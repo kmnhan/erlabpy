@@ -3,6 +3,7 @@ import pytest
 import scipy.interpolate
 import xarray as xr
 
+import erlab
 from erlab.analysis.interpolate import interpn, slice_along_path, slice_along_vector
 
 
@@ -200,3 +201,64 @@ def test_slice_along_vector() -> None:
     np.testing.assert_allclose(interp.x.values, np.array([0.34508067, 0.65491933]))
     np.testing.assert_allclose(interp.y.values, np.array([0.21055728, 0.38944272]))
     np.testing.assert_allclose(interp.path.values, np.array([0.0, 0.4]))
+
+
+def test_fast_interpolator_from_xarray_matches_scipy() -> None:
+    data = xr.DataArray(
+        [[0.0, 1.0], [2.0, 3.0]],
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+    interp = erlab.analysis.interpolate.FastInterpolator.from_xarray(data)
+
+    points = np.array([[0.5, 0.5]])
+
+    expected = scipy.interpolate.RegularGridInterpolator(
+        (data.x.values, data.y.values),
+        data.values,
+        bounds_error=False,
+        fill_value=np.nan,
+    )(points)
+
+    np.testing.assert_allclose(interp(points), expected)
+
+
+def test_fast_interpolator_warns_for_uneven_coords() -> None:
+    x = np.array([0.0, 1.0, 3.0])
+    y = np.array([0.0, 1.0, 2.0])
+    values = value_func_2d(*np.meshgrid(x, y, indexing="ij"))
+    interp = erlab.analysis.interpolate.FastInterpolator(
+        (x, y), values, fill_value=np.nan
+    )
+    points = np.array([[0.5, 0.5]])
+
+    with pytest.warns(RuntimeWarning, match="falling back to scipy"):
+        res = interp(points)
+
+    scipy_interp = scipy.interpolate.RegularGridInterpolator(
+        (x, y), values, bounds_error=False, fill_value=np.nan
+    )(points)
+    np.testing.assert_allclose(res, scipy_interp)
+
+
+def test_slice_along_path_validations() -> None:
+    darr = xr.DataArray(
+        np.zeros((2, 2)), dims=("x", "y"), coords={"x": [0.0, 1.0], "y": [0.0, 1.0]}
+    )
+
+    with pytest.raises(ValueError, match="Dimension z"):
+        slice_along_path(darr, {"z": [0, 1]})
+
+    with pytest.raises(ValueError, match="same length"):
+        slice_along_path(darr, {"x": [0, 1], "y": [0, 1, 2]})
+
+    with pytest.raises(ValueError, match="finite"):
+        slice_along_path(darr, {"x": [0, 1], "y": [0, 1]}, step_size=np.inf)
+
+    with pytest.raises(ValueError, match="positive"):
+        slice_along_path(darr, {"x": [0, 1], "y": [0, 1]}, step_size=-1.0)
+
+
+def test_get_interp_func_invalid_dim_raises() -> None:
+    with pytest.raises(ValueError, match="only supported for 2D or 3D"):
+        erlab.analysis.interpolate._get_interp_func(4)

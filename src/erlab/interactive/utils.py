@@ -21,6 +21,7 @@ import types
 import typing
 import warnings
 import weakref
+import webbrowser
 from collections.abc import Iterable
 
 import numpy as np
@@ -496,7 +497,7 @@ def copy_to_clipboard(content: str | list[str]) -> str:
     return content
 
 
-def format_kwargs(d: dict[str, typing.Any]) -> str:
+def format_kwargs(d: dict[Hashable, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
     If the keys are valid Python identifiers, the output will be formatted as keyword
@@ -508,7 +509,7 @@ def format_kwargs(d: dict[str, typing.Any]) -> str:
         Dictionary of keyword arguments.
 
     """
-    if all(s.isidentifier() for s in d):
+    if all(isinstance(k, str) and k.isidentifier() for k in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
     out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
     return "{" + out + "}"
@@ -526,7 +527,6 @@ def _parse_single_arg(arg):
             arg = f"'{arg}'"
         else:
             arg = f'"{arg}"'
-
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string
         arg = {k: erlab.utils.misc._convert_to_native(v) for k, v in arg.items()}
@@ -535,6 +535,23 @@ def _parse_single_arg(arg):
             + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])
             + "}"
         )
+    elif isinstance(arg, slice):
+        start, stop, step = arg.start, arg.stop, arg.step
+        if step is not None:
+            args = [start, stop, step]
+        elif start is None:
+            args = [stop]
+        else:
+            args = [start, stop]
+        return f"slice({', '.join(repr(_parse_single_arg(a)) for a in args)})"
+    elif isinstance(arg, np.ndarray):
+        arg = np.array2string(
+            arg,
+            separator=", ",
+            threshold=sys.maxsize,
+            formatter={"float_kind": lambda v: np.format_float_positional(v, trim="-")},
+        ).replace("\n", "")
+        arg = f"np.array({arg})"
 
     return arg
 
@@ -578,6 +595,11 @@ def file_loaders(
             {"engine": "erlab-igor"},
         ),
     }
+    if importlib.util.find_spec("zarr"):  # pragma: no branch
+        valid_loaders["Zarr Store (*.zarr)"] = (
+            xr.open_dataarray,
+            {"engine": "zarr", "chunks": "auto"},
+        )
 
     additional_loaders: dict[str, tuple[Callable, dict]] = {}
     for k in erlab.io.loaders:
@@ -611,7 +633,7 @@ def generate_code(
     kwargs: dict[str, typing.Any],
     module: str | None = None,
     name: str | None = None,
-    assign: str | None = None,
+    assign: str | tuple[str, ...] | None = None,
     prefix: str | None = None,
     remove_defaults: bool = True,
     line_length: int = 88,
@@ -637,7 +659,8 @@ def generate_code(
     name
         Name of the function. If `None`, `func.__name__` is used.
     assign
-        If provided, the return value will be assigned to this variable.
+        If provided, the return value will be assigned to this variable. For multiple
+        assignment, pass a tuple.
     prefix
         Prefix to add to the generated string.
     remove_defaults
@@ -673,6 +696,8 @@ def generate_code(
     if name is None:
         name = func.__name__
     if assign is not None:
+        if isinstance(assign, tuple):
+            assign = ", ".join(assign)
         module = f"{assign} = {module}"
     if prefix is not None:
         module = f"{prefix}{module}"
@@ -913,6 +938,27 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
     return None
 
 
+def make_help_actions(parent: QtCore.QObject) -> tuple[QtGui.QAction, ...]:
+    """Create shared help actions for ImageTool and ImageTool Manager."""
+    release_notes_action = QtWidgets.QAction("Release Notes", parent)
+    release_notes_action.triggered.connect(
+        lambda _: webbrowser.open("https://github.com/kmnhan/erlabpy/releases")
+    )
+
+    open_docs_action = QtWidgets.QAction("Documentation", parent)
+    open_docs_action.triggered.connect(
+        lambda _: webbrowser.open(
+            "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html"
+        )
+    )
+    report_issue_action = QtWidgets.QAction("Report an Issue", parent)
+    report_issue_action.triggered.connect(
+        lambda _: webbrowser.open("https://github.com/kmnhan/erlabpy/issues")
+    )
+
+    return release_notes_action, open_docs_action, report_issue_action
+
+
 class KeyboardEventFilter(QtCore.QObject):
     """Event filter that intercepts select all and copy shortcuts.
 
@@ -998,6 +1044,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         scientific: bool = False,
         value: float = 0.0,
         prefix: str = "",
+        trim: typing.Literal["k", ".", "0", "-"] = "k",
         **kwargs,
     ) -> None:
         self._only_int = integer
@@ -1013,6 +1060,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
         self._prefix = prefix
+        self._trim = trim
 
         kwargs.setdefault("correctionMode", self.CorrectionMode.CorrectToPreviousValue)
         kwargs.setdefault("keyboardTracking", False)
@@ -1112,7 +1160,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                     value,
                     precision=self.decimals(),
                     unique=False,
-                    trim="k",
+                    trim=self._trim,
                     exp_digits=1,
                 )
             return self.prefix() + np.format_float_positional(
@@ -1120,7 +1168,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
                 precision=self.decimals(),
                 unique=False,
                 fractional=not self._decimal_significant,
-                trim="k",
+                trim=self._trim,
             )
         return self.prefix() + str(int(value))
 
@@ -1520,7 +1568,9 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
         if cut_to_data:
             kargs["levels"] = self.data_cut_levels(data=image)
         super().setImage(image=image, autoLevels=autoLevels, **kargs)
-        self.data_array = None
+
+        if image is not None and self.data_array is not None:
+            self.data_array = None
 
     def setDataArray(
         self, data: xr.DataArray, update_labels: bool = True, **kargs
@@ -1887,7 +1937,7 @@ class ROIControls(ParameterGroup):
             spinbox_kw = {}
         self.roi = roi
         x0, y0, x1, y1 = self.roi_limits
-        xm, ym, xM, yM = self.roi.maxBounds.getCoords()
+        xm, ym, xM, yM = self.max_bounds
 
         default_properties = {
             "decimals": 3,
@@ -1949,6 +1999,17 @@ class ROIControls(ParameterGroup):
         x1, y1 = x0 + w, y0 + h
         return x0, y0, x1, y1
 
+    @property
+    def max_bounds(self) -> tuple[float, float, float, float]:
+        bounds: QtCore.QRectF | None = self.roi.maxBounds
+        if bounds is None:
+            coords = (-np.inf, -np.inf, np.inf, np.inf)
+        else:
+            coords = typing.cast(
+                "tuple[float, float, float, float]", bounds.getCoords()
+            )
+        return coords
+
     @typing.no_type_check
     def update_pos(self) -> None:
         self.widgets["x0"].setMaximum(self.widgets["x1"].value())
@@ -1966,7 +2027,7 @@ class ROIControls(ParameterGroup):
         x0, y0, x1, y1 = (
             (f if f is not None else i) for i, f in zip(lim_old, lim_new, strict=True)
         )
-        xm, ym, xM, yM = self.roi.maxBounds.getCoords()
+        xm, ym, xM, yM = self.max_bounds
         x0, y0, x1, y1 = max(x0, xm), max(y0, ym), min(x1, xM), min(y1, yM)
         self.roi.setPos((x0, y0), update=False)
         self.roi.setSize((x1 - x0, y1 - y0), update=update)
@@ -2099,6 +2160,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        # Enable closing with keyboard shortcut
+        self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self.hide)
+
     @property
     def tool_status(self) -> M:
         raise NotImplementedError(
@@ -2204,10 +2271,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
         if tool_data_name == "<none-value>":
             tool_data_name = None
-        tool = cls_obj(
-            ds["<saved-tool-data>"].rename(tool_data_name),  # type: ignore[arg-type]
-            **kwargs,
-        )
+        tool = cls_obj(ds["<saved-tool-data>"].rename(tool_data_name), **kwargs)
         tool.tool_status = cls_obj.StateModel.model_validate_json(
             ds.attrs["tool_state"]
         )
@@ -2451,23 +2515,31 @@ class AnalysisWidgetBase(pg.GraphicsLayoutWidget):
             self.images[0].setDataArray(
                 self.input, cut_to_data=self.cut_to_data in ("in", "both")
             )
+            self.axes[0].autoRange()
 
-    def add_roi(self, i):
-        self.roi[i] = pg.ROI(
+    def add_roi(self, i: int) -> pg.ROI:
+        vb: pg.ViewBox = self.axes[i].getViewBox()
+        vb.updateAutoRange()
+        vb.updateMatrix()
+        rect = vb.itemBoundingRect(self.images[i])
+
+        roi = pg.ROI(
             [-0.1, -0.5],
             [0.3, 0.5],
             parent=self.images[i],
             rotatable=False,
             resizable=True,
-            maxBounds=self.axes[i].getViewBox().itemBoundingRect(self.images[i]),
+            maxBounds=rect,
         )
-        self.roi[i].addScaleHandle([0.5, 1], [0.5, 0])
-        self.roi[i].addScaleHandle([0.5, 0], [0.5, 1])
-        self.roi[i].addScaleHandle([1, 0.5], [0, 0.5])
-        self.roi[i].addScaleHandle([0, 0.5], [1, 0.5])
-        self.axes[i].addItem(self.roi[i])
-        self.roi[i].setZValue(10)
-        return self.roi[i]
+        roi.addScaleHandle([0.5, 1], [0.5, 0])
+        roi.addScaleHandle([0.5, 0], [0.5, 1])
+        roi.addScaleHandle([1, 0.5], [0, 0.5])
+        roi.addScaleHandle([0, 0.5], [1, 0.5])
+        self.axes[i].addItem(roi)
+        roi.setZValue(10)
+
+        self.roi[i] = roi
+        return roi
 
 
 class ComparisonWidget(AnalysisWidgetBase):
@@ -2508,6 +2580,7 @@ class ComparisonWidget(AnalysisWidgetBase):
             self.images[0].setDataArray(
                 self.input, cut_to_data=self.cut_to_data in ("in", "both")
             )
+        self.axes[0].autoRange()
 
     def set_pre_function(self, func, only_values=False, **kwargs) -> None:
         self.prefunc_only_values = only_values
@@ -2603,7 +2676,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
                     act = actopts
                     sep_before, sep_after = False, False
                 else:
-                    if "actions" in actopts:
+                    if "actions" in actopts or "menu" in actopts:
                         self.parse_menu(menu, **{actname: actopts})
                         continue
                     sep_before = actopts.pop("sep_before", False)

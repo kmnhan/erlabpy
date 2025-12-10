@@ -1,7 +1,12 @@
 import concurrent.futures
+import io
 import json
 import logging
+import pickle
+import sys
 import tempfile
+import time
+import types
 import typing
 from collections.abc import Callable
 
@@ -9,6 +14,7 @@ import numpy as np
 import pytest
 import xarray as xr
 import xarray.testing
+import zmq
 from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -27,7 +33,15 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
 )
-from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
+from erlab.interactive.imagetool.manager._server import (
+    HOST_IP,
+    PORT,
+    AddDataPacket,
+    Response,
+    _recv_multipart,
+    _remove_idx,
+    _show_idx,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -963,11 +977,27 @@ def test_manager_open_files(
             manager.get_imagetool(0).slicer_area.data, test_data
         )
 
+        # Try reload
+        with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
+            manager.get_imagetool(0).slicer_area.reload()
+
+        # Try archive
+        manager._imagetool_wrappers[0].archive()
+        qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
+
+        # Unarchive
+        manager._imagetool_wrappers[0].unarchive()
+        qtbot.wait_until(
+            lambda: not manager._imagetool_wrappers[0].archived, timeout=5000
+        )
+
         # Simulate drag and drop with wrong filter, retry with correct filter
         # Dialogs created are:
         # select loader → failed alert → retry → select loader
         def _choose_wrong_filter(dialog: _NameFilterDialog):
-            assert dialog._valid_name_filters[0] == "xarray HDF5 Files (*.h5)"
+            assert (
+                next(iter(dialog._valid_loaders.keys())) == "xarray HDF5 Files (*.h5)"
+            )
             dialog._button_group.buttons()[-1].setChecked(True)
 
         def _choose_correct_filter(dialog: _NameFilterDialog):
@@ -1145,3 +1175,250 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
         assert not handled
         assert text is None
+
+
+def test_warning_alert(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        warning_logger = logging.getLogger("test.warning.history")
+        warning_logger.warning("First warning")
+        warning_logger.warning("Second warning")
+
+        qtbot.wait_until(lambda: len(manager._alert_dialogs) == 2)
+        qtbot.wait_until(
+            lambda: all(warning.isVisible() for warning in manager._alert_dialogs)
+        )
+
+        texts = [notification.text() for notification in manager._alert_dialogs]
+        assert any("First warning" in text for text in texts)
+        assert any("Second warning" in text for text in texts)
+
+        clear_all_button = manager._alert_dialogs[-1].findChild(
+            QtWidgets.QPushButton, "warningDismissAllButton"
+        )
+        assert clear_all_button is not None
+
+        qtbot.mouseClick(clear_all_button, QtCore.Qt.MouseButton.LeftButton, delay=10)
+        qtbot.wait_until(lambda: len(manager._alert_dialogs) == 0)
+
+
+def test_manager_progressbar_alert(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        message = "Load data:   8%|8         | 1/12 [00:00<00:07,  1.54it/s]"
+        manager._show_alert("INFO", logging.INFO, message, "")
+
+        assert 12 in manager._progress_bars
+        pbar = manager._progress_bars[12]
+        assert pbar.labelText() == "Load data"
+        assert pbar.value() == 1
+        assert manager._alert_dialogs == []
+
+        manager._show_alert(
+            "INFO",
+            logging.INFO,
+            "Load data:  50%|##        | 6/12 [00:00<00:07,  1.54it/s]",
+            "",
+        )
+        assert manager._progress_bars[12] is pbar
+        assert pbar.value() == 6
+
+        pbar.close()
+
+
+def test_manager_alert_icons(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    recorded_icons: list[QtWidgets.QStyle.StandardPixmap | None] = []
+
+    class _RecordingMessageDialog(erlab.interactive.utils.MessageDialog):
+        def __init__(self, *args, icon_pixmap=None, **kwargs):
+            recorded_icons.append(icon_pixmap)
+            super().__init__(*args, icon_pixmap=icon_pixmap, **kwargs)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        manager._show_alert("INFO", logging.INFO, "info", "")
+        manager._show_alert("WARNING", logging.WARNING, "warning", "")
+        manager._show_alert("ERROR", logging.ERROR, "error", "")
+
+        assert recorded_icons == [
+            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation,
+            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+            QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical,
+        ]
+
+        manager._clear_all_alerts()
+        QtWidgets.QApplication.processEvents()
+
+
+def test_uncaught_exception_alert(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        assert sys.excepthook == manager._handle_uncaught_exception
+        manager._previous_excepthook = lambda *exc: None
+
+        try:
+            raise RuntimeError("boom")  # noqa: TRY301
+        except RuntimeError:
+            exc_info = sys.exc_info()
+
+        sys.excepthook(*exc_info)
+
+        qtbot.wait_until(lambda: len(manager._alert_dialogs) == 1)
+        qtbot.wait_until(manager._alert_dialogs[0].isVisible)
+
+        text = manager._alert_dialogs[0].text()
+        detailed_text = manager._alert_dialogs[0].detailedText()
+
+        assert "ERROR" in manager._alert_dialogs[0].windowTitle()
+        assert "An unexpected error occurred" in text
+        assert detailed_text is not None
+        assert "boom" in detailed_text
+        assert "RuntimeError" in detailed_text
+
+
+def test_manager_reload(
+    qtbot,
+    example_loader,
+    example_data_dir,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        manager.activateWindow()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        load_in_manager(
+            [example_data_dir / "data_006.h5"], loader_name=example_loader.name
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        # Try reload
+        with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
+            manager.get_imagetool(0).slicer_area.reload()
+
+        # Try archive
+        manager._imagetool_wrappers[0].archive()
+        qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
+
+        # Unarchive
+        manager._imagetool_wrappers[0].unarchive()
+        qtbot.wait_until(
+            lambda: not manager._imagetool_wrappers[0].archived, timeout=5000
+        )
+
+        # Try reload again
+        with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
+            manager.get_imagetool(0).slicer_area.reload()
+
+
+def make_dataarray_unpicklable(darr):
+    mod = types.ModuleType("temp_mod_for_apply_ufunc")
+    exec(  # noqa: S102
+        "def myfunc(dat):\n    return dat * 2\n",
+        mod.__dict__,
+    )
+    sys.modules[mod.__name__] = mod
+    from temp_mod_for_apply_ufunc import myfunc
+
+    darr = xr.apply_ufunc(myfunc, darr.chunk(), vectorize=True, dask="parallelized")
+    return darr, mod.__name__
+
+
+def _create_frames(
+    obj: dict[str, typing.Any], pickler_cls: type[pickle.Pickler]
+) -> list[memoryview]:
+    buffers: list[pickle.PickleBuffer] = []  # out-of-band frames will be appended here
+    bio = io.BytesIO()
+
+    p = pickler_cls(bio, protocol=5, buffer_callback=buffers.append)
+    p.dump(obj)
+    header = memoryview(bio.getbuffer())
+    return [header] + [memoryview(b) for b in buffers]
+
+
+def test_manager_cloudpickle(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context(use_socket=True) as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        # Test with unpicklable data
+        darr, modname = make_dataarray_unpicklable(test_data)
+        del sys.modules[modname]
+        erlab.interactive.imagetool.manager.show_in_manager(darr)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        logger.info("Confirmed tool is added, checking data")
+        assert manager.get_imagetool(0).array_slicer.point_value(0) == 24.0
+
+        # Pickle data first and remove module before trying unpickle
+        darr, modname = make_dataarray_unpicklable(test_data)
+        content = AddDataPacket(
+            packet_type="add", data_list=darr, arguments={}
+        ).model_dump(exclude_unset=True)
+        ctx = zmq.Context.instance()
+        sock: zmq.Socket = ctx.socket(zmq.REQ)
+        sock.setsockopt(zmq.SNDHWM, 0)
+        sock.setsockopt(zmq.RCVHWM, 0)
+        try:
+            sock.connect(f"tcp://{HOST_IP}:{PORT}")
+            frames = _create_frames(content, pickler_cls=pickle.Pickler)
+            del sys.modules[modname]
+            sock.send_multipart(frames, copy=False)
+
+            timeout_seconds = 5.0
+            start_time = time.time()
+            while True:
+                try:
+                    response = Response(**_recv_multipart(sock, flags=zmq.NOBLOCK))
+                except zmq.Again as e:
+                    if time.time() - start_time > timeout_seconds:
+                        raise TimeoutError(
+                            "Timed out waiting for response from ZeroMQ socket."
+                        ) from e
+                else:
+                    break
+            assert response.status == "unpickle-failed"
+        finally:
+            sock.close()

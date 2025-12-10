@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import os
@@ -8,6 +9,7 @@ import platform
 import sys
 import tempfile
 import threading
+import traceback
 import typing
 import uuid
 
@@ -28,6 +30,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+from erlab.interactive.imagetool.manager._logging import get_log_file_path
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
@@ -35,8 +38,41 @@ from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
-
 logger = logging.getLogger(__name__)
+
+
+class _WarningEmitter(QtCore.QObject):
+    warning_received = QtCore.Signal(str, int, str, str)
+
+
+class _WarningNotificationHandler(logging.Handler):
+    def __init__(self, emitter: _WarningEmitter):
+        super().__init__(level=logging.WARNING)
+        self._emitter = emitter
+
+    def emit(self, record: logging.LogRecord) -> None:
+        traceback_msg = ""
+        try:
+            message = str(record.message)
+            traceback_header = "Traceback (most recent call last):"
+            if traceback_header in message:
+                message, traceback_msg = message.split(traceback_header, 1)
+                traceback_msg = traceback_header + traceback_msg
+            if record.exc_info:
+                traceback_msg = "".join(traceback.format_exception(record.exc_info[1]))
+
+            if traceback_msg:
+                traceback_msg = erlab.interactive.utils._format_traceback(traceback_msg)
+
+            # emit_user_level_warning adds "<sys>:0: " when triggerd from GUI actions
+            message = message.strip().replace("<sys>:0: ", "")
+
+        except Exception:  # pragma: no cover
+            self.handleError(record)
+            return
+        self._emitter.warning_received.emit(
+            record.levelname, record.levelno, message, traceback_msg
+        )
 
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"
@@ -64,6 +100,15 @@ _LINKER_COLORS: tuple[QtGui.QColor, ...] = (
     QtGui.QColor(100, 181, 205),
 )
 """Colors for different linkers."""
+
+_WATCHED_VAR_COLORS: tuple[QtGui.QColor, ...] = (
+    QtGui.QColor(72, 120, 208),
+    QtGui.QColor(238, 133, 74),
+    QtGui.QColor(106, 204, 100),
+    QtGui.QColor(214, 95, 95),
+    QtGui.QColor(149, 108, 180),
+)
+"""Colors for watched variables from different kernels."""
 
 _manager_instance: ImageToolManager | None = None
 """Reference to the running manager instance."""
@@ -136,6 +181,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+
+        # Initialize warning notifications
+        self._warning_emitter = _WarningEmitter(self)
+        self._warning_emitter.warning_received.connect(self._show_alert)
+        self._warning_handler = _WarningNotificationHandler(self._warning_emitter)
+        logging.getLogger().addHandler(self._warning_handler)
+        self._alert_dialogs: list[erlab.interactive.utils.MessageDialog] = []
+
+        # Setup uncaught exception handler
+        self._previous_excepthook = sys.excepthook
+        sys.excepthook = self._handle_uncaught_exception
+
+        # Setup servers and connect signals
         self.server: _ManagerServer = _ManagerServer()
         self.server.sigReceived.connect(self._data_recv)
         self.server.sigLoadRequested.connect(self._data_load)
@@ -173,6 +231,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Stores additional analysis tools opened from child ImageTool windows
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
 
+        # Store progress bar widgets
+        self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
+
         # Initialize actions
         self.settings_action = QtWidgets.QAction("Settings", self)
         self.settings_action.triggered.connect(self.open_settings)
@@ -190,7 +251,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.hide_action = QtWidgets.QAction("Hide", self)
         self.hide_action.triggered.connect(self.hide_selected)
-        self.hide_action.setShortcut(QtGui.QKeySequence.StandardKey.Close)
+        self.hide_action.setShortcut("Ctrl+W")
         self.hide_action.setToolTip("Hide selected windows")
 
         self.gc_action = QtWidgets.QAction("Run Garbage Collection", self)
@@ -293,6 +354,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.check_update_action.triggered.connect(self.check_for_updates)
         self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
 
+        release_notes_action, open_docs_action, report_issue_action = (
+            erlab.interactive.utils.make_help_actions(self)
+        )
+
+        self.open_log_folder_action = QtWidgets.QAction("Open Log Directory", self)
+        self.open_log_folder_action.triggered.connect(self.open_log_directory)
+
         # Populate menu bar
         file_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&File")
@@ -344,8 +412,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "QtWidgets.QMenu", self.menu_bar.addMenu("&Help")
         )
         help_menu.addAction(self.about_action)
-        help_menu.addSeparator()
         help_menu.addAction(self.check_update_action)
+        help_menu.addAction(release_notes_action)
+        help_menu.addSeparator()
+        help_menu.addAction(open_docs_action)
+        help_menu.addAction(report_issue_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self.open_log_folder_action)
 
         # Initialize sidebar buttons linked to actions
         self.open_button = erlab.interactive.utils.IconActionButton(
@@ -472,22 +545,28 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def about(self) -> None:
         """Show the about dialog."""
+        import h5netcdf
+        import xarray_lmfit
+
         msg_box = self._make_icon_msgbox()
 
         version_info = {
-            "erlab": erlab.__version__,
             "numpy": np.__version__,
             "xarray": xr.__version__,
+            "h5netcdf": h5netcdf.__version__,
+            "xarray-lmfit": xarray_lmfit.__version__,
             "pyqtgraph": pyqtgraph.__version__,
             "Qt": f"{qtpy.API_NAME} {qtpy.QT_VERSION}",
             "Python": platform.python_version(),
             "OS": platform.platform(),
         }
         if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
-            version_info["Location"] = os.path.dirname(sys.executable)
-        msg_box.setInformativeText(
-            "\n".join(f"{k}: {v}" for k, v in version_info.items())
-        )
+            version_info["Location"] = os.path.dirname(sys.executable).removesuffix(
+                "/Contents/MacOS"
+            )
+        version_info_str = "\n".join(f"{k}: {v}" for k, v in version_info.items())
+        msg_box.setText(f"ImageTool Manager {erlab.__version__}")
+        msg_box.setInformativeText(version_info_str)
         msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Close)
         copy_btn = msg_box.addButton(
             "Copy", QtWidgets.QMessageBox.ButtonRole.AcceptRole
@@ -495,9 +574,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.exec()
 
         if msg_box.clickedButton() == copy_btn:
-            cb = QtWidgets.QApplication.clipboard()
-            if cb:
-                cb.setText(msg_box.informativeText())
+            erlab.interactive.utils.copy_to_clipboard(
+                f"erlab: {erlab.__version__}\n" + version_info_str
+            )
 
     def updated(self, old_version: str, new_version: str) -> None:  # pragma: no cover
         """Notify the user that the application has been updated."""
@@ -509,6 +588,119 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Ok)
         msg_box.exec()
+
+    @QtCore.Slot()
+    def open_log_directory(self) -> None:
+        """Open the log directory in the system file explorer."""
+        erlab.utils.misc.open_in_file_manager(get_log_file_path().parent)
+
+    def _check_message_is_progressbar(self, message: str) -> bool:
+        """Check if a log message contains a progress bar.
+
+        example: "Title:   8%|8         | 1/12 [00:00<00:07,  1.54it/s]"
+        """
+        return "|" in message and "%" in message and message.endswith("]")
+
+    def _parse_progressbar(self, message: str):
+        """Parse and display a progress bar from a log message."""
+        title_part, _, info_part = message.split("|", 2)
+        title: str = title_part.split(":", 1)[0].strip()
+        current: int = int(info_part.split("/", 1)[0].strip())
+        total: int = int(info_part.split("/", 1)[1].split("[", 1)[0].strip())
+
+        if total in self._progress_bars:
+            pbar = self._progress_bars[total]
+        else:
+            pbar = QtWidgets.QProgressDialog(self)
+            pbar.setLabelText(title)
+            pbar.setMinimum(0)
+            pbar.setMaximum(total)
+            pbar.setAutoReset(True)
+            pbar.setAutoClose(True)
+            pbar.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+            pbar.setWindowFlags(
+                pbar.windowFlags()
+                | QtCore.Qt.WindowType.Tool
+                | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            )
+            pbar.findChild(QtWidgets.QProgressBar).setFormat("%p% (%v/%m)")
+            self._progress_bars[total] = pbar
+            pbar.show()
+            pbar.raise_()
+            pbar.activateWindow()
+
+        pbar.setValue(current)
+
+    @QtCore.Slot(str, int, str, str)
+    def _show_alert(
+        self, levelname: str, levelno: int, message: str, formatted_traceback: str
+    ) -> None:
+        """Show a non-intrusive warning message in a floating window."""
+        if self._check_message_is_progressbar(message):
+            try:
+                self._parse_progressbar(message)
+            except Exception:  # pragma: no cover
+                logger.exception("Failed to parse progress bar message %r", message)
+            else:
+                return
+
+        if levelno >= logging.ERROR:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical
+        elif levelno >= logging.WARNING:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
+        else:
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation
+
+        dialog = erlab.interactive.utils.MessageDialog(
+            self,
+            title=levelname,
+            text=message,
+            detailed_text=formatted_traceback,
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=icon_pixmap,
+        )
+        dialog.setModal(False)
+        dialog.setWindowFlags(
+            dialog.windowFlags()
+            | QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+        )
+
+        btn = QtWidgets.QPushButton("Dismiss All", dialog)
+        btn.setObjectName("warningDismissAllButton")
+        btn.clicked.connect(self._clear_all_alerts)
+        btn.setDefault(False)
+        btn.setAutoDefault(False)
+        dialog._button_box.addButton(
+            btn, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        )
+        dialog._dismiss_all_btn = btn  # type: ignore[attr-defined]
+        self._alert_dialogs.append(dialog)
+        dialog.finished.connect(lambda *, d=dialog: self._unregister_alert(d))
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _unregister_alert(self, alert: erlab.interactive.utils.MessageDialog) -> None:
+        with contextlib.suppress(ValueError):  # pragma: no cover - defensive cleanup
+            self._alert_dialogs.remove(alert)
+
+    @QtCore.Slot()
+    def _clear_all_alerts(self) -> None:
+        for notification in list(self._alert_dialogs):
+            notification.close()
+
+    def _handle_uncaught_exception(self, exc_type, exc_value, exc_traceback):
+        """Show a dialog for uncaught exceptions and log them."""
+        if not issubclass(exc_type, KeyboardInterrupt):
+            logger.error(
+                "An unexpected error occurred.",
+                exc_info=(exc_type, exc_value, exc_traceback),
+            )
+        if self._previous_excepthook is not None:  # pragma: no branch
+            with contextlib.suppress(Exception):
+                self._previous_excepthook(exc_type, exc_value, exc_traceback)
 
     @property
     def _reindex_lock(self) -> threading.Lock:
@@ -1197,7 +1389,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._recent_directory = os.path.dirname(fname)
             try:
                 self._from_datatree(
-                    xr.open_datatree(fname, engine="h5netcdf", chunks="auto")
+                    xr.open_datatree(
+                        fname, engine="h5netcdf", chunks="auto", phony_dims="sort"
+                    )
                 )
             except Exception:
                 logger.exception("Error while loading workspace")
@@ -1297,11 +1491,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
         indices: list[int] = []
         kwargs["_in_manager"] = True
 
-        for d in data:
+        load_func = kwargs.pop("load_func", None)
+
+        for i, d in enumerate(data):
+            # Set index-specific load function if provided
+            this_load_func = (*load_func[:2], i) if load_func else None
             try:
                 indices.append(
                     self.add_imagetool(
-                        ImageTool(d, **kwargs), activate=True, watched_var=watched_var
+                        ImageTool(d, **kwargs, load_func=this_load_func),
+                        activate=True,
+                        watched_var=watched_var,
                     )
                 )
                 if watched_var is not None:
@@ -1356,6 +1556,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if v._watched_uid == uid:
                 return k
         return None
+
+    def color_for_watched_var_kernel(self, kernel_uid: str) -> QtGui.QColor:
+        """Return a different color for different source kernels."""
+        all_kernel_uids = tuple(
+            typing.cast("str", v._watched_uid).removeprefix(f"{v._watched_varname} ")
+            for v in self._imagetool_wrappers.values()
+            if v.watched
+        )
+        idx = all_kernel_uids.index(kernel_uid)
+        return _WATCHED_VAR_COLORS[idx % len(_WATCHED_VAR_COLORS)]
 
     @QtCore.Slot(str)
     def _remove_watched(self, uid: str) -> None:
@@ -1570,7 +1780,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if try_workspace:
             for p in list(queued):
                 try:
-                    dt = xr.open_datatree(p, engine="h5netcdf", chunks="auto")
+                    dt = xr.open_datatree(
+                        p, engine="h5netcdf", chunks="auto", phony_dims="sort"
+                    )
                 except Exception:
                     logger.debug("Failed to open %s as datatree workspace", p)
                 else:
@@ -1618,15 +1830,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             func, kargs = next(iter(valid_loaders.values()))
             self._recent_name_filter = next(iter(valid_loaders.keys()))
         else:
-            valid_name_filters: list[str] = list(valid_loaders.keys())
-
-            dialog = _NameFilterDialog(self, valid_name_filters)
+            dialog = _NameFilterDialog(self, valid_loaders)
             dialog.check_filter(self._recent_name_filter)
 
             if dialog.exec():
-                selected = dialog.checked_filter()
-                func, kargs = valid_loaders[selected]
-                self._recent_name_filter = selected
+                self._recent_name_filter, func, kargs = dialog.checked_filter()
             else:
                 return
 
@@ -1912,5 +2120,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         logger.debug("Closing dask client (if any)...")
         self._dask_menu.close_client()
+
+        root_logger = logging.getLogger()
+        if self._warning_handler in root_logger.handlers:  # pragma: no branch
+            root_logger.removeHandler(self._warning_handler)
+
+        self._clear_all_alerts()
+
+        if sys.excepthook == self._handle_uncaught_exception:
+            sys.excepthook = self._previous_excepthook
 
         super().closeEvent(event)

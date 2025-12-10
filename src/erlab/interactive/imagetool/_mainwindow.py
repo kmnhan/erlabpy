@@ -93,6 +93,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
             self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, d)
         self.resize(720, 720)
 
+        # Allow writing history after initialization
+        self.slicer_area._write_history = True
+
     @property
     def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
         """
@@ -300,6 +303,9 @@ class ImageTool(BaseImageTool):
         self.__recent_directory: str | None = None
 
         self._dask_menu = erlab.interactive._dask.DaskMenu(self, "Dask")
+        self._history_menu = erlab.interactive.imagetool._history.HistoryMenu(
+            self.slicer_area, "History"
+        )
         self.initialize_actions()
         self.setMenuBar(ItoolMenuBar(self))
 
@@ -343,7 +349,7 @@ class ImageTool(BaseImageTool):
         self.save_act.setIcon(QtGui.QIcon.fromTheme("document-save-as"))
 
         self.close_act = QtWidgets.QAction("&Close", self)
-        self.close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
+        self.close_act.setShortcut("Ctrl+W")
         self.close_act.triggered.connect(self.close)
         self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 
@@ -392,7 +398,9 @@ class ImageTool(BaseImageTool):
 
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
-                    self.slicer_area.set_data(fn(fname, **kargs), file_path=fname)
+                    self.slicer_area.set_data(
+                        fn(fname, **kargs), file_path=fname, load_func=(fn, kargs, 0)
+                    )
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self,
@@ -469,6 +477,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     def _generate_menu_kwargs(self) -> dict:
         guideline_actions = self.slicer_area.main_image._guideline_actions
+        release_notes_action, open_docs_action, report_issue_action = (
+            erlab.interactive.utils.make_help_actions(self.image_tool)
+        )
         menu_kwargs: dict[str, typing.Any] = {
             "fileMenu": {
                 "title": "&File",
@@ -496,9 +507,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                 "actions": {
                     "undoAct": self.slicer_area.undo_act,
                     "redoAct": self.slicer_area.redo_act,
+                    "historyMenu": {"menu": self.image_tool._history_menu},
                     "sep": {"separator": True},
                     "&Copy Cursor Values": {
-                        "shortcut": "Ctrl+C",
+                        "shortcut": "Ctrl+Shift+C",
                         "triggered": self._copy_cursor_val,
                     },
                     "&Copy Cursor Indices": {
@@ -548,6 +560,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "lockLevelsAct": self.slicer_area.lock_levels_act,
                     "sep3": {"separator": True},
                     "ktoolAct": self.slicer_area.ktool_act,
+                    "meshtoolAct": self.slicer_area.meshtool_act,
                     "sep4": {"separator": True},
                     "Normalize": {"triggered": self._normalize},
                     "resetAct": {
@@ -561,11 +574,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
             "helpMenu": {
                 "title": "&Help",
                 "actions": {
-                    "helpAction": {"text": "Help (WIP)"},
-                    "shortcutsAction": {
-                        "text": "Keyboard Shortcuts Reference (WIP)",
-                        "sep_before": True,
-                    },
+                    "releaseNotesAct": release_notes_action,
+                    "help_sep": {"separator": True},
+                    "openDocsAct": open_docs_action,
+                    "reportIssueAct": report_issue_action,
                 },
             },
         }

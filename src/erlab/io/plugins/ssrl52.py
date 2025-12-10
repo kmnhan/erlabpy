@@ -6,20 +6,13 @@ import datetime
 import os
 import re
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 
 import numpy as np
 import xarray as xr
 
 import erlab
 from erlab.io.dataloader import LoaderBase
-
-if typing.TYPE_CHECKING:
-    import h5netcdf
-else:
-    import lazy_loader as _lazy
-
-    h5netcdf = _lazy.load("h5netcdf")
 
 
 def _format_polarization(val) -> str:
@@ -31,6 +24,14 @@ def _parse_value(value):
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def _find_group_for_key(dt: xr.DataTree, name: str) -> xr.DataTree | None:
+    target = name.casefold()
+    for k, v in dt.items():
+        if str(k).casefold() == target and isinstance(v, xr.DataTree):
+            return v
+    return None
 
 
 class SSRL52Loader(LoaderBase):
@@ -109,179 +110,171 @@ class SSRL52Loader(LoaderBase):
         return {"SSRL BL5-2 Raw Data (*.h5)": (self.load, {})}
 
     def load_single(
-        self, file_path: str | os.PathLike, without_values: bool = False
+        self,
+        file_path: str | os.PathLike,
+        without_values: bool = False,
+        chunks: str | int | dict[str, int] | None = "auto",
     ) -> xr.DataArray:
         is_hvdep: bool = False
 
-        dim_mapping: dict[str, str] = {}
+        dt = xr.open_datatree(
+            file_path, engine="h5netcdf", phony_dims="sort", chunks=chunks
+        )
 
-        with h5netcdf.File(file_path, mode="r", phony_dims="sort") as ncf:
-            attrs = dict(ncf.attrs)
-            compat_mode = "data" in ncf.groups  # Compatibility with older data
+        compat_mode: bool = "/data" in dt.groups
 
-            for k, v in ncf.groups.items():
-                ds = xr.open_dataset(xr.backends.H5NetCDFStore(v, autoclose=True))
+        # Combine top-level attributes
+        attrs: dict[Hashable, typing.Any] = dt.attrs.copy()
+        for ds in dt.values():
+            attrs |= {k: _parse_value(v) for k, v in ds.attrs.items()}
 
-                # if k.casefold() == "Beamline".casefold():
-                #     attrs[k] = ds.attrs
-                #     attrs["polarization"] = ds.attrs.get("polarization")
+        data = _find_group_for_key(dt, "Data")
+        if data is None:
+            raise KeyError("Data group not found in SSRL 5-2 file")
 
-                # else:
-                # Merge group attributes
-                attrs = attrs | ds.attrs
+        mapinfo: xr.DataTree | None = _find_group_for_key(dt, "MapInfo")
 
-                if k.casefold() == "Data".casefold():
-                    if compat_mode:
-                        if "exposure" in ds.variables:
-                            ds = ds.rename_vars(counts="spectrum", exposure="time")
-                        else:
-                            ds = ds.rename_vars(counts="spectrum")
-                    elif "Time" in ds.variables:
-                        ds = ds.rename_vars(Count="spectrum", Time="time")
-                    else:
-                        ds = ds.rename_vars(Count="spectrum")
+        # Normalize variable names
+        time_var_name: str = "time"
+        if compat_mode:
+            count_var_name: str = "counts"
+            if "exposure" in data.variables:
+                time_var_name = "exposure"
+        else:
+            count_var_name = "Count"
+            if "Time" in data.variables:
+                time_var_name = "Time"
 
-                    # List of dicts containing scale and label info for each axis
-                    axes: list[dict[str, float | int | str]] = [
-                        dict(v.groups[g].attrs) for g in v.groups
-                    ]
+        # List of dicts containing scale and label info for each axis
+        # Unify case for compatibility with old data
+        axes: list[dict[str, float | int | str]] = [
+            {str(name).lower(): val for name, val in v.attrs.items()}
+            for v in data.children.values()
+        ]
 
-                    for i, ax in enumerate(axes):
-                        # Unify case for compatibility with old data
-                        axes[i] = {name.lower(): val for name, val in ax.items()}
+        # Apply dim labels
+        dim_mapping = {f"phony_dim_{i}": str(ax["label"]) for i, ax in enumerate(axes)}
 
-                    # Apply dim labels
-                    dim_mapping = {
-                        f"phony_dim_{i}": str(ax["label"]) for i, ax in enumerate(axes)
-                    }
-                    data = ds.rename_dims(dim_mapping)
+        ds = data.dataset.rename_dims(dim_mapping)
 
-                    # Apply coordinates
-                    for i, ax in enumerate(axes):
-                        if compat_mode:
-                            cnt = v.dimensions[f"phony_dim_{i}"].size
-                        else:
-                            cnt = int(ax["count"])
+        for i, ax in enumerate(axes):
+            cnt = data.sizes[f"phony_dim_{i}"] if compat_mode else int(ax["count"])
 
-                        if isinstance(ax["offset"], str):
-                            if ax["label"] == "energy":
-                                data = data.assign_coords(
-                                    {
-                                        ax["label"]: np.array(
-                                            ncf["MapInfo"]["Beamline:energy"]
-                                        )
-                                    }
-                                )
-                                # Axes2 may have some values... not sure what they are
-                                # For now, just ignore them and use beamline attributes
-                                continue
-                            if ax["label"] != "Kinetic Energy":
-                                erlab.utils.misc.emit_user_level_warning(
-                                    "Undefined offset for non-energy axis. This was "
-                                    "not taken into account while writing the loader "
-                                    "code. Please report this issue. Resulting data "
-                                    "may be incorrect"
-                                )
-                                continue
-                            is_hvdep = True
+            if isinstance(ax["offset"], str):
+                if mapinfo is None:
+                    raise RuntimeError
+                if ax["label"] == "energy":
+                    ds = ds.assign_coords(
+                        {ax["label"]: mapinfo["Beamline:energy"].data}
+                    )
+                    # Axes2 may have some values... not sure what they are
+                    # For now, just ignore them and use beamline attributes
+                    continue
+                if ax["label"] != "Kinetic Energy":
+                    erlab.utils.misc.emit_user_level_warning(
+                        "Undefined offset for non-energy axis. This was "
+                        "not taken into account while writing the loader "
+                        "code. Please report this issue. Resulting data "
+                        "may be incorrect"
+                    )
+                    continue
+                is_hvdep = True
 
-                            # For hv dep scans, EKin is given for each scan
-                            data = data.rename({ax["label"]: "Binding Energy"})
-                            ax["label"] = "Binding Energy"
+                # For hv dep scans, EKin is given for each scan
+                ds = ds.rename({ax["label"]: "Binding Energy"})
+                ax["label"] = "Binding Energy"
 
-                            # ax['offset'] will be something like:
-                            # "MapInfo:Data:Axes0:Offset"
-                            offset_key: str = ax["offset"][8:]
+                # ax['offset'] will be something like:
+                # "MapInfo:Data:Axes0:Offset"
+                offset_key: str = ax["offset"][8:]
 
-                            # Take first kinetic energy
-                            offset = np.array(ncf["MapInfo"][offset_key])[0]
+                # Take first kinetic energy
+                offset = np.array(mapinfo[offset_key])[0]
 
-                            if isinstance(ax["delta"], str):
-                                delta = np.array(ncf["MapInfo"][ax["delta"][8:]])
-                                # may be ~1e-8 difference between values
-                                if not np.allclose(delta, delta[0], atol=1e-7):
-                                    erlab.utils.misc.emit_user_level_warning(
-                                        "Non-uniform delta for hv-dependent scan. This "
-                                        "was not taken into account while writing the "
-                                        "loader code. Please report this issue. "
-                                        "Resulting data may be incorrect"
-                                    )
-                                delta = delta[0]
-                            else:
-                                delta = float(ax["delta"])
-
-                        else:
-                            offset = float(ax["offset"])
-                            delta = float(ax["delta"])
-
-                        mn, mx = (offset, offset + (cnt - 1) * delta)
-                        coord = np.linspace(mn, mx, cnt)
-
-                        if len(data[ax["label"]]) != cnt:
-                            # For premature data
-                            coord = coord[: len(data[ax["label"]])]
-
-                        data = data.assign_coords({ax["label"]: coord})
-
-            attrs = {k: _parse_value(v) for k, v in attrs.items()}
-
-            coord_names = list(data.coords.keys())
-            coord_sizes = [len(data[coord]) for coord in coord_names]
-            coord_attrs: dict = {}
-            for k, v in dict(attrs).items():
-                if isinstance(v, str) and v.startswith("MapInfo:"):
-                    del attrs[k]
-                    var = np.array(ncf["MapInfo"][v[8:]])
-                    same_length_indices = [
-                        i for i, s in enumerate(coord_sizes) if s == len(var)
-                    ]
-                    for idx in list(same_length_indices):
-                        # Attributes should not be dependent on these dims
-                        if coord_names[idx] in (
-                            "ThetaX",
-                            "Kinetic Energy",
-                            "Binding Energy",
-                        ):
-                            same_length_indices.remove(idx)
-                    if len(same_length_indices) != 1:
-                        # Multiple dimensions with the same length, ambiguous
+                if isinstance(ax["delta"], str):
+                    delta = np.array(mapinfo[ax["delta"][8:]])
+                    # may be ~1e-8 difference between values
+                    if not np.allclose(delta, delta[0], atol=1e-7):
                         erlab.utils.misc.emit_user_level_warning(
-                            f"Ambiguous length for {k}. This was not taken into "
-                            "account while writing the loader code. Please report this "
-                            "issue. Resulting data may be incorrect"
+                            "Non-uniform delta for hv-dependent scan. This "
+                            "was not taken into account while writing the "
+                            "loader code. Please report this issue. "
+                            "Resulting data may be incorrect"
                         )
-                    idx = same_length_indices[-1]
-                    coord_attrs[k] = xr.DataArray(var, dims=[coord_names[idx]])
-
-            if is_hvdep:
-                data = data.assign_coords(
-                    {
-                        "Binding Energy": data["Binding Energy"]
-                        - data["energy"].values[0]
-                        + attrs.get("WorkFunction", 4.465)
-                    }
-                )
-
-                # data = data.rename(energy="hv")
-
-            darr = data["spectrum"]
-
-            if not without_values:
-                darr = darr.load()  # Load into memory before closing file
-                if "time" in data.variables:
-                    # Normalize by dwell time
-                    darr = darr / data["time"]
+                    delta = delta[0]
+                else:
+                    delta = float(ax["delta"])
 
             else:
-                darr = xr.DataArray(
-                    np.zeros(darr.shape, darr.dtype),
-                    coords=darr.coords,
-                    dims=darr.dims,
-                    attrs=darr.attrs,
-                    name=darr.name,
-                )
+                offset = float(ax["offset"])
+                delta = float(ax["delta"])
 
-            darr = darr.assign_attrs(attrs)
+            mn, mx = (offset, offset + (cnt - 1) * delta)
+            coord = np.linspace(mn, mx, cnt)
+
+            if len(ds[ax["label"]]) != cnt:
+                # For premature data
+                coord = coord[: len(ds[ax["label"]])]
+
+            ds = ds.assign_coords({ax["label"]: coord})
+
+        coord_names = list(ds.coords.keys())
+        coord_sizes: list[int] = [len(ds[coord]) for coord in coord_names]
+        coord_attrs: dict[Hashable, typing.Any] = {}
+        for k, v in dict(attrs).items():
+            if isinstance(v, str) and v.startswith("MapInfo:"):
+                if mapinfo is None:
+                    raise RuntimeError
+                del attrs[k]
+                var = mapinfo[v[8:]].data
+                same_length_indices = [
+                    i for i, s in enumerate(coord_sizes) if s == len(var)
+                ]
+                for idx in list(same_length_indices):
+                    # Attributes should not be dependent on these dims
+                    if coord_names[idx] in (
+                        "ThetaX",
+                        "Kinetic Energy",
+                        "Binding Energy",
+                    ):
+                        same_length_indices.remove(idx)
+                if len(same_length_indices) != 1:
+                    # Multiple dimensions with the same length, ambiguous
+                    erlab.utils.misc.emit_user_level_warning(
+                        f"Ambiguous length for {k}. This was not taken into "
+                        "account while writing the loader code. Please report this "
+                        "issue. Resulting data may be incorrect"
+                    )
+                idx = same_length_indices[-1]
+                coord_attrs[k] = xr.DataArray(var, dims=[coord_names[idx]])
+
+        if is_hvdep:
+            ds = ds.assign_coords(
+                {
+                    "Binding Energy": ds["Binding Energy"]
+                    - ds["energy"].values[0]
+                    + attrs.get("WorkFunction", 4.465)
+                }
+            )
+
+            # ds = ds.rename(energy="hv")
+
+        darr = ds[count_var_name].rename("spectrum")
+
+        if without_values:
+            darr = xr.DataArray(
+                np.zeros(darr.shape, darr.dtype),
+                coords=darr.coords,
+                dims=darr.dims,
+                attrs=darr.attrs,
+                name=darr.name,
+            )
+        elif time_var_name in data.variables:
+            # Normalize by dwell time
+            dwell_time = ds[time_var_name]
+            darr = darr.where(dwell_time > 0) / dwell_time.clip(min=1e-15)
+
+        darr = darr.assign_attrs(attrs)
 
         return darr.assign_coords(coord_attrs)
 

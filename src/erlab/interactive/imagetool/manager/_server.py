@@ -95,7 +95,12 @@ variable ``ITOOL_MANAGER_HOST``, enabling remote connections.
 class _BasePacket(pydantic.BaseModel):
     """Base class for packets sent to the server."""
 
-    model_config = {"arbitrary_types_allowed": True}
+    pickler_kind: typing.Literal["pickle", "cloudpickle"] = "pickle"
+
+    model_config = {
+        "extra": "allow",
+        "arbitrary_types_allowed": True,
+    }
 
 
 class AddDataPacket(_BasePacket):
@@ -147,8 +152,19 @@ class CommandPacket(_BasePacket):
     command_arg: str | int | None = None
 
 
+class UnpickleFailedPacket(_BasePacket):
+    """Packet structure for data that failed to unpickle."""
+
+    packet_type: typing.Literal["unpickle-failed"]
+
+
 PacketVariant = typing.Annotated[
-    AddDataPacket | OpenFilesPacket | ReplacePacket | WatchPacket | CommandPacket,
+    AddDataPacket
+    | OpenFilesPacket
+    | ReplacePacket
+    | WatchPacket
+    | CommandPacket
+    | UnpickleFailedPacket,
     pydantic.Field(discriminator="packet_type"),
 ]
 
@@ -158,30 +174,153 @@ Packet: pydantic.TypeAdapter = pydantic.TypeAdapter(PacketVariant)
 class Response(pydantic.BaseModel):
     """Response for server replies."""
 
-    status: typing.Literal["ok", "error"]
+    status: typing.Literal["ok", "error", "unpickle-failed"]
     data: xr.DataArray | None = None
+    pickler_kind: typing.Literal["pickle", "cloudpickle"] = "pickle"
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = {
+        "extra": "allow",
+        "arbitrary_types_allowed": True,
+    }
 
 
-def _send_multipart(sock: zmq.Socket, obj: typing.Any, **kwargs) -> None:
-    """Send a Python object as a multipart ZeroMQ message using pickle protocol 5."""
+def _send_multipart(
+    sock: zmq.Socket,
+    obj: dict[str, typing.Any],
+    *,
+    use_cloudpickle: bool = False,
+    max_frame_size: int = 2**30,
+    **kwargs,
+) -> None:
+    """Send a Python object as a multipart ZeroMQ message using pickle protocol 5.
+
+    Parameters
+    ----------
+    max_frame_size
+        Upper bound for each multipart frame. Messages exceeding this are split into
+        smaller chunks. Defaults to 2**30 to stay below the 2 GiB ZMQ ceiling.
+    """
+    pickler_cls = pickle.Pickler
+    if use_cloudpickle:
+        import cloudpickle
+
+        pickler_cls = cloudpickle.Pickler
+
     buffers: list[pickle.PickleBuffer] = []  # out-of-band frames will be appended here
     bio = io.BytesIO()
-    p = pickle.Pickler(bio, protocol=5, buffer_callback=buffers.append)
+
+    p = pickler_cls(bio, protocol=5, buffer_callback=buffers.append)
     try:
         p.dump(obj)
-    except Exception as e:
-        raise RuntimeError("Failed to serialize object to send to server") from e
+    except Exception:
+        if use_cloudpickle:
+            raise
+        # Retry with cloudpickle
+        _send_multipart(sock, obj, use_cloudpickle=True, **kwargs)
+        return
+
+    pickler_kind = b"cloudpickle" if use_cloudpickle else b"pickle"
     header = memoryview(bio.getbuffer())
-    frames = [header] + [memoryview(b) for b in buffers]
-    sock.send_multipart(frames, copy=False, **kwargs)
+    frames: list[memoryview | bytes] = [pickler_kind, header] + [
+        memoryview(b) for b in buffers
+    ]
+
+    def _normalize_frame(frame: memoryview | bytes) -> memoryview | bytes:
+        if not isinstance(frame, memoryview):
+            return frame
+        if frame.ndim == 1 and frame.format == "B":
+            return frame
+        try:
+            return frame.cast("B")
+        except TypeError:
+            return memoryview(bytes(frame))
+
+    def _frame_size(frame: memoryview | bytes) -> int:
+        return frame.nbytes if isinstance(frame, memoryview) else len(frame)
+
+    normalized_frames = [_normalize_frame(frame) for frame in frames]
+
+    if all(_frame_size(frame) <= max_frame_size for frame in normalized_frames):
+        sock.send_multipart(normalized_frames, copy=False, **kwargs)
+        return
+
+    chunked_frames: list[memoryview | bytes] = [pickler_kind, memoryview(b"chunked-v1")]
+    for frame in normalized_frames[1:]:
+        frame_len = _frame_size(frame)
+        chunk_count = (frame_len + max_frame_size - 1) // max_frame_size
+        chunk_header = memoryview(f"{chunk_count}:{frame_len}".encode())
+        chunked_frames.append(chunk_header)
+        start = 0
+        for _ in range(chunk_count):
+            end = min(start + max_frame_size, frame_len)
+            chunked_frames.append(frame[start:end])
+            start = end
+
+    sock.send_multipart(chunked_frames, copy=False, **kwargs)
 
 
-def _recv_multipart(sock: zmq.Socket, **kwargs) -> typing.Any:
+def _recv_multipart(sock: zmq.Socket, **kwargs) -> dict[str, typing.Any]:
     """Receive a multipart ZeroMQ message and reconstruct the Python object."""
     parts = sock.recv_multipart(copy=False, **kwargs)
-    return pickle.loads(parts[0].buffer, buffers=(p.buffer for p in parts[1:]))
+    pickler_kind = b"pickle"
+    if parts[0].bytes in {b"pickle", b"cloudpickle"}:
+        pickler_kind = parts[0].bytes
+        parts = parts[1:]
+
+    if parts and parts[0].bytes == b"chunked-v1":
+        parts = parts[1:]
+        rebuilt_parts: list[memoryview] = []
+        idx = 0
+        while idx < len(parts):
+            try:
+                chunk_info = parts[idx].bytes
+                idx += 1
+                chunk_count_str, total_len_str = chunk_info.split(b":", maxsplit=1)
+                chunk_count = int(chunk_count_str)
+                total_len = int(total_len_str)
+            except Exception as exc:  # pragma: no cover - defensive parsing
+                raise RuntimeError(
+                    "Malformed chunk header in multipart message"
+                ) from exc
+
+            if idx + chunk_count > len(parts):  # pragma: no cover - defensive parsing
+                raise RuntimeError("Incomplete chunked multipart message")
+
+            if chunk_count == 1:
+                rebuilt_parts.append(parts[idx].buffer)
+                idx += 1
+                continue
+
+            combined = bytearray(total_len)
+            offset = 0
+            for _ in range(chunk_count):
+                chunk = parts[idx].buffer
+                combined[offset : offset + len(chunk)] = chunk
+                offset += len(chunk)
+                idx += 1
+            rebuilt_parts.append(memoryview(combined))
+        parts = rebuilt_parts
+
+    def _as_buffer(frame: typing.Any) -> memoryview:
+        if isinstance(frame, memoryview):
+            return frame
+        return memoryview(frame)
+
+    try:
+        payload_dict = pickle.loads(
+            _as_buffer(parts[0]),
+            buffers=(
+                p.buffer if hasattr(p, "buffer") else _as_buffer(p) for p in parts[1:]
+            ),
+        )
+    except (AttributeError, ModuleNotFoundError) as e:
+        logger.info("Unpickling failed with %s: %s", type(e).__name__, e)
+        payload_dict = {
+            "packet_type": "unpickle-failed",
+            "status": "unpickle-failed",
+        }
+    payload_dict["pickler_kind"] = pickler_kind.decode()
+    return payload_dict
 
 
 def _query_zmq(payload: PacketVariant) -> Response:
@@ -206,10 +345,16 @@ def _query_zmq(payload: PacketVariant) -> Response:
         logger.exception("Failed to connect to server")
     else:
         logger.debug("Sending request %s", payload)
-        _send_multipart(sock, payload.model_dump(exclude_unset=True))
+        payload_dict = payload.model_dump(exclude_unset=True)
+        _send_multipart(sock, payload_dict)
+
         # Wait for a response
         try:
             response = Response(**_recv_multipart(sock))
+            if response.status == "unpickle-failed":
+                logger.debug("Retrying with cloudpickle...")
+                _send_multipart(sock, payload_dict, use_cloudpickle=True)
+                response = Response(**_recv_multipart(sock))
         except Exception:
             logger.exception("Failed to receive response from server")
             response = Response(status="error")
@@ -327,8 +472,23 @@ class _ManagerServer(QtCore.QThread):
                     logger.exception("Failed to parse incoming packet")
                     _send_multipart(sock, {"status": "error"})
                     continue
+                else:
+                    if (
+                        payload.packet_type == "unpickle-failed"
+                        and payload.pickler_kind == "pickle"
+                    ):
+                        _send_multipart(sock, {"status": "unpickle-failed"})
+                        continue
 
                 logger.debug("Received payload with type %s", payload.packet_type)
+                if not (
+                    payload.packet_type == "command" and payload.command == "get-data"
+                ):
+                    # For non-get-data commands, send an immediate OK response
+                    logger.debug("Sending response...")
+                    _send_multipart(sock, {"status": "ok"})
+                    logger.debug("Response sent")
+
                 match payload.packet_type:
                     case "add":
                         self.sigReceived.emit(payload.data_list, payload.arguments)
@@ -349,8 +509,6 @@ class _ManagerServer(QtCore.QThread):
                     case "command":
                         logger.debug("Processing command: %s", payload.command)
                         match payload.command:
-                            case "ping":
-                                pass
                             case "get-data":
                                 self.sigDataRequested.emit(payload.command_arg)
                                 logger.debug("Getting data...")
@@ -360,11 +518,14 @@ class _ManagerServer(QtCore.QThread):
                                     data = self._ret_val
                                     self._ret_val = _UNSET
 
-                                if data.chunks is not None:
-                                    data = data.compute()
-
                                 logger.debug("Data obtained, sending response...")
-                                _send_multipart(sock, {"status": "ok", "data": data})
+                                _send_multipart(
+                                    sock,
+                                    {"status": "ok", "data": data},
+                                    use_cloudpickle=bool(
+                                        payload.pickler_kind == "cloudpickle"
+                                    ),
+                                )
                                 logger.debug("Response sent")
 
                                 continue
@@ -378,10 +539,6 @@ class _ManagerServer(QtCore.QThread):
                                 self.sigShowUID.emit(str(payload.command_arg))
                             case "unwatch-uid":
                                 self.sigUnwatchUID.emit(str(payload.command_arg))
-
-                logger.debug("Sending response...")
-                _send_multipart(sock, {"status": "ok"})
-                logger.debug("Response sent")
 
         except Exception:
             logger.exception("Server encountered an error")
@@ -441,8 +598,8 @@ def _manager_running(func: Callable) -> Callable:
     def _wrapper(*args, **kwargs):
         if not erlab.interactive.imagetool.manager.is_running():
             raise RuntimeError(
-                "ImageToolManager is not running. Please start the ImageToolManager "
-                "application before using this function"
+                "ImageTool manager is not running. Please start the ImageTool manager "
+                "application before using this function."
             )
         return func(*args, **kwargs)
 
@@ -611,11 +768,6 @@ def watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -
         `False`. If this is a new variable being watched, a new ImageTool window will be
         created and shown regardless of this parameter.
     """
-    if data.chunks is not None:
-        # TODO: there might be a better way to handle this like directly serializing as
-        # dask, but for now just compute to numpy
-        data = data.compute()
-
     _query_zmq(
         WatchPacket(packet_type="watch", watched_info=(varname, uid), watched_data=data)
     )

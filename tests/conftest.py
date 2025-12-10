@@ -34,10 +34,10 @@ from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
 
-DATA_COMMIT_HASH = "dad271692f9a139808c0c18fc373b86a8a5ed697"
+DATA_COMMIT_HASH = "065632d4c5865ce6012c4b7cdc568af3db506104"
 """The commit hash of the commit to retrieve from `kmnhan/erlabpy-data`."""
 
-DATA_KNOWN_HASH = "25d5c85d80ed5e90e007667ab5e540980bdec857a560ba4fea2ea0d3ed063e18"
+DATA_KNOWN_HASH = "892783c7c5030aea81d437d9344947632d17bbd28794c67f09d6a9746e79dce1"
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
@@ -183,6 +183,7 @@ def manager_context() -> Callable[
             QtWidgets.QApplication.processEvents()
             erlab.interactive.imagetool.manager._manager_instance.remove_all_tools()
             erlab.interactive.imagetool.manager._manager_instance.close()
+            erlab.interactive.imagetool.manager._manager_instance.deleteLater()
             erlab.interactive.imagetool.manager._manager_instance = None
             erlab.interactive.imagetool.manager._always_use_socket = False
 
@@ -466,6 +467,7 @@ def cover_qthreadpool(monkeypatch, qtbot):
     from qtpy.QtCore import QThreadPool
 
     base_start = QThreadPool.start
+    QThreadPool.globalInstance().setMaxThreadCount(1)
 
     def start_with_trace(self, runnable, *args, **kwargs):
         if "coverage" in sys.modules:
@@ -479,6 +481,65 @@ def cover_qthreadpool(monkeypatch, qtbot):
         return base_start(self, runnable, *args, **kwargs)
 
     monkeypatch.setattr(QThreadPool, "start", start_with_trace)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def serialize_hdf5_loads():
+    """Prevent non-threadsafe HDF5 wheels from crashing during threaded loads."""
+    mp = pytest.MonkeyPatch()
+    from erlab.interactive.imagetool.manager import _io
+
+    lock = threading.Lock()
+    original_run = _io._DataLoader.run
+
+    def locked_run(self):
+        with lock:
+            return original_run(self)
+
+    mp.setattr(_io._DataLoader, "run", locked_run)
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def patch_pyqtgraph_boundingrect():
+    """Guard pyqtgraph InfiniteLine boundingRect from None viewboxes during teardown."""
+    mp = pytest.MonkeyPatch()
+    import pyqtgraph as pg
+    from qtpy import QtCore
+
+    original_br = pg.InfiniteLine.boundingRect
+
+    def safe_br(self):
+        vb = self.getViewBox()
+        if vb is None:
+            return QtCore.QRectF()
+        return original_br(self)
+
+    mp.setattr(pg.InfiniteLine, "boundingRect", safe_br, raising=False)
+    try:
+        yield
+    finally:
+        mp.undo()
+
+
+@pytest.fixture
+def ip_shell():
+    """IPython shell with the interactive extension loaded."""
+    from IPython.testing.globalipapp import start_ipython
+
+    ip_session = start_ipython()
+    ip_session.run_line_magic("load_ext", "erlab.interactive")
+
+    yield ip_session
+
+    ip_session.run_line_magic("unload_ext", "erlab.interactive")
+    ip_session.user_ns.clear()
+    ip_session.clear_instance()
+    with contextlib.suppress(AttributeError):
+        del start_ipython.already_called
 
 
 def make_data(beta=5.0, temp=20.0, hv=50.0, bandshift=0.0):

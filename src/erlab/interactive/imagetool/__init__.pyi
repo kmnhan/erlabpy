@@ -1,6 +1,7 @@
 __all__ = [
     "BaseImageTool",
     "ImageTool",
+    "_history",
     "controls",
     "core",
     "dialogs",
@@ -11,6 +12,15 @@ __all__ = [
     "slicer",
 ]
 
-from . import controls, core, dialogs, fastbinning, fastslicing, manager, slicer
+from . import (
+    _history,
+    controls,
+    core,
+    dialogs,
+    fastbinning,
+    fastslicing,
+    manager,
+    slicer,
+)
 from ._itool import itool
 from ._mainwindow import BaseImageTool, ImageTool

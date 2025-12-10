@@ -70,7 +70,9 @@ class _DataLoader(QtCore.QRunnable):
                 )
             )
         except Exception:
-            logger.exception("Error loading data from %s", self._file_path)
+            logger.debug(
+                "Error loading data from %s", self._file_path
+            )  # Use debug level to avoid duplicate popup
             self.signals.sigFailed.emit(self._file_path, traceback.format_exc())
         else:
             self.signals.sigLoaded.emit(self._file_path, data_list)
@@ -127,9 +129,8 @@ class _MultiFileHandler(QtCore.QObject):
 
         self._abort: bool = False
 
-    @property
-    def _threadpool(self) -> QtCore.QThreadPool:
-        return typing.cast("QtCore.QThreadPool", QtCore.QThreadPool.globalInstance())
+        self._threadpool = QtCore.QThreadPool(self)
+        self._threadpool.setExpiryTimeout(0)
 
     @property
     def manager(self) -> ImageToolManager:
@@ -181,9 +182,14 @@ class _MultiFileHandler(QtCore.QObject):
     def _deliver_and_queue(
         self, file_path: pathlib.Path, data_list: list[xr.DataArray]
     ) -> None:
+        func: Callable | str = self._func
+        func_instance = getattr(func, "__self__", None)
+        if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+            func = func_instance.name
+
         self.manager._data_recv(
             data_list,
-            kwargs={"file_path": file_path, "_disable_reload": len(data_list) > 1},
+            kwargs={"file_path": file_path, "load_func": (func, self._kwargs.copy())},
         )
         QtCore.QTimer.singleShot(0, self._load_next)
 
@@ -215,6 +221,9 @@ class _MultiFileHandler(QtCore.QObject):
         will be loaded.
         """
         self._abort = True
+        self._queue.clear()
+        if hasattr(self._threadpool, "clear"):
+            self._threadpool.clear()
 
     def wait(self) -> None:
         """Block until all files are loaded or the loading process is aborted."""

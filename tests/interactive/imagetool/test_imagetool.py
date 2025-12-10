@@ -1,9 +1,11 @@
+import copy
 import logging
 import tempfile
 import weakref
 
 import numpy as np
 import pyperclip
+import pyqtgraph as pg
 import pytest
 import xarray as xr
 import xarray.testing
@@ -16,7 +18,11 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
-from erlab.interactive.imagetool.core import _AssociatedCoordsDialog, _parse_input
+from erlab.interactive.imagetool.core import (
+    _AssociatedCoordsDialog,
+    _parse_input,
+    _PolyROIEditDialog,
+)
 from erlab.interactive.imagetool.dialogs import (
     AssignCoordsDialog,
     AverageDialog,
@@ -24,6 +30,8 @@ from erlab.interactive.imagetool.dialogs import (
     CropToViewDialog,
     EdgeCorrectionDialog,
     NormalizeDialog,
+    ROIMaskDialog,
+    ROIPathDialog,
     RotationDialog,
     SymmetrizeDialog,
 )
@@ -62,80 +70,151 @@ _TEST_DATA: dict[str, xr.DataArray] = {
 }
 
 
+def _press_alt(monkeypatch):
+    """Pretend that the Alt/Option key is currently pressed."""
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "queryKeyboardModifiers",
+        lambda: QtCore.Qt.KeyboardModifier.AltModifier,
+    )
+
+
 @pytest.mark.parametrize(
     "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
 )
 @pytest.mark.parametrize("condition", ["unbinned", "binned"])
-def test_itool_tools(qtbot, test_data_type, condition) -> None:
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no_dask"])
+def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
     data = _TEST_DATA[test_data_type].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    win.show()
+    if use_dask:
+        data = data.chunk()
 
-    main_image = win.slicer_area.images[0]
+        old_threshold = erlab.interactive.options["io/dask/compute_threshold"]
+        # force compute for dask
+        erlab.interactive.options["io/dask/compute_threshold"] = 0
 
-    logger.info("Test code generation")
-    if data.ndim == 2:
-        assert main_image.get_selection_code(placeholder="") == ""
-    else:
-        assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
+    try:
+        win = itool(data, execute=False)
+        qtbot.addWidget(win)
+        win.show()
 
-    if condition == "binned":
-        logger.info("Set bins")
-        win.array_slicer.set_bin(0, axis=0, value=3, update=False)
-        win.array_slicer.set_bin(0, axis=1, value=2, update=data.ndim != 3)
-        if data.ndim == 3:
-            win.array_slicer.set_bin(0, axis=2, value=3, update=True)
+        main_image = win.slicer_area.images[0]
 
-    logger.info("Test alt key menu")
-    main_image.vb.menu.popup(QtCore.QPoint(0, 0))
-    main_image.vb.menu.eventFilter(
-        main_image.vb.menu,
-        QtGui.QKeyEvent(
-            QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
-        ),
-    )
-    for action in main_image.vb.menu.actions():
-        if action.text().startswith("goldtool"):
-            action.text().endswith("(Crop)")
+        logger.info("Test code generation")
+        if data.ndim == 2:
+            assert main_image.get_selection_code(placeholder="") == ""
+        else:
+            assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
 
-    logger.info("Check access to cropped data")
-    assert isinstance(main_image._current_data_cropped, xr.DataArray)
+        if condition == "binned":
+            logger.info("Set bins")
+            win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+            win.array_slicer.set_bin(0, axis=1, value=2, update=data.ndim != 3)
+            if data.ndim == 3:
+                win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
-    if not test_data_type.endswith("nonuniform"):
-        logger.info("Opening goldtool from main image")
-        main_image.open_in_goldtool()
-        qtbot.wait_until(
-            lambda: isinstance(win.slicer_area._associated_tools_list[-1], GoldTool),
-            timeout=2000,
-        )
-
-        logger.info("Opening restool from main image")
-        main_image.open_in_restool()
-        qtbot.wait_until(
-            lambda: isinstance(
-                win.slicer_area._associated_tools_list[-1], ResolutionTool
+        logger.info("Test alt key menu")
+        main_image.vb.menu.popup(QtCore.QPoint(0, 0))
+        main_image.vb.menu.eventFilter(
+            main_image.vb.menu,
+            QtGui.QKeyEvent(
+                QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
             ),
-            timeout=2000,
         )
+        for action in main_image.vb.menu.actions():
+            if action.text().startswith("goldtool"):
+                action.text().endswith("(Crop)")
 
-        logger.info("Opening dtool from main image")
-        main_image.open_in_dtool()
+        logger.info("Check access to cropped data")
+        assert isinstance(main_image._current_data_cropped, xr.DataArray)
+
+        if not test_data_type.endswith("nonuniform"):
+            logger.info("Opening goldtool from main image")
+            main_image.open_in_goldtool()
+            qtbot.wait_until(
+                lambda: isinstance(
+                    win.slicer_area._associated_tools_list[-1], GoldTool
+                ),
+                timeout=2000,
+            )
+
+            logger.info("Opening restool from main image")
+            main_image.open_in_restool()
+            qtbot.wait_until(
+                lambda: isinstance(
+                    win.slicer_area._associated_tools_list[-1], ResolutionTool
+                ),
+                timeout=2000,
+            )
+
+            logger.info("Opening dtool from main image")
+            main_image.open_in_dtool()
+            qtbot.wait_until(
+                lambda: isinstance(
+                    win.slicer_area._associated_tools_list[-1], DerivativeTool
+                ),
+                timeout=2000,
+            )
+
+        logger.info("Open main image in new window")
+        main_image.open_in_new_window()
         qtbot.wait_until(
-            lambda: isinstance(
-                win.slicer_area._associated_tools_list[-1], DerivativeTool
-            ),
+            lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
             timeout=2000,
         )
-
-    logger.info("Open main image in new window")
-    main_image.open_in_new_window()
-    qtbot.wait_until(
-        lambda: isinstance(win.slicer_area._associated_tools_list[-1], ImageTool),
-        timeout=2000,
-    )
+    finally:
+        for img in win.slicer_area.images:
+            # Prevent segfault before shutdown
+            img.disconnect_signals()
+            img.deleteLater()
+        if use_dask:
+            erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
 
     logger.info("Closing ImageTool")
+    win.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    win.close()
+
+
+def test_copy_selection_code_includes_crop_with_alt(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+    win.slicer_area.set_manual_limits({"x": [1.0, 3.0], "y": [0.0, 2.0]})
+
+    _press_alt(monkeypatch)
+
+    copied: list[str] = []
+
+    def fake_copy(content: str | list[str]) -> str:
+        copied.append(content if isinstance(content, str) else "\n".join(content))
+        return copied[-1]
+
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", fake_copy)
+
+    main_image.copy_selection_code()
+    assert copied == [".sel(x=slice(1.0, 3.0), y=slice(0.0, 2.0))"]
+    win.close()
+
+
+def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    main_image = win.slicer_area.images[0]
+    alpha_dim = next(str(d) for d in win.slicer_area.data.dims if "alpha" in str(d))
+    e_dim = next(str(d) for d in win.slicer_area.data.dims if "eV" in str(d))
+    win.slicer_area.set_manual_limits({alpha_dim: [0.0, 2.0], e_dim: [1.0, 3.0]})
+
+    _press_alt(monkeypatch)
+
+    sel_code = main_image.selection_code
+    assert sel_code == ".qsel(beta=2.0, eV=slice(1.0, 3.0)).isel(alpha=slice(0, 2))"
     win.close()
 
 
@@ -356,14 +435,33 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
             "twin_coord_names": (),
         },
         "current_cursor": 1,
-        "manual_limits": {"x": [-0.5, 4.5], "y": [-0.5, 4.5]},
+        "manual_limits": {},
         "splitter_sizes": list(old_state["splitter_sizes"]),
         "file_path": None,
+        "load_func": None,
         "cursor_colors": ["#cccccc", "#ffff00"],
         "plotitem_states": [
-            {"vb_aspect_locked": False, "vb_x_inverted": False, "vb_y_inverted": False},
-            {"vb_aspect_locked": False, "vb_x_inverted": False, "vb_y_inverted": False},
-            {"vb_aspect_locked": False, "vb_x_inverted": False, "vb_y_inverted": False},
+            {
+                "roi_states": [],
+                "vb_aspect_locked": False,
+                "vb_autorange": (True, True),
+                "vb_x_inverted": False,
+                "vb_y_inverted": False,
+            },
+            {
+                "roi_states": [],
+                "vb_aspect_locked": False,
+                "vb_autorange": (True, True),
+                "vb_x_inverted": False,
+                "vb_y_inverted": False,
+            },
+            {
+                "roi_states": [],
+                "vb_aspect_locked": False,
+                "vb_autorange": (True, True),
+                "vb_x_inverted": False,
+                "vb_y_inverted": False,
+            },
         ],
     }
     assert win.slicer_area.state == expected_state
@@ -663,6 +761,13 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def set_vb_range(
+    vb: pg.ViewBox, x_range: tuple[float, float], y_range: tuple[float, float]
+) -> None:
+    vb.setRange(xRange=x_range, yRange=y_range)
+    vb.sigRangeChangedManually.emit(vb.state["mouseEnabled"][:])
+
+
 def test_itool_normalize_to_view(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
@@ -672,15 +777,26 @@ def test_itool_normalize_to_view(qtbot) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
+    with qtbot.wait_exposed(win):
+        win.show()
+        win.activateWindow()
+
     # Change limits
-    win.slicer_area.main_image.getViewBox().setRange(xRange=[1, 4], yRange=[0, 3])
-    # Trigger manual range propagation
-    win.slicer_area.main_image.getViewBox().sigRangeChangedManually.emit(
-        win.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
+    set_vb_range(
+        win.slicer_area.main_image.getViewBox(), x_range=(1, 4), y_range=(0, 3)
     )
+    assert win.slicer_area.manual_limits == {"x": [1.0, 4.0], "y": [0.0, 3.0]}
+    slice_dict = {"x": slice(1.0, 4.0), "y": slice(0.0, 3.0)}
+    assert win.slicer_area.make_slice_dict() == slice_dict
 
     # Adjust colors
     win.slicer_area.main_image.normalize_to_current_view()
+
+    cropped = data.sel(**slice_dict)
+    xr.testing.assert_identical(
+        win.slicer_area.main_image._current_data_cropped, cropped
+    )
+    assert erlab.utils.array.minmax_darr(cropped) == (5.0, 23.0)
 
     mn, mx = win.slicer_area.levels
     np.testing.assert_allclose(mn, 5.0)
@@ -797,6 +913,264 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_roi_lifecycle(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    add_roi_action = next(
+        act for act in plot_item.vb.menu.actions() if act.text() == "Add Polygon ROI"
+    )
+    add_roi_action.trigger()
+
+    assert len(plot_item._roi_list) == 1
+    roi = plot_item._roi_list[0]
+
+    roi_menu = roi.getMenu()
+    assert {
+        "Edit ROI...",
+        "Slice Along ROI Path",
+        "Mask Data with ROI",
+    }.issubset({act.text() for act in roi_menu.actions()})
+
+    state = copy.deepcopy(plot_item._serializable_state)
+    assert "roi_states" in state
+    saved_points = [
+        (float(pt[0]), float(pt[1]))
+        for pt in plot_item._roi_list[0].getState()["points"]
+    ]
+    assert state["roi_states"][0]["points"] == saved_points
+
+    plot_item.clear_rois()
+    assert not plot_item._roi_list
+
+    plot_item._serializable_state = state
+    assert len(plot_item._roi_list) == 1
+    restored_points = [
+        (float(pt[0]), float(pt[1]))
+        for pt in plot_item._roi_list[0].getState()["points"]
+    ]
+    assert restored_points == state["roi_states"][0]["points"]
+
+    plot_item.add_roi()
+    assert len(plot_item._roi_list) == 2
+
+    win.slicer_area.sigShapeChanged.emit()
+    assert not plot_item._roi_list
+
+    plot_item.add_roi()
+    assert plot_item._roi_list
+    win.slicer_area.adjust_layout()
+    assert not plot_item._roi_list
+
+    win.close()
+
+
+def test_itool_roi_dialogs(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={
+            "x": np.array([0.1, 0.4, 0.55, 0.65, 0.95]),
+            "y": np.linspace(-1.0, 1.0, 5),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.add_roi()
+    roi = plot_item._roi_list[0]
+
+    array_slicer = win.slicer_area.array_slicer
+    x_axis, y_axis = plot_item.display_axis
+    roi_points = [
+        (
+            float(array_slicer.coords_uniform[x_axis][idx]),
+            float(array_slicer.coords_uniform[y_axis][idy]),
+        )
+        for idx, idy in [(0, 0), (2, 2), (4, 3)]
+    ]
+    roi.setPoints(roi_points, closed=True)
+    assert roi.closed
+
+    vertices = roi._get_vertices()
+
+    path_dialog = ROIPathDialog(roi)
+    qtbot.addWidget(path_dialog)
+    path_dialog._dim_name_line.setText("trace_dim")
+
+    path_calls: dict[str, object] = {}
+
+    def fake_slice(data_arg, **kwargs):
+        path_calls["data"] = data_arg
+        path_calls["params"] = kwargs
+        return data_arg
+
+    fake_slice.__name__ = "slice_along_path"
+
+    monkeypatch.setattr(
+        erlab.analysis.interpolate, "slice_along_path", fake_slice, raising=False
+    )
+
+    result = path_dialog.process_data(win.slicer_area.data)
+    assert result is win.slicer_area.data
+
+    expected_vertices = {
+        dim: [*list(values), values[0]] for dim, values in vertices.items()
+    }
+
+    assert path_calls["data"] is win.slicer_area.data
+    assert path_calls["params"]["dim_name"] == "trace_dim"
+    assert np.isclose(path_calls["params"]["step_size"], path_dialog._step_spin.value())
+    assert path_calls["params"]["vertices"] == expected_vertices
+    for dim in expected_vertices:
+        assert path_calls["params"]["vertices"][dim][-1] == expected_vertices[dim][0]
+
+    path_code = path_dialog.make_code()
+    assert "era.interpolate.slice_along_path" in path_code
+    assert 'dim_name="trace_dim"' in path_code
+
+    mask_dialog = ROIMaskDialog(roi)
+    qtbot.addWidget(mask_dialog)
+    mask_dialog._invert_check.setChecked(True)
+    mask_dialog._drop_check.setChecked(True)
+
+    mask_calls: dict[str, object] = {}
+
+    def fake_mask(data_arg, **kwargs):
+        mask_calls["data"] = data_arg
+        mask_calls["params"] = kwargs
+        return data_arg
+
+    fake_mask.__name__ = "mask_with_polygon"
+
+    monkeypatch.setattr(
+        erlab.analysis.mask, "mask_with_polygon", fake_mask, raising=False
+    )
+
+    mask_dialog.process_data(win.slicer_area.data)
+
+    expected_vertices_array = np.column_stack(tuple(vertices.values()))
+    np.testing.assert_allclose(
+        mask_calls["params"]["vertices"], expected_vertices_array
+    )
+    assert mask_calls["params"]["dims"] == tuple(vertices.keys())
+    assert mask_calls["params"]["invert"] is True
+    assert mask_calls["params"]["drop"] is True
+
+    mask_code = mask_dialog.make_code()
+    assert "era.mask.mask_with_polygon" in mask_code
+    assert "vertices=np.array(" in mask_code
+    assert "invert=True" in mask_code
+    assert "drop=True" in mask_code
+
+    win.close()
+
+
+def test_itool_roi_edit_dialog_updates_points(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.add_roi()
+    roi = plot_item._roi_list[0]
+    roi.setPoints([(0.0, 0.0), (2.0, 1.0)], closed=False)
+
+    dialog = _PolyROIEditDialog(roi)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.table.rowCount() == 2
+
+    dialog._add_row()
+    assert dialog.table.rowCount() == 3
+
+    dialog.table.setCurrentCell(0, 0)
+    dialog._delete_row()
+    assert dialog.table.rowCount() == 2
+    assert not dialog.del_row_btn.isEnabled()
+
+    dialog._add_row()
+    dialog._add_row()
+    assert dialog.table.rowCount() == 4
+
+    new_points = [(0.5, 1.5), (1.5, 0.5), (2.5, 1.0), (3.5, 1.5)]
+    for row, (x_val, y_val) in enumerate(new_points):
+        x_item = dialog.table.item(row, 0)
+        y_item = dialog.table.item(row, 1)
+        assert x_item is not None
+        assert y_item is not None
+        x_item.setText(np.format_float_positional(x_val))
+        y_item.setText(np.format_float_positional(y_val))
+
+    dialog.closed_check.setChecked(True)
+    dialog.accept()
+
+    assert roi.closed
+    assert [
+        (float(pt[0]), float(pt[1])) for pt in roi.getState()["points"]
+    ] == new_points
+
+    win.close()
+
+
+def test_itool_roi_edit_dialog_invalid_values(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.add_roi()
+    roi = plot_item._roi_list[0]
+    original_points = [(0.0, 0.0), (1.0, 1.0)]
+    roi.setPoints(original_points, closed=False)
+
+    dialog = _PolyROIEditDialog(roi)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    dialog.table.item(0, 0).setText("invalid")
+
+    message_calls: dict[str, str] = {}
+
+    def fake_critical(*args, **kwargs):
+        message_calls["title"] = args[1] if len(args) > 1 else ""
+        message_calls["text"] = args[2] if len(args) > 2 else ""
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", fake_critical)
+
+    dialog.accept()
+    assert message_calls
+    assert [
+        (float(pt[0]), float(pt[1])) for pt in roi.getState()["points"]
+    ] == original_points
+
+    dialog.table.item(0, 0).setText("3.0")
+    dialog.accept()
+    assert [(float(pt[0]), float(pt[1])) for pt in roi.getState()["points"]] == [
+        (3.0, 0.0),
+        (1.0, 1.0),
+    ]
+
+    win.close()
+
+
 def test_itool_average(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(60).reshape((3, 4, 5)).astype(float),
@@ -819,7 +1193,9 @@ def test_itool_average(qtbot, accept_dialog) -> None:
         dialog.new_window_check.setChecked(False)
 
     accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
-    xarray.testing.assert_identical(win.slicer_area._data, data.qsel.average("x"))
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.qsel.average("x")
+    )
 
     assert pyperclip.paste() == '.qsel.average("x")'
     win.close()
@@ -849,7 +1225,8 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
 
     accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
-        win.slicer_area._data, erlab.analysis.transform.symmetrize(data, "z", center=2)
+        win.slicer_area._data.rename(None),
+        erlab.analysis.transform.symmetrize(data, "z", center=2),
     )
 
     assert pyperclip.paste() == 'era.transform.symmetrize(, dim="z", center=2.0)'
@@ -920,7 +1297,7 @@ def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) 
             chained_dialogs=2,
         )
         xarray.testing.assert_identical(
-            win.slicer_area._data,
+            win.slicer_area._data.rename(None),
             erlab.analysis.gold.correct_with_edge(
                 gold, gold_fit_res, shift_coords=shift_coords
             ),
@@ -964,7 +1341,7 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
         dialog.coord_widget.spin0.setValue(1)
         dialog.new_window_check.setChecked(False)
 
-    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params)
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
 
 

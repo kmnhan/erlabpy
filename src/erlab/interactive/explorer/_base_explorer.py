@@ -879,7 +879,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._close_act.triggered.connect(self.try_close)
-        self._close_act.setShortcut(QtGui.QKeySequence.StandardKey.Close)
+        self._close_act.setShortcut("Ctrl+W")
 
         fm_name = "Finder" if sys.platform == "darwin" else "File Explorer"
         self._finder_act = QtWidgets.QAction(f"Reveal in {fm_name}", self)

@@ -1,0 +1,32 @@
+name: Prek Checks
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prek:
+    if: github.repository == 'kmnhan/erlabpy'
+    name: Run prek hooks
+    runs-on: ubuntu-latest
+    env:
+      FORCE_COLOR: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Run prek
+        id: prek
+        uses: j178/prek-action@v1
+        with:
+          extra-args: "--all-files"

@@ -371,18 +371,16 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         if watched_rect:
             palette = option.palette
-            highlight_color = palette.color(
-                getattr(
-                    QtGui.QPalette.ColorRole,
-                    "Accent",
-                    QtGui.QPalette.ColorRole.Highlight,
-                )
-            )
+            watched_varname = str(tool_wrapper._watched_varname)
+            watched_uid = str(tool_wrapper._watched_uid)
+            kernel_uid = watched_uid.removeprefix(f"{watched_varname} ")
+            color = self.manager.color_for_watched_var_kernel(kernel_uid)
+
             _fill_rounded_rect(
                 painter,
                 watched_rect,
                 facecolor=palette.base(),
-                edgecolor=highlight_color,
+                edgecolor=color,
                 linewidth=self.icon_border_width,
                 radius=self.icon_corner_radius,
             )
@@ -390,12 +388,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             watched_font.setPointSizeF(self._font_size * self.watched_font_scale)
             painter.save()
             painter.setFont(watched_font)
-            painter.setPen(highlight_color)
+            painter.setPen(color)
             painter.drawText(
                 watched_rect,
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignCenter,
-                typing.cast("str", tool_wrapper._watched_varname),
+                watched_varname,
             )
             painter.restore()
 

@@ -75,16 +75,17 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def load_thumbnail(self, index: int) -> None:
         if not self.thumbnails_loaded:
             text = self.itemText(index)
-            with contextlib.suppress(KeyError):
+            with contextlib.suppress(RuntimeError):
                 self.setItemIcon(index, QtGui.QIcon(pg_colormap_to_QPixmap(text)))
 
     def load_all(self) -> None:
-        load_all_colormaps()
-        self.clear()
-        for name in pg_colormap_names("all", exclude_local=True):
-            self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
+        with QtCore.QSignalBlocker(self):
+            load_all_colormaps()
+            self.loaded_all = True
+            self.clear()
+            for name in pg_colormap_names("all", exclude_local=True):
+                self.addItem(QtGui.QIcon(pg_colormap_to_QPixmap(name)), name)
         self.thumbnails_loaded = False
-        self.loaded_all = True
         self.resetCmap()
 
     # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
@@ -395,6 +396,71 @@ class _ColorBarLimitWidget(QtWidgets.QWidget):
             self.region_changed()
 
 
+class _ColorBarEditWidget(QtWidgets.QWidget):
+    def __init__(self, colorbar: BetterColorBarItem) -> None:
+        super().__init__()
+        self.cb = colorbar
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.setLayout(layout)
+
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self._cmap_combo = ColorMapComboBox()
+        self._gamma_widget = ColorMapGammaWidget()
+        self._reversed_check = QtWidgets.QCheckBox("Reverse")
+        self._high_contrast_check = QtWidgets.QCheckBox("High Contrast")
+
+        self._cmap_combo.currentTextChanged.connect(self.apply_changes)
+        self._gamma_widget.valueChanged.connect(self.apply_changes)
+        self._reversed_check.toggled.connect(self.apply_changes)
+        self._high_contrast_check.toggled.connect(self.apply_changes)
+
+        layout.addWidget(self._cmap_combo)
+        layout.addWidget(self._gamma_widget)
+        layout.addWidget(self._reversed_check)
+        layout.addWidget(self._high_contrast_check)
+
+    @QtCore.Slot()
+    def apply_changes(self) -> None:
+        cmap_name: str = self._cmap_combo.currentText()
+        gamma: float = self._gamma_widget.value()
+        reverse: bool = self._reversed_check.isChecked()
+        high_contrast: bool = self._high_contrast_check.isChecked()
+
+        for img_ref in self.cb.images:
+            img = img_ref()
+            if img is not None:
+                img.set_colormap(
+                    cmap_name,
+                    gamma,
+                    reverse=reverse,
+                    high_contrast=high_contrast,
+                    update=True,
+                )
+
+    def populate_cmap_info(self) -> None:
+        with (
+            QtCore.QSignalBlocker(self._cmap_combo),
+            QtCore.QSignalBlocker(self._gamma_widget),
+            QtCore.QSignalBlocker(self._reversed_check),
+            QtCore.QSignalBlocker(self._high_contrast_check),
+        ):
+            cmap = self.cb.primary_image()._colorMap
+
+            if hasattr(cmap, "_erlab_attrs"):
+                self._cmap_combo.setCurrentText(cmap.name)
+                self._gamma_widget.setValue(cmap._erlab_attrs["gamma"])
+                self._reversed_check.setChecked(cmap._erlab_attrs["reverse"])
+                self._high_contrast_check.setChecked(
+                    cmap._erlab_attrs.get("high_contrast", False)
+                )
+
+    def setVisible(self, visible: bool) -> None:
+        super().setVisible(visible)
+        if visible:
+            self.populate_cmap_info()
+
+
 class BetterColorBarItem(pg.PlotItem):
     def __init__(
         self,
@@ -405,6 +471,8 @@ class BetterColorBarItem(pg.PlotItem):
         pen: QtGui.QPen | str = "c",
         hoverPen: QtGui.QPen | str = "m",
         hoverBrush: QtGui.QBrush | str = "#FFFFFF33",
+        *,
+        show_colormap_edit_menu: bool = True,
         **kargs,
     ) -> None:
         super().__init__(parent, **kargs)
@@ -451,6 +519,13 @@ class BetterColorBarItem(pg.PlotItem):
 
         center_zero_action = self.vb.menu.addAction("Center zero")
         center_zero_action.triggered.connect(clw.center_zero)
+
+        if show_colormap_edit_menu:
+            self._cmap_menu: QtWidgets.QMenu = self.vb.menu.addMenu("Edit colormap")
+            cew = _ColorBarEditWidget(self)
+            act = QtWidgets.QWidgetAction(self._cmap_menu)
+            act.setDefaultWidget(cew)
+            self._cmap_menu.addAction(act)
 
         if image is not None:
             self.setImageItem(image)
@@ -553,9 +628,12 @@ class BetterColorBarItem(pg.PlotItem):
                     img.sigLevelsChanged.connect(self.image_level_changed)
                 if hasattr(img, "sigImageChanged"):
                     img.sigImageChanged.connect(self.image_changed)
-                if img.getColorMap() is not None:
-                    self._primary_image = img_ref
-                    break
+
+        for img_ref in self._images:
+            img = img_ref()
+            if img is not None and img.getColorMap() is not None:
+                self._primary_image = img_ref
+                break
 
         if self._primary_image is None:
             raise ValueError("ImageItem with a colormap was not found")
@@ -623,6 +701,8 @@ class BetterColorBarItem(pg.PlotItem):
         if not self.isVisible():
             return
         cmap = self.primary_image()._colorMap
+        if not cmap:
+            return
         lut = cmap.getStops()[1]
         if self._colorbar.image.shape[0] != lut.shape[0]:
             self._colorbar.setImage(cmap.pos.reshape((-1, 1)))
@@ -640,7 +720,9 @@ class BetterColorBarItem(pg.PlotItem):
         mn, mx = self.limits
         self._colorbar.setRect(0.0, mn, 1.0, mx - mn)
         if self.levels is not None:
-            self._colorbar.setLevels((np.asarray(self.levels) - mn) / (mx - mn))
+            self._colorbar.setLevels(
+                (np.asarray(self.levels) - mn) / max(mx - mn, 1e-15)
+            )
         self._span.setBounds((mn, mx))
 
     # def cmap_changed(self):
@@ -780,21 +862,23 @@ def pg_colormap_from_name(
     pyqtgraph.ColorMap
 
     """
-    try:
-        return pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
-    except ValueError:
-        try:
-            return pg.colormap.get(name, skipCache=skipCache)
-        except (FileNotFoundError, IndexError):
-            try:
-                return pg.colormap.get(name, source="colorcet", skipCache=skipCache)
-            except KeyError:
-                if not _loaded_all:
-                    load_all_colormaps()
-                    return pg_colormap_from_name(
-                        name, skipCache=skipCache, _loaded_all=True
-                    )
-                raise
+    cmap: pg.ColorMap | None = None
+    with contextlib.suppress(ValueError):
+        cmap = pg.colormap.get(name, source="matplotlib", skipCache=skipCache)
+
+    if not cmap:
+        with contextlib.suppress(FileNotFoundError, IndexError, KeyError):
+            cmap = pg.colormap.get(name, skipCache=skipCache)
+    if not cmap:
+        with contextlib.suppress(KeyError):
+            cmap = pg.colormap.get(name, source="colorcet", skipCache=skipCache)
+    if not cmap and not _loaded_all:
+        with contextlib.suppress(ValueError, FileNotFoundError, IndexError, KeyError):
+            load_all_colormaps()
+            cmap = pg_colormap_from_name(name, skipCache=skipCache, _loaded_all=True)
+    if not cmap:
+        raise RuntimeError(f"Colormap '{name}' not found in any source.")
+    return cmap
 
 
 def pg_colormap_powernorm(
@@ -845,6 +929,13 @@ def pg_colormap_powernorm(
     cmap.color = cmap.mapToFloat(mapping)
     cmap.pos = np.linspace(0, 1, N)
     pg.colormap._mapCache = {}  # disable cache to reduce memory usage
+
+    cmap._erlab_attrs = {
+        "gamma": gamma,
+        "reverse": reverse,
+        "high_contrast": high_contrast,
+        "zero_centered": zero_centered,
+    }
     return cmap
 
 

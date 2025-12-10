@@ -1,6 +1,7 @@
 __all__ = [
     "_dask",
     "_options",
+    "bzplot",
     "colors",
     "data_explorer",
     "derivative",
@@ -12,6 +13,7 @@ __all__ = [
     "itool",
     "kspace",
     "ktool",
+    "meshtool",
     "options",
     "restool",
     "utils",
@@ -20,6 +22,7 @@ __all__ = [
 from . import (
     _dask,
     _options,
+    bzplot,
     colors,
     derivative,
     explorer,
@@ -28,6 +31,7 @@ from . import (
     kspace,
     utils,
 )
+from ._mesh import meshtool
 from ._options import options
 from .derivative import dtool
 from .explorer import data_explorer

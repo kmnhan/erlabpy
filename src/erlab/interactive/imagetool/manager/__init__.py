@@ -32,6 +32,7 @@ __all__ = [
     "PORT_WATCH",
     "ImageToolManager",
     "fetch",
+    "get_log_file_path",
     "is_running",
     "load_in_manager",
     "main",
@@ -52,6 +53,10 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool.manager._logging import (
+    configure_logging,
+    get_log_file_path,
+)
 from erlab.interactive.imagetool.manager._mainwindow import _ICON_PATH, ImageToolManager
 from erlab.interactive.imagetool.manager._server import (
     HOST_IP,
@@ -152,7 +157,7 @@ def main(execute: bool = True) -> None:
     ):  # pragma: no branch
         # Ignore if running in a PyInstaller bundle on macOS
         qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
-        qapp.setApplicationName("imagetool-manager")
+        qapp.setApplicationName("ImageTool Manager")
         qapp.setApplicationDisplayName("ImageTool Manager")
         qapp.setApplicationVersion(erlab.__version__)
 
@@ -189,6 +194,8 @@ def main(execute: bool = True) -> None:
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             break
     else:
+        configure_logging()
+
         _manager_instance = ImageToolManager()
         _manager_instance.show()
         _manager_instance.activateWindow()
@@ -200,6 +207,7 @@ def main(execute: bool = True) -> None:
                 qapp._pending_files.clear()
 
         if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+            # Handle cleanup after a successful application update
             updater_settings = _get_updater_settings()
             new_version = str(erlab.__version__)
             old_version = updater_settings.value("version_before_update", "")
@@ -208,6 +216,9 @@ def main(execute: bool = True) -> None:
                 _cleanup_update_tmp_dirs(updater_settings)
                 updater_settings.setValue("version_before_update", new_version)
                 updater_settings.sync()
+
+            # Suppress warnings on console initialization
+            os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
 
         if execute:
             qapp.exec()

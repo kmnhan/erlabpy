@@ -42,5 +42,6 @@ def test_load(expected_dir, args, expected) -> None:
         loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
     )
     # Properly clean up the IPython session
-    ip_session.clear_instance()
+    if ip_session:
+        ip_session.clear_instance()
     del start_ipython.already_called

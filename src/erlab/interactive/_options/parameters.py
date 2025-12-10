@@ -146,6 +146,10 @@ class ColorListParameterItem(
 class ColorListParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
     itemClass = ColorListParameterItem
 
+    def __init__(self, **opts):
+        opts.setdefault("type", "colorlist")
+        super().__init__(**opts)
+
     def saveState(self, filter=None):  # noqa: A002
         state = super().saveState(filter)
         state["value"] = [c.getRgb() for c in self.value()]

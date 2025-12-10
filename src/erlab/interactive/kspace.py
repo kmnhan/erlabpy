@@ -752,9 +752,7 @@ class KspaceTool(KspaceToolGUI):
         if isinstance(tool, QtWidgets.QWidget):
             if self._itool is not None:
                 self._itool.close()
-
-            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            tool.destroyed.connect(lambda: setattr(self, "_itool", None))
+                self._itool.deleteLater()
             self._itool = tool
             self._itool.show()
 

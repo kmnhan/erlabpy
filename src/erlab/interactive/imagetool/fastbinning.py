@@ -8,11 +8,16 @@ multiple axes. This enables efficient real-time multidimensional binning.
 __all__ = ["NANMEAN_FUNCS", "fast_nanmean", "fast_nanmean_skipcheck"]
 
 import importlib
+import typing
 from collections.abc import Callable, Collection
 
 import numba
 import numpy as np
 import numpy.typing as npt
+
+if typing.TYPE_CHECKING:
+    import dask.array
+
 
 _general_nanmean_func: Callable = np.nanmean
 
@@ -383,8 +388,9 @@ def fast_nanmean(
 
 
 def fast_nanmean_skipcheck(
-    a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int]
-) -> npt.NDArray[np.float32 | np.float64] | np.float64:
+    a: "npt.NDArray[np.float32 | np.float64] | dask.array.Array",
+    axis: int | Collection[int],
+) -> "npt.NDArray[np.float32 | np.float64] | np.float64 | dask.array.Array":
     """Compute the mean for specific floating point arrays while ignoring NaNs.
 
     This is a version of `fast_nanmean` with near-zero overhead meant for internal use.
@@ -411,6 +417,10 @@ def fast_nanmean_skipcheck(
     may lead to obscure errors or silently produce incorrect results.
 
     """
+    if not isinstance(a, np.ndarray):
+        import dask.array
+
+        return dask.array.nanmean(a, axis=axis)
     if isinstance(axis, Collection):
         if len(axis) == a.ndim:
             return _nanmean_all(a)

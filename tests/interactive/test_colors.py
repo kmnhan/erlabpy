@@ -1,8 +1,14 @@
+import numpy as np
 import pytest
-from qtpy import QtGui
+from qtpy import QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.colors import ColorCycleDialog
+from erlab.interactive.colors import (
+    BetterColorBarItem,
+    BetterImageItem,
+    ColorCycleDialog,
+    pg_colormap_powernorm,
+)
 
 
 def test_ColorCycleDialog_flow(qtbot):
@@ -130,3 +136,69 @@ def test_is_dark_mode_fallback(monkeypatch, qtbot, dark):
     monkeypatch.setattr(colors_mod.QtGui, "QPalette", DummyPalette, raising=True)
 
     assert colors_mod.is_dark_mode() == dark
+
+
+def test_pg_colormap_powernorm_sets_metadata() -> None:
+    cmap = pg_colormap_powernorm(
+        "viridis", gamma=0.6, reverse=True, high_contrast=True, zero_centered=False
+    )
+
+    attrs = getattr(cmap, "_erlab_attrs", {})
+    assert attrs["gamma"] == 0.6
+    assert attrs["reverse"] is True
+    assert attrs["high_contrast"] is True
+    assert attrs["zero_centered"] is False
+
+
+def _colorbar_edit_widget(colorbar: BetterColorBarItem) -> QtWidgets.QWidget:
+    cmap_menu = getattr(colorbar, "_cmap_menu", None)
+    assert cmap_menu is not None
+    actions = cmap_menu.actions()
+    assert actions
+    widget = actions[0].defaultWidget()
+    assert widget is not None
+    return widget
+
+
+def test_colorbar_edit_widget_populates_from_primary_image(qtbot):
+    data = np.arange(16, dtype=float).reshape(4, 4)
+    image = BetterImageItem(data)
+    image.set_colormap("magma", gamma=0.6, reverse=True, high_contrast=True)
+
+    colorbar = BetterColorBarItem(image=image)
+    edit_widget = _colorbar_edit_widget(colorbar)
+    qtbot.addWidget(edit_widget)
+
+    edit_widget.setVisible(True)
+
+    assert colorbar._cmap_menu.title() == "Edit colormap"
+    assert edit_widget._cmap_combo.currentText() == "magma"
+    assert edit_widget._gamma_widget.value() == pytest.approx(0.6)
+    assert edit_widget._reversed_check.isChecked()
+    assert edit_widget._high_contrast_check.isChecked()
+
+
+def test_colorbar_edit_widget_applies_changes_to_images(qtbot):
+    data = np.linspace(0, 1, 25, dtype=float).reshape(5, 5)
+    images = [BetterImageItem(data + offset) for offset in (0.0, 1.0)]
+    for img in images:
+        img.set_colormap("viridis", gamma=1.0)
+
+    colorbar = BetterColorBarItem(image=images)
+    edit_widget = _colorbar_edit_widget(colorbar)
+    qtbot.addWidget(edit_widget)
+    edit_widget.setVisible(True)
+
+    edit_widget._cmap_combo.setCurrentText("plasma")
+    edit_widget._gamma_widget.setValue(0.4)
+    edit_widget._reversed_check.setChecked(True)
+    edit_widget._high_contrast_check.setChecked(True)
+    QtWidgets.QApplication.processEvents()
+
+    for img in images:
+        cmap = img._colorMap
+        attrs = getattr(cmap, "_erlab_attrs", {})
+        assert cmap.name == "plasma"
+        assert attrs["gamma"] == pytest.approx(0.4)
+        assert attrs["reverse"] is True
+        assert attrs["high_contrast"] is True

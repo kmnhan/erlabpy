@@ -27,10 +27,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.13t"]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
         qt-api: ["pyqt6", "pyside6"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -53,12 +53,12 @@ jobs:
 
       - name: Test with pytest
         if: ${{ matrix.python-version != env.COV_VERSION || matrix.qt-api != env.COV_QT_API }}
-        run: uv run pytest -v -s -o log-cli=1 --log-cli-level=INFO
+        run: uv run pytest -v -s -o log_cli=1 --log-cli-level=INFO
         timeout-minutes: 20
 
       - name: Test with pytest with coverage
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
-        run: uv run pytest -v -s -o log-cli=1 --log-cli-level=INFO --cov erlab --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
+        run: uv run pytest -v -s -o log_cli=1 --log-cli-level=INFO --cov erlab --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
         timeout-minutes: 20
 
       - name: Upload coverage to Codecov
@@ -77,7 +77,7 @@ jobs:
     name: Static type checking
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7

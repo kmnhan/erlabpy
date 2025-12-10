@@ -247,8 +247,8 @@ def shift(
 ) -> xr.DataArray:
     """Shifts the values of a DataArray along a single dimension.
 
-    The shift is applied using `scipy.ndimage.shift` which uses spline interpolation. By
-    default, the spline is of order 1 (linear interpolation).
+    The shift is applied using :func:scipy.ndimage.shift` which uses spline
+    interpolation. By default, the spline is of order 1 (linear interpolation).
 
     Parameters
     ----------
@@ -269,8 +269,9 @@ def shift(
         shape of the original data will be retained, and only the data will be shifted.
         Defaults to `False`.
     **shift_kwargs
-        Additional keyword arguments passed onto `scipy.ndimage.shift`. Default values
-        of `cval` and `order` are set to `np.nan` and `1` respectively.
+        Additional keyword arguments passed onto `scipy.ndimage.shift`. The default
+        values of some parameters are different from scipy. ``order`` is set to 1,
+        ``cval`` is set to ``np.nan``, and ``prefilter`` is set to `False`.
 
     Returns
     -------
@@ -304,6 +305,7 @@ def shift(
     """
     shift_kwargs.setdefault("order", 1)
     shift_kwargs.setdefault("mode", "constant")
+    shift_kwargs.setdefault("prefilter", False)
     if shift_kwargs["mode"] == "constant":
         shift_kwargs.setdefault("cval", np.nan)
 
@@ -359,6 +361,8 @@ def shift(
             mode="constant",
             constant_values=np.nan,
         )
+        if bool(out.chunks):
+            out = out.chunk({along: -1})
         out = out.assign_coords({along: new_along})
 
     # Broadcast shift array to match non-along dims of output array

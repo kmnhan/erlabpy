@@ -1,3 +1,131 @@
+## v3.17.0 (2025-11-24)
+
+### ✨ Features
+
+- **manager:** label watched variables from different notebooks with different colors ([413eb00](https://github.com/kmnhan/erlabpy/commit/413eb00f4fb29e5e455465df21643b8277a7e3c6))
+
+- **manager:** fully support dask arrays (#216) ([46ce5a3](https://github.com/kmnhan/erlabpy/commit/46ce5a31a79df49e8007d494243a66c62ff23dc9))
+
+  Dask-based DataArrays are now fully supported for all ImageTool manager features including notebook integration and data retrieval. If a dask graph includes non-picklable functions, it will be automatically serialized using cloudpickle to ensure compatibility.
+
+  This change introduces incompatibility with older versions of ImageTool manager. The manager will still be able to receive data from older versions, but older versions of the manager will not be able to handle requests from this version.
+
+- **imagetool:** add menu for viewing all undo/redo history ([3b8fbad](https://github.com/kmnhan/erlabpy/commit/3b8fbad15a5196a1bbc8cbc2883afb9435258882))
+
+- **interactive:** add magic commands `%ktool`, `%dtool`, `%goldtool`, and `%restool` for launching various interactive tools from Jupyter notebooks ([1c69e3e](https://github.com/kmnhan/erlabpy/commit/1c69e3e1f1db4d8245fdef35d60ea9d2ad2d4747))
+
+- **manager:** show warnings as pop-up ([acabaf9](https://github.com/kmnhan/erlabpy/commit/acabaf921788f719327eeceba0415010e3550e75))
+
+  Warnings emitted from the code are now shown in the ImageTool manager in dialogs. Also adds logging functionality for debugging.
+
+- **manager:** support reloading data containing multiple DataArrays in a single file ([1d76d34](https://github.com/kmnhan/erlabpy/commit/1d76d34053eefb49864005a617b97b58142138b4))
+
+- **io.plugins.merlin:** add support for multi-region scans ([9293556](https://github.com/kmnhan/erlabpy/commit/92935560680a2a2e5aec9531caca8dd70e21d438))
+
+  Multi-region scans are now loaded as DataTrees, with each region as a separate branch. Multi-region motor scans are also supported.
+
+- **io:** add support for automatic concatenation of DataTrees ([3324a17](https://github.com/kmnhan/erlabpy/commit/3324a17377f752e97198d2818739f38d47ec211d))
+
+- **imagetool:** add polygon ROI support (#202) ([dcd9754](https://github.com/kmnhan/erlabpy/commit/dcd97547f0acaf57c81c9e5809ec71119a3f272c))
+
+  This commit introduces support for polygonal Regions of Interest (ROIs) in ImageTool. For each image plot, users can now create a polygon or line ROI from the right-click context menu. The created ROI can be manipulated by dragging its vertices. New vertices can be added by clicking on the edges of the polygon, and existing vertices can be removed by right-clicking on them. The right-click context menu of a ROI also includes options such as editing the ROI's coordinates directly, deleting the ROI, and multidimensional slicing of the data along the edges of the ROI or masking within the polygonal area.
+
+- **analysis.gold:** allow fermi edge fitting functions to be used with any angle dimension and higher dimensional data ([b5f007a](https://github.com/kmnhan/erlabpy/commit/b5f007ac2502d1e34062c8e6e2216b0c36bd0aa3))
+
+  Adds an 'along' parameter to the functions like `edge`, `poly`, and `correct_with_edge` to specify which dimension to use for fitting. Previously, these functions assumed an 'alpha' dimension, limiting their applicability.
+
+  With this change, the functions can also fit higher dimensional data; for instance, a 3D DataArray containing hν-alpha-eV data can be passed directly to `edge` or `poly` to get a multidimensional fit.
+
+  Dask parallelization is also automatically handled for chunked inputs, as long as the data is not chunked along the energy dimension. Previously, passing a dask array to `edge` used to fail miserably.
+
+- **manager:** allow user to edit keyword arguments when loading data by drag-and-drop (#199) ([7fc89db](https://github.com/kmnhan/erlabpy/commit/7fc89dbc94c31298ae1d2543a0cee06b07fe5548))
+
+  When loading data via drag-and-drop, users can now specify custom keyword arguments for the loader functions.
+
+### 🐞 Bug Fixes
+
+- **imagetool:** make coordinate edit dialog display the full precision of coordinate values ([4afa974](https://github.com/kmnhan/erlabpy/commit/4afa974a9cdff1006bb70f0b5ecb9f4a5a174129))
+
+  When editing coordinate values in the image tool, the start and end/step spinboxes were only showing up to 4 decimal places, which could lead to loss of precision. This change updates the dialog to allow full precision input.
+
+- **imagetool:** fix coordinate edit dialog reset button not working ([66b7427](https://github.com/kmnhan/erlabpy/commit/66b74279254f559250f17b45745924779c947420))
+
+- **imagetool:** fix state restoration of viewbox autorange and reduce unnecessary refreshes (#214) ([27989f1](https://github.com/kmnhan/erlabpy/commit/27989f1b7f00c13bf4d587d0a8eb2829861298f1))
+
+- **imagetool:** retain keyword arguments to loader function when reloading data ([8717bd1](https://github.com/kmnhan/erlabpy/commit/8717bd1c35fe14bb57739045a2eae600bed817a5))
+
+- **imagetool:** retain colorbar reversed state when opening in new window ([3c2e14d](https://github.com/kmnhan/erlabpy/commit/3c2e14d87d078cff392b4e4742f340007f2495da))
+
+- **imagetool:** include watched variable name in code copied from dialogs ([1248dfd](https://github.com/kmnhan/erlabpy/commit/1248dfdd79c3b2219fc504272f4c9a8a3f99e4bd))
+
+- **imagetool:** fix regression with all-NaN data ([41d13ed](https://github.com/kmnhan/erlabpy/commit/41d13ed0f8457f849dd9470821f209cff87e2840))
+
+- **interactive:** ensure compatiblilty with pyqtgraph 0.14.0 ([e12cb4e](https://github.com/kmnhan/erlabpy/commit/e12cb4edee7f6b95337949bc3112e76174329689))
+
+  `pyqtgraph 0.14.0` introduced changes that affected the behavior of linked views and range updates, which impacted some tools and tests.
+
+- **imagetool:** update shortcut for copying cursor values to `Ctrl+Shift+C` instead of `Ctrl+C` due to conflict with standard copy action ([336cc99](https://github.com/kmnhan/erlabpy/commit/336cc9979496a35346aaf69c43e3bbd8ce75f37b))
+
+- **imagetool:** apply crop to copied selection code ([6f3cf44](https://github.com/kmnhan/erlabpy/commit/6f3cf4496dd7ea05f0c1463d67451f4713adeab1))
+
+- **manager:** unify window close shortcut across all platforms ([0d32830](https://github.com/kmnhan/erlabpy/commit/0d32830e3a892b3c039c71db6b65b32603e25504))
+
+  Windows sometimes had `Ctrl+F4` as the close shortcut. This change makes `Ctrl+W` the standard close shortcut across all platforms and all interactive windows, improving consistency.
+
+- **analysis.transform.shift:** resolve dask chunk size issues when using chunked arrays with `shift_coords=True` ([d6be258](https://github.com/kmnhan/erlabpy/commit/d6be258f3e93ea27d2da3539b0e6e8220748becc))
+
+### ♻️ Code Refactor
+
+- **imagetool:** improve colormap handling logic ([00c7b90](https://github.com/kmnhan/erlabpy/commit/00c7b90beb7b9566ea744516bbd9106216ba913a))
+
+- **interactive:** allow closing interactive tools with Ctrl+W ([6fdcf86](https://github.com/kmnhan/erlabpy/commit/6fdcf864b847f939f81cea148192ed69a34ed56c))
+
+- **io:** improve error message upon failure during preparing data for combination ([f5f5ede](https://github.com/kmnhan/erlabpy/commit/f5f5ede3f4c8ab72925f7843843a306df0ef9f88))
+
+- **goldtool:** use execute like other tools ([ab5b80b](https://github.com/kmnhan/erlabpy/commit/ab5b80b419f7f096a47ffc2eb9894e85eb6ced78))
+
+- **manager:** use macOS icon on other platforms ([da52629](https://github.com/kmnhan/erlabpy/commit/da52629f4ef3f5af695315d5821d16f95835b47c))
+
+  Use the current macOS icon for the application window on all platforms to maintain a consistent look and feel across different operating systems.
+
+- **imagetool:** change dimension name label buttons to labels ([44f4f48](https://github.com/kmnhan/erlabpy/commit/44f4f48e55b07d4840b41e13bcf6ed302c2e33a7))
+
+  The dimension name label buttons in ImageTool actually did nothing, so they have been converted to static labels.
+
+- **analysis.transform.shift:** do not prefilter by default since prefiltering messes up `shift_coords=True` use case ([5b671f4](https://github.com/kmnhan/erlabpy/commit/5b671f42716538af22a9d17096220669f60cc3d9))
+
+## v3.16.2 (2025-11-13)
+
+### 🐞 Bug Fixes
+
+- **analysis.gold.correct_with_edge:** allow fit result datasets without `modelfit_results` and also allow passing bare polynomial coefficients ([0b903c9](https://github.com/kmnhan/erlabpy/commit/0b903c9f824aba8be7ec919cf34ed73d48a9c989))
+
+### ⚡️ Performance
+
+- **imagetool:** micro-optimizations for slicing ([0c906a3](https://github.com/kmnhan/erlabpy/commit/0c906a375533c1603d27638fc3099b44675f7edb))
+
+- **imagetool:** disable caching transposed data ([2e7cca2](https://github.com/kmnhan/erlabpy/commit/2e7cca29cae03ed80340e11db71d21626eee8bb2))
+
+  Improves memory usage and performance by accessing the data directly without caching transposed versions.
+
+- **imagetool:** greatly improve performance for dask-based data (#197) ([171c18f](https://github.com/kmnhan/erlabpy/commit/171c18f5f89f8f3a404de4ec85b2693cbd429512))
+
+  Previously, indexing/slicing/averaging was done for all plots individually. This commit changes the behavior for dask-based data so that dask.compute is now called only once for a given update, which greatly improves performance when working with dask. Regular data retains the original behavior, but should benefit from additional optimizations such as improved signal handling when moving multiple cursors simultaneously and ignored image updates for plots that are hidden.
+
+### ♻️ Code Refactor
+
+- **io:** add `zarr` to optional dependencies and allow loading dataarrays stored with zarr if installed ([b42ccba](https://github.com/kmnhan/erlabpy/commit/b42ccbafdef6147c66200f78ccf844e2142da9f1))
+
+## v3.16.1 (2025-11-11)
+
+### 🐞 Bug Fixes
+
+- **manager:** update installer script to remove old files to prevent conflicts on windows (#194) ([f2269cf](https://github.com/kmnhan/erlabpy/commit/f2269cfcf46fb8a3caa67cf0adc3caf9f8e2dfec))
+
+- **manager:** fix missing win32com imports for numba on Windows standalone builds ([47142b2](https://github.com/kmnhan/erlabpy/commit/47142b241969a948fe9ac3c409c7f92a70a338bc))
+
+- **analysis.transform.shift:** fix wrong shifted coordinate calculation ([973f3e6](https://github.com/kmnhan/erlabpy/commit/973f3e68b70c9b0ca0e458d34e1dec7513e96d46))
+
 ## v3.16.0 (2025-11-10)
 
 ### ✨ Features

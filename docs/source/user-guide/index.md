@@ -19,7 +19,7 @@ If you are new to `erlab`, you may want to start with the [getting started guide
 :caption: Table of Contents
 :maxdepth: 2
 
-imagetool
+interactive/index
 io
 indexing
 plotting

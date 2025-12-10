@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
+import erlab
 from erlab.analysis.fit import models
 
 
@@ -112,6 +113,12 @@ def test_fermi_edge_2d_model() -> None:
     assert result["c2"].value == 0.0
     assert result["const_bkg"].value > 0.0
     assert result["lin_bkg"].value > 0.0
+
+    # Perform the fit
+    fit_res = data.xlm.modelfit(["eV", "alpha"], model=model, guess=True)
+
+    # Try correcting with fit result
+    erlab.analysis.gold.correct_with_edge(data, fit_res)
 
 
 def test_multi_peak_model() -> None:

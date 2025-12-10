@@ -7,13 +7,6 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 
-if typing.TYPE_CHECKING:
-    import mpl_toolkits
-else:
-    import lazy_loader as _lazy
-
-    mpl_toolkits = _lazy.load("mpl_toolkits")
-
 
 class BZPlotter(QtWidgets.QMainWindow):
     """
@@ -298,6 +291,7 @@ class LatticeWidget(QtWidgets.QTabWidget):
 class BZPlotWidget(QtWidgets.QWidget):
     def __init__(self, bvec) -> None:
         super().__init__()
+        import mpl_toolkits
         from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.backends.backend_qtagg import (
             NavigationToolbar2QT as NavigationToolbar,

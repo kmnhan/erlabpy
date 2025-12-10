@@ -11,6 +11,7 @@ import collections
 import contextlib
 import copy
 import functools
+import importlib
 import inspect
 import itertools
 import logging
@@ -34,6 +35,7 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Hashable, Iterable, Sequence
 
+    import dask.array
     import qtawesome
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
@@ -63,6 +65,8 @@ class PlotItemState(typing.TypedDict):
     vb_aspect_locked: bool | float
     vb_x_inverted: bool
     vb_y_inverted: bool
+    vb_autorange: typing.NotRequired[tuple[bool, bool]]
+    roi_states: typing.NotRequired[list[dict[str, typing.Any]]]
 
 
 class ImageSlicerState(typing.TypedDict):
@@ -74,6 +78,7 @@ class ImageSlicerState(typing.TypedDict):
     manual_limits: dict[str, list[float]]
     cursor_colors: list[str]
     file_path: typing.NotRequired[str | None]
+    load_func: typing.NotRequired[tuple[str, dict[str, typing.Any], int] | None]
     splitter_sizes: typing.NotRequired[list[list[int]]]
     plotitem_states: typing.NotRequired[list[PlotItemState]]
 
@@ -508,8 +513,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
     state
         Initial state containing the settings and cursor position.
     file_path
-        If the data has been loaded from a file, the path to the file. This is used to
-        set the window title.
+        Path to the file from which the data was loaded. If given, the file path is used
+        to set the window title and when reloading the data. To successfully reload the
+        data, ``load_func`` must also be provided.
+    load_func
+        3-tuple containing the function, a dictionary of keyword arguments, and the
+        index of the data variable used when loading the data. The function is called
+        when reloading the data. If from a data loader plugin, the function may be given
+        as a string representing the loader name. If the function always returns a
+        single DataArray, the last element should be 0.
 
     Signals
     -------
@@ -527,6 +539,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     sigDataEdited()
         Signal to track when the data has been modified by user actions.
+    sigPointValueChanged(value)
+        Signal emitted when the point value at the current cursor has been computed.
+        Only emitted for dask-backed data.
     sigCursorCountChanged(n_cursors)
         Inherited from :class:`erlab.interactive.slicer.ArraySlicer`.
     sigIndexChanged(cursor, axes)
@@ -566,6 +581,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigWriteHistory = QtCore.Signal()  #: :meta private:
     sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
     sigDataEdited = QtCore.Signal()  #: :meta private:
+    sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
 
     @property
     def sigCursorCountChanged(self) -> QtCore.SignalInstance:
@@ -608,10 +624,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         bench: bool = False,
         state: ImageSlicerState | None = None,
         file_path: str | os.PathLike | None = None,
+        load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
         image_cls=None,
         plotdata_cls=None,
         _in_manager: bool = False,
-        _disable_reload: bool = False,
     ) -> None:
         super().__init__(parent)
         self.qapp = typing.cast(
@@ -630,11 +646,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.initialize_actions()
 
         self._in_manager: bool = _in_manager  #: Internal flag for tools inside manager
-
-        self._disable_reload: bool = _disable_reload
-        # For data like multiregion scans, one file may correspond to multiple windows.
-        # In this case, we can't reliably reload the data from the file path, so we
-        # disable reloading altogether when this flag is set by the manager.
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -655,8 +666,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             maxlen=1000
         )
 
-        # Flag to prevent writing history when restoring state
-        self._write_history: bool = True
+        # Flag to prevent writing history when restoring state, must be set to True
+        # after initialization is complete
+        self._write_history = False
 
         layout = QtWidgets.QHBoxLayout()
         self.setLayout(layout)
@@ -696,7 +708,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 cmap_reversed = True
             if cmap.startswith("cet_CET"):
                 cmap = cmap.removeprefix("cet_")
-        self._colormap_properties = {"cmap": cmap, "gamma": gamma}
+        self._colormap_properties = {
+            "cmap": cmap,
+            "gamma": gamma,
+            "reverse": cmap_reversed,
+            "high_contrast": high_contrast,
+            "zero_centered": zero_centered,
+            "levels_locked": False,
+        }
 
         self.manual_limits: dict[str, list[float]] = {}
         # Dictionary of current axes limits for each data dimension to ensure all plots
@@ -767,9 +786,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._splitters[6].addWidget(self._plots[i])
 
         self._file_path: pathlib.Path | None = None
+        self._load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None
         self.current_cursor: int = 0
 
-        self.set_data(data, rad2deg=rad2deg, file_path=file_path)
+        self.set_data(data, rad2deg=rad2deg, file_path=file_path, load_func=load_func)
 
         if self.bench:
             print("\n")
@@ -835,17 +855,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def colormap_properties(self) -> ColorMapState:
         prop = copy.deepcopy(self._colormap_properties)
-        prop["reverse"] = self.reverse_act.isChecked()
-        prop["high_contrast"] = self.high_contrast_act.isChecked()
-        prop["zero_centered"] = self.zero_centered_act.isChecked()
-        prop["levels_locked"] = self.levels_locked
 
+        prop["levels_locked"] = self.levels_locked  # history handled by lock_levels()
         if prop["levels_locked"]:
             prop["levels"] = copy.deepcopy(self.levels)
         return typing.cast("ColorMapState", prop)
 
     @property
     def state(self) -> ImageSlicerState:
+        load_func = self._load_func
+        if load_func is not None:
+            fn = load_func[0]
+            func_name = f"{fn.__module__}:{fn.__qualname__}" if callable(fn) else fn
+            load_func = (func_name, *load_func[1:])
         return {
             "color": self.colormap_properties,
             "slice": self.array_slicer.state,
@@ -853,44 +875,76 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "manual_limits": copy.deepcopy(self.manual_limits),
             "splitter_sizes": self.splitter_sizes,
             "file_path": str(self._file_path) if self._file_path is not None else None,
+            "load_func": load_func,
             "cursor_colors": [c.name() for c in self.cursor_colors],
             "plotitem_states": [p._serializable_state for p in self.axes],
         }
 
     @state.setter
     def state(self, state: ImageSlicerState) -> None:
+        logger.debug("Restoring state...")
         if "splitter_sizes" in state:
             self.splitter_sizes = state["splitter_sizes"]
-
-        # Restore cursor number and colors
-        self.make_cursors(state["cursor_colors"])
-
-        # Set current cursor before restoring coordinates
-        self.set_current_cursor(state["current_cursor"], update=False)
-
-        # Restore coordinates, bins, etc.
-        self.array_slicer.state = state["slice"]
-
-        self.manual_limits = state.get("manual_limits", {})
-        self.sigShapeChanged.emit()  # to trigger manual limits update
-
-        file_path = state.get("file_path", None)
-        if file_path is not None:
-            self._file_path = pathlib.Path(file_path)
-            self.sigDataChanged.emit()
 
         plotitem_states = state.get("plotitem_states", None)
         if plotitem_states is not None:  # pragma: no branch
             for ax, plotitem_state in zip(self.axes, plotitem_states, strict=True):
                 ax._serializable_state = plotitem_state
+        logger.debug("Restored plotitem states")
+
+        self.set_manual_limits(state.get("manual_limits", {}))
+        logger.debug("Restored manual limits")
+
+        self.make_cursors(state["cursor_colors"], update=False)
+        logger.debug("Restored cursor number and colors")
+
+        self.set_current_cursor(state["current_cursor"], update=False)
+        logger.debug("Restored current cursor")
+
+        self.array_slicer.state = state["slice"]
+        logger.debug("Restored array slicer state")
+
+        file_path = state.get("file_path", None)
+        if file_path is not None:
+            self._file_path = pathlib.Path(file_path)
+
+        load_func = state.get("load_func", None)
+        if load_func is not None:
+            fn: str = load_func[0]
+            if ":" in fn:
+                self._load_func = load_func
+                try:
+                    mod_name, qual = fn.split(":")
+                    mod = importlib.import_module(mod_name)
+                    func_obj = mod
+                    for attr in qual.split("."):
+                        func_obj = getattr(func_obj, attr)
+                    self._load_func = (
+                        typing.cast("Callable", func_obj),
+                        *load_func[1:],
+                    )
+                except Exception:
+                    self._load_func = None
+            elif fn in erlab.io.loaders:
+                self._load_func = load_func
+            else:
+                self._load_func = None
+
+        if file_path is not None:
+            self.sigDataChanged.emit()
+            logger.debug("Restored file path")
 
         # Restore colormap settings
         try:
-            self.set_colormap(**state.get("color", {}), update=True)
+            self.set_colormap(**state.get("color", {}), update=False)
         except Exception:
             erlab.utils.misc.emit_user_level_warning(
                 "Failed to restore colormap settings, skipping"
             )
+        logger.debug("Restored colormap settings")
+
+        self.refresh_all()
+        logger.debug("Refreshed after state restoration")
 
     @property
     def splitter_sizes(self) -> list[list[int]]:
@@ -1020,22 +1074,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         finally:
             self._write_history = original
 
-    # def on_close(self) -> None:
-    #     if hasattr(self, "array_slicer"):
-    #         self.array_slicer.clear_cache()
-    #     if hasattr(self, "data"):
-    #         self.data.close()
-    #     if hasattr(self, "_data") and self._data is not None:
-    #         self._data.close()
-    #         del self._data
-
     @QtCore.Slot()
     def write_state(self) -> None:
         if not self._write_history:
             return
 
         last_state = self._prev_states[-1] if self.undoable else None
-        curr_state = self.state
+        curr_state = self.state.copy()
 
         # Don't store splitter sizes in history
         if last_state is not None:
@@ -1075,6 +1120,36 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._prev_states.append(self.state)
             self.state = self._next_states.pop()
             self.sigHistoryChanged.emit()
+
+    def history_states(self) -> tuple[list[ImageSlicerState], int]:
+        states = list(self._prev_states)
+        current_state = self.state.copy()
+        if not states or states[-1] != current_state:
+            states.append(current_state)
+        current_index = len(states) - 1
+
+        if self._next_states:
+            states.extend(reversed(self._next_states))
+
+        return states, current_index
+
+    def go_to_history_index(self, index: int) -> None:
+        """Go to a specific index in the history.
+
+        Parameters
+        ----------
+        index
+            Index in the history to go to. 0 corresponds to the current state. Positive
+            indices point to the future, while negative indices point to the past.
+        """
+        if index == 0:
+            return
+        if index < 0:
+            for _ in range(-index):
+                self.undo_act.trigger()
+        else:
+            for _ in range(index):
+                self.redo_act.trigger()
 
     def initialize_actions(self) -> None:
         """Initialize :class:`QtWidgets.QAction` instances."""
@@ -1163,6 +1238,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "Open data in the interactive momentum conversion tool"
         )
 
+        self.meshtool_act = QtWidgets.QAction("Open meshtool", self)
+        self.meshtool_act.triggered.connect(self.open_in_meshtool)
+        self.meshtool_act.setToolTip("Open data in the interactive mesh removal tool")
+
         self.associated_coords_act = QtWidgets.QAction(
             "Plot Associated Coordinates", self
         )
@@ -1230,6 +1309,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         actions is about to be shown.
         """
         self.ktool_act.setEnabled(self.data.kspace._interactive_compatible)
+        self.meshtool_act.setEnabled(
+            all(dim in self.data.dims for dim in {"alpha", "eV"})
+        )
 
     def connect_axes_signals(self) -> None:
         for ax in self.axes:
@@ -1246,7 +1328,86 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigDataChanged.connect(self.refresh_all)
         self.sigShapeChanged.connect(self.refresh_all)
         self.sigWriteHistory.connect(self.write_state)
+
+        self.sigIndexChanged.connect(self._handle_refresh_dask)
+        self.sigBinChanged.connect(self._handle_refresh_dask)
+
         logger.debug("Connected signals")
+
+    @QtCore.Slot(int, object)
+    @QtCore.Slot(object, object)
+    def _handle_refresh_dask(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None
+    ) -> None:
+        """Handle refresh for dask-backed data.
+
+        This method is called when the data is dask-backed and a refresh is requested.
+        It computes the necessary chunks and updates the plots accordingly.
+
+        For non-dask data, this method does nothing. The updates are calculated by each
+        PlotItem individually.
+
+        This method exists to compute multiple slicing operations across different
+        PlotItems in a single dask.compute() call.
+
+        The implementation essentially loops over multiple PlotItems and executes what
+        :meth:`ItoolPlotItem.refresh_items_data` should do. The lazy dask arrays are
+        returned by :meth:`ItoolPlotItem.collect_dask_objects`.
+
+        Parameters
+        ----------
+        cursor
+            Index of the cursor to refresh.
+        axes
+            Tuple of axis indices to refresh. If `None`, all axes are refreshed.
+
+        """
+        if not self.data_chunked:
+            return
+
+        import dask
+
+        if isinstance(cursor, int):
+            cursor = (cursor,)
+
+        obj_list = []
+        axes_list = []
+        coord_or_rect_list = []
+        arrays_list_flat = []
+
+        for ax in self.axes:
+            objs, coord_or_rects, arrays = ax.collect_dask_objects(cursor, axes)
+            if objs:
+                obj_list.append(objs)
+                axes_list.append(ax)
+                coord_or_rect_list.append(coord_or_rects)
+                arrays_list_flat.extend(arrays)
+
+        # Also get the point value at the current cursor
+        arrays_list_flat.append(
+            self.array_slicer.point_value(self.current_cursor, binned=True)
+        )
+
+        if arrays_list_flat:
+            arrays_list_flat = dask.compute(*arrays_list_flat)
+
+        arrays_it = iter(arrays_list_flat)
+
+        for ax in self.axes:
+            for c in cursor:
+                ax.refresh_cursor(c)
+
+        for objs, ax, coord_or_rects in zip(
+            obj_list, axes_list, coord_or_rect_list, strict=True
+        ):
+            if len(cursor) == 1:
+                ax.set_active_cursor(cursor[0])
+            ax.vb.blockSignals(True)
+            for obj, coord_or_rect in zip(objs, coord_or_rects, strict=True):
+                obj.update_data(coord_or_rect, next(arrays_it))
+            ax.vb.blockSignals(False)
+
+        self.sigPointValueChanged.emit(float(next(arrays_it)))
 
     def link(self, proxy: SlicerLinkProxy) -> None:
         proxy.add(self)
@@ -1280,8 +1441,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def refresh_all(
         self, axes: tuple[int, ...] | None = None, only_plots: bool = False
     ) -> None:
-        for c in range(self.n_cursors):
-            self.sigIndexChanged.emit(c, axes)
+        self.sigIndexChanged.emit(tuple(c for c in range(self.n_cursors)), axes)
         if not only_plots:
             for ax in self.axes:
                 ax.refresh_labels()
@@ -1333,6 +1493,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
+        load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
         auto_compute: bool = True,
     ) -> None:
         """Set the data to be displayed.
@@ -1351,13 +1512,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
             correspond to the given strings are converted.
         file_path
             Path to the file from which the data was loaded. If given, the file path is
-            used to set the window title.
+            used to set the window title and when reloading the data. To successfully
+            reload the data, ``load_func`` must also be provided.
+        load_func
+            3-tuple containing the function, a dictionary of keyword arguments, and the
+            index of the data variable used when loading the data. The function is
+            called when reloading the data. If from a data loader plugin, the function
+            may be given as a string representing the loader name. If the function
+            always returns a single DataArray, the last element should be 0.
         auto_compute
             If `True` and the data is dask-backed, automatically compute the data if its
             size is below the threshold defined in options.
 
         """
         self._file_path = pathlib.Path(file_path) if file_path is not None else None
+
+        if load_func is not None:
+            func: Callable | str = load_func[0]
+            func_instance = getattr(func, "__self__", None)
+            if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+                func = func_instance.name
+            self._load_func = (func, *load_func[1:])
+        else:
+            self._load_func = None
+
         if hasattr(self, "_array_slicer") and hasattr(self, "_data"):
             n_cursors_old = self.n_cursors
             if isinstance(self._data, xr.DataArray):  # pragma: no branch
@@ -1465,24 +1643,29 @@ class ImageSlicerArea(QtWidgets.QWidget):
         bool
             `True` if the data can be reloaded, `False` otherwise.
         """
-        if self._disable_reload:
-            return False
         return (
             (self._file_path is not None)
-            and ("data_loader_name" in self._data.attrs)
             and self._file_path.exists()
+            and self._load_func is not None
+            and (callable(self._load_func[0]) or self._load_func[0] in erlab.io.loaders)
         )
 
     def _fetch_for_reload(self) -> xr.DataArray:
-        reloaded = erlab.io.loaders[self._data.attrs["data_loader_name"]].load(
-            typing.cast("pathlib.Path", self._file_path)
+        file_path = self._file_path
+        load_func = self._load_func
+        if file_path is None or load_func is None:
+            raise RuntimeError("Data cannot be reloaded")
+
+        func = (
+            load_func[0]
+            if callable(load_func[0])
+            else erlab.io.loaders[load_func[0]].load
         )
-        if not isinstance(reloaded, xr.DataArray):
-            raise TypeError(
-                "Reloading data opened from files that contain "
-                "more than one DataArray is not supported"
-            )
-        return reloaded
+        reloaded = typing.cast(
+            "xr.DataArray | xr.Dataset | xr.DataTree",
+            func(file_path, **load_func[1]),
+        )
+        return _parse_input(reloaded)[load_func[2]]
 
     def reload(self) -> None:
         """Reload the data from the file it was loaded from, using the same loader.
@@ -1496,7 +1679,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.reloadable:  # pragma: no branch
             try:
-                self.set_data(self._fetch_for_reload(), file_path=self._file_path)
+                self.set_data(
+                    self._fetch_for_reload(),
+                    file_path=self._file_path,
+                    load_func=self._load_func,
+                )
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."
@@ -1546,7 +1733,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.array_slicer._obj[:] = values
 
         if update:  # pragma: no branch
-            self.array_slicer.clear_val_cache(include_vals=True)
+            self.array_slicer.clear_val_cache()
             self.refresh_all(only_plots=True)
 
             # This will update colorbar limits if visible
@@ -1609,6 +1796,27 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for ax in self.axes:
             if ax is not axes:
                 ax.update_manual_range()
+
+    def make_slice_dict(self) -> dict[Hashable, slice]:
+        """Create a dictionary of slices for current manual limits.
+
+        Returns
+        -------
+        dict
+            A dictionary mapping dimension names to slices.
+        """
+        slice_dict: dict[Hashable, slice] = {}
+        for k, v in self.manual_limits.items():
+            ax_idx = self.data.dims.index(k)
+            sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
+            start, end = (
+                float(np.round(v[0], sig_digits)),
+                float(np.round(v[1], sig_digits)),
+            )
+            if sig_digits == 0:
+                start, end = int(start), int(end)
+            slice_dict[k] = slice(start, end)
+        return slice_dict
 
     @property
     def watched_data_name(self) -> str | None:
@@ -1748,25 +1956,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for c in range(self.n_cursors):
             self.array_slicer.set_bins(c, new_bins, update)
 
-    def make_cursors(self, colors: Iterable[QtGui.QColor | str]) -> None:
+    def make_cursors(
+        self, colors: Iterable[QtGui.QColor | str], *, update: bool = True
+    ) -> None:
         """Create cursors with the specified colors.
 
         Used when restoring the state of the slicer. All existing cursors are removed.
         """
         while self.n_cursors > 1:
-            self.remove_cursor(0)
+            self.remove_cursor(0, update=False)
 
         for clr in colors:
-            self.add_cursor(color=clr)
+            self.add_cursor(color=clr, update=False)
 
-        self.remove_cursor(0)
-        self.refresh_all()
+        self.remove_cursor(0, update=False)
+        if update:
+            self.refresh_all()
 
     @QtCore.Slot()
     @QtCore.Slot(object)
     @link_slicer
     @record_history
-    def add_cursor(self, color: QtGui.QColor | str | None = None) -> None:
+    def add_cursor(
+        self, color: QtGui.QColor | str | None = None, *, update: bool = True
+    ) -> None:
         self.array_slicer.add_cursor(self.current_cursor, update=False)
         if color is None:
             self.cursor_colors.append(self.color_for_cursor(self.n_cursors - 1))
@@ -1776,15 +1989,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.current_cursor = self.n_cursors - 1
         for ax in self.axes:
             ax.add_cursor(update=False)
-        self._colorbar.cb.level_change()
-        self.refresh_current()
-        self.sigCursorCountChanged.emit(self.n_cursors)
-        self.sigCurrentCursorChanged.emit(self.current_cursor)
+        if update:
+            self._colorbar.cb.level_change()  # <- why is this required?
+            self.refresh_current()
+            self.sigCursorCountChanged.emit(self.n_cursors)
+            self.sigCurrentCursorChanged.emit(self.current_cursor)
 
     @QtCore.Slot(int)
     @link_slicer
     @record_history
-    def remove_cursor(self, index: int) -> None:
+    def remove_cursor(self, index: int, *, update: bool = True) -> None:
         index = index % self.n_cursors
         if self.n_cursors == 1:
             return
@@ -1799,9 +2013,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         for ax in self.axes:
             ax.remove_cursor(index)
-        self.refresh_current()
-        self.sigCursorCountChanged.emit(self.n_cursors)
-        self.sigCurrentCursorChanged.emit(self.current_cursor)
+        if update:
+            self.refresh_current()
+            self.sigCursorCountChanged.emit(self.n_cursors)
+            self.sigCurrentCursorChanged.emit(self.current_cursor)
 
     @QtCore.Slot()
     @record_history
@@ -1855,6 +2070,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if gamma is None and levels_locked is None and levels is None:
             # These will be handled in their respective methods or calling widgets
             self.sigWriteHistory.emit()
+            prop = copy.deepcopy(self._colormap_properties)
+            new_reverse = self.reverse_act.isChecked()
+            new_high_contrast = self.high_contrast_act.isChecked()
+            new_zero_centered = self.zero_centered_act.isChecked()
+            if any(
+                (
+                    prop["reverse"] != new_reverse,
+                    prop["high_contrast"] != new_high_contrast,
+                    prop["zero_centered"] != new_zero_centered,
+                )
+            ):
+                self._colormap_properties["reverse"] = new_reverse
+                self._colormap_properties["high_contrast"] = new_high_contrast
+                self._colormap_properties["zero_centered"] = new_zero_centered
 
         if cmap is not None:
             self._colormap_properties["cmap"] = cmap
@@ -1961,17 +2190,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     manager.add_widget(widget)
                 return
 
-        widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-
         uid: str = str(uuid.uuid4())
         with self._assoc_tools_lock:
             self._associated_tools[uid] = widget  # Store reference to prevent gc
 
-        def _on_destroyed() -> None:
-            with self._assoc_tools_lock:
-                self._associated_tools.pop(uid, None)
+        old_close_event = widget.closeEvent
 
-        widget.destroyed.connect(_on_destroyed)
+        def new_close_event(event: QtGui.QCloseEvent) -> None:
+            with self._assoc_tools_lock:
+                if uid in self._associated_tools:
+                    tool = self._associated_tools.pop(uid)
+                    tool.deleteLater()
+            old_close_event(event)
+
+        widget.closeEvent = new_close_event  # type: ignore[assignment]
         widget.show()
 
     @QtCore.Slot()
@@ -1994,6 +2226,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 gamma=gamma,
                 data_name=self.watched_data_name,
                 execute=False,
+            )
+        )
+
+    @QtCore.Slot()
+    def open_in_meshtool(self) -> None:
+        """Open the interactive mesh removal tool."""
+        self.add_tool_window(
+            erlab.interactive.meshtool(
+                self.data, data_name=self.watched_data_name, execute=False
             )
         )
 
@@ -2075,6 +2316,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             vert_pad=self.VERT_PAD,
             font_size=self.TICK_FONT_SIZE,
         )
+
+        # Remove all ROI since they may not be valid anymore
+        for ax in self.axes:
+            ax.clear_rois()
 
     def _cursor_name(self, i: int) -> str:
         return f" Cursor {int(i)}"
@@ -2239,8 +2484,20 @@ class ItoolDisplayObject:
                 sliced = sliced.rename(f"{sliced.name} Sliced")
             return sliced
 
+    def fetch_new_data(
+        self,
+    ) -> tuple[
+        npt.NDArray[np.floating] | tuple[float, float, float, float],
+        npt.NDArray[np.floating] | dask.array.Array,
+    ]:
+        raise NotImplementedError
+
+    def update_data(self, *args) -> None:
+        raise NotImplementedError
+
+    @suppressnanwarning
     def refresh_data(self) -> None:
-        pass
+        self.update_data(*self.fetch_new_data())
 
 
 def _pad_1d_plot(
@@ -2262,11 +2519,12 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         self.normalize: bool = False
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
-    def refresh_data(self) -> None:
-        ItoolDisplayObject.refresh_data(self)
-        coord, vals = self.array_slicer.slice_with_coord(
-            self.cursor_index, self.display_axis
-        )
+    def fetch_new_data(
+        self,
+    ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating] | dask.array.Array]:
+        return self.array_slicer.slice_with_coord(self.cursor_index, self.display_axis)
+
+    def update_data(self, coord, vals) -> None:
         if self.normalize:
             avg = np.nanmean(vals)
             if not np.isnan(avg):  # pragma: no branch
@@ -2295,12 +2553,15 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
         defaults.update(kargs)
         return self.setImage(*args, **defaults)
 
-    @suppressnanwarning
-    def refresh_data(self) -> None:
-        ItoolDisplayObject.refresh_data(self)
-        rect, img = self.array_slicer.slice_with_coord(
-            self.cursor_index, self.display_axis
-        )
+    def fetch_new_data(
+        self,
+    ) -> tuple[
+        tuple[float, float, float, float],
+        npt.NDArray[np.floating] | dask.array.Array,
+    ]:
+        return self.array_slicer.slice_with_coord(self.cursor_index, self.display_axis)
+
+    def update_data(self, rect, img) -> None:
         self.setImage(
             image=img, rect=rect, autoLevels=not self.slicer_area.levels_locked
         )
@@ -2474,6 +2735,8 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb1: pg.ViewBox | None = None
         self._twin_visible: bool = False
 
+        self._roi_list: list[ItoolPolyLineROI] = []
+
     def setup_actions(self) -> None:
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
@@ -2482,6 +2745,12 @@ class ItoolPlotItem(pg.PlotItem):
             # Hide unnecessary menu items
             self.vb.menu.ctrl[i].linkCombo.setVisible(False)
             self.vb.menu.ctrl[i].label.setVisible(False)
+
+        if self.is_image:
+            # ROI actions
+            self.vb.menu.addSeparator()
+            poly_roi_action = self.vb.menu.addAction("Add Polygon ROI")
+            poly_roi_action.triggered.connect(self.add_roi)
 
         self.vb.menu.addSeparator()
 
@@ -2494,7 +2763,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb.menu.addSeparator()
 
         # List of actions that should have '(Crop)' appended when Alt is pressed
-        croppable_actions: list[QtWidgets.QAction] = [save_action]
+        croppable_actions: list[QtWidgets.QAction] = [save_action, copy_code_action]
 
         if self.is_image:
             # Aspect ratio lock checkbox
@@ -2578,10 +2847,12 @@ class ItoolPlotItem(pg.PlotItem):
     def connect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.connect(self.refresh_items_data)
         self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
-        self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
-        if not self.is_image:
+        if self.is_image:
+            self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
+            self.slicer_area.sigShapeChanged.connect(self.clear_rois)
+        else:
             self.slicer_area.sigDataChanged.connect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.connect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.connect(self.update_twin_plots)
@@ -2589,10 +2860,12 @@ class ItoolPlotItem(pg.PlotItem):
     def disconnect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
         self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
-        self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
-        if not self.is_image:
+        if self.is_image:
+            self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
+            self.slicer_area.sigShapeChanged.disconnect(self.clear_rois)
+        else:
             self.slicer_area.sigDataChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.disconnect(self.update_twin_plots)
@@ -2709,28 +2982,73 @@ class ItoolPlotItem(pg.PlotItem):
                 self.vb1.removeItem(item)
                 item.forgetViewBox()
 
+    @QtCore.Slot()
+    @record_history
+    def add_roi(self) -> None:
+        # Start from current cursor position
+        x0, y0 = tuple(
+            self.array_slicer.get_value(
+                self.slicer_area.current_cursor, ax, uniform=True
+            )
+            for ax in self.display_axis
+        )
+        xrange, yrange = self.vb.state["viewRange"]
+        dx, dy = 0.2 * (xrange[1] - xrange[0]), 0.2 * (yrange[1] - yrange[0])
+        roi = ItoolPolyLineROI(self, positions=[(x0, y0), (x0 + dx, y0 + dy)])
+        self._roi_list.append(roi)
+        self.addItem(roi)
+        roi.sigRemoveRequested.connect(self.remove_roi)
+
+    @QtCore.Slot(object)
+    @record_history
+    def remove_roi(self, roi: ItoolPolyLineROI) -> None:
+        if roi in self._roi_list:
+            self._roi_list.remove(roi)
+            self.removeItem(roi)
+            roi.deleteLater()
+
+    @QtCore.Slot()
+    @suppress_history
+    def clear_rois(self) -> None:
+        """Remove all ROIs from the plot."""
+        for roi in self._roi_list.copy():
+            self.remove_roi(roi)
+
     @property
     def _serializable_state(self) -> PlotItemState:
         """Subset of the state of the underlying viewbox that should be restorable."""
-        vb = self.getViewBox()
+        vb_state = self.getViewBox().getState()
         return {
-            "vb_aspect_locked": vb.state["aspectLocked"],
-            "vb_x_inverted": vb.state["xInverted"],
-            "vb_y_inverted": vb.state["yInverted"],
+            "vb_aspect_locked": vb_state["aspectLocked"],
+            "vb_x_inverted": vb_state["xInverted"],
+            "vb_y_inverted": vb_state["yInverted"],
+            "vb_autorange": tuple(vb_state["autoRange"]),
+            "roi_states": [roi.saveState() for roi in self._roi_list],
         }
 
     @_serializable_state.setter
     def _serializable_state(self, state: PlotItemState) -> None:
         vb = self.getViewBox()
+        state_dict: dict[str, typing.Any] = {
+            "aspectLocked": state["vb_aspect_locked"],
+            "xInverted": state["vb_x_inverted"],
+            "yInverted": state["vb_y_inverted"],
+        }
+        autorange = state.get("vb_autorange", None)
+        if autorange:
+            state_dict["autoRange"] = list(autorange)
+        vb.state.update()
 
-        locked = state["vb_aspect_locked"]
-        if isinstance(locked, bool):
-            vb.setAspectLocked(locked)
-        else:
-            vb.setAspectLocked(True, ratio=locked)
+        if "roi_states" in state:
+            self.clear_rois()
 
-        vb.invertX(state["vb_x_inverted"])
-        vb.invertY(state["vb_y_inverted"])
+            with self.slicer_area.history_suppressed():
+                for s in state["roi_states"]:
+                    roi = ItoolPolyLineROI(self, positions=s["points"])
+                    self._roi_list.append(roi)
+                    self.addItem(roi)
+                    roi.sigRemoveRequested.connect(self.remove_roi)
+                    roi.setState(s)
 
     def _get_axis_dims(self, uniform: bool) -> tuple[str | None, str | None]:
         dim_list: list[str] = [
@@ -2791,18 +3109,18 @@ class ItoolPlotItem(pg.PlotItem):
         return False
 
     @property
+    def _crop_indexers(self) -> dict[Hashable, slice]:
+        """Returns argument to `DataArray.sel` for cropping to current view limits."""
+        return {
+            k: v
+            for k, v in self.slicer_area.make_slice_dict().items()
+            if k in self._current_data.dims
+        }
+
+    @property
     def _current_data_cropped(self) -> xr.DataArray:
         """Data in the current plot item, cropped to the current axes view limits."""
-        darr: xr.DataArray = self._current_data
-        slice_dict: dict[Hashable, slice] = {}
-        for k, v in self.slicer_area.manual_limits.items():
-            if k in darr.dims:
-                ax_idx = self.slicer_area.data.dims.index(k)
-                sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-                slice_dict[k] = slice(
-                    *sorted(float(np.round(val, sig_digits)) for val in v)
-                )
-        return self._current_data.sel(slice_dict)
+        return self._current_data.sel(self._crop_indexers)
 
     @property
     def current_data(self) -> xr.DataArray:
@@ -2828,9 +3146,50 @@ class ItoolPlotItem(pg.PlotItem):
         Returns a string that looks like ``.sel(...)`` or ``.qsel(...)`` that selects
         the current slice of data based on the current cursor location and bin size.
         """
-        return self.array_slicer.qsel_code(
+        sel_code = self.array_slicer.qsel_code(
             self.slicer_area.current_cursor, self.display_axis
         )
+        # sel_code will be ".qsel(...)" or ".isel(...)" or empty string
+
+        if (
+            QtCore.Qt.KeyboardModifier.AltModifier
+            in QtWidgets.QApplication.queryKeyboardModifiers()
+        ):
+            sel_indexers = self._crop_indexers
+            isel_indexers: dict[Hashable, slice] = {}
+            for k in list(sel_indexers.keys()):
+                if str(k).endswith("_idx"):
+                    isel_indexers[str(k).removesuffix("_idx")] = sel_indexers.pop(k)
+
+            if sel_code.startswith(".qsel"):
+                qsel_kw = self.array_slicer.qsel_args(
+                    self.slicer_area.current_cursor, self.display_axis
+                )
+                qsel_kw = qsel_kw | sel_indexers
+
+                sel_code = erlab.interactive.utils.format_kwargs(qsel_kw)
+                sel_code = f".qsel({sel_code})"
+
+                if isel_indexers:
+                    isel_code = erlab.interactive.utils.format_kwargs(isel_indexers)
+                    sel_code = sel_code + f".isel({isel_code})"
+
+                return sel_code
+
+            if sel_code.startswith(".isel"):
+                isel_kw = self.array_slicer.isel_args(
+                    self.slicer_area.current_cursor, self.display_axis, int_if_one=True
+                )
+                isel_kw = isel_kw | isel_indexers
+
+                sel_code = erlab.interactive.utils.format_kwargs(isel_kw)
+                sel_code = f".isel({sel_code})"
+
+            if sel_indexers:
+                crop_code = erlab.interactive.utils.format_kwargs(sel_indexers)
+                sel_code = sel_code + f".sel({crop_code})"
+
+        return sel_code
 
     def get_selection_code(self, placeholder: str = "data") -> str:
         """Get selection code for the current cursor and display axis.
@@ -2882,6 +3241,8 @@ class ItoolPlotItem(pg.PlotItem):
             }
             if color_props["levels_locked"]:
                 itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+            if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
+                itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
 
             tool = typing.cast(
                 "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
@@ -2893,21 +3254,16 @@ class ItoolPlotItem(pg.PlotItem):
     def open_in_goldtool(self) -> None:
         if self.is_image:  # pragma: no branch
             data = self.current_data
-
-            if set(data.dims) != {"alpha", "eV"}:
-                QtWidgets.QMessageBox.critical(
-                    None,
-                    "Error",
-                    "Data must have 'alpha' and 'eV' dimensions "
-                    "to be opened in goldtool.",
+            try:
+                self.slicer_area.add_tool_window(
+                    erlab.interactive.goldtool(
+                        data, data_name=self.get_selection_code(), execute=False
+                    )
                 )
-                return
-
-            self.slicer_area.add_tool_window(
-                erlab.interactive.goldtool(
-                    data, data_name=self.get_selection_code(), execute=False
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    None, "Error", "An error occurred while opening goldtool."
                 )
-            )
 
     @QtCore.Slot()
     def open_in_restool(self) -> None:
@@ -3108,7 +3464,7 @@ class ItoolPlotItem(pg.PlotItem):
                     self.slicer_area.set_value(
                         ax, data_pos_coords[i], update=False, uniform=True, cursor=c
                     )
-                self.slicer_area.refresh(c, self.display_axis)
+            self.slicer_area.refresh_all(self.display_axis)
         else:
             for i, ax in enumerate(self.display_axis):
                 self.slicer_area.set_value(
@@ -3248,18 +3604,15 @@ class ItoolPlotItem(pg.PlotItem):
                 axis, value, update=True, uniform=True, cursor=cursor
             )
         else:
-            for i in range(self.slicer_area.n_cursors):
+            cursors = tuple(c for c in range(self.slicer_area.n_cursors))
+            for c in cursors:
                 self.slicer_area.set_value(
-                    axis, value, update=True, uniform=True, cursor=i
+                    axis, value, update=False, uniform=True, cursor=c
                 )
+            self.sigIndexChanged.emit(cursors, (axis,))
 
     def remove_cursor(self, index: int) -> None:
         item = self.slicer_data_items.pop(index)
-
-        # Store autorange state and disable it temporarily to prevent the viewbox from
-        # trying to autorange while removing items.
-        auto_range = self.vb.state["autoRange"]
-        self.enableAutoRange(enable=False)
 
         self.removeItem(item)
         for line, span in zip(
@@ -3275,11 +3628,6 @@ class ItoolPlotItem(pg.PlotItem):
             span.deleteLater()
         for i, item in enumerate(self.slicer_data_items):
             item.cursor_index = i
-
-        # Restore autorange state
-        for enable, axis in zip(auto_range, ("x", "y"), strict=True):
-            if enable is not False:
-                self.enableAutoRange(axis=axis, enable=enable)
 
     def refresh_cursor(self, cursor: int) -> None:
         for ax, line in self.cursor_lines[cursor].items():
@@ -3373,21 +3721,79 @@ class ItoolPlotItem(pg.PlotItem):
             self.setTitle(None)
 
     @QtCore.Slot(int, object)
-    def refresh_items_data(self, cursor: int, axes: tuple[int] | None = None) -> None:
-        self.refresh_cursor(cursor)
+    @QtCore.Slot(object, object)
+    def refresh_items_data(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None = None
+    ) -> None:
+        if self.slicer_area.data_chunked:
+            # When data is chunked, refreshing is handled by _handle_refresh_dask
+            return
+
+        if isinstance(cursor, int):
+            cursor = (cursor,)
+
+        for c in cursor:
+            # Set cursor lines and spans positions
+            self.refresh_cursor(c)
+
         if axes is not None and all(elem in self.display_axis for elem in axes):
             # When only the indices along display_axis change, it has no effect on the
             # sliced data, so we do not need to refresh the data.
             return
+
+        if len(cursor) == 1:
+            # May have been called from refresh_current upon cursor change, handle
+            # active cursor switching here
+
+            # This hides images corresponding to other plots and hidden items are not
+            # updated due to the isVisible() check below.
+
+            # If multiple cursors are being updated, assume visibility is already set as
+            # expected, so skip
+            self.set_active_cursor(cursor[0])
+
+        self.vb.blockSignals(True)
         for item in self.slicer_data_items:
-            if item.cursor_index != cursor:
+            if item.cursor_index not in cursor or not item.isVisible():
                 continue
-            self.set_active_cursor(cursor)
-            self.vb.blockSignals(True)
             item.refresh_data()
-            self.vb.blockSignals(False)
-            # Block vb state signals, handle axes limits in refresh_all after update by
-            # calling update_manual_range
+        self.vb.blockSignals(False)
+        # Block vb state signals, handle axes limits in refresh_all after update by
+        # calling update_manual_range
+
+    def collect_dask_objects(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None = None
+    ) -> tuple[
+        list[ItoolDisplayObject],
+        list[npt.NDArray[np.floating] | tuple[float, float, float, float]],
+        list[dask.array.Array],
+    ]:
+        # When data is dask-backed, collect all dask arrays in the items that requires
+        # computation
+        if axes is not None and all(elem in self.display_axis for elem in axes):
+            return [], [], []
+
+        if isinstance(cursor, int):
+            cursor = (cursor,)
+
+        objs: list[ItoolDisplayObject] = []
+        coord_or_rects: list[
+            npt.NDArray[np.floating] | tuple[float, float, float, float]
+        ] = []
+        arrays: list[dask.array.Array] = []
+
+        if len(cursor) == 1:
+            self.set_active_cursor(cursor[0])
+
+        for item in self.slicer_data_items:
+            if item.cursor_index not in cursor or not item.isVisible():
+                continue
+            objs.append(item)
+            c, arr = item.fetch_new_data()
+            coord_or_rects.append(c)
+            arrays.append(typing.cast("dask.array.Array", arr))
+
+        return objs, coord_or_rects, arrays
 
     @QtCore.Slot()
     def refresh_labels(self) -> None:
@@ -3447,6 +3853,8 @@ class ItoolPlotItem(pg.PlotItem):
 
         last_dir = pg.PlotItem.lastFileDir
         if not last_dir:
+            last_dir = erlab.interactive.imagetool.manager._get_recent_directory()
+        if not last_dir:
             last_dir = os.getcwd()
 
         dialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
@@ -3458,17 +3866,13 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def copy_selection_code(self) -> None:
-        if self.selection_code == "":
+        code = self.get_selection_code(placeholder="")
+        if code == "":
             QtWidgets.QMessageBox.critical(
-                None,
-                "Error",
-                "Selection code is unavailable for main image of 2D data.",
+                None, "Error", "Selection code is unavailable for this data."
             )
             return
-
-        erlab.interactive.utils.copy_to_clipboard(
-            self.get_selection_code(placeholder="")
-        )
+        erlab.interactive.utils.copy_to_clipboard(code)
 
     @property
     def display_axis(self) -> tuple[int, ...]:
@@ -3511,6 +3915,7 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
                 for a in ("left", "right", "top", "bottom")
             },
         )
+        kwargs["show_colormap_edit_menu"] = False
         super().__init__(**kwargs)
 
         copy_action = self.vb.menu.addAction("Copy color limits to clipboard")
@@ -3581,3 +3986,227 @@ class ItoolColorBar(pg.PlotWidget):
 
         if visible:
             self.cb.setSpanRegion(self.cb.limits)
+
+
+class ItoolPolyLineROI(pg.PolyLineROI):
+    """Custom ROI for ImageTool.
+
+    Additional functionality includes context menu actions for editing the ROI, slicing
+    along the ROI path, and masking data with the ROI.
+
+    Parameters
+    ----------
+    plot_item : ItoolPlotItem
+        Parent plot item.
+    positions : list[tuple[float, float]]
+        List of (x, y) positions for the ROI vertices.
+    closed : bool, optional
+        Whether the ROI is closed (polygon) or open (polyline). Default is False.
+
+    """
+
+    def __init__(
+        self,
+        plot_item: ItoolPlotItem,
+        positions: list[tuple[float, float]],
+        closed: bool = False,
+    ) -> None:
+        super().__init__(
+            positions, closed=closed, rotatable=False, resizable=False, removable=True
+        )
+        self._plot_item = weakref.ref(plot_item)
+
+    @property
+    def plot_item(self) -> ItoolPlotItem:
+        plot_item = self._plot_item()
+        if plot_item:
+            return plot_item
+        raise LookupError("Parent was destroyed")
+
+    @property
+    def slicer_area(self) -> ImageSlicerArea:
+        return self.plot_item.slicer_area
+
+    def getMenu(self):
+        if self.menu is None:
+            self.menu = super().getMenu()
+
+            edit_act = QtWidgets.QAction("Edit ROI...", self.menu)
+            edit_act.triggered.connect(self.edit_roi)
+            self.menu.addAction(edit_act)
+            self.menu.edit_act = edit_act
+
+            slice_path_act = QtWidgets.QAction("Slice Along ROI Path", self.menu)
+            slice_path_act.triggered.connect(self.slice_along_path)
+            self.menu.addAction(slice_path_act)
+            self.menu.slice_path_act = slice_path_act
+
+            mask_roi_act = QtWidgets.QAction("Mask Data with ROI", self.menu)
+            mask_roi_act.triggered.connect(self.mask_with_roi)
+            self.menu.addAction(mask_roi_act)
+            self.menu.mask_roi_act = mask_roi_act
+
+        return self.menu
+
+    @record_history
+    def handleMoveStarted(self):
+        """Inherited to add history recording on move start."""
+        super().handleMoveStarted()
+
+    @record_history
+    def segmentClicked(self, segment, ev=None, pos=None):
+        """Inherited to add history recording on segment click."""
+        super().segmentClicked(segment, ev, pos)
+
+    @QtCore.Slot()
+    def edit_roi(self) -> None:
+        """Open dialog to edit ROI vertices."""
+        dialog = _PolyROIEditDialog(self)
+        dialog.exec()
+
+    @QtCore.Slot()
+    def slice_along_path(self) -> None:
+        """Extract line profile as an xarray DataArray."""
+        dialog = erlab.interactive.imagetool.dialogs.ROIPathDialog(self)
+        dialog.exec()
+
+    @QtCore.Slot()
+    def mask_with_roi(self) -> None:
+        """Mask data with the polygon defined by the ROI."""
+        dialog = erlab.interactive.imagetool.dialogs.ROIMaskDialog(self)
+        dialog.exec()
+
+    def _get_vertices(self, uniform: bool = False) -> dict[Hashable, list[float]]:
+        array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
+            self.plot_item.array_slicer
+        )
+
+        coords = self.getState()["points"]
+        raw_xy = (
+            np.array([p[0] for p in coords], dtype=float),
+            np.array([p[1] for p in coords], dtype=float),
+        )
+
+        vertices: dict[Hashable, list[float]] = {}
+        for ax, dim, values in zip(
+            self.plot_item.display_axis, self.plot_item.axis_dims, raw_xy, strict=True
+        ):
+            decimals: int = array_slicer.get_significant(ax, uniform=uniform)
+            if not uniform and ax in array_slicer._nonuniform_axes:
+                # Convert from index to true coordinates
+                vertices[dim] = (
+                    np.interp(
+                        values, array_slicer.coords_uniform[ax], array_slicer.coords[ax]
+                    )
+                    .round(decimals)
+                    .tolist()
+                )
+            else:
+                vertices[dim] = values.round(decimals).tolist()
+
+        return vertices
+
+
+class _PolyROIEditDialog(QtWidgets.QDialog):
+    def __init__(self, roi: ItoolPolyLineROI) -> None:
+        super().__init__()
+        self.roi = roi
+        self.setWindowTitle("Edit ROI")
+        self.setModal(True)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.setLayout(layout)
+
+        self.table = QtWidgets.QTableWidget(self)
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(self.roi.plot_item.axis_dims_uniform)
+        hdr = self.table.horizontalHeader()
+        if hdr:  # pragma: no branch
+            hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+
+        self.closed_check = QtWidgets.QCheckBox("Closed", self)
+        self.closed_check.setChecked(self.roi.closed)
+        layout.addWidget(self.closed_check)
+
+        # Add/Remove row buttons
+        btn_layout = QtWidgets.QHBoxLayout()
+        self.add_row_btn = QtWidgets.QPushButton("Add Row")
+        self.del_row_btn = QtWidgets.QPushButton("Delete Row")
+        btn_layout.addWidget(self.add_row_btn)
+        btn_layout.addWidget(self.del_row_btn)
+        layout.addLayout(btn_layout)
+
+        self.add_row_btn.clicked.connect(self._add_row)
+        self.del_row_btn.clicked.connect(self._delete_row)
+
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        model = self.table.model()
+        if model:  # pragma: no branch
+            model.rowsRemoved.connect(self._rowcount_changed)
+
+        self._populate_table()
+
+    def _populate_table(self) -> None:
+        values = np.column_stack(tuple(self.roi._get_vertices(uniform=True).values()))
+        self.table.setRowCount(len(values))
+        for i in range(values.shape[0]):
+            for j in range(2):
+                item = QtWidgets.QTableWidgetItem(
+                    np.format_float_positional(values[i, j], trim="-")
+                )
+                item.setTextAlignment(
+                    QtCore.Qt.AlignmentFlag.AlignRight
+                    | QtCore.Qt.AlignmentFlag.AlignVCenter
+                )
+                self.table.setItem(i, j, item)
+
+    @QtCore.Slot()
+    def _rowcount_changed(self) -> None:
+        """Enable/disable delete row button based on row count."""
+        self.del_row_btn.setEnabled(self.table.rowCount() >= 3)
+
+    @QtCore.Slot()
+    def _add_row(self) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        # Optionally, initialize with zeros or NaN
+        for j in range(2):
+            item = QtWidgets.QTableWidgetItem("0")
+            item.setTextAlignment(
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
+            self.table.setItem(row, j, item)
+
+    @QtCore.Slot()
+    def _delete_row(self) -> None:
+        row = self.table.currentRow()
+        if row >= 0:
+            self.table.removeRow(row)
+
+    def accept(self) -> None:
+        points = []
+        for i in range(self.table.rowCount()):
+            x_item = self.table.item(i, 0)
+            y_item = self.table.item(i, 1)
+            try:
+                if x_item is not None and y_item is not None:
+                    points.append((float(x_item.text()), float(y_item.text())))
+            except ValueError:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Invalid value at row {i + 1}. Please enter numeric values.",
+                )
+                return
+        self.roi.slicer_area.sigWriteHistory.emit()
+        self.roi.setPoints(points, closed=self.closed_check.isChecked())
+        super().accept()

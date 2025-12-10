@@ -96,7 +96,12 @@ class _Watcher:
             self.watched_vars[varname] = {"fingerprint": fingerprint, "uid": uid}
             self._last_send = time.time()
 
-        self._push_to_gui(varname, obj, show=show)  # Initial push
+        try:
+            self._push_to_gui(varname, obj, show=show)  # Initial push
+        except Exception:
+            with self._lock:
+                self.watched_vars.pop(varname, None)
+            raise
 
         if not self._thread_started:
             self.start_thread()

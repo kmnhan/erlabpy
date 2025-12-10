@@ -1,6 +1,6 @@
 [project]
 name = "erlab"
-version = "3.16.0"
+version = "3.17.0"
 authors = [{ name = "Kimoon Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -44,13 +45,18 @@ dependencies = [
     "tqdm>=4.66.2",
     "varname>=0.13.0",
     "xarray>=2024.10.0",
-    "xarray-lmfit>=0.3.0",
+    "xarray-lmfit>=0.4.1",
 ]
 
 [project.optional-dependencies]
 complete = ["erlab[viz,io,perf,misc]"]
 viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
-io = ["astropy>=5.1.1", "libarchive-c>=5.2", "nexusformat>=1.0.6"]
+io = [
+    "astropy>=5.1.1",
+    "libarchive-c>=5.2",
+    "nexusformat>=1.0.6",
+    "zarr>=3.1.2",
+]
 perf = ["numbagg>=0.8.1", "xxhash>=3.5.0"]
 misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0"]
 
@@ -63,8 +69,8 @@ dev = [
     "jupyter-bokeh>=4.0.5",
     "mypy[faster-cache,reports]>=1.16.0",
     "pooch>=1.8.0",
-    "pre-commit>=3.7.0",
-    "pytest>=8.3.0",
+    "prek>=0.2.15",
+    "pytest>=9.0.0",
     "pytest-cov>=7.0.0",
     "pytest-datadir>=1.5.0",
     "pytest-env>=1.1.5",
@@ -86,6 +92,7 @@ docs = [
     "sphinx-qt-documentation>=0.4.1",
     "sphinxcontrib-bibtex>=2.6.3",
     "sphinxcontrib-googleanalytics>=0.4",
+    "sphinxext-rediraffe>=0.3.0",
 ]
 pyinstaller = [
     "cmasher>=1.9.2",
@@ -243,16 +250,16 @@ line-ending = "auto"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
 
-[tool.pytest.ini_options]
+[tool.pytest]
+minversion = "9.0"
 addopts = [
     "-ra",
     "--strict-config",
     "--strict-markers",
     "--import-mode=importlib",
 ]
-pythonpath = "src"
-testpaths = "tests"
-minversion = "8.3"
+pythonpath = ["src"]
+testpaths = ["tests"]
 log_cli_level = "INFO"
 xfail_strict = true
 filterwarnings = [
@@ -325,5 +332,6 @@ module = [
     "erlab.interactive.derivative",
     "erlab.interactive.fermiedge",
     "erlab.interactive.kspace",
+    "erlab.interactive._mesh",
 ]
 disable_error_code = ["attr-defined"]

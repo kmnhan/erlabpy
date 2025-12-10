@@ -53,7 +53,7 @@ class Downloader(QtCore.QThread):
                 received = 0
                 with open(self.out_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=1024 * 64):
-                        if self._stop:
+                        if self._stop or self.isInterruptionRequested():
                             return
                         if chunk:
                             f.write(chunk)
@@ -65,6 +65,41 @@ class Downloader(QtCore.QThread):
 
     def stop(self):
         self._stop = True
+        self.requestInterruption()
+
+
+class Extractor(QtCore.QThread):
+    progress = QtCore.Signal(int, int)  # bytes_processed, total_bytes (-1 if unknown)
+    finished_ok = QtCore.Signal(str)  # path to extracted dir
+    failed = QtCore.Signal(str)
+
+    def __init__(self, zip_path: pathlib.Path, out_dir: pathlib.Path):
+        super().__init__()
+        self.zip_path = zip_path
+        self.out_dir = out_dir
+        self._stop = False
+
+    def run(self):
+        try:
+            with zipfile.ZipFile(self.zip_path) as zf:
+                infos = zf.infolist()
+                total = sum(info.file_size for info in infos if not info.is_dir())
+                processed = 0
+                for info in infos:
+                    if self._stop or self.isInterruptionRequested():
+                        return
+                    zf.extract(info, self.out_dir)
+                    if info.is_dir():
+                        continue
+                    processed += info.file_size
+                    self.progress.emit(processed, total or -1)
+            self.finished_ok.emit(str(self.out_dir))
+        except Exception as e:
+            self.failed.emit(f"Extraction failed: {e}")
+
+    def stop(self):
+        self._stop = True
+        self.requestInterruption()
 
 
 class AutoUpdater(QtCore.QObject):
@@ -74,7 +109,9 @@ class AutoUpdater(QtCore.QObject):
             current_version = erlab.__version__
         self.current_version = current_version
 
-    def check_for_updates(self, parent: QtWidgets.QWidget):
+    def check_for_updates(
+        self, parent: erlab.interactive.imagetool.manager.ImageToolManager
+    ):
         try:
             info = fetch_latest_release()
         except Exception:
@@ -92,22 +129,24 @@ class AutoUpdater(QtCore.QObject):
         new = packaging.version.Version(info.tag)
         cur = packaging.version.Version(self.current_version)
         if new <= cur:
-            QtWidgets.QMessageBox.information(
-                parent,
-                "Up to date",
-                f"You are running the latest version (v{self.current_version}).",
+            msg_box = parent._make_icon_msgbox()
+            msg_box.setText("Up to date!")
+            msg_box.setInformativeText(
+                f"You are running the latest version (v{self.current_version})."
             )
+
+            msg_box.exec()
             return
 
         # Show changelog in a custom dialog with Markdown rendering
         dlg = QtWidgets.QDialog(parent)
-        dlg.setWindowTitle("Update available")
+        dlg.setWindowTitle("")
         dlg.setModal(True)
 
         vbox = QtWidgets.QVBoxLayout(dlg)
 
         title_label = QtWidgets.QLabel(
-            f"Version {info.tag} is available. You have v{self.current_version}.", dlg
+            "A new version of ImageTool Manager is available!", dlg
         )
         font = title_label.font()
         font.setBold(True)
@@ -116,7 +155,9 @@ class AutoUpdater(QtCore.QObject):
         vbox.addWidget(title_label)
 
         info_label = QtWidgets.QLabel(
-            "Do you want to download and install it now?", dlg
+            f"{info.tag} is available—you have v{self.current_version}. "
+            "Would you like to download it now?",
+            dlg,
         )
         info_label.setWordWrap(True)
         vbox.addWidget(info_label)
@@ -140,10 +181,24 @@ class AutoUpdater(QtCore.QObject):
         if not dlg.exec():
             return
 
+        install_root = get_install_root()
+        if sys.platform == "darwin" and not self._macos_location_is_writable(
+            install_root
+        ):
+            QtWidgets.QMessageBox.warning(
+                parent,
+                "Move to Applications",
+                "ImageTool Manager needs to live in the Applications folder "
+                "to install updates.\n\n"
+                f"Current location: {install_root}\n\n"
+                "Please move it to the Applications folder and try again.",
+            )
+            return
+
         match QtWidgets.QMessageBox.question(
             parent,
             "Update",
-            "The application will download and install the update automatically. "
+            "The application will download and install the update. "
             "The application will close and relaunch during the process. "
             "Make sure to save your work. Continue?",
             QtWidgets.QMessageBox.StandardButton.Yes
@@ -170,9 +225,7 @@ class AutoUpdater(QtCore.QObject):
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        progress = QtWidgets.QProgressDialog(
-            "Downloading update…", "Cancel", 0, 100, parent
-        )
+        progress = QtWidgets.QProgressDialog("Downloading…", "Cancel", 0, 100, parent)
         progress.setAutoClose(False)
         progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
@@ -181,13 +234,18 @@ class AutoUpdater(QtCore.QObject):
         total_hint = info.asset.size if info.asset.size > 0 else None
         dl = Downloader(info.asset.download_url, zippath, total_hint, headers)
 
+        factor = 1024 * 1024  # Bytes to MiB
+
         def _on_prog(done: int, total: int):
             if total <= 0:
-                progress.setLabelText(f"Downloading… {done // (1024 * 1024)} MB")
+                progress.setLabelText(f"Downloading…<br>{done / factor:.1f} MiB")
                 progress.setRange(0, 0)  # busy
             else:
                 progress.setRange(0, total)
                 progress.setValue(done)
+                progress.setLabelText(
+                    f"Downloading…<br>{done / factor:.1f} / {total / factor:.1f} MiB"
+                )
 
         def _on_fail(msg: str):
             progress.cancel()
@@ -214,8 +272,14 @@ class AutoUpdater(QtCore.QObject):
         progress.canceled.connect(on_cancel)
         dl.start()
 
-    def _extract_and_update(self, zip_path: pathlib.Path, parent: QtWidgets.QWidget):
+    def _extract_and_update(
+        self,
+        zip_path: pathlib.Path,
+        parent: erlab.interactive.imagetool.manager.ImageToolManager,
+    ):
         install_root = get_install_root()
+
+        self._confirm_install_ready(parent)
 
         tmpdir = zip_path.parent
 
@@ -313,6 +377,34 @@ class AutoUpdater(QtCore.QObject):
         qapp = QtWidgets.QApplication.instance()
         if qapp:
             qapp.quit()
+
+    @staticmethod
+    def _confirm_install_ready(
+        parent: erlab.interactive.imagetool.manager.ImageToolManager,
+    ) -> None:
+        msg = parent._make_icon_msgbox()
+        msg.setWindowTitle("Updating ImageTool Manager")
+        msg.setText("Ready to install")
+        install_btn = msg.addButton(
+            "Install Update"
+            if sys.platform.startswith("win")
+            else "Install and Relaunch",
+            QtWidgets.QMessageBox.ButtonRole.AcceptRole,
+        )
+        msg.setDefaultButton(install_btn)
+        msg.exec()
+
+    @staticmethod
+    def _macos_location_is_writable(app_path: pathlib.Path) -> bool:
+        resolved = app_path.resolve()
+        parent_dir = resolved.parent
+        in_applications = False
+        try:
+            in_applications = resolved.is_relative_to(pathlib.Path("/Applications"))
+        except AttributeError:
+            in_applications = str(resolved).startswith("/Applications")
+        writable = os.access(parent_dir, os.W_OK)
+        return in_applications and writable
 
 
 def _macos_helper_script(new_app: pathlib.Path, old_app: pathlib.Path, pid: int) -> str:

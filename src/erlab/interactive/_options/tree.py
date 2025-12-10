@@ -137,8 +137,9 @@ def parameter_to_options(param: pyqtgraph.parametertree.Parameter) -> AppOptions
         data: dict[str, typing.Any] = {}
         default_instance = model_cls()
         for fname in model_cls.model_fields:
-            child = group_param.child(fname)
-            if child is None:
+            try:
+                child = group_param.child(fname)
+            except KeyError:
                 continue
             val = child.value() if child.hasChildren() is False else None
             # Recurse for nested models

@@ -251,10 +251,11 @@ class ItoolCrosshairControls(ItoolControlsBase):
         )
         try:
             with np.errstate(divide="ignore"):
-                self.spin_dat.setDecimals(
-                    round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+                approx_abs_max = np.nanmax(
+                    np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )
-        except OverflowError:
+                self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
+        except Exception:
             self.spin_dat.setDecimals(4)
 
         # add multicursor widgets
@@ -273,11 +274,15 @@ class ItoolCrosshairControls(ItoolControlsBase):
         typing.cast("QtWidgets.QLayout", self.layout()).addWidget(self.values_groups[0])
 
         # info widgets
-        self.label_dim = tuple(
-            QtWidgets.QPushButton(grp) for grp in self.values_groups[1:]
-        )
+        self.label_dim = tuple(QtWidgets.QLabel(grp) for grp in self.values_groups[1:])
         for lab in self.label_dim:
-            lab.setCheckable(True)
+            lab.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            lab.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignHCenter
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
+            )
 
         self.spin_idx = tuple(
             erlab.interactive.utils.BetterSpinBox(
@@ -312,8 +317,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
         # add and connect info widgets
         for i in range(self.data.ndim):
-            # TODO: implelemnt cursor locking
-            # self.label_dim[i].toggled.connect()
             self.spin_idx[i].valueChanged.connect(
                 lambda ind, axis=i: self.slicer_area.set_index(axis, ind)
             )
@@ -356,6 +359,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
         self.slicer_area.sigCursorColorsChanged.connect(self.update_colors)
+        self.slicer_area.sigPointValueChanged.connect(self.spin_dat.setValue)
 
     def disconnect_signals(self) -> None:
         super().disconnect_signals()
@@ -366,6 +370,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
         self.slicer_area.sigBinChanged.disconnect(self.update_spins)
         self.slicer_area.sigCursorColorsChanged.disconnect(self.update_colors)
+        self.slicer_area.sigPointValueChanged.disconnect(self.spin_dat.setValue)
 
     @QtCore.Slot()
     def update_colors(self) -> None:
@@ -384,7 +389,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.initialize_widgets()
 
         for i in range(self.data.ndim):
-            self.values_groups[i].blockSignals(True)
             self.spin_idx[i].blockSignals(True)
             self.spin_val[i].blockSignals(True)
 
@@ -392,14 +396,6 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.label_dim[i].setText(str(self.data.dims[i]).removesuffix("_idx"))
             else:
                 self.label_dim[i].setText(str(self.data.dims[i]))
-
-            lw = (
-                self.label_dim[i]
-                .fontMetrics()
-                .boundingRect(self.label_dim[i].text())
-                .width()
-            )
-            self.label_dim[i].setMaximumWidth(lw + 15)
 
             # update spinbox properties to match new data
             self.spin_idx[i].setRange(0, self.data.shape[i] - 1)
@@ -410,15 +406,15 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_val[i].setValue(self.slicer_area.get_current_value(i))
             self.spin_val[i].setDecimals(self.array_slicer.get_significant(i))
 
-            self.label_dim[i].blockSignals(False)
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
         try:
             with np.errstate(divide="ignore"):
-                self.spin_dat.setDecimals(
-                    round(abs(np.log10(self.array_slicer.absnanmax)) + 1)
+                approx_abs_max = np.nanmax(
+                    np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )
-        except OverflowError:
+                self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
+        except Exception:
             self.spin_dat.setDecimals(4)
         self.spin_dat.setValue(
             self.array_slicer.point_value(self.current_cursor, binned=True)
@@ -439,9 +435,12 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
 
-        self.spin_dat.setValue(
-            self.array_slicer.point_value(self.current_cursor, binned=True)
-        )
+        # For chunked data, updating the point value is expensive, we let slicer_area
+        # emit sigPointValueChanged after computation is done
+        if not self.slicer_area.data_chunked:
+            self.spin_dat.setValue(
+                self.array_slicer.point_value(self.current_cursor, binned=True)
+            )
 
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:
@@ -535,7 +534,7 @@ class ItoolColormapControls(ItoolControlsBase):
         self.cb_colormap = erlab.interactive.colors.ColorMapComboBox(
             self, maximumWidth=175
         )
-        self.cb_colormap.textActivated.connect(self.slicer_area.set_colormap)
+        self.cb_colormap.currentTextChanged.connect(self.slicer_area.set_colormap)
 
         self.gamma_widget = erlab.interactive.colors.ColorMapGammaWidget(
             spin_cls=erlab.interactive.utils.BetterSpinBox

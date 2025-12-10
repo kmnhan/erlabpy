@@ -7,7 +7,7 @@ import weakref
 
 import numpy as np
 import numpy.typing as npt
-import xarray as xr
+import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -15,7 +15,13 @@ import erlab
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable
 
-    from erlab.interactive.imagetool.core import ColorMapState, ImageSlicerArea
+    import xarray as xr
+
+    from erlab.interactive.imagetool.core import (
+        ColorMapState,
+        ImageSlicerArea,
+        ItoolPolyLineROI,
+    )
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 
@@ -177,6 +183,12 @@ class DataTransformDialog(_DataManipulationDialog):
     keep_color_limits: bool = True
     """Whether to also keep manual color limits when opening in a new window."""
 
+    apply_on_nonuniform_data: bool = False
+    """Whether to apply the transform on data with non-uniform dimensions.
+
+    Set to `True` for transforms that can handle coordinates that are not evenly spaced.
+    """
+
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__(slicer_area)
         self.new_window_check = QtWidgets.QCheckBox("Open in New Window")
@@ -188,7 +200,7 @@ class DataTransformDialog(_DataManipulationDialog):
         if self.slicer_area.data.name is not None:
             new_name = f"{self.prefix}{self.slicer_area.data.name}{self.suffix}"
         else:
-            new_name = None
+            new_name = self.suffix.lstrip("_")
 
         try:
             applied_func = None
@@ -197,9 +209,18 @@ class DataTransformDialog(_DataManipulationDialog):
                 applied_func = self.slicer_area._applied_func
                 self.slicer_area.apply_func(None)
 
-            processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-                self.process_data(self.slicer_area.data)
-            ).rename(new_name)
+            if self.apply_on_nonuniform_data:
+                processed = self.process_data(
+                    erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                        self.slicer_area.data
+                    )
+                )
+            else:
+                processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                    self.process_data(self.slicer_area.data)
+                )
+
+            processed = processed.rename(new_name)
 
             if self.new_window_check.isChecked():
                 itool_kw: dict[str, typing.Any] = {
@@ -372,7 +393,7 @@ class RotationDialog(DataTransformDialog):
         return erlab.analysis.transform.rotate(data, **self._rotate_params)
 
     def make_code(self) -> str:
-        placeholder = " "
+        placeholder = self.slicer_area.watched_data_name or " "
         return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.rotate,
             [f"|{placeholder}|"],
@@ -535,7 +556,7 @@ class SymmetrizeDialog(DataTransformDialog):
         return erlab.analysis.transform.symmetrize(data, **self._params)
 
     def make_code(self) -> str:
-        placeholder = " "
+        placeholder = self.slicer_area.watched_data_name or " "
         return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.symmetrize,
             [f"|{placeholder}|"],
@@ -590,35 +611,20 @@ class _BaseCropDialog(DataTransformDialog):
         return data.sel(self._slice_kwargs)
 
     def make_code(self) -> str:
-        kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
+        sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
+        isel_kwargs: dict[Hashable, slice] = {}
 
-        isel_kwargs: dict[str, slice] = {}
-        for k in list(kwargs.keys()):
+        for k in list(sel_kwargs.keys()):
             if str(k).endswith("_idx"):
-                isel_kwargs[str(k).removesuffix("_idx")] = kwargs.pop(k)
+                isel_kwargs[str(k).removesuffix("_idx")] = sel_kwargs.pop(k)
 
         out: str = ""
-
-        if kwargs:
-            if all(isinstance(k, str) and str(k).isidentifier() for k in kwargs):
-                out = erlab.interactive.utils.generate_code(
-                    xr.DataArray.sel,
-                    [],
-                    kwargs=typing.cast("dict[str, slice]", kwargs),
-                    module=out,
-                )
-            else:
-                out += f".sel({kwargs})"
-
+        if sel_kwargs:
+            out += f".sel({erlab.interactive.utils.format_kwargs(sel_kwargs)})"
         if isel_kwargs:
-            if all(k.isidentifier() for k in isel_kwargs):
-                out = erlab.interactive.utils.generate_code(
-                    xr.DataArray.isel, [], isel_kwargs, module=out
-                )
-            else:
-                out += f".isel({isel_kwargs})"
+            out += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
 
-        return out.replace(", None)", ")")
+        return out
 
 
 class CropToViewDialog(_BaseCropDialog):
@@ -648,16 +654,11 @@ class CropToViewDialog(_BaseCropDialog):
 
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
-        slice_dict: dict[Hashable, slice] = {}
-        for k, v in self.slicer_area.manual_limits.items():
-            if self.dim_checks[k].isChecked():
-                ax_idx = self.slicer_area.data.dims.index(k)
-                sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-                slice_dict[k] = slice(
-                    *sorted(float(np.round(val, sig_digits)) for val in v)
-                )
-
-        return slice_dict
+        return {
+            k: v
+            for k, v in self.slicer_area.make_slice_dict().items()
+            if self.dim_checks[k].isChecked()
+        }
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -703,15 +704,19 @@ class CropDialog(_BaseCropDialog):
             ax_idx = self.slicer_area.data.dims.index(k)
             sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
 
-            v0 = self.array_slicer.get_value(cursor=c0, axis=ax_idx, uniform=True)
-            v1 = self.array_slicer.get_value(cursor=c1, axis=ax_idx, uniform=True)
+            start = self.array_slicer.get_value(cursor=c0, axis=ax_idx, uniform=True)
+            end = self.array_slicer.get_value(cursor=c1, axis=ax_idx, uniform=True)
 
-            if v0 > v1:
-                v0, v1 = v1, v0
+            if start > end:
+                start, end = end, start
 
-            slice_dict[k] = slice(
-                float(np.round(v0, sig_digits)), float(np.round(v1, sig_digits))
-            )
+            start = float(np.round(start, sig_digits))
+            end = float(np.round(end, sig_digits))
+
+            if sig_digits == 0:
+                start, end = int(start), int(end)
+
+            slice_dict[k] = slice(start, end)
 
         return slice_dict
 
@@ -854,21 +859,11 @@ class _CoordinateWidget(QtWidgets.QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_widget.setLayout(left_layout)
 
-        self.spin0 = QtWidgets.QDoubleSpinBox()
-        self.spin0.setRange(-1e9, 1e9)
-        self.spin0.setSingleStep(0.01)
-        self.spin0.setValue(0.0)
-        self.spin0.setDecimals(4)
-        self.spin0.setKeyboardTracking(False)
-        left_layout.addRow("Start", self.spin0)
+        self.spin0 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
         self.spin0.valueChanged.connect(self.update_table)
+        left_layout.addRow("Start", self.spin0)
 
-        self.spin1 = QtWidgets.QDoubleSpinBox()
-        self.spin1.setRange(-1e9, 1e9)
-        self.spin1.setSingleStep(0.01)
-        self.spin1.setValue(0.0)
-        self.spin1.setDecimals(4)
-        self.spin1.setKeyboardTracking(False)
+        self.spin1 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
         self.spin1.valueChanged.connect(self.update_table)
 
         self.mode_combo = QtWidgets.QComboBox()
@@ -878,6 +873,7 @@ class _CoordinateWidget(QtWidgets.QWidget):
         left_layout.addRow(self.mode_combo, self.spin1)
 
         self.reset_btn = QtWidgets.QPushButton("Reset")
+        self.reset_btn.clicked.connect(self.reset)
         left_layout.addRow(self.reset_btn)
 
         self.table = QtWidgets.QTableWidget()
@@ -912,19 +908,20 @@ class _CoordinateWidget(QtWidgets.QWidget):
         self.mode_combo.setDisabled(is_scalar)
 
         if not is_scalar:
-            self.spin0.blockSignals(True)
-            self.spin1.blockSignals(True)
-            if erlab.utils.array.is_uniform_spaced(self._old_coord):
-                self.spin0.setValue(float(self._old_coord[0]))
-                if self.mode_combo.currentText() == "End":
-                    self.spin1.setValue(float(self._old_coord[-1]))
+            with QtCore.QSignalBlocker(self.spin0), QtCore.QSignalBlocker(self.spin1):
+                decimals = erlab.utils.array.unique_decimals(self._old_coord)
+                self.spin0.setDecimals(decimals)
+                self.spin1.setDecimals(decimals)
+
+                if erlab.utils.array.is_uniform_spaced(self._old_coord):
+                    self.spin0.setValue(float(self._old_coord[0]))
+                    if self.mode_combo.currentText() == "End":
+                        self.spin1.setValue(float(self._old_coord[-1]))
+                    else:
+                        self.spin1.setValue(self._old_coord[1] - self._old_coord[0])
                 else:
-                    self.spin1.setValue(float(self._old_coord[1] - self._old_coord[0]))
-            else:
-                self.spin0.setValue(0.0)
-                self.spin1.setValue(0.0)
-            self.spin0.blockSignals(False)
-            self.spin1.blockSignals(False)
+                    self.spin0.setValue(0.0)
+                    self.spin1.setValue(0.0)
 
         self._set_table_values(np.atleast_1d(self._old_coord))
 
@@ -977,12 +974,15 @@ class _CoordinateWidget(QtWidgets.QWidget):
         # Make zero-based
         self.table.setVerticalHeaderLabels([str(i) for i in range(len(values))])
         for i, val in enumerate(values):
-            item = QtWidgets.QTableWidgetItem(np.format_float_positional(val, trim="-"))
+            item = QtWidgets.QTableWidgetItem(np.format_float_positional(val, trim="0"))
             item.setTextAlignment(
-                QtCore.Qt.AlignmentFlag.AlignRight
-                | QtCore.Qt.AlignmentFlag.AlignVCenter
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
             )
             self.table.setItem(i, 0, item)
+        self.table.resizeColumnsToContents()
+        self.setMinimumWidth(
+            self.table.horizontalHeader().length() + self.table.verticalHeader().width()
+        )
 
 
 class AssignCoordsDialog(DataTransformDialog):
@@ -1032,4 +1032,134 @@ class AssignCoordsDialog(DataTransformDialog):
             ),
             keys=data.coords.keys(),
             dims_first=False,
+        )
+
+
+class ROIPathDialog(DataTransformDialog):
+    title = "Slice Along ROI Path"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    @property
+    def suffix(self) -> str:
+        return "_path"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def __init__(self, roi: ItoolPolyLineROI) -> None:
+        self.roi = roi
+        super().__init__(self.roi.plot_item.slicer_area)
+
+    def setup_widgets(self) -> None:
+        group = QtWidgets.QGroupBox()
+        layout = QtWidgets.QFormLayout()
+        group.setLayout(layout)
+
+        decimals = max(
+            self.array_slicer.get_significant(ax, uniform=False)
+            for ax in self.roi.plot_item.display_axis
+        )
+        default_step = min(
+            self.roi.slicer_area.array_slicer.incs[ax]
+            for ax in self.roi.plot_item.display_axis
+        )  # Reasonable default step size
+
+        # TODO: add vertice customization
+
+        self._step_spin = pg.SpinBox()
+        self._step_spin.setDecimals(decimals)
+        self._step_spin.setSingleStep(10 ** (-decimals))
+        self._step_spin.setMinimum(10 ** (-decimals - 1))
+        self._step_spin.setOpts(compactHeight=False)
+        self._step_spin.setValue(round(default_step, decimals))
+
+        layout.addRow("Step Size", self._step_spin)
+
+        self._dim_name_line = QtWidgets.QLineEdit()
+        self._dim_name_line.setText("path")
+        layout.addRow("New Dim Name", self._dim_name_line)
+
+        self.layout_.addRow(group)
+
+    @property
+    def _params(self) -> dict[str, typing.Any]:
+        vert_dict = self.roi._get_vertices()
+
+        if self.roi.closed:
+            for k, v in dict(vert_dict).items():
+                vert_dict[k] = [*v, v[0]]  # Close the path
+
+        return {
+            "vertices": vert_dict,
+            "step_size": self._step_spin.value(),
+            "dim_name": self._dim_name_line.text().strip(),
+        }
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.interpolate.slice_along_path(data, **self._params)
+
+    def make_code(self) -> str:
+        placeholder = self.slicer_area.watched_data_name or " "
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.interpolate.slice_along_path,
+            [f"|{placeholder}|"],
+            self._params,
+            module="era.interpolate",
+        )
+
+
+class ROIMaskDialog(DataTransformDialog):
+    title = "Mask with ROI"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    @property
+    def suffix(self) -> str:
+        return "_masked"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def __init__(self, roi: ItoolPolyLineROI) -> None:
+        self.roi = roi
+        super().__init__(self.roi.plot_item.slicer_area)
+
+    def setup_widgets(self) -> None:
+        group = QtWidgets.QGroupBox()
+        layout = QtWidgets.QFormLayout()
+        group.setLayout(layout)
+
+        self._invert_check = QtWidgets.QCheckBox("Invert Mask")
+        layout.addRow(self._invert_check)
+
+        self._drop_check = QtWidgets.QCheckBox("Drop Masked Values")
+        layout.addRow(self._drop_check)
+
+        self.layout_.addRow(group)
+
+    @property
+    def _params(self) -> dict[str, typing.Any]:
+        vert_dict = self.roi._get_vertices()
+        return {
+            "vertices": np.column_stack(tuple(vert_dict.values())),
+            "dims": tuple(vert_dict.keys()),
+            "invert": self._invert_check.isChecked(),
+            "drop": self._drop_check.isChecked(),
+        }
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.mask.mask_with_polygon(data, **self._params)
+
+    def make_code(self) -> str:
+        placeholder = self.slicer_area.watched_data_name or " "
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.mask.mask_with_polygon,
+            [f"|{placeholder}|"],
+            self._params,
+            module="era.mask",
         )

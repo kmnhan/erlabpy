@@ -5,6 +5,7 @@ __all__ = [
     "generate_data_angles",
     "generate_gold_edge",
     "generate_hvdep_cuts",
+    "make_mesh_pattern",
 ]
 
 import typing
@@ -473,6 +474,92 @@ def generate_hvdep_cuts(
     return xr.combine_by_coords(out_list).transpose("alpha", "eV", "hv")
 
 
+def _smooth_opening_1d(u, width, sigma):
+    """
+    Gaussian-broadened 1D top-hat centered at 0 with width ``width``.
+
+    Parameters
+    ----------
+    u : array_like
+        Coordinate (can be ndarray).
+    width : float
+        Opening width.
+    sigma : float
+        Gaussian sigma (edge broadening) in same units as u.
+
+    Returns
+    -------
+    prof : ndarray
+        Values between ~0 (bar) and ~1 (open).
+    """
+    if sigma <= 0:
+        # hard top-hat
+        return (np.abs(u) <= width / 2).astype(float)
+
+    s2 = np.sqrt(2.0) * sigma
+    half = width / 2.0
+
+    # Unnormalized top-hat ⊗ Gaussian
+    prof = 0.5 * (
+        scipy.special.erf((u + half) / s2) - scipy.special.erf((u - half) / s2)
+    )
+
+    center_val = scipy.special.erf(half / s2)
+    if center_val > 0:
+        prof /= center_val
+    return prof
+
+
+def make_mesh_pattern(
+    shape: tuple[int, int],
+    *,
+    pitch: float = 12.4,
+    duty: float = 0.8,
+    amplitude: float = 0.3,
+    rotate: float = 27.0,
+    sigma_edge: float = 0.7,
+) -> np.ndarray:
+    """Simulate an ARPES mesh pattern using step edges broadened by Gaussians.
+
+    Parameters
+    ----------
+    shape
+        Output image size.
+    pitch
+        Period of the mesh in pixels.
+    duty
+        Open fraction along each axis, between 0 and 1.
+    amplitude
+        Amplitude of the mesh.
+    rotate
+        Rotation of the mesh relative to detector x-axis.
+    sigma_edge
+        Gaussian sigma (in pixels) for edge broadening.
+    """
+    ny, nx = shape
+    y, x = np.mgrid[0:ny, 0:nx]
+    theta = np.deg2rad(rotate)
+
+    # Rotate into mesh-aligned coordinates
+    xr = x * np.cos(theta) + y * np.sin(theta)
+    yr = -x * np.sin(theta) + y * np.cos(theta)
+
+    open_width = duty * pitch
+
+    # Fold coordinates into a single cell centered at 0
+    ux = ((xr + pitch / 2) % pitch) - pitch / 2
+    uy = ((yr + pitch / 2) % pitch) - pitch / 2
+
+    # 1D opening profiles along each axis (0..1)
+    open_x = _smooth_opening_1d(ux, open_width, sigma_edge)
+    open_y = _smooth_opening_1d(uy, open_width, sigma_edge)
+
+    mask = 1 - np.minimum(open_x, open_y)
+    mask = mask - mask.mean()
+
+    return 1 + amplitude * mask
+
+
 def generate_gold_edge(
     shape: tuple[int, int] = (200, 300),
     *,
@@ -488,6 +575,8 @@ def generate_gold_edge(
     noise: bool = True,
     seed: int | None = None,
     ccd_sigma: float = 0.6,
+    add_mesh: bool = False,
+    mesh_params: dict | None = None,
 ) -> xr.DataArray:
     """
     Generate a curved Fermi edge with a linear density of states.
@@ -524,12 +613,10 @@ def generate_gold_edge(
     ccd_sigma
         Standard deviation of the Gaussian filter applied to the spectrum. Default is
         0.6.
-    const_bkg
-        Constant background as a fraction of the count, by default 1e-3
-    nx
-        Number of angle points. Default is 200.
-    ny
-        Number of energy points. Default is 300.
+    add_mesh
+        Whether to multiply the spectrum by a mesh pattern. Default is False.
+    mesh_params
+        Parameters for the mesh pattern generation. Default is None.
 
     Returns
     -------
@@ -537,6 +624,10 @@ def generate_gold_edge(
         Simulated gold edge spectrum.
 
     """
+    if add_mesh:
+        if mesh_params is None:
+            mesh_params = {}
+        mesh = make_mesh_pattern(shape, **mesh_params).T
     alpha = np.linspace(-15, 15, shape[0])
     eV = np.linspace(-1.3, 0.3, shape[1])
 
@@ -568,6 +659,8 @@ def generate_gold_edge(
         ),
     )
 
+    if add_mesh:
+        data = data * mesh
     if noise:
         data[:] = scipy.ndimage.gaussian_filter(
             rng.poisson(data).astype(float), sigma=ccd_sigma

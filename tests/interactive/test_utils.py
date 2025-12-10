@@ -11,6 +11,7 @@ from erlab.interactive.utils import (
     IconActionButton,
     IdentifierValidator,
     MessageDialog,
+    generate_code,
     load_fit_ui,
     save_fit_ui,
 )
@@ -212,6 +213,18 @@ def test_message_dialog_with_details_toggle(qtbot):
     ok_btn = dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
     ok_btn.click()
     assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+def test_generate_code_multiple_assignment() -> None:
+    def _dummy(a, b=1):
+        return a + b
+
+    code = generate_code(
+        _dummy, args=(1,), kwargs={"b": 2}, module="dummy", assign=("x", "y")
+    )
+
+    assert code.startswith("x, y = dummy._dummy(1")
+    assert "b=2" in code
 
 
 def test_message_dialog_without_details(qtbot):
