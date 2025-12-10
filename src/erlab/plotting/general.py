@@ -16,7 +16,7 @@ __all__ = [
 import contextlib
 import copy
 import typing
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 
 import matplotlib
 import matplotlib.colorbar
@@ -40,8 +40,6 @@ from erlab.plotting.colors import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Collection
-
     from matplotlib.typing import ColorType
 
 figure_width_ref = {
@@ -910,11 +908,17 @@ def plot_slices(
                 qsel_kw[plot_dims[0]] = slice(*ylim)
 
     if slice_width is not None and slice_dim is not None:
-        qsel_kw[slice_dim + "_width"] = slice_width
+        if isinstance(slice_width, Collection):
+            if len(slice_width) != len(slice_levels):
+                raise ValueError("Number of widths must match the number of positions")
+        else:
+            qsel_kw[slice_dim + "_width"] = slice_width
 
     for i in range(len(slice_levels)):
         if slice_dim is not None:
             qsel_kw[slice_dim] = slice_levels[i]
+            if isinstance(slice_width, Collection):
+                qsel_kw[slice_dim + "_width"] = slice_width[i]
 
         for j in range(len(maps)):
             dat_sel = maps[j].qsel(**qsel_kw)

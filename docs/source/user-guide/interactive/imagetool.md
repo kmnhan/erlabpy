@@ -137,7 +137,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - To move all cursors simultaneously, hold {kbd}`Alt` while dragging a cursor line, or use {kbd}`Ctrl+Alt` while dragging on the image.
 
-- Right-click on the image or cut plots to open useful context menus. Common options include copying the slicing code, locking the aspect ratio, exporting the current slice to a file, or launching helpers such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, {ref}`goldtool <guide-goldtool>`, and {ref}`restool <guide-restool>`.
+- Right-click on the image or cut plots to open useful context menus. Common options include copying the slicing code, locking the aspect ratio, exporting the current slice to a matplotlib window or a file, or launching helpers such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, {ref}`goldtool <guide-goldtool>`, and {ref}`restool <guide-restool>`.
 
   :::{hint}
   Holding {kbd}`Alt` while opening the menu switches many actions to cropped mode, which crops the data to what is currently visible in the plot before performing the action. This is useful for conducting analysis on a specific region.

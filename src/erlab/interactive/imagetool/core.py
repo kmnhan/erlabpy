@@ -36,6 +36,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Hashable, Iterable, Sequence
 
     import dask.array
+    import matplotlib.colors
     import qtawesome
 
     from erlab.interactive.imagetool.slicer import ArraySlicerState
@@ -2758,6 +2759,13 @@ class ItoolPlotItem(pg.PlotItem):
         copy_code_action = self.vb.menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
 
+        if self.slicer_area._in_manager:
+            plot_with_matplotlib_action = self.vb.menu.addAction("Plot with matplotlib")
+            plot_with_matplotlib_action.triggered.connect(self.plot_with_matplotlib)
+
+        copy_mpl_code_action = self.vb.menu.addAction("Copy matplotlib code")
+        copy_mpl_code_action.triggered.connect(self.copy_matplotlib_code)
+
         self.vb.menu.addSeparator()
 
         # List of actions that should have '(Crop)' appended when Alt is pressed
@@ -3223,6 +3231,252 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
+
+    def _qsel_kwargs_multicursor(
+        self,
+    ) -> tuple[dict[Hashable, float | list[float]], Hashable]:
+        """Generate keyword arguments for :meth:`xarray.DataArray.qsel` for all cursors.
+
+        Only supports varying a single dimension across cursors and uniform axes.
+        """
+        if any(
+            a in self.array_slicer._nonuniform_axes
+            for a in set(range(self.array_slicer._obj.ndim)) - set(self.display_axis)
+        ):
+            raise ValueError(
+                "Cannot generate multi-cursor plot code when non-uniform axes "
+                "are present outside the displayed axes."
+            )
+
+        all_qsel_kws: list[dict[Hashable, float]] = [
+            self.array_slicer.qsel_args(cursor, self.display_axis)
+            for cursor in range(self.slicer_area.n_cursors)
+        ]
+
+        all_keys: set[Hashable] = set().union(*(d.keys() for d in all_qsel_kws))
+        result: dict[Hashable, float | list[float]] = {}
+        varying: list[Hashable] = []
+
+        for key in all_keys:
+            if str(key).endswith("_width"):
+                values = [d.get(key, 0.0) for d in all_qsel_kws]
+            else:
+                values = [d[key] for d in all_qsel_kws]
+
+            if len(set(values)) == 1:
+                result[key] = values[0]
+            else:
+                varying.append(key)
+                result[key] = values
+
+        if len(varying) > 1 and not (
+            len(varying) == 2 and any(f"{k}_width" in varying for k in varying)
+        ):
+            raise ValueError(
+                "More than one dimension has differing values across cursors: "
+                f"{sorted(map(str, varying))}"
+            )
+        if len(varying) == 1 and str(varying[0]).endswith("_width"):
+            # Only widths vary; we can't index on widths alone
+            raise ValueError(
+                "Cannot generate multi-cursor plot code when "
+                "all cursor positions are the same but widths differ."
+            )
+
+        match len(varying):
+            case 0:
+                variable_dim_name: Hashable | None = None
+            case 1:
+                variable_dim_name = varying[0]
+            case _:
+                for k in varying:
+                    if not str(k).endswith("_width"):
+                        variable_dim_name = k
+                        break
+
+        # Put varying keys first
+        variable_keys = (variable_dim_name, f"{variable_dim_name}_width")
+        other_keys = sorted((k for k in result if k not in variable_keys), key=str)
+        ordered_keys = [k for k in variable_keys if k in result] + other_keys
+        result = {k: result[k] for k in ordered_keys}
+
+        return result, variable_dim_name
+
+    def _plot_code_multicursor(self, *, placeholder_name: str | None = None) -> str:
+        """Generate matplotlib plot code for all cursors."""
+        result, variable_dim = self._qsel_kwargs_multicursor()
+
+        if placeholder_name is not None:
+            data_name: str = placeholder_name
+        else:
+            data_name = self.slicer_area.watched_data_name or "data"
+
+        # Determine order of plotted dimensions
+        dim_order_plot = list(self.slicer_area._data.dims)
+        for k in result:
+            if k in dim_order_plot:
+                dim_order_plot.remove(k)
+        if len(dim_order_plot) != len(self.display_axis):  # pragma: no cover
+            raise ValueError(
+                "Could not determine order of plotted dimensions for multi-cursor "
+                "plot code. This should not happen; please report a bug."
+            )
+
+        # Order so that index 0 is always the x axis (for matplotlib plots)
+        dim_order_plot.reverse()
+
+        if self.is_image:
+            return self._plot_code_image(
+                data_name, result, variable_dim, dim_order_plot
+            )
+
+        return self._plot_code_line(data_name, result, variable_dim, dim_order_plot[0])
+
+    def _plot_code_line(
+        self,
+        data_name: str,
+        qsel_kwargs: dict[Hashable, float | list[float]],
+        variable_dim: Hashable | None,
+        x_dim: Hashable,
+    ) -> str:
+        TAB: str = "    "
+        plot_lines: list[str] = ["fig, ax = plt.subplots()"]
+
+        colors: list[str] = [
+            self.slicer_area.cursor_colors[i].name()
+            for i in range(self.slicer_area.n_cursors)
+        ]
+        default_colors = erlab.interactive._options.schema.ColorOptions.model_fields[
+            "cursors"
+        ].default
+        colors_changed: bool = any(c not in default_colors for c in colors)
+
+        selected: str = (
+            f"{data_name}.qsel({erlab.interactive.utils.format_kwargs(qsel_kwargs)})"
+        )
+        is_normalized: bool = self.slicer_data_items[
+            self.slicer_area.current_cursor
+        ].normalize
+
+        if variable_dim is None:
+            selected = selected + ".plot(ax=ax)"
+            plot_lines.append(selected)
+            return "\n".join(plot_lines)
+
+        selected = selected + f'.transpose("{variable_dim}", ...)'
+
+        plot_code: str = erlab.interactive.utils.generate_code(
+            xr.DataArray.plot,
+            args=[],
+            kwargs={"color": "|line_colors[i]|"} if colors_changed else {},
+            module="line" if not is_normalized else "(line / line.mean())",
+            name="plot",
+        )
+
+        set_kwargs: dict[str, typing.Any] = {}
+        if x_dim in self._crop_indexers:
+            slice_obj = self._crop_indexers[x_dim]
+            set_kwargs["xlim"] = (float(slice_obj.start), float(slice_obj.stop))
+
+        if colors_changed:
+            plot_lines.append(f"line_colors = {colors!s}")
+            plot_lines.append(f"for i, line in enumerate({selected}):")
+        else:
+            plot_lines.append(f"for line in {selected}:")
+        plot_lines.append(TAB + plot_code)
+
+        if set_kwargs:
+            import matplotlib.axes
+
+            plot_lines.append(
+                erlab.interactive.utils.generate_code(
+                    matplotlib.axes.Axes.set, args=[], kwargs=set_kwargs, module="ax"
+                )
+            )
+        return "\n".join(plot_lines)
+
+    def _plot_code_image(
+        self,
+        data_name: str,
+        qsel_kwargs: dict[Hashable, float | list[float]],
+        variable_dim: Hashable | None,
+        dim_order_plot: list[Hashable],
+    ) -> str:
+        # Setup plot keyword arguments
+        plot_args: list[typing.Any] = [f"|[{data_name}]|"]
+        if all(isinstance(k, str) and k.isidentifier() for k in qsel_kwargs):
+            plot_kwargs: dict[str, typing.Any] = {
+                str(k): v for k, v in qsel_kwargs.items()
+            }
+        else:
+            plot_kwargs = {}
+            plot_args.append(
+                f"|**{erlab.interactive.utils.format_kwargs(qsel_kwargs)}|"
+            )
+
+        if dim_order_plot[0] != self.axis_dims[0]:
+            plot_kwargs["transpose"] = True
+            dim_order_plot.reverse()
+
+        for k, v in self._crop_indexers.items():
+            if k == dim_order_plot[0]:
+                plot_kwargs["xlim"] = (float(v.start), float(v.stop))
+            elif k == dim_order_plot[1]:
+                plot_kwargs["ylim"] = (float(v.start), float(v.stop))
+
+        colormap_props = self.slicer_area.colormap_properties.copy()
+        levels: tuple[float, float] | None = None
+        if colormap_props["levels_locked"]:
+            plot_kwargs["same_limits"] = True
+            levels = colormap_props.get("levels")
+        if self.getViewBox().state["aspectLocked"]:
+            plot_kwargs["axis"] = "image"
+        plot_kwargs["cmap"] = colormap_props["cmap"]
+
+        if colormap_props["reverse"] and isinstance(plot_kwargs["cmap"], str):
+            plot_kwargs["cmap"] = f"{plot_kwargs['cmap']}_r"
+
+        norm_kws: dict[str, typing.Any] = {}
+        if levels is not None:
+            if colormap_props["zero_centered"]:
+                vmin, vmax = levels
+                norm_kws["vcenter"] = 0.5 * (vmin + vmax)
+                norm_kws["halfrange"] = (vmax - vmin) / 2
+            else:
+                norm_kws["vmin"], norm_kws["vmax"] = levels
+
+        if colormap_props["high_contrast"]:
+            if colormap_props["zero_centered"]:
+                norm_cls: type[matplotlib.colors.Normalize] | None = (
+                    erlab.plotting.CenteredInversePowerNorm
+                )
+            else:
+                norm_cls = erlab.plotting.InversePowerNorm
+        else:
+            if colormap_props["zero_centered"]:
+                norm_cls = erlab.plotting.CenteredPowerNorm
+            else:
+                norm_cls = None
+
+        if norm_cls is None:
+            plot_kwargs["gamma"] = colormap_props["gamma"]
+            plot_kwargs.update(norm_kws)
+        else:
+            norm_code = erlab.interactive.utils.generate_code(
+                norm_cls,
+                args=[colormap_props["gamma"]],
+                kwargs=norm_kws,
+                module="eplt",
+            )
+            plot_kwargs["norm"] = f"|{norm_code}|"
+
+        return erlab.interactive.utils.generate_code(
+            erlab.plotting.plot_slices,
+            args=plot_args,
+            kwargs=plot_kwargs,
+            module="eplt",
+            assign=("fig", "axs" if variable_dim else "ax"),
+        )
 
     @QtCore.Slot(bool)
     def set_normalize(self, normalize: bool) -> None:
@@ -3883,6 +4137,27 @@ class ItoolPlotItem(pg.PlotItem):
             )
             return
         erlab.interactive.utils.copy_to_clipboard(code)
+
+    @QtCore.Slot()
+    def copy_matplotlib_code(self) -> None:
+        """Copy matplotlib plot code for all cursors to the clipboard."""
+        erlab.interactive.utils.copy_to_clipboard(self._plot_code_multicursor())
+
+    @QtCore.Slot()
+    def plot_with_matplotlib(self) -> None:
+        """Show the current data using matplotlib (only works in ImageTool Manager)."""
+        if self.slicer_area._in_manager:  # pragma: no branch
+            manager = erlab.interactive.imagetool.manager._manager_instance
+            if manager:  # pragma: no branch
+                manager.ensure_console_initialized()
+                console = manager.console._console_widget
+                console.initialize_kernel()
+                idx = manager.index_from_slicer_area(self.slicer_area)
+                code = self._plot_code_multicursor(
+                    placeholder_name=f"tools[{idx}].data"
+                )
+                code += "\nfig.show()"
+                console.execute(code)
 
     @property
     def display_axis(self) -> tuple[int, ...]:
