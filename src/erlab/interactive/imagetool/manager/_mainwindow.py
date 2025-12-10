@@ -1919,13 +1919,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.tree_view.childtool_added(uid, index)
         return uid
 
+    def index_from_slicer_area(
+        self, slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea
+    ) -> int | None:
+        """Get the index corresponding to the given slicer area."""
+        for index, wrapper in self._imagetool_wrappers.items():  # pragma: no branch
+            if wrapper.slicer_area is slicer_area:
+                return index
+        return None
+
     def wrapper_from_slicer_area(
         self, slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea
     ) -> _ImageToolWrapper | None:
         """Get the ImageTool wrapper corresponding to the given slicer area."""
-        for wrapper in self._imagetool_wrappers.values():  # pragma: no branch
-            if wrapper.slicer_area is slicer_area:
-                return wrapper
+        index = self.index_from_slicer_area(slicer_area)
+        if index is not None:
+            return self._imagetool_wrappers[index]
         return None
 
     def _add_childtool_from_slicerarea(

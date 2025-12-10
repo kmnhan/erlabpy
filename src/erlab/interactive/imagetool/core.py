@@ -3153,16 +3153,13 @@ class ItoolPlotItem(pg.PlotItem):
             data, self.slicer_area._data.coords.keys()
         )
 
-    @property
-    def selection_code(self) -> str:
+    def selection_code_for_cursor(self, cursor: int) -> str:
         """Get the selection code for the data.
 
         Returns a string that looks like ``.sel(...)`` or ``.qsel(...)`` that selects
         the current slice of data based on the current cursor location and bin size.
         """
-        sel_code = self.array_slicer.qsel_code(
-            self.slicer_area.current_cursor, self.display_axis
-        )
+        sel_code = self.array_slicer.qsel_code(cursor, self.display_axis)
         # sel_code will be ".qsel(...)" or ".isel(...)" or empty string
 
         if (
@@ -3176,9 +3173,7 @@ class ItoolPlotItem(pg.PlotItem):
                     isel_indexers[str(k).removesuffix("_idx")] = sel_indexers.pop(k)
 
             if sel_code.startswith(".qsel"):
-                qsel_kw = self.array_slicer.qsel_args(
-                    self.slicer_area.current_cursor, self.display_axis
-                )
+                qsel_kw = self.array_slicer.qsel_args(cursor, self.display_axis)
                 qsel_kw = qsel_kw | sel_indexers
 
                 sel_code = erlab.interactive.utils.format_kwargs(qsel_kw)
@@ -3192,7 +3187,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             if sel_code.startswith(".isel"):
                 isel_kw = self.array_slicer.isel_args(
-                    self.slicer_area.current_cursor, self.display_axis, int_if_one=True
+                    cursor, self.display_axis, int_if_one=True
                 )
                 isel_kw = isel_kw | isel_indexers
 
@@ -3222,7 +3217,8 @@ class ItoolPlotItem(pg.PlotItem):
         data_name = self.slicer_area.watched_data_name
         if not data_name:
             data_name = placeholder
-        return f"{data_name}{self.selection_code}"
+        sel_code: str = self.selection_code_for_cursor(self.slicer_area.current_cursor)
+        return f"{data_name}{sel_code}"
 
     @property
     def is_guidelines_visible(self) -> bool:

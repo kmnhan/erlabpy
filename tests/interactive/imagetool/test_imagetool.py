@@ -213,7 +213,9 @@ def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> Non
 
     _press_alt(monkeypatch)
 
-    sel_code = main_image.selection_code
+    sel_code = main_image.selection_code_for_cursor(
+        main_image.slicer_area.current_cursor
+    )
     assert sel_code == ".qsel(beta=2.0, eV=slice(1.0, 3.0)).isel(alpha=slice(0, 2))"
     win.close()
 
