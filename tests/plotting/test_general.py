@@ -13,7 +13,7 @@ from erlab.plotting.general import (
 )
 
 
-def test_plot_slices_general() -> None:
+def test_plot_slices_general(monkeypatch) -> None:
     # Create some sample data
     x = np.linspace(0, 1, 11)
     y = np.linspace(0, 1, 11)
@@ -319,6 +319,17 @@ def test_plot_slices_with_axis_and_show_all_labels():
         assert ax.get_xlabel() != ""
         assert ax.get_ylabel() != ""
     plt.close(fig)
+
+
+def test_plot_slices_width_length_mismatch() -> None:
+    x = np.linspace(0, 1, 11)
+    y = np.linspace(0, 1, 11)
+    data = xr.DataArray(
+        np.random.default_rng(0).random((11, 11)), coords=[x, y], dims=["x", "y"]
+    )
+
+    with pytest.raises(ValueError, match="Number of widths must match"):
+        plot_slices(data, y=[0.2, 0.4], y_width=[0.1])
 
 
 def test_plot_slices_with_invalid_slice_dim():

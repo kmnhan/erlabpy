@@ -1,6 +1,7 @@
 import copy
 import logging
 import tempfile
+import types
 import weakref
 
 import numpy as np
@@ -217,6 +218,240 @@ def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> Non
         main_image.slicer_area.current_cursor
     )
     assert sel_code == ".qsel(beta=2.0, eV=slice(1.0, 3.0)).isel(alpha=slice(0, 2))"
+    win.close()
+
+
+def test_qsel_kwargs_multicursor_with_varying_dim(qtbot) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=2, value=3.0, cursor=1)
+
+    kwargs, variable = main_image._qsel_kwargs_multicursor()
+    assert kwargs == {"beta": [1.0, 3.0]}
+    assert variable == "beta"
+
+    win.close()
+
+
+def test_qsel_kwargs_multicursor_width_only_error(qtbot) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=2, value=2.0, cursor=0)
+    win.slicer_area.set_value(axis=2, value=2.0, cursor=1)
+    win.array_slicer.set_bin(0, axis=2, value=3, update=False)
+    win.array_slicer.set_bin(1, axis=2, value=1, update=True)
+
+    with pytest.raises(ValueError, match="Cannot generate multi-cursor plot code when"):
+        main_image._qsel_kwargs_multicursor()
+
+    win.close()
+
+
+def test_qsel_kwargs_multicursor_rejects_nonuniform_axes(qtbot) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    main_image = win.slicer_area.images[0]
+    main_image.display_axis = (1, 2)
+
+    with pytest.raises(
+        ValueError, match="non-uniform axes are present outside the displayed axes"
+    ):
+        main_image._qsel_kwargs_multicursor()
+
+    win.close()
+
+
+def test_qsel_kwargs_multicursor_with_width_and_value_changes(qtbot) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=2, value=3.0, cursor=1)
+    win.array_slicer.set_bin(0, axis=2, value=3, update=False)
+    win.array_slicer.set_bin(1, axis=2, value=1, update=True)
+
+    kwargs, variable = main_image._qsel_kwargs_multicursor()
+    assert list(kwargs.keys())[:2] == ["beta", "beta_width"]
+    assert kwargs["beta"] == [1.0, 3.0]
+    assert kwargs["beta_width"] == [3.0, 0.0]
+    assert variable == "beta"
+
+    win.close()
+
+
+def test_qsel_kwargs_multicursor_rejects_multiple_varying_dims(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(120).reshape((2, 3, 4, 5)),
+        dims=["a", "b", "c", "d"],
+        coords={
+            "a": np.arange(2),
+            "b": np.arange(3),
+            "c": np.arange(4),
+            "d": np.arange(5),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=3, value=0.0, cursor=0)
+    win.slicer_area.set_value(axis=2, value=2.0, cursor=1)
+    win.slicer_area.set_value(axis=3, value=1.0, cursor=1)
+
+    with pytest.raises(
+        ValueError, match="More than one dimension has differing values across cursors"
+    ):
+        main_image._qsel_kwargs_multicursor()
+
+    win.close()
+
+
+def test_plot_code_multicursor_line_includes_limits_and_colors(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    line_plot = win.slicer_area.get_axes(1)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=1, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=1, value=3.0, cursor=1)
+    win.slicer_area.cursor_colors = [QtGui.QColor("#123456"), QtGui.QColor("#654321")]
+    line_plot.set_normalize(True)
+    win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0]})
+
+    code = line_plot._plot_code_multicursor()
+    assert "line_colors" in code
+    assert "line / line.mean()" in code
+    assert "xlim=(1.0, 3.0)" in code
+    assert "beta" not in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_line_without_variation(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    line_plot = win.slicer_area.get_axes(1)
+
+    code = line_plot._plot_code_multicursor()
+    assert code.startswith("fig, ax = plt.subplots()")
+    assert ".plot(ax=ax)" in code
+    assert "for" not in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_image_includes_norm_settings(qtbot) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=2, value=2.0, cursor=1)
+    win.slicer_area.set_colormap(
+        cmap="magma",
+        gamma=1.5,
+        reverse=True,
+        high_contrast=True,
+        zero_centered=True,
+    )
+    win.slicer_area.levels = (1.0, 4.0)
+    win.slicer_area.lock_levels(True)
+    main_image.getViewBox().setAspectLocked(True)
+
+    code = main_image._plot_code_multicursor()
+    assert "transpose=True" in code
+    assert "same_limits=True" in code
+    assert 'axis="image"' in code
+    assert 'cmap="magma_r"' in code
+    assert "CenteredInversePowerNorm" in code
+
+    win.close()
+
+
+def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    win.slicer_area._in_manager = True
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    class _Console:
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+
+        def initialize_kernel(self) -> None:
+            self.initialized = True
+
+        def execute(self, code: str) -> None:
+            self.executed.append(code)
+
+    console = _Console()
+
+    class _Manager:
+        def __init__(self) -> None:
+            self.console = types.SimpleNamespace(_console_widget=console)
+
+        def ensure_console_initialized(self) -> None:
+            self.initialized = True
+
+        def index_from_slicer_area(self, slicer_area):
+            assert slicer_area is win.slicer_area
+            return 0
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", _Manager()
+    )
+
+    main_image.plot_with_matplotlib()
+    assert console.executed
+    assert "tools[0].data" in console.executed[0]
+    assert console.executed[0].strip().endswith("fig.show()")
+
+    win.close()
+
+
+def test_copy_matplotlib_code_uses_generated_output(qtbot, monkeypatch) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=2, value=3.0, cursor=1)
+
+    expected = main_image._plot_code_multicursor()
+    copied: dict[str, str] = {}
+
+    def _copy(arg: str) -> None:
+        copied["text"] = arg
+
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", _copy)
+
+    main_image.copy_matplotlib_code()
+    assert copied["text"] == expected
+    assert "beta=[1.0, 3.0]" in expected
+
     win.close()
 
 
