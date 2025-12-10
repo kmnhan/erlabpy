@@ -2166,6 +2166,41 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         # Enable closing with keyboard shortcut
         self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self.hide)
 
+        # Enable removing from the manager with keyboard shortcut
+        self.__remove_shortcut = QtWidgets.QShortcut(
+            QtGui.QKeySequence.StandardKey.Delete, self, self._remove_from_manager
+        )
+
+    @QtCore.Slot()
+    def _remove_from_manager(self) -> None:
+        """Remove this tool from the ImageTool manager, if present."""
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager:  # pragma: no branch
+            uid: str | None = None
+            for wrapper in manager._imagetool_wrappers.values():
+                for k, v in wrapper._childtools.items():
+                    if v is self:
+                        uid = k
+                        break
+                if uid is not None:
+                    break
+            if uid is not None:  # pragma: no branch
+                msg_box = QtWidgets.QMessageBox(self)
+                msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+                msg_box.setText("Remove window?")
+                msg_box.setInformativeText(
+                    f"The current {self.tool_name} window will be removed. "
+                    "This cannot be undone."
+                )
+                msg_box.setStandardButtons(
+                    QtWidgets.QMessageBox.StandardButton.Yes
+                    | QtWidgets.QMessageBox.StandardButton.Cancel
+                )
+                msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
+
+                if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
+                    QtCore.QTimer.singleShot(0, lambda: manager._remove_childtool(uid))
+
     @property
     def tool_status(self) -> M:
         raise NotImplementedError(
