@@ -978,6 +978,7 @@ def plot_slices(
                         gradient_fill(
                             dat_sel[plot_dims[0]], dat_sel.values, ax=ax, **gradient_kw
                         )
+                fancy_labels(ax)
 
             elif len(plot_dims) == 2:
                 if isinstance(cmap_norm, Iterable):
