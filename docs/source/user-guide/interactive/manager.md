@@ -98,13 +98,13 @@ The left pane lists every ImageTool window by index and optional name (`index: n
 Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over the list.
 :::
 
-The following lists common actions included in the {guilabel}`Edit` and right-click context menus:
+The following lists common actions included in the {guilabel}`File`, {guilabel}`Edit`, and right-click context menus:
 
-- {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove` – Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring windows to the front, hide them, or remove them entirely.
+- {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove` – Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring windows to the front, hide them, or remove them entirely. These controls live in {guilabel}`File`.
 - {guilabel}`Rename` / {guilabel}`Duplicate` – Rename multiple selections at once or activate in-place editing for a single tool. {guilabel}`Duplicate` clones the currently selected windows, including their state.
 - {guilabel}`Reset Index` – Renumbers all windows from zero.
 - {guilabel}`Link` / {guilabel}`Unlink` – {kbd}`Ctrl+L` links the selected windows so they share cursors and slices; {kbd}`Ctrl+Shift+L` removes the links.
-- {guilabel}`Archive` / {guilabel}`Unarchive` – {guilabel}`Archive` writes a tool’s dataset and UI state to a temporary file, frees its memory, and grays it out in the list. {guilabel}`Unarchive` reopens it.
+- {guilabel}`Archive` / {guilabel}`Unarchive` – {guilabel}`Archive` writes a tool’s dataset and UI state to a temporary file, frees its memory, and grays it out in the list. {guilabel}`Unarchive` reopens it. Both actions are under {guilabel}`File`.
 - {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
 - {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. Handy when data is updated during acquisition.
 
