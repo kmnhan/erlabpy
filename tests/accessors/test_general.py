@@ -138,9 +138,27 @@ def test_qsel_collection() -> None:
         ),
     )
 
+    # Same but width as list
+    xr.testing.assert_identical(
+        dat.qsel(x=[1, 3], x_width=[2, 2]),
+        xr.DataArray(
+            np.array([[5, 6, 7, 8, 9], [15, 16, 17, 18, 19]], dtype=float),
+            dims=("x", "y"),
+        ),
+    )
+
     # List of values & width for both dimensions
     xr.testing.assert_equal(
         dat.qsel(x=[1, 3], x_width=2, y=[1, 3], y_width=2),
+        xr.DataArray(
+            np.array([[6, 8], [16, 18]], dtype=float),
+            dims=("x", "y"),
+        ),
+    )
+
+    # Same but widths as list
+    xr.testing.assert_equal(
+        dat.qsel(x=[1, 3], x_width=[2, 2], y=[1, 3], y_width=[2, 2]),
         xr.DataArray(
             np.array([[6, 8], [16, 18]], dtype=float),
             dims=("x", "y"),

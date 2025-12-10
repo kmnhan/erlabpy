@@ -535,7 +535,9 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
               If no width is specified, the data is selected along the nearest value for
               each element. It is equivalent to calling :meth:`xarray.DataArray.sel`
-              with ``method='nearest'``.
+              with ``method='nearest'``. When a collection is provided, multiple
+              selections are made and concatenated along the dimension. In this case,
+              the width may also be provided as a collection with the same length.
 
             - As a value and width: ``alpha=5, alpha_width=0.5``
 
@@ -580,7 +582,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         coord_order = list(self._obj.coords.keys())
 
         # Bin widths for each dimension, zero if width not specified
-        bin_widths: dict[Hashable, float] = {}
+        bin_widths: dict[Hashable, float | Collection[float]] = {}
 
         for dim in indexers:
             if not str(dim).endswith("_width"):
@@ -590,7 +592,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                         f"Slice not allowed for width of dimension `{dim}`"
                     )
 
-                bin_widths[dim] = float(width)
+                bin_widths[dim] = width
                 if dim not in self._obj.dims:
                     raise ValueError(f"Dimension `{dim}` not found in data")
             else:
@@ -623,10 +625,28 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                     )
                 if isinstance(value, Collection):
                     # Given a list of center values, create a list of slices
-                    slice_collections[dim] = [
-                        slice(v - width / 2.0, v + width / 2.0) for v in value
-                    ]
+                    if isinstance(width, Collection):
+                        if len(width) != len(value):
+                            raise ValueError(
+                                f"Number of widths does not match number of "
+                                f"center values for dimension `{dim}`"
+                            )
+                        slice_collections[dim] = [
+                            slice(v - w / 2.0, v + w / 2.0)
+                            for v, w in zip(value, width, strict=True)
+                        ]
+                    else:
+                        slice_collections[dim] = [
+                            slice(v - width / 2.0, v + width / 2.0) for v in value
+                        ]
                 else:
+                    if isinstance(width, Collection):
+                        if len(width) != 1:
+                            raise ValueError(
+                                f"Multiple widths provided for single value "
+                                f"selection along dimension `{dim}`"
+                            )
+                        width = next(iter(width))
                     # Center and width given, single slice
                     slices[dim] = slice(value - width / 2.0, value + width / 2.0)
 
