@@ -2145,6 +2145,31 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> erlab.interactive.imagetool.manager.ImageToolManager | None:
         return erlab.interactive.imagetool.manager._manager_instance
 
+    def remove_from_manager(self) -> None:
+        """Remove this ImageTool from the manager, if it is in one."""
+        if self._in_manager:
+            manager = self._manager_instance
+            if manager:  # pragma: no branch
+                index = manager.index_from_slicer_area(self)
+                if index is not None:  # pragma: no branch
+                    msg_box = QtWidgets.QMessageBox(self)
+                    msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+                    msg_box.setText("Remove window?")
+                    msg_box.setInformativeText(
+                        f"The ImageTool window at index {index} will be removed. "
+                        "This cannot be undone."
+                    )
+                    msg_box.setStandardButtons(
+                        QtWidgets.QMessageBox.StandardButton.Yes
+                        | QtWidgets.QMessageBox.StandardButton.Cancel
+                    )
+                    msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
+
+                    if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
+                        QtCore.QTimer.singleShot(
+                            0, lambda: manager.remove_imagetool(index)
+                        )
+
     def add_tool_window(
         self,
         widget: QtWidgets.QWidget,
@@ -4147,7 +4172,7 @@ class ItoolPlotItem(pg.PlotItem):
     def plot_with_matplotlib(self) -> None:
         """Show the current data using matplotlib (only works in ImageTool Manager)."""
         if self.slicer_area._in_manager:  # pragma: no branch
-            manager = erlab.interactive.imagetool.manager._manager_instance
+            manager = self.slicer_area._manager_instance
             if manager:  # pragma: no branch
                 manager.ensure_console_initialized()
                 console = manager.console._console_widget

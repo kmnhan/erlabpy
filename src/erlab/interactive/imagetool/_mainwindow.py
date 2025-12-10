@@ -353,6 +353,11 @@ class ImageTool(BaseImageTool):
         self.close_act.triggered.connect(self.close)
         self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 
+        self.remove_act = QtWidgets.QAction("Remove from Manager", self)
+        self.remove_act.setShortcut(QtGui.QKeySequence.StandardKey.Delete)
+        self.remove_act.triggered.connect(self.slicer_area.remove_from_manager)
+        self.remove_act.setVisible(self.slicer_area._in_manager)
+
         self._dask_menu.addSeparator()
         self._dask_menu.addAction(self.slicer_area.compute_act)
         self._dask_menu.addAction(self.slicer_area.chunk_auto_act)
@@ -488,6 +493,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "saveAsAct": self.image_tool.save_act,
                     "sep0": {"separator": True},
                     "closeAct": self.image_tool.close_act,
+                    "removeAct": self.image_tool.remove_act,
                     "sep1": {"separator": True},
                     "moveToManagerAct": {
                         "text": "Move to Manager",
