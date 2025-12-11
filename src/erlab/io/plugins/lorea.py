@@ -49,7 +49,9 @@ class LOREALoader(LoaderBase):
 
     def load_single(self, file_path, without_values: bool = False) -> xr.DataArray:
         if pathlib.Path(file_path).suffix == ".krx":
-            return erlab.io.plugins.mbs.load_krax(file_path)
+            from erlab.io.plugins.mbs import load_krax
+
+            return load_krax(file_path)
 
         return erlab.io.nexusutils.nxgroup_to_xarray(
             erlab.io.nexusutils.get_entry(file_path), _get_data, without_values
