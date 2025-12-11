@@ -438,6 +438,67 @@ def test_manager(
         accept_dialog(manager.about)
 
 
+def test_remove_from_window_shortcut(
+    qtbot,
+    accept_dialog,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        tool = manager.get_imagetool(0)
+
+        with qtbot.waitExposed(tool):
+            tool.activateWindow()
+            tool.raise_()
+            tool.setFocus()
+
+        assert tool.remove_act.isVisible()
+
+        accept_dialog(lambda: qtbot.keyClick(tool, QtCore.Qt.Key.Key_Delete))
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+
+def test_remove_childtool_delete_shortcut(
+    qtbot,
+    accept_dialog,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+        wrapper = manager._imagetool_wrappers[0]
+        uid, child = next(iter(wrapper._childtools.items()))
+
+        with qtbot.waitExposed(child):
+            child.activateWindow()
+            child.raise_()
+            child.setFocus()
+
+        accept_dialog(lambda: qtbot.keyClick(child, QtCore.Qt.Key.Key_Delete))
+        qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
+
+
 def test_manager_replace(
     qtbot,
     test_data,
