@@ -1,3 +1,53 @@
+## Unreleased
+
+### ✨ Features
+
+- **manager:** add direct removal of windows ([5d104ed](https://github.com/kmnhan/erlabpy/commit/5d104edb18b39c37565b8188c453a86885d33dbc))
+
+  The currently active window can now be directly removed from the ImageTool manager without switching to the manager interface by using the keyboard shortcut `Delete` (`fn + Backspace` on MacBook keyboards). A confirmation dialog is presented to prevent accidental deletions.
+
+- **imagetool:** export plots to matplotlib ([5f0379f](https://github.com/kmnhan/erlabpy/commit/5f0379f35eefe8c7829940fa3b5639733cb8d14f))
+
+  Adds ability to export plots from the ImageTool to matplotlib code. The new functionality is available via the right-click context menu on each plot.
+
+- **qsel:** allow multiple widths for multiple indices ([4424c21](https://github.com/kmnhan/erlabpy/commit/4424c2167f1dbc075c5861fbd911ce0a4dc2d3d8))
+
+- add support for Python 3.14 (#226) ([9003791](https://github.com/kmnhan/erlabpy/commit/9003791a0905d6246cf61e437dc73c353c2ee614))
+
+- **io.plugins.ssrl52:** reimplement loader to support dask (#224) ([440012a](https://github.com/kmnhan/erlabpy/commit/440012ab7b3ee77566aeeb32c13c878b58de559e))
+
+  Rewrites the SSRL 5-2 data loader to use xarray native methods. Data are now loaded as dask arrays with automatic chunking by default.
+
+- **interactive:** add interactive mesh removal tool with UI and integration into ImageTool ([7f0a920](https://github.com/kmnhan/erlabpy/commit/7f0a920ca39038aaa42287bb400d7a9e794646ed))
+
+- **analysis:** add new `mesh` module for experimental Fourier-based mesh removal ([4c5e1c7](https://github.com/kmnhan/erlabpy/commit/4c5e1c7391185af24bf55eee21e75818f97354f2))
+
+### 🐞 Bug Fixes
+
+- **plotting.plot_slices:** also convert axis labels to fancy ones for line plots ([aec318f](https://github.com/kmnhan/erlabpy/commit/aec318f94709a404a920049e66bdb22f22d38ea0))
+
+- **imagetool:** disable errors due to non-plottable associated coordinates ([1bb0d0b](https://github.com/kmnhan/erlabpy/commit/1bb0d0b000c93316d53088da6366d4de8b253def))
+
+  Data with associated coordinates that cannot be converted to float64 (e.g., str) would cause ambiguous errors when displayed. This change ensures that such coordinates are silently skipped.
+
+- **interactive:** fix some issues with DataArray handling and colormap settings ([9dfc7b8](https://github.com/kmnhan/erlabpy/commit/9dfc7b8b12703f3cf0e0c4081fc184bf00627ccc))
+
+- **manager:** display progress bar correctly in the packaged version ([8b8498d](https://github.com/kmnhan/erlabpy/commit/8b8498df4f9f31e49654be4f87be1720932a453b))
+
+- **manager:** fix very large DataArrays (>2 GB) failing to send via socket (#221) ([607eeac](https://github.com/kmnhan/erlabpy/commit/607eeac039ca27819a2dd4215200a38333f549d1))
+
+### ⚡️ Performance
+
+- **imagetool:** delay associated coords calculation until needed ([067a550](https://github.com/kmnhan/erlabpy/commit/067a5504f6dbd7ea7294147dab30c24e3a747633))
+
+  Associated coordinates for each dimension are now not accessed until they are needed for plotting. This improves performance when loading large data with many associated coordinates.
+
+### ♻️ Code Refactor
+
+- **manager:** move show/hide/archive actions from Edit menu to File menu ([2eda37c](https://github.com/kmnhan/erlabpy/commit/2eda37ca92d2ee6b19343dbd57fe771afe17a750))
+
+- **interactive.utils:** update `generate_code` to support multiple assignment ([17e8d30](https://github.com/kmnhan/erlabpy/commit/17e8d30c7e2e996f7194add612eda3507cb99dc0))
+
 ## v3.17.0 (2025-11-24)
 
 ### ✨ Features
