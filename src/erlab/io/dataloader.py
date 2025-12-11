@@ -1084,7 +1084,7 @@ class LoaderBase(metaclass=_Loader):
                     _add_content(next(iter(data.data_vars.values())), file_path, suffix)
                 else:
                     for k, darr in data.data_vars.items():
-                        _add_content(darr, file_path, suffix=suffix + k)
+                        _add_content(darr, file_path, suffix=suffix + str(k))
 
             elif isinstance(data, xr.DataTree):
                 for leaf in data.leaves:
