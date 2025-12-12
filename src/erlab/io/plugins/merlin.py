@@ -211,10 +211,23 @@ class MERLINLoader(LoaderBase):
             header, coord_arr = self._parse_motor_file(data_dir, prefix, num)
 
             if len(files) > coord_arr.shape[0]:
-                raise RuntimeError(
-                    f"Number of motor positions ({coord_arr.shape[0]}) "
-                    f"does not match number of files ({len(files)})"
-                )
+                if header == ["Fake Motor"] and coord_arr.shape[0] > 0:
+                    # Allow incomplete motor scan files
+                    coord_arr = np.arange(len(files)).reshape(-1, 1) + coord_arr[0, 0]
+                elif len(header) == 1 and coord_arr.shape[0] > 1:
+                    start = coord_arr[0, 0]
+                    step = coord_arr[1, 0] - start
+                    erlab.utils.misc.emit_user_level_warning(
+                        f"Number of motor positions ({coord_arr.shape[0]}) "
+                        f"less than the number of files ({len(files)}). "
+                        f"Assuming step size of {step} to generate motor positions."
+                    )
+                    coord_arr = np.arange(len(files)).reshape(-1, 1) * step + start
+                else:
+                    raise RuntimeError(
+                        f"Number of motor positions ({coord_arr.shape[0]}) "
+                        f"does not match number of files ({len(files)})"
+                    )
 
             for i, dim in enumerate(header):
                 # Trim coord to number of files
