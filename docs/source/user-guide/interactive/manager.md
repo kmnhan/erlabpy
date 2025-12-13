@@ -101,6 +101,9 @@ Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the 
 The following lists common actions included in the {guilabel}`File`, {guilabel}`Edit`, and right-click context menus:
 
 - {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove` – Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring windows to the front, hide them, or remove them entirely. These controls live in {guilabel}`File`.
+  :::{note}
+  {kbd}`Ctrl+W` and {kbd}`Del` also works when analysis windows are focused, which is often more convenient than switching back to the manager.
+  :::
 - {guilabel}`Rename` / {guilabel}`Duplicate` – Rename multiple selections at once or activate in-place editing for a single tool. {guilabel}`Duplicate` clones the currently selected windows, including their state.
 - {guilabel}`Reset Index` – Renumbers all windows from zero.
 - {guilabel}`Link` / {guilabel}`Unlink` – {kbd}`Ctrl+L` links the selected windows so they share cursors and slices; {kbd}`Ctrl+Shift+L` removes the links.

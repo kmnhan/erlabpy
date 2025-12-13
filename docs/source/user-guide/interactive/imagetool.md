@@ -170,8 +170,8 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most transforms are destructive yet provide an {guilabel}`Open in New Window` checkbox so you can keep the original data. When {guilabel}`Copy Code` is available, the generated snippet is placed on your clipboard, ready to paste into a script or notebook for reproducibility.
 
 - **Rotate** – Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active the dialog pre-fills the matching angle and pivot.
-- **Average Over Dimensions** – Select any set of dimensions to average via {meth}`DataArray.qsel.average`.
-- **Symmetrize** – Mirror a selected dimension about a specified center. Options include additive vs. subtractive symmetry, {guilabel}`valid` vs. {guilabel}`full` overlap, and whether to keep both halves or a single side.
+- **Average Over Dimensions** – Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
+- **Symmetrize** – Mirror a selected dimension about a specified center. Options include additive vs. subtractive symmetry, `valid` vs. `full` overlap, and whether to keep both halves or a single side.
 - **Crop** – Enter exact coordinate ranges, or choose {guilabel}`Crop to View` to grab the currently visible extent.
 - **Edge Correction** – If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
 - **Normalize** ({guilabel}`View → Normalize`) – A non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction. You can preview the effect, undo it, or reapply a different normalization later.
@@ -191,20 +191,24 @@ Only polygonal ROIs with arbitrary vertex counts are supported at this time.
 
 - Right-click on an image plot and choose {guilabel}`Add Polygon ROI`. A two-point line appears near the active cursor so you can immediately drag it into place.
 - Drag any handle to move a vertex. Click on a segment to insert a new vertex.
-- Right-click on an ROI and pick {guilabel}`Edit ROI…` to open a table-based editor.
-- The coordinate table lists every vertex of the ROI.
-- Check the {guilabel}`Closed` option to convert an open polyline into a filled polygon.
+- Right-click on a ROI and pick {guilabel}`Edit ROI…` to open a tabular editor.
+  - The coordinate table lists every vertex of the ROI.
+  - Check the {guilabel}`Closed` option to convert an open polyline into a filled polygon.
 - Edits are logged, so you can undo accidental drags with {kbd}`Ctrl+Z`.
 
 ### ROI-driven analysis
 
-Two additional context-menu actions appear upon right-clicking an ROI:
+Two additional context-menu actions appear upon right-clicking on a ROI:
 
-- **Slice Along ROI Path** interpolates the data with {func}`erlab.analysis.interpolate.slice_along_path`. Choose a step size and a name for the new path dimension, then decide whether to open the result in a new window or replace the current data.
+- **Slice Along ROI Path** interpolates the data with {func}`erlab.analysis.interpolate.slice_along_path`.
 
-- **Mask Data with ROI** calls {func}`erlab.analysis.mask.mask_with_polygon` to select mask the data with the ROI. You can choose whether to invert the mask and whether to trim the resulting data.
+  Choose a step size and a name for the new path dimension, then decide whether to open the result in a new window or replace the current data.
 
-Note that both procedures work on the entire data, not just the visible slice.
+- **Mask Data with ROI** calls {func}`erlab.analysis.mask.mask_with_polygon` to mask the data with the ROI.
+
+  You can choose whether to invert the mask and whether to trim the resulting data.
+
+Note that both procedures work on the entire data volume, not just the visible slice.
 
 (imagetool-export)=
 
@@ -214,7 +218,7 @@ Note that both procedures work on the entire data, not just the visible slice.
 
 - {guilabel}`File → Move to Manager` hands the window off to the {ref}`ImageTool manager <imagetool-manager>`.
 
-- Keep your configuration consistent across runs via {guilabel}`Help → Preferences…`, which opens the options described in [](./options.md).
+- Keep your configuration consistent across runs via [](./options.md).
 
 (imagetool-shortcuts)=
 
