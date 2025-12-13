@@ -455,6 +455,104 @@ def test_copy_matplotlib_code_uses_generated_output(qtbot, monkeypatch) -> None:
     win.close()
 
 
+def test_cursor_colors_follow_coordinate(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    slicer = win.slicer_area
+    slicer.array_slicer._cursor_color_params = ("x", "x", "coolwarm", False, 0.0, 1.0)
+    slicer._refresh_cursor_colors(tuple(range(slicer.n_cursors)), None)
+
+    cmap = erlab.interactive.colors.pg_colormap_from_name("coolwarm")
+    coords = data.coords["x"].values
+    mn, mx = np.min(coords), np.max(coords)
+    scale = (1.0 - 0.0) / (mx - mn)
+    idx = slicer.array_slicer.get_index(0, 0)
+    expected = cmap.map((coords[idx] - mn) * scale, mode=cmap.QCOLOR).name()
+    assert slicer.cursor_colors[0].name() == expected
+
+    slicer.set_value(axis=0, value=4.0, cursor=0)
+    idx = slicer.array_slicer.get_index(0, 0)
+    expected = cmap.map((coords[idx] - mn) * scale, mode=cmap.QCOLOR).name()
+    assert slicer.cursor_colors[0].name() == expected
+
+    slicer.set_value(axis=1, value=4.0, cursor=0)
+    assert slicer.cursor_colors[0].name() == expected
+
+    for ax in slicer.axes:
+        display_ax = ax.display_axis[0]
+        assert (
+            ax.cursor_lines[0][display_ax].pen.color().name()
+            == slicer.cursor_colors[0].name()
+        )
+
+    win.close()
+
+
+def test_cursor_colors_from_associated_coord(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(5),
+            "temp": ("x", np.linspace(-1, 1, 5)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    slicer = win.slicer_area
+    slicer.array_slicer._cursor_color_params = ("x", "temp", "viridis", True, 0.2, 0.8)
+    slicer._refresh_cursor_colors(tuple(range(slicer.n_cursors)), None)
+
+    cmap = erlab.interactive.colors.pg_colormap_from_name("viridis")
+    coords = data.coords["temp"].values
+    mn, mx = np.min(coords), np.max(coords)
+    scale = (0.8 - 0.2) / (mx - mn)
+
+    idx = slicer.array_slicer.get_index(0, 0)
+    raw = (coords[idx] - mn) * scale + 0.2
+    expected = cmap.map(1 - raw, mode=cmap.QCOLOR).name()
+    assert slicer.cursor_colors[0].name() == expected
+
+    slicer.set_value(axis=0, value=1.0, cursor=0)
+    idx = slicer.array_slicer.get_index(0, 0)
+    raw = (coords[idx] - mn) * scale + 0.2
+    expected = cmap.map(1 - raw, mode=cmap.QCOLOR).name()
+    assert slicer.cursor_colors[0].name() == expected
+
+    win.close()
+
+
+def test_manual_cursor_colors_disable_coord_updates(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    slicer = win.slicer_area
+    slicer.array_slicer._cursor_color_params = ("x", "x", "plasma", False, 0.0, 1.0)
+    slicer._refresh_cursor_colors(tuple(range(slicer.n_cursors)), None)
+
+    slicer.set_value(axis=0, value=4.0, cursor=0)
+    dynamic_color = slicer.cursor_colors[0].name()
+
+    slicer.set_cursor_colors(["#123456"])
+    assert slicer.array_slicer._cursor_color_params is None
+
+    slicer.set_value(axis=0, value=0.0, cursor=0)
+    assert slicer.cursor_colors[0].name() == "#123456"
+    assert slicer.cursor_colors[0].name() != dynamic_color
+
+    win.close()
+
+
 def test_itool_edit_cursor_colors(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),

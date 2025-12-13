@@ -479,6 +479,145 @@ class _AssociatedCoordsDialog(QtWidgets.QDialog):
         super().accept()
 
 
+class _CursorColorCoordDialog(QtWidgets.QDialog):
+    def __init__(self, slicer_area: ImageSlicerArea) -> None:
+        super().__init__(slicer_area)
+        self._slicer_area = weakref.ref(slicer_area)
+        self.setup_ui()
+
+    def update_params(self) -> None:
+        slicer_area = self._slicer_area()
+        if slicer_area:  # pragma: no branch
+            cursor_color_params = slicer_area.array_slicer._cursor_color_params
+            if cursor_color_params is not None:
+                _, coord_name, cmap, reverse, vmin, vmax = cursor_color_params
+                self.choose_coord(coord_name)
+                self.cmap_combo.setCurrentText(cmap)
+                self.reverse_check.setChecked(reverse)
+                self.start_spin.setValue(vmin)
+                self.stop_spin.setValue(vmax)
+            else:
+                self.main_group.setChecked(False)
+
+    def choose_coord(self, coord_name: Hashable) -> None:
+        self.coord_combo.setCurrentText(str(coord_name))
+
+    def get_checked_coord_name(self) -> tuple[Hashable, Hashable] | None:
+        slicer_area = self._slicer_area()
+        if not slicer_area:  # pragma: no cover
+            return None
+        coord_name = self.coord_combo.currentText()
+        for dim_name in slicer_area.data.dims:
+            if coord_name == str(dim_name):
+                return dim_name, dim_name
+        for dim, coords in slicer_area.array_slicer.associated_coords.items():
+            for k in coords:
+                if coord_name == str(k):
+                    return dim, k
+        return None
+
+    def setup_ui(self):
+        slicer_area = self._slicer_area()
+        if not slicer_area:  # pragma: no cover
+            return
+
+        self.layout_ = QtWidgets.QVBoxLayout(self)
+        self.setLayout(self.layout_)
+
+        self.main_group = QtWidgets.QGroupBox("Set cursor color by coordinate", self)
+        self.layout_.addWidget(self.main_group)
+        main_layout = QtWidgets.QVBoxLayout()
+        self.main_group.setLayout(main_layout)
+        self.main_group.setCheckable(True)
+
+        # Coord selection
+        coord_layout = QtWidgets.QFormLayout()
+        main_layout.addLayout(coord_layout)
+
+        self.coord_combo = QtWidgets.QComboBox()
+        coord_layout.addRow("Coordinate", self.coord_combo)
+
+        for name in slicer_area.data.dims:
+            self.coord_combo.addItem(str(name))
+
+        for coords in slicer_area.array_slicer.associated_coords.values():
+            for k in coords:
+                self.coord_combo.addItem(str(k))
+
+        # Colormap selection
+        cmap_group = QtWidgets.QGroupBox("Colormap parameters", self)
+        main_layout.addWidget(cmap_group)
+        cmap_layout = QtWidgets.QHBoxLayout()
+        cmap_group.setLayout(cmap_layout)
+
+        self.cmap_combo = erlab.interactive.colors.ColorMapComboBox(self)
+        self.cmap_combo.setToolTip("Select a colormap to sample colors from")
+        self.cmap_combo.setDefaultCmap("coolwarm")
+        cmap_layout.addWidget(self.cmap_combo)
+
+        self.reverse_check = QtWidgets.QCheckBox("Reverse", self)
+        self.reverse_check.setToolTip("Reverse the colormap")
+        cmap_layout.addWidget(self.reverse_check)
+
+        cmap_layout.addStretch()
+        cmap_layout.addWidget(QtWidgets.QLabel("Range:"))
+        self.start_spin = QtWidgets.QDoubleSpinBox(self)
+        self.start_spin.setRange(0.0, 1.0)
+        self.start_spin.setDecimals(2)
+        self.start_spin.setSingleStep(0.1)
+        self.start_spin.setValue(0.1)
+        self.start_spin.setToolTip("Start of the colormap")
+        cmap_layout.addWidget(self.start_spin)
+
+        self.stop_spin = QtWidgets.QDoubleSpinBox(self)
+        self.stop_spin.setRange(0.0, 1.0)
+        self.stop_spin.setDecimals(2)
+        self.stop_spin.setSingleStep(0.1)
+        self.stop_spin.setValue(0.9)
+        self.stop_spin.setToolTip("End of the colormap")
+        cmap_layout.addWidget(self.stop_spin)
+        cmap_layout.addStretch()
+
+        # Bottom layout
+        bottom_layout = QtWidgets.QHBoxLayout()
+        self.layout_.addLayout(bottom_layout)
+
+        # Dialog buttons
+        self.button_box = QtWidgets.QDialogButtonBox()
+        btn_ok = self.button_box.addButton(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok,
+        )
+        btn_cancel = self.button_box.addButton(
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+        )
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+
+        self.layout_.addWidget(self.button_box)
+        self.update_params()
+
+    def accept(self) -> None:
+        slicer_area = self._slicer_area()
+        if slicer_area:  # pragma: no branch
+            dim_and_coord_names = self.get_checked_coord_name()
+            if dim_and_coord_names is None:
+                slicer_area.array_slicer._cursor_color_params = None
+            else:
+                dim_name, coord_name = dim_and_coord_names
+                slicer_area.array_slicer._cursor_color_params = (
+                    dim_name,
+                    coord_name,
+                    self.cmap_combo.currentText(),
+                    self.reverse_check.isChecked(),
+                    self.start_spin.value(),
+                    self.stop_spin.value(),
+                )
+            slicer_area._refresh_cursor_colors(
+                tuple(i for i in range(slicer_area.n_cursors)), None
+            )
+        super().accept()
+
+
 class ImageSlicerArea(QtWidgets.QWidget):
     """A interactive tool based on :mod:`pyqtgraph` for exploring 3D data.
 
@@ -1188,6 +1327,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.cursor_color_act = QtWidgets.QAction("Edit Cursor Colors...", self)
         self.cursor_color_act.triggered.connect(self.edit_cursor_colors)
 
+        self.cursor_colors_by_coord_act = QtWidgets.QAction(
+            "Set Cursor Colors by Coordinate...", self
+        )
+        self.cursor_colors_by_coord_act.triggered.connect(
+            self._set_cursor_colors_by_coord
+        )
+        self.cursor_colors_by_coord_act.setToolTip(
+            "Set cursor colors based on a coordinate value"
+        )
+
         self.undo_act = QtWidgets.QAction("&Undo", self)
         self.undo_act.setShortcut(QtGui.QKeySequence.StandardKey.Undo)
         self.undo_act.setDisabled(True)
@@ -1285,6 +1434,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         dialog.exec()
 
     @QtCore.Slot()
+    def _set_cursor_colors_by_coord(self) -> None:
+        dialog = _CursorColorCoordDialog(self)
+        dialog.exec()
+
+    @QtCore.Slot()
     def _history_changed(self) -> None:
         """Enable undo and redo actions based on the current history.
 
@@ -1331,9 +1485,48 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigWriteHistory.connect(self.write_state)
 
         self.sigIndexChanged.connect(self._handle_refresh_dask)
+        self.sigIndexChanged.connect(self._refresh_cursor_colors)
         self.sigBinChanged.connect(self._handle_refresh_dask)
 
         logger.debug("Connected signals")
+
+    @QtCore.Slot(int, object)
+    @QtCore.Slot(object, object)
+    def _refresh_cursor_colors(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None
+    ) -> None:
+        cursor_color_params = self.array_slicer._cursor_color_params
+        if cursor_color_params is not None:
+            dim_name, coord_name, cmap, reverse, vmin, vmax = cursor_color_params
+            if (axes is not None) and (
+                dim_name not in tuple(self.data.dims[ax] for ax in axes)
+            ):
+                return
+
+            if isinstance(cursor, int):
+                cursor = (cursor,)
+
+            axis_idx = self.data.dims.index(dim_name)
+            if coord_name == dim_name:
+                target_coord = self.array_slicer.coords[axis_idx]
+            else:
+                target_coord = self.array_slicer.associated_coords[dim_name][
+                    coord_name
+                ][1]
+            mn, mx = np.min(target_coord), np.max(target_coord)
+            scale_factor = (vmax - vmin) / (mx - mn)
+            cmap = erlab.interactive.colors.pg_colormap_from_name(cmap)
+
+            for cursor_idx in cursor:
+                value_idx: int = self.array_slicer.get_indices(cursor_idx)[axis_idx]
+                value = (target_coord[value_idx] - mn) * scale_factor + vmin
+                if reverse:
+                    value = 1 - value
+                color = cmap.map(value, mode=cmap.QCOLOR)
+                for ax in self.axes:
+                    self.cursor_colors[cursor_idx] = color
+                    ax.set_cursor_color(cursor_idx, color)
+            self.sigCursorColorsChanged.emit()
 
     @QtCore.Slot(int, object)
     @QtCore.Slot(object, object)
@@ -2051,6 +2244,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         colors
             An iterable of colors to set for the cursors.
         """
+        self.array_slicer._cursor_color_params = None
         self.cursor_colors = [pg.mkColor(c) for c in colors]
         for ax in self.axes:
             ax.set_cursor_colors(self.cursor_colors)
@@ -3763,23 +3957,25 @@ class ItoolPlotItem(pg.PlotItem):
 
     def set_cursor_colors(self, colors: Iterable[QtGui.QColor]) -> None:
         """Set the colors of the cursors and spans."""
-        for cursor, (clr, line_dict, span_dict) in enumerate(
-            zip(colors, self.cursor_lines, self.cursor_spans, strict=True)
-        ):
-            _, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge = (
-                _make_cursor_colors(clr)
-            )
-            for line in line_dict.values():
-                line.setPen(pg.mkPen(clr_cursor, width=1))
-                line.setHoverPen(pg.mkPen(clr_cursor_hover, width=1))
-            for span in span_dict.values():
-                for span_line in span.lines:
-                    span_line.setPen(pg.mkPen(clr_span_edge))
-                span.setBrush(pg.mkBrush(clr_span))
+        for i, clr in enumerate(colors):
+            self.set_cursor_color(i, clr)
 
-            if not self.is_image:
-                # For line plots, set the pen color of the data item
-                self.slicer_data_items[cursor].setPen(pg.mkPen(clr))
+    def set_cursor_color(self, index: int, color: QtGui.QColor) -> None:
+        """Set the color of a specific cursor and span."""
+        _, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge = _make_cursor_colors(
+            color
+        )
+        for line in self.cursor_lines[index].values():
+            line.setPen(pg.mkPen(clr_cursor, width=1))
+            line.setHoverPen(pg.mkPen(clr_cursor_hover, width=1))
+        for span in self.cursor_spans[index].values():
+            for span_line in span.lines:
+                span_line.setPen(pg.mkPen(clr_span_edge))
+            span.setBrush(pg.mkBrush(clr_span))
+
+        if not self.is_image:
+            # For line plots, set the pen color of the data item
+            self.slicer_data_items[index].setPen(pg.mkPen(color))
 
     def add_cursor(self, update: bool = True) -> None:
         new_cursor: int = len(self.slicer_data_items)
