@@ -215,6 +215,7 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog
         yield dialog
     finally:
         dialog.close()
+        dialog.deleteLater()
 
 
 def _format_traceback(exc_text: str) -> str:
