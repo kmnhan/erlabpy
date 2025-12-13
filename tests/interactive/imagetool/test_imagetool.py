@@ -980,23 +980,109 @@ def test_itool_load_compat(qtbot) -> None:
 
 
 def test_parse_input() -> None:
-    # If no 2D to 4D data is present in given Dataset, ValueError is raised
-    with pytest.raises(
-        ValueError, match="No valid data for ImageTool found in Dataset"
-    ):
-        _parse_input(
-            xr.Dataset({"data1d": xr.DataArray(np.arange(5), dims=["x"]), "data0d": 1})
-        )
+    data_1d = xr.DataArray(np.arange(5), dims=["x"])
+    parsed = _parse_input(xr.Dataset({"data1d": data_1d, "data0d": 1}))
+    assert len(parsed) == 1
+    xr.testing.assert_identical(parsed[0], data_1d.rename("data1d"))
+
+    parsed_tree = _parse_input(
+        xr.DataTree.from_dict({"dummy": xr.Dataset({"a": data_1d})})
+    )
+    assert len(parsed_tree) == 1
+    xr.testing.assert_identical(parsed_tree[0], data_1d.rename("a"))
 
     with pytest.raises(ValueError, match="No valid data for ImageTool found"):
         _parse_input([])
 
     with pytest.raises(ValueError, match="No valid data for ImageTool found"):
+        _parse_input(xr.Dataset({"scalar": xr.DataArray(1)}))
+
+    with pytest.raises(ValueError, match="No valid data for ImageTool found"):
         _parse_input(
-            xr.DataTree.from_dict(
-                {"dummy": xr.Dataset({"a": xr.DataArray(np.arange(5), dims=["x"])})}
-            )
+            xr.DataTree.from_dict({"dummy": xr.Dataset({"scalar": xr.DataArray(1)})})
         )
+
+
+def test_itool_promotes_1d_input(qtbot) -> None:
+    data = xr.DataArray(np.arange(5), dims=["x"], coords={"x": np.arange(5)})
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x", "stack_dim")
+    assert win.slicer_area.data.shape == (5, 1)
+    xr.testing.assert_identical(
+        win.slicer_area.data.squeeze("stack_dim", drop=True), data
+    )
+
+    win.close()
+
+
+def test_profile_open_in_new_window_from_1d_plot(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    profile = win.slicer_area.profiles[0]
+    initial_count = len(win.slicer_area._associated_tools_list)
+    profile.open_in_new_window()
+
+    qtbot.wait_until(
+        lambda: len(win.slicer_area._associated_tools_list) > initial_count,
+        timeout=2000,
+    )
+    new_tool = win.slicer_area._associated_tools_list[-1]
+    assert isinstance(new_tool, ImageTool)
+    xr.testing.assert_identical(
+        new_tool.slicer_area.data.squeeze(drop=True),
+        profile.current_data.squeeze(drop=True),
+    )
+
+    new_tool.close()
+    win.close()
+
+
+def test_itool_singleton_dimension(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(5, dtype=float).reshape((1, 5)),
+        dims=["x", "y"],
+        coords={"x": [0.0], "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.shape == (1, 5)
+    assert win.slicer_area.data.dims == ("x", "y")
+    assert win.array_slicer._obj.shape == (1, 5)
+    np.testing.assert_array_equal(win.array_slicer.incs, (1.0, 1.0))
+    xr.testing.assert_identical(win.slicer_area.data, data)
+
+    win.close()
+
+
+def test_itool_squeezes_high_dim_input(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 1, 5, 1, 1)),
+        dims=["a", "b", "c", "d", "e"],
+        coords={
+            "a": np.arange(5),
+            "b": [0],
+            "c": np.arange(5),
+            "d": [0],
+            "e": [0],
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.shape == (5, 5)
+    assert win.slicer_area.data.dims == ("a", "c")
+    np.testing.assert_array_equal(win.slicer_area.data.values, data.squeeze().values)
+
+    win.close()
 
 
 def test_itool_ds(qtbot) -> None:
@@ -1009,27 +1095,38 @@ def test_itool_ds(qtbot) -> None:
     )
     wins = itool(data, execute=False, link=True)
     assert isinstance(wins, list)
-    assert len(wins) == 2
+    assert len(wins) == 3
 
-    qtbot.addWidget(wins[0])
-    qtbot.addWidget(wins[1])
+    for win in wins:
+        qtbot.addWidget(win)
 
     with qtbot.waitExposed(wins[0]):
         wins[0].show()
     with qtbot.waitExposed(wins[1]):
         wins[1].show()
+    with qtbot.waitExposed(wins[2]):
+        wins[2].show()
 
-    assert wins[0].windowTitle() == "a"
-    assert wins[1].windowTitle() == "b"
+    assert [w.windowTitle() for w in wins] == ["data1d", "a", "b"]
+
+    data1d_out = wins[0].slicer_area.data.squeeze("stack_dim", drop=True)
+    assert data1d_out.name == "data1d"
+    assert data1d_out.dims == ("x",)
+    np.testing.assert_array_equal(data1d_out.values, data.data1d.values)
 
     # Check if properly linked
-    assert wins[0].slicer_area._linking_proxy == wins[1].slicer_area._linking_proxy
-    assert wins[0].slicer_area.linked_slicers == weakref.WeakSet([wins[1].slicer_area])
+    assert (
+        wins[0].slicer_area._linking_proxy
+        == wins[1].slicer_area._linking_proxy
+        == wins[2].slicer_area._linking_proxy
+    )
+    assert wins[0].slicer_area.linked_slicers == weakref.WeakSet(
+        [wins[1].slicer_area, wins[2].slicer_area]
+    )
 
-    wins[0].slicer_area.unlink()
-    wins[1].slicer_area.unlink()
-    wins[0].close()
-    wins[1].close()
+    for win in wins:
+        win.slicer_area.unlink()
+        win.close()
 
 
 def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:

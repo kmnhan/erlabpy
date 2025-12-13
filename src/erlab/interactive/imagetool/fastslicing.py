@@ -53,7 +53,10 @@ def _index_of_value(
     incs: tuple[np.floating, ...],
     shape: tuple[int],
 ) -> int:
-    ind = min(round((val - lims[axis][0]) / incs[axis]), shape[axis] - 1)
+    delta = incs[axis]
+    if delta == 0:
+        return 0
+    ind = min(round((val - lims[axis][0]) / delta), shape[axis] - 1)
     if ind < 0:
         return 0
     return ind
@@ -78,6 +81,9 @@ def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
     cache=True,
 )
 def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
+    if arr.size == 1:
+        # A single-element coordinate array is considered uniform
+        return True
     dif = np.diff(arr)
     if dif[0] == 0.0:
         # Treat constant coordinate array as non-uniform
