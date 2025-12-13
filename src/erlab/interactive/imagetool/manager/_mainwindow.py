@@ -2107,6 +2107,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         logger.debug("Closing additional windows...")
         for widget in dict(self._additional_windows).values():
             widget.close()
+            widget.deleteLater()
 
         logger.debug("Removing event filters...")
         self.text_box.removeEventFilter(self._kb_filter)
@@ -2116,10 +2117,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             logger.debug("Shutting down console kernel...")
             self.console._console_widget.shutdown_kernel()
             self.console.close()
+            self.console.deleteLater()
 
         if hasattr(self, "explorer"):
             logger.debug("Closing data explorer...")
             self.explorer.close()
+            self.explorer.deleteLater()
 
         logger.debug("Cleaning up temporary directory...")
         self._tmp_dir.cleanup()

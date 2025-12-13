@@ -3461,7 +3461,7 @@ class ItoolPlotItem(pg.PlotItem):
         """
         if any(
             a in self.array_slicer._nonuniform_axes
-            for a in set(range(self.array_slicer._obj.ndim)) - set(self.display_axis)
+            for a in set(range(self.slicer_area.data.ndim)) - set(self.display_axis)
         ):
             raise ValueError("Cannot plot when indexing along non-uniform axes.")
 

@@ -350,7 +350,7 @@ class ImageTool(BaseImageTool):
 
         self.close_act = QtWidgets.QAction("&Close", self)
         self.close_act.setShortcut("Ctrl+W")
-        self.close_act.triggered.connect(self.close)
+        self.close_act.triggered.connect(self.hide)
         self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 
         self.remove_act = QtWidgets.QAction("Remove from Manager", self)

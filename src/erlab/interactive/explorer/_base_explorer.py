@@ -848,7 +848,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def try_close(self) -> None:
         if self.isWindow() and not hasattr(self.parent(), "close_tab"):
-            self.close()
+            self.hide()
         else:
             self.sigCloseRequested.emit(self)
 
