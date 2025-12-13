@@ -1924,7 +1924,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> int | None:
         """Get the index corresponding to the given slicer area."""
         for index, wrapper in self._imagetool_wrappers.items():  # pragma: no branch
-            if wrapper.slicer_area is slicer_area:
+            if (wrapper.imagetool is not None) and (wrapper.slicer_area is slicer_area):
                 return index
         return None
 
