@@ -350,7 +350,7 @@ class _ImageToolWrapper(QtCore.QObject):
         if self.archived:
             self.touch_timer.stop()
             self.imagetool = ImageTool.from_file(
-                typing.cast("str", self._archived_fname)
+                typing.cast("str", self._archived_fname), _in_manager=True
             )
             self.imagetool.show()
             self._info_text_archived = ""
