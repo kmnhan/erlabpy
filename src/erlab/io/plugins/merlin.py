@@ -197,13 +197,16 @@ class MERLINLoader(LoaderBase):
             else:
                 # Look for multiregion scan like f_001_R0.pxt
                 files = sorted(data_dir.glob(f"*_{str(num).zfill(3)}_R*.pxt"))
-                region_numbers = []
-                for f in files:
-                    match_r = re.match(rf".*?_{str(num).zfill(3)}_R(\d).pxt", f.name)
-                    if match_r is None:
-                        raise RuntimeError(f"Failed to parse file name {f.name}")
-                    region_numbers.append(int(match_r.group(1)))
-                coord_dict["__region"] = np.array(region_numbers)
+                if len(files) != 0:
+                    region_numbers = []
+                    for f in files:
+                        match_r = re.match(
+                            rf".*?_{str(num).zfill(3)}_R(\d).pxt", f.name
+                        )
+                        if match_r is None:
+                            raise RuntimeError(f"Failed to parse file name {f.name}")
+                        region_numbers.append(int(match_r.group(1)))
+                    coord_dict["__region"] = np.array(region_numbers)
 
         elif len(files) > 1:
             # Extract motor positions for multi-file scan
