@@ -29,6 +29,9 @@ class ArraySlicerState(typing.TypedDict):
     values: list[list[float]]
     snap_to_data: bool
     twin_coord_names: typing.NotRequired[tuple[Hashable, ...]]
+    cursor_color_params: typing.NotRequired[
+        tuple[Hashable, Hashable, str, bool, float, float] | None
+    ]
 
 
 def check_cursors_compatible(old: xr.DataArray, new: xr.DataArray) -> bool:
@@ -259,6 +262,9 @@ class ArraySlicer(QtCore.QObject):
                 [c[i] for c, i in zip(self.coords, self._indices[0], strict=True)]
             ]
             self._twin_coord_names = set()
+            self._cursor_color_params: (
+                tuple[Hashable, Hashable, str, bool, float, float] | None
+            ) = None
             self.snap_to_data = False
         return reset
 
@@ -389,6 +395,7 @@ class ArraySlicer(QtCore.QObject):
             "values": erlab.utils.misc._convert_to_native(self._values),
             "snap_to_data": bool(self.snap_to_data),
             "twin_coord_names": tuple(self.twin_coord_names),
+            "cursor_color_params": copy.deepcopy(self._cursor_color_params),
         }
 
     @state.setter
@@ -410,6 +417,7 @@ class ArraySlicer(QtCore.QObject):
             # We call set_array below so use update=False
 
         self.twin_coord_names = set(state.get("twin_coord_names", set()))
+        self._cursor_color_params = state.get("cursor_color_params", None)
 
         self.set_array(self._obj, validate=False)
         # Not sure why the last line is needed but the cursor is not fully restored

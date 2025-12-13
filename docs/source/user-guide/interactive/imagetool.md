@@ -145,6 +145,12 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Add quick measurement aids by enabling the rotation guideline {guilabel}`View → Rotation Guidelines`. The guideline angles feed directly into the Rotate dialog so you can align your sample quickly.
 
+- The default color cycle of cursors is user configurable. See [](./options.md).
+
+- Colors can be changed individually from {guilabel}`View → Edit Cursor Colors...`, where you can choose from a colormap or edit each cursor's color separately.
+
+- Alternatively, the colors of the cursors can be set to follow a specific coordinate dynamically based on their positions. This can be enabled from {guilabel}`View → Set Cursor Colors by Coordinate...`.
+
 (imagetool-color)=
 
 ## Color and normalization
