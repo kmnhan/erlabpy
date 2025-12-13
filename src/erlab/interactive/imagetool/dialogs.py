@@ -437,11 +437,11 @@ class AverageDialog(DataTransformDialog):
             )
             return
 
-        if (self.slicer_area.data.ndim - len(self._target_dims)) < 2:
+        if (self.slicer_area.data.ndim - len(self._target_dims)) < 1:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Not Enough Dimensions Left",
-                "Data must have at least 2 dimensions after averaging to be displayed.",
+                "Data must have at least 1 dimension after averaging to be displayed.",
             )
             return
 

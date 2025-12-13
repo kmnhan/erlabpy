@@ -88,16 +88,22 @@ suppressnanwarning = np.testing.suppress_warnings()
 suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
 
 
-def _squeezed_ndim(data: xr.DataArray) -> int:
-    return len(tuple(s for s in data.shape if s != 1))
+def _processed_ndim(darr: xr.DataArray) -> int:
+    if darr.ndim == 1:
+        nd = 2
+    elif darr.ndim > 4:
+        nd = len(tuple(s for s in darr.shape if s != 1))
+    else:
+        nd = darr.ndim
+    return nd
 
 
-def _supported_shape(data: xr.DataArray) -> bool:
-    return _squeezed_ndim(data) in (2, 3, 4)
+def _supported_shape(darr: xr.DataArray) -> bool:
+    return _processed_ndim(darr) in (2, 3, 4)
 
 
-def _parse_dataset(data: xr.Dataset) -> tuple[xr.DataArray, ...]:
-    return tuple(d for d in data.data_vars.values() if _supported_shape(d))
+def _parse_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
+    return tuple(d for d in ds.data_vars.values() if _supported_shape(d))
 
 
 def _make_cursor_colors(
@@ -1780,7 +1786,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         cursors_reset: bool = True
         try:
             if hasattr(self, "_array_slicer"):
-                if self._array_slicer._obj.ndim == _squeezed_ndim(self._data):
+                if self._array_slicer._obj.ndim == _processed_ndim(self._data):
                     ndim_changed = False
                 cursors_reset = self._array_slicer.set_array(self._data, reset=True)
 
@@ -2721,7 +2727,8 @@ class ItoolDisplayObject:
 def _pad_1d_plot(
     coord: npt.NDArray, values: npt.NDArray
 ) -> tuple[npt.NDArray, npt.NDArray]:
-    pad = 0.5 * (coord[1] - coord[0])
+    delta = 1.0 if len(coord) < 2 else coord[1] - coord[0]
+    pad = 0.5 * delta
     return np.r_[coord[0] - pad, coord, coord[-1] + pad], np.r_[np.nan, values, np.nan]
 
 
@@ -2987,10 +2994,33 @@ class ItoolPlotItem(pg.PlotItem):
 
         self.vb.menu.addSeparator()
 
+        itool_action = self.vb.menu.addAction("New Window")
+        itool_action.triggered.connect(self.open_in_new_window)
+        itool_action.setIcon(qtawesome.icon("mdi6.export"))
+        itool_action.setIconVisibleInMenu(True)
+
         # List of actions that should have '(Crop)' appended when Alt is pressed
-        croppable_actions: list[QtWidgets.QAction] = [save_action, copy_code_action]
+        croppable_actions: list[QtWidgets.QAction] = [
+            save_action,
+            copy_code_action,
+            itool_action,
+        ]
 
         if self.is_image:
+            # Actions that open new windows
+            goldtool_action = self.vb.menu.addAction("goldtool")
+            goldtool_action.triggered.connect(self.open_in_goldtool)
+
+            restool_action = self.vb.menu.addAction("restool")
+            restool_action.triggered.connect(self.open_in_restool)
+
+            dtool_action = self.vb.menu.addAction("dtool")
+            dtool_action.triggered.connect(self.open_in_dtool)
+
+            croppable_actions.extend((goldtool_action, restool_action, dtool_action))
+
+            self.vb.menu.addSeparator()
+
             # Aspect ratio lock checkbox
             equal_aspect_action = self.vb.menu.addAction("Equal aspect ratio")
             equal_aspect_action.setCheckable(True)
@@ -3014,37 +3044,8 @@ class ItoolPlotItem(pg.PlotItem):
             )
             adjust_color_action.triggered.connect(self.normalize_to_current_view)
 
-            self.vb.menu.addSeparator()
-
-            # Actions that open new windows
-            itool_action = self.vb.menu.addAction("New Window")
-            itool_action.triggered.connect(self.open_in_new_window)
-
-            goldtool_action = self.vb.menu.addAction("goldtool")
-            goldtool_action.triggered.connect(self.open_in_goldtool)
-
-            restool_action = self.vb.menu.addAction("restool")
-            restool_action.triggered.connect(self.open_in_restool)
-
-            dtool_action = self.vb.menu.addAction("dtool")
-            dtool_action.triggered.connect(self.open_in_dtool)
-
-            croppable_actions.extend(
-                (
-                    itool_action,
-                    goldtool_action,
-                    restool_action,
-                    dtool_action,
-                )
-            )
-
             def _set_icons():
-                for act in (
-                    itool_action,
-                    goldtool_action,
-                    restool_action,
-                    dtool_action,
-                ):
+                for act in (goldtool_action, restool_action, dtool_action):
                     act.setIcon(qtawesome.icon("mdi6.export"))
                     act.setIconVisibleInMenu(True)
 
@@ -3704,31 +3705,30 @@ class ItoolPlotItem(pg.PlotItem):
 
     @QtCore.Slot()
     def open_in_new_window(self) -> None:
-        """Open the current data in a new window. Only available for 2D data."""
-        if self.is_image:  # pragma: no branch
-            data = self.current_data
+        """Open the current data in a new window."""
+        data = self.current_data
 
-            color_props = self.slicer_area.colormap_properties
-            itool_kw: dict[str, typing.Any] = {
-                "data": data,
-                "cmap": color_props["cmap"],
-                "gamma": color_props["gamma"],
-                "high_contrast": color_props["high_contrast"],
-                "zero_centered": color_props["zero_centered"],
-                "transpose": (data.dims != self.axis_dims),
-                "file_path": self.slicer_area._file_path,
-                "execute": False,
-            }
-            if color_props["levels_locked"]:
-                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
-            if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
-                itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
+        color_props = self.slicer_area.colormap_properties
+        itool_kw: dict[str, typing.Any] = {
+            "data": data,
+            "cmap": color_props["cmap"],
+            "gamma": color_props["gamma"],
+            "high_contrast": color_props["high_contrast"],
+            "zero_centered": color_props["zero_centered"],
+            "transpose": (self.is_image and data.dims[0] != self.axis_dims[0]),
+            "file_path": self.slicer_area._file_path,
+            "execute": False,
+        }
+        if color_props["levels_locked"]:
+            itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+        if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
+            itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
 
-            tool = typing.cast(
-                "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
-            )
-            if tool is not None:  # pragma: no branch
-                self.slicer_area.add_tool_window(tool)
+        tool = typing.cast(
+            "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
+        )
+        if tool is not None:  # pragma: no branch
+            self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:

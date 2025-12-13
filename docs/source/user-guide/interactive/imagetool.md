@@ -22,7 +22,7 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 
 ## Key capabilities
 
-- Responsive slicing of 2D, 3D, and 4D {class}`DataArray <xarray.DataArray>` objects, including Dask-backed data.
+- Responsive slicing of multidimensional (up to 4D) {class}`DataArray <xarray.DataArray>` objects, including Dask-backed data.
 - Unlimited number of cursors with independent binning and code export for each line cut.
 - Rich colormap controls with power law scaling, midpoint-aware scaling, and live color range adjustment.
 - Built-in menus for rotation, symmetrization, averaging, cropping, coordinate reassignment, Fermi edge correction, and other common operations.
@@ -33,7 +33,7 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 
 ## Launching ImageTool
 
-ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>` with 2–4 dimensions. Dimensions of length 1 are squeezed automatically and non-uniform coordinates gain parallel `_idx` indices so you can still slice by position. Supported inputs include numpy arrays, datasets, or entire {class}`DataTree <xarray.DataTree>` objects; dataset and tree inputs open one ImageTool window per valid variable.
+ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>` with 2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform coordinates gain parallel `_idx` indices so you can still slice by position. Supported inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire {class}`DataTree <xarray.DataTree>` objects; Dataset and DataTree inputs open one ImageTool window per valid variable.
 
 (imagetool-entry-points)=
 
