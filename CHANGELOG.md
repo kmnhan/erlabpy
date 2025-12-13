@@ -2,6 +2,16 @@
 
 ### ✨ Features
 
+- **imagetool:** improve dimension handling, add support for 1D data ([2104d92](https://github.com/kmnhan/erlabpy/commit/2104d92a00b37e586920a1894ef932800d078035))
+
+  1D inputs are now automatically converted and displayed as 2D data, effectively enabling support for 1D data. This also enables the `Open in New Window` button in the right-click menu for line profiles. Users can now directly load and analyze 1D datasets like core level spectra.
+
+  This change also disables automatic squeezing of dimensions of size 1 for <5D data, so that the data is preserved as-is when opened in ImageTool.
+
+- **imagetool:** add dynamic cursor colors ([0b33b95](https://github.com/kmnhan/erlabpy/commit/0b33b95b7ce7a7f758b8e341d88f6eaed617a12f))
+
+  Adds a new feature to ImageTool allowing cursor colors to be set dynamically based on their coordinates. With the new option, cursor colors change dynamically depending on their positions. This feature can be enabled from the "Set Cursor Colors by Coordinate..." menu option under the View menu.
+
 - **manager:** add direct removal of windows ([5d104ed](https://github.com/kmnhan/erlabpy/commit/5d104edb18b39c37565b8188c453a86885d33dbc))
 
   The currently active window can now be directly removed from the ImageTool manager without switching to the manager interface by using the keyboard shortcut `Delete` (`fn + Backspace` on MacBook keyboards). A confirmation dialog is presented to prevent accidental deletions.
@@ -24,6 +34,12 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool:** better instance management, prevent premature closing and memory leaks ([9fdbbfd](https://github.com/kmnhan/erlabpy/commit/9fdbbfddc32405e4c01ff42e5b80cc24c65aa09a))
+
+- **io.plugin.merlin:** ensure region numbers are only processed if region files are found (#230) ([8ef0882](https://github.com/kmnhan/erlabpy/commit/8ef088235c939cc13640edd46b005dc8eba496a2))
+
+- **manager:** fix inconsistent behavior for unarchived tools ([bad1406](https://github.com/kmnhan/erlabpy/commit/bad14063d92a5237b6814c89e87a9a44379813e2))
+
 - **plotting.plot_slices:** also convert axis labels to fancy ones for line plots ([aec318f](https://github.com/kmnhan/erlabpy/commit/aec318f94709a404a920049e66bdb22f22d38ea0))
 
 - **imagetool:** disable errors due to non-plottable associated coordinates ([1bb0d0b](https://github.com/kmnhan/erlabpy/commit/1bb0d0b000c93316d53088da6366d4de8b253def))
@@ -43,6 +59,10 @@
   Associated coordinates for each dimension are now not accessed until they are needed for plotting. This improves performance when loading large data with many associated coordinates.
 
 ### ♻️ Code Refactor
+
+- **io.plugins.merlin:** automatically complete incomplete motor positions when loading data (#228) ([4c8d24f](https://github.com/kmnhan/erlabpy/commit/4c8d24fd28c354abd2641dfc077db261cf429357))
+
+  Data with incomplete motor positions are now automatically completed using the start and step size, while showing a warning.
 
 - **manager:** move show/hide/archive actions from Edit menu to File menu ([2eda37c](https://github.com/kmnhan/erlabpy/commit/2eda37ca92d2ee6b19343dbd57fe771afe17a750))
 
