@@ -21,6 +21,7 @@ from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.core import (
     _AssociatedCoordsDialog,
+    _CursorColorCoordDialog,
     _parse_input,
     _PolyROIEditDialog,
 )
@@ -549,6 +550,60 @@ def test_manual_cursor_colors_disable_coord_updates(qtbot) -> None:
     slicer.set_value(axis=0, value=0.0, cursor=0)
     assert slicer.cursor_colors[0].name() == "#123456"
     assert slicer.cursor_colors[0].name() != dynamic_color
+
+    win.close()
+
+
+def test_cursor_color_coord_dialog_updates_params(
+    qtbot, accept_dialog, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(5),
+            "temp": ("x", np.linspace(-1, 1, 5)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    slicer = win.slicer_area
+    slicer.array_slicer._cursor_color_params = ("x", "temp", "magma", True, 0.1, 0.9)
+
+    called: dict[str, object] = {}
+
+    def _refresh(cursor, axes):
+        called["cursor"] = cursor
+        called["axes"] = axes
+
+    monkeypatch.setattr(slicer, "_refresh_cursor_colors", _refresh)
+
+    def prepare(dialog: _CursorColorCoordDialog) -> None:
+        assert dialog.coord_combo.currentText() == "temp"
+        assert dialog.cmap_combo.currentText() == "magma"
+        assert dialog.reverse_check.isChecked()
+        assert dialog.start_spin.value() == 0.1
+        assert dialog.stop_spin.value() == 0.9
+
+        dialog.main_group.setChecked(True)
+        dialog.cmap_combo.setCurrentText("viridis")
+        dialog.reverse_check.setChecked(False)
+        dialog.start_spin.setValue(0.0)
+        dialog.stop_spin.setValue(0.5)
+        dialog.coord_combo.setCurrentText("temp")
+
+    accept_dialog(slicer._set_cursor_colors_by_coord, pre_call=prepare)
+
+    assert slicer.array_slicer._cursor_color_params == (
+        "x",
+        "temp",
+        "viridis",
+        False,
+        0.0,
+        0.5,
+    )
+    assert called == {"cursor": tuple(range(slicer.n_cursors)), "axes": None}
 
     win.close()
 
