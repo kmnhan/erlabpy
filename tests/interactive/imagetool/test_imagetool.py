@@ -768,6 +768,7 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
             "values": [[2, 2], [2, 2]],
             "snap_to_data": True,
             "twin_coord_names": (),
+            "cursor_color_params": None,
         },
         "current_cursor": 1,
         "manual_limits": {},
