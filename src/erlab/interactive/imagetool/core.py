@@ -3268,10 +3268,7 @@ class ItoolPlotItem(pg.PlotItem):
             a in self.array_slicer._nonuniform_axes
             for a in set(range(self.array_slicer._obj.ndim)) - set(self.display_axis)
         ):
-            raise ValueError(
-                "Cannot generate multi-cursor plot code when non-uniform axes "
-                "are present outside the displayed axes."
-            )
+            raise ValueError("Cannot plot when indexing along non-uniform axes.")
 
         all_qsel_kws: list[dict[Hashable, float]] = [
             self.array_slicer.qsel_args(cursor, self.display_axis)
@@ -3298,14 +3295,14 @@ class ItoolPlotItem(pg.PlotItem):
             len(varying) == 2 and any(f"{k}_width" in varying for k in varying)
         ):
             raise ValueError(
-                "More than one dimension has differing values across cursors: "
+                "Cannot plot when more than one dimension has differing values "
+                "across cursors: "
                 f"{sorted(map(str, varying))}"
             )
         if len(varying) == 1 and str(varying[0]).endswith("_width"):
             # Only widths vary; we can't index on widths alone
             raise ValueError(
-                "Cannot generate multi-cursor plot code when "
-                "all cursor positions are the same but widths differ."
+                "Cannot plot when all cursor positions are the same but widths differ."
             )
 
         match len(varying):
