@@ -250,7 +250,7 @@ def test_qsel_kwargs_multicursor_width_only_error(qtbot) -> None:
     win.array_slicer.set_bin(0, axis=2, value=3, update=False)
     win.array_slicer.set_bin(1, axis=2, value=1, update=True)
 
-    with pytest.raises(ValueError, match="Cannot generate multi-cursor plot code when"):
+    with pytest.raises(ValueError, match="Cannot plot when"):
         main_image._qsel_kwargs_multicursor()
 
     win.close()
@@ -264,9 +264,7 @@ def test_qsel_kwargs_multicursor_rejects_nonuniform_axes(qtbot) -> None:
     main_image = win.slicer_area.images[0]
     main_image.display_axis = (1, 2)
 
-    with pytest.raises(
-        ValueError, match="non-uniform axes are present outside the displayed axes"
-    ):
+    with pytest.raises(ValueError, match="indexing along non-uniform axes"):
         main_image._qsel_kwargs_multicursor()
 
     win.close()
@@ -315,7 +313,9 @@ def test_qsel_kwargs_multicursor_rejects_multiple_varying_dims(qtbot) -> None:
     win.slicer_area.set_value(axis=3, value=1.0, cursor=1)
 
     with pytest.raises(
-        ValueError, match="More than one dimension has differing values across cursors"
+        ValueError,
+        match="Cannot plot when more than one dimension has differing values"
+        " across cursors",
     ):
         main_image._qsel_kwargs_multicursor()
 
