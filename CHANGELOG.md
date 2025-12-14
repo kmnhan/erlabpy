@@ -1,4 +1,4 @@
-## Unreleased
+## v3.18.0 (2025-12-14)
 
 ### ✨ Features
 
