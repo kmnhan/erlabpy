@@ -18,6 +18,7 @@ def test_goldtool(
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.params_edge.widgets["Fast"].setChecked(fast)
+    win.params_edge.widgets["# CPU"].setValue(1)
 
     expected = gold_fit_res if fast else gold_fit_res_fd
 
