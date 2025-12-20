@@ -1,5 +1,6 @@
 import tempfile
 
+import joblib
 import pytest
 import scipy
 import xarray as xr
@@ -13,8 +14,10 @@ from erlab.io.exampledata import generate_gold_edge
 
 @pytest.mark.parametrize("fast", [True, False], ids=["StepB", "FD"])
 def test_goldtool(
-    qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog
+    qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog, monkeypatch
 ) -> None:
+    # Force joblib to avoid loky while Qt is running
+    monkeypatch.setattr(joblib.parallel, "DEFAULT_BACKEND", "threading")
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.params_edge.widgets["Fast"].setChecked(fast)
