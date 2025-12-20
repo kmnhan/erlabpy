@@ -64,6 +64,10 @@ class _WarningNotificationHandler(logging.Handler):
         try:
             message = str(record.message)
 
+            if message.strip() == traceback_header:
+                # Ignore messages that are only the traceback header
+                return
+
             if traceback_header in message:
                 message, traceback_msg = message.split(traceback_header, 1)
                 traceback_msg = traceback_header + traceback_msg
@@ -595,16 +599,39 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 f"erlab: {erlab.__version__}\n" + version_info_str
             )
 
-    def updated(self, old_version: str, new_version: str) -> None:  # pragma: no cover
+    def updated(self, old_version: str, new_version: str) -> None:
         """Notify the user that the application has been updated."""
         msg_box = self._make_icon_msgbox()
-        msg_box.setText("ImageTool Manager Updated")
-        msg_box.setInformativeText(
-            "ImageTool Manager has been successfully updated from version "
-            f"{old_version} to {new_version}.",
-        )
+        if old_version == "":
+            # First time installation
+            msg_box.setText("ImageTool Manager Installed")
+            msg_box.setInformativeText(
+                f"Welcome to ImageTool Manager! You are using version {new_version}.",
+            )
+        else:
+            msg_box.setText("ImageTool Manager Updated")
+            msg_box.setInformativeText(
+                "ImageTool Manager has been successfully updated from version "
+                f"{old_version} to {new_version}.",
+            )
         msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Ok)
+        release_notes_btn = msg_box.addButton(
+            "Open Release Notes", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        documentation_btn = msg_box.addButton(
+            "Open Documentation", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
         msg_box.exec()
+
+        import webbrowser
+
+        clicked_button = msg_box.clickedButton()
+        if clicked_button == release_notes_btn:
+            webbrowser.open("https://github.com/kmnhan/erlabpy/releases")
+        elif clicked_button == documentation_btn:
+            webbrowser.open(
+                "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html"
+            )
 
     @QtCore.Slot()
     def open_log_directory(self) -> None:

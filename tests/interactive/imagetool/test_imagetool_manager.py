@@ -8,6 +8,7 @@ import tempfile
 import time
 import types
 import typing
+import webbrowser
 from collections.abc import Callable
 
 import numpy as np
@@ -1483,3 +1484,74 @@ def test_manager_cloudpickle(
             assert response.status == "unpickle-failed"
         finally:
             sock.close()
+
+
+@pytest.mark.parametrize(
+    (
+        "old_version",
+        "new_version",
+        "button_text",
+        "expected_url",
+        "expected_title",
+        "expected_info",
+    ),
+    [
+        (
+            "",
+            "1.2.3",
+            "Open Release Notes",
+            "https://github.com/kmnhan/erlabpy/releases",
+            "ImageTool Manager Installed",
+            "Welcome to ImageTool Manager! You are using version 1.2.3.",
+        ),
+        (
+            "1.0.0",
+            "1.1.0",
+            "Open Documentation",
+            "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html",
+            "ImageTool Manager Updated",
+            "ImageTool Manager has been successfully updated from version 1.0.0 to "
+            "1.1.0.",
+        ),
+    ],
+)
+def test_manager_updated_opens_links(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch,
+    old_version,
+    new_version,
+    button_text,
+    expected_url,
+    expected_title,
+    expected_info,
+) -> None:
+    opened: list[str] = []
+
+    def _open(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    def _accept_call(dialog: QtWidgets.QMessageBox) -> None:
+        assert dialog.text() == expected_title
+        assert dialog.informativeText() == expected_info
+        for button in dialog.buttons():
+            if button.text() == button_text:
+                button.click()
+                return
+        pytest.fail(f"Button {button_text!r} not found.")
+
+    monkeypatch.setattr(webbrowser, "open", _open)
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        accept_dialog(
+            lambda: manager.updated(old_version=old_version, new_version=new_version),
+            accept_call=_accept_call,
+        )
+
+    assert opened == [expected_url]
