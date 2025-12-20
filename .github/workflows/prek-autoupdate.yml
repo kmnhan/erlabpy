@@ -136,7 +136,7 @@ jobs:
 
       - name: Create pull request with updated hooks
         if: steps.autoupdate_changes.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           title: "ci(prek): prek autoupdate"
           body-path: ${{ steps.paths.outputs.body_path }}
