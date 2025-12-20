@@ -45,19 +45,36 @@ class _WarningEmitter(QtCore.QObject):
     warning_received = QtCore.Signal(str, int, str, str)
 
 
+def _check_message_is_progressbar(message: str) -> bool:
+    """Check if a log message contains a progress bar.
+
+    example: "Title:   8%|8         | 1/12 [00:00<00:07,  1.54it/s]"
+    """
+    return "|" in message and "%" in message and message.endswith("]")
+
+
 class _WarningNotificationHandler(logging.Handler):
     def __init__(self, emitter: _WarningEmitter):
         super().__init__(level=logging.WARNING)
         self._emitter = emitter
 
     def emit(self, record: logging.LogRecord) -> None:
+        traceback_header = "Traceback (most recent call last):"
         traceback_msg = ""
         try:
             message = str(record.message)
-            traceback_header = "Traceback (most recent call last):"
+
             if traceback_header in message:
                 message, traceback_msg = message.split(traceback_header, 1)
                 traceback_msg = traceback_header + traceback_msg
+            elif (
+                not _check_message_is_progressbar(message)
+                and record.levelno == logging.ERROR
+                and not record.exc_info
+            ):
+                # This should have been handled by stderr logger already, so just ignore
+                return
+
             if record.exc_info:
                 traceback_msg = "".join(traceback.format_exception(record.exc_info[1]))
 
@@ -594,13 +611,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Open the log directory in the system file explorer."""
         erlab.utils.misc.open_in_file_manager(get_log_file_path().parent)
 
-    def _check_message_is_progressbar(self, message: str) -> bool:
-        """Check if a log message contains a progress bar.
-
-        example: "Title:   8%|8         | 1/12 [00:00<00:07,  1.54it/s]"
-        """
-        return "|" in message and "%" in message and message.endswith("]")
-
     def _parse_progressbar(self, message: str):
         """Parse and display a progress bar from a log message."""
         title_part, _, info_part = message.split("|", 2)
@@ -636,7 +646,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self, levelname: str, levelno: int, message: str, formatted_traceback: str
     ) -> None:
         """Show a non-intrusive warning message in a floating window."""
-        if self._check_message_is_progressbar(message):
+        if _check_message_is_progressbar(message):
             try:
                 self._parse_progressbar(message)
             except Exception:  # pragma: no cover
