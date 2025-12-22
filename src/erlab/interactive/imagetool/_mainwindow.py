@@ -350,7 +350,7 @@ class ImageTool(BaseImageTool):
 
         self.close_act = QtWidgets.QAction("&Close", self)
         self.close_act.setShortcut("Ctrl+W")
-        self.close_act.triggered.connect(self.hide)
+        self.close_act.triggered.connect(self._hide_or_close)
         self.close_act.setIcon(QtGui.QIcon.fromTheme("window-close"))
 
         self.remove_act = QtWidgets.QAction("Remove from Manager", self)
@@ -362,6 +362,13 @@ class ImageTool(BaseImageTool):
         self._dask_menu.addAction(self.slicer_area.compute_act)
         self._dask_menu.addAction(self.slicer_area.chunk_auto_act)
         self._dask_menu.addAction(self.slicer_area.chunk_act)
+
+    @QtCore.Slot()
+    def _hide_or_close(self) -> None:
+        if self.slicer_area._in_manager:
+            self.hide()
+        else:
+            self.close()
 
     @property
     def mnb(self) -> ItoolMenuBar:
