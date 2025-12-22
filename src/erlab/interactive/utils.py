@@ -2173,6 +2173,18 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
 
     @QtCore.Slot()
+    def _hide_or_close(self) -> None:
+        """Hide or close the tool window based on its presence in the manager."""
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager and any(
+            self in wrapper._childtools.values()
+            for wrapper in manager._imagetool_wrappers.values()
+        ):
+            self.hide()
+        else:
+            self.close()
+
+    @QtCore.Slot()
     def _remove_from_manager(self) -> None:
         """Remove this tool from the ImageTool manager, if present."""
         manager = erlab.interactive.imagetool.manager._manager_instance
