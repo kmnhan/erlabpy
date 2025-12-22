@@ -4091,7 +4091,7 @@ class ItoolPlotItem(pg.PlotItem):
                 self.slicer_area.set_value(
                     axis, value, update=False, uniform=True, cursor=c
                 )
-            self.sigIndexChanged.emit(cursors, (axis,))
+            self.slicer_area.sigIndexChanged.emit(cursors, (axis,))
 
     def remove_cursor(self, index: int) -> None:
         item = self.slicer_data_items.pop(index)
