@@ -374,7 +374,13 @@ def auto_correct_curvature(
     # Get shift in eV
     shift_arr = (shift_idx_arr.values[max_idx] - poly_values) * step
     shifted = erlab.analysis.transform.shift(
-        darr, shift_arr, "eV", shift_coords=False, order=3, cval=0.0, prefilter=True
+        darr.fillna(0),
+        shift_arr,
+        "eV",
+        shift_coords=False,
+        order=3,
+        cval=0.0,
+        prefilter=True,
     ).clip(min=0)
 
     shifted_trimmed = shifted.copy()
