@@ -14,7 +14,7 @@ if sys.platform.startswith("win"):
         company_name="kmnhan",
         file_description="ImageTool Manager",
         internal_name="ImageTool Manager",
-        legal_copyright="© Kimoon Han. All rights reserved.",
+        legal_copyright="© Kimoon Higashihira Han. All rights reserved.",
         original_filename="ImageTool Manager.exe",
         product_name="ImageTool Manager",
         translations=[1033, 1200],  # English - Unicode
