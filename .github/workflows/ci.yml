@@ -87,7 +87,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install mypy and dependencies
-        run: uv sync --all-extras --dev --group pyqt6
+        run: uv sync --all-extras --dev --group pyqt6 --group pyside6
 
       - name: Run mypy
         run: uv run mypy --install-types --non-interactive --html-report mypy-report .
