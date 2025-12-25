@@ -73,6 +73,21 @@ __all__ = [
 ]
 
 
+try:
+    from shiboken6 import isValid as _qt_is_valid
+except Exception:  # pragma: no cover - varies by Qt binding
+    try:
+        import sip  # type: ignore[import-not-found]
+
+        def _qt_is_valid(arg__1: object) -> bool:
+            return arg__1 is not None and not sip.isdeleted(arg__1)
+
+    except Exception:  # pragma: no cover - fallback for unknown bindings
+
+        def _qt_is_valid(arg__1: object) -> bool:
+            return arg__1 is not None
+
+
 def parse_data(data) -> xr.DataArray:
     if isinstance(data, xr.Dataset):
         raise TypeError(

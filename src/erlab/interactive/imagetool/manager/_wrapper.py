@@ -114,21 +114,50 @@ class _ImageToolWrapper(QtCore.QObject):
         tool. The box ratio is calculated from the view box size of the main image.
         """
         if self.imagetool is not None:
-            main_image = self.slicer_area.main_image
-            vb_rect = main_image.getViewBox().rect()
+            try:
+                main_image = self.slicer_area.main_image
+            except RuntimeError:
+                return self._box_ratio_archived, self._pixmap_archived
 
-            pixmap: QtGui.QPixmap = (
-                main_image.slicer_data_items[0]
-                .getPixmap()
-                .transformed(QtGui.QTransform().scale(1.0, -1.0))
-            )
-            box_ratio: float = vb_rect.height() / vb_rect.width()
+            if not erlab.interactive.utils._qt_is_valid(main_image):
+                return self._box_ratio_archived, self._pixmap_archived
 
+            view_box = main_image.getViewBox()
+            if not erlab.interactive.utils._qt_is_valid(view_box):
+                return self._box_ratio_archived, self._pixmap_archived
+
+            vb_rect = view_box.rect()
+            width = vb_rect.width()
+            height = vb_rect.height()
+            if width <= 0 or height <= 0:
+                return self._box_ratio_archived, self._pixmap_archived
+
+            if not main_image.slicer_data_items:
+                return self._box_ratio_archived, self._pixmap_archived
+
+            image_item = main_image.slicer_data_items[0]
+            if not erlab.interactive.utils._qt_is_valid(image_item):
+                return self._box_ratio_archived, self._pixmap_archived
+
+            try:
+                pixmap = image_item.getPixmap()
+            except RuntimeError:
+                return self._box_ratio_archived, self._pixmap_archived
+
+            if pixmap.isNull():
+                return self._box_ratio_archived, self._pixmap_archived
+
+            pixmap = pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
+            box_ratio = height / width
             return box_ratio, pixmap
         return self._box_ratio_archived, self._pixmap_archived
 
     @property
     def imagetool(self) -> ImageTool | None:
+        if self._imagetool is not None and not erlab.interactive.utils._qt_is_valid(
+            self._imagetool
+        ):
+            self._imagetool = None
         return self._imagetool
 
     @imagetool.setter
@@ -368,6 +397,7 @@ class _ImageToolWrapper(QtCore.QObject):
             tool._tool_display_name = str(self.name)
 
         tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(uid=u))
+        tool.destroyed.connect(lambda _=None, u=uid: self.manager._remove_childtool(u))
 
         if show:
             tool.show()
@@ -377,5 +407,6 @@ class _ImageToolWrapper(QtCore.QObject):
         """Remove a child tool window from the current tool."""
         if uid in self._childtools:
             tool = self._childtools.pop(uid)
-            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            tool.close()
+            if erlab.interactive.utils._qt_is_valid(tool):
+                tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+                tool.close()
