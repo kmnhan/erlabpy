@@ -209,9 +209,9 @@ def test_manager(
         )
         delegate = manager.tree_view.itemDelegate()
         assert isinstance(delegate, _ImageToolWrapperItemDelegate)
-        assert isinstance(delegate._current_editor(), QtWidgets.QLineEdit)
-        delegate._current_editor().setText("new_name_1_single")
-        qtbot.keyClick(delegate._current_editor(), QtCore.Qt.Key.Key_Return)
+        assert isinstance(delegate._current_editor, QtWidgets.QLineEdit)
+        delegate._current_editor.setText("new_name_1_single")
+        qtbot.keyClick(delegate._current_editor, QtCore.Qt.Key.Key_Return)
         qtbot.wait_until(
             lambda: manager._imagetool_wrappers[1].name == "new_name_1_single",
             timeout=5000,
@@ -296,9 +296,9 @@ def test_manager(
         )
         delegate = manager.tree_view.itemDelegate()
         assert isinstance(delegate, _ImageToolWrapperItemDelegate)
-        assert isinstance(delegate._current_editor(), QtWidgets.QLineEdit)
-        delegate._current_editor().setText("new_goldtool_name")
-        qtbot.keyClick(delegate._current_editor(), QtCore.Qt.Key.Key_Return)
+        assert isinstance(delegate._current_editor, QtWidgets.QLineEdit)
+        delegate._current_editor.setText("new_goldtool_name")
+        qtbot.keyClick(delegate._current_editor, QtCore.Qt.Key.Key_Return)
         qtbot.wait_until(
             lambda: next(
                 iter(manager._imagetool_wrappers[3]._childtools.values())

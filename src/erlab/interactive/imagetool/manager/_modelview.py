@@ -79,10 +79,6 @@ class _ResizingLineEdit(QtWidgets.QLineEdit):
         )
 
 
-class _Placeholder:
-    pass
-
-
 class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     """
     A :class:`QtWidgets.QStyledItemDelegate` that handles displaying list view items.
@@ -114,9 +110,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         super().__init__(parent)
         self._manager = weakref.ref(manager)
         self._font_size = QtGui.QFont().pointSize()
-        self._current_editor: weakref.ref[QtWidgets.QLineEdit | _Placeholder] = (
-            weakref.ref(_Placeholder())
-        )
+        self._current_editor: QtWidgets.QLineEdit | None = None
 
         # Initialize popup preview
         self.preview_popup = QtWidgets.QLabel(parent)
@@ -149,7 +143,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         editor.setFont(option.font)
         editor.setFrame(True)
         editor.setPlaceholderText("Enter new name")
-        self._current_editor = weakref.ref(editor)
+        self._current_editor = editor
+        editor.destroyed.connect(self._clear_current_editor)
         return editor
 
     def updateEditorGeometry(
@@ -162,6 +157,17 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             rect = QtCore.QRectF(option.rect)
             rect.setTop(rect.center().y() - editor.sizeHint().height() / 2)
             editor.setGeometry(rect.toRect())
+
+    def destroyEditor(
+        self, editor: QtWidgets.QWidget | None, index: QtCore.QModelIndex
+    ) -> None:
+        if self._current_editor is editor:
+            self._current_editor = None
+        super().destroyEditor(editor, index)
+
+    @QtCore.Slot()
+    def _clear_current_editor(self) -> None:
+        self._current_editor = None
 
     def _show_popup(
         self,
