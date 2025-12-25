@@ -15,6 +15,10 @@ from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
 def test_poly(gold, parallel_kw: dict, fast: bool, use_dask: bool) -> None:
     if use_dask:
         gold = gold.chunk(alpha=1)
+    if parallel_kw:
+        parallel_kw["backend"] = "threading"
+    else:
+        parallel_kw = {"backend": "threading"}
     res = poly(
         gold,
         angle_range=(-15, 15),
@@ -63,7 +67,10 @@ def test_poly_nd(gold, parallel_kw: dict, fast: bool, use_dask: bool) -> None:
     )
     if use_dask:
         gold_nd = gold_nd.chunk({"beta": 1, "hv": 1})
-
+    if parallel_kw:
+        parallel_kw["backend"] = "threading"
+    else:
+        parallel_kw = {"backend": "threading"}
     res = poly(
         gold_nd,
         angle_range=(-15, 15),
@@ -106,6 +113,7 @@ def test_spline(gold) -> None:
         fast=True,
         lam=None,
         plot=True,
+        parallel_kw={"backend": "threading"},
     )
     plt.close()
 

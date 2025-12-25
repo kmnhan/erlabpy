@@ -41,6 +41,7 @@ for module_name in (
     "cmcrameri",  # Colormap library
     "seaborn",  # Colormap library
     "xarray",  # Full xarray for repr, etc.
+    "igorwriter",  # Igor file writing
 ):
     tmp_ret = collect_all(module_name)
     datas += tmp_ret[0]
