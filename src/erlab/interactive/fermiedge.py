@@ -4,6 +4,7 @@ import concurrent.futures
 import importlib.resources
 import os
 import time
+import traceback
 import typing
 
 import numpy as np
@@ -55,61 +56,82 @@ LMFIT_METHODS = [
 ]
 
 
-class EdgeFitter(QtCore.QThread):
+class EdgeFitSignals(QtCore.QObject):
     sigIterated = QtCore.Signal(int)
-    sigFinished = QtCore.Signal()
+    sigFinished = QtCore.Signal(object, object)
+    sigFailed = QtCore.Signal(str)
 
-    def set_params(self, data, along, x0, y0, x1, y1, params) -> None:
+
+class EdgeFitTask(QtCore.QRunnable):
+    def __init__(
+        self,
+        data: xr.DataArray,
+        along: str,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        params,
+    ) -> None:
+        super().__init__()
         self.data = data.copy()
         self.along = along
         self.x_range: tuple[float, float] = (x0, x1)
         self.y_range: tuple[float, float] = (y0, y1)
         self.params = params
-        self.parallel_obj = joblib.Parallel(
-            n_jobs=self.params["# CPU"],
-            max_nbytes=None,
-            return_as="generator",
-            pre_dispatch="n_jobs",
-            # https://github.com/joblib/joblib/issues/1002
-            backend="threading" if erlab.utils.misc._IS_PACKAGED else "loky",
-        )
-        self.edge_center: xr.DataArray | None = None
-        self.edge_stderr: xr.DataArray | None = None
+        self.parallel_obj: joblib.Parallel | None = None
+        self.signals = EdgeFitSignals()
+        self._mutex = QtCore.QMutex()
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
-        if self.isRunning():
-            self.mutex.lock()
+        if self.parallel_obj is None:
+            return
+        self._mutex.lock()
         self.parallel_obj._aborting = True
         self.parallel_obj._exception = True
-        if self.isRunning():
-            self.mutex.unlock()
+        self._mutex.unlock()
 
     def run(self) -> None:
-        self.mutex = QtCore.QMutex()
-        self.sigIterated.emit(0)
-        with erlab.utils.parallel.joblib_progress_qt(self.sigIterated) as _:
-            self.edge_center, self.edge_stderr = typing.cast(
-                "tuple[xr.DataArray, xr.DataArray]",
-                erlab.analysis.gold.edge(
-                    gold=self.data,
-                    along=self.along,
-                    angle_range=self.x_range,
-                    eV_range=self.y_range,
-                    bin_size=(self.params["Bin x"], self.params["Bin y"]),
-                    temp=self.params["T (K)"],
-                    vary_temp=not self.params["Fix T"],
-                    bkg_slope=self.params["Linear"],
-                    resolution=self.params["Resolution"],
-                    fast=self.params["Fast"],
-                    method=self.params["Method"],
-                    scale_covar=self.params["Scale cov"],
-                    progress=False,
-                    parallel_obj=self.parallel_obj,
-                    drop_nans=True,
-                ),
+        try:
+            # https://github.com/joblib/joblib/issues/1002
+            backend = (
+                "threading"
+                if erlab.utils.misc._IS_PACKAGED
+                else joblib.parallel.DEFAULT_BACKEND
             )
-        self.sigFinished.emit()
+            self.parallel_obj = joblib.Parallel(
+                n_jobs=self.params["# CPU"],
+                max_nbytes=None,
+                return_as="generator",
+                pre_dispatch="n_jobs",
+                backend=backend,
+            )
+            self.signals.sigIterated.emit(0)
+            with erlab.utils.parallel.joblib_progress_qt(self.signals.sigIterated) as _:
+                edge_center, edge_stderr = typing.cast(
+                    "tuple[xr.DataArray, xr.DataArray]",
+                    erlab.analysis.gold.edge(
+                        gold=self.data,
+                        along=self.along,
+                        angle_range=self.x_range,
+                        eV_range=self.y_range,
+                        bin_size=(self.params["Bin x"], self.params["Bin y"]),
+                        temp=self.params["T (K)"],
+                        vary_temp=not self.params["Fix T"],
+                        bkg_slope=self.params["Linear"],
+                        resolution=self.params["Resolution"],
+                        fast=self.params["Fast"],
+                        method=self.params["Method"],
+                        scale_covar=self.params["Scale cov"],
+                        progress=False,
+                        parallel_obj=self.parallel_obj,
+                        drop_nans=True,
+                    ),
+                )
+            self.signals.sigFinished.emit(edge_center, edge_stderr)
+        except Exception:  # pragma: no cover - defensive for worker thread
+            self.signals.sigFailed.emit(traceback.format_exc())
 
 
 class GoldTool(erlab.interactive.utils.AnalysisWindow):
@@ -386,12 +408,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.progress.setAutoReset(False)
         self.progress.cancel()
 
-        # Setup fitter thread
+        # Setup fitter worker
         # This allows the GUI to remain responsive during fitting so it can be aborted
-        self.fitter = EdgeFitter()
-        self.fitter.sigIterated.connect(self.iterated)
-        self.fitter.sigFinished.connect(self.post_fit)
-        self.sigAbortFitting.connect(self.fitter.abort_fit)
+        self._threadpool = QtCore.QThreadPool(self)
+        self._fit_task: EdgeFitTask | None = None
+        self.sigAbortFitting.connect(self._abort_fit_task)
 
         # Resize roi to data bounds
         eV_span = self.data.eV.values[-1] - self.data.eV.values[0]
@@ -446,20 +467,23 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             .sel({self._along_dim: slice(x0, x1)})
         )
         self.progress.setMaximum(n_total)
-        self.fitter.set_params(self.data, self._along_dim, x0, y0, x1, y1, params)
-        self.fitter.start()
+        self._abort_fit_task()
+        task = EdgeFitTask(self.data, self._along_dim, x0, y0, x1, y1, params)
+        task.signals.sigIterated.connect(self.iterated)
+        task.signals.sigFinished.connect(self.post_fit)
+        task.signals.sigFailed.connect(self._handle_fit_failed)
+        self._fit_task = task
+        self._threadpool.start(task)
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
         self.sigAbortFitting.emit()
 
-    @QtCore.Slot()
-    def post_fit(self) -> None:
+    @QtCore.Slot(object, object)
+    def post_fit(self, edge_center: xr.DataArray, edge_stderr: xr.DataArray) -> None:
         self.progress.reset()
-        self.edge_center, self.edge_stderr = (
-            typing.cast("xr.DataArray", self.fitter.edge_center),
-            typing.cast("xr.DataArray", self.fitter.edge_stderr),
-        )
+        self.edge_center, self.edge_stderr = edge_center, edge_stderr
+        self._fit_task = None
 
         xval = self.edge_center[self._along_dim].values
         yval = self.edge_center.values
@@ -471,6 +495,23 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.params_spl.setDisabled(False)
         self.params_tab.setDisabled(False)
         self.perform_fit()
+
+    @QtCore.Slot()
+    def _abort_fit_task(self) -> None:
+        if self._fit_task is None:
+            return
+        self._fit_task.abort_fit()
+
+    @QtCore.Slot(str)
+    def _handle_fit_failed(self, message: str) -> None:
+        self.progress.reset()
+        self._fit_task = None
+        erlab.interactive.utils.MessageDialog.critical(
+            self,
+            "Fermi Edge Fitting Failed",
+            "An error occurred during fitting. See details below.",
+            detailed_text=erlab.interactive.utils._format_traceback(message),
+        )
 
     @property
     def edge_func(self) -> "Callable":
@@ -628,9 +669,16 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     def _stop_server(self) -> None:
         """Stop the fitter thread properly."""
-        if self.fitter.isRunning():
-            self.fitter.abort_fit()
-            self.fitter.wait()
+        self._abort_fit_task()
+        if self._threadpool.activeThreadCount():
+            if hasattr(self._threadpool, "waitForDone"):  # Qt 6.8+
+                self._threadpool.waitForDone(5000)
+            else:  # pragma: no cover
+                import contextlib
+
+                with contextlib.suppress(KeyboardInterrupt):
+                    while self._threadpool.activeThreadCount() > 0:
+                        QtCore.QThread.msleep(100)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Overridden close event to ensure proper cleanup."""
