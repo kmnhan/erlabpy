@@ -68,16 +68,19 @@ class BZPlotter(QtWidgets.QMainWindow):
                 bvec = params
 
         self.plot = BZPlotWidget(bvec)
-        self.setCentralWidget(self.plot)
+        widget = QtWidgets.QWidget()
+        self.setCentralWidget(widget)
+        layout = QtWidgets.QVBoxLayout(widget)
 
         self.controls = LatticeWidget(bvec)
         self.controls.sigChanged.connect(self.plot.set_bvec)
+        layout.addWidget(self.controls)
+        layout.addWidget(self.plot)
 
         with erlab.interactive.utils.setup_qapp(execute):
             self.show()
             self.activateWindow()
             self.raise_()
-            self.controls.show()
 
 
 class LatticeWidget(QtWidgets.QTabWidget):
