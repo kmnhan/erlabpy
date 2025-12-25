@@ -501,40 +501,39 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         index: QtCore.QModelIndex,
     ) -> bool:
         if isinstance(event, QtGui.QHelpEvent) and index.isValid():
-            tool_wrapper: _ImageToolWrapper = typing.cast(
-                "_ImageToolWrapper", index.internalPointer()
-            )
-            _, dask_rect, link_rect, watched_rect = self._compute_icons_info(
-                option, tool_wrapper
-            )
-            pos = event.pos()
-            if dask_rect and dask_rect.contains(pos):
-                QtWidgets.QToolTip.showText(
-                    event.globalPos(),
-                    "Dask-backed data (chunked array)",
-                    view,
-                    dask_rect,
+            tool_wrapper = index.internalPointer()
+            if isinstance(tool_wrapper, _ImageToolWrapper):  # pragma: no branch
+                _, dask_rect, link_rect, watched_rect = self._compute_icons_info(
+                    option, tool_wrapper
                 )
-                return True
-            if link_rect and link_rect.contains(pos):
-                proxy = tool_wrapper.slicer_area._linking_proxy
-                if proxy:  # pragma: no branch
-                    linker_index = self.manager._linkers.index(proxy)
+                pos = event.pos()
+                if dask_rect and dask_rect.contains(pos):
                     QtWidgets.QToolTip.showText(
                         event.globalPos(),
-                        f"Linked (#{linker_index})",
+                        "Dask-backed data (chunked array)",
                         view,
-                        link_rect,
+                        dask_rect,
                     )
                     return True
-            if watched_rect and watched_rect.contains(pos):
-                QtWidgets.QToolTip.showText(
-                    event.globalPos(),
-                    "Variable synced with IPython",
-                    view,
-                    watched_rect,
-                )
-                return True
+                if link_rect and link_rect.contains(pos):
+                    proxy = tool_wrapper.slicer_area._linking_proxy
+                    if proxy:  # pragma: no branch
+                        linker_index = self.manager._linkers.index(proxy)
+                        QtWidgets.QToolTip.showText(
+                            event.globalPos(),
+                            f"Linked (#{linker_index})",
+                            view,
+                            link_rect,
+                        )
+                        return True
+                if watched_rect and watched_rect.contains(pos):
+                    QtWidgets.QToolTip.showText(
+                        event.globalPos(),
+                        "Variable synced with IPython",
+                        view,
+                        watched_rect,
+                    )
+                    return True
 
         return super().helpEvent(event, view, option, index)
 

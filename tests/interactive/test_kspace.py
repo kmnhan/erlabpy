@@ -47,6 +47,9 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
         execute=False,
     )
     qtbot.addWidget(win)
+    win.centering_combo.setCurrentText("I")
+    if not win.data.kspace._has_hv:
+        win.kz_spin.setValue(0.5)
 
     for k, v in offset_dict.items():
         if assignment == "before":
