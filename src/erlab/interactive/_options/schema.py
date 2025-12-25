@@ -91,7 +91,23 @@ class KToolBZOptions(BaseModel):
         le=99.99,
         json_schema_extra={"ui_step": 0.01, "ui_suffix": "Å"},
     )
-    default_ang: float = Field(
+    default_alpha: float = Field(
+        default=90.0,
+        title="α",
+        description="Default lattice angle α in degrees.",
+        ge=1.0,
+        le=179.0,
+        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+    )
+    default_beta: float = Field(
+        default=90.0,
+        title="β",
+        description="Default lattice angle β in degrees.",
+        ge=1.0,
+        le=179.0,
+        json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
+    )
+    default_gamma: float = Field(
         default=120.0,
         title="γ",
         description="Default lattice angle γ in degrees.",
@@ -99,10 +115,21 @@ class KToolBZOptions(BaseModel):
         le=179.0,
         json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},
     )
+    default_centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"] = Field(
+        default="P",
+        title="Centering",
+        description="Default centering used to transform the conventional cell "
+        "into a primitive cell.",
+        json_schema_extra={
+            "ui_type": "list",
+            "ui_limits": ["P", "A", "B", "C", "F", "I", "R"],
+        },
+    )
+
     default_rot: float = Field(
         default=0.0,
-        title="rot",
-        description="Default rotation of the Brillouin zone in degrees.",
+        title="Rotation",
+        description="Default rotation of the Brillouin zone about kz in degrees.",
         ge=-360.0,
         le=360.0,
         json_schema_extra={"ui_step": 1.0, "ui_suffix": "°"},

@@ -143,6 +143,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self,
         avec: npt.NDArray | None = None,
         rotate_bz: float | None = None,
+        centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"] | None = None,
         cmap: str | None = None,
         gamma: float | None = None,
     ) -> None:
@@ -193,13 +194,13 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self.bz_group.toggled.connect(self.update_bz)
         self.a_spin.valueChanged.connect(self.update_bz)
         self.b_spin.valueChanged.connect(self.update_bz)
-        self.ang_spin.valueChanged.connect(self.update_bz)
-        self.rot_spin.valueChanged.connect(self.update_bz)
         self.c_spin.valueChanged.connect(self.update_bz)
-        self.ab_spin.valueChanged.connect(self.update_bz)
-        self.n1_spin.valueChanged.connect(self.update_bz)
-        self.n2_spin.valueChanged.connect(self.update_bz)
-        self.reciprocal_check.stateChanged.connect(self.update_bz)
+        self.alpha_spin.valueChanged.connect(self.update_bz)
+        self.beta_spin.valueChanged.connect(self.update_bz)
+        self.gamma_spin.valueChanged.connect(self.update_bz)
+        self.rot_spin.valueChanged.connect(self.update_bz)
+        self.kz_spin.valueChanged.connect(self.update_bz)
+        self.centering_combo.currentIndexChanged.connect(self.update_bz)
         self.points_check.stateChanged.connect(self.update_bz)
 
         self.plotitems[0].setVisible(False)
@@ -210,29 +211,60 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self._roi_list: list[_MovableCircleROI] = []
         self.add_circle_btn.clicked.connect(self._add_circle)
 
-        if avec is None:
-            self.a_spin.setValue(opts.ktool.bz.default_a)
-            self.b_spin.setValue(opts.ktool.bz.default_b)
-            self.c_spin.setValue(opts.ktool.bz.default_c)
-            self.ab_spin.setValue(opts.ktool.bz.default_a)
-            self.ang_spin.setValue(opts.ktool.bz.default_ang)
-        else:
-            self._populate_bz(avec)
         if rotate_bz is None:
             rotate_bz = opts.ktool.bz.default_rot
 
-        self.rot_spin.setValue(rotate_bz)
+        with QtCore.QSignalBlocker(self.rot_spin):
+            self.rot_spin.setValue(rotate_bz)
 
-    def _populate_bz(self, avec) -> None:
+        if centering is None:
+            centering = opts.ktool.bz.default_centering
+
+        with QtCore.QSignalBlocker(self.centering_combo):
+            self.centering_combo.setCurrentText(centering)
+
+        if avec is None:
+            avec = erlab.lattice.abc2avec(
+                opts.ktool.bz.default_a,
+                opts.ktool.bz.default_b,
+                opts.ktool.bz.default_c,
+                opts.ktool.bz.default_alpha,
+                opts.ktool.bz.default_beta,
+                opts.ktool.bz.default_gamma,
+            )
+        self._avec = avec
+
+    @property
+    def _avec(self) -> npt.NDArray:
+        return erlab.lattice.abc2avec(
+            self.a_spin.value(),
+            self.b_spin.value(),
+            self.c_spin.value(),
+            self.alpha_spin.value(),
+            self.beta_spin.value(),
+            self.gamma_spin.value(),
+        )
+
+    @_avec.setter
+    def _avec(self, avec: npt.NDArray) -> None:
         if avec.shape == (2, 2):
             avec = np.pad(avec, ((0, 1), (0, 1)))
             avec[2, 2] = 1.0e-15
-        a, b, c, _, _, gamma = erlab.lattice.avec2abc(avec)
-        self.a_spin.setValue(a)
-        self.b_spin.setValue(b)
-        self.c_spin.setValue(c)
-        self.ab_spin.setValue(a)
-        self.ang_spin.setValue(gamma)
+        a, b, c, alpha, beta, gamma = erlab.lattice.avec2abc(avec)
+        with (
+            QtCore.QSignalBlocker(self.a_spin),
+            QtCore.QSignalBlocker(self.b_spin),
+            QtCore.QSignalBlocker(self.c_spin),
+            QtCore.QSignalBlocker(self.alpha_spin),
+            QtCore.QSignalBlocker(self.beta_spin),
+            QtCore.QSignalBlocker(self.gamma_spin),
+        ):
+            self.a_spin.setValue(a)
+            self.b_spin.setValue(b)
+            self.c_spin.setValue(c)
+            self.alpha_spin.setValue(alpha)
+            self.beta_spin.setValue(beta)
+            self.gamma_spin.setValue(gamma)
 
     @QtCore.Slot()
     def _add_circle(self) -> None:
@@ -266,21 +298,10 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         self.plotitems[1].clearPlots()
         if not self.bz_group.isChecked():
             return
-        if self.reciprocal_check.isChecked():
-            self.a_spin.setSuffix(" Å⁻¹")
-            self.b_spin.setSuffix(" Å⁻¹")
-            self.c_spin.setSuffix(" Å⁻¹")
-            self.ab_spin.setSuffix(" Å⁻¹")
-        else:
-            self.a_spin.setSuffix(" Å")
-            self.b_spin.setSuffix(" Å")
-            self.c_spin.setSuffix(" Å")
-            self.ab_spin.setSuffix(" Å")
 
-        lines, vertices = self.get_bz_lines()
+        lines, vertices, midpoints = self.get_bz_lines()
         for line in lines:
             self.plotitems[1].plot(line[:, 0], line[:, 1], pen=pg.mkPen("m", width=2))
-            vertices = np.vstack((vertices, np.mean(line, axis=0)))
 
         if self.points_check.isChecked():
             self.plotitems[1].plot(
@@ -291,6 +312,15 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
                 symbolPen=pg.mkColor(255, 255, 255, 0),
                 symbolBrush=pg.mkColor("m"),
                 symbolSize=6,
+            )
+            self.plotitems[1].plot(
+                midpoints[:, 0],
+                midpoints[:, 1],
+                symbol="x",
+                pen=pg.mkColor(255, 255, 255, 0),
+                symbolPen=pg.mkColor(255, 255, 255, 0),
+                symbolBrush=pg.mkColor("m"),
+                symbolSize=8,
             )
 
 
@@ -311,15 +341,10 @@ class KspaceTool(KspaceToolGUI):
         resolution_enabled: bool
         resolution: dict[str, float]
         bz_enabled: bool
-        a: float
-        b: float
-        ang: float
+        lattice_params: tuple[float, float, float, float, float, float]
         rot: float
-        c: float
-        ab: float
-        n1: int
-        n2: int
-        reciprocal: bool
+        kz: float
+        centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"]
         points: bool
         circle_rois: list[tuple[float, float, float]]
         cmap_name: str
@@ -400,15 +425,10 @@ class KspaceTool(KspaceToolGUI):
             resolution_enabled=self.resolution_supergroup.isChecked(),
             resolution={k: spin.value() for k, spin in self._resolution_spins.items()},
             bz_enabled=self.bz_group.isChecked(),
-            a=self.a_spin.value(),
-            b=self.b_spin.value(),
-            ang=self.ang_spin.value(),
+            lattice_params=erlab.lattice.avec2abc(self._avec),
             rot=self.rot_spin.value(),
-            c=self.c_spin.value(),
-            ab=self.ab_spin.value(),
-            n1=self.n1_spin.value(),
-            n2=self.n2_spin.value(),
-            reciprocal=self.reciprocal_check.isChecked(),
+            kz=self.kz_spin.value(),
+            centering=self.centering_combo.currentText(),
             points=self.points_check.isChecked(),
             circle_rois=[roi.get_position() for roi in self._roi_list],
             cmap_name=self.cmap_combo.currentText(),
@@ -452,39 +472,25 @@ class KspaceTool(KspaceToolGUI):
             self._resolution_spins[k].blockSignals(False)
 
         # Restore BZ parameters
-        self.bz_group.blockSignals(True)
-        self.a_spin.blockSignals(True)
-        self.b_spin.blockSignals(True)
-        self.ang_spin.blockSignals(True)
-        self.rot_spin.blockSignals(True)
-        self.c_spin.blockSignals(True)
-        self.ab_spin.blockSignals(True)
-        self.n1_spin.blockSignals(True)
-        self.n2_spin.blockSignals(True)
-        self.reciprocal_check.blockSignals(True)
-        self.points_check.blockSignals(True)
-        self.bz_group.setChecked(status.bz_enabled)
-        self.a_spin.setValue(status.a)
-        self.b_spin.setValue(status.b)
-        self.ang_spin.setValue(status.ang)
-        self.rot_spin.setValue(status.rot)
-        self.c_spin.setValue(status.c)
-        self.ab_spin.setValue(status.ab)
-        self.n1_spin.setValue(status.n1)
-        self.n2_spin.setValue(status.n2)
-        self.reciprocal_check.setChecked(status.reciprocal)
-        self.points_check.setChecked(status.points)
-        self.bz_group.blockSignals(False)
-        self.a_spin.blockSignals(False)
-        self.b_spin.blockSignals(False)
-        self.ang_spin.blockSignals(False)
-        self.rot_spin.blockSignals(False)
-        self.c_spin.blockSignals(False)
-        self.ab_spin.blockSignals(False)
-        self.n1_spin.blockSignals(False)
-        self.n2_spin.blockSignals(False)
-        self.reciprocal_check.blockSignals(False)
-        self.points_check.blockSignals(False)
+        with (
+            QtCore.QSignalBlocker(self.bz_group),
+            QtCore.QSignalBlocker(self.a_spin),
+            QtCore.QSignalBlocker(self.b_spin),
+            QtCore.QSignalBlocker(self.c_spin),
+            QtCore.QSignalBlocker(self.alpha_spin),
+            QtCore.QSignalBlocker(self.beta_spin),
+            QtCore.QSignalBlocker(self.gamma_spin),
+            QtCore.QSignalBlocker(self.rot_spin),
+            QtCore.QSignalBlocker(self.kz_spin),
+            QtCore.QSignalBlocker(self.centering_combo),
+            QtCore.QSignalBlocker(self.points_check),
+        ):
+            self.bz_group.setChecked(status.bz_enabled)
+            self._avec = erlab.lattice.abc2avec(*status.lattice_params)
+            self.rot_spin.setValue(status.rot)
+            self.kz_spin.setValue(status.kz)
+            self.centering_combo.setCurrentText(status.centering)
+            self.points_check.setChecked(status.points)
 
         # Restore circle ROIs
         for x0, y0, radius in status.circle_rois:
@@ -538,12 +544,15 @@ class KspaceTool(KspaceToolGUI):
         data: xr.DataArray,
         avec: npt.NDArray | None = None,
         rotate_bz: float | None = None,
+        centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"] | None = None,
+        *,
         cmap: str | None = None,
         gamma: float | None = None,
-        *,
         data_name: str | None = None,
     ) -> None:
-        super().__init__(avec=avec, rotate_bz=rotate_bz, cmap=cmap, gamma=gamma)
+        super().__init__(
+            avec=avec, rotate_bz=rotate_bz, centering=centering, cmap=cmap, gamma=gamma
+        )
 
         self._argnames: dict[str, str] = {}
 
@@ -626,12 +635,9 @@ class KspaceTool(KspaceToolGUI):
             self.offsets_group.layout().addRow(
                 self._OFFSET_LABELS["V0"], self._offset_spins["V0"]
             )
-
-            for i in range(8):
-                self.bz_form.setRowVisible(i, i not in (0, 1, 2))
+            self.bz_form.setRowVisible(7, False)
         else:
-            for i in range(8):
-                self.bz_form.setRowVisible(i, i not in (3, 4))
+            self.bz_form.setRowVisible(7, True)
 
         # Work function spinbox
         self._offset_spins["wf"] = QtWidgets.QDoubleSpinBox()
@@ -884,60 +890,59 @@ class KspaceTool(KspaceToolGUI):
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k.T)
         self.sigInfoChanged.emit()
+        if self.bz_group.isChecked():
+            self.update_bz()
 
-    def get_bz_lines(self) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    def get_bz_lines(
+        self,
+    ) -> tuple[
+        npt.NDArray[np.floating], npt.NDArray[np.floating], npt.NDArray[np.floating]
+    ]:
+        avec_primitive = erlab.lattice.to_primitive(
+            self._avec, centering_type=self.centering_combo.currentText()
+        )
+        bvec = erlab.lattice.to_reciprocal(avec_primitive)
+        converted_slice: xr.DataArray | None = self.images[1].data_array
+        if converted_slice is None:
+            return np.zeros((0, 2)), np.zeros((0, 2)), np.zeros((0, 2))
+
+        rot: float = self.rot_spin.value()
+
         if self.data.kspace._has_hv:
-            # Out-of-plane BZ
-            a, c = self.ab_spin.value(), self.c_spin.value()
-            rot = np.deg2rad(self.rot_spin.value())
+            kp_dim = next(d for d in converted_slice.dims if d != "kz")
+            other = "kx" if kp_dim == "ky" else "ky"
 
-            basis = np.array([[a, 0], [0, c]])
-            if not self.reciprocal_check.isChecked():
-                basis = 2 * np.pi * np.linalg.inv(basis).T
-
-            if rot != 0.0:
-                basis[0, :] *= np.cos(rot)
-
-            lines, vertices = erlab.lattice.get_bz_edge(
-                basis,
-                reciprocal=True,
-                extend=(self.n1_spin.value(), self.n2_spin.value()),
+            kp_vals = converted_slice[kp_dim].values
+            kz_vals = converted_slice["kz"].values
+            lines, vertices, midpoints = erlab.lattice.get_out_of_plane_bz(
+                bvec,
+                k_parallel=float(converted_slice[other]),
+                angle=rot,
+                bounds=(kp_vals.min(), kp_vals.max(), kz_vals.min(), kz_vals.max()),
+                return_midpoints=True,
             )
-
         else:
-            # In-plane BZ
-            a, b = self.a_spin.value(), self.b_spin.value()
-            ang = np.deg2rad(self.ang_spin.value())
-            rot = np.deg2rad(self.rot_spin.value())
-
-            avec = np.array([[a, 0], [b * np.cos(ang), b * np.sin(ang)]])
-
-            lines, vertices = erlab.lattice.get_bz_edge(
-                avec,
-                reciprocal=self.reciprocal_check.isChecked(),
-                extend=(self.n1_spin.value(), self.n2_spin.value()),
+            kx_vals = converted_slice["kx"].values
+            ky_vals = converted_slice["ky"].values
+            lines, vertices, midpoints = erlab.lattice.get_in_plane_bz(
+                bvec,
+                kz=self.kz_spin.value() * np.pi / self.c_spin.value(),
+                angle=rot,
+                bounds=(kx_vals.min(), kx_vals.max(), ky_vals.min(), ky_vals.max()),
+                return_midpoints=True,
             )
 
-            if rot != 0.0:
-                rotmat = np.array(
-                    [
-                        [np.cos(rot), -np.sin(rot)],
-                        [np.sin(rot), np.cos(rot)],
-                    ]
-                )
-                lines = (rotmat @ lines.transpose(1, 2, 0)).transpose(2, 0, 1)
-                vertices = (rotmat @ vertices.T).T
-
-        return lines, vertices
+        return lines, vertices, midpoints
 
 
 def ktool(
     data: xr.DataArray,
     avec: npt.NDArray | None = None,
     rotate_bz: float | None = None,
+    centering: typing.Literal["P", "A", "B", "C", "F", "I", "R"] | None = None,
+    *,
     cmap: str | None = None,
     gamma: float | None = None,
-    *,
     data_name: str | None = None,
     execute: bool | None = None,
 ) -> KspaceTool:
@@ -959,6 +964,10 @@ def ktool(
         can use utilities from :mod:`erlab.lattice` to construct these vectors.
     rotate_bz
         Rotation angle for the Brillouin zone boundary overlay.
+    centering
+        Optional centering type to convert the conventional unit cell into a primitive
+        one. Must be one of ``"P"`` (primitive), ``"A"``, ``"B"``, ``"C"``, ``"I"``
+        (body-centered), ``"F"`` (face-centered), and ``"R"`` (rhombohedral).
     cmap : str, optional
         Name of the colormap to use.
     gamma
@@ -979,6 +988,7 @@ def ktool(
             data,
             avec=avec,
             rotate_bz=rotate_bz,
+            centering=centering,
             cmap=cmap,
             gamma=gamma,
             data_name=data_name,

@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>759</width>
-    <height>708</height>
+    <height>723</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -210,7 +210,7 @@
              <item row="0" column="0">
               <widget class="QLabel" name="label">
                <property name="text">
-                <string>a</string>
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;a&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                </property>
               </widget>
              </item>
@@ -239,7 +239,7 @@
              <item row="1" column="0">
               <widget class="QLabel" name="label_2">
                <property name="text">
-                <string>b</string>
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;b&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                </property>
               </widget>
              </item>
@@ -265,43 +265,14 @@
                </property>
               </widget>
              </item>
-             <item row="2" column="1">
-              <widget class="QDoubleSpinBox" name="ang_spin">
-               <property name="keyboardTracking">
-                <bool>false</bool>
-               </property>
-               <property name="suffix">
-                <string>°</string>
-               </property>
-               <property name="decimals">
-                <number>1</number>
-               </property>
-               <property name="minimum">
-                <double>1.000000000000000</double>
-               </property>
-               <property name="maximum">
-                <double>179.000000000000000</double>
-               </property>
-               <property name="value">
-                <double>120.000000000000000</double>
-               </property>
-              </widget>
-             </item>
              <item row="2" column="0">
-              <widget class="QLabel" name="label_3">
-               <property name="text">
-                <string>ang</string>
-               </property>
-              </widget>
-             </item>
-             <item row="3" column="0">
               <widget class="QLabel" name="label_13">
                <property name="text">
-                <string>c</string>
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;c&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                </property>
               </widget>
              </item>
-             <item row="3" column="1">
+             <item row="2" column="1">
               <widget class="QDoubleSpinBox" name="c_spin">
                <property name="keyboardTracking">
                 <bool>false</bool>
@@ -323,37 +294,15 @@
                </property>
               </widget>
              </item>
-             <item row="4" column="1">
-              <widget class="QDoubleSpinBox" name="ab_spin">
-               <property name="keyboardTracking">
-                <bool>false</bool>
-               </property>
-               <property name="suffix">
-                <string> Å</string>
-               </property>
-               <property name="decimals">
-                <number>3</number>
-               </property>
-               <property name="minimum">
-                <double>0.001000000000000</double>
-               </property>
-               <property name="singleStep">
-                <double>0.010000000000000</double>
-               </property>
-               <property name="value">
-                <double>3.540000000000000</double>
-               </property>
-              </widget>
-             </item>
-             <item row="4" column="0">
-              <widget class="QLabel" name="label_14">
+             <item row="3" column="0">
+              <widget class="QLabel" name="label_3">
                <property name="text">
-                <string>a or b</string>
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;α&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                </property>
               </widget>
              </item>
-             <item row="5" column="1">
-              <widget class="QDoubleSpinBox" name="rot_spin">
+             <item row="3" column="1">
+              <widget class="QDoubleSpinBox" name="alpha_spin">
                <property name="keyboardTracking">
                 <bool>false</bool>
                </property>
@@ -361,7 +310,97 @@
                 <string>°</string>
                </property>
                <property name="decimals">
-                <number>1</number>
+                <number>3</number>
+               </property>
+               <property name="minimum">
+                <double>1.000000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>179.998999999999995</double>
+               </property>
+               <property name="value">
+                <double>90.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="0">
+              <widget class="QLabel" name="label_7">
+               <property name="text">
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;β&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="1">
+              <widget class="QDoubleSpinBox" name="beta_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
+               <property name="suffix">
+                <string>°</string>
+               </property>
+               <property name="decimals">
+                <number>3</number>
+               </property>
+               <property name="minimum">
+                <double>1.000000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>179.998999999999995</double>
+               </property>
+               <property name="value">
+                <double>90.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="5" column="0">
+              <widget class="QLabel" name="label_14">
+               <property name="text">
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;γ&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+               </property>
+              </widget>
+             </item>
+             <item row="5" column="1">
+              <widget class="QDoubleSpinBox" name="gamma_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
+               <property name="suffix">
+                <string>°</string>
+               </property>
+               <property name="decimals">
+                <number>3</number>
+               </property>
+               <property name="minimum">
+                <double>1.000000000000000</double>
+               </property>
+               <property name="maximum">
+                <double>179.998999999999995</double>
+               </property>
+               <property name="value">
+                <double>120.000000000000000</double>
+               </property>
+              </widget>
+             </item>
+             <item row="6" column="0">
+              <widget class="QLabel" name="label_4">
+               <property name="text">
+                <string>angle</string>
+               </property>
+              </widget>
+             </item>
+             <item row="6" column="1">
+              <widget class="QDoubleSpinBox" name="rot_spin">
+               <property name="wrapping">
+                <bool>true</bool>
+               </property>
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
+               <property name="suffix">
+                <string>°</string>
+               </property>
+               <property name="decimals">
+                <number>3</number>
                </property>
                <property name="minimum">
                 <double>-360.000000000000000</double>
@@ -374,49 +413,85 @@
                </property>
               </widget>
              </item>
-             <item row="5" column="0">
-              <widget class="QLabel" name="label_4">
+             <item row="7" column="0">
+              <widget class="QLabel" name="label_24">
                <property name="text">
-                <string>rot</string>
-               </property>
-              </widget>
-             </item>
-             <item row="6" column="1">
-              <widget class="QSpinBox" name="n1_spin">
-               <property name="minimum">
-                <number>1</number>
-               </property>
-              </widget>
-             </item>
-             <item row="6" column="0">
-              <widget class="QLabel" name="label_11">
-               <property name="text">
-                <string>n1</string>
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic;&quot;&gt;k&lt;/span&gt;&lt;span style=&quot; font-style:italic; vertical-align:sub;&quot;&gt;z&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                </property>
               </widget>
              </item>
              <item row="7" column="1">
-              <widget class="QSpinBox" name="n2_spin">
+              <widget class="QDoubleSpinBox" name="kz_spin">
+               <property name="keyboardTracking">
+                <bool>false</bool>
+               </property>
+               <property name="suffix">
+                <string> π/c</string>
+               </property>
+               <property name="decimals">
+                <number>3</number>
+               </property>
                <property name="minimum">
-                <number>1</number>
+                <double>-99.989999999999995</double>
+               </property>
+               <property name="singleStep">
+                <double>0.100000000000000</double>
+               </property>
+               <property name="value">
+                <double>0.000000000000000</double>
                </property>
               </widget>
              </item>
-             <item row="7" column="0">
-              <widget class="QLabel" name="label_12">
+             <item row="8" column="0">
+              <widget class="QLabel" name="label_25">
                <property name="text">
-                <string>n2</string>
+                <string>centering</string>
                </property>
+              </widget>
+             </item>
+             <item row="8" column="1">
+              <widget class="QComboBox" name="centering_combo">
+               <property name="toolTip">
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Choose the centering type of the basis.&lt;/p&gt;&lt;p&gt;&lt;br/&gt;&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;P&lt;/span&gt;: Primitive (no change)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;A&lt;/span&gt;: Extra point on bc face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;B&lt;/span&gt;: Extra point on ac face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;C&lt;/span&gt;: Extra point on ab face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;F&lt;/span&gt;: Face-centered (extra points on all faces)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;I&lt;/span&gt;: Body-centered (extra point in cell center)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;R&lt;/span&gt;: Rhombohedral (in hexagonal setting)&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+               </property>
+               <item>
+                <property name="text">
+                 <string>P</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>A</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>B</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>C</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>F</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>I</string>
+                </property>
+               </item>
+               <item>
+                <property name="text">
+                 <string>R</string>
+                </property>
+               </item>
               </widget>
              </item>
             </layout>
-           </item>
-           <item>
-            <widget class="QCheckBox" name="reciprocal_check">
-             <property name="text">
-              <string>Reciprocal</string>
-             </property>
-            </widget>
            </item>
            <item>
             <widget class="QCheckBox" name="points_check">
@@ -531,7 +606,7 @@
            <item row="1" column="0">
             <widget class="QLabel" name="label_6">
              <property name="text">
-              <string>NBins</string>
+              <string># of Bins</string>
              </property>
             </widget>
            </item>
