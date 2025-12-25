@@ -1,3 +1,4 @@
+import joblib
 import numpy as np
 import pytest
 import scipy.signal
@@ -23,7 +24,8 @@ def test_acf2_handles_nans_and_renames_axes() -> None:
     assert np.isclose(result.sel(qx=0.0, qy=0.0), 1.0)
 
 
-def test_acf2stack_invalid_dim_count() -> None:
+def test_acf2stack_invalid_dim_count(monkeypatch) -> None:
+    monkeypatch.setattr(joblib.parallel, "DEFAULT_BACKEND", "threading")
     arr = xr.DataArray(np.zeros((2, 2, 2, 2)), dims=("a", "b", "c", "d"))
 
     with pytest.raises(ValueError, match="number of dimensions"):
