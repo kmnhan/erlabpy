@@ -7,6 +7,7 @@ __all__ = ["_ImageToolWrapperTreeView"]
 import functools
 import json
 import logging
+import math
 import os
 import typing
 import weakref
@@ -14,12 +15,12 @@ import weakref
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
-    import erlab
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 logger = logging.getLogger(__name__)
@@ -139,6 +140,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         index: QtCore.QModelIndex,
     ) -> QtWidgets.QWidget | None:
         option.font.setPointSize(self._font_size)
+        view = typing.cast("_ImageToolWrapperTreeView", self.parent())
+        if parent is None:
+            parent = view.viewport()
         editor = _ResizingLineEdit(parent)
         editor.setFont(option.font)
         editor.setFrame(True)
@@ -175,6 +179,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         pixmap: QtGui.QPixmap,
         option: QtWidgets.QStyleOptionViewItem,
     ) -> None:
+        if pixmap.isNull() or not math.isfinite(box_ratio) or box_ratio <= 0:
+            self.preview_popup.hide()
+            return
+
         popup_height = 150
 
         self.preview_popup.setFixedSize(round(popup_height / box_ratio), popup_height)
@@ -459,19 +467,42 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 or self._force_hover
             )
         ):
-            child_tool = self.manager.get_childtool(index.internalPointer())
-            image_item = child_tool.preview_imageitem
-            if image_item is None:
+            try:
+                child_tool = self.manager.get_childtool(index.internalPointer())
+            except KeyError:
                 self.preview_popup.hide()
-            else:
-                vb_rect = image_item.getViewBox().rect()
-                self._show_popup(
-                    vb_rect.height() / vb_rect.width(),
-                    image_item.getPixmap().transformed(
-                        QtGui.QTransform().scale(1.0, -1.0)
-                    ),
-                    option,
-                )
+                return
+
+            image_item = child_tool.preview_imageitem
+            if image_item is None or not erlab.interactive.utils._qt_is_valid(
+                image_item
+            ):
+                self.preview_popup.hide()
+                return
+
+            view_box = image_item.getViewBox()
+            if not erlab.interactive.utils._qt_is_valid(view_box):
+                self.preview_popup.hide()
+                return
+
+            vb_rect = view_box.rect()
+            width = vb_rect.width()
+            height = vb_rect.height()
+            if width <= 0 or height <= 0:
+                self.preview_popup.hide()
+                return
+
+            try:
+                pixmap = image_item.getPixmap()
+            except RuntimeError:
+                self.preview_popup.hide()
+                return
+
+            self._show_popup(
+                height / width,
+                pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0)),
+                option,
+            )
 
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None

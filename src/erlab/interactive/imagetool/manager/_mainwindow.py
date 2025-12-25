@@ -786,7 +786,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 wrapper.unarchive()
             else:
                 raise KeyError(f"Tool of index '{index}' is archived")
-        return typing.cast("ImageTool", wrapper.imagetool)
+        tool = wrapper.imagetool
+        if tool is None or not erlab.interactive.utils._qt_is_valid(tool):
+            raise KeyError(f"Tool of index '{index}' is not available")
+        return tool
 
     def color_for_linker(
         self, linker: erlab.interactive.imagetool.core.SlicerLinkProxy
@@ -2006,7 +2009,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """
         for idx, wrapper in self._imagetool_wrappers.items():
             if uid in wrapper._childtool_indices:
-                return wrapper._childtools[uid], idx
+                tool = wrapper._childtools[uid]
+                if not erlab.interactive.utils._qt_is_valid(tool):
+                    self._remove_childtool(uid)
+                    break
+                return tool, idx
         raise KeyError(f"No child tool with UID {uid} found")
 
     def get_childtool(self, uid: str) -> erlab.interactive.utils.ToolWindow:
