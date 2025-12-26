@@ -198,6 +198,53 @@ def test_multi_peak_model() -> None:
         model.fit(y, params, x=x)
 
 
+def test_multi_peak_model_guess_finds_peaks() -> None:
+    x = np.linspace(-5, 5, 401)
+    model = models.MultiPeakModel(npeaks=2, fd=False, background="linear")
+    params = model.make_params()
+    params["p0_center"].set(value=-1.5)
+    params["p0_height"].set(value=1.2)
+    params["p0_width"].set(value=0.7)
+    params["p1_center"].set(value=2.2)
+    params["p1_height"].set(value=0.8)
+    params["p1_width"].set(value=1.1)
+    params["const_bkg"].set(value=0.2)
+    params["lin_bkg"].set(value=0.05)
+
+    y = model.eval(params=params, x=x)
+    order = np.random.default_rng(0).permutation(x.size)
+    guess = model.guess(y[order], x=x[order])
+
+    centers = np.sort([guess["p0_center"].value, guess["p1_center"].value])
+    expected = np.sort([params["p0_center"].value, params["p1_center"].value])
+    assert np.allclose(centers, expected, atol=0.25)
+    assert guess["p0_height"].value > 0.0
+    assert guess["p1_height"].value > 0.0
+    assert guess["p0_width"].value > 0.0
+    assert guess["p1_width"].value > 0.0
+
+
+def test_multi_peak_model_guess_fallback_even_spacing() -> None:
+    x = np.linspace(-4, 4, 200)
+    y = np.full_like(x, 0.2)
+    model = models.MultiPeakModel(npeaks=3, fd=False, background="none")
+
+    guess = model.guess(y, x=x)
+    centers = np.sort(
+        [guess["p0_center"].value, guess["p1_center"].value, guess["p2_center"].value]
+    )
+    expected = np.linspace(x.min(), x.max(), 5)[1:-1]
+    step = x[1] - x[0]
+
+    assert np.allclose(centers, expected, atol=step)
+    widths = np.array(
+        [guess["p0_width"].value, guess["p1_width"].value, guess["p2_width"].value]
+    )
+    xrange = x.max() - x.min()
+    assert np.all(widths >= 0.1 * xrange)
+    assert np.all(widths <= xrange)
+
+
 def test_polynomial_model() -> None:
     # Create test data
     x = np.linspace(-10, 10, 100)
