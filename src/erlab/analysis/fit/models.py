@@ -360,11 +360,27 @@ class MultiPeakModel(lmfit.Model):
 
     def guess(self, data, x=None, **kwargs):
         pars = self.make_params()
-        # TODO: better guesses
+        if x is None:
+            x = np.arange(len(data), dtype=float)
+        data = np.asarray(data)
+        x = np.asarray(x, dtype=float)
+
+        # Drop non-finite values so guesses don't propagate NaNs/Infs.
+        mask = np.isfinite(data) & np.isfinite(x)
+        if not np.any(mask):
+            return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
+        data = data[mask]
+        x = x[mask]
+
+        # Ensure monotonic x for edge sampling and peak-finding.
+        order = np.argsort(x)
+        x, data = x[order], data[order]
+
         if self.func.fd:
+            # Use average intensity above EF as a simple initial offset guess.
             pars[f"{self.prefix}offset"].set(value=float(data[x >= 0].mean()))
 
-        # Sample edges for background estimation
+        # Sample both ends to estimate a background robustly.
         xc, yc = _get_edges(x, data, fraction=0.2)
         if self.func.background == "constant":
             poly = PolynomialModel(0).guess(yc, xc)
@@ -382,10 +398,97 @@ class MultiPeakModel(lmfit.Model):
 
         xrange = float(x.max() - x.min())
 
-        for i in range(self.func.npeaks):  # Number of peaks
-            pars[f"{self.prefix}p{i}_center"].set(value=0.0)
-            pars[f"{self.prefix}p{i}_height"].set(value=float(data.mean()))
-            pars[f"{self.prefix}p{i}_width"].set(value=0.1 * xrange)
+        # Subtract estimated background to isolate peaks for initialization.
+        baseline = np.zeros_like(data, dtype=float)
+        if self.func.background == "constant":
+            baseline = float(pars[f"{self.prefix}const_bkg"].value)
+        elif self.func.background == "linear":
+            baseline = (
+                float(pars[f"{self.prefix}const_bkg"].value)
+                + float(pars[f"{self.prefix}lin_bkg"].value) * x
+            )
+        elif self.func.background == "polynomial":
+            coeffs = [
+                float(pars[f"{self.prefix}c{i}"].value)
+                for i in range(self.func.bkg_degree + 1)
+            ]
+            baseline = np.zeros_like(data, dtype=float)
+            for i, coef in enumerate(coeffs):
+                baseline = baseline + coef * x**i
+
+        y = data - baseline
+
+        # Light smoothing to reduce noise-driven local maxima.
+        if y.size >= 5:
+            window = max(3, int(0.02 * y.size))
+            if window % 2 == 0:
+                window += 1
+            kernel = np.ones(window, dtype=float) / window
+            y_smooth = np.convolve(y, kernel, mode="same")
+        else:
+            y_smooth = y
+
+        # Candidate peaks: simple local-max test, then rank by height.
+        peak_idx = (
+            np.where(
+                (y_smooth[1:-1] > y_smooth[:-2]) & (y_smooth[1:-1] > y_smooth[2:])
+            )[0]
+            + 1
+        )
+        peak_idx = peak_idx[np.argsort(y_smooth[peak_idx])[::-1]]
+
+        # Enforce a minimum separation so multiple peaks don't collapse to one feature.
+        min_sep = max(1, int(len(x) / max(self.func.npeaks * 2, 1)))
+        chosen = []
+        for idx in peak_idx:
+            if all(abs(idx - c) >= min_sep for c in chosen):
+                chosen.append(int(idx))
+            if len(chosen) >= self.func.npeaks:
+                break
+
+        # If not enough peaks found, seed centers approximately evenly across range.
+        if len(chosen) < self.func.npeaks:
+            fallback = np.linspace(x.min(), x.max(), self.func.npeaks + 2)[1:-1]
+            for val in fallback:
+                if len(chosen) >= self.func.npeaks:
+                    break
+                chosen.append(int(np.argmin(np.abs(x - val))))
+
+        height_default = float(np.nanmean(y)) if np.isfinite(np.nanmean(y)) else 0.0
+        width_default = 0.1 * xrange if np.isfinite(xrange) else 1.0
+
+        for i in range(self.func.npeaks):
+            idx = chosen[i] if i < len(chosen) else int(np.argmax(y_smooth))
+            center = float(x[idx])
+            height = float(y[idx]) if np.isfinite(y[idx]) else height_default
+            width = width_default
+
+            # Estimate width via an approximate FWHM on the smoothed trace.
+            peak_height = float(y_smooth[idx])
+            if np.isfinite(peak_height) and peak_height > 0:
+                half_max = peak_height * 0.5
+                left = idx
+                while left > 0 and y_smooth[left] > half_max:
+                    left -= 1
+                right = idx
+                while right < y_smooth.size - 1 and y_smooth[right] > half_max:
+                    right += 1
+                if left != right:
+                    x_left = np.interp(
+                        half_max,
+                        [y_smooth[left], y_smooth[left + 1]],
+                        [x[left], x[left + 1]],
+                    )
+                    x_right = np.interp(
+                        half_max,
+                        [y_smooth[right - 1], y_smooth[right]],
+                        [x[right - 1], x[right]],
+                    )
+                    width = float(abs(x_right - x_left))
+
+            pars[f"{self.prefix}p{i}_center"].set(value=center)
+            pars[f"{self.prefix}p{i}_height"].set(value=height)
+            pars[f"{self.prefix}p{i}_width"].set(value=width)
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
