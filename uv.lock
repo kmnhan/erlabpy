@@ -853,6 +853,7 @@ complete = [
     { name = "libarchive-c" },
     { name = "nexusformat" },
     { name = "numbagg" },
+    { name = "numdifftools" },
     { name = "xxhash" },
     { name = "zarr" },
 ]
@@ -865,6 +866,7 @@ io = [
 misc = [
     { name = "csaps" },
     { name = "iminuit" },
+    { name = "numdifftools" },
 ]
 perf = [
     { name = "numbagg" },
@@ -948,6 +950,7 @@ requires-dist = [
     { name = "numba", marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'", specifier = ">=0.63.0" },
     { name = "numba", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", specifier = ">=0.61.0,<0.63.0" },
     { name = "numbagg", marker = "extra == 'perf'", specifier = ">=0.8.1" },
+    { name = "numdifftools", marker = "extra == 'misc'", specifier = ">=0.9.42" },
     { name = "numexpr", specifier = ">=2.11.0" },
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "packaging", specifier = ">=24.0" },
@@ -963,7 +966,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.2" },
     { name = "varname", specifier = ">=0.13.0" },
     { name = "xarray", specifier = ">=2024.10.0" },
-    { name = "xarray-lmfit", specifier = ">=0.4.1" },
+    { name = "xarray-lmfit", specifier = ">=0.5.4" },
     { name = "xxhash", marker = "extra == 'perf'", specifier = ">=3.5.0" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.1.2" },
 ]
@@ -2527,6 +2530,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4e/15/e2e1151b5a8b14a15dfd4bb4abccce7fff7580f39bc34092780088835f3a/numcodecs-0.16.5-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:49f7b7d24f103187f53135bed28bb9f0ed6b2e14c604664726487bb6d7c882e1", size = 8476987, upload-time = "2025-11-21T02:49:43.363Z" },
     { url = "https://files.pythonhosted.org/packages/6d/30/16a57fc4d9fb0ba06c600408bd6634f2f1753c54a7a351c99c5e09b51ee2/numcodecs-0.16.5-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:aec9736d81b70f337d89c4070ee3ffeff113f386fd789492fa152d26a15043e4", size = 9102377, upload-time = "2025-11-21T02:49:45.508Z" },
     { url = "https://files.pythonhosted.org/packages/31/a5/a0425af36c20d55a3ea884db4b4efca25a43bea9214ba69ca7932dd997b4/numcodecs-0.16.5-cp314-cp314-win_amd64.whl", hash = "sha256:b16a14303800e9fb88abc39463ab4706c037647ac17e49e297faa5f7d7dbbf1d", size = 819022, upload-time = "2025-11-21T02:49:47.39Z" },
+]
+
+[[package]]
+name = "numdifftools"
+version = "0.9.42"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/17/94/7c83677dddc78f93230f4c8a6a5faa06c92699a76eb019386a3aed8a9762/numdifftools-0.9.42.tar.gz", hash = "sha256:866675171f293c4bf2f1e1c5bf9b88a07d5396903e3b3e7fcc3879e2a01cfbc1", size = 79612, upload-time = "2025-12-11T12:06:10.54Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/60/c7504633e9fe53dc823db5d83dc15651c595cf35d668781832b4d2748272/numdifftools-0.9.42-py3-none-any.whl", hash = "sha256:22f926b8de24aa44f740bc26744a74555c1c80413068b1dee2edb3c3d10566f6", size = 94252, upload-time = "2025-12-11T12:06:09.322Z" },
 ]
 
 [[package]]
@@ -4655,7 +4671,7 @@ wheels = [
 
 [[package]]
 name = "xarray-lmfit"
-version = "0.5.1"
+version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lazy-loader" },
@@ -4663,9 +4679,9 @@ dependencies = [
     { name = "numpy" },
     { name = "xarray" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/df/50/950b8f9f33bb7c77eabe49a2c97f61de8bb0a99f04978ebf431d92f12a5c/xarray_lmfit-0.5.1.tar.gz", hash = "sha256:10d8991de7dc01e6154af8d3ccf5c1b6afa6fa1cd973ffde18f2d8e528f23de0", size = 207600, upload-time = "2025-11-25T04:47:44.385Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/fe/e18b87e83569fb41ad1a0730d7a1d9c3beeb25c7e2634b5358ec69c742a0/xarray_lmfit-0.5.4.tar.gz", hash = "sha256:fa802cf085de1a53f8f2661542b54559daea3fc539b79c76b39f7ae622626d75", size = 38871, upload-time = "2026-01-05T06:56:15.652Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/7a/65a26a5ea3573866dd986f5c3753c575e359779a6a4c9b9c5a8cb7d87968/xarray_lmfit-0.5.1-py3-none-any.whl", hash = "sha256:29e29d878e2312b2eeafca6cc06b6d9942c3f02aebcb791effd5af882acac61d", size = 38040, upload-time = "2025-11-25T04:47:42.901Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/ec/6898b3186d9bf659a2f8a51f5164a0bc534b6634178058ddfd79f34626fa/xarray_lmfit-0.5.4-py3-none-any.whl", hash = "sha256:acc5c664959e3389bcbbc93ee574cd42e6706ac82d0a5bada79133de19b57f45", size = 26417, upload-time = "2026-01-05T06:56:14.276Z" },
 ]
 
 [[package]]

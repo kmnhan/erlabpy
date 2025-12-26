@@ -71,3 +71,23 @@ class InteractiveToolMagics(Magics):
         return erlab.interactive.meshtool(
             data=self.parse_expression(data), data_name=data
         )
+
+    @magic_arguments()
+    @argument(
+        "--model",
+        "-m",
+        default=None,
+        help="Model to fit to the data. If not provided, MultiPeakModel is used.",
+    )
+    @argument("data", help="Data to fit.")
+    @line_magic
+    def ftool(self, args):
+        args = parse_argstring(self.ftool, args)
+        data = args.data
+        model = args.model
+        return erlab.interactive.ftool(
+            data=self.parse_expression(data),
+            model=self.parse_expression(model) if model else None,
+            data_name=data,
+            model_name=model if model else None,
+        )

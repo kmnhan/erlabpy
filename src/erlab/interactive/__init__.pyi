@@ -8,6 +8,7 @@ __all__ = [
     "dtool",
     "explorer",
     "fermiedge",
+    "ftool",
     "goldtool",
     "imagetool",
     "itool",
@@ -31,6 +32,7 @@ from . import (
     kspace,
     utils,
 )
+from ._fit2d import ftool
 from ._mesh import meshtool
 from ._options import options
 from .derivative import dtool

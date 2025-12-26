@@ -30,6 +30,7 @@ def _isel_eV0(data):
         ("goldtool", "darr.isel(alpha=1)", "darr.isel(alpha=1)", _isel_alpha1),
         ("restool", "darr.isel(eV=0)", "darr.isel(eV=0)", _isel_eV0),
         ("meshtool", "darr", "darr", _identity),
+        ("ftool", "darr", "darr", _identity),
     ],
 )
 def test_interactive_tool_magics_forward_data(

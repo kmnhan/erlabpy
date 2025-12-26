@@ -58,6 +58,7 @@ __all__ = [
     "KeyboardEventFilter",
     "MessageDialog",
     "ParameterGroup",
+    "ResizingLineEdit",
     "RotatableLine",
     "ToolWindow",
     "copy_to_clipboard",
@@ -540,9 +541,9 @@ def _parse_single_arg(arg):
         if arg.startswith("|") and arg.endswith("|"):
             arg = arg[1:-1]
         elif '"' in arg:
-            arg = f"'{arg}'"
+            arg = f"'''{arg}'''" if "\n" in arg else f"'{arg}'"
         else:
-            arg = f'"{arg}"'
+            arg = f'"""{arg}"""' if "\n" in arg else f'"{arg}"'
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string
         arg = {k: erlab.utils.misc._convert_to_native(v) for k, v in arg.items()}
@@ -899,7 +900,9 @@ def save_fit_ui(
 
         match selected_filter:
             case "HDF5 Files (*.h5)":
-                xarray_lmfit.save_fit(fit_result, file_name, engine="h5netcdf")
+                xarray_lmfit.save_fit(
+                    fit_result, file_name, engine="h5netcdf", invalid_netcdf=True
+                )
             case _:
                 xarray_lmfit.save_fit(fit_result, file_name)
 
@@ -2181,10 +2184,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
         # Enable closing with keyboard shortcut
         self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self.hide)
+        self.__close_shortcut.setContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
 
         # Enable removing from the manager with keyboard shortcut
         self.__remove_shortcut = QtWidgets.QShortcut(
             QtGui.QKeySequence.StandardKey.Delete, self, self._remove_from_manager
+        )
+        self.__remove_shortcut.setContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
 
     @QtCore.Slot()
@@ -3350,3 +3359,35 @@ class ChunkEditDialog(QtWidgets.QDialog):
 
         self.result_chunks = new_chunks
         super().accept()
+
+
+class ResizingLineEdit(QtWidgets.QLineEdit):
+    """:class:`QtWidgets.QLineEdit` that resizes itself to fit the text.
+
+    This line edit automatically adjusts its size to fit the content as the user types.
+    Adopted from `this StackOverflow answer <https://stackoverflow.com/a/73663065>`_.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.textChanged.connect(self._on_text_changed)
+
+    @QtCore.Slot(str)
+    def _on_text_changed(self, text):
+        font_metrics = QtGui.QFontMetrics(self.font())
+
+        tm = self.textMargins()
+        tm_size = QtCore.QSize(tm.left() + tm.right(), tm.top() + tm.bottom())
+
+        cm = self.contentsMargins()
+        cm_size = QtCore.QSize(cm.left() + cm.right(), cm.top() + cm.bottom())
+
+        contents_size = (
+            font_metrics.size(0, text) + tm_size + cm_size + QtCore.QSize(8, 4)
+        )
+
+        self.setFixedSize(
+            self.style().sizeFromContents(
+                QtWidgets.QStyle.ContentsType.CT_LineEdit, None, contents_size, self
+            )
+        )

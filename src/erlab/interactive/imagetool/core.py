@@ -2431,6 +2431,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         widget.closeEvent = new_close_event  # type: ignore[assignment]
         widget.show()
+        widget.raise_()
+        widget.activateWindow()
 
     @QtCore.Slot()
     def open_in_ktool(self) -> None:
@@ -2985,6 +2987,8 @@ class ItoolPlotItem(pg.PlotItem):
         copy_code_action = self.vb.menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
 
+        self.vb.menu.addSeparator()
+
         if self.slicer_area._in_manager:
             plot_with_matplotlib_action = self.vb.menu.addAction("Plot with matplotlib")
             plot_with_matplotlib_action.triggered.connect(self.plot_with_matplotlib)
@@ -3017,7 +3021,12 @@ class ItoolPlotItem(pg.PlotItem):
             dtool_action = self.vb.menu.addAction("dtool")
             dtool_action.triggered.connect(self.open_in_dtool)
 
-            croppable_actions.extend((goldtool_action, restool_action, dtool_action))
+            ftool_action = self.vb.menu.addAction("ftool")
+            ftool_action.triggered.connect(self.open_in_ftool)
+
+            croppable_actions.extend(
+                (goldtool_action, restool_action, dtool_action, ftool_action)
+            )
 
             self.vb.menu.addSeparator()
 
@@ -3045,7 +3054,12 @@ class ItoolPlotItem(pg.PlotItem):
             adjust_color_action.triggered.connect(self.normalize_to_current_view)
 
             def _set_icons():
-                for act in (goldtool_action, restool_action, dtool_action):
+                for act in (
+                    goldtool_action,
+                    restool_action,
+                    dtool_action,
+                    ftool_action,
+                ):
                     act.setIcon(qtawesome.icon("mdi6.export"))
                     act.setIconVisibleInMenu(True)
 
@@ -3053,6 +3067,14 @@ class ItoolPlotItem(pg.PlotItem):
             _set_icons()
 
         else:
+            ftool_action = self.vb.menu.addAction("ftool")
+            ftool_action.triggered.connect(self.open_in_ftool)
+            ftool_action.setIcon(qtawesome.icon("mdi6.export"))
+            ftool_action.setIconVisibleInMenu(True)
+            croppable_actions.append(ftool_action)
+
+            self.vb.menu.addSeparator()
+
             norm_action = self.vb.menu.addAction("Normalize by mean")
             norm_action.setCheckable(True)
             norm_action.setChecked(False)
@@ -3772,6 +3794,16 @@ class ItoolPlotItem(pg.PlotItem):
                     execute=False,
                 )
             )
+
+    @QtCore.Slot()
+    def open_in_ftool(self) -> None:
+        self.slicer_area.add_tool_window(
+            erlab.interactive.ftool(
+                self.current_data,
+                data_name=self.get_selection_code(),
+                execute=False,
+            )
+        )
 
     @QtCore.Slot()
     def normalize_to_current_view(self) -> None:
