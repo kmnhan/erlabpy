@@ -46,7 +46,7 @@ dependencies = [
     "tqdm>=4.66.2",
     "varname>=0.13.0",
     "xarray>=2024.10.0",
-    "xarray-lmfit>=0.4.1",
+    "xarray-lmfit>=0.5.4",
 ]
 
 
@@ -60,7 +60,7 @@ io = [
     "zarr>=3.1.2",
 ]
 perf = ["numbagg>=0.8.1", "xxhash>=3.5.0"]
-misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0"]
+misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0", "numdifftools>=0.9.42"]
 
 [dependency-groups]
 dev = [

@@ -51,35 +51,6 @@ def _fill_rounded_rect(
     painter.restore()
 
 
-class _ResizingLineEdit(QtWidgets.QLineEdit):
-    """:class:`QtWidgets.QLineEdit` that resizes itself to fit the text."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.textChanged.connect(self._on_text_changed)
-
-    @QtCore.Slot(str)
-    def _on_text_changed(self, text):
-        # https://stackoverflow.com/a/73663065
-        font_metrics = QtGui.QFontMetrics(self.font())
-
-        tm = self.textMargins()
-        tm_size = QtCore.QSize(tm.left() + tm.right(), tm.top() + tm.bottom())
-
-        cm = self.contentsMargins()
-        cm_size = QtCore.QSize(cm.left() + cm.right(), cm.top() + cm.bottom())
-
-        contents_size = (
-            font_metrics.size(0, text) + tm_size + cm_size + QtCore.QSize(8, 4)
-        )
-
-        self.setFixedSize(
-            self.style().sizeFromContents(
-                QtWidgets.QStyle.ContentsType.CT_LineEdit, None, contents_size, self
-            )
-        )
-
-
 class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     """
     A :class:`QtWidgets.QStyledItemDelegate` that handles displaying list view items.
@@ -143,7 +114,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         view = typing.cast("_ImageToolWrapperTreeView", self.parent())
         if parent is None:
             parent = view.viewport()
-        editor = _ResizingLineEdit(parent)
+        editor = erlab.interactive.utils.ResizingLineEdit(parent)
         editor.setFont(option.font)
         editor.setFrame(True)
         editor.setPlaceholderText("Enter new name")
