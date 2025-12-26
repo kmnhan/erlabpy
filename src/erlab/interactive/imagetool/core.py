@@ -2985,6 +2985,8 @@ class ItoolPlotItem(pg.PlotItem):
         copy_code_action = self.vb.menu.addAction("Copy selection code")
         copy_code_action.triggered.connect(self.copy_selection_code)
 
+        self.vb.menu.addSeparator()
+
         if self.slicer_area._in_manager:
             plot_with_matplotlib_action = self.vb.menu.addAction("Plot with matplotlib")
             plot_with_matplotlib_action.triggered.connect(self.plot_with_matplotlib)
@@ -3053,6 +3055,13 @@ class ItoolPlotItem(pg.PlotItem):
             _set_icons()
 
         else:
+            fit1d_action = self.vb.menu.addAction("fit1d")
+            fit1d_action.triggered.connect(self.open_in_fit1d)
+            fit1d_action.setIcon(qtawesome.icon("mdi6.export"))
+            fit1d_action.setIconVisibleInMenu(True)
+
+            self.vb.menu.addSeparator()
+
             norm_action = self.vb.menu.addAction("Normalize by mean")
             norm_action.setCheckable(True)
             norm_action.setChecked(False)
@@ -3768,6 +3777,17 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.add_tool_window(
                 erlab.interactive.dtool(
                     self.current_data.T,
+                    data_name=self.get_selection_code(),
+                    execute=False,
+                )
+            )
+
+    @QtCore.Slot()
+    def open_in_fit1d(self) -> None:
+        if not self.is_image:  # pragma: no branch
+            self.slicer_area.add_tool_window(
+                erlab.interactive.fit1d(
+                    self.current_data,
                     data_name=self.get_selection_code(),
                     execute=False,
                 )
