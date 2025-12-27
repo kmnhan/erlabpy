@@ -106,6 +106,7 @@ class Minuit(iminuit.Minuit):
         | Sequence[npt.NDArray | xarray.DataArray],
         yerr: float | npt.NDArray | None = None,
         return_cost: bool = False,
+        params=None,
         **kwargs,
     ) -> Minuit | tuple[LeastSq, Minuit]:
         if len(model.independent_vars) == 1 and isinstance(
@@ -123,26 +124,26 @@ class Minuit(iminuit.Minuit):
 
         if yerr is None:
             yerr = 1.0
-
-        try:
-            if len(model.independent_vars) == 1:
-                params = model.guess(data, x)
-            else:
-                params = model.guess(data, *x)
-
-            for key, val in kwargs.items():
-                pname = f"{model.prefix}{key}"
-                if pname not in params:
-                    pname = key
-                if pname not in params:
-                    continue
-                if isinstance(val, dict):
-                    params[pname].set(**val)
+        if params is None:
+            try:
+                if len(model.independent_vars) == 1:
+                    params = model.guess(data, x)
                 else:
-                    params[pname].value = val
+                    params = model.guess(data, *x)
 
-        except NotImplementedError:
-            params = model.make_params(**kwargs)
+                for key, val in kwargs.items():
+                    pname = f"{model.prefix}{key}"
+                    if pname not in params:
+                        pname = key
+                    if pname not in params:
+                        continue
+                    if isinstance(val, dict):
+                        params[pname].set(**val)
+                    else:
+                        params[pname].value = val
+
+            except NotImplementedError:
+                params = model.make_params(**kwargs)
 
         # Convert data to numpy array (must be after guessing parameters)
         data = np.asarray(data)

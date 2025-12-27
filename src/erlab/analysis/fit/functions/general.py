@@ -209,7 +209,10 @@ def do_convolve_2d(
 @broadcast_args
 @numba.njit(cache=True)
 def gaussian_wh(
-    x: npt.NDArray[np.float64], center: float, width: float, height: float
+    x: npt.NDArray[np.float64],
+    center: float = 0.0,
+    width: float = 1.0,
+    height: float = 1.0,
 ) -> npt.NDArray[np.float64]:
     r"""Gaussian parametrized with FWHM and peak height.
 
@@ -244,7 +247,10 @@ def gaussian(
 @broadcast_args
 @numba.njit(cache=True)
 def lorentzian_wh(
-    x: npt.NDArray[np.float64], center: float, width: float, height: float
+    x: npt.NDArray[np.float64],
+    center: float = 0.0,
+    width: float = 1.0,
+    height: float = 1.0,
 ) -> npt.NDArray[np.float64]:
     r"""Lorentzian parametrized with FWHM and peak height.
 
