@@ -171,6 +171,9 @@ class MultiPeakFunction(DynamicFunction):
         Flag indicating whether the model should be convolved with a gaussian
         kernel. If `True`, adds a ``resolution`` parameter to the model,
         corresponding to the FWHM of the gaussian kernel.
+    oversample
+        Factor by which to oversample `x` during convolution to reduce numerical
+        artifacts.
     segmented
         Flag indicating whether to convolve the model in segments. If `True`, the
         model will be convolved in segments of uniform spacing. This must be set to
@@ -195,12 +198,14 @@ class MultiPeakFunction(DynamicFunction):
         ] = "linear",
         degree: int = 2,
         convolve: bool = True,
+        oversample: int = 1,
         segmented: bool = False,
     ) -> None:
         super().__init__()
         self.npeaks = npeaks
         self.fd = fd
         self.convolve = convolve
+        self.oversample = max(1, int(oversample))
         self.background = background
         self.segmented = segmented
 
@@ -353,8 +358,10 @@ class MultiPeakFunction(DynamicFunction):
                     "Missing parameter `resolution` required for convolution"
                 )
             if self.segmented:
-                return do_convolve_segments(x, self.pre_call, **params)
-            return do_convolve(x, self.pre_call, **params)
+                return do_convolve_segments(
+                    x, self.pre_call, oversample=self.oversample, **params
+                )
+            return do_convolve(x, self.pre_call, oversample=self.oversample, **params)
         return self.pre_call(x, **params)
 
 
