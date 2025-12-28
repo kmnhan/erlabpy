@@ -325,6 +325,7 @@ class MultiPeakModel(lmfit.Model):
         ] = "linear",
         degree: int = 2,
         convolve: bool = True,
+        oversample: int = 1,
         segmented: bool = False,
         **kwargs,
     ) -> None:
@@ -337,6 +338,7 @@ class MultiPeakModel(lmfit.Model):
                 background=background,
                 degree=degree,
                 convolve=convolve,
+                oversample=oversample,
                 segmented=segmented,
             ),
             **kwargs,

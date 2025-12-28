@@ -107,6 +107,7 @@ def do_convolve(
     func: Callable,
     resolution: float,
     pad: int = 5,
+    oversample: int = 1,
     **kwargs,
 ) -> npt.NDArray[np.float64]:
     r"""Convolves `func` with gaussian of FWHM `resolution` in `x`.
@@ -121,14 +122,25 @@ def do_convolve(
         FWHM of the gaussian kernel.
     pad
         Multiples of the standard deviation :math:`\sigma` to pad with.
+    oversample
+        Factor by which to oversample `x` for convolution to reduce numerical artifacts.
     **kwargs
         Additional keyword arguments to `func`.
 
     """
-    xn, g = _gen_kernel(
-        np.asarray(x, dtype=np.float64), float(resolution), pad=int(pad)
-    )
-    return np.convolve(func(xn, **kwargs), g, mode="valid")
+    if oversample == 1:
+        xn, g = _gen_kernel(
+            np.asarray(x, dtype=np.float64), float(resolution), pad=int(pad)
+        )
+        return np.convolve(func(xn, **kwargs), g, mode="valid")
+
+    dx = x[1] - x[0]
+    fine_dx = dx / oversample
+    n_fine = (x.size - 1) * oversample + 1
+    x_fine = x[0] + np.arange(n_fine, dtype=np.float64) * fine_dx
+
+    xn_fine, g = _gen_kernel(x_fine, float(resolution), pad=int(pad))
+    return np.convolve(func(xn_fine, **kwargs), g, mode="valid")[::oversample]
 
 
 def do_convolve_segments(
