@@ -164,6 +164,7 @@ class FermiEdgeModel(lmfit.Model):
         )
 
     def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("name", "FermiEdgeModel")
         super().__init__(self._lin_broad_fd, **kwargs)
         self.set_param_hint("temp", min=0.0)
         self.set_param_hint("resolution", min=0.0)
@@ -229,6 +230,7 @@ class FermiDiracModel(lmfit.Model):
         return fermi_dirac_broad(x, center, temp, resolution)
 
     def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("name", "FermiDiracModel")
         super().__init__(self._broadFermiDirac, **kwargs)
         self.set_param_hint("temp", min=0.0)
         self.set_param_hint("resolution", min=0.0)
