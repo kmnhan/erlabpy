@@ -32,6 +32,7 @@ from collections.abc import Callable
 import numba
 import numpy as np
 import numpy.typing as npt
+import scipy.signal
 import scipy.special
 
 from erlab.constants import TINY, kb_eV
@@ -132,7 +133,7 @@ def do_convolve(
         xn, g = _gen_kernel(
             np.asarray(x, dtype=np.float64), float(resolution), pad=int(pad)
         )
-        return np.convolve(func(xn, **kwargs), g, mode="valid")
+        return scipy.signal.convolve(func(xn, **kwargs), g, mode="valid")
 
     dx = x[1] - x[0]
     fine_dx = dx / oversample
@@ -140,7 +141,7 @@ def do_convolve(
     x_fine = x[0] + np.arange(n_fine, dtype=np.float64) * fine_dx
 
     xn_fine, g = _gen_kernel(x_fine, float(resolution), pad=int(pad))
-    return np.convolve(func(xn_fine, **kwargs), g, mode="valid")[::oversample]
+    return scipy.signal.convolve(func(xn_fine, **kwargs), g, mode="valid")[::oversample]
 
 
 def do_convolve_segments(
