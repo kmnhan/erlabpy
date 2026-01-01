@@ -923,9 +923,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
         self._result_ds: xr.Dataset | None = None
 
-        self._executor: concurrent.futures.ThreadPoolExecutor | None = (
-            concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        )
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
 
     @property
     def x_range(self) -> tuple[float, float]:
@@ -1004,7 +1002,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         t0 = time.perf_counter()
 
         if self._executor is None:
-            raise RuntimeError("Executor has been shut down.")
+            self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
         # Execute in threadpool
         future = self._executor.submit(
