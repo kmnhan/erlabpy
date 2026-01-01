@@ -260,8 +260,15 @@ class FermiDiracModel(lmfit.Model):
 
 
 class StepEdgeModel(lmfit.Model):
+    @staticmethod
+    def _step_linbkg_broad(
+        x, center=0.0, sigma=0.02, back0=0.0, back1=0.0, dos0=1.0, dos1=0.0
+    ):
+        return step_linbkg_broad(x, center, sigma, back0, back1, dos0, dos1)
+
     def __init__(self, **kwargs) -> None:
-        super().__init__(step_linbkg_broad, **kwargs)
+        kwargs.setdefault("name", "StepEdgeModel")
+        super().__init__(self._step_linbkg_broad, **kwargs)
         self.set_param_hint("sigma", min=0.0)
 
     def guess(self, data, x, **kwargs):
