@@ -125,6 +125,10 @@ class PolynomialFunction(DynamicFunction):
     def argnames(self) -> list[str]:
         return ["x"] + [f"c{i}" for i in range(self.degree + 1)]
 
+    @property
+    def kwargs(self) -> list[tuple[str, float]]:
+        return [(f"c{i}", 0.0) for i in range(self.degree + 1)]
+
     def __call__(self, x, *coeffs: float, **params):
         if len(coeffs) != self.degree + 1:
             coeffs = tuple(params[f"c{d}"] for d in range(self.degree + 1))
