@@ -317,12 +317,6 @@ class PolynomialModel(lmfit.Model):
 
 
 class MultiPeakModel(lmfit.Model):
-    """Model for fitting multiple Gaussian or Lorentzian peaks.
-
-    Most input parameters are passed to the :class:`MultiPeakFunction
-    <erlab.analysis.fit.functions.MultiPeakFunction>` constructor.
-    """
-
     def __init__(
         self,
         npeaks: int = 1,
@@ -334,7 +328,7 @@ class MultiPeakModel(lmfit.Model):
         ] = "linear",
         degree: int = 2,
         convolve: bool = True,
-        oversample: int = 1,
+        oversample: int = 3,
         segmented: bool = False,
         **kwargs,
     ) -> None:
@@ -354,14 +348,8 @@ class MultiPeakModel(lmfit.Model):
         )
 
         for i in range(self.func.npeaks):
-            self.set_param_hint(f"p{i}_width", min=0.0)
-            self.set_param_hint(f"p{i}_height", min=0.0)
-            sigma_expr = self.func.sigma_expr(i, self.prefix)
-            if sigma_expr is not None:
-                self.set_param_hint(f"p{i}_sigma", expr=sigma_expr)
-            amplitude_expr = self.func.amplitude_expr(i, self.prefix)
-            if amplitude_expr is not None:
-                self.set_param_hint(f"p{i}_amplitude", expr=amplitude_expr)
+            for name, kwargs in self.func.peak_param_hints(i, self.prefix).items():
+                self.set_param_hint(name, **kwargs)
 
         if self.func.fd:
             self.set_param_hint("temp", min=0.0)
@@ -522,13 +510,19 @@ class MultiPeakModel(lmfit.Model):
         for i in range(self.func.npeaks):
             out[f"{key}_p{i}"] = self.func.eval_peak(i, **fargs)
 
-        out[f"{key}_bkg"] = self.func.eval_bkg(**fargs)
+        if self.func.background != "none":
+            out[f"{key}_bkg"] = self.func.eval_bkg(**fargs)
 
         if self.func.fd:
             out[f"{key}_fd"] = self.func.eval_fd(**fargs)
 
         return out
 
+    __doc__ = (
+        str(MultiPeakFunction.__doc__)
+        + "**kwargs\n        Additional keyword arguments to be passed to the "
+        ":class:`lmfit.model.Model` constructor."
+    )
     guess.__doc__ = COMMON_GUESS_DOC
 
 
