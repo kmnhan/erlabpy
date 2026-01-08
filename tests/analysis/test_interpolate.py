@@ -4,7 +4,12 @@ import scipy.interpolate
 import xarray as xr
 
 import erlab
-from erlab.analysis.interpolate import interpn, slice_along_path, slice_along_vector
+from erlab.analysis.interpolate import (
+    interpn,
+    leading_edge,
+    slice_along_path,
+    slice_along_vector,
+)
 
 
 def value_func_1d(x):
@@ -238,7 +243,55 @@ def test_fast_interpolator_warns_for_uneven_coords() -> None:
     scipy_interp = scipy.interpolate.RegularGridInterpolator(
         (x, y), values, bounds_error=False, fill_value=np.nan
     )(points)
+
     np.testing.assert_allclose(res, scipy_interp)
+
+
+def test_leading_edge_simple_step() -> None:
+    eV = np.linspace(-1.0, 1.0, 401)
+    edge = 0.2
+    width = 0.03
+
+    values = 1.0 / (1.0 + np.exp((eV - edge) / width))
+    darr = xr.DataArray(values, dims=("eV",), coords={"eV": eV}, name="edc")
+
+    out = leading_edge(darr, fraction=0.5)
+    assert out.dims == ()
+    assert float(out) == pytest.approx(edge, abs=1e-3)
+
+
+def test_leading_edge_vectorized_over_other_dims() -> None:
+    eV = np.linspace(-1.0, 1.0, 501)
+    edges = np.array([-0.25, 0.35])
+    width = 0.02
+
+    ee, ev = np.meshgrid(edges, eV, indexing="ij")
+    values = 1.0 / (1.0 + np.exp((ev - ee) / width))
+    darr = xr.DataArray(values, dims=("idx", "eV"), coords={"idx": [0, 1], "eV": eV})
+
+    out = leading_edge(darr, fraction=0.5)
+    assert out.dims == ("idx",)
+    np.testing.assert_allclose(out.values, edges, atol=1e-3)
+
+
+def test_leading_edge_dask_parallelized() -> None:
+    pytest.importorskip("dask.array")
+
+    eV = np.linspace(-1.0, 1.0, 801)
+    edges = np.array([-0.1, 0.0, 0.4])
+    width = 0.02
+
+    ee, ev = np.meshgrid(edges, eV, indexing="ij")
+    values = 1.0 / (1.0 + np.exp((ev - ee) / width))
+
+    darr = xr.DataArray(
+        values,
+        dims=("idx", "eV"),
+        coords={"idx": np.arange(edges.size), "eV": eV},
+    ).chunk(eV=-1, idx="auto")
+
+    out = leading_edge(darr, fraction=0.5)
+    np.testing.assert_allclose(out.compute().values, edges, atol=1e-3)
 
 
 def test_slice_along_path_validations() -> None:
