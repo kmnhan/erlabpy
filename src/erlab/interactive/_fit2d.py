@@ -1063,13 +1063,15 @@ def ftool(
 
     The tool provides an interactive GUI for fitting 1D models to 1D or 2D data.
 
+    See the :ref:`user guide <guide-ftool>` for more information on using the tool.
+
     Parameters
     ----------
     data
         The 1D or 2D data to fit.
     model
         The model to fit to the data. If `None`, :class:`MultiPeakModel
-        <erlab.analysis.fit.models.MultiPeakModel` will be used.
+        <erlab.analysis.fit.models.MultiPeakModel>` will be used.
     params
         Initial parameters for the fit. If `None`, parameters will be initialized from
         the model. If `data` is 2D, `params` can be a dictionary that is interpreted
