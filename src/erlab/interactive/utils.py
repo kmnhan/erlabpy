@@ -2808,7 +2808,7 @@ class DictMenuBar(QtWidgets.QMenuBar):
 class ExclusiveComboGroup(QtCore.QObject):
     """A group of mutually exclusive comboboxes.
 
-    Adapted from `this StackOverflow answer <https://stackoverflow.com/a/66093311>`_.
+    Adapted from `<https://stackoverflow.com/a/66093311>`_.
 
     This group stores only weak references to the comboboxes, so it is necessary to keep
     a reference to the comboboxes elsewhere in the code.
@@ -3365,7 +3365,7 @@ class ResizingLineEdit(QtWidgets.QLineEdit):
     """:class:`QtWidgets.QLineEdit` that resizes itself to fit the text.
 
     This line edit automatically adjusts its size to fit the content as the user types.
-    Adopted from `this StackOverflow answer <https://stackoverflow.com/a/73663065>`_.
+    Adopted from `<https://stackoverflow.com/a/73663065>`_.
     """
 
     def __init__(self, *args, **kwargs):
