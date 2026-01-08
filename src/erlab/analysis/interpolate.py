@@ -1,6 +1,12 @@
 """Utilities for interpolation."""
 
-__all__ = ["FastInterpolator", "interpn", "slice_along_path", "slice_along_vector"]
+__all__ = [
+    "FastInterpolator",
+    "interpn",
+    "leading_edge",
+    "slice_along_path",
+    "slice_along_vector",
+]
 
 import itertools
 import math
@@ -11,6 +17,7 @@ import numba
 import numpy as np
 import numpy.typing as npt
 import scipy.interpolate
+import scipy.optimize
 import xarray as xr
 import xarray.core.missing
 
@@ -532,6 +539,53 @@ def slice_along_vector(
         for k in center
     }
     return slice_along_path(data, vertices=vert, **kwargs)
+
+
+def _minimize_func(edc_values: npt.NDArray, energy_coord: npt.NDArray) -> float:
+    spl = scipy.interpolate.make_interp_spline(energy_coord, edc_values)
+    rs = scipy.optimize.root_scalar(
+        spl,
+        bracket=[energy_coord[np.argmax(edc_values)], energy_coord.max()],
+    )
+    return rs.root
+
+
+def leading_edge(darr: xr.DataArray, fraction: float = 0.5) -> xr.DataArray:
+    """Calculate the leading edge of EDCs in a DataArray with subpixel precision.
+
+    The leading edge is defined as the energy where the intensity reaches a given
+    fraction of the maximum intensity in the EDC, by default 50%.
+
+    It is calculated by interpolating the EDC with a spline and finding the root of the
+    function defined as the difference between the EDC and the target intensity.
+
+    Parameters
+    ----------
+    darr : xr.DataArray
+        The input DataArray containing EDCs along the 'eV' dimension. It can be of any
+        shape, as long as one dimension is named 'eV'.
+    fraction : float, optional
+        The fraction of the maximum intensity to define the leading edge, by default
+        0.5.
+
+    Returns
+    -------
+    leading_edge : xr.DataArray
+        A DataArray containing the leading edge energies for each EDC in the input
+        DataArray. The shape will be the same as the input DataArray, but without the
+        'eV' dimension.
+    """
+    half_max = darr.max("eV") * fraction
+
+    return xr.apply_ufunc(
+        _minimize_func,
+        darr - half_max,
+        input_core_dims=[["eV"]],
+        dask="parallelized",
+        output_dtypes=[float],
+        vectorize=True,
+        kwargs={"energy_coord": darr.eV.values},
+    )
 
 
 # Monkey patch xarray to make fast interpolator available
