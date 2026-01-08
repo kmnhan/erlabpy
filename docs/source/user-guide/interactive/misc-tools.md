@@ -8,7 +8,6 @@ Most of these tools can be opened as auxiliary windows from within ImageTool, an
 
 More interactive tools will be added in the near future. Current plans include:
 
-- Curve fitting
 - Fourier-based automatic mesh removal
 - Experiment planner
 
@@ -20,7 +19,7 @@ Here are some of the miscellaneous interactive tools provided:
 
 Interactive conversion from angles to momentum space.
 
-There are four ways to invoke the GUI.
+There are four ways to start `ktool`.
 
 1. {meth}`xarray.DataArray.kspace.interactive`
 
@@ -106,7 +105,7 @@ For all available parameters, see the documentation for {func}`erlab.interactive
 
 Interactive tool for visualizing dispersive data using derivative-based methods.
 
-The GUI can be invoked with {func}`erlab.interactive.dtool`:
+`dtool` can be started with {func}`erlab.interactive.dtool`:
 
 ```python
 import erlab.interactive as eri
@@ -151,7 +150,7 @@ The `%dtool` line magic (see {ref}`interactive-misc-magics`) provides the same e
 
 Interactive tool for obtaining the shape of the Fermi edge (e.g., from a gold reference spectrum).
 
-The GUI can be invoked with {func}`erlab.interactive.goldtool`:
+`goldtool` can be started with {func}`erlab.interactive.goldtool`:
 
 ```python
 import erlab.interactive as eri
@@ -162,6 +161,266 @@ eri.goldtool(data)
 It can also be opened from within ImageTool from the right-click context menu of any image plot.
 
 Use the `%goldtool` magic (see {ref}`interactive-misc-magics`) to launch it directly from IPython.
+
+(guide-ftool)=
+
+## ftool
+
+Interactive curve-fitting tool for 1D and 2D data. By default uses {class}`erlab.analysis.fit.models.MultiPeakModel`, but you can pass any 1D lmfit model.
+
+There are three ways to start `ftool`.
+
+1. {func}`erlab.interactive.ftool`
+
+   ```python
+   import erlab.interactive as eri
+
+   eri.ftool(data)
+   ```
+
+   To supply a custom model:
+
+   ```python
+   eri.ftool(data, model=my_model)
+   ```
+
+2. From within ImageTool
+
+   Right-click any plot and choose {guilabel}`ftool`.
+
+3. From IPython using the `%ftool` magic described in
+   {ref}`interactive-misc-magics`.
+
+   ```ipython
+   %ftool data
+   %ftool --model my_model data
+   ```
+
+### Overview
+
+When you first open {guilabel}`ftool`, you will see a stack of controls on the left and
+a plot on the right, as shown below. The controls have two tabs: {guilabel}`Setup` and
+{guilabel}`Fit`.
+
+:::::{tab-set}
+
+::::{tab-item} Setup
+
+```{image} ../../images/ftool_1d_setup_light.png
+:align: center
+:class: only-light
+```
+
+:::{only} format_html
+
+```{image} ../../images/ftool_1d_setup_dark.png
+:align: center
+:class: only-dark
+```
+
+:::
+::::
+
+::::{tab-item} Fit
+
+```{image} ../../images/ftool_1d_fit_light.png
+:align: center
+:class: only-light
+```
+
+:::{only} format_html
+
+```{image} ../../images/ftool_1d_fit_dark.png
+:align: center
+:class: only-dark
+```
+
+:::
+::::
+
+:::::
+
+- The main plot shows the data with the fit overlay, plus dashed vertical lines that
+  define the current fit window.
+
+  - Check {guilabel}`Plot components` to show individual model components (if any). This
+    also adds a legend for each curve. You can show/hide a component by clicking its
+    legend entry.
+
+- The left panel contains controls for setting up and performing the fit. The
+  {guilabel}`Setup` tab is for choosing the model and preprocessing options, while the
+  {guilabel}`Fit` tab contains parameter settings and options related to the fitting
+  process.
+
+### Models and options
+
+First, use the {guilabel}`Model` drop-down to choose a predefined model, a user-provided model, or a model loaded from disk.
+
+- Built-in options are:
+
+  - {class}`erlab.analysis.fit.models.MultiPeakModel`
+  - {class}`erlab.analysis.fit.models.FermiEdgeModel`
+  - {class}`erlab.analysis.fit.models.StepEdgeModel`
+  - {class}`erlab.analysis.fit.models.PolynomialModel`
+  - {class}`lmfit.models.ExpressionModel`
+
+- {guilabel}`From file` loads a lmfit model saved with {func}`lmfit.model.save_model`.
+
+Some models have additional options that appear below the model selector that are used to initialize the model:
+
+- {class}`MultiPeakModel <erlab.analysis.fit.models.MultiPeakModel>`:
+
+  - {guilabel}`# Peaks` and {guilabel}`Peak shape` define how many components are fit and whether they are Lorentzian or Gaussian.
+  - {guilabel}`Background` and {guilabel}`Degree` add a constant, linear, or polynomial background.
+  - {guilabel}`Fermi-Dirac` multiplies the peaks by a Fermi-Dirac distribution.
+  - {guilabel}`Convolve` applies instrumental broadening; {guilabel}`Oversample` controls the internal sampling density used for the convolution.
+
+- {class}`ExpressionModel <lmfit.models.ExpressionModel>`:
+
+  - Edit the independent variable name in the `f(...)` header and type your formula in the expression box (e.g., `a * x + b`).
+  - Click {guilabel}`Apply` to rebuild the model from the current expression.
+  - Use {guilabel}`Edit init script...` to define helper functions or constants used in the expression.
+  - For more information, see the documentation for {class}`lmfit.models.ExpressionModel`.
+
+### Workflow for 1D data
+
+1. Choose your model, and set any model-specific options.
+
+2. In the {guilabel}`Preprocess` group, set the fit window using {guilabel}`X range` or
+   drag the dashed vertical bounds in the plot.
+
+   You may also choose to divide the data by its average value for better numerical stability.
+
+3. Now, move on to the {guilabel}`Fit` tab.
+
+   In the {guilabel}`Parameters` group, click {guilabel}`Guess` to get initial parameters, then refine them.
+
+   You can edit parameter values, bounds, and other settings directly in the table.
+
+   You can also use the slider to adjust parameter values interactively.
+
+   :::{note}
+
+   - {guilabel}`Guess` uses the model's built-in guessing method (if implemented) to
+     generate initial parameter values based on the data in the fit window. This
+     overwrites all current parameter values.
+
+   - Any adjustment can be undone & redone with standard keyboard shortcuts.
+
+   - You can right-click parameters in the table to assign/remove expressions.
+
+     For instance, to tie the position of peak 1 (`p1_center`) to be always 0.1 units
+     above than peak 0 (`p0_center`), right-click `p1_center`, choose {guilabel}`Set
+     expression...`, and enter `p0_center + 0.1`.
+
+   - Hover over rows in the parameter table to see tooltips with additional information.
+
+   - You can choose to fix a parameter value to be equal to a coordinate variable in the
+     data (e.g., get the temperature from a `sample_temp` coordinate) by changing the
+     {guilabel}`Mode` in the {guilabel}`Parameter` panel.
+
+   - When using {class}`MultiPeakModel <erlab.analysis.fit.models.MultiPeakModel>`,
+     checking {guilabel}`Plot components` also shows lines at the peak centers in
+     addition to the component curves.
+
+     These lines can be dragged to quickly adjust peak positions and heights. Dragging
+     vertically changes the height, while dragging horizontally changes the center
+     position. Dragging vertically while holding the right mouse button changes the peak
+     width.
+
+   :::
+
+4. Click {guilabel}`Fit` to perform the fit.
+
+   If the fit fails to converge or gives unsatisfactory results, adjust the parameters and try again.
+
+   If you want to retry automatically, use {guilabel}`Fit×20`. You can increase {guilabel}`Max nfev` in the {guilabel}`Fit options` group, which sets the maximum number of function evaluations allowed. The `nfev` stat is highlighted in red when the fit hits this limit without converging.
+
+   :::{admonition} About {guilabel}`Fit ×20`
+   :class: tip
+
+   {guilabel}`Fit ×20` performs a sequence of 20 fits on the *same* data. After each run, the fitted parameters are fed back in as the initial parameters for the next run. This can help in nonlinear or highly correlated models where a single fit gets close but not fully converged. Reusing the previous best-fit parameters often nudges the optimizer into a better solution without you having to manually tweak values between runs.
+   :::
+
+5. Use {guilabel}`Copy code` to copy the reproducible code for this fit to the clipboard, or use {guilabel}`Save fit` to save the results with {func}`xarray_lmfit.save_fit`.
+
+### Workflow for 2D data
+
+For 2D data, an additional image and a parameter-versus-coordinate plot are shown, along
+with a {guilabel}`Transpose` button and index navigation controls.
+
+:::::{tab-set}
+
+::::{tab-item} Setup
+
+```{image} ../../images/ftool_2d_setup_light.png
+:align: center
+:class: only-light
+```
+
+:::{only} format_html
+
+```{image} ../../images/ftool_2d_setup_dark.png
+:align: center
+:class: only-dark
+```
+
+:::
+::::
+
+::::{tab-item} Fit
+
+```{image} ../../images/ftool_2d_fit_light.png
+:align: center
+:class: only-light
+```
+
+:::{only} format_html
+
+```{image} ../../images/ftool_2d_fit_dark.png
+:align: center
+:class: only-dark
+```
+
+:::
+::::
+
+:::::
+
+For 2D data, the tool fits a *stack* of 1D curves.
+
+1. Check if the data dimensions are in the correct order. The axis you wish to sweep
+   along is the vertical axis; if the image is rotated 90 degrees from what you expect,
+   click {guilabel}`Transpose` to swap the axes.
+
+2. Set the X window with {guilabel}`X range` or by dragging the vertical dashed lines.
+
+3. Choose the Y range to fit: use the {guilabel}`Y range` spin boxes or drag the
+   horizontal dashed lines in the image.
+
+4. Pick a representative Y index with {guilabel}`Index` (or drag the yellow cursor),
+   then tune the fit parameters for that slice like in the 1D workflow above. Once you
+   are satisfied with the fit, proceed to the next step.
+
+5. Decide how parameters propagate between EDCs using {guilabel}`Fill mode`.
+
+   - {guilabel}`Previous` keeps the last good parameters.
+
+   - {guilabel}`Extrapolate` linearly projects parameters from the previous two slices.
+
+   - Use {guilabel}`None` when all slices already have reasonable initial parameters,
+     and you just want to fit them all without parameter propagation.
+
+6. Start the 2D sequence with {guilabel}`Fit ⤒` or {guilabel}`Fit ⤓`. The tool will step
+   through the selected range while populating the parameters according to the chosen
+   mode.
+
+7. Inspect the parameter plot to verify trends. If a slice fails, move to it with
+   {guilabel}`Index`, fix the parameters, then continue the sequence.
+
+8. When all indices in the range are fitted, click {guilabel}`Save fit` to export the
+   combined results or {guilabel}`Copy code` to generate reproducible code for the full
+   2D fit. These buttons are only enabled after the full sequence is complete.
 
 (guide-restool)=
 
@@ -270,7 +529,7 @@ Once opened, a matplotlib figure window will appear alongside a control panel fo
 
 ## Notebook shortcuts
 
-Loading the :mod:`erlab.interactive` IPython extension (`%load_ext erlab.interactive`) registers convenient line magics for quickly launching the various interactive tools from within a Jupyter notebook or IPython console.
+Loading the {mod}`erlab.interactive` IPython extension (`%load_ext erlab.interactive`) registers convenient line magics for quickly launching the various interactive tools from within a Jupyter notebook or IPython console.
 
 ```ipython
 %ktool --cmap viridis darr.sel(eV=0)
@@ -280,4 +539,6 @@ Loading the :mod:`erlab.interactive` IPython extension (`%load_ext erlab.interac
 %goldtool darr.isel(beta=1)
 
 %restool darr.mean(dim='kx')
+
+%ftool --model my_model darr
 ```
