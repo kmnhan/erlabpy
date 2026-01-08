@@ -154,8 +154,6 @@ import erlab.plotting as eplt
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-
-xr.set_options(keep_attrs=True)
 ```
 
 :::{note}
