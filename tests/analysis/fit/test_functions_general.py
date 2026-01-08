@@ -1,9 +1,12 @@
 import numpy as np
 import pytest
+import scipy.signal
 import scipy.special
 
 from erlab.analysis.fit.functions.general import (
     _gen_kernel,
+    _sc_spectral_function_bare,
+    _tll_bare,
     do_convolve,
     fermi_dirac,
     fermi_dirac_broad,
@@ -11,8 +14,10 @@ from erlab.analysis.fit.functions.general import (
     fermi_dirac_linbkg_broad,
     gaussian_wh,
     lorentzian_wh,
+    sc_spectral_function,
     step_broad,
     step_linbkg_broad,
+    tll,
 )
 
 KB_EV = 8.617333262145179e-5
@@ -48,44 +53,44 @@ def test_gen_kernel() -> None:
     assert np.allclose(gauss, expected_gauss)
 
 
-def test_do_convolve() -> None:
-    # Test case 1: Convolve a quadratic function with a Gaussian kernel
+def test_do_convolve_matches_kernel() -> None:
     x = np.linspace(1, 10, 5)
 
     def testfunc(x):
         return x**2
 
     resolution = 3.0
-    expected = np.array(
-        [
-            2.54995914,
-            12.11245914,
-            31.79995914,
-            61.61245914,
-            101.54995914,
-        ]
-    )
-    result = do_convolve(x, testfunc, resolution)
+    xn, g = _gen_kernel(x, resolution)
+    expected = scipy.signal.convolve(testfunc(xn), g, mode="valid")
+    result = do_convolve(x, testfunc, resolution, oversample=1)
     assert np.allclose(result, expected)
 
-    # Test case 2: Convolve a sine function with a Gaussian kernel
     x = np.linspace(0, 2 * np.pi, 5)
 
     def testfunc(x):
         return np.sin(x)
 
     resolution = 5
-    expected = np.array(
-        [
-            -2.60089778e-16,
-            1.04956310e-01,
-            1.85198936e-16,
-            -1.04956310e-01,
-            -2.01286051e-16,
-        ]
-    )
-    result = do_convolve(x, testfunc, resolution)
+    xn, g = _gen_kernel(x, resolution)
+    expected = scipy.signal.convolve(testfunc(xn), g, mode="valid")
+    result = do_convolve(x, testfunc, resolution, oversample=1)
     assert np.allclose(result, expected)
+
+
+def test_do_convolve_oversample_and_zero_resolution() -> None:
+    x = np.linspace(-1, 1, 9)
+
+    def testfunc(x):
+        return x**3
+
+    xn_fine = np.linspace(x[0], x[-1], (x.size - 1) * 3 + 1)
+    xn_kernel, g = _gen_kernel(xn_fine, 0.5)
+    expected = scipy.signal.convolve(testfunc(xn_kernel), g, mode="valid")[::3]
+    result = do_convolve(x, testfunc, 0.5)
+    assert np.allclose(result, expected)
+
+    result = do_convolve(x, testfunc, 0.0)
+    assert np.allclose(result, testfunc(x))
 
 
 def test_gaussian_wh() -> None:
@@ -205,3 +210,26 @@ def test_step_linbkg_broad() -> None:
     assert np.allclose(
         step_linbkg_broad(x, center, sigma, back0, back1, dos0, dos1), expected_result
     )
+
+
+def test_tll_resolution_zero_matches_bare() -> None:
+    x = np.linspace(-0.1, 0.1, 21)
+    params = {"amp": 1.2, "center": 0.01, "alpha": 0.2, "temp": 25.0}
+    expected = _tll_bare(x, **params) + 0.03
+    result = tll(x, resolution=0.0, const_bkg=0.03, **params)
+    assert np.allclose(result, expected)
+
+
+def test_sc_spectral_function_resolution_zero_matches_bare() -> None:
+    x = np.linspace(-0.1, 0.1, 21)
+    params = {
+        "amp": 1.1,
+        "gamma1": 0.02,
+        "gamma0": 0.01,
+        "delta": 0.03,
+        "lin_bkg": 0.2,
+        "const_bkg": 0.1,
+    }
+    expected = _sc_spectral_function_bare(x, **params)
+    result = sc_spectral_function(x, resolution=0.0, **params)
+    assert np.allclose(result, expected)

@@ -9,6 +9,8 @@ __all__ = [
     "MultiPeakModel",
     "PolynomialModel",
     "StepEdgeModel",
+    "SymmetrizedGapModel",
+    "TLLModel",
 ]
 
 import typing
@@ -28,7 +30,9 @@ from erlab.analysis.fit.functions import (
     dynes,
     fermi_dirac_broad,
     fermi_dirac_linbkg_broad,
+    sc_spectral_function,
     step_linbkg_broad,
+    tll,
 )
 from erlab.analysis.fit.functions.general import _infer_meshgrid_shape
 
@@ -615,4 +619,31 @@ class DynesModel(lmfit.Model):
         self.set_param_hint("delta", min=0.0)
 
     __doc__ = dynes.__doc__
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
+
+
+class TLLModel(lmfit.Model):
+    def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("name", "TLLModel")
+        super().__init__(tll, **kwargs)
+        self.set_param_hint("amp", min=0.0)
+        self.set_param_hint("alpha", min=0.0)
+        self.set_param_hint("temp", min=0.0)
+        self.set_param_hint("resolution", min=0.0)
+
+    __doc__ = tll.__doc__
+    __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
+
+
+class SymmetrizedGapModel(lmfit.Model):
+    def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("name", "SymmetrizedGapModel")
+        super().__init__(sc_spectral_function, **kwargs)
+        self.set_param_hint("amp", min=0.0)
+        self.set_param_hint("gamma1", min=0.0)
+        self.set_param_hint("gamma0", value=0.0, vary=False)
+        self.set_param_hint("delta", min=0.0)
+        self.set_param_hint("resolution", min=0.0)
+
+    __doc__ = sc_spectral_function.__doc__
     __init__.__doc__ = lmfit.models.COMMON_INIT_DOC
