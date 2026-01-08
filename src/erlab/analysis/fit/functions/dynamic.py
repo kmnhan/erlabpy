@@ -188,6 +188,7 @@ class MultiPeakFunction(DynamicFunction):
         lorentzian_wh: ["lorentzian", "lor", "l"],
         gaussian_wh: ["gaussian", "gauss", "g"],
     }
+    """Mapping of peak functions to their string aliases."""
 
     DEFAULT_PEAK: str = "lorentzian"
 
@@ -202,7 +203,7 @@ class MultiPeakFunction(DynamicFunction):
         ] = "linear",
         degree: int = 2,
         convolve: bool = True,
-        oversample: int = 1,
+        oversample: int = 3,
         segmented: bool = False,
     ) -> None:
         super().__init__()
@@ -292,28 +293,35 @@ class MultiPeakFunction(DynamicFunction):
                 kws.append((f"p{i}_{arg}", val))
         return kws
 
-    def sigma_expr(self, index: int, prefix: str) -> str | None:
-        if self._peak_funcs[index] == gaussian_wh:
-            return f"{prefix}p{index}_width / (2 * sqrt(2 * log(2)))"
-        if self._peak_funcs[index] == lorentzian_wh:
-            return f"{prefix}p{index}_width / 2"
-        return None
-
-    def amplitude_expr(self, index: int, prefix: str) -> str | None:
-        if self._peak_funcs[index] == gaussian_wh:
-            return f"{prefix}p{index}_height * {prefix}p{index}_sigma / sqrt(2 * pi)"
-        if self._peak_funcs[index] == lorentzian_wh:
-            return f"{prefix}p{index}_height * {prefix}p{index}_sigma * pi"
-        return None
+    def peak_param_hints(
+        self, index: int, prefix: str
+    ) -> dict[str, dict[str, typing.Any]]:
+        out: dict[str, dict[str, typing.Any]] = {}
+        peak_func = self._peak_funcs[index]
+        label = f"p{index}_"
+        if peak_func == gaussian_wh:
+            out[f"{label}width"] = {"min": 0.0}
+            out[f"{label}height"] = {"min": 0.0}
+            out[f"{label}sigma"] = {
+                "expr": f"{prefix}{label}width / (2 * sqrt(2 * log(2)))"
+            }
+            out[f"{label}amplitude"] = {
+                "expr": f"{prefix}{label}height * {prefix}{label}sigma / sqrt(2 * pi)"
+            }
+        elif peak_func == lorentzian_wh:
+            out[f"{label}width"] = {"min": 0.0}
+            out[f"{label}height"] = {"min": 0.0}
+            out[f"{label}sigma"] = {"expr": f"{prefix}{label}width / 2"}
+            out[f"{label}amplitude"] = {
+                "expr": f"{prefix}{label}height * {prefix}{label}sigma * pi"
+            }
+        return out
 
     def eval_peak(self, index: int, x, **params):
-        return self.peak_funcs[index](
+        func = self.peak_funcs[index]
+        return func(
             x,
-            **{
-                k.removeprefix(f"p{index}_"): v
-                for k, v in params.items()
-                if k.startswith(f"p{index}_") and not k.endswith(("sigma", "amplitude"))
-            },
+            **{arg: params[f"p{index}_{arg}"] for arg in self.peak_argnames[func]},
         )
 
     def eval_bkg(self, x, **params):
@@ -344,7 +352,8 @@ class MultiPeakFunction(DynamicFunction):
                 x, **{arg: params[f"p{i}_{arg}"] for arg in self.peak_argnames[func]}
             )
 
-        y += self.eval_bkg(x, **params)
+        if self.background != "none":
+            y += self.eval_bkg(x, **params)
 
         if self.fd:
             y *= fermi_dirac(x, center=params["efermi"], temp=params["temp"])
