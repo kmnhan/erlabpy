@@ -23,8 +23,10 @@ __all__ = [
     "gaussian_wh",
     "lorentzian",
     "lorentzian_wh",
+    "sc_spectral_function",
     "step_broad",
     "step_linbkg_broad",
+    "tll",
 ]
 
 from collections.abc import Callable
@@ -108,7 +110,7 @@ def do_convolve(
     func: Callable,
     resolution: float,
     pad: int = 5,
-    oversample: int = 1,
+    oversample: int = 3,
     **kwargs,
 ) -> npt.NDArray[np.float64]:
     r"""Convolves `func` with gaussian of FWHM `resolution` in `x`.
@@ -129,14 +131,15 @@ def do_convolve(
         Additional keyword arguments to `func`.
 
     """
+    if np.isclose(resolution, 0.0):
+        return func(x, **kwargs)
     if oversample == 1:
         xn, g = _gen_kernel(
             np.asarray(x, dtype=np.float64), float(resolution), pad=int(pad)
         )
         return scipy.signal.convolve(func(xn, **kwargs), g, mode="valid")
 
-    dx = x[1] - x[0]
-    fine_dx = dx / oversample
+    fine_dx = (x[1] - x[0]) / oversample
     n_fine = (x.size - 1) * oversample + 1
     x_fine = x[0] + np.arange(n_fine, dtype=np.float64) * fine_dx
 
@@ -423,6 +426,108 @@ def fermi_dirac_linbkg_broad(
     )
 
 
+def _tll_bare(x, amp=1.0, center=0.0, alpha=0.1, temp=10.0):
+    r"""Tomonaga-Luttinger liquid spectral function.
+
+    The TLL spectral function is calculated as :cite:p:`ohtsubo2015tll`:
+
+    .. math::
+
+        I(x) = A \cdot T^{\alpha} \cosh\left(\frac{\epsilon}{2}\right\left|
+        \Gamma\left(\frac{1 + \alpha}{2} + i \frac{\epsilon}{2\pi}\right)\right|^2
+        f(\epsilon,T)
+
+    where :math:`\epsilon=(x - x_0)/k_B T`, :math:`\Gamma` is the gamma function, and
+    :math:`f(\epsilon,T) = 1/(e^{\epsilon}+1)` is the Fermi-Dirac distribution.
+
+    Parameters
+    ----------
+    x
+        The energy values at which to calculate the TLL spectral function.
+    amp
+        The amplitude.
+    center
+        The center.
+    alpha
+        The power law exponent.
+    temp
+        The temperature in K.
+
+    """
+    x_n = (x - center) / kb_eV / temp
+    gamma_arg = (1.0 + alpha) / 2.0 + 1j * x_n / (2.0 * np.pi)
+    return (
+        amp
+        * temp**alpha
+        * np.cosh(x_n / 2.0)
+        * np.abs(scipy.special.gamma(gamma_arg)) ** 2.0
+        / _clip_tiny(np.exp(x_n) + 1.0)
+    )
+
+
+@broadcast_args
+def tll(
+    x: npt.NDArray[np.float64],
+    amp: float = 1.0,
+    center: float = 0.0,
+    alpha: float = 0.1,
+    temp: float = 10.0,
+    resolution: float = 0.01,
+    const_bkg: float = 0.0,
+) -> npt.NDArray[np.float64]:
+    r"""Resolution-broadened Tomonaga-Luttinger liquid (TLL) spectral function.
+
+    The TLL spectral function is calculated as :cite:p:`ohtsubo2015tll`:
+
+    .. math::
+
+        I(x) = A \cdot T^{\alpha} \cosh\left(\frac{\epsilon}{2}\right\left|
+        \Gamma\left(\frac{1 + \alpha}{2} + i \frac{\epsilon}{2\pi}\right)\right|^2
+        f(\epsilon,T)
+
+    where :math:`\epsilon=(x - x_0)/k_B T`, :math:`\Gamma` is the gamma function, and
+    :math:`f(\epsilon,T) = 1/(e^{\epsilon}+1)` is the Fermi-Dirac distribution.
+
+    The broadened TLL function is calculated as:
+
+    .. math::
+
+        I_{broad}(x) = I(x) \otimes \text{g}(\sigma) + B
+
+    Parameters
+    ----------
+    x
+        The energy values at which to calculate the TLL spectral function.
+    amp
+        The amplitude.
+    center
+        The center.
+    alpha
+        The power law exponent.
+    temp
+        The temperature in K.
+    resolution
+        The resolution of the Gaussian kernel in eV. Note that this is the FWHM of the
+        Gaussian kernel, not the standard deviation.
+    const_bkg
+        A constant background to add to the broadened TLL function.
+
+    """
+    return (
+        do_convolve(
+            x,
+            _tll_bare,
+            resolution=resolution,
+            amp=amp,
+            center=center,
+            alpha=alpha,
+            temp=temp,
+            oversample=5,
+        )
+        + const_bkg
+    )
+
+
 @broadcast_args
 def step_broad(
     x: npt.NDArray[np.float64],
@@ -536,4 +641,152 @@ def dynes(x, n0=1.0, gamma=0.003, delta=0.01):
     """
     return n0 * np.real(
         (np.abs(x) + 1j * gamma) / (np.sqrt((np.abs(x) + 1j * gamma) ** 2 - delta**2))
+    )
+
+
+def sc_self_energy(x, gamma1=1e-5, gamma0=0.0, delta=0.0):
+    r"""General phenomenological self-energy for superconductors.
+
+    The function is given by :cite:p:`norman1998sc`:
+
+    .. math::
+
+        \Sigma(x) = -i \Gamma_1 + \frac{\Delta^2}{x + i \Gamma_0}
+
+    where :math:`\Gamma_1` is the single-particle scattering rate, :math:`\Gamma_0` is
+    the pair-breaking rate, and :math:`\Delta` is the energy gap.
+
+    Parameters
+    ----------
+    x : array-like
+        The input array of energy in eV.
+    gamma1
+        :math:`\Gamma_1`, the single-particle scattering rate.
+    gamma0
+        :math:`\Gamma_0`, the pair-breaking scattering rate.
+    delta
+        The energy gap :math:`\Delta`.
+
+    """
+    return -1j * gamma1 + (delta**2) / (x + 1j * gamma0)
+
+
+def spectral_function(x, im=0, re=0):
+    r"""General spectral function given imaginary and real parts of self-energy.
+
+    The spectral function is calculated as:
+
+    .. math::
+
+        A(x) = \frac{-\text{Im}\Sigma(x)}{(x - \text{Re}\Sigma(x))^2 +
+        (\text{Im}\Sigma(x))^2} \cdot \frac{1}{\pi}
+
+    where :math:`\Sigma(x)` is the complex self-energy.
+
+    Parameters
+    ----------
+    x : array-like
+        The input array of energy in eV.
+    im
+        The imaginary part of the self-energy :math:`\text{Im}\Sigma(x)`.
+    re
+        The real part of the self-energy :math:`\text{Re}\Sigma(x)`.
+    """
+    return im / ((x - re) ** 2 + im**2) / np.pi
+
+
+def _sc_spectral_function_bare(x, amp, gamma1, gamma0, delta, lin_bkg, const_bkg):
+    r"""Superconducting spectral function with linear background.
+
+    The superconducting spectral function with a linear background is calculated as:
+
+    .. math::
+
+        I(x) = A \cdot A_{sc}(x, \Sigma) + \left(\text{sgn}(x) \cdot m \cdot x + b
+        \right)
+
+    where :math:`A_{sc}(x, \Sigma)` is the superconducting spectral function calculated
+    using the self-energy :math:`\Sigma(x)` given by :func:`sc_self_energy`.
+
+    Parameters
+    ----------
+    x : array-like
+        The input array of energy in eV.
+    amp
+        The amplitude :math:`A`.
+    gamma1
+        :math:`\Gamma_1`, the single-particle scattering rate.
+    gamma0
+        :math:`\Gamma_0`, the pair-breaking scattering rate.
+    delta
+        The energy gap :math:`\Delta`.
+    lin_bkg
+        The slope of the linear background :math:`m`.
+    const_bkg
+        The constant background :math:`b`.
+    """
+    se = sc_self_energy(x, gamma1, gamma0, delta)
+    akw = spectral_function(x, np.imag(se), np.real(se))
+    return amp * akw + (np.sign(x) * lin_bkg * x + const_bkg)
+
+
+@broadcast_args
+def sc_spectral_function(
+    x: npt.NDArray[np.float64],
+    amp: float = 1.0,
+    gamma1: float = 1e-5,
+    gamma0: float = 0.0,
+    delta: float = 0.0,
+    lin_bkg: float = 0.0,
+    const_bkg: float = 0.0,
+    resolution: float = 0.01,
+) -> npt.NDArray[np.float64]:
+    r"""Resolution-broadened superconducting spectral function.
+
+    The superconducting spectral function with a linear background is calculated as:
+
+    .. math::
+
+        I(x) = A \cdot A_{sc}(x, \Sigma) + \left(\text{sgn}(x) \cdot m \cdot x + b
+        \right)
+
+    where :math:`A_{sc}(x, \Sigma)` is the superconducting spectral function calculated
+    using the self-energy :math:`\Sigma(x)` given by :func:`sc_self_energy`.
+
+    The broadened superconducting spectral function is calculated as:
+
+    .. math::
+
+        I_{broad}(x) = I(x) \otimes \text{g}(\sigma)
+
+    Parameters
+    ----------
+    x : array-like
+        The input array of energy in eV.
+    amp
+        The amplitude :math:`A`.
+    gamma1
+        :math:`\Gamma_1`, the single-particle scattering rate.
+    gamma0
+        :math:`\Gamma_0`, the pair-breaking scattering rate.
+    delta
+        The energy gap :math:`\Delta`.
+    lin_bkg
+        The slope of the linear background :math:`m`.
+    const_bkg
+        The constant background :math:`b`.
+    resolution
+        The broadening in eV. Note that this is the FWHM of the Gaussian kernel, not the
+        standard deviation.
+    """
+    return do_convolve(
+        x,
+        _sc_spectral_function_bare,
+        resolution=resolution,
+        amp=amp,
+        gamma1=gamma1,
+        gamma0=gamma0,
+        delta=delta,
+        lin_bkg=lin_bkg,
+        const_bkg=const_bkg,
     )

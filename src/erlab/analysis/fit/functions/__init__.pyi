@@ -16,8 +16,10 @@ __all__ = [
     "general",
     "lorentzian",
     "lorentzian_wh",
+    "sc_spectral_function",
     "step_broad",
     "step_linbkg_broad",
+    "tll",
 ]
 from . import dynamic, general
 from .dynamic import FermiEdge2dFunction, MultiPeakFunction, PolynomialFunction
@@ -34,6 +36,8 @@ from .general import (
     gaussian_wh,
     lorentzian,
     lorentzian_wh,
+    sc_spectral_function,
     step_broad,
     step_linbkg_broad,
+    tll,
 )
