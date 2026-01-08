@@ -1,3 +1,59 @@
+## Unreleased
+
+### ✨ Features
+
+- **erlab.analysis.fit:** add 2 new models for data fitting ([9baea86](https://github.com/kmnhan/erlabpy/commit/9baea86a6538ceb8fa7dfb1e7f69441af6bf61b6))
+
+  Adds `TLLModel` which represents a Tomonaga-Luttinger liquid power-law suppression of the density of states, and `SymmetrizedGapModel` which represents the superconducting gap spectral function symmetrized about the Fermi level.
+
+- **analysis.interpolate:** add `leading_edge` function that computes the leading edge of EDCs. ([846aafc](https://github.com/kmnhan/erlabpy/commit/846aafc058e819db882ac73161e6219f8b5ddc7e))
+
+- add interactive GUI for curve fitting ([633f722](https://github.com/kmnhan/erlabpy/commit/633f7229a9258ee9fac38144a945bdaa7f88000b))
+
+  Adds a new `erlab.interactive.ftool` tool that can be used to interactively fit arbitrary 1D lmfit models to 1D and 2D data.
+
+- **analysis.fit:** add oversampling parameter to convolution fit function  for improved accuracy ([dea64ff](https://github.com/kmnhan/erlabpy/commit/dea64ffc4295680b7568e1b78f6d9d65eb25499b))
+
+  With narrow peaks smaller than the data step size, convolution-based fitting can produce inaccurate results due to undersampling. This commit introduces an 'oversampling' parameter to the convolution fit function, allowing users to specify a higher sampling rate during convolution operations.
+
+  Oversampling is also available as a parameter to `MultiPeakModel`.
+
+- **analysis.fit.models:** add rough guess of peak centers and widths to `MultiPeakModel` ([0c45f93](https://github.com/kmnhan/erlabpy/commit/0c45f93249f7a9972da308573a27f4c8aeb26fd6))
+
+  MultiPeakModel's `guess` method now estimates peak centers and widths based on the input data, improving initial parameter estimates for fitting. Note that this is a basic heuristic and will only work when peaks are well-separated and distinct.
+
+- add functions for plotting arbitrary BZ slices ([2bdd1fc](https://github.com/kmnhan/erlabpy/commit/2bdd1fc12219f245eacba7c701e326fa2e5302fe))
+
+  Adds functions to compute the intersections of Brillouin zone boundaries with arbitrary planes in k-space.
+
+  Also updates `ktool` to use the new functions, improving visualization of BZ slices.
+
+### 🐞 Bug Fixes
+
+- **restool:** fix trying to fit sometimes resulting in a RuntimeError ([610649c](https://github.com/kmnhan/erlabpy/commit/610649c908cfc9580829f8e569fc0d7b7aa65a47))
+
+- **analysis.fit.models:** properly display reprs for `FermiEdgeModel` and `FermiDiracModel` ([d71f40a](https://github.com/kmnhan/erlabpy/commit/d71f40ac4be5ca4a39b5c6c76bc928ff58dcbc18))
+
+- **analysis.mesh:** fix undoing automatic straight slit Fermi level correction for data containing NaNs ([9c0dcb2](https://github.com/kmnhan/erlabpy/commit/9c0dcb2a9ad7e68ea5b43ea9a9b7b2604367714a))
+
+- **interactive:** make interactive tool windows close completely when pressing Ctrl+W if it is not in the ImageTool manager ([3350324](https://github.com/kmnhan/erlabpy/commit/335032481e07973c2e2c76eb06e48be69c2181a1))
+
+- **imagetool:** fix error when dragging cursor line with alt key pressed ([a7ef23f](https://github.com/kmnhan/erlabpy/commit/a7ef23f36ddbcfbb1c3eb1ea4421f5fef72c6971))
+
+- **manager:** fix duplicate error messages for standalone build of ImageTool Manager ([4428604](https://github.com/kmnhan/erlabpy/commit/4428604b95c4a97a65f21b49ac801e106fb5a4a1))
+
+### ⚡️ Performance
+
+- **analysis.fit:** speed up convolution by using `fftconvolve` ([ab974a7](https://github.com/kmnhan/erlabpy/commit/ab974a717faa43ac8e9b8c3e7f556566728b2d18))
+
+### ♻️ Code Refactor
+
+- **analysis.fit:** set default coefficients for `PolynomialModel` and `StepEdgeModel` ([2b3aa9a](https://github.com/kmnhan/erlabpy/commit/2b3aa9a82ac22ca22fc95a4a03b65b0e5c01b5e0))
+
+- **analaysis.fit.minuit:** allow passing lmfit parameters directly to `from_lmfit` ([9eef563](https://github.com/kmnhan/erlabpy/commit/9eef563b6a7bdbc44c9a6405b62e798c644e70d4))
+
+- **analysis.fit.functions.general:** add defaults to `gaussian_wh` and `lorentzian_wh` ([3ceb79c](https://github.com/kmnhan/erlabpy/commit/3ceb79c4c251c183e09785b9aa7adfa0cf453102))
+
 ## v3.18.0 (2025-12-14)
 
 ### ✨ Features
