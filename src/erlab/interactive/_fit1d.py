@@ -686,6 +686,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         "FermiEdgeModel": erlab.analysis.fit.models.FermiEdgeModel,
         "StepEdgeModel": erlab.analysis.fit.models.StepEdgeModel,
         "PolynomialModel": erlab.analysis.fit.models.PolynomialModel,
+        "TLLModel": erlab.analysis.fit.models.TLLModel,
+        "SymmetrizedGapModel": erlab.analysis.fit.models.SymmetrizedGapModel,
         "ExpressionModel": lmfit.models.ExpressionModel,
     }
 

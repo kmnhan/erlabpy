@@ -262,6 +262,8 @@ First, use the {guilabel}`Model` drop-down to choose a predefined model, a user-
   - {class}`erlab.analysis.fit.models.FermiEdgeModel`
   - {class}`erlab.analysis.fit.models.StepEdgeModel`
   - {class}`erlab.analysis.fit.models.PolynomialModel`
+  - {class}`erlab.analysis.fit.models.TLLModel`
+  - {class}`erlab.analysis.fit.models.SymmetrizedGapModel`
   - {class}`lmfit.models.ExpressionModel`
 
 - {guilabel}`From file` loads a lmfit model saved with {func}`lmfit.model.save_model`.
