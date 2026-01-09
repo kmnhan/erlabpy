@@ -3449,44 +3449,52 @@ class PythonHighlighter(QtGui.QSyntaxHighlighter):
         self._formats = self._build_formats(style)
         self._doc_rev: int = -1
         self._dirty: bool = True
-        self._rehighlight_scheduled: bool = False
         self._building_cache: bool = False
         self._block_spans: dict[int, list[tuple[int, int, QtGui.QTextCharFormat]]] = {}
+
+        self._rehighlight_timer = QtCore.QTimer(self)
+        self._rehighlight_timer.setSingleShot(True)
+        self._rehighlight_timer.timeout.connect(self._do_rehighlight)
 
         doc = self.document()
         if doc is not None:
             doc.contentsChanged.connect(self._mark_dirty)
 
     def setDocument(self, doc: QtGui.QTextDocument | None) -> None:
-        old = self.document()
+        old = None
+        try:
+            old = self.document()
+        except RuntimeError:
+            old = None
+
         if old is not None:
             with contextlib.suppress(Exception):
                 old.contentsChanged.disconnect(self._mark_dirty)
 
         super().setDocument(doc)
 
-        if doc is not None:
-            doc.contentsChanged.connect(self._mark_dirty)
-
         self._dirty = True
         self._doc_rev = -1
         self._block_spans.clear()
+
+        if doc is not None:
+            doc.contentsChanged.connect(self._mark_dirty)
+
         self._mark_dirty()
 
     @QtCore.Slot()
     def _mark_dirty(self) -> None:
         self._dirty = True
-        if not self._rehighlight_scheduled:
-            self._rehighlight_scheduled = True
-            QtCore.QTimer.singleShot(0, self._do_rehighlight)
+        if not self._rehighlight_timer.isActive():
+            self._rehighlight_timer.start(0)
 
     @QtCore.Slot()
     def _do_rehighlight(self) -> None:
-        self._rehighlight_scheduled = False
-        if self._building_cache:
-            self._mark_dirty()
+        try:
+            doc = self.document()
+        except RuntimeError:
             return
-        if self.document() is None:
+        if doc is None or self._building_cache:
             return
         super().rehighlight()
 
@@ -3533,74 +3541,75 @@ class PythonHighlighter(QtGui.QSyntaxHighlighter):
         import pygments
         import pygments.token
 
-        doc = self.document()
-        if doc is not None:  # pragma: no branch
-            rev = doc.revision()
-            if not self._dirty and rev == self._doc_rev:
-                return
+        try:
+            doc = self.document()
+        except RuntimeError:
+            return
+        if doc is None:  # pragma: no cover
+            return
 
-            self._building_cache = True
-            try:
-                text = doc.toPlainText()
-                self._block_spans.clear()
+        rev = doc.revision()
+        if not self._dirty and rev == self._doc_rev:
+            return
 
-                blocks: list[QtGui.QTextBlock] = []
-                b = doc.firstBlock()
-                while b.isValid():
-                    blocks.append(b)
-                    b = b.next()
+        self._building_cache = True
+        try:
+            text = doc.toPlainText()
+            self._block_spans.clear()
 
-                if not blocks:
-                    self._doc_rev = rev
-                    self._dirty = False
-                    return
+            blocks: list[QtGui.QTextBlock] = []
+            b = doc.firstBlock()
+            while b.isValid():
+                blocks.append(b)
+                b = b.next()
 
-                block_positions = [blk.position() for blk in blocks]
-                block_positions.append(len(text) + 1)
-
-                def block_index_for_pos(pos: int) -> int:
-                    i = bisect.bisect_right(block_positions, pos) - 1
-                    if i < 0:
-                        return 0
-                    if i >= len(blocks):
-                        return len(blocks) - 1
-                    return i
-
-                abs_pos = 0
-                for tok, val in pygments.lex(text, self._lexer):
-                    if not val:
-                        continue
-
-                    f = self._format_for_token(tok)
-                    if f.isEmpty() and tok is not pygments.token.Operator:
-                        abs_pos += len(val)
-                        continue
-
-                    start = abs_pos
-                    end = abs_pos + len(val)
-
-                    s = start
-                    while s < end:
-                        bi = block_index_for_pos(s)
-                        blk = blocks[bi]
-                        blk_start = blk.position()
-                        blk_end = blk_start + blk.length()  # includes newline
-                        seg_end = min(end, blk_end)
-
-                        col_start = s - blk_start
-                        seg_len = seg_end - s
-                        if seg_len > 0:
-                            self._block_spans.setdefault(bi, []).append(
-                                (col_start, seg_len, f)
-                            )
-                        s = seg_end
-
-                    abs_pos = end
-
+            if not blocks:
                 self._doc_rev = rev
                 self._dirty = False
-            finally:
-                self._building_cache = False
+                return
+
+            block_positions = [blk.position() for blk in blocks]
+            block_positions.append(len(text) + 1)
+
+            def block_index_for_pos(pos: int) -> int:
+                i = bisect.bisect_right(block_positions, pos) - 1
+                return 0 if i < 0 else (len(blocks) - 1 if i >= len(blocks) else i)
+
+            abs_pos = 0
+            for tok, val in pygments.lex(text, self._lexer):
+                if not val:
+                    continue
+
+                f = self._format_for_token(tok)
+                if f.isEmpty() and tok is not pygments.token.Operator:
+                    abs_pos += len(val)
+                    continue
+
+                start = abs_pos
+                end = abs_pos + len(val)
+
+                s = start
+                while s < end:
+                    bi = block_index_for_pos(s)
+                    blk = blocks[bi]
+                    blk_start = blk.position()
+                    blk_end = blk_start + blk.length()  # includes newline
+                    seg_end = min(end, blk_end)
+
+                    col_start = s - blk_start
+                    seg_len = seg_end - s
+                    if seg_len > 0:
+                        self._block_spans.setdefault(bi, []).append(
+                            (col_start, seg_len, f)
+                        )
+                    s = seg_end
+
+                abs_pos = end
+
+            self._doc_rev = rev
+            self._dirty = False
+        finally:
+            self._building_cache = False
 
     def highlightBlock(self, text: str | None) -> None:
         self._relex_document_if_needed()
