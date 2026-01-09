@@ -16,7 +16,7 @@ __all__ = [
     "watch_data",
 ]
 
-import contextlib
+
 import errno
 import functools
 import io
@@ -24,6 +24,7 @@ import logging
 import os
 import pathlib
 import pickle
+import socket
 import threading
 import typing
 
@@ -574,41 +575,12 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Socket closed")
 
 
-def _is_zmq_endpoint_reachable(endpoint: str, timeout_ms: int = 100) -> bool:
-    ctx = zmq.Context.instance()
-    s = ctx.socket(zmq.DEALER)  # DEALER avoids REQ send/recv lockstep
-    s.linger = 0
-    s.setsockopt(zmq.IMMEDIATE, 1)  # don't queue if no peer
-
-    mon_ep = "inproc://_mon"
-    s.monitor(
-        mon_ep,
-        zmq.EVENT_HANDSHAKE_SUCCEEDED
-        | zmq.EVENT_HANDSHAKE_FAILED_NO_DETAIL
-        | zmq.EVENT_HANDSHAKE_FAILED_PROTOCOL
-        | zmq.EVENT_HANDSHAKE_FAILED_AUTH
-        | zmq.EVENT_DISCONNECTED,
-    )
-    mon = ctx.socket(zmq.PAIR)
-    mon.connect(mon_ep)
-
+def _is_tcp_port_open(host: str, port: int, timeout: float = 0.1) -> bool:
     try:
-        s.connect(endpoint)
-
-        poller = zmq.Poller()
-        poller.register(mon, zmq.POLLIN)
-
-        if not poller.poll(timeout_ms):
-            return False
-
-        msg = zmq.utils.monitor.recv_monitor_message(mon)
-        ev = msg["event"]
-        return ev == zmq.EVENT_HANDSHAKE_SUCCEEDED
-    finally:
-        with contextlib.suppress(Exception):
-            s.disable_monitor()
-        mon.close(0)
-        s.close(0)
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def is_running() -> bool:
@@ -621,7 +593,7 @@ def is_running() -> bool:
     """
     if erlab.interactive.imagetool.manager._manager_instance is not None:
         return True
-    return _is_zmq_endpoint_reachable(f"tcp://{HOST_IP}:{PORT}")
+    return _is_tcp_port_open(HOST_IP, PORT)
 
 
 def _manager_running(func: Callable) -> Callable:
