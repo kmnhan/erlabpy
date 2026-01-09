@@ -645,7 +645,7 @@ class SymmetrizedGapModel(lmfit.Model):
         super().__init__(sc_spectral_function, **kwargs)
         self.set_param_hint("amp", min=0.0)
         self.set_param_hint("gamma1", min=0.0)
-        self.set_param_hint("gamma0", value=0.0, vary=False)
+        self.set_param_hint("gamma0", min=0.0, value=0.0, vary=False)
         self.set_param_hint("delta", min=0.0)
         self.set_param_hint("resolution", min=0.0)
 

@@ -23,6 +23,7 @@ __all__ = [
     "gaussian_wh",
     "lorentzian",
     "lorentzian_wh",
+    "sc_self_energy",
     "sc_spectral_function",
     "step_broad",
     "step_linbkg_broad",
@@ -246,6 +247,10 @@ def gaussian_wh(
 ) -> npt.NDArray[np.float64]:
     r"""Gaussian parametrized with FWHM and peak height.
 
+    .. math::
+
+        G(x) = h \exp\left[-\frac{16 \log{2} (x-x_0)^2}{w^2}\right]
+
     Note
     ----
     :math:`\sigma=\frac{w}{2\sqrt{2\log{2}}}`
@@ -266,7 +271,8 @@ def gaussian(
 
     .. math::
 
-        \frac{A}{\sqrt{2\pi\sigma^2}} \exp\left[-\frac{(x-x_0)^2}{2\sigma^2}\right]
+        G(x) = \frac{A}{\sqrt{2\pi\sigma^2}}
+        \exp\left[-\frac{(x-x_0)^2}{2\sigma^2}\right]
 
     """
     return (amplitude / _clip_tiny(S2PI * sigma)) * np.exp(
@@ -284,6 +290,10 @@ def lorentzian_wh(
 ) -> npt.NDArray[np.float64]:
     r"""Lorentzian parametrized with FWHM and peak height.
 
+    .. math::
+
+        L(x) = \frac{h}{1 + 4\left(\frac{x-x_0}{w}\right)^2}
+
     Note
     ----
     :math:`\sigma=w/2`
@@ -295,19 +305,19 @@ def lorentzian_wh(
 @broadcast_args
 @numba.njit(cache=True)
 def lorentzian(
-    x: npt.NDArray[np.float64], center: float, sigma: float, amplitude: float
+    x: npt.NDArray[np.float64], center: float, gamma: float, amplitude: float
 ) -> npt.NDArray[np.float64]:
     r"""
     Lorentzian parametrized with HWHM and amplitude.
 
     .. math::
 
-        \frac{A}{\pi\sigma\left[1 + \left(\frac{x-x_0}{\sigma}\right)^2\right]}
+        L(x) = \frac{A}{\pi\gamma\left[1 + \left(\frac{x-x_0}{\gamma}\right)^2\right]}
 
     """
     return (
-        amplitude / (1 + ((1.0 * x - center) / _clip_tiny(sigma)) ** 2)
-    ) / _clip_tiny(np.pi * sigma)
+        amplitude / (1 + ((1.0 * x - center) / _clip_tiny(gamma)) ** 2)
+    ) / _clip_tiny(np.pi * gamma)
 
 
 @broadcast_args
@@ -318,7 +328,19 @@ def voigt(
     gamma: float = 0.5,
     amplitude: float = 1.0,
 ) -> npt.NDArray[np.float64]:
-    """Voigt profile."""
+    r"""Voigt profile.
+
+    The Voigt profile can be expressed as:
+
+    .. math::
+
+        V(x) = A \frac{\text{Re}[w(z)]}{\sigma \sqrt{2\pi}}, \quad z = \frac{x - x_0 + i
+        \gamma}{\sigma \sqrt{2}}
+
+    where :math:`w(z)` is the Faddeeva function. This implementation uses
+    :func:`scipy.special.voigt_profile` to compute the Voigt profile.
+
+    """
     return amplitude * scipy.special.voigt_profile(x - center, sigma, gamma)
 
 
@@ -331,7 +353,7 @@ def fermi_dirac(
 
     .. math::
 
-        \frac{1}{1 + e^{(x-x_0)/k_B T}}
+        f(x) = \frac{1}{1 + e^{(x-x_0)/k_B T}}
 
     Parameters
     ----------
@@ -396,7 +418,11 @@ def fermi_dirac_linbkg(
     dos0: float,
     dos1: float,
 ) -> npt.NDArray[np.float64]:
-    """Fermi-dirac edge with linear backgrounds above and below the fermi level.
+    r"""Fermi-dirac edge with linear backgrounds above and below the Fermi level.
+
+    .. math::
+
+        I(x) = b_0 + b_1 x + \frac{d_0 - b_0 + (d_1 - b_1) x} {1 + e^{(x-x_0)/k_B T}}
 
     Parameters
     ----------
@@ -438,7 +464,14 @@ def fermi_dirac_linbkg_broad(
     dos0: float,
     dos1: float,
 ) -> npt.NDArray[np.float64]:
-    """Resolution-broadened Fermi edge with linear backgrounds above and below EF."""
+    r"""Resolution-broadened Fermi edge with linear backgrounds.
+
+    .. math::
+
+        I(x) = \left[ b_0 + b_1 x + \frac{d_0 - b_0 + (d_1 - b_1) x} {1 +
+        e^{(x-x_0)/k_B T}} \right] \otimes \text{g}(\sigma)
+
+    """
     return do_convolve(
         x,
         fermi_dirac_linbkg,
@@ -459,12 +492,13 @@ def _tll_bare(x, amp=1.0, center=0.0, alpha=0.1, temp=10.0):
 
     .. math::
 
-        I(x) = A \cdot T^{\alpha} \cosh\left(\frac{\epsilon}{2}\right\left|
-        \Gamma\left(\frac{1 + \alpha}{2} + i \frac{\epsilon}{2\pi}\right)\right|^2
+        I(x,T) = A T^\alpha \cosh\left(\frac{\epsilon}{2}\right)
+        \left|\Gamma\left(\frac{1 + \alpha}{2} + i \frac{\epsilon}{2\pi}\right)\right|^2
         f(\epsilon,T)
 
-    where :math:`\epsilon=(x - x_0)/k_B T`, :math:`\Gamma` is the gamma function, and
-    :math:`f(\epsilon,T) = 1/(e^{\epsilon}+1)` is the Fermi-Dirac distribution.
+    where :math:`\epsilon=(x - x_0)/k_B T` is the temperature-normalized energy,
+    :math:`\Gamma` is the gamma function, and :math:`f(\epsilon,T) = 1/(e^{\epsilon}+1)`
+    is the Fermi-Dirac distribution.
 
     Parameters
     ----------
@@ -507,18 +541,17 @@ def tll(
 
     .. math::
 
-        I(x) = A \cdot T^{\alpha} \cosh\left(\frac{\epsilon}{2}\right\left|
-        \Gamma\left(\frac{1 + \alpha}{2} + i \frac{\epsilon}{2\pi}\right)\right|^2
-        f(\epsilon,T)
+        I(x,T) = \left[A T^\alpha \cosh\left(\frac{\epsilon}{2}\right)
+        \left|\Gamma\left(\frac{1 + \alpha}{2} + i \frac{\epsilon}{2\pi}\right)\right|^2
+        f(\epsilon,T)\right] \otimes \text{g}(\sigma) + B
 
-    where :math:`\epsilon=(x - x_0)/k_B T`, :math:`\Gamma` is the gamma function, and
-    :math:`f(\epsilon,T) = 1/(e^{\epsilon}+1)` is the Fermi-Dirac distribution.
+    where :math:`\epsilon=(x - x_0)/k_B T` is the temperature-normalized energy,
+    :math:`\Gamma` is the gamma function, :math:`f(\epsilon,T) = 1/(e^{\epsilon}+1)` is
+    the Fermi-Dirac distribution, :math:`\text{g}(\sigma)` is a Gaussian kernel with
+    standard deviation :math:`\sigma`, and :math:`B` is a constant background.
 
-    The broadened TLL function is calculated as:
-
-    .. math::
-
-        I_{broad}(x) = I(x) \otimes \text{g}(\sigma) + B
+    Note that the resolution parameter is the FWHM of the Gaussian kernel, not the
+    standard deviation.
 
     Parameters
     ----------
@@ -718,7 +751,7 @@ def spectral_function(x, im=0, re=0):
     re
         The real part of the self-energy :math:`\text{Re}\Sigma(x)`.
     """
-    return im / ((x - re) ** 2 + im**2) / np.pi
+    return -im / ((x - re) ** 2 + im**2) / np.pi
 
 
 def _sc_spectral_function_bare(x, amp, gamma1, gamma0, delta, lin_bkg, const_bkg):
@@ -732,7 +765,8 @@ def _sc_spectral_function_bare(x, amp, gamma1, gamma0, delta, lin_bkg, const_bkg
         \right)
 
     where :math:`A_{sc}(x, \Sigma)` is the superconducting spectral function calculated
-    using the self-energy :math:`\Sigma(x)` given by :func:`sc_self_energy`.
+    using the self-energy :math:`\Sigma(x)` given by :func:`sc_self_energy
+    <erlab.analysis.fit.functions.general.sc_self_energy>`.
 
     Parameters
     ----------
@@ -753,7 +787,7 @@ def _sc_spectral_function_bare(x, amp, gamma1, gamma0, delta, lin_bkg, const_bkg
     """
     se = sc_self_energy(x, gamma1, gamma0, delta)
     akw = spectral_function(x, np.imag(se), np.real(se))
-    return amp * akw + (np.sign(x) * lin_bkg * x + const_bkg)
+    return amp * akw + (lin_bkg * np.abs(x) + const_bkg)
 
 
 @broadcast_args
@@ -773,24 +807,21 @@ def sc_spectral_function(
 
     .. math::
 
-        I(x) = A \cdot A_{sc}(x, \Sigma) + \left(\text{sgn}(x) \cdot m \cdot x + b
-        \right)
+        I(x) = \left[ A \cdot A_{sc}(x, \Sigma) + \left(m \cdot |x| + b \right) \right]
+        \otimes \text{g}(\sigma)
 
     where :math:`A_{sc}(x, \Sigma)` is the superconducting spectral function calculated
     using the self-energy :math:`\Sigma(x)` given by :func:`sc_self_energy`.
-
-    The broadened superconducting spectral function is calculated as:
-
-    .. math::
-
-        I_{broad}(x) = I(x) \otimes \text{g}(\sigma)
+    :math:`\text{g}(\sigma)` is a Gaussian kernel with standard deviation
+    :math:`\sigma`. Note that the resolution parameter is the FWHM of the Gaussian
+    kernel, not the standard deviation.
 
     Parameters
     ----------
     x : array-like
         The input array of energy in eV.
     amp
-        The amplitude :math:`A`.
+        The overall scale factor :math:`A`.
     gamma1
         :math:`\Gamma_1`, the single-particle scattering rate.
     gamma0
