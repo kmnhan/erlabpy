@@ -209,6 +209,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._warning_handler = _WarningNotificationHandler(self._warning_emitter)
         logging.getLogger().addHandler(self._warning_handler)
         self._alert_dialogs: list[erlab.interactive.utils.MessageDialog] = []
+        self._ignored_warning_messages: set[str] = set()
 
         # Setup uncaught exception handler
         self._previous_excepthook = sys.excepthook
@@ -681,6 +682,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             else:
                 return
 
+        if message in self._ignored_warning_messages:
+            return
+
         if levelno >= logging.ERROR:
             icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxCritical
         elif levelno >= logging.WARNING:
@@ -703,21 +707,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
             | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
 
-        btn = QtWidgets.QPushButton("Dismiss All", dialog)
-        btn.setObjectName("warningDismissAllButton")
-        btn.clicked.connect(self._clear_all_alerts)
-        btn.setDefault(False)
-        btn.setAutoDefault(False)
-        dialog._button_box.addButton(
-            btn, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        ignore_btn = QtWidgets.QPushButton("Ignore", dialog)
+        ignore_btn.setObjectName("warningIgnoreButton")
+        ignore_btn.clicked.connect(
+            lambda *, msg=message: self._ignore_warning_message(msg)
         )
-        dialog._dismiss_all_btn = btn  # type: ignore[attr-defined]
+        ignore_btn.setDefault(False)
+        ignore_btn.setAutoDefault(False)
+        dialog._button_box.addButton(
+            ignore_btn, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        )
+
+        dismiss_btn = QtWidgets.QPushButton("Dismiss All", dialog)
+        dismiss_btn.setObjectName("warningDismissAllButton")
+        dismiss_btn.clicked.connect(self._clear_all_alerts)
+        dismiss_btn.setDefault(False)
+        dismiss_btn.setAutoDefault(False)
+        dialog._button_box.addButton(
+            dismiss_btn, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        )
         self._alert_dialogs.append(dialog)
         dialog.finished.connect(lambda *, d=dialog: self._unregister_alert(d))
 
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _ignore_warning_message(self, message: str) -> None:
+        """Ignore future warnings with the same message for this session."""
+        self._ignored_warning_messages.add(message)
+        for notification in list(self._alert_dialogs):
+            if notification.text() == message:
+                notification.close()
 
     def _unregister_alert(self, alert: erlab.interactive.utils.MessageDialog) -> None:
         with contextlib.suppress(ValueError):  # pragma: no cover - defensive cleanup
