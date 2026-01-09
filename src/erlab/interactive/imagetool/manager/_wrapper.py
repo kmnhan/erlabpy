@@ -401,6 +401,8 @@ class _ImageToolWrapper(QtCore.QObject):
 
         if show:
             tool.show()
+            tool.activateWindow()
+            tool.raise_()
         return uid
 
     def _remove_childtool(self, uid: str) -> None:
