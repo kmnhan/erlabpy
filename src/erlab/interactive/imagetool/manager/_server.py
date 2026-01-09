@@ -6,6 +6,7 @@ __all__ = [
     "HOST_IP",
     "PORT",
     "PORT_WATCH",
+    "ImageToolManagerTimeoutError",
     "fetch",
     "is_running",
     "load_in_manager",
@@ -44,6 +45,9 @@ if typing.TYPE_CHECKING:
 if np.lib.NumpyVersion(np.__version__) < "2.3.0":  # pragma: no cover
     # Patch numpy to add compatibility for cases where ImageToolManager is running on
     # numpy <2.3 and the client is using numpy >=2.3.
+
+    # Note: does not cover the case where ImageToolManager is running on numpy >=2.3
+    # and the client is using numpy <2.3
 
     # This whole block can be removed when we drop support for numpy <2.3
 
@@ -89,6 +93,14 @@ HOST_IP: str = str(os.getenv("ITOOL_MANAGER_HOST", "localhost"))
 
 The default host IP address "localhost" can be overridden by setting the environment
 variable ``ITOOL_MANAGER_HOST``, enabling remote connections.
+"""
+
+ZMQ_TIMEOUT_MS: int = int(os.getenv("ITOOL_MANAGER_ZMQ_TIMEOUT_MS", "15000"))
+"""Timeout (ms) for client-side ZMQ requests.
+
+The default timeout is 15000 ms and can be overridden by setting the environment
+variable ``ITOOL_MANAGER_ZMQ_TIMEOUT_MS``. Set to 0 or a negative value to disable
+the timeout.
 """
 
 
@@ -323,6 +335,17 @@ def _recv_multipart(sock: zmq.Socket, **kwargs) -> dict[str, typing.Any]:
     return payload_dict
 
 
+class ImageToolManagerTimeoutError(TimeoutError):
+    """Custom timeout error for ImageToolManager operations."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"Timed out waiting for ImageToolManager response after "
+            f"{ZMQ_TIMEOUT_MS} ms. Adjust via the environment variable "
+            "ITOOL_MANAGER_ZMQ_TIMEOUT_MS."
+        )
+
+
 def _query_zmq(payload: PacketVariant) -> Response:
     """Client side function to send a packet to the server and receive a response.
 
@@ -338,6 +361,8 @@ def _query_zmq(payload: PacketVariant) -> Response:
     sock: zmq.Socket = ctx.socket(zmq.REQ)
     sock.setsockopt(zmq.SNDHWM, 0)
     sock.setsockopt(zmq.RCVHWM, 0)
+    poller = zmq.Poller()
+    poller.register(sock, zmq.POLLIN)
     try:
         logger.debug("Connecting to server...")
         sock.connect(f"tcp://{HOST_IP}:{PORT}")
@@ -349,15 +374,15 @@ def _query_zmq(payload: PacketVariant) -> Response:
         _send_multipart(sock, payload_dict)
 
         # Wait for a response
-        try:
+        if ZMQ_TIMEOUT_MS > 0 and not poller.poll(ZMQ_TIMEOUT_MS):
+            raise ImageToolManagerTimeoutError
+        response = Response(**_recv_multipart(sock))
+        if response.status == "unpickle-failed":
+            logger.debug("Retrying with cloudpickle...")
+            _send_multipart(sock, payload_dict, use_cloudpickle=True)
+            if ZMQ_TIMEOUT_MS > 0 and not poller.poll(ZMQ_TIMEOUT_MS):
+                raise ImageToolManagerTimeoutError
             response = Response(**_recv_multipart(sock))
-            if response.status == "unpickle-failed":
-                logger.debug("Retrying with cloudpickle...")
-                _send_multipart(sock, payload_dict, use_cloudpickle=True)
-                response = Response(**_recv_multipart(sock))
-        except Exception:
-            logger.exception("Failed to receive response from server")
-            response = Response(status="error")
     finally:
         sock.close()
 
