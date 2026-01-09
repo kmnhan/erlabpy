@@ -1299,6 +1299,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def initialize_actions(self) -> None:
         """Initialize :class:`QtWidgets.QAction` instances."""
+        self.reload_act = QtWidgets.QAction("&Reload Data", self)
+        self.reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
+        self.reload_act.triggered.connect(self.reload)
+        self.reload_act.setToolTip("Reload data from the original source")
+        self.reload_act.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
+
         self.view_all_act = QtWidgets.QAction("View &All", self)
         self.view_all_act.setShortcut("Ctrl+A")
         self.view_all_act.triggered.connect(self.view_all)
@@ -1867,6 +1873,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         return _parse_input(reloaded)[load_func[2]]
 
+    @QtCore.Slot()
     def reload(self) -> None:
         """Reload the data from the file it was loaded from, using the same loader.
 
