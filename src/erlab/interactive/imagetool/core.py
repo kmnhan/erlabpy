@@ -509,6 +509,8 @@ class _CursorColorCoordDialog(QtWidgets.QDialog):
         self.coord_combo.setCurrentText(str(coord_name))
 
     def get_checked_coord_name(self) -> tuple[Hashable, Hashable] | None:
+        if not self.main_group.isChecked():
+            return None
         slicer_area = self._slicer_area()
         if not slicer_area:  # pragma: no cover
             return None
