@@ -253,6 +253,26 @@ def _kwargs_to_text(kwargs: dict) -> str:
     return ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
 
 
+def _parse_value(node: ast.expr) -> typing.Any:
+    """Parse a node into a Python literal if possible.
+
+    Handles special case for dict(...) calls.
+    """
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "dict"
+        and not node.args
+    ):
+        result = {}
+        for kw in node.keywords:
+            if kw.arg is None:
+                raise ValueError("Cannot evaluate dict with **kwargs")
+            result[kw.arg] = ast.literal_eval(kw.value)
+        return result
+    return ast.literal_eval(node)
+
+
 def _text_to_kwargs(text: str) -> dict[str, typing.Any]:
     """Parse ``a=1, b='x'`` style text into a kwargs dict."""
     text = text.strip()
@@ -272,7 +292,7 @@ def _text_to_kwargs(text: str) -> dict[str, typing.Any]:
     result: dict = {}
     for kw in call.keywords:
         try:
-            value = ast.literal_eval(kw.value)
+            value = _parse_value(kw.value)
         except ValueError as e:
             raise ValueError(f"Value for {kw.arg!r} is not a valid literal") from e
         result[kw.arg] = value

@@ -59,6 +59,7 @@ class DA30Loader(LoaderBase):
     def load_single(
         self,
         file_path: str | os.PathLike,
+        *,
         without_values: bool = False,
         use_libarchive: bool = True,
     ) -> xr.DataArray | xr.DataTree:
