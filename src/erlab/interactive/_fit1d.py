@@ -35,6 +35,9 @@ class _PythonCodeEditor(QtWidgets.QTextEdit):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.setFont(
+            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        )
         self.highlighter = erlab.interactive.utils.PythonHighlighter(self.document())
 
     def keyPressEvent(self, e: QtGui.QKeyEvent | None) -> None:
@@ -674,7 +677,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def tool_data(self) -> xr.DataArray:
         return self._data
 
-    PLOT_RESAMPLE: int = 10
+    PLOT_RESAMPLE: int = 5
     FIT_COLOR: str = "c"
     BOUNDS_COLOR: str = "#adadad"
     HIGHLIGHT_COLOR: str = "#d62728"
@@ -1043,6 +1046,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.expr_label = QtWidgets.QLabel("")
         self.expr_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.expr_label.setFont(
+            QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
         )
         self.expr_label.setWordWrap(True)
 

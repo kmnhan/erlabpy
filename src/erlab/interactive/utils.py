@@ -244,21 +244,17 @@ def _format_traceback(exc_text: str) -> str:
     string with syntax highlighting. If `pygments` is not installed, the traceback will
     be returned as a plain text string wrapped in `<pre>` tags.
     """
-    try:
-        import pygments
-    except ImportError:  # pragma: no branch
-        return f"<pre>{exc_text}</pre>"
-    else:
-        from pygments.formatters import HtmlFormatter
-        from pygments.lexers.python import PythonTracebackLexer
+    import pygments
+    import pygments.formatters
+    import pygments.lexers.python
 
-        formatter = HtmlFormatter(
-            style="github-dark"
-            if erlab.interactive.colors.is_dark_mode()
-            else "default",
-            noclasses=True,
-        )
-        return pygments.highlight(exc_text, PythonTracebackLexer(), formatter)
+    formatter = pygments.formatters.HtmlFormatter(
+        style="github-dark" if erlab.interactive.colors.is_dark_mode() else "default",
+        noclasses=True,
+    )
+    return pygments.highlight(
+        exc_text, pygments.lexers.python.PythonTracebackLexer(), formatter
+    )
 
 
 class MessageDialog(QtWidgets.QDialog):
