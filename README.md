@@ -39,6 +39,12 @@ Interactive windows support dark mode.
 </picture>
 
 <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/ftool_2d_fit_dark.png?raw=true">
+  <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/ftool_2d_fit_light.png?raw=true">
+  <img alt="Interactive curve fitting tool." src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/ftool_2d_fit_light.png?raw=true">
+</picture>
+
+<picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/manager_dark.png?raw=true">
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/manager_light.png?raw=true">
   <img alt="ImageTool manager window." src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/manager_light.png?raw=true">
