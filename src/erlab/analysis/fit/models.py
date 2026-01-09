@@ -490,8 +490,12 @@ class MultiPeakModel(lmfit.Model):
                     width = float(abs(x_right - x_left))
 
             pars[f"{self.prefix}p{i}_center"].set(value=center)
-            pars[f"{self.prefix}p{i}_height"].set(value=height)
-            pars[f"{self.prefix}p{i}_width"].set(value=width)
+            if self.func._peak_shapes[i] == "voigt":
+                pars[f"{self.prefix}p{i}_gamma"].set(value=width / 2)
+                pars[f"{self.prefix}p{i}_amplitude"].set(value=height * width)
+            else:
+                pars[f"{self.prefix}p{i}_height"].set(value=height)
+                pars[f"{self.prefix}p{i}_width"].set(value=width)
 
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
