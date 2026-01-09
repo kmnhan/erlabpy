@@ -27,6 +27,7 @@ from erlab.analysis.fit.functions.general import (
     fermi_dirac,
     gaussian_wh,
     lorentzian_wh,
+    voigt,
 )
 from erlab.constants import TINY, kb_eV
 
@@ -187,6 +188,7 @@ class MultiPeakFunction(DynamicFunction):
     PEAK_SHAPES: typing.ClassVar[dict[Callable, list[str]]] = {
         lorentzian_wh: ["lorentzian", "lor", "l"],
         gaussian_wh: ["gaussian", "gauss", "g"],
+        voigt: ["voigt", "v"],
     }
     """Mapping of peak functions to their string aliases."""
 
@@ -239,6 +241,8 @@ class MultiPeakFunction(DynamicFunction):
 
         if len(self._peak_funcs) != self.npeaks:
             raise ValueError("Invalid peak name")
+
+        self._peak_shapes = [self.PEAK_SHAPES[fcn][0] for fcn in self._peak_funcs]
 
     @functools.cached_property
     def peak_all_args(self) -> dict[Callable, PeakArgs]:
@@ -311,10 +315,25 @@ class MultiPeakFunction(DynamicFunction):
         elif peak_func == lorentzian_wh:
             out[f"{label}width"] = {"min": 0.0}
             out[f"{label}height"] = {"min": 0.0}
-            out[f"{label}sigma"] = {"expr": f"{prefix}{label}width / 2"}
+            out[f"{label}gamma"] = {"expr": f"{prefix}{label}width / 2"}
             out[f"{label}amplitude"] = {
-                "expr": f"{prefix}{label}height * {prefix}{label}sigma * pi"
+                "expr": f"{prefix}{label}height * {prefix}{label}gamma * pi"
             }
+        elif peak_func == voigt:
+            out[f"{label}sigma"] = {"min": 0.0}
+            out[f"{label}gamma"] = {"min": 0.0}
+            out[f"{label}amplitude"] = {"min": 0.0}
+            fexpr = (
+                "1.0692*{pre:s}gamma+"
+                + "sqrt(0.8664*{pre:s}gamma**2+5.545083*{pre:s}sigma**2)"
+            )
+            hexpr = (
+                "({pre:s}amplitude/(max({0}, {pre:s}sigma*sqrt(2*pi))))*"
+                "real(wofz((1j*{pre:s}gamma)/(max({0}, {pre:s}sigma*sqrt(2)))))"
+            )
+            out[f"{label}width"] = {"expr": fexpr.format(pre=prefix + label)}
+            out[f"{label}height"] = {"expr": hexpr.format(TINY, pre=prefix + label)}
+
         return out
 
     def eval_peak(self, index: int, x, **params):

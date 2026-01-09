@@ -27,6 +27,7 @@ __all__ = [
     "step_broad",
     "step_linbkg_broad",
     "tll",
+    "voigt",
 ]
 
 from collections.abc import Callable
@@ -294,6 +295,18 @@ def lorentzian(
     return (
         amplitude / (1 + ((1.0 * x - center) / _clip_tiny(sigma)) ** 2)
     ) / _clip_tiny(np.pi * sigma)
+
+
+@broadcast_args
+def voigt(
+    x: npt.NDArray[np.float64],
+    center: float = 0.0,
+    sigma: float = 0.0,
+    gamma: float = 0.5,
+    amplitude: float = 1.0,
+) -> npt.NDArray[np.float64]:
+    """Voigt profile."""
+    return amplitude * scipy.special.voigt_profile(x - center, sigma, gamma)
 
 
 @broadcast_args
