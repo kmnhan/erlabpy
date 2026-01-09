@@ -481,13 +481,13 @@ def _tll_bare(x, amp=1.0, center=0.0, alpha=0.1, temp=10.0):
 
     """
     x_n = (x - center) / kb_eV / temp
-    gamma_arg = (1.0 + alpha) / 2.0 + 1j * x_n / (2.0 * np.pi)
+    gamma_arg = (1.0 + alpha) / 2.0 + (1j * x_n / (2.0 * np.pi))
     return (
         amp
         * temp**alpha
         * np.cosh(x_n / 2.0)
         * np.abs(scipy.special.gamma(gamma_arg)) ** 2.0
-        / _clip_tiny(np.exp(x_n) + 1.0)
+        * scipy.special.expit(-x_n)
     )
 
 
