@@ -461,7 +461,7 @@ def meshtool(
 ) -> MeshTool:
     """Interactive tool for mesh removal.
 
-    This tool can also be accessed from the menu
+    This tool can also be accessed from the menu in ImageTool.
 
     Parameters
     ----------

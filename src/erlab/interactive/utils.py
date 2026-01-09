@@ -2182,8 +2182,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
+        # Initialize a menu bar to correctly apply keyboard shortcuts on some platforms
+        self.menuBar()
+
         # Enable closing with keyboard shortcut
-        self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self.hide)
+        self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self._hide_or_close)
         self.__close_shortcut.setContext(
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
