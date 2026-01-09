@@ -16,6 +16,7 @@ __all__ = [
     "watch_data",
 ]
 
+import contextlib
 import errno
 import functools
 import io
@@ -30,6 +31,7 @@ import numpy as np
 import pydantic
 import xarray as xr
 import zmq
+import zmq.utils.monitor
 from qtpy import QtCore
 
 import erlab
@@ -572,35 +574,41 @@ class _ManagerServer(QtCore.QThread):
             logger.debug("Socket closed")
 
 
-def _ping_server(attempts: int = 3, per_attempt_ms: int = 100) -> bool:
-    """Ping the ImageToolManager server to check if it is running.
-
-    Parameters
-    ----------
-    attempts
-        Number of attempts to ping the server. Default is 3.
-    per_attempt_ms
-        Milliseconds to wait per attempt. Default is 100.
-    """
+def _is_zmq_endpoint_reachable(endpoint: str, timeout_ms: int = 100) -> bool:
     ctx = zmq.Context.instance()
+    s = ctx.socket(zmq.DEALER)  # DEALER avoids REQ send/recv lockstep
+    s.linger = 0
+    s.setsockopt(zmq.IMMEDIATE, 1)  # don't queue if no peer
 
-    sock: zmq.Socket = ctx.socket(zmq.REQ)
-    sock.linger = 0
-    sock.connect(f"tcp://{HOST_IP}:{PORT}")
-    poller = zmq.Poller()
-    poller.register(sock, zmq.POLLIN)
+    mon_ep = "inproc://_mon"
+    s.monitor(
+        mon_ep,
+        zmq.EVENT_HANDSHAKE_SUCCEEDED
+        | zmq.EVENT_HANDSHAKE_FAILED_NO_DETAIL
+        | zmq.EVENT_HANDSHAKE_FAILED_PROTOCOL
+        | zmq.EVENT_HANDSHAKE_FAILED_AUTH
+        | zmq.EVENT_DISCONNECTED,
+    )
+    mon = ctx.socket(zmq.PAIR)
+    mon.connect(mon_ep)
+
     try:
-        for _ in range(attempts):
-            _send_multipart(sock, {"packet_type": "command", "command": "ping"})
-            if poller.poll(per_attempt_ms):
-                response = Response(**_recv_multipart(sock))
-                if response.status == "ok":
-                    return True
-    except Exception:
-        return False
+        s.connect(endpoint)
+
+        poller = zmq.Poller()
+        poller.register(mon, zmq.POLLIN)
+
+        if not poller.poll(timeout_ms):
+            return False
+
+        msg = zmq.utils.monitor.recv_monitor_message(mon)
+        ev = msg["event"]
+        return ev == zmq.EVENT_HANDSHAKE_SUCCEEDED
     finally:
-        sock.close()
-    return False
+        with contextlib.suppress(Exception):
+            s.disable_monitor()
+        mon.close(0)
+        s.close(0)
 
 
 def is_running() -> bool:
@@ -613,7 +621,7 @@ def is_running() -> bool:
     """
     if erlab.interactive.imagetool.manager._manager_instance is not None:
         return True
-    return _ping_server()
+    return _is_zmq_endpoint_reachable(f"tcp://{HOST_IP}:{PORT}")
 
 
 def _manager_running(func: Callable) -> Callable:
