@@ -1,6 +1,20 @@
-## Unreleased
+## v3.19.0 (2026-01-09)
 
 ### ✨ Features
+
+- **analysis.fit:** add voigt peak shape to `MultiPeakModel` ([547d4ab](https://github.com/kmnhan/erlabpy/commit/547d4ab8188e7a9a596bb399219238c62b3be324))
+
+- **io:** support loading data with chunks for some loaders ([c5cc15b](https://github.com/kmnhan/erlabpy/commit/c5cc15bdddeb16f1fa7c1e0977c2d338d7d27b3d))
+
+  Some supported loaders (`erpes`, `maestro`, `ssrl52`) now accept a `chunks` argument in `erlab.io.load`. Users can control the chunk size when loading large datasets to optimize memory usage and performance. The default chunking is `None`.
+
+- **imagetool:** add reload action directly to ImageTool window ([6529b33](https://github.com/kmnhan/erlabpy/commit/6529b3336fec9cc4da11b2def858ef4fd76a60a1))
+
+  The reload action was only available in the manager right-click context menu. Now, it is also accessible directly from the ImageTool window's File menu and also with a standard refresh keyboard shortcut.
+
+- **interactive:** add option to ignore specific warning messages in ImageToolManager ([79ef0d7](https://github.com/kmnhan/erlabpy/commit/79ef0d7e782cea87e20233ffc9ccdcb5b5befa9c))
+
+  When a warning dialog is shown in the ImageToolManager, users can now choose an `Ignore` button. This will suppress future warnings with the same message for the duration of the session.
 
 - **erlab.analysis.fit:** add 2 new models for data fitting ([9baea86](https://github.com/kmnhan/erlabpy/commit/9baea86a6538ceb8fa7dfb1e7f69441af6bf61b6))
 
@@ -30,6 +44,20 @@
 
 ### 🐞 Bug Fixes
 
+- **io.plugins.ssrl52:** check ssrl loader correctly loads all example files including camera ([24656b0](https://github.com/kmnhan/erlabpy/commit/24656b0d0a260656b720da86bbc98c6ea81dc355))
+
+- **imagetool:** fixes an issue where disabling setting cursor colors from coordinate values did not work as intended ([9718a8a](https://github.com/kmnhan/erlabpy/commit/9718a8ab3ccd27947445b0a08f1c87cab9312d17))
+
+- **manager:** improve running check reliability ([4192eba](https://github.com/kmnhan/erlabpy/commit/4192eba657b7f915352cd4acdaa792d2f56f7c8e))
+
+  The previous implementation of `is_running` relied on checking if the TCP port was open, which could lead to false positives if the port was occupied by another process. The updated implementation uses ZeroMQ's monitoring capabilities to verify that the server is actively responding to handshake events, providing a more accurate assessment of its running state.
+
+- **manager:** add timeout for communication with ImageTool Manager to prevent hangs in user code. ([fae261f](https://github.com/kmnhan/erlabpy/commit/fae261f6c6c2c7cc4483ed04240b8d6fdbb5644f))
+
+  The default htimeout is set to 15 seconds, and can be configured by the `ITOOL_MANAGER_ZMQ_TIMEOUT_MS` environment variable.
+
+- **interactive:** fix inconsistent Ctrl+W behavior in tools, especially on macOS ([4c7ccef](https://github.com/kmnhan/erlabpy/commit/4c7ccef090efe70709940b694d2c27d4952c8b87))
+
 - **restool:** fix trying to fit sometimes resulting in a RuntimeError ([610649c](https://github.com/kmnhan/erlabpy/commit/610649c908cfc9580829f8e569fc0d7b7aa65a47))
 
 - **analysis.fit.models:** properly display reprs for `FermiEdgeModel` and `FermiDiracModel` ([d71f40a](https://github.com/kmnhan/erlabpy/commit/d71f40ac4be5ca4a39b5c6c76bc928ff58dcbc18))
@@ -47,6 +75,8 @@
 - **analysis.fit:** speed up convolution by using `fftconvolve` ([ab974a7](https://github.com/kmnhan/erlabpy/commit/ab974a717faa43ac8e9b8c3e7f556566728b2d18))
 
 ### ♻️ Code Refactor
+
+- **analysis.fit:** improve gaussian convolution stability and accuracy ([3cc0718](https://github.com/kmnhan/erlabpy/commit/3cc0718dab84263ab1228748176b3bef052b12f8))
 
 - **analysis.fit:** set default coefficients for `PolynomialModel` and `StepEdgeModel` ([2b3aa9a](https://github.com/kmnhan/erlabpy/commit/2b3aa9a82ac22ca22fc95a4a03b65b0e5c01b5e0))
 
