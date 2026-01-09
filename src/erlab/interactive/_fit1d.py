@@ -34,10 +34,8 @@ class _PythonCodeEditor(QtWidgets.QTextEdit):
     TAB_SPACES = 4
 
     def __init__(self, *args, **kwargs) -> None:
-        from pyqtgraph.examples.ExampleApp import PythonHighlighter
-
         super().__init__(*args, **kwargs)
-        self.highlighter = PythonHighlighter(self.document())
+        self.highlighter = erlab.interactive.utils.PythonHighlighter(self.document())
 
     def keyPressEvent(self, e: QtGui.QKeyEvent | None) -> None:
         if e is not None:
@@ -1046,6 +1044,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.expr_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
+        self.expr_label.setWordWrap(True)
 
         self.slider_width_label = QtWidgets.QLabel("Range")
         self.slider_width_spin = pg.SpinBox(dec=True, compactHeight=False, finite=False)
@@ -1345,7 +1344,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         self.peak_shape_label = QtWidgets.QLabel("Peak shape")
         self.peak_shape_combo = QtWidgets.QComboBox()
-        self.peak_shape_combo.addItems(["lorentzian", "gaussian"])
+        self.peak_shape_combo.addItems(["lorentzian", "gaussian", "voigt"])
         self.peak_shape_combo.setCurrentText("lorentzian")
 
         self.fd_check = QtWidgets.QCheckBox("Fermi-Dirac")
@@ -1369,7 +1368,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         self.oversample_label = QtWidgets.QLabel("Oversample")
         self.oversample_spin = QtWidgets.QSpinBox()
-        self.oversample_spin.setRange(1, 20)
+        self.oversample_spin.setRange(1, 64)
         self.oversample_spin.setToolTip("Factor to oversample x during convolution.")
         self.oversample_spin.setValue(3)
         self._set_oversample_enabled(self.convolve_check.isChecked())
@@ -2752,6 +2751,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _peak_param_name(self, peak_index: int, suffix: str) -> str:
         prefix = getattr(self._model, "prefix", "")
+        if self.peak_shape_combo.currentText().casefold() == "voigt":
+            if suffix == "width":
+                suffix = "gamma"
+            elif suffix == "height":
+                suffix = "amplitude"
         return f"{prefix}p{peak_index}_{suffix}"
 
     def _get_peak_param_value(self, peak_index: int, suffix: str) -> float | None:

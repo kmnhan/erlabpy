@@ -325,9 +325,12 @@ class _NameFilterDialog(QtWidgets.QDialog):
         self.func_label = QtWidgets.QLabel()
         layout.addWidget(self.func_label)
 
-        self.kwargs_line = QtWidgets.QLineEdit()
+        self.kwargs_line = erlab.interactive.utils.SingleLinePlainTextEdit()
         self.kwargs_line.setFont(
             QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+        )
+        self.highlighter = erlab.interactive.utils.PythonHighlighter(
+            self.kwargs_line.document()
         )
 
         layout.addWidget(self.kwargs_line)

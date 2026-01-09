@@ -47,6 +47,7 @@ dependencies = [
     "varname>=0.13.0",
     "xarray>=2024.10.0",
     "xarray-lmfit>=0.5.4",
+    "pygments>=2.11.0",
 ]
 
 
