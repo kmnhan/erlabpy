@@ -532,6 +532,7 @@ class LoaderBase(metaclass=_Loader):
         identifier: str | os.PathLike | int,
         data_dir: str | os.PathLike | None = None,
         *,
+        chunks: int | dict | typing.Literal["auto"] | tuple[int, ...] | None = None,
         single: bool = False,
         combine: bool = True,
         parallel: bool | None = None,
@@ -572,6 +573,8 @@ class LoaderBase(metaclass=_Loader):
 
             When called as :func:`erlab.io.load`, this argument defaults to the value
             set by :func:`erlab.io.set_data_dir` or :func:`erlab.io.loader_context`.
+        chunks
+            Chunking strategy for loading data with ``dask`` for supported loaders.
         single
             This argument is only used when :attr:`always_single
             <erlab.io.dataloader.LoaderBase.always_single>` is `False`, and `identifier`
@@ -656,6 +659,17 @@ class LoaderBase(metaclass=_Loader):
             single = True
         if load_kwargs is None:
             load_kwargs = {}
+
+        if chunks is not None:
+            if hasattr(
+                self, "_original_load_single"
+            ) and erlab.utils.misc.accepts_kwarg(self._original_load_single, "chunks"):
+                load_kwargs["chunks"] = chunks
+            else:
+                erlab.utils.misc.emit_user_level_warning(
+                    f"Loader '{self.name}' does not support chunked loading. "
+                    "The `chunks` argument will be ignored."
+                )
 
         if isinstance(identifier, int):
             # Scan number given
@@ -1395,6 +1409,15 @@ class LoaderBase(metaclass=_Loader):
         `xarray.Dataset` or `xarray.DataTree` depending on whether the regions can be
         merged with without conflicts (i.e., all mutual coordinates of the regions are
         the same).
+
+        Subclasses may add additional keyword arguments to this method as needed, which
+        can be passed through :meth:`load <erlab.io.dataloader.LoaderBase.load>` using
+        the `load_kwargs` argument.
+
+        If the loader supports dask-based lazy loading, it should add a ``chunks``
+        keyword argument to this method, which should be passed to the underlying data
+        loading function (e.g., :func:`xarray.open_dataset`,
+        :func:`xarray.open_datatree`).
 
         Parameters
         ----------

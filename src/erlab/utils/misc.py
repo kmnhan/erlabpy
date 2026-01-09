@@ -1,6 +1,7 @@
 """Utilities that don't fit in any other category."""
 
 __all__ = [
+    "accepts_kwarg",
     "emit_user_level_warning",
     "get_tqdm",
     "is_interactive",
@@ -16,7 +17,7 @@ import subprocess
 import sys
 import typing
 import warnings
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -196,3 +197,40 @@ def get_tqdm() -> type["tqdm.tqdm"]:
         import tqdm.auto as tqdm
 
     return tqdm.tqdm
+
+
+def accepts_kwarg(func: Callable, name: str, *, strict: bool = True) -> bool:
+    """Return True if `func` can be called with keyword argument `name`.
+
+    Parameters
+    ----------
+    func
+        The callable to inspect.
+    name
+        The name of the keyword argument to check for.
+    strict
+        If True, only return True if `name` is explicitly defined as a keyword parameter
+        in `func`'s signature. If False, also return True if `func` accepts arbitrary
+        keyword arguments via `**kwargs`.
+
+    """
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        # Some builtins/C-extensions don't expose a signature reliably
+        return False
+
+    params = sig.parameters
+
+    # Explicit keyword parameter?
+    if name in params:
+        p = params[name]
+        return p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    if strict:
+        return False
+
+    # Has **kwargs?
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())

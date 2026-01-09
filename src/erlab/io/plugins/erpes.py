@@ -176,15 +176,17 @@ class ERPESLoader(DA30Loader):
     def load_single(
         self,
         file_path: str | os.PathLike,
+        *,
         without_values: bool = False,
         use_libarchive: bool = True,
+        chunks: int | dict | typing.Literal["auto"] | tuple[int, ...] | None = None,
     ) -> xr.DataArray | xr.DataTree:
         """DA30 .zip files take a long time to load. Caches them as .da30 files."""
         if pathlib.Path(file_path).suffix == ".zip":
             cache_file = get_cache_file(file_path)
 
             if cache_file.exists():
-                dt = xr.open_datatree(cache_file, chunks="auto")
+                dt = xr.open_datatree(cache_file, chunks=chunks, engine="h5netcdf")
                 if dt.groups == ("/",):
                     # Single DataArray
                     da = next(iter(dt.data_vars.values()))
@@ -218,6 +220,13 @@ class ERPESLoader(DA30Loader):
                     except Exception:  # pragma: no cover
                         # Incomplete write; remove cache file
                         cache_file.unlink(missing_ok=True)
+                    else:
+                        return self.load_single(
+                            file_path,
+                            without_values=without_values,
+                            use_libarchive=use_libarchive,
+                            chunks=chunks,
+                        )
                 return data.chunk()
 
         return super().load_single(

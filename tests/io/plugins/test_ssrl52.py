@@ -16,6 +16,7 @@ def expected_dir(data_dir):
     return data_dir / "expected"
 
 
+@pytest.mark.parametrize("chunks", [None, "auto"], ids=["no_chunks", "auto_chunks"])
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
@@ -25,8 +26,15 @@ def expected_dir(data_dir):
         ({"identifier": 2, "zap": True}, "f_zap_0002.h5"),
     ],
 )
-def test_load(expected_dir, args, expected) -> None:
-    loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
+def test_load(expected_dir, args, expected, chunks) -> None:
+    loaded = (
+        erlab.io.load(**args, chunks=chunks)
+        if isinstance(args, dict)
+        else erlab.io.load(args, chunks=chunks)
+    )
+
+    if chunks is not None:
+        assert loaded.chunks is not None
 
     xr.testing.assert_identical(
         loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")

@@ -35,7 +35,11 @@ def get_cache_file(file_path: str | os.PathLike) -> Path:
     return cache_dir.joinpath(file_path.stem + "_2D_Data" + file_path.suffix)
 
 
-def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataArray:
+def cache_as_float32(
+    file_path: str | os.PathLike,
+    data: xr.Dataset,
+    chunks: int | dict | typing.Literal["auto"] | tuple[int, ...] | None,
+) -> xr.DataArray:
     """Cache and return the 2D part of the data as a float32 DataArray.
 
     If the cache file exists, it is loaded and returned.
@@ -49,7 +53,7 @@ def cache_as_float32(file_path: str | os.PathLike, data: xr.Dataset) -> xr.DataA
     cache_file = get_cache_file(file_path)
 
     if cache_file.is_file():
-        return xr.open_dataarray(cache_file, engine="h5netcdf")
+        return xr.open_dataarray(cache_file, engine="h5netcdf", chunks=chunks)
 
     writable: bool = os.access(cache_file.parent.parent, os.W_OK)
 
@@ -150,8 +154,16 @@ class MAESTROMicroLoader(LoaderBase):
         ]
         return matches, {}
 
-    def load_single(self, file_path, without_values: bool = False) -> xr.DataArray:
-        groups = xr.open_groups(file_path, engine="h5netcdf", phony_dims="sort")
+    def load_single(
+        self,
+        file_path,
+        *,
+        without_values: bool = False,
+        chunks: int | dict | typing.Literal["auto"] | tuple[int, ...] | None = None,
+    ) -> xr.DataArray:
+        groups = xr.open_groups(
+            file_path, engine="h5netcdf", phony_dims="sort", chunks=chunks
+        )
 
         if "PreScan" in groups["/Comments"]:
             pre_scan: str = groups["/Comments"]["PreScan"].item()[0].decode()
@@ -238,7 +250,7 @@ class MAESTROMicroLoader(LoaderBase):
             )
         else:
             # Create or load cache
-            data = cache_as_float32(file_path, groups["/2D_Data"])
+            data = cache_as_float32(file_path, groups["/2D_Data"], chunks)
 
         coord_dict = {
             name: np.linspace(offset, offset + (size - 1) * delta, size)
