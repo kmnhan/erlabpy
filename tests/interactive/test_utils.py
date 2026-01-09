@@ -11,6 +11,8 @@ from erlab.interactive.utils import (
     IconActionButton,
     IdentifierValidator,
     MessageDialog,
+    PythonHighlighter,
+    SingleLinePlainTextEdit,
     generate_code,
     load_fit_ui,
     save_fit_ui,
@@ -213,6 +215,45 @@ def test_message_dialog_with_details_toggle(qtbot):
     ok_btn = dialog._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
     ok_btn.click()
     assert dialog.result() == QtWidgets.QDialog.Accepted
+
+
+def test_single_line_plain_text_edit_newlines(qtbot) -> None:
+    widget = SingleLinePlainTextEdit()
+    qtbot.addWidget(widget)
+
+    widget.setText("alpha\nbeta")
+    assert widget.text() == "alpha beta"
+    assert "\n" not in widget.text()
+
+    mime = QtCore.QMimeData()
+    mime.setText("a\nb\r\nc")
+    widget.clear()
+    widget.insertFromMimeData(mime)
+    assert widget.text() == "abc"
+
+
+def test_single_line_plain_text_edit_block_return(qtbot) -> None:
+    widget = SingleLinePlainTextEdit()
+    qtbot.addWidget(widget)
+    widget.setText("abc")
+
+    qtbot.keyPress(widget, QtCore.Qt.Key_Return)
+    assert widget.text() == "abc"
+
+
+def test_python_highlighter_formats_operator(qtbot) -> None:
+    doc = QtGui.QTextDocument("a+b")
+    highlighter = PythonHighlighter(doc, style="default")
+    qtbot.addWidget(QtWidgets.QWidget())
+
+    highlighter._relex_document_if_needed()
+    spans = highlighter._block_spans.get(0, [])
+
+    has_operator_format = any(
+        start <= 1 < (start + length) and not fmt.isEmpty()
+        for start, length, fmt in spans
+    )
+    assert has_operator_format
 
 
 def test_generate_code_multiple_assignment() -> None:

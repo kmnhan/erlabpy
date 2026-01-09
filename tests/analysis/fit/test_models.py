@@ -4,7 +4,7 @@ import xarray as xr
 
 import erlab
 from erlab.analysis.fit import models
-from erlab.analysis.fit.functions.general import sc_spectral_function, tll
+from erlab.analysis.fit.functions.general import sc_spectral_function, tll, voigt
 
 
 def test_fermi_dirac_model() -> None:
@@ -200,6 +200,28 @@ def test_multi_peak_model() -> None:
     for background in ["constant", "linear", "polynomial", "none"]:
         model = models.MultiPeakModel(npeaks=2, background=background)
         model.guess(y, x=x)
+
+
+def test_multi_peak_model_voigt() -> None:
+    x = np.linspace(-4, 4, 200)
+    model = models.MultiPeakModel(
+        npeaks=1, peak_shapes="voigt", fd=False, background="none", convolve=False
+    )
+    params = model.make_params()
+    params["p0_center"].set(value=0.5)
+    params["p0_sigma"].set(value=0.25)
+    params["p0_gamma"].set(value=0.15)
+    params["p0_amplitude"].set(value=1.2)
+
+    expected = voigt(x, 0.5, 0.25, 0.15, 1.2)
+    assert np.allclose(model.eval(params=params, x=x), expected)
+
+    guess = model.guess(expected, x=x)
+    assert guess["p0_gamma"].value > 0.0
+    assert guess["p0_amplitude"].value > 0.0
+
+    assert model.param_hints["p0_width"]["expr"] is not None
+    assert model.param_hints["p0_height"]["expr"] is not None
 
 
 def test_multi_peak_model_guess_finds_peaks() -> None:

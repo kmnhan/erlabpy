@@ -7,7 +7,7 @@ from erlab.analysis.fit.functions.dynamic import (
     MultiPeakFunction,
     PolynomialFunction,
 )
-from erlab.analysis.fit.functions.general import gaussian_wh, lorentzian_wh
+from erlab.analysis.fit.functions.general import gaussian_wh, lorentzian_wh, voigt
 
 RAND_STATE = np.random.RandomState(1)
 
@@ -156,6 +156,33 @@ def test_multi_peak_function_call() -> None:
             )(x, **params),
             expected_result + expected_bkg,
         )
+
+
+def test_multi_peak_function_voigt_shape() -> None:
+    x = np.linspace(-3, 3, 50, dtype=np.float64)
+    params = {
+        "p0_center": 0.2,
+        "p0_sigma": 0.3,
+        "p0_gamma": 0.15,
+        "p0_amplitude": 1.4,
+    }
+    expected = voigt(
+        x,
+        params["p0_center"],
+        params["p0_sigma"],
+        params["p0_gamma"],
+        params["p0_amplitude"],
+    )
+
+    func = MultiPeakFunction(
+        1, peak_shapes="voigt", background="none", fd=False, convolve=False
+    )
+    assert np.allclose(func(x, **params), expected)
+
+    alias_func = MultiPeakFunction(
+        1, peak_shapes="v", background="none", fd=False, convolve=False
+    )
+    assert np.allclose(alias_func(x, **params), expected)
 
 
 @pytest.mark.filterwarnings("ignore:overflow encountered in exp.*:RuntimeWarning")
