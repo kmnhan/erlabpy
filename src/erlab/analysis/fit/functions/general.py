@@ -71,7 +71,7 @@ def _infer_meshgrid_shape(arr: np.ndarray) -> tuple[tuple[int, int], int, np.nda
 
 @numba.njit(cache=True)
 def _gen_kernel(
-    x: npt.NDArray[np.float64], resolution: float, pad: int = 5
+    x: npt.NDArray[np.float64], resolution: float, pad: int = 6
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     r"""Generate a Gaussian kernel for convolution.
 
@@ -92,10 +92,11 @@ def _gen_kernel(
         The gaussian kernel defined on `extended`.
 
     """
-    delta_x = x[1] - x[0]
+    delta_x = np.abs(x[1] - x[0])
 
     sigma = np.abs(resolution) / np.sqrt(8 * np.log(2))  # resolution given in FWHM
-    n_pad = int(sigma * pad / delta_x + 0.5)
+    n_pad = min(int(sigma * pad / delta_x + 0.5), len(x) - 1)
+
     x_pad = n_pad * delta_x
 
     extended = np.linspace(x[0] - x_pad, x[-1] + x_pad, 2 * n_pad + len(x))
@@ -106,11 +107,23 @@ def _gen_kernel(
     return extended, gauss
 
 
+def _choose_conv_method_na(in1, in2, mode):
+    if np.isfinite(in1).all() and np.isfinite(in2).all():
+        return scipy.signal.choose_conv_method(in1, in2, mode)
+    return "direct"
+
+
+def _convolve(in1, in2, mode: str = "full"):
+    return scipy.signal.convolve(
+        in1, in2, mode=mode, method=_choose_conv_method_na(in1, in2, mode)
+    )
+
+
 def do_convolve(
     x: npt.NDArray[np.float64],
     func: Callable,
     resolution: float,
-    pad: int = 5,
+    pad: int = 7,
     oversample: int = 3,
     **kwargs,
 ) -> npt.NDArray[np.float64]:
@@ -138,14 +151,14 @@ def do_convolve(
         xn, g = _gen_kernel(
             np.asarray(x, dtype=np.float64), float(resolution), pad=int(pad)
         )
-        return scipy.signal.convolve(func(xn, **kwargs), g, mode="valid")
+        return _convolve(func(xn, **kwargs), g, mode="valid")
 
     fine_dx = (x[1] - x[0]) / oversample
     n_fine = (x.size - 1) * oversample + 1
     x_fine = x[0] + np.arange(n_fine, dtype=np.float64) * fine_dx
 
     xn_fine, g = _gen_kernel(x_fine, float(resolution), pad=int(pad))
-    return scipy.signal.convolve(func(xn_fine, **kwargs), g, mode="valid")[::oversample]
+    return _convolve(func(xn_fine, **kwargs), g, mode="valid")[::oversample]
 
 
 def do_convolve_segments(
