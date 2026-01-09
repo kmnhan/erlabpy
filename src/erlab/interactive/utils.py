@@ -6,6 +6,7 @@ of pyqtgraph and Qt.
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import fnmatch
 import importlib
@@ -58,8 +59,10 @@ __all__ = [
     "KeyboardEventFilter",
     "MessageDialog",
     "ParameterGroup",
+    "PythonHighlighter",
     "ResizingLineEdit",
     "RotatableLine",
+    "SingleLinePlainTextEdit",
     "ToolWindow",
     "copy_to_clipboard",
     "file_loaders",
@@ -3394,3 +3397,217 @@ class ResizingLineEdit(QtWidgets.QLineEdit):
                 QtWidgets.QStyle.ContentsType.CT_LineEdit, None, contents_size, self
             )
         )
+
+
+class SingleLinePlainTextEdit(QtWidgets.QPlainTextEdit):
+    """A QPlainTextEdit constrained to a single line (LineEdit-like).
+
+    This mainly exists to allow for syntax highlighting in a single-line text input.
+    """
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTabChangesFocus(True)
+        self.setFixedHeight(self.fontMetrics().height() + 10)
+
+    def keyPressEvent(self, e: QtGui.QKeyEvent | None) -> None:
+        if e and e.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+            e.ignore()
+            return
+        super().keyPressEvent(e)
+
+    def insertFromMimeData(self, source: QtCore.QMimeData | None) -> None:
+        if source:  # pragma: no branch
+            # Strip newlines on paste/drop
+            text = source.text().replace("\r", "").replace("\n", "")
+            self.insertPlainText(text)
+
+    def setText(self, text: str) -> None:
+        """Set the text of the widget, replacing newlines with spaces."""
+        text = text.replace("\r", " ").replace("\n", " ")
+        super().setPlainText(text)
+
+    def text(self) -> str:
+        """Get the text of the widget."""
+        return self.toPlainText()
+
+
+class PythonHighlighter(QtGui.QSyntaxHighlighter):
+    """Syntax highlighter for Python code using Pygments."""
+
+    def __init__(
+        self, document: QtGui.QTextDocument | None = None, *, style: str | None = None
+    ):
+        import pygments.lexers
+
+        super().__init__(document)
+
+        self._lexer = pygments.lexers.PythonLexer()
+        if style is None:  # pragma: no branch
+            style = (
+                "github-dark" if erlab.interactive.colors.is_dark_mode() else "default"
+            )
+        self._formats = self._build_formats(style)
+        self._doc_rev: int = -1
+        self._dirty: bool = True
+        self._rehighlight_scheduled: bool = False
+        self._building_cache: bool = False
+        self._block_spans: dict[int, list[tuple[int, int, QtGui.QTextCharFormat]]] = {}
+
+        doc = self.document()
+        if doc is not None:
+            doc.contentsChanged.connect(self._mark_dirty)
+
+    def setDocument(self, doc: QtGui.QTextDocument | None) -> None:
+        old = self.document()
+        if old is not None:
+            with contextlib.suppress(Exception):
+                old.contentsChanged.disconnect(self._mark_dirty)
+
+        super().setDocument(doc)
+
+        if doc is not None:
+            doc.contentsChanged.connect(self._mark_dirty)
+
+        self._dirty = True
+        self._doc_rev = -1
+        self._block_spans.clear()
+        self._mark_dirty()
+
+    @QtCore.Slot()
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+        if not self._rehighlight_scheduled:
+            self._rehighlight_scheduled = True
+            QtCore.QTimer.singleShot(0, self._do_rehighlight)
+
+    @QtCore.Slot()
+    def _do_rehighlight(self) -> None:
+        self._rehighlight_scheduled = False
+        if self._building_cache:
+            self._mark_dirty()
+            return
+        if self.document() is None:
+            return
+        super().rehighlight()
+
+    def _build_formats(self, style: str) -> dict:
+        import pygments.styles
+        import pygments.token
+
+        fmts: dict = {}
+
+        style_obj = pygments.styles.get_style_by_name(style)
+
+        def make(fmt_str: str) -> QtGui.QTextCharFormat:
+            f = QtGui.QTextCharFormat()
+            if not fmt_str:
+                return f
+            for p in fmt_str.split():
+                if p.startswith("#") and len(p) in (4, 7):
+                    f.setForeground(QtGui.QColor(p))
+                elif p == "bold":
+                    f.setFontWeight(QtGui.QFont.Weight.Bold)
+                elif p == "italic":
+                    f.setFontItalic(True)
+                elif p == "underline":
+                    f.setFontUnderline(True)
+            return f
+
+        for tok, fmt_str in style_obj.styles.items():
+            if fmt_str:
+                fmts[tok] = make(fmt_str)
+
+        fmts.setdefault(pygments.token.Operator, make("bold"))
+        return fmts
+
+    def _format_for_token(self, tok) -> QtGui.QTextCharFormat:
+        t = tok
+        while t is not None:
+            f = self._formats.get(t)
+            if f is not None:
+                return f
+            t = t.parent
+        return QtGui.QTextCharFormat()
+
+    def _relex_document_if_needed(self) -> None:
+        import pygments
+        import pygments.token
+
+        doc = self.document()
+        if doc is not None:  # pragma: no branch
+            rev = doc.revision()
+            if not self._dirty and rev == self._doc_rev:
+                return
+
+            self._building_cache = True
+            try:
+                text = doc.toPlainText()
+                self._block_spans.clear()
+
+                blocks: list[QtGui.QTextBlock] = []
+                b = doc.firstBlock()
+                while b.isValid():
+                    blocks.append(b)
+                    b = b.next()
+
+                if not blocks:
+                    self._doc_rev = rev
+                    self._dirty = False
+                    return
+
+                block_positions = [blk.position() for blk in blocks]
+                block_positions.append(len(text) + 1)
+
+                def block_index_for_pos(pos: int) -> int:
+                    i = bisect.bisect_right(block_positions, pos) - 1
+                    if i < 0:
+                        return 0
+                    if i >= len(blocks):
+                        return len(blocks) - 1
+                    return i
+
+                abs_pos = 0
+                for tok, val in pygments.lex(text, self._lexer):
+                    if not val:
+                        continue
+
+                    f = self._format_for_token(tok)
+                    if f.isEmpty() and tok is not pygments.token.Operator:
+                        abs_pos += len(val)
+                        continue
+
+                    start = abs_pos
+                    end = abs_pos + len(val)
+
+                    s = start
+                    while s < end:
+                        bi = block_index_for_pos(s)
+                        blk = blocks[bi]
+                        blk_start = blk.position()
+                        blk_end = blk_start + blk.length()  # includes newline
+                        seg_end = min(end, blk_end)
+
+                        col_start = s - blk_start
+                        seg_len = seg_end - s
+                        if seg_len > 0:
+                            self._block_spans.setdefault(bi, []).append(
+                                (col_start, seg_len, f)
+                            )
+                        s = seg_end
+
+                    abs_pos = end
+
+                self._doc_rev = rev
+                self._dirty = False
+            finally:
+                self._building_cache = False
+
+    def highlightBlock(self, text: str | None) -> None:
+        self._relex_document_if_needed()
+        bi = self.currentBlock().blockNumber()
+        for start, length, f in self._block_spans.get(bi, ()):
+            self.setFormat(start, length, f)
