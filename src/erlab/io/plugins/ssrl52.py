@@ -71,7 +71,6 @@ class SSRL52Loader(LoaderBase):
 
     additional_attrs: typing.ClassVar[dict] = {
         "configuration": 3,
-        "sample_workfunction": 4.5,
     }
 
     formatters: typing.ClassVar[dict[str, Callable]] = {
@@ -112,8 +111,9 @@ class SSRL52Loader(LoaderBase):
     def load_single(
         self,
         file_path: str | os.PathLike,
+        *,
         without_values: bool = False,
-        chunks: str | int | dict[str, int] | None = "auto",
+        chunks: int | dict | typing.Literal["auto"] | tuple[int, ...] | None = None,
     ) -> xr.DataArray:
         is_hvdep: bool = False
 
@@ -129,6 +129,8 @@ class SSRL52Loader(LoaderBase):
             attrs |= {k: _parse_value(v) for k, v in ds.attrs.items()}
 
         data = _find_group_for_key(dt, "Data")
+        if data is None:
+            data = _find_group_for_key(dt, "Camera")
         if data is None:
             raise KeyError("Data group not found in SSRL 5-2 file")
 
@@ -157,10 +159,13 @@ class SSRL52Loader(LoaderBase):
 
         ds = data.dataset.rename_dims(dim_mapping)
 
-        for i, ax in enumerate(axes):
-            cnt = data.sizes[f"phony_dim_{i}"] if compat_mode else int(ax["count"])
-
-            if isinstance(ax["offset"], str):
+        for ax in axes:
+            cnt = ds.sizes[ax["label"]]
+            if "centerpixel" in ax:
+                offset = float(ax["centerpixel"])
+                delta = 1.0
+                count_var_name = "Image"
+            elif isinstance(ax["offset"], str):
                 if mapinfo is None:
                     raise RuntimeError
                 if ax["label"] == "energy":
@@ -192,16 +197,16 @@ class SSRL52Loader(LoaderBase):
                 offset = np.array(mapinfo[offset_key])[0]
 
                 if isinstance(ax["delta"], str):
-                    delta = np.array(mapinfo[ax["delta"][8:]])
+                    deltas = np.array(mapinfo[ax["delta"][8:]])
                     # may be ~1e-8 difference between values
-                    if not np.allclose(delta, delta[0], atol=1e-7):
+                    if not np.allclose(deltas, deltas[0], atol=1e-7):
                         erlab.utils.misc.emit_user_level_warning(
                             "Non-uniform delta for hv-dependent scan. This "
                             "was not taken into account while writing the "
                             "loader code. Please report this issue. "
                             "Resulting data may be incorrect"
                         )
-                    delta = delta[0]
+                    delta = deltas[0]
                 else:
                     delta = float(ax["delta"])
 
@@ -210,43 +215,27 @@ class SSRL52Loader(LoaderBase):
                 delta = float(ax["delta"])
 
             mn, mx = (offset, offset + (cnt - 1) * delta)
-            coord = np.linspace(mn, mx, cnt)
-
-            if len(ds[ax["label"]]) != cnt:
-                # For premature data
-                coord = coord[: len(ds[ax["label"]])]
+            coord = xr.DataArray(np.linspace(mn, mx, cnt), dims=[ax["label"]], attrs=ax)
 
             ds = ds.assign_coords({ax["label"]: coord})
 
-        coord_names = list(ds.coords.keys())
-        coord_sizes: list[int] = [len(ds[coord]) for coord in coord_names]
         coord_attrs: dict[Hashable, typing.Any] = {}
+        map_dims = tuple(
+            v
+            for v in dim_mapping.values()
+            # Attributes should not be dependent on these dims
+            if v not in ("ThetaX", "Kinetic Energy", "Binding Energy")
+        )
         for k, v in dict(attrs).items():
             if isinstance(v, str) and v.startswith("MapInfo:"):
                 if mapinfo is None:
                     raise RuntimeError
                 del attrs[k]
-                var = mapinfo[v[8:]].data
-                same_length_indices = [
-                    i for i, s in enumerate(coord_sizes) if s == len(var)
-                ]
-                for idx in list(same_length_indices):
-                    # Attributes should not be dependent on these dims
-                    if coord_names[idx] in (
-                        "ThetaX",
-                        "Kinetic Energy",
-                        "Binding Energy",
-                    ):
-                        same_length_indices.remove(idx)
-                if len(same_length_indices) != 1:
-                    # Multiple dimensions with the same length, ambiguous
-                    erlab.utils.misc.emit_user_level_warning(
-                        f"Ambiguous length for {k}. This was not taken into "
-                        "account while writing the loader code. Please report this "
-                        "issue. Resulting data may be incorrect"
+                if k not in map_dims:
+                    coord_da = mapinfo[v[8:]]
+                    coord_attrs[k] = coord_da.rename(
+                        {d: map_dims[i] for i, d in enumerate(coord_da.dims)}
                     )
-                idx = same_length_indices[-1]
-                coord_attrs[k] = xr.DataArray(var, dims=[coord_names[idx]])
 
         if is_hvdep:
             ds = ds.assign_coords(
@@ -259,7 +248,9 @@ class SSRL52Loader(LoaderBase):
 
             # ds = ds.rename(energy="hv")
 
-        darr = ds[count_var_name].rename("spectrum")
+        darr = ds[count_var_name].rename(
+            dt.attrs.get("FileName", "").removesuffix(".h5")
+        )
 
         if without_values:
             darr = xr.DataArray(
