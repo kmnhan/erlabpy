@@ -498,6 +498,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                 "actions": {
                     "openAct": self.image_tool.open_act,
                     "saveAsAct": self.image_tool.save_act,
+                    "reloadAct": self.slicer_area.reload_act,
                     "sep0": {"separator": True},
                     "closeAct": self.image_tool.close_act,
                     "removeAct": self.image_tool.remove_act,
@@ -666,6 +667,8 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     @QtCore.Slot()
     def _file_menu_visibility(self) -> None:
+        self.slicer_area.reload_act.setVisible(self.slicer_area.reloadable)
+
         if self.slicer_area._in_manager:
             visible: bool = False
         else:
