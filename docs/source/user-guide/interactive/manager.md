@@ -146,6 +146,10 @@ Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspac
 
 The manager keeps notebooks synchronized through the `%watch` magic and exposes helper APIs for retrieving and storing data.
 
+:::{tip}
+If you are using VS Code (or other editor that supports VS Code extensions), the dedicated `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ) adds convenient commands for working with the manager directly from notebooks. Search for `erlab` in the extensions panel of your editor to install it.
+:::
+
 (imagetool-manager-watching)=
 
 ### Watching notebook variables

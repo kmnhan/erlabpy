@@ -4,6 +4,8 @@ Welcome to ERLabPy! This documentation will guide you through the installation p
 
 If you are new to programming with Python, check out [Scientific Python Lectures](https://github.com/jrjohansson/scientific-python-lectures) as a great starting point.
 
+We recommend using [Visual Studio Code](https://code.visualstudio.com) (or editors based on VS Code, like [VSCodium](https://vscodium.com/), [Cursor](https://cursor.com/), [Windsurf](https://windsurf.dev/), etc.) with the Jupyter extension and a dedicated `erlab` extension ([marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab)) which enables additional convenient features for working with ERLabPy.
+
 Data structures in ERLabPy are represented using [xarray](https://docs.xarray.dev/){cite:p}`hoyer2017xarray`, which provides a powerful data structure for working with multi-dimensional arrays. Be sure to review the [xarray tutorial](https://tutorial.xarray.dev/) and the [xarray user guide](https://docs.xarray.dev/en/stable/index.html) to get familiar with it.
 
 ## Installing
