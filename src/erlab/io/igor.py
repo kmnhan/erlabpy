@@ -407,22 +407,23 @@ def save_wave(darr: xr.DataArray, filename: str | os.PathLike) -> None:
     for dim_name, dim in zip(darr.dims, ("x", "y", "z", "t"), strict=False):
         coord = darr.coords[dim_name].values
         if not erlab.utils.array.is_uniform_spaced(coord):
-            raise ValueError(
-                "Failed to save the wave because the coordinate for dimension "
-                f"'{dim_name}' is not evenly spaced. "
+            dim_name = f"{dim_name}_idx"
+            coord = np.arange(len(coord))
+            erlab.utils.misc.emit_user_level_warning(
+                f"The coordinate for dimension '{dim_name}' is not evenly spaced. "
+                f"Saving with index-based coordinate instead."
             )
 
         wave.set_dimscale(
             dim, start=coord[0], delta=coord[1] - coord[0], units=dim_name
         )
 
-    for c in darr.coords:
-        if c not in darr.dims:
-            # If the coordinate is not a dimension, print a warning
-            erlab.utils.misc.emit_user_level_warning(
-                f"Coordinate '{c}' is not a DataArray dimension, and will not be "
-                "written to the Igor binary wave file."
-            )
+    non_dim_coords: list[str] = [str(c) for c in darr.coords if c not in darr.dims]
+    if non_dim_coords:
+        erlab.utils.misc.emit_user_level_warning(
+            f"The following coordinates are not dimension scales and will be ignored "
+            f"when saving to Igor wave: {', '.join(non_dim_coords)}"
+        )
 
     wave.set_note("\n".join(f"{k}={v}" for k, v in darr.attrs.items()))
     with pathlib.Path(filename).open("wb") as f:
