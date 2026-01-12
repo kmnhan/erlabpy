@@ -124,8 +124,11 @@ def test_save_wave_non_uniform_coord(tmp_path):
         np.arange(5).astype(np.float64), dims=["x"], coords={"x": [0, 1, 3, 6, 10]}
     )
     path = tmp_path / "fail.ibw"
-    with pytest.raises(ValueError, match="not evenly spaced"):
+    with pytest.warns(UserWarning, match="not evenly spaced"):
         save_wave(arr, path)
+    loaded = load_wave(path)
+    assert loaded.dims == ("x_idx",)
+    np.testing.assert_allclose(loaded["x_idx"], np.arange(5))
 
 
 def test_save_wave_extra_coord_warns(tmp_path):
@@ -135,7 +138,7 @@ def test_save_wave_extra_coord_warns(tmp_path):
         coords={"x": np.arange(5), "foo": 3},
     )
     path = tmp_path / "warn.ibw"
-    with pytest.warns(UserWarning, match="not a DataArray dimension"):
+    with pytest.warns(UserWarning, match="not dimension scales"):
         save_wave(arr, path)
 
 
