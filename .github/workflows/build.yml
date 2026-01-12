@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      upgrade_dependencies:
+        description: "Upgrade dependencies before building"
+        required: false
+        default: false
+        type: boolean
   workflow_run:
     workflows: [Release]
     types:
@@ -55,7 +60,12 @@ jobs:
           python-version: "3.13"
 
       - name: Install project with all optional deps and pyinstaller
-        run: uv sync --no-editable --all-extras --group pyqt6 --group pyinstaller
+        run: |
+          uv_args="--no-editable --all-extras --group pyqt6 --group pyinstaller"
+          if [[ "${{ github.event.inputs.upgrade_dependencies }}" == "true" ]]; then
+            uv_args="--upgrade ${uv_args}"
+          fi
+          uv sync ${uv_args}
 
       - name: Get package version and make zip name
         id: info
