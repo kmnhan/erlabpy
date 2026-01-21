@@ -627,7 +627,7 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins["V0"].setRange(0, 100)
             self._offset_spins["V0"].setSingleStep(1)
             self._offset_spins["V0"].setDecimals(1)
-            self._offset_spins["V0"].setSuffix(self._OFFSET_UNITS[k])
+            self._offset_spins["V0"].setSuffix(self._OFFSET_UNITS["V0"])
             self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
             with warnings.catch_warnings(action="ignore", category=UserWarning):
                 self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
