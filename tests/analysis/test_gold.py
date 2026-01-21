@@ -1,10 +1,52 @@
+import typing
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
 from numpy.testing import assert_allclose
 
+import erlab.analysis.gold as gold_mod
 from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
+
+
+def test_spline_forwards_along_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Create a dummy gold array with dims ('beta', 'eV')
+    beta = np.linspace(0.0, 10.0, 11)
+    eV = np.linspace(-0.2, 0.2, 51)
+    gold = xr.DataArray(
+        np.ones((beta.size, eV.size), dtype=float),
+        dims=("beta", "eV"),
+        coords={"beta": beta, "eV": eV},
+    )
+
+    # Stub edge() to return center and stderr along 'beta'
+    center_vals = np.linspace(0.0, 0.1, beta.size)
+    center_arr = xr.DataArray(center_vals, dims=["beta"], coords={"beta": beta})
+    center_stderr = xr.DataArray(
+        np.full(beta.shape, 0.01), dims=["beta"], coords={"beta": beta}
+    )
+
+    def _stub_edge(
+        *_args: typing.Any, **_kwargs: typing.Any
+    ) -> tuple[xr.DataArray, xr.DataArray]:
+        return center_arr, center_stderr
+
+    monkeypatch.setattr(gold_mod, "edge", _stub_edge)
+
+    # Execute
+    result = gold_mod.spline(
+        gold,
+        along="beta",
+        angle_range=(beta.min(), beta.max()),
+        eV_range=(eV.min(), eV.max()),
+        plot=False,
+    )
+
+    # Validate type without importing scipy at module top to avoid hard dependency
+    from scipy.interpolate import BSpline  # local import for optional dependency
+
+    assert isinstance(result, BSpline)
 
 
 @pytest.mark.parametrize(
