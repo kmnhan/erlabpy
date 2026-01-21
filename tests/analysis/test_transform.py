@@ -150,6 +150,27 @@ def test_shift(use_dask) -> None:
     assert np.allclose(shifted, expected, equal_nan=True)
 
 
+def test_shift_order1_optimized() -> None:
+    arr = xr.DataArray(
+        np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        dims=["x", "y"],
+        coords={"x": [0, 1], "y": [0, 1, 2]},
+    )
+
+    shifted = shift(
+        arr,
+        shift=1.0,
+        along="y",
+        shift_coords=False,
+        order=1,
+        mode="constant",
+        prefilter=False,
+    )
+
+    expected = np.array([[np.nan, 1.0, 2.0], [np.nan, 4.0, 5.0]])
+    np.testing.assert_allclose(shifted.values, expected, equal_nan=True)
+
+
 @pytest.mark.parametrize(
     ("mode", "part", "expected"),
     [
