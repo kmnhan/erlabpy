@@ -880,8 +880,8 @@ def save_fit_ui(
     dialog = QtWidgets.QFileDialog(parent)
     dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
     dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
-    dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
-    dialog.setDefaultSuffix("nc")
+    dialog.setNameFilters(["HDF5 Files (*.h5)", "All files (*)"])
+    dialog.setDefaultSuffix("h5")
 
     if os.environ.get("PYTEST_VERSION") is not None:
         # If running in pytest, do not use native file dialog
@@ -893,17 +893,11 @@ def save_fit_ui(
 
     if dialog.exec():
         file_name: str = dialog.selectedFiles()[0]
-        selected_filter: str = dialog.selectedNameFilter()
-
         import xarray_lmfit
 
-        match selected_filter:
-            case "HDF5 Files (*.h5)":
-                xarray_lmfit.save_fit(
-                    fit_result, file_name, engine="h5netcdf", invalid_netcdf=True
-                )
-            case _:
-                xarray_lmfit.save_fit(fit_result, file_name)
+        xarray_lmfit.save_fit(
+            fit_result, file_name, engine="h5netcdf", invalid_netcdf=True
+        )
 
 
 def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None:
@@ -927,8 +921,8 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
     dialog = QtWidgets.QFileDialog(parent)
     dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptOpen)
     dialog.setFileMode(QtWidgets.QFileDialog.FileMode.ExistingFile)
-    dialog.setNameFilters(["NetCDF Files (*.nc)", "HDF5 Files (*.h5)"])
-    dialog.setDefaultSuffix("nc")
+    dialog.setNameFilters(["HDF5 Files (*.h5)", "All files (*)"])
+    dialog.setDefaultSuffix("h5")
 
     if os.environ.get("PYTEST_VERSION") is not None:
         # If running in pytest, do not use native file dialog
@@ -936,16 +930,15 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
 
     if dialog.exec():
         file_name: str = dialog.selectedFiles()[0]
-        selected_filter: str = dialog.selectedNameFilter()
 
         import xarray_lmfit
 
         try:
-            match selected_filter:
-                case "HDF5 Files (*.h5)":
-                    return xarray_lmfit.load_fit(file_name, engine="h5netcdf")
-                case _:
-                    return xarray_lmfit.load_fit(file_name)
+            try:
+                return xarray_lmfit.load_fit(file_name, engine="h5netcdf")
+            except Exception:
+                return xarray_lmfit.load_fit(file_name)
+
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
                 None,
