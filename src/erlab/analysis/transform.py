@@ -237,6 +237,16 @@ def rotate(
     return rotated.transpose(*darr.dims)
 
 
+def _ndimage_shift(arr, shift, order=3, mode="constant", cval=0.0, prefilter=False):
+    if order == 1 and mode == "constant":
+        x = np.arange(arr.size)
+        return erlab.analysis.interpolate._interp1(x, arr, x - shift[0], cval)
+
+    return scipy.ndimage.shift(
+        arr, shift, order=order, mode=mode, cval=cval, prefilter=prefilter
+    )
+
+
 def shift(
     darr: xr.DataArray,
     shift: float | xr.DataArray,
@@ -372,7 +382,7 @@ def shift(
     def _shift_1d(arr_1d: np.ndarray, shift_scalar: np.ndarray) -> np.ndarray:
         # shift_scalar is 0-D here
         s = float(shift_scalar)
-        return scipy.ndimage.shift(arr_1d, (s,), **shift_kwargs)
+        return _ndimage_shift(arr_1d, (s,), **shift_kwargs)
 
     # Apply over the `along` axis, vectorized over the rest
     # - arr has core dim [along]
