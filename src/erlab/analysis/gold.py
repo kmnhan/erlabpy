@@ -678,7 +678,7 @@ def spline(
         ),
     )
 
-    spl = spline_from_edge(center_arr, weights=1 / center_stderr, lam=lam)
+    spl = spline_from_edge(center_arr, weights=1 / center_stderr, lam=lam, along=along)
     if plot:
         _plot_gold_fit(
             fig, gold, along, angle_range, eV_range, center_arr, center_stderr, spl
