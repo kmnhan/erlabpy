@@ -1,3 +1,23 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **interactive:** prioritize HDF5 format when saving fit results (#252) ([16b46d8](https://github.com/kmnhan/erlabpy/commit/16b46d8a47f125e4c84104c9eabd7093b1dd467d))
+
+- **analysis.gold:** correctly fit spline along dimensions other than alpha (#250) ([60aa88a](https://github.com/kmnhan/erlabpy/commit/60aa88aa105405718dd8fbc252a80cdc433ed31c))
+
+- **io:** improve handling of non-uniform coordinates in `save_wave` (#245) ([404882d](https://github.com/kmnhan/erlabpy/commit/404882d7cab7c13f0c50e146bbf91daa42723397))
+
+  Non-uniform coordinates are now replaced with index-based coordinates when saving to Igor waves, with a user-level warning.
+
+  Also combines multiple warnings complaining about dropped non-dimension coordinates into a single warning to reduce clutter.
+
+### ⚡️ Performance
+
+- **analysis.transform.shift:** improve speed for linear interpolation (#251) ([2a391fd](https://github.com/kmnhan/erlabpy/commit/2a391fd9830ab4035d0fee63f84ef225655933cc))
+
+  Speeds up `erlab.analysis.transform.shift` for `order=1` and `mode='constant'` by switching to a fast linear interpolation implementation instead of `scipy.ndimage.shift`.
+
 ## v3.19.0 (2026-01-09)
 
 ### ✨ Features
