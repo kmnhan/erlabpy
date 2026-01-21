@@ -318,13 +318,7 @@ warn_unused_ignores = true
 warn_unreachable = false
 allow_redefinition = true
 check_untyped_defs = false
-exclude = [
-    '^docs/',
-    '^tests/',
-    '^build/',
-    '_deprecated/',
-    '^src/erlab/interactive/curvefittingtool.py',
-]
+exclude = ['^docs/', '^tests/', '^build/', '_deprecated/']
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 disable_error_code = ["import-untyped"]
 pretty = true
