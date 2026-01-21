@@ -23,7 +23,6 @@ interactive tools.
    imagetool
    bzplot
    colors
-   curvefittingtool
    derivative
    explorer
    fermiedge
