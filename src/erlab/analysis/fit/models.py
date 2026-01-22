@@ -300,6 +300,8 @@ class StepEdgeModel(lmfit.Model):
 
 
 class PolynomialModel(lmfit.Model):
+    func: PolynomialFunction
+
     def __init__(self, degree=9, **kwargs) -> None:
         kwargs.setdefault("name", f"Poly{degree}")
         super().__init__(PolynomialFunction(degree), **kwargs)
@@ -321,6 +323,8 @@ class PolynomialModel(lmfit.Model):
 
 
 class MultiPeakModel(lmfit.Model):
+    func: MultiPeakFunction
+
     def __init__(
         self,
         npeaks: int = 1,

@@ -980,12 +980,22 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         self.guess_button = QtWidgets.QPushButton("Guess")
         self.guess_button.clicked.connect(self._guess_params)
+        self.guess_button.setToolTip(
+            "Estimate initial parameters based on the data and model.\n"
+            "Only works if a `.guess` method is implemented for the model."
+        )
         self.fit_button = QtWidgets.QPushButton("Fit")
         self.fit_button.clicked.connect(self._run_fit)
+        self.fit_button.setToolTip("Run the fit with the current parameters.")
         self.fit_multi_button = QtWidgets.QPushButton("Fit ×20")
         self.fit_multi_button.clicked.connect(lambda: self._run_fit_multiple(20))
+        self.fit_multi_button.setToolTip(
+            "Run multiple fits (20) with the result of each fit used as the "
+            "initial parameters for the next fit."
+        )
         self.reset_button = QtWidgets.QPushButton("Reset")
         self.reset_button.clicked.connect(self._reset_params)
+        self.reset_button.setToolTip("Reset parameters to their initial values.")
         self.copy_button = QtWidgets.QPushButton("Copy code")
         self.copy_button.clicked.connect(self.copy_code)
         self.copy_button.setEnabled(False)
@@ -1371,11 +1381,20 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         self.convolve_check = QtWidgets.QCheckBox("Convolve")
         self.convolve_check.setChecked(True)
+        self.convolve_check.setToolTip(
+            "Convolve peaks with a Gaussian to account for instrumental "
+            "broadening.\n"
+            "Adds a parameter 'resolution' to the model, which "
+            "corresponds to the FWHM of the Gaussian kernel."
+        )
 
         self.oversample_label = QtWidgets.QLabel("Oversample")
         self.oversample_spin = QtWidgets.QSpinBox()
         self.oversample_spin.setRange(1, 64)
-        self.oversample_spin.setToolTip("Factor to oversample x during convolution.")
+        self.oversample_spin.setToolTip(
+            "Factor to oversample x during convolution to improve "
+            "accuracy for narrow features."
+        )
         self.oversample_spin.setValue(3)
         self._set_oversample_enabled(self.convolve_check.isChecked())
 

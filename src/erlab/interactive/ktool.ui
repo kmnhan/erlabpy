@@ -452,7 +452,7 @@
              <item row="8" column="1">
               <widget class="QComboBox" name="centering_combo">
                <property name="toolTip">
-                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Choose the centering type of the basis.&lt;/p&gt;&lt;p&gt;&lt;br/&gt;&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;P&lt;/span&gt;: Primitive (no change)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;A&lt;/span&gt;: Extra point on bc face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;B&lt;/span&gt;: Extra point on ac face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;C&lt;/span&gt;: Extra point on ab face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;F&lt;/span&gt;: Face-centered (extra points on all faces)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;I&lt;/span&gt;: Body-centered (extra point in cell center)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;R&lt;/span&gt;: Rhombohedral (in hexagonal setting)&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Choose the centering type of the basis.&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;P&lt;/span&gt;: Primitive (no change)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;A&lt;/span&gt;: Extra point on bc face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;B&lt;/span&gt;: Extra point on ac face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;C&lt;/span&gt;: Extra point on ab face&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;F&lt;/span&gt;: Face-centered (extra points on all faces)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;I&lt;/span&gt;: Body-centered (extra point in cell center)&lt;/p&gt;&lt;p&gt;&lt;span style=&quot; font-weight:700;&quot;&gt;R&lt;/span&gt;: Rhombohedral (in hexagonal setting)&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
                </property>
                <item>
                 <property name="text">
@@ -681,7 +681,7 @@
      <x>0</x>
      <y>0</y>
      <width>759</width>
-     <height>33</height>
+     <height>30</height>
     </rect>
    </property>
   </widget>
