@@ -798,6 +798,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if data.ndim != 1:
             raise ValueError("`data` must be a 1D DataArray")
 
+        running_thread = getattr(self, "_fit_thread", None)
+        running_worker = getattr(self, "_fit_worker", None)
+        keep_running = running_thread is not None and running_thread.isRunning()
+
         self._data: xr.DataArray = data
         self._coord_name: Hashable = data.dims[0]
         self._user_model: lmfit.Model | None = model
@@ -833,10 +837,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._slider_drag_range: tuple[float, float] | None = None
         self._fit_is_current: bool = False
         self._table_widths_initialized: bool = False
-        self._fit_thread: QtCore.QThread | None = None
-        self._fit_worker: _FitWorker | None = None
+        self._fit_thread: QtCore.QThread | None = (
+            running_thread if keep_running else None
+        )
+        self._fit_worker: _FitWorker | None = running_worker if keep_running else None
         self._fit_start_time: float | None = None
         self._fit_running_multi: bool = False
+        self._fit_cancel_requested: bool = keep_running
         self._pending_fit_action: Callable[[], None] | None = None
         self._peak_lines: list[_PeakPositionLine] = []
         self._fit_multi_total: int | None = None
@@ -2409,6 +2416,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         self._fit_start_time = time.perf_counter()
         self._fit_running_multi = multi
+        self._fit_cancel_requested = False
         self._set_fit_running(True, multi=multi, step=step, total=total)
 
         worker = _FitWorker(
@@ -2445,14 +2453,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         worker.sigFinished.connect(_queue_success)
         worker.sigTimedOut.connect(lambda: self._queue_fit_action(on_timeout))
         worker.sigErrored.connect(_queue_error)
-        worker.sigCancelled.connect(lambda: self._queue_fit_action(self._fit_cancelled))
+        worker.sigCancelled.connect(
+            lambda: self._queue_fit_action(
+                self._fit_cancelled, allow_when_cancelled=True
+            )
+        )
 
         self._fit_thread = thread
         self._fit_worker = worker
         thread.start()
         return True
 
-    def _queue_fit_action(self, action: Callable[[], None]) -> None:
+    def _queue_fit_action(
+        self,
+        action: Callable[[], None],
+        *,
+        allow_when_cancelled: bool = False,
+    ) -> None:
+        if self._fit_cancel_requested and not allow_when_cancelled:
+            return
         self._pending_fit_action = action
         if self._fit_thread is None:
             self._pending_fit_action = None
@@ -2463,6 +2482,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._pending_fit_action = None
         self._fit_thread = None
         self._fit_worker = None
+        if action is None and self._fit_cancel_requested:
+            self._fit_cancel_requested = False
+            self._fit_cancelled()
+            return
+        self._fit_cancel_requested = False
         if action is not None:
             action()
 
@@ -2574,12 +2598,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             else:
                 self.fit_multi_button.setText("Fit ×20")
             self.cancel_fit_button.setEnabled(True)
+            self.cancel_fit_button.setText("Cancel")
         else:
             self.fit_button.setEnabled(True)
             self.fit_multi_button.setEnabled(True)
             self.fit_button.setText("Fit")
             self.fit_multi_button.setText("Fit ×20")
             self.cancel_fit_button.setEnabled(False)
+            self.cancel_fit_button.setText("Cancel")
 
     def _make_model_code(self, data_name: str) -> tuple[str, str, list[str]]:
         lines: list[str] = []
@@ -3231,9 +3257,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._fit_worker.cancel()
         if self._fit_thread is not None:
             self._fit_thread.requestInterruption()
-            self._fit_thread.quit()
-            self._fit_thread.wait()
+        self._fit_cancel_requested = True
+        self.cancel_fit_button.setEnabled(False)
+        self.cancel_fit_button.setText("Canceling...")
         self._pending_fit_action = None
-        self._fit_thread = None
-        self._fit_worker = None
-        self._fit_running_multi = False
