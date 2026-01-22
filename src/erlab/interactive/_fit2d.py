@@ -169,6 +169,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_total: int = 0
         self._fit_2d_direction: typing.Literal["down", "up"] | None = None
         self._fit_2d_start_idx: int = 0
+        self._fit_2d_initial_range: tuple[int, int] | None = None
 
     def _update_params_full(self) -> None:
         self._params_full[self._current_idx] = self._params
@@ -836,6 +837,10 @@ class Fit2DTool(Fit1DTool):
             end_idx = self.y_max_spin.value()
         else:
             end_idx = self.y_min_spin.value()
+        self._fit_2d_initial_range = (
+            self.y_min_spin.value(),
+            self.y_max_spin.value(),
+        )
 
         indices = (
             range(start_idx, end_idx - 1, -1)
@@ -853,8 +858,22 @@ class Fit2DTool(Fit1DTool):
         if not self._fit_2d_indices:
             self._finish_fit_2d_sequence()
             return
+        if self._fit_2d_initial_range is not None:
+            current_range = (
+                self.y_min_spin.value(),
+                self.y_max_spin.value(),
+            )
+            if (
+                current_range[0] < self._fit_2d_initial_range[0]
+                or current_range[1] > self._fit_2d_initial_range[1]
+            ):
+                self._finish_fit_2d_sequence()
+                return
 
         idx = self._fit_2d_indices.pop(0)
+        if idx < self.y_min_spin.value() or idx > self.y_max_spin.value():
+            self._finish_fit_2d_sequence()
+            return
         self._set_current_index(idx)
         if idx != self._fit_2d_start_idx:
             direction = self._fit_2d_direction or "up"
@@ -907,6 +926,7 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_indices = []
         self._fit_2d_total = 0
         self._fit_2d_direction = None
+        self._fit_2d_initial_range = None
         self._update_full_fit_saveable()
         self._update_param_plot()
 
