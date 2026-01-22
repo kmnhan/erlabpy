@@ -346,16 +346,6 @@ Some models have additional options that appear below the model selector that ar
 
 5. Use {guilabel}`Copy code` to copy the reproducible code for this fit to the clipboard, or use {guilabel}`Save fit` to save the results with {func}`xarray_lmfit.save_fit`.
 
-### Reopening saved fits
-
-You can reopen a saved fit by loading the dataset with {func}`xarray_lmfit.load_fit` and passing it directly to {func}`erlab.interactive.ftool`.
-
-Saved fits restore the stored data, the serialized model (when available), and the fitted parameter values. For 2D fits, all slices must share the same model definition.
-
-:::{note}
-The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from a data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
-:::
-
 ### Workflow for 2D data
 
 For 2D data, an additional image and a parameter-versus-coordinate plot are shown, along
@@ -423,6 +413,16 @@ For 2D data, the tool fits a *stack* of 1D curves.
 7. Inspect the parameter plot to verify trends. If a slice fails, move to it with {guilabel}`Index`, fix the parameters, then continue the sequence.
 
 8. When all indices in the range are fitted, click {guilabel}`Save fit` to export the combined results or {guilabel}`Copy code` to generate reproducible code for the full 2D fit. These buttons are only enabled after the full sequence is complete.
+
+### Reopening saved fits
+
+You can reopen a saved fit by loading the dataset with {func}`xarray_lmfit.load_fit` and passing it directly to {func}`erlab.interactive.ftool`.
+
+Saved fits restore the stored data, the serialized model (when available), and the fitted parameter values. For 2D fits, all slices must share the same model definition.
+
+:::{note}
+The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from a data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
+:::
 
 (guide-restool)=
 
