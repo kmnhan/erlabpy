@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import typing
 
 import numpy as np
@@ -12,10 +13,15 @@ from xarray_lmfit._io import _patch_encode4js
 from xarray_lmfit.modelfit import _ParametersWrapper, _parse_params
 
 import erlab.interactive.utils
-from erlab.interactive._fit1d import Fit1DTool, _SnapCursorLine, _State2D
+from erlab.interactive._fit1d import (
+    Fit1DTool,
+    _FitRestoreState,
+    _SnapCursorLine,
+    _State2D,
+)
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Mapping
+    from collections.abc import Callable, Hashable, Mapping
 
     import lmfit
     import varname
@@ -25,6 +31,63 @@ else:
 
     varname = _lazy.load("varname")
     lmfit = _lazy.load("lmfit")
+
+_P = typing.ParamSpec("_P")
+_R = typing.TypeVar("_R")
+
+
+def _rebuild_ui(
+    *,
+    mark_fresh: bool = True,
+) -> Callable[
+    [Callable[typing.Concatenate[Fit2DTool, _P], _R]],
+    Callable[typing.Concatenate[Fit2DTool, _P], _R],
+]:
+    """Decorate a method to rebuild the UI after changing the data/model."""
+
+    def decorator(
+        func: Callable[typing.Concatenate[Fit2DTool, _P], _R],
+    ) -> Callable[typing.Concatenate[Fit2DTool, _P], _R]:
+        @functools.wraps(func)
+        def wrapper(self: Fit2DTool, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+            old_geom = self.saveGeometry() if hasattr(self, "saveGeometry") else None
+            self._cancel_fit()
+
+            # Remove the existing UI to avoid duplicate widgets/signals.
+            if hasattr(self, "centralWidget"):
+                old_cw = self.centralWidget()
+                if old_cw is not None:
+                    old_cw.setParent(None)
+                    old_cw.deleteLater()
+
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                # Reset current slice + fit state.
+                self._reset_fit_state(
+                    self._data_full.isel({self._y_dim_name: self._current_idx}),
+                    self._model,
+                    None,
+                    data_name=self._data_name,
+                    model_name=self._model_name,
+                )
+
+                # Rebuild UI and refresh views.
+                self._build_ui()
+                self.param_model.sigParamsChanged.connect(self._update_params_full)
+                self.sigFitFinished.connect(self._update_params_full)
+                self.sigFitFinished.connect(self._update_ds_full)
+                self._update_fit_curve()
+                self._write_history = True
+                self._write_state()
+                self._refresh_contents_from_index(mark_fit_stale=not mark_fresh)
+
+                if old_geom is not None and hasattr(self, "restoreGeometry"):
+                    self.restoreGeometry(old_geom)
+
+        return wrapper
+
+    return decorator
 
 
 class Fit2DTool(Fit1DTool):
@@ -405,47 +468,13 @@ class Fit2DTool(Fit1DTool):
         )
         self.y_index_spin.setValue(self._current_idx)
 
+    @_rebuild_ui(mark_fresh=False)
     def _transpose(self) -> None:
-        # Reset everything, transpose data, and rebuild UI.
-        old_geom = self.saveGeometry() if hasattr(self, "saveGeometry") else None
-
-        self._cancel_fit()
-
-        # Remove the existing UI to avoid duplicate widgets/signals.
-        if hasattr(self, "centralWidget"):
-            old_cw = self.centralWidget()
-            if old_cw is not None:
-                old_cw.setParent(None)
-                old_cw.deleteLater()
-
         # Transpose the full 2D data (swap axes).
         self._init_full_data_state(
             erlab.interactive.utils.parse_data(self._data_full.transpose()),
             data_name=self._data_name_full,
         )
-
-        # Reset current slice + fit state.
-        model = self._model
-        self._reset_fit_state(
-            self._data_full.isel({self._y_dim_name: self._current_idx}),
-            model,
-            None,
-            data_name=self._data_name,
-            model_name=self._model_name,
-        )
-
-        # Rebuild UI and refresh views.
-        self._build_ui()
-        self.param_model.sigParamsChanged.connect(self._update_params_full)
-        self.sigFitFinished.connect(self._update_params_full)
-        self.sigFitFinished.connect(self._update_ds_full)
-        self._update_fit_curve()
-        self._write_history = True
-        self._write_state()
-        self._refresh_contents_from_index()
-
-        if old_geom is not None and hasattr(self, "restoreGeometry"):
-            self.restoreGeometry(old_geom)
 
     @QtCore.Slot()
     def _domain_changed(self) -> None:
@@ -548,12 +577,13 @@ class Fit2DTool(Fit1DTool):
         )
         self.param_plot_scatter.setData(x=param_values, y=plot_y)
 
-    def _refresh_contents_from_index(self) -> None:
+    def _refresh_contents_from_index(self, *, mark_fit_stale: bool = True) -> None:
         self._data = self._data_full.isel({self._y_dim_name: self._current_idx})
 
         params = self._params_full[self._current_idx]
         params_from_coord = self._params_from_coord_full[self._current_idx]
         last_ds = self._result_ds_full[self._current_idx]
+        self._last_result_ds = last_ds
         if self._initial_params_full is not None:
             self._initial_params = self._initial_params_full[self._current_idx]
         if params is None:
@@ -579,9 +609,77 @@ class Fit2DTool(Fit1DTool):
         if last_ds is not None:
             result = last_ds.modelfit_results.compute().item()
             self._set_fit_stats(result)
+            if mark_fit_stale:
+                self._mark_fit_stale()
+            else:
+                self._mark_fit_fresh()
         else:
             self._set_fit_stats(None)
-        self._mark_fit_stale()
+            self._mark_fit_stale()
+
+    @_rebuild_ui(mark_fresh=True)
+    def _restore_from_fit_dataset(
+        self, fit_ds: xr.Dataset, *, model: lmfit.Model | None = None
+    ) -> None:
+        fit_data = self._extract_fit_data(fit_ds)
+        if fit_data.ndim != 2:
+            raise ValueError("Fit dataset does not contain 2D data.")
+
+        if "modelfit_results" not in fit_ds.data_vars:
+            raise ValueError(
+                "Fit dataset is missing the 'modelfit_results' variable containing "
+                "the serialized fit results."
+            )
+
+        y_dim = fit_data.dims[0]
+        results_da = fit_ds["modelfit_results"]
+        if results_da.ndim != 1 or results_da.dims[0] != y_dim:
+            raise ValueError(
+                "Fit dataset result dimensions do not match the data slices."
+            )
+        if results_da.sizes[y_dim] != fit_data.sizes[y_dim]:
+            raise ValueError(
+                "Fit dataset contains a different number of fit results than data "
+                "slices."
+            )
+
+        slice_states: list[tuple[_FitRestoreState, xr.Dataset]] = []
+        for idx in range(results_da.sizes[y_dim]):
+            slice_ds = fit_ds.isel({y_dim: idx}).copy()
+            restore = self._parse_fit_dataset_for_restore(slice_ds, model=model)
+            if restore.data.ndim != 1:
+                raise ValueError(
+                    "Fit dataset slice does not contain a 1D DataArray for fitting."
+                )
+            slice_states.append((restore, slice_ds))
+
+        base_model = slice_states[0][0].model
+        base_param_names = list(base_model.param_names)
+        base_indep = list(base_model.independent_vars)
+        for restore, _ in slice_states:
+            result_model = restore.result.model or restore.model
+            if (
+                type(result_model) is not type(base_model)
+                or list(result_model.param_names) != base_param_names
+                or list(result_model.independent_vars) != base_indep
+            ):
+                raise ValueError(
+                    "Fit dataset contains mixed model definitions across slices."
+                )
+
+        self._model = base_model
+        self._init_full_data_state(fit_data, data_name=self._data_name_full)
+        self._current_idx = min(
+            self._current_idx, self._data_full.sizes[self._y_dim_name] - 1
+        )
+        y_size = fit_data.sizes[y_dim]
+        self._params_full = [restore.params.copy() for restore, _ in slice_states]
+        self._initial_params_full = [
+            restore.params.copy() for restore, _ in slice_states
+        ]
+        self._params_from_coord_full = [{} for _ in range(y_size)]
+        self._result_ds_full = [slice_ds for _, slice_ds in slice_states]
+        self._fit_is_current = True
 
     @QtCore.Slot()
     def _y_minmax_changed(self) -> None:
@@ -1051,7 +1149,7 @@ class Fit2DTool(Fit1DTool):
 
 
 def ftool(
-    data: xr.DataArray,
+    data: xr.DataArray | xr.Dataset,
     model: lmfit.Model | None = None,
     params: lmfit.Parameters | dict[str, typing.Any] | None = None,
     *,
@@ -1068,7 +1166,9 @@ def ftool(
     Parameters
     ----------
     data
-        The 1D or 2D data to fit.
+        The 1D or 2D data to fit. Also accepted is a fit result :class:`xarray.Dataset`,
+        from which the data to fit will be extracted. In this case, the tool will
+        attempt to restore the fit state from the dataset.
     model
         The model to fit to the data. If `None`, :class:`MultiPeakModel
         <erlab.analysis.fit.models.MultiPeakModel>` will be used.
@@ -1083,7 +1183,14 @@ def ftool(
         The name of the model variable, used in code generation. If `None`, an attempt
         will be made to infer the name from the calling context.
     """
-    if data_name is None:
+    fit_ds: xr.Dataset | None = None
+    if isinstance(data, xr.Dataset):
+        fit_ds = data
+        data = Fit1DTool._extract_fit_data(fit_ds)
+        if data_name is None:
+            data_name = "data"
+        params = None
+    elif data_name is None:
         try:
             data_name = str(varname.argname("data", func=ftool, vars_only=False))
         except Exception:
@@ -1102,6 +1209,12 @@ def ftool(
             raise ValueError("`data` must be a 1D or 2D DataArray")
     with _patch_encode4js(), erlab.interactive.utils.setup_qapp(execute):
         win = tool_cls(data, model, params, data_name=data_name, model_name=model_name)
+        if fit_ds is not None:
+            try:
+                win._restore_from_fit_dataset(fit_ds, model=model)
+            except Exception:
+                win.close()
+                raise
         win.show()
         win.raise_()
         win.activateWindow()

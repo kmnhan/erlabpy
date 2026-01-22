@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import dataclasses
+import functools
 import importlib
 import threading
 import time
@@ -28,6 +30,9 @@ else:
 
     varname = _lazy.load("varname")
     lmfit = _lazy.load("lmfit")
+
+_P = typing.ParamSpec("_P")
+_R = typing.TypeVar("_R")
 
 
 class _PythonCodeEditor(QtWidgets.QTextEdit):
@@ -557,6 +562,14 @@ class _State2D(pydantic.BaseModel):
     fill_mode: typing.Literal["previous", "extrapolate", "none"]
 
 
+@dataclasses.dataclass(frozen=True)
+class _FitRestoreState:
+    data: xr.DataArray
+    model: lmfit.Model
+    params: lmfit.Parameters
+    result: lmfit.model.ModelResult
+
+
 class _FitWorker(QtCore.QObject):
     sigFinished = QtCore.Signal(object)
     sigTimedOut = QtCore.Signal()
@@ -633,6 +646,47 @@ class _FitWorker(QtCore.QObject):
             self.sigTimedOut.emit()
         else:
             self.sigFinished.emit(result_ds)
+
+
+def _rebuild_ui(
+    *,
+    mark_fresh: bool = True,
+) -> Callable[
+    [Callable[typing.Concatenate[Fit1DTool, _P], _R]],
+    Callable[typing.Concatenate[Fit1DTool, _P], _R],
+]:
+    """Decorate a method to rebuild the UI after changing the data/model."""
+
+    def decorator(
+        func: Callable[typing.Concatenate[Fit1DTool, _P], _R],
+    ) -> Callable[typing.Concatenate[Fit1DTool, _P], _R]:
+        @functools.wraps(func)
+        def wrapper(self: Fit1DTool, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+            old_geom = self.saveGeometry() if hasattr(self, "saveGeometry") else None
+            self._cancel_fit()
+
+            if hasattr(self, "centralWidget"):
+                old_cw = self.centralWidget()
+                if old_cw is not None:
+                    old_cw.setParent(None)
+                    old_cw.deleteLater()
+
+            try:
+                return func(self, *args, **kwargs)
+            finally:
+                self._build_ui()
+                self._update_fit_curve()
+                self._write_history = True
+                self._write_state()
+                if mark_fresh:
+                    self._mark_fit_fresh()
+
+                if old_geom is not None and hasattr(self, "restoreGeometry"):
+                    self.restoreGeometry(old_geom)
+
+        return wrapper
+
+    return decorator
 
 
 class Fit1DTool(erlab.interactive.utils.ToolWindow):
@@ -1235,6 +1289,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         for name, model_cls in self.MODEL_CHOICES.items():
             if isinstance(model, model_cls):
                 return name
+        if isinstance(
+            model.func, erlab.analysis.fit.functions.dynamic.MultiPeakFunction
+        ):
+            return "MultiPeakModel"
+        if isinstance(
+            model.func, erlab.analysis.fit.functions.dynamic.PolynomialFunction
+        ):
+            return "PolynomialModel"
         return None
 
     def _make_default_model(self) -> lmfit.Model:
@@ -2236,6 +2298,78 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if viewport:  # pragma: no branch
             viewport.update()
         return self._params
+
+    @staticmethod
+    def _extract_fit_data(fit_ds: xr.Dataset) -> xr.DataArray:
+        if "modelfit_data" not in fit_ds.data_vars:
+            raise ValueError(
+                "Fit dataset is missing the 'modelfit_data' variable containing the "
+                "data used for fitting."
+            )
+        return fit_ds["modelfit_data"]
+
+    @staticmethod
+    def _extract_fit_result(fit_ds: xr.Dataset) -> lmfit.model.ModelResult:
+        if "modelfit_results" not in fit_ds.data_vars:
+            raise ValueError(
+                "Fit dataset is missing the 'modelfit_results' variable containing "
+                "the serialized fit results."
+            )
+        results = fit_ds["modelfit_results"]
+        if results.size != 1:
+            raise ValueError(
+                "Fit dataset contains multiple results. Use the 2D fit tool to open "
+                "multi-slice fits."
+            )
+        result = results.compute().item()
+        if not isinstance(result, lmfit.model.ModelResult):
+            raise TypeError(
+                "Fit dataset does not contain deserialized lmfit ModelResult objects. "
+                "Load it with xarray_lmfit.load_fit before opening."
+            )
+        return result
+
+    def _parse_fit_dataset_for_restore(
+        self, fit_ds: xr.Dataset, *, model: lmfit.Model | None = None
+    ) -> _FitRestoreState:
+        fit_data = self._extract_fit_data(fit_ds)
+        result = self._extract_fit_result(fit_ds)
+        if model is None:
+            model = getattr(result, "model", None)
+            if model is None:
+                raise ValueError(
+                    "Fit dataset does not include a serialized model. Provide a "
+                    "compatible lmfit model when opening."
+                )
+            inferred = self._infer_model_choice(model)
+            if inferred is not None:
+                model.__class__ = self.MODEL_CHOICES[inferred]
+        params = result.params.copy()
+        return _FitRestoreState(
+            data=fit_data,
+            model=model,
+            params=params,
+            result=result,
+        )
+
+    @_rebuild_ui(mark_fresh=True)
+    def _restore_from_fit_dataset(
+        self, fit_ds: xr.Dataset, *, model: lmfit.Model | None = None
+    ) -> None:
+        restore = self._parse_fit_dataset_for_restore(fit_ds, model=model)
+        if restore.data.ndim != 1:
+            raise ValueError(
+                "Fit dataset contains 2D data. Use the 2D fit tool to open this file."
+            )
+        self._reset_fit_state(
+            restore.data,
+            restore.model,
+            restore.params,
+            data_name="data",
+            model_name="model",
+        )
+        self._last_result_ds = fit_ds.copy()
+        self._set_fit_stats(restore.result)
 
     def _fit_running(self) -> bool:
         return self._fit_thread is not None and self._fit_thread.isRunning()

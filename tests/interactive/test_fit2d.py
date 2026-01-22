@@ -103,6 +103,48 @@ def test_fit2d_run_fit(qtbot, exp_decay_model) -> None:
     assert ".isel(" in code
 
 
+def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
+    data = xr.DataArray(data, dims=("y", "t"), coords={"y": y, "t": t}, name="decay2d")
+
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win.nfev_spin.setValue(0)
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
+    )
+    assert all(ds is not None for ds in win._result_ds_full)
+
+    full_ds = xr.concat(
+        win._result_ds_full,
+        dim=win._y_dim_name,
+        data_vars="all",
+        coords="minimal",
+        compat="override",
+        join="override",
+        combine_attrs="override",
+    )
+    win_restored = erlab.interactive.ftool(full_ds, execute=False)
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit2DTool)
+
+    assert win_restored._fit_is_current
+    assert all(ds is not None for ds in win_restored._result_ds_full)
+    assert win_restored.copy_button.isEnabled()
+    assert win_restored.save_button.isEnabled()
+    assert win_restored.copy_full_button.isEnabled()
+    assert win_restored.save_full_button.isEnabled()
+
+
 def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
