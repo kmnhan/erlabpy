@@ -1,6 +1,16 @@
-## Unreleased
+## v3.19.1 (2026-01-22)
 
 ### 🐞 Bug Fixes
+
+- allow read-only arrays to be passed to `_split_uniform_segments` ([d5d9b97](https://github.com/kmnhan/erlabpy/commit/d5d9b976192cd9510d5f01cb07331eaab9a90522))
+
+- **ftool:** improve fit cancellation handling ([eef9c21](https://github.com/kmnhan/erlabpy/commit/eef9c21ba5fe99d7186ce8111a5f0e3a2cbec89f))
+
+- **ftool:** allow changing fit range during 2D fit propagation ([c16b734](https://github.com/kmnhan/erlabpy/commit/c16b7341ee9b17fa618f1751d10934e33f57e8fc))
+
+- **goldtool:** allow polynomial degree to be 0 (effectively functions as weighted average) ([d3f4641](https://github.com/kmnhan/erlabpy/commit/d3f46413c45a6316a72fffd48404fff1525a1464))
+
+- **ktool:** fix unit for inner potential showing as degrees ([e8322dd](https://github.com/kmnhan/erlabpy/commit/e8322ddd1403373959b1ab7021c67e0478d45d10))
 
 - **interactive:** prioritize HDF5 format when saving fit results (#252) ([16b46d8](https://github.com/kmnhan/erlabpy/commit/16b46d8a47f125e4c84104c9eabd7093b1dd467d))
 
@@ -17,6 +27,14 @@
 - **analysis.transform.shift:** improve speed for linear interpolation (#251) ([2a391fd](https://github.com/kmnhan/erlabpy/commit/2a391fd9830ab4035d0fee63f84ef225655933cc))
 
   Speeds up `erlab.analysis.transform.shift` for `order=1` and `mode='constant'` by switching to a fast linear interpolation implementation instead of `scipy.ndimage.shift`.
+
+### ♻️ Code Refactor
+
+- **ftool:** `ftool` now accepts fit result datasets saved from `xarray-lmfit` so that users can load and visualize previous fit results in the GUI. ([6773511](https://github.com/kmnhan/erlabpy/commit/67735117be6ec032489eb3b5172cc7e94f49755d))
+
+- **docs:** add information about AI assistance and the [new VS Code extension](https://marketplace.visualstudio.com/items?itemName=khan.erlab) to the getting started guide ([ca09e99](https://github.com/kmnhan/erlabpy/commit/ca09e9997e71cd136914c9c0cb6c0bddb8828d40))
+
+- remove curvefittingtool, nobody uses it anymore ([cb23d93](https://github.com/kmnhan/erlabpy/commit/cb23d93b72e9fc5c55d0f0ab46c379a2a4777996))
 
 ## v3.19.0 (2026-01-09)
 
