@@ -65,6 +65,8 @@ ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataAr
 
 - Need to open a file quickly? Use {guilabel}`File → Open…` inside ImageTool. The dialog lists every available loader, including those from data loader plugins, so you can switch between formats without writing code.
 
+- If you are using VS Code, you can open a DataArray in ImageTool directly from the GUI with the `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ).
+
 (imagetool-ipython)=
 
 ### Notebook auto-loading
