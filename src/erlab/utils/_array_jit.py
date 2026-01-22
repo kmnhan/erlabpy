@@ -14,7 +14,14 @@ def _check_uniform(arr: npt.NDArray[np.float64], rtol, atol) -> bool:
     return np.allclose(dif, dif[0], rtol=rtol, atol=atol)
 
 
-@numba.njit(numba.types.ListType(numba.float64[:])(numba.float64[:]), cache=True)
+_f64_1d_any_rw = numba.types.Array(numba.float64, 1, "A", readonly=False)
+_f64_1d_any_ro = numba.types.Array(numba.float64, 1, "A", readonly=True)
+
+_sig_rw = numba.types.ListType(_f64_1d_any_rw)(_f64_1d_any_rw)
+_sig_ro = numba.types.ListType(_f64_1d_any_ro)(_f64_1d_any_ro)
+
+
+@numba.njit([_sig_rw, _sig_ro], cache=True)
 def _split_uniform_segments(
     arr: npt.NDArray[np.float64],
 ) -> numba.typed.List[npt.NDArray[np.float64]]:
