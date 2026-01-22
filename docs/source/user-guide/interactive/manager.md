@@ -223,6 +223,10 @@ my_data = tools[0].data
 
 Later, in any notebook, retrieve the stored variable with `%store -r my_data` and continue analysis without reopening files.
 
+### Editor integration
+
+If you are using VS Code (or other editor that supports VS Code extensions), the dedicated `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ) adds convenient features for working with the manager directly from notebooks. Search for `erlab` in the extensions panel of your editor to install it.
+
 (imagetool-manager-automation)=
 
 ## Automation APIs

@@ -4,9 +4,19 @@ Welcome to ERLabPy! This documentation will guide you through the installation p
 
 If you are new to programming with Python, check out [Scientific Python Lectures](https://github.com/jrjohansson/scientific-python-lectures) as a great starting point.
 
-We recommend using [Visual Studio Code](https://code.visualstudio.com) (or editors based on VS Code, like [VSCodium](https://vscodium.com/), [Cursor](https://cursor.com/), [Windsurf](https://windsurf.dev/), etc.) with the Jupyter extension and a dedicated `erlab` extension ([marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab)) which enables additional convenient features for working with ERLabPy.
+We recommend using [Visual Studio Code](https://code.visualstudio.com) (or editors based on VS Code, like [VSCodium](https://vscodium.com/), [Cursor](https://cursor.com/), [Windsurf](https://windsurf.dev/), etc.) with the Jupyter extension and a dedicated `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ) which enables additional convenient features for working with ERLabPy.
 
 Data structures in ERLabPy are represented using [xarray](https://docs.xarray.dev/){cite:p}`hoyer2017xarray`, which provides a powerful data structure for working with multi-dimensional arrays. Be sure to review the [xarray tutorial](https://tutorial.xarray.dev/) and the [xarray user guide](https://docs.xarray.dev/en/stable/index.html) to get familiar with it.
+
+## AI Assistance
+
+LLMs can be useful for beginners as a shortcut to common workflows and small example scripts. They are **not** a source of truth: verify API details in the documentation and validate results on your own data.
+
+ERLabPy provides ways to integrate with various LLMs.
+
+- For ChatGPT users, a [custom GPT informed on the ERLabPy documentation](https://chatgpt.com/g/g-6962fdab53008191ac5e3307a694b0a9-arpes-analysis-assistant) is available.
+
+- An [agent skill](https://agentskills.io/) for ERLabPy is available in the [GitHub repository](https://github.com/kmnhan/erlabpy/tree/main/skills) for extending the capabilities of LLMs.
 
 ## Installing
 
@@ -83,7 +93,7 @@ conda install -c conda-forge erlab
 Or with the recommended dependencies:
 
 ```bash
-conda install -c conda-forge erlab pyside6 hvplot ipywidgets
+conda install -c conda-forge erlab pyqt6 hvplot ipywidgets
 ```
 
 If you require other [optional dependencies](#optional-dependencies), append them to the above command.
@@ -159,7 +169,7 @@ import xarray as xr
 ```
 
 :::{note}
-The interactive plotting module, `erlab.interactive`, requires a Qt library (such as PyQt6 or PySide6). If one is not installed, ERLabPy will notify you upon import.
+Interactive tools in {mod}`erlab.interactive` require a Qt library (such as PyQt6 or PySide6). If one is not installed, ERLabPy will notify you upon import.
 :::
 
 ## Dependencies
