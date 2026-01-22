@@ -97,6 +97,32 @@ def test_fit1d_run_fit(qtbot, exp_decay_model) -> None:
     assert result.params["tau"].value == pytest.approx(2.0, rel=1e-2)
 
 
+def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    assert win._run_fit()
+    qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
+    fit_ds = win._last_result_ds
+    assert fit_ds is not None
+
+    win_restored = erlab.interactive.ftool(fit_ds, execute=False)
+    qtbot.addWidget(win_restored)
+
+    assert win_restored._last_result_ds is not None
+    assert win_restored._fit_is_current
+    assert win_restored.save_button.isEnabled()
+    assert win_restored.copy_button.isEnabled()
+    assert isinstance(win_restored._model, type(exp_decay_model))
+
+
 def test_parameter_table_model_and_delegate(qtbot) -> None:
     params = lmfit.Parameters()
     params.add("amp", value=1.0, min=-1.0, max=2.0, vary=True)

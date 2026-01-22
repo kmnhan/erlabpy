@@ -346,6 +346,16 @@ Some models have additional options that appear below the model selector that ar
 
 5. Use {guilabel}`Copy code` to copy the reproducible code for this fit to the clipboard, or use {guilabel}`Save fit` to save the results with {func}`xarray_lmfit.save_fit`.
 
+### Reopening saved fits
+
+You can reopen a saved fit by loading the dataset with {func}`xarray_lmfit.load_fit` and passing it directly to {func}`erlab.interactive.ftool`.
+
+Saved fits restore the stored data, the serialized model (when available), and the fitted parameter values. For 2D fits, all slices must share the same model definition.
+
+:::{note}
+The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from a data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
+:::
+
 ### Workflow for 2D data
 
 For 2D data, an additional image and a parameter-versus-coordinate plot are shown, along
@@ -391,18 +401,13 @@ with a {guilabel}`Transpose` button and index navigation controls.
 
 For 2D data, the tool fits a *stack* of 1D curves.
 
-1. Check if the data dimensions are in the correct order. The axis you wish to sweep
-   along is the vertical axis; if the image is rotated 90 degrees from what you expect,
-   click {guilabel}`Transpose` to swap the axes.
+1. Check if the data dimensions are in the correct order. The axis you wish to sweep along is the vertical axis; if the image is rotated 90 degrees from what you expect, click {guilabel}`Transpose` to swap the axes.
 
 2. Set the X window with {guilabel}`X range` or by dragging the vertical dashed lines.
 
-3. Choose the Y range to fit: use the {guilabel}`Y range` spin boxes or drag the
-   horizontal dashed lines in the image.
+3. Choose the Y range to fit: use the {guilabel}`Y range` spin boxes or drag the horizontal dashed lines in the image.
 
-4. Pick a representative Y index with {guilabel}`Index` (or drag the yellow cursor),
-   then tune the fit parameters for that slice like in the 1D workflow above. Once you
-   are satisfied with the fit, proceed to the next step.
+4. Pick a representative Y index with {guilabel}`Index` (or drag the yellow cursor), then tune the fit parameters for that slice like in the 1D workflow above. Once you are satisfied with the fit, proceed to the next step.
 
 5. Decide how parameters propagate between EDCs using {guilabel}`Fill mode`.
 
@@ -410,19 +415,14 @@ For 2D data, the tool fits a *stack* of 1D curves.
 
    - {guilabel}`Extrapolate` linearly projects parameters from the previous two slices.
 
-   - Use {guilabel}`None` when all slices already have reasonable initial parameters,
-     and you just want to fit them all without parameter propagation.
+   - Use {guilabel}`None` when all slices already have reasonable initial parameters, and you just want to fit them all without parameter propagation.
 
-6. Start the 2D sequence with {guilabel}`Fit ⤒` or {guilabel}`Fit ⤓`. The tool will step
-   through the selected range while populating the parameters according to the chosen
+6. Start the 2D sequence with {guilabel}`Fit ⤒` or {guilabel}`Fit ⤓`. The tool will step through the selected range while populating the parameters according to the chosen
    mode.
 
-7. Inspect the parameter plot to verify trends. If a slice fails, move to it with
-   {guilabel}`Index`, fix the parameters, then continue the sequence.
+7. Inspect the parameter plot to verify trends. If a slice fails, move to it with {guilabel}`Index`, fix the parameters, then continue the sequence.
 
-8. When all indices in the range are fitted, click {guilabel}`Save fit` to export the
-   combined results or {guilabel}`Copy code` to generate reproducible code for the full
-   2D fit. These buttons are only enabled after the full sequence is complete.
+8. When all indices in the range are fitted, click {guilabel}`Save fit` to export the combined results or {guilabel}`Copy code` to generate reproducible code for the full 2D fit. These buttons are only enabled after the full sequence is complete.
 
 (guide-restool)=
 
