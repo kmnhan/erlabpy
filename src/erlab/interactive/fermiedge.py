@@ -282,7 +282,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         self.params_poly = erlab.interactive.utils.ParameterGroup(
             {
-                "Degree": {"qwtype": "spin", "value": 4, "range": (1, 20)},
+                "Degree": {"qwtype": "spin", "value": 4, "range": (0, 20)},
                 "Scale cov": {"qwtype": "chkbox", "checked": True},
                 "Residuals": {"qwtype": "chkbox", "checked": False},
                 "Corrected": {"qwtype": "chkbox", "checked": False},
