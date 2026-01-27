@@ -1,3 +1,29 @@
+## v3.19.2 (2026-01-27)
+
+### 🐞 Bug Fixes
+
+- **ftool:** fix state restoration for 2D data ([8736d68](https://github.com/kmnhan/erlabpy/commit/8736d68305a63962d7fa02ff8b695652c0fa436a))
+
+- **goldtool:** use adaptive decimal steps for range selection ([8942b45](https://github.com/kmnhan/erlabpy/commit/8942b453b8417b86fe405d540316b9c78196fc06))
+
+  The range selection spinboxes will now adjust its number of decimals based on the coordinates of the input data.
+
+- **ftool:** update parameters for all slices in 2D data when changing the model ([d358f9d](https://github.com/kmnhan/erlabpy/commit/d358f9db6f6dc1ca1a919029a3d53881bc589e03))
+
+- **ftool:** make initial values of parameters change more consistently with user expectations when making changes to the model options that change the parameter set ([6ec1785](https://github.com/kmnhan/erlabpy/commit/6ec178599e6e2131df9c9743bbd7ab81d4eadc88))
+
+- ensure compatibility with coordinates with negative increments across the codebase (#255) ([5478eb0](https://github.com/kmnhan/erlabpy/commit/5478eb03e6d0bd970e9623727d45a2f6155a0147))
+
+  Many functions and interactive tools returns wrong results or raises ambiguous errors when working with data with coordinates that are decreasing. This commit ensures that the following functions and tools function correctly for such data:
+
+  - `gaussian_filter`, `gaussian_laplace`, `diffn`, `scaled_laplace`, and `curvature` in `erlab.analysis.image` module
+
+  - Cropping and code generation in ImageTool
+
+  - `goldtool`, `restool`, `ftool`, `dtool`
+
+- **ftool:** fix transpose button not working for 2D data (#254) ([dde56c0](https://github.com/kmnhan/erlabpy/commit/dde56c06aa3e042245ccbafcd96c1c1edb6fc961))
+
 ## v3.19.1 (2026-01-22)
 
 ### 🐞 Bug Fixes
