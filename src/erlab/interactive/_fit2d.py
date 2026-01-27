@@ -543,8 +543,43 @@ class Fit2DTool(Fit1DTool):
             else:
                 self._update_param_plot()
 
-    def set_model(self, *args, **kwargs) -> None:
-        super().set_model(*args, **kwargs)
+    def set_model(
+        self,
+        model: lmfit.Model,
+        *,
+        model_load_path: str | None = None,
+        merge_params: bool = False,
+        reset_params_from_coord: bool = False,
+    ) -> None:
+        for i in range(self._data_full.sizes[self._y_dim_name]):
+            if i == self._current_idx:
+                continue
+
+            prev_params: lmfit.Parameters | None = self._params_full[i]
+            new_params: lmfit.Parameters | None = None
+            if prev_params is not None:
+                prev_params = prev_params.copy()
+                new_params = model.make_params()
+                if merge_params:
+                    self._merge_params(prev_params, new_params)
+                self._params_full[i] = new_params
+
+            if reset_params_from_coord:
+                self._params_from_coord_full[i] = {}
+
+            for k in list(self._params_from_coord_full[i].keys()):
+                if new_params is not None and k not in new_params:
+                    self._params_from_coord_full[i].pop(k)
+
+            if self._initial_params_full is not None and new_params is not None:
+                self._initial_params_full[i] = new_params.copy()
+
+        super().set_model(
+            model,
+            model_load_path=model_load_path,
+            merge_params=merge_params,
+            reset_params_from_coord=reset_params_from_coord,
+        )
         self._update_param_plot_options()
 
     @QtCore.Slot()
@@ -589,9 +624,12 @@ class Fit2DTool(Fit1DTool):
             self._initial_params = self._initial_params_full[self._current_idx]
         if params is None:
             params = self._initial_params.copy()
-        for param_name, param_coord in params_from_coord.items():
-            if param_name in params and param_coord in self._data.coords:
-                params[param_name].value = float(self._data[param_coord].values)
+        for param_name, param_coord in dict(params_from_coord).items():
+            if param_name in params:
+                if param_coord in self._data.coords:
+                    params[param_name].value = float(self._data[param_coord].values)
+            else:
+                del params_from_coord[param_name]
 
         self._params = params
         self._params_from_coord = params_from_coord
