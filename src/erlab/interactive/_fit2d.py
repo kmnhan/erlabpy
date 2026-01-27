@@ -469,12 +469,12 @@ class Fit2DTool(Fit1DTool):
         )
         self.y_index_spin.setValue(self._current_idx)
 
+    @QtCore.Slot()
     @_rebuild_ui(mark_fresh=False)
     def _transpose(self) -> None:
         # Transpose the full 2D data (swap axes).
         self._init_full_data_state(
-            erlab.interactive.utils.parse_data(self._data_full.transpose()),
-            data_name=self._data_name_full,
+            self._data_full.transpose(), data_name=self._data_name_full
         )
 
     @QtCore.Slot()
