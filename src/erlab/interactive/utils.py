@@ -1943,15 +1943,23 @@ class ParameterGroup(QtWidgets.QGroupBox):
 
 
 class ROIControls(ParameterGroup):
-    def __init__(self, roi: pg.ROI, spinbox_kw: dict | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        roi: pg.ROI,
+        x_decimals: int = 3,
+        y_decimals: int = 3,
+        spinbox_kw: dict | None = None,
+        **kwargs,
+    ) -> None:
         if spinbox_kw is None:
             spinbox_kw = {}
         self.roi = roi
+        self._x_decimals = x_decimals
+        self._y_decimals = y_decimals
         x0, y0, x1, y1 = self.roi_limits
         xm, ym, xM, yM = self.max_bounds
 
         default_properties = {
-            "decimals": 3,
             "singleStep": 0.002,
             "keyboardTracking": False,
         }
@@ -1965,6 +1973,7 @@ class ROIControls(ParameterGroup):
                 valueChanged=lambda x: self.modify_roi(x0=x),
                 minimum=xm,
                 maximum=xM,
+                decimals=self._x_decimals,
                 **spinbox_kw,
             ),
             x1=dict(
@@ -1973,6 +1982,7 @@ class ROIControls(ParameterGroup):
                 valueChanged=lambda x: self.modify_roi(x1=x),
                 minimum=xm,
                 maximum=xM,
+                decimals=self._x_decimals,
                 **spinbox_kw,
             ),
             y0=dict(
@@ -1981,6 +1991,7 @@ class ROIControls(ParameterGroup):
                 valueChanged=lambda x: self.modify_roi(y0=x),
                 minimum=ym,
                 maximum=yM,
+                decimals=self._y_decimals,
                 **spinbox_kw,
             ),
             y1=dict(
@@ -1989,6 +2000,7 @@ class ROIControls(ParameterGroup):
                 valueChanged=lambda x: self.modify_roi(y1=x),
                 minimum=ym,
                 maximum=yM,
+                decimals=self._y_decimals,
                 **spinbox_kw,
             ),
             drawbtn={
@@ -2004,11 +2016,16 @@ class ROIControls(ParameterGroup):
         self.roi.sigRegionChanged.connect(self.update_pos)
 
     @property
-    def roi_limits(self):
+    def roi_limits(self) -> tuple[float, float, float, float]:
         x0, y0 = self.roi.state["pos"]
         w, h = self.roi.state["size"]
         x1, y1 = x0 + w, y0 + h
-        return x0, y0, x1, y1
+        return (
+            round(x0, self._x_decimals),
+            round(y0, self._y_decimals),
+            round(x1, self._x_decimals),
+            round(y1, self._y_decimals),
+        )
 
     @property
     def max_bounds(self) -> tuple[float, float, float, float]:
