@@ -387,6 +387,23 @@ def test_fit2d_y_range_slice(qtbot) -> None:
     assert sl.stop == 2
 
 
+def test_fit2d_y_bounds_descending_coords(qtbot) -> None:
+    data = _make_2d_data().isel(y=slice(None, None, -1))
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_min_spin.setValue(0)
+    win.y_max_spin.setValue(1)
+
+    assert win.y_min_line.bounds()[0] <= win.y_min_line.bounds()[1]
+    assert win.y_max_line.bounds()[0] <= win.y_max_line.bounds()[1]
+
+    y_vals = data["y"].values
+    assert win.y_min_line.value() == pytest.approx(y_vals[0])
+    assert win.y_max_line.value() == pytest.approx(y_vals[1])
+
+
 def test_fit2d_param_plot_options_update(qtbot, exp_decay_model) -> None:
     data = _make_2d_data()
     params = exp_decay_model.make_params(n0=1.0, tau=1.0)
