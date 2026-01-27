@@ -848,8 +848,8 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         x_coords = data["eV"].values
         y_coords = data[self.y_dim].values
 
-        self._x_range = x_coords[[0, -1]]
-        self._y_range = y_coords[[0, -1]]
+        self._x_range = x_coords.min(), x_coords.max()
+        self._y_range = y_coords.min(), y_coords.max()
 
         self._x_decimals = erlab.utils.array.effective_decimals(x_coords)
         self._y_decimals = erlab.utils.array.effective_decimals(y_coords)
@@ -904,7 +904,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.edc_fit = pg.PlotDataItem(pen=pg.mkPen("r"))
         self.plot1.addItem(self.edc_fit)
 
-        y_offset = self._y_range.mean()
+        y_offset = np.mean(self._y_range)
         initial_y_range = (self._y_range - y_offset) * 0.75 + y_offset
         self.y_region = pg.LinearRegionItem(
             values=initial_y_range,
@@ -916,7 +916,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.plot0.addItem(self.y_region)
 
         x_width = self._x_range[-1] - self._x_range[0]
-        initial_x_range = (self._x_range.mean(), self._x_range[-1] - x_width * 0.04)
+        initial_x_range = (np.mean(self._x_range), self._x_range[-1] - x_width * 0.04)
         self.x_region = pg.LinearRegionItem(
             values=initial_x_range,
             orientation="vertical",
@@ -940,6 +940,8 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         """Currently selected x range (eV) for the fit."""
         x0 = round(self.x0_spin.value(), self._x_decimals)
         x1 = round(self.x1_spin.value(), self._x_decimals)
+        if self.data.eV[-1] < self.data.eV[0]:
+            x0, x1 = x1, x0
         return x0, x1
 
     @property
@@ -947,6 +949,8 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         """Currently selected y range to average EDCs."""
         y0 = round(self.y0_spin.value(), self._y_decimals)
         y1 = round(self.y1_spin.value(), self._y_decimals)
+        if self.data[self.y_dim][-1] < self.data[self.y_dim][0]:
+            y0, y1 = y1, y0
         return y0, y1
 
     def _shutdown_executor(self) -> None:
