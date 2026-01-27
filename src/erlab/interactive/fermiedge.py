@@ -229,7 +229,16 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             temp = 30.0
         temp = float(temp)
 
-        self.params_roi = erlab.interactive.utils.ROIControls(self.aw.add_roi(0))
+        x_decimals = erlab.utils.array.effective_decimals(
+            self.data[self._along_dim].values
+        )
+        y_decimals = erlab.utils.array.effective_decimals(self.data.eV.values)
+
+        self.params_roi = erlab.interactive.utils.ROIControls(
+            self.aw.add_roi(0),
+            x_decimals=x_decimals,
+            y_decimals=y_decimals,
+        )
         self.params_edge = erlab.interactive.utils.ParameterGroup(
             {
                 "T (K)": {"qwtype": "dblspin", "value": temp, "range": (0.0, 400.0)},
