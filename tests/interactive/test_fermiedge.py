@@ -71,6 +71,19 @@ def test_goldtool(
     tmp_dir.cleanup()
 
 
+def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:
+    gold_desc = gold.isel(alpha=slice(None, None, -1), eV=slice(None, None, -1))
+    win: GoldTool = goldtool(gold_desc, execute=False)
+    qtbot.addWidget(win)
+
+    win.params_roi.modify_roi(x0=-10.0, x1=10.0, y0=-0.5, y1=0.2)
+    x0, y0, x1, y1 = win.roi_limits_ordered
+    assert x0 == pytest.approx(10.0)
+    assert x1 == pytest.approx(-10.0)
+    assert y0 == pytest.approx(0.2)
+    assert y1 == pytest.approx(-0.5)
+
+
 def test_restool(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
@@ -124,3 +137,20 @@ def test_restool(qtbot) -> None:
     assert str(win_restored.info_text) == str(win.info_text)
 
     tmp_dir.cleanup()
+
+
+def test_restool_ranges_descending_coords(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    gold_desc = gold.isel(alpha=slice(None, None, -1), eV=slice(None, None, -1))
+    win = restool(gold_desc, execute=False)
+    qtbot.addWidget(win)
+
+    win.x0_spin.setValue(-0.3)
+    win.x1_spin.setValue(0.3)
+    win.y0_spin.setValue(-12.0)
+    win.y1_spin.setValue(12.0)
+
+    assert win.x_range == pytest.approx((0.3, -0.3))
+    assert win.y_range == pytest.approx((12.0, -12.0))

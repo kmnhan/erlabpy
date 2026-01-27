@@ -371,3 +371,48 @@ def test_remove_stripe_invalid_dims():
     )
     with pytest.raises(ValueError, match="alpha"):
         era.image.remove_stripe(darr, deg=2)
+
+
+def _reverse_2d(darr: xr.DataArray) -> xr.DataArray:
+    return darr.isel(x=slice(None, None, -1), y=slice(None, None, -1))
+
+
+def test_filters_support_decreasing_coords() -> None:
+    coords = np.linspace(0.0, 4.0, 5)
+    darr = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": coords, "y": coords},
+    )
+    darr_rev = _reverse_2d(darr)
+
+    result_inc = era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
+    result_rev = era.image.gaussian_filter(darr_rev, sigma={"x": 1.0, "y": 1.0})
+    xr.testing.assert_allclose(_reverse_2d(result_rev), result_inc)
+
+    result_inc = era.image.gaussian_laplace(darr, sigma={"x": 1.0, "y": 1.0})
+    result_rev = era.image.gaussian_laplace(darr_rev, sigma={"x": 1.0, "y": 1.0})
+    xr.testing.assert_allclose(_reverse_2d(result_rev), result_inc)
+
+
+def test_derivatives_support_decreasing_coords() -> None:
+    coords = np.linspace(0.0, 4.0, 5)
+    darr = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float) ** 3,
+        dims=["x", "y"],
+        coords={"x": coords, "y": coords},
+    )
+    darr_rev = _reverse_2d(darr)
+
+    dx1_inc, dx2_inc = era.image.diffn(darr, "x", order=(1, 2))
+    dx1_rev, dx2_rev = era.image.diffn(darr_rev, "x", order=(1, 2))
+    xr.testing.assert_allclose(_reverse_2d(dx1_rev), dx1_inc)
+    xr.testing.assert_allclose(_reverse_2d(dx2_rev), dx2_inc)
+
+    scaled_inc = era.image.scaled_laplace(darr)
+    scaled_rev = era.image.scaled_laplace(darr_rev)
+    xr.testing.assert_allclose(_reverse_2d(scaled_rev), scaled_inc)
+
+    curve_inc = era.image.curvature(darr)
+    curve_rev = era.image.curvature(darr_rev)
+    xr.testing.assert_allclose(_reverse_2d(curve_rev), curve_inc)

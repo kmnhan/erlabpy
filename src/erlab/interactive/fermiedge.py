@@ -936,10 +936,21 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
 
     @property
-    def x_range(self) -> tuple[float, float]:
-        """Currently selected x range (eV) for the fit."""
+    def _x_range_ui(self) -> tuple[float, float]:
         x0 = round(self.x0_spin.value(), self._x_decimals)
         x1 = round(self.x1_spin.value(), self._x_decimals)
+        return x0, x1
+
+    @property
+    def _y_range_ui(self) -> tuple[float, float]:
+        y0 = round(self.y0_spin.value(), self._y_decimals)
+        y1 = round(self.y1_spin.value(), self._y_decimals)
+        return y0, y1
+
+    @property
+    def x_range(self) -> tuple[float, float]:
+        """Currently selected x range (eV) for the fit."""
+        x0, x1 = self._x_range_ui
         if self.data.eV[-1] < self.data.eV[0]:
             x0, x1 = x1, x0
         return x0, x1
@@ -947,8 +958,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
     @property
     def y_range(self) -> tuple[float, float]:
         """Currently selected y range to average EDCs."""
-        y0 = round(self.y0_spin.value(), self._y_decimals)
-        y1 = round(self.y1_spin.value(), self._y_decimals)
+        y0, y1 = self._y_range_ui
         if self.data[self.y_dim][-1] < self.data[self.y_dim][0]:
             y0, y1 = y1, y0
         return y0, y1
@@ -1117,10 +1127,10 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
     @QtCore.Slot()
     def _update_region(self) -> None:
         """Update the region items when the spinboxes are changed."""
-        if self.x_range != self.x_region.getRegion():
-            self.x_region.setRegion(self.x_range)
-        if self.y_range != self.y_region.getRegion():
-            self.y_region.setRegion(self.y_range)
+        if self._x_range_ui != self.x_region.getRegion():
+            self.x_region.setRegion(self._x_range_ui)
+        if self._y_range_ui != self.y_region.getRegion():
+            self.y_region.setRegion(self._y_range_ui)
 
     @QtCore.Slot()
     def _x_region_changed(self) -> None:

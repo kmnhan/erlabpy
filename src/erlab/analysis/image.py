@@ -767,11 +767,11 @@ def diffn(
         the provided order.
     """
     xvals = darr[coord].values.astype(np.float64)
-    grid = (
-        abs(xvals[1] - xvals[0])
-        if erlab.utils.array.is_uniform_spaced(xvals)
-        else xvals
-    )
+    dx = xvals[1] - xvals[0]
+    if dx < 0:
+        grid = xvals
+    else:
+        grid = dx if erlab.utils.array.is_uniform_spaced(xvals) else xvals
     d_dx = findiff.Diff(darr.get_axis_num(coord), grid=grid, **kwargs)
 
     if not isinstance(order, int) and isinstance(order, Iterable):
