@@ -454,11 +454,21 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.progress.setValue(n)
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
 
+    @property
+    def roi_limits_ordered(self) -> tuple[float, float, float, float]:
+        """Returns the ordered ROI limits respecting data coordinate directions."""
+        x0, y0, x1, y1 = self.params_roi.roi_limits
+        if self.data[self._along_dim][-1] < self.data[self._along_dim][0]:
+            x0, x1 = x1, x0
+        if self.data.eV[-1] < self.data.eV[0]:
+            y0, y1 = y1, y0
+        return x0, y0, x1, y1
+
     @QtCore.Slot()
     def perform_edge_fit(self) -> None:
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
-        x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
+        x0, y0, x1, y1 = self.roi_limits_ordered
         params = self.params_edge.values
         n_total: int = len(
             self.data[self._along_dim]
@@ -616,7 +626,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 p1 = self.params_poly.values
             case "spl":
                 p1 = self.params_spl.values
-        x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
+        x0, y0, x1, y1 = self.roi_limits_ordered
 
         arg_dict: dict[str, typing.Any] = {
             "along": self._along_dim,
