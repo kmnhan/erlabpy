@@ -455,6 +455,9 @@ class Fit2DTool(Fit1DTool):
 
     @tool_status.setter
     def tool_status(self, status: Fit1DTool.StateModel) -> None:
+        super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
+            self, status
+        )
         state2d = status.state2d
         if state2d is not None:  # pragma: no branch
             self._current_idx = state2d.current_idx
@@ -464,9 +467,6 @@ class Fit2DTool(Fit1DTool):
                 self._deserialize_params(params) for params in state2d.params_full
             ]
             self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
-        super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
-            self, status
-        )
         self.y_index_spin.setValue(self._current_idx)
 
     @QtCore.Slot()
