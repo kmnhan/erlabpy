@@ -220,6 +220,7 @@ napoleon_type_aliases = {
     "np.float64": "float64",
     "numpy.float64": "float64",
     "array-like": "`array-like <numpy.typing.ArrayLike>`",
+    "array_like": "`array-like <numpy.typing.ArrayLike>`",
     "ColorType": "`ColorType <matplotlib.typing.ColorType>`",
     "RGBColorType": "`RGBColorType <matplotlib.typing.RGBColorType>`",
     "RGBAColorType": "`RGBAColorType <matplotlib.typing.RGBAColorType>`",
