@@ -149,14 +149,14 @@ class MultiPeakFunction(DynamicFunction):
     npeaks
         The number of peaks to fit.
     peak_shapes
-        The shape(s) of the peaks in the model. If a list of strings is provided,
-        each string represents the shape of a peak. If a single string is provided,
-        it will be split by spaces to create a list of peak shapes. If not provided,
-        the default peak shape will be used for all peaks.
+        The shape(s) of the peaks in the model. If a list of strings is provided, each
+        string represents the shape of a peak. If a single string is provided, it will
+        be split by spaces to create a list of peak shapes. If not provided, the default
+        peak shape will be used for all peaks.
     fd
         Flag indicating whether the model should be multiplied by the Fermi-Dirac
-        distribution. This adds three parameters to the model: ``efermi``, ``temp``,
-        and ``offset``, each corresponding to the Fermi level, temperature in K, and
+        distribution. This adds three parameters to the model: ``efermi``, ``temp``, and
+        ``offset``, each corresponding to the Fermi level, temperature in K, and
         constant background.
     background
         The type of background to include in the model. Possible values are:
@@ -173,16 +173,16 @@ class MultiPeakFunction(DynamicFunction):
         The degree of the polynomial background. Only used if `background` is
         ``'polynomial'``. Default is 2.
     convolve
-        Flag indicating whether the model should be convolved with a gaussian
-        kernel. If `True`, adds a ``resolution`` parameter to the model,
-        corresponding to the FWHM of the gaussian kernel.
+        Flag indicating whether the model should be convolved with a gaussian kernel. If
+        `True`, adds a ``resolution`` parameter to the model, corresponding to the FWHM
+        of the gaussian kernel.
     oversample
         Factor by which to oversample `x` during convolution to reduce numerical
         artifacts.
     segmented
-        Flag indicating whether to convolve the model in segments. If `True`, the
-        model will be convolved in segments of uniform spacing. This must be set to
-        `True` when fitting data with large gaps or discontinuities in the x-axis.
+        Flag indicating whether to convolve the model in segments. If `True`, the model
+        will be convolved in segments of uniform spacing. This must be set to `True`
+        when fitting data with large gaps or discontinuities in the x-axis.
     """
 
     PEAK_SHAPES: typing.ClassVar[dict[Callable, list[str]]] = {

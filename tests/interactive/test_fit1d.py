@@ -32,7 +32,6 @@ def test_fit1d_fit_domain_descending_coords(qtbot) -> None:
     assert domain == pytest.approx((0.5, -0.5))
 
     fit_data = win._fit_data_raw()
-    fit_data = data.sel(x=slice(0.5, -0.5))
     assert fit_data.size > 0
     assert fit_data["x"].values[0] == pytest.approx(0.5)
     assert fit_data["x"].values[-1] == pytest.approx(-0.5)
