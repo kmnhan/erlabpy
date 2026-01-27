@@ -2018,10 +2018,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         for k, v in self.manual_limits.items():
             ax_idx = self.data.dims.index(k)
             sig_digits = self.array_slicer.get_significant(ax_idx, uniform=True)
-            start, end = (
+            bounds = (
                 float(np.round(v[0], sig_digits)),
                 float(np.round(v[1], sig_digits)),
             )
+            start, end = min(bounds), max(bounds)
+            if self.array_slicer.incs_uniform[ax_idx] < 0:
+                start, end = end, start
             if sig_digits == 0:
                 start, end = int(start), int(end)
             slice_dict[k] = slice(start, end)

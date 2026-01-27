@@ -454,11 +454,21 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.progress.setValue(n)
         self.pbar.setFormat(f"{n}/{self.progress.maximum()} finished")
 
+    @property
+    def roi_limits_ordered(self) -> tuple[float, float, float, float]:
+        """Returns the ordered ROI limits respecting data coordinate directions."""
+        x0, y0, x1, y1 = self.params_roi.roi_limits
+        if self.data[self._along_dim][-1] < self.data[self._along_dim][0]:
+            x0, x1 = x1, x0
+        if self.data.eV[-1] < self.data.eV[0]:
+            y0, y1 = y1, y0
+        return x0, y0, x1, y1
+
     @QtCore.Slot()
     def perform_edge_fit(self) -> None:
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
-        x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
+        x0, y0, x1, y1 = self.roi_limits_ordered
         params = self.params_edge.values
         n_total: int = len(
             self.data[self._along_dim]
@@ -616,7 +626,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 p1 = self.params_poly.values
             case "spl":
                 p1 = self.params_spl.values
-        x0, y0, x1, y1 = (float(np.round(x, 3)) for x in self.params_roi.roi_limits)
+        x0, y0, x1, y1 = self.roi_limits_ordered
 
         arg_dict: dict[str, typing.Any] = {
             "along": self._along_dim,
@@ -838,8 +848,8 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         x_coords = data["eV"].values
         y_coords = data[self.y_dim].values
 
-        self._x_range = x_coords[[0, -1]]
-        self._y_range = y_coords[[0, -1]]
+        self._x_range = x_coords.min(), x_coords.max()
+        self._y_range = y_coords.min(), y_coords.max()
 
         self._x_decimals = erlab.utils.array.effective_decimals(x_coords)
         self._y_decimals = erlab.utils.array.effective_decimals(y_coords)
@@ -894,7 +904,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.edc_fit = pg.PlotDataItem(pen=pg.mkPen("r"))
         self.plot1.addItem(self.edc_fit)
 
-        y_offset = self._y_range.mean()
+        y_offset = np.mean(self._y_range)
         initial_y_range = (self._y_range - y_offset) * 0.75 + y_offset
         self.y_region = pg.LinearRegionItem(
             values=initial_y_range,
@@ -906,7 +916,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.plot0.addItem(self.y_region)
 
         x_width = self._x_range[-1] - self._x_range[0]
-        initial_x_range = (self._x_range.mean(), self._x_range[-1] - x_width * 0.04)
+        initial_x_range = (np.mean(self._x_range), self._x_range[-1] - x_width * 0.04)
         self.x_region = pg.LinearRegionItem(
             values=initial_x_range,
             orientation="vertical",
@@ -926,17 +936,31 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
 
     @property
-    def x_range(self) -> tuple[float, float]:
-        """Currently selected x range (eV) for the fit."""
+    def _x_range_ui(self) -> tuple[float, float]:
         x0 = round(self.x0_spin.value(), self._x_decimals)
         x1 = round(self.x1_spin.value(), self._x_decimals)
         return x0, x1
 
     @property
-    def y_range(self) -> tuple[float, float]:
-        """Currently selected y range to average EDCs."""
+    def _y_range_ui(self) -> tuple[float, float]:
         y0 = round(self.y0_spin.value(), self._y_decimals)
         y1 = round(self.y1_spin.value(), self._y_decimals)
+        return y0, y1
+
+    @property
+    def x_range(self) -> tuple[float, float]:
+        """Currently selected x range (eV) for the fit."""
+        x0, x1 = self._x_range_ui
+        if self.data.eV[-1] < self.data.eV[0]:
+            x0, x1 = x1, x0
+        return x0, x1
+
+    @property
+    def y_range(self) -> tuple[float, float]:
+        """Currently selected y range to average EDCs."""
+        y0, y1 = self._y_range_ui
+        if self.data[self.y_dim][-1] < self.data[self.y_dim][0]:
+            y0, y1 = y1, y0
         return y0, y1
 
     def _shutdown_executor(self) -> None:
@@ -1103,10 +1127,10 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
     @QtCore.Slot()
     def _update_region(self) -> None:
         """Update the region items when the spinboxes are changed."""
-        if self.x_range != self.x_region.getRegion():
-            self.x_region.setRegion(self.x_range)
-        if self.y_range != self.y_region.getRegion():
-            self.y_region.setRegion(self.y_range)
+        if self._x_range_ui != self.x_region.getRegion():
+            self.x_region.setRegion(self._x_range_ui)
+        if self._y_range_ui != self.y_region.getRegion():
+            self.y_region.setRegion(self._y_range_ui)
 
     @QtCore.Slot()
     def _x_region_changed(self) -> None:

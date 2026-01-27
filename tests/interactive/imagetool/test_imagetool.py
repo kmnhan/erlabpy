@@ -203,6 +203,32 @@ def test_copy_selection_code_includes_crop_with_alt(qtbot, monkeypatch) -> None:
     win.close()
 
 
+def test_copy_selection_code_descending_coords(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(4, -1, -1), "y": np.arange(4, -1, -1)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+    win.slicer_area.set_manual_limits({"x": [1.0, 3.0], "y": [0.0, 2.0]})
+
+    _press_alt(monkeypatch)
+
+    copied: list[str] = []
+
+    def fake_copy(content: str | list[str]) -> str:
+        copied.append(content if isinstance(content, str) else "\n".join(content))
+        return copied[-1]
+
+    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", fake_copy)
+
+    main_image.copy_selection_code()
+    assert copied == [".sel(x=slice(3.0, 1.0), y=slice(2.0, 0.0))"]
+    win.close()
+
+
 def test_selection_code_merges_cursor_and_crop_on_alt(qtbot, monkeypatch) -> None:
     data = _TEST_DATA["3D_nonuniform"].copy()
     win = itool(data, execute=False)

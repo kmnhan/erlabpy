@@ -19,6 +19,25 @@ def _make_1d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("x",), coords={"x": x}, name="spec")
 
 
+def test_fit1d_fit_domain_descending_coords(qtbot) -> None:
+    x = np.linspace(1.0, -1.0, 21)
+    data = xr.DataArray(np.exp(-(x**2)), dims=("x",), coords={"x": x})
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.domain_min_spin.setValue(-0.5)
+    win.domain_max_spin.setValue(0.5)
+
+    domain = win._fit_domain()
+    assert domain == pytest.approx((0.5, -0.5))
+
+    fit_data = win._fit_data_raw()
+    fit_data = data.sel(x=slice(0.5, -0.5))
+    assert fit_data.size > 0
+    assert fit_data["x"].values[0] == pytest.approx(0.5)
+    assert fit_data["x"].values[-1] == pytest.approx(-0.5)
+
+
 def test_ftool_1d_param_edit_and_state(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)

@@ -1907,7 +1907,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if domain is None:
             mask = np.isfinite(xvals)
         else:
-            lo, hi = domain
+            lo, hi = sorted(domain)
             mask = np.isfinite(xvals) & (xvals >= lo) & (xvals <= hi)
         base = pg.mkBrush(30, 30, 30)
         tint_color = pg.mkColor(self.FIT_COLOR)
@@ -1987,6 +1987,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         x0, x1 = sorted((float(x0), float(x1)))
         if np.isclose(x0, x_min) and np.isclose(x1, x_max):
             return None
+        if x_vals[-1] < x_vals[0]:
+            x0, x1 = x1, x0
         x_decimals = erlab.utils.array.effective_decimals(x_vals)
         return round(x0, x_decimals), round(x1, x_decimals)
 

@@ -323,10 +323,10 @@ class ArraySlicer(QtCore.QObject):
 
     @functools.cached_property
     def incs(self) -> tuple[np.floating, ...]:
-        """Increment size of each dimension in the array.
+        """Increment of each dimension in the array.
 
-        Returns the step size of each dimension in the array. Non-uniform dimensions
-        will return the absolute average of all non-zero step sizes.
+        Returns the step for each dimension coordinate in the array. Non-uniform
+        dimensions will return the absolute average of all non-zero step sizes.
         """
         if self._nonuniform_axes:
             return tuple(
@@ -851,13 +851,13 @@ class ArraySlicer(QtCore.QObject):
 
             if binned[axis_idx]:
                 coord = self._obj[dim][selector].values
+                center = float(np.round(coord.mean(), order))
+                width = float(np.round(coord[-1] - coord[0] + inc, order))
 
-                out[dim] = float(np.round(coord.mean(), order))
-                width = float(np.round(abs(coord[-1] - coord[0]) + inc, order))
-
+                out[dim] = center
                 if not np.allclose(
                     self._obj[dim]
-                    .sel({dim: slice(out[dim] - width / 2, out[dim] + width / 2)})
+                    .sel({dim: slice(center - width / 2, center + width / 2)})
                     .values,
                     coord,
                 ):
