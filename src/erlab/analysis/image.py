@@ -191,7 +191,7 @@ def gaussian_filter(
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
-        sigma_dict[d] / (darr[d].values[1] - darr[d].values[0]) for d in sigma_dict
+        sigma_dict[d] / abs(darr[d].values[1] - darr[d].values[0]) for d in sigma_dict
     )
 
     # Convert arguments to tuples acceptable by scipy
@@ -208,7 +208,7 @@ def gaussian_filter(
 
         # Calculate radius in pixels
         radius_pix: tuple[int, ...] | None = tuple(
-            round(r / (darr[d].values[1] - darr[d].values[0]))
+            round(r / abs(darr[d].values[1] - darr[d].values[0]))
             for d, r in radius_dict.items()
         )
     else:
@@ -389,7 +389,8 @@ def gaussian_laplace(
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
-        val / (darr[d].values[1] - darr[d].values[0]) for d, val in sigma_dict.items()
+        val / abs(darr[d].values[1] - darr[d].values[0])
+        for d, val in sigma_dict.items()
     )
 
     return darr.copy(
@@ -767,7 +768,9 @@ def diffn(
     """
     xvals = darr[coord].values.astype(np.float64)
     grid = (
-        (xvals[1] - xvals[0]) if erlab.utils.array.is_uniform_spaced(xvals) else xvals
+        abs(xvals[1] - xvals[0])
+        if erlab.utils.array.is_uniform_spaced(xvals)
+        else xvals
     )
     d_dx = findiff.Diff(darr.get_axis_num(coord), grid=grid, **kwargs)
 
@@ -876,7 +879,7 @@ def scaled_laplace(darr, factor: float = 1.0, **kwargs) -> xr.DataArray:
     xvals = darr[darr.dims[1]].values.astype(np.float64)
     yvals = darr[darr.dims[0]].values.astype(np.float64)
 
-    dx, dy = xvals[1] - xvals[0], yvals[1] - yvals[0]
+    dx, dy = abs(xvals[1] - xvals[0]), abs(yvals[1] - yvals[0])
     weight = (dx / dy) ** 2
 
     if factor > 0:
@@ -925,7 +928,7 @@ def curvature(
     xvals = darr[darr.dims[1]].values.astype(np.float64)
     yvals = darr[darr.dims[0]].values.astype(np.float64)
 
-    dx, dy = xvals[1] - xvals[0], yvals[1] - yvals[0]
+    dx, dy = abs(xvals[1] - xvals[0]), abs(yvals[1] - yvals[0])
     weight = (dx / dy) ** 2
 
     if factor > 0:
