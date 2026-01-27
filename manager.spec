@@ -1,3 +1,5 @@
+import importlib.metadata
+import importlib.util
 import os
 import pathlib
 import sys
@@ -5,12 +7,12 @@ import sys
 import pyinstaller_versionfile
 from PyInstaller.utils.hooks import collect_all
 
-import erlab
+erlab_version_str = importlib.metadata.version("erlab")
 
 if sys.platform.startswith("win"):
     pyinstaller_versionfile.create_versionfile(
         output_file="versionfile.txt",
-        version=erlab.__version__,
+        version=erlab_version_str,
         company_name="kmnhan",
         file_description="ImageTool Manager",
         internal_name="ImageTool Manager",
@@ -20,16 +22,35 @@ if sys.platform.startswith("win"):
         translations=[1033, 1200],  # English - Unicode
     )
 
-manager_dir = pathlib.Path(erlab.interactive.imagetool.manager.__file__).parent
+manager_dir = (
+    pathlib.Path(
+        next(iter(importlib.util.find_spec("erlab").submodule_search_locations))
+    ).resolve()
+    / "interactive/imagetool/manager"
+)
 
 datas = []
 binaries = []
 hiddenimports = ["PyQt6", "dask", "distributed"]
 
 if sys.platform.startswith("win"):
+    # Temporary workaround for https://github.com/pyinstaller/pyinstaller/issues/9360
+    sitepkgs = pathlib.Path(sys.prefix) / "Lib" / "site-packages"
+    dll_patterns = ("msvcp140-*.dll",)
+
+    seen = set()
+    for libs_dir in sitepkgs.glob("*.libs"):
+        for pat in dll_patterns:
+            for dll in libs_dir.glob(pat):
+                src = str(dll)
+                if src not in seen:
+                    binaries.append((src, "."))  # copy into dist root
+                    seen.add(src)
+
+if sys.platform.startswith("win"):
     # Required for numba cache directory resolution on Windows
     # Used in numba.misc.appdirs._get_win_folder_with_pywin32
-    hiddenimports += ["win32com", "win32com.shell"]
+    hiddenimports += ["win32com"]
 
 for module_name in (
     "erlab",
@@ -48,6 +69,11 @@ for module_name in (
     binaries += tmp_ret[1]
     hiddenimports += tmp_ret[2]
 
+for mod in list(hiddenimports):
+    # Remove test modules from hidden imports
+    if mod.startswith(("xarray.tests", "numbagg.test")):
+        hiddenimports.remove(mod)
+
 if sys.platform == "darwin":
     icon_path = str(manager_dir / "icon.icns")
     datas += [("./resources/Assets.car", ".")]  # Liquid glass icon for macOS 26+
@@ -63,7 +89,7 @@ a = Analysis(  # noqa: F821 # pyright: ignore[reportUndefinedVariable]
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["PySide6", "PySide2", "PyQt5", "numbagg.test", "xarray.tests"],
+    excludes=["PySide6", "PySide2", "PyQt5", "numbagg.test"],
     noarchive=False,
     optimize=0,
     module_collection_mode={"erlab": "pyz+py"},
@@ -104,10 +130,10 @@ if sys.platform == "darwin":
         name="ImageTool Manager.app",
         icon=icon_path,
         bundle_identifier="dev.kmnhan.erlabpy.imagetoolmanager",
-        version=str(erlab.__version__),
+        version=erlab_version_str,
         info_plist={
             "CFBundleIconName": "icon",  # macOS 26+ liquid glass icon
-            "CFBundleVersion": str(erlab.__version__),
+            "CFBundleVersion": erlab_version_str,
             "CFBundleDocumentTypes": [
                 {  # ImageTool workspace (.itws)
                     "CFBundleTypeName": "ImageTool Workspace",
