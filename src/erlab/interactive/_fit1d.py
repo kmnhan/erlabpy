@@ -2154,6 +2154,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             new_param: lmfit.Parameter = new_params[name]
             if new_param.expr:
                 continue
+            if old_param.expr:
+                continue
             new_param.set(
                 value=old_param.value,
                 min=old_param.min,
