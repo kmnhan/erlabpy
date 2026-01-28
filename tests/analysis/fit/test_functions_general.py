@@ -7,6 +7,7 @@ from erlab.analysis.fit.functions.general import (
     _gen_kernel,
     _sc_spectral_function_bare,
     _tll_bare,
+    active_shirley,
     do_convolve,
     fermi_dirac,
     fermi_dirac_broad,
@@ -14,6 +15,7 @@ from erlab.analysis.fit.functions.general import (
     fermi_dirac_linbkg_broad,
     gaussian_wh,
     lorentzian_wh,
+    right_integral_trapz,
     sc_spectral_function,
     step_broad,
     step_linbkg_broad,
@@ -233,3 +235,87 @@ def test_sc_spectral_function_resolution_zero_matches_bare() -> None:
     expected = _sc_spectral_function_bare(x, **params)
     result = sc_spectral_function(x, resolution=0.0, **params)
     assert np.allclose(result, expected)
+
+
+def test_right_integral_trapz_constant_increasing_and_decreasing() -> None:
+    x_inc = np.linspace(-2.0, 2.0, 9)
+    y = np.ones_like(x_inc)
+    expected_inc = x_inc[-1] - x_inc
+    result_inc = right_integral_trapz(x_inc, y)
+    assert np.allclose(result_inc, expected_inc)
+
+    x_dec = x_inc[::-1]
+    result_dec = right_integral_trapz(x_dec, y[::-1])
+    expected_dec = x_dec[0] - x_dec
+    assert np.allclose(result_dec, expected_dec)
+
+
+def test_right_integral_trapz_errors() -> None:
+    x = np.array([0.0, 1.0, 1.0, 2.0])
+    y = np.ones_like(x)
+    with pytest.raises(ValueError, match="repeated values"):
+        right_integral_trapz(x, y)
+
+    x = np.array([0.0, 1.0, 0.5, 2.0])
+    with pytest.raises(ValueError, match="monotonic"):
+        right_integral_trapz(x, y)
+
+    x2d = np.array([[0.0, 1.0], [2.0, 3.0]])
+    with pytest.raises(ValueError, match="1D arrays"):
+        right_integral_trapz(x2d, y)
+
+    with pytest.raises(ValueError, match="same length"):
+        right_integral_trapz(np.array([0.0, 1.0, 2.0]), np.array([1.0, 2.0]))
+
+
+def test_right_integral_trapz_short_input_returns_zero() -> None:
+    x = np.array([0.0])
+    y = np.array([2.0])
+    result = right_integral_trapz(x, y)
+    assert np.allclose(result, np.zeros_like(y))
+
+
+def test_active_shirley_components() -> None:
+    x = np.linspace(0.0, 4.0, 5)
+    peak = np.ones_like(x)
+    out = active_shirley(
+        x,
+        peaks=[peak],
+        k_steps=[0.5],
+        k_slope=0.25,
+        lin_bkg=0.1,
+        const_bkg=0.2,
+    )
+    assert set(out) == {"baseline", "shirley", "slope"}
+    expected_baseline = 0.2 + 0.1 * x
+    assert np.allclose(out["baseline"], expected_baseline)
+    assert np.all(out["shirley"] >= 0.0)
+    assert np.all(out["slope"] >= 0.0)
+
+    out_no_peaks = active_shirley(
+        x, peaks=[], k_steps=[], k_slope=0.0, lin_bkg=0.2, const_bkg=0.1
+    )
+    assert set(out_no_peaks) == {"baseline"}
+
+
+def test_active_shirley_invalid_inputs_and_zero_steps() -> None:
+    x = np.linspace(0.0, 1.0, 5)
+    peak = np.ones_like(x)
+
+    with pytest.raises(ValueError, match="x must be 1D"):
+        active_shirley(x.reshape(1, -1), peaks=[peak], k_steps=[0.1])
+
+    x_short = np.array([0.0])
+    out_short = active_shirley(
+        x_short, peaks=[np.array([1.0])], k_steps=[0.1], const_bkg=0.3
+    )
+    assert set(out_short) == {"baseline"}
+    assert np.allclose(out_short["baseline"], np.array([0.3]))
+
+    with pytest.raises(ValueError, match="k_steps"):
+        active_shirley(x, peaks=[peak, peak], k_steps=[0.1])
+
+    out_zero = active_shirley(
+        x, peaks=[peak, peak], k_steps=[0.0, 0.2], k_slope=0.0, lin_bkg=0.0
+    )
+    assert "shirley" in out_zero

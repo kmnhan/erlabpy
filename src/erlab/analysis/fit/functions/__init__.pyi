@@ -2,6 +2,7 @@ __all__ = [
     "FermiEdge2dFunction",
     "MultiPeakFunction",
     "PolynomialFunction",
+    "active_shirley",
     "bcs_gap",
     "do_convolve",
     "do_convolve_2d",
@@ -26,6 +27,7 @@ __all__ = [
 from . import dynamic, general
 from .dynamic import FermiEdge2dFunction, MultiPeakFunction, PolynomialFunction
 from .general import (
+    active_shirley,
     bcs_gap,
     do_convolve,
     do_convolve_2d,

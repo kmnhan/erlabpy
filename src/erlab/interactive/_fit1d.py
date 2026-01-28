@@ -1403,7 +1403,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             ),
             fd=self.fd_check.isChecked(),
             background=typing.cast(
-                "typing.Literal['none', 'constant', 'linear', 'polynomial']",
+                "typing.Literal['none', 'constant', 'linear', 'polynomial', 'shirley']",
                 self.background_combo.currentText(),
             ),
             degree=self.degree_spin.value(),
@@ -1438,7 +1438,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         self.background_label = QtWidgets.QLabel("Background")
         self.background_combo = QtWidgets.QComboBox()
-        self.background_combo.addItems(["none", "constant", "linear", "polynomial"])
+        self.background_combo.addItems(
+            ["none", "constant", "linear", "polynomial", "shirley"]
+        )
         self.background_combo.setCurrentText("none")
         self.background_combo.setToolTip("Type of background to use.")
 

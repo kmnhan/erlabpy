@@ -21,6 +21,7 @@ import numpy.typing as npt
 import xarray as xr
 
 from erlab.analysis.fit.functions.general import (
+    active_shirley,
     do_convolve,
     do_convolve_2d,
     do_convolve_segments,
@@ -168,7 +169,15 @@ class MultiPeakFunction(DynamicFunction):
         'constant'    ``const_bkg``
         'linear'      ``lin_bkg``, ``const_bkg``
         'polynomial'  ``c0``, ``c1``, ... depending on `degree`
+        'shirley'     ``const_bkg``, ``lin_bkg``, ``k_slope``, and ``k_step_i``
+                      with i from 0 to `npeaks` - 1
         ============  ============================================================
+
+        .. note::
+
+            The 'shirley' background is calculated by
+            :func:`erlab.analysis.fit.functions.general.active_shirley` See its
+            documentation for details about the parameters.
     degree
         The degree of the polynomial background. Only used if `background` is
         ``'polynomial'``. Default is 2.
@@ -201,7 +210,7 @@ class MultiPeakFunction(DynamicFunction):
         *,
         fd: bool = True,
         background: typing.Literal[
-            "constant", "linear", "polynomial", "none"
+            "constant", "linear", "polynomial", "none", "shirley"
         ] = "linear",
         degree: int = 2,
         convolve: bool = True,
@@ -281,6 +290,13 @@ class MultiPeakFunction(DynamicFunction):
             kws.append(("lin_bkg", 0.0))
         elif self.background == "polynomial":
             kws += [(f"c{i}", 0.0) for i in range(self.bkg_degree + 1)]
+        elif self.background == "shirley":
+            kws += [(f"k_step_{i}", 0.1) for i in range(self.npeaks)]
+            kws += [
+                ("const_bkg", 0.0),
+                ("k_slope", 0.0),
+                ("lin_bkg", 0.0),
+            ]
 
         if self.fd:
             kws += [
@@ -334,6 +350,14 @@ class MultiPeakFunction(DynamicFunction):
             out[f"{label}width"] = {"expr": fexpr.format(pre=prefix + label)}
             out[f"{label}height"] = {"expr": hexpr.format(TINY, pre=prefix + label)}
 
+        if self.background == "shirley":
+            if self.npeaks > 0:
+                out["k_step_0"] = {"min": 0.0}
+                for i in range(1, self.npeaks):
+                    out[f"k_step_{i}"] = {"expr": f"{prefix}k_step_0", "min": 0.0}
+            out["k_slope"] = {"value": 0.0, "vary": False}
+            out["lin_bkg"] = {"value": 0.0, "vary": False}
+
         return out
 
     def eval_peak(self, index: int, x, **params):
@@ -343,18 +367,55 @@ class MultiPeakFunction(DynamicFunction):
             **{arg: params[f"p{index}_{arg}"] for arg in self.peak_argnames[func]},
         )
 
-    def eval_bkg(self, x, **params):
+    def eval_peaks(self, x, **params) -> list[npt.NDArray]:
+        """Get a list of peak contributions."""
+        return [self.eval_peak(i, x, **params) for i in range(self.npeaks)]
+
+    def _apply_fd(self, x, y, **params):
+        if not self.fd:
+            return y
+        y = y * fermi_dirac(x, center=params["efermi"], temp=params["temp"])
+        return y + params["offset"]
+
+    def eval_bkg_components(self, x, **params) -> dict[str, npt.NDArray[np.floating]]:
         match self.background:
             case "constant":
-                return 0.0 * x + params["const_bkg"]
+                return {"constant": 0.0 * x + params["const_bkg"]}
             case "linear":
-                return params["lin_bkg"] * x + params["const_bkg"]
+                return {"linear": params["lin_bkg"] * x + params["const_bkg"]}
             case "polynomial":
-                return PolynomialFunction(self.bkg_degree)(
-                    x, **{f"c{i}": params[f"c{i}"] for i in range(self.bkg_degree + 1)}
+                return {
+                    "polynomial": PolynomialFunction(self.bkg_degree)(
+                        x,
+                        **{
+                            f"c{i}": params[f"c{i}"] for i in range(self.bkg_degree + 1)
+                        },
+                    )
+                }
+            case "shirley":
+                return active_shirley(
+                    x,
+                    peaks=self._cached_peaks
+                    if hasattr(self, "_cached_peaks")
+                    else self.eval_peaks(x, **params),
+                    k_steps=[params[f"k_step_{i}"] for i in range(self.npeaks)],
+                    k_slope=params["k_slope"],
+                    lin_bkg=params["lin_bkg"],
+                    const_bkg=params["const_bkg"],
                 )
             case "none":
-                return 0.0 * x
+                return {}
+
+    def eval_bkg(self, x, **params) -> npt.NDArray:
+        components = self.eval_bkg_components(x, **params)
+        if components:
+            return typing.cast("npt.NDArray", sum(components.values()))
+        return np.zeros_like(x)
+
+    def _apply_bkg(self, x, y, **params):
+        if self.background == "none":
+            return y
+        return y + self.eval_bkg(x, **params)
 
     def eval_fd(self, x, **params):
         return (
@@ -363,22 +424,19 @@ class MultiPeakFunction(DynamicFunction):
         )
 
     def pre_call(self, x, **params):
-        x = np.asarray(x).copy()
-        y = np.zeros_like(x)
+        try:
+            x = np.asarray(x).copy()
+            self._cached_peaks = self.eval_peaks(x, **params)
+            y = sum(self._cached_peaks) if self._cached_peaks else np.zeros_like(x)
+            y = self._apply_bkg(x, y, **params)
+            return self._apply_fd(x, y, **params)
+        finally:
+            self.__dict__.pop("_cached_peaks", None)
 
-        for i, func in enumerate(self.peak_funcs):
-            y += func(
-                x, **{arg: params[f"p{i}_{arg}"] for arg in self.peak_argnames[func]}
-            )
-
-        if self.background != "none":
-            y += self.eval_bkg(x, **params)
-
-        if self.fd:
-            y *= fermi_dirac(x, center=params["efermi"], temp=params["temp"])
-            y += params["offset"]
-
-        return y
+    def _compute_convolution(self, x, func, **params):
+        if self.segmented:
+            return do_convolve_segments(x, func, oversample=self.oversample, **params)
+        return do_convolve(x, func, oversample=self.oversample, **params)
 
     def __call__(self, x, **params):
         if isinstance(x, xr.DataArray):
@@ -389,11 +447,9 @@ class MultiPeakFunction(DynamicFunction):
                 raise TypeError(
                     "Missing parameter `resolution` required for convolution"
                 )
-            if self.segmented:
-                return do_convolve_segments(
-                    x, self.pre_call, oversample=self.oversample, **params
-                )
-            return do_convolve(x, self.pre_call, oversample=self.oversample, **params)
+            if np.isclose(params["resolution"], 0.0):
+                return self.pre_call(x, **params)
+            return self._compute_convolution(x, self.pre_call, **params)
         return self.pre_call(x, **params)
 
 
