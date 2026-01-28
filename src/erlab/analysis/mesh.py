@@ -4,6 +4,15 @@ This module provides functions to detect and remove periodic mesh patterns from 
 data acquired in fixed mode, using an experimental Fourier-based approach.
 """
 
+__all__ = [
+    "auto_correct_curvature",
+    "find_peaks",
+    "higher_order_peaks",
+    "pad_and_taper",
+    "remove_mesh",
+    "unpad",
+]
+
 import typing
 from collections.abc import Iterable
 

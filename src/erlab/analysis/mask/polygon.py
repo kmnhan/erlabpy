@@ -3,6 +3,8 @@
 The implementation has been adapted from the `CGAL C++ library
 <https://doc.cgal.org/5.3.2/Polygon/index.html>`_.
 
+For most use cases, users should prefer the higher-level functions in
+:mod:`erlab.analysis.mask` that uses this module internally.
 """
 
 from __future__ import annotations
