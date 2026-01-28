@@ -1,12 +1,6 @@
 """Some general functions and utilities used in fitting.
 
-Many functions are ``numba``-compiled for speed.
-
-.. note::
-
-    ``numba``-compiled functions do not accept xarray objects. To broadcast over xarray
-    objects, use :func:`xarray.apply_ufunc`.
-
+Many functions are `numba <https://numba.pydata.org/>`_-compiled for performance.
 """
 
 __all__ = [
@@ -296,7 +290,7 @@ def lorentzian_wh(
 
     Note
     ----
-    :math:`\sigma=w/2`
+    :math:`\gamma=w/2`
 
     """
     return height / (1 + 4 * ((1.0 * x - center) / _clip_tiny(width)) ** 2)
