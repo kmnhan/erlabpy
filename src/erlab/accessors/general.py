@@ -8,6 +8,7 @@ __all__ = [
     "SelectionAccessor",
 ]
 
+import contextlib
 import functools
 import importlib
 import typing
@@ -505,13 +506,17 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
             # Average coordinate values over the dimensions being averaged and add them
             # back afterward
-            lost_coords: dict[Hashable, xr.DataArray] = {
-                k: out[k].mean(
-                    dim=set(avg_dims).intersection(out[k].dims), keep_attrs=True
-                )
-                for k in lost_dims
-                if (k not in unindexed_dims)
-            }
+            lost_coords: dict[Hashable, xr.DataArray] = {}
+
+            for k in lost_dims:
+                if k not in unindexed_dims:
+                    with contextlib.suppress(
+                        TypeError
+                    ):  # Drop non-numeric coordinates that cannot be averaged
+                        lost_coords[k] = out[k].mean(
+                            dim=set(avg_dims).intersection(out[k].dims), keep_attrs=True
+                        )
+
             out = out.mean(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)
 
