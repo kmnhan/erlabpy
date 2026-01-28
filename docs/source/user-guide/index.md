@@ -26,6 +26,7 @@ plotting
 kconv
 curve-fitting
 filtering
+transform
 ```
 
 ## Further reading

@@ -405,6 +405,7 @@ def generate_hvdep_cuts(
     angrange: tuple[float, float] = (-15.0, 15.0),
     Erange: tuple[float, float] = (-0.45, 0.12),
     hvrange: tuple[float, float] = (20.0, 69.0),
+    hv_shift: float | tuple[float, float] | np.ndarray | None = None,
     configuration: (
         erlab.constants.AxesConfiguration | int
     ) = erlab.constants.AxesConfiguration.Type1,
@@ -422,6 +423,14 @@ def generate_hvdep_cuts(
         The shape of the generated data, by default (250, 250, 300)
     hvrange
         Photon energy range in eV.
+    hv_shift
+        Optional energy shift (in eV) applied across the photon-energy axis. If a
+        float, a linear shift from ``-hv_shift`` to ``+hv_shift`` is applied across the
+        hν range. If a tuple, the shift is linearly interpolated between the two values
+        across hν. If an array, it must have length ``shape[0]`` and provides the shift
+        at each hν value. If `None`, no shift is applied. The shift is simulated by
+        generating each hν cut on a shifted energy axis and then assigning a common
+        energy coordinate, so the output contains no all-NaN energies.
     angrange
         Angle range in degrees.
     Erange
@@ -453,13 +462,26 @@ def generate_hvdep_cuts(
     kwargs.setdefault("assign_attributes", True)
     kwargs.setdefault("extended", True)
 
+    if hv_shift is None:
+        shift_vals = np.zeros_like(hv)
+    elif np.isscalar(hv_shift):
+        shift_vals = np.linspace(-float(hv_shift), float(hv_shift), hv.size)
+    elif isinstance(hv_shift, tuple):
+        shift_vals = np.linspace(hv_shift[0], hv_shift[1], hv.size)
+    else:
+        shift_vals = np.asarray(hv_shift, dtype=float)
+        if shift_vals.shape != hv.shape:
+            raise ValueError("hv_shift array must have the same length as the hv axis")
+
+    eV_common = np.linspace(*Erange, shape[2])
+
     out_list = []
-    for hv_i, beta_i in zip(hv, beta, strict=True):
+    for hv_i, beta_i, shift_i in zip(hv, beta, shift_vals, strict=True):
         out_list.append(
             generate_data_angles(
                 (shape[1], 1, shape[2]),
                 angrange={"alpha": angrange, "beta": (beta_i, beta_i)},
-                Erange=Erange,
+                Erange=(Erange[0] - shift_i, Erange[1] - shift_i),
                 hv=float(hv_i),
                 configuration=configuration,
                 temp=temp,
@@ -468,10 +490,15 @@ def generate_hvdep_cuts(
                 **kwargs,
             )
             .expand_dims("hv")
-            .assign_coords(beta=("hv", [beta_i]))
+            .assign_coords(beta=("hv", [beta_i]), eV=eV_common)
         )
 
-    return xr.combine_by_coords(out_list).transpose("alpha", "eV", "hv")
+    out = xr.combine_by_coords(out_list).transpose("alpha", "eV", "hv")
+
+    if hv_shift is not None:
+        out = out.assign_coords(hv_shift=("hv", shift_vals))
+
+    return out
 
 
 def _smooth_opening_1d(u, width, sigma):
