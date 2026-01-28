@@ -1300,10 +1300,19 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             model.func, erlab.analysis.fit.functions.dynamic.MultiPeakFunction
         ):
             return "MultiPeakModel"
+        if model.func == erlab.analysis.fit.models.FermiEdgeModel._lin_broad_fd:
+            return "FermiEdgeModel"
+        if model.func == erlab.analysis.fit.models.StepEdgeModel._step_linbkg_broad:
+            return "StepEdgeModel"
         if isinstance(
             model.func, erlab.analysis.fit.functions.dynamic.PolynomialFunction
         ):
             return "PolynomialModel"
+        if model.func == erlab.analysis.fit.functions.tll:
+            return "TLLModel"
+        if model.func == erlab.analysis.fit.functions.sc_spectral_function:
+            return "SymmetrizedGapModel"
+
         return None
 
     def _make_default_model(self) -> lmfit.Model:
