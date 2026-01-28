@@ -34,7 +34,9 @@ from erlab.analysis.fit.functions import (
     step_linbkg_broad,
     tll,
 )
+from erlab.analysis.fit.functions.dynamic import active_shirley
 from erlab.analysis.fit.functions.general import _infer_meshgrid_shape
+from erlab.constants import TINY
 
 COMMON_GUESS_DOC = lmfit.models.COMMON_GUESS_DOC.replace(
     """.. versionchanged:: 1.0.3
@@ -332,7 +334,7 @@ class MultiPeakModel(lmfit.Model):
         *,
         fd: bool = True,
         background: typing.Literal[
-            "none", "constant", "linear", "polynomial"
+            "none", "constant", "linear", "polynomial", "shirley"
         ] = "linear",
         degree: int = 2,
         convolve: bool = True,
@@ -402,6 +404,22 @@ class MultiPeakModel(lmfit.Model):
             poly = PolynomialModel(self.func.bkg_degree).guess(yc, xc)
             for i in range(self.func.bkg_degree + 1):
                 pars[f"{self.prefix}c{i}"].set(poly[f"c{i}"].value)
+        elif self.func.background == "shirley":
+            edge = max(1, int(0.1 * len(data)))
+            const = float(np.nanmean(data[-edge:]))
+            left = float(np.nanmean(data[:edge]))
+            y_adj = data - const
+            dx = np.abs(np.diff(x))
+            if dx.size > 0:
+                avg = 0.5 * (y_adj[:-1] + y_adj[1:])
+                cumulative0 = float(np.sum(avg * dx))
+            else:
+                cumulative0 = 0.0
+            k_guess = 0.0 if abs(cumulative0) < TINY else (left - const) / cumulative0
+            pars[f"{self.prefix}k_step_0"].set(value=k_guess)
+            pars[f"{self.prefix}k_slope"].set(value=0.0)
+            pars[f"{self.prefix}lin_bkg"].set(value=0.0)
+            pars[f"{self.prefix}const_bkg"].set(value=const)
 
         xrange = float(x.max() - x.min())
 
@@ -422,7 +440,23 @@ class MultiPeakModel(lmfit.Model):
             baseline = np.zeros_like(data, dtype=float)
             for i, coef in enumerate(coeffs):
                 baseline = baseline + coef * x**i
-
+        elif self.func.background == "shirley":
+            baseline = sum(
+                active_shirley(
+                    x,
+                    peaks=[
+                        data
+                        - (
+                            float(pars[f"{self.prefix}lin_bkg"].value) * x
+                            + float(pars[f"{self.prefix}const_bkg"].value)
+                        )
+                    ],
+                    k_steps=[float(pars[f"{self.prefix}k_step_0"].value)],
+                    k_slope=float(pars[f"{self.prefix}k_slope"].value),
+                    lin_bkg=float(pars[f"{self.prefix}lin_bkg"].value),
+                    const_bkg=float(pars[f"{self.prefix}const_bkg"].value),
+                ).values()
+            )
         y = data - baseline
 
         # Light smoothing to reduce noise-driven local maxima.
@@ -504,6 +538,16 @@ class MultiPeakModel(lmfit.Model):
         return lmfit.models.update_param_vals(pars, self.prefix, **kwargs)
 
     def eval_components(self, params=None, **kwargs) -> dict[str, np.ndarray]:
+        """Evaluate model components.
+
+        .. versionchanged:: 3.20.0
+
+           Background components are returned as separate entries (for example,
+           ``{prefix}_baseline``, ``{prefix}_shirley``, ``{prefix}_slope`` or
+           ``{prefix}_constant``/``{prefix}_linear``/``{prefix}_polynomial``) instead of
+           a single ``{prefix}_bkg`` entry that represented the sum of all background
+           components.
+        """
         key = self._prefix
         if len(key) < 1:
             key = self._name
@@ -522,8 +566,8 @@ class MultiPeakModel(lmfit.Model):
         for i in range(self.func.npeaks):
             out[f"{key}_p{i}"] = self.func.eval_peak(i, **fargs)
 
-        if self.func.background != "none":
-            out[f"{key}_bkg"] = self.func.eval_bkg(**fargs)
+        for bkg_name, bkg_comp in self.func.eval_bkg_components(**fargs).items():
+            out[f"{key}_{bkg_name}"] = bkg_comp
 
         if self.func.fd:
             out[f"{key}_fd"] = self.func.eval_fd(**fargs)

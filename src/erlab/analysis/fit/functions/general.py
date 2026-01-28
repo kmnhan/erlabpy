@@ -11,6 +11,7 @@ Many functions are ``numba``-compiled for speed.
 
 __all__ = [
     "TINY",
+    "active_shirley",
     "bcs_gap",
     "do_convolve",
     "do_convolve_2d",
@@ -31,11 +32,12 @@ __all__ = [
     "voigt",
 ]
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numba
 import numpy as np
 import numpy.typing as npt
+import scipy.integrate
 import scipy.signal
 import scipy.special
 
@@ -847,3 +849,162 @@ def sc_spectral_function(
         lin_bkg=lin_bkg,
         const_bkg=const_bkg,
     )
+
+
+def right_integral_trapz(x: npt.ArrayLike, y: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    r"""Compute a right-sided cumulative trapezoidal integral on a monotonic grid.
+
+    For each index ``i``, this returns
+
+    .. math::
+
+        F_i = \int_{x_i}^{x_{\mathrm{right}}} y(x')\,dx'
+
+    where ``x_right`` is the last element of ``x`` (in the input order).
+
+    Parameters
+    ----------
+    x : array-like
+        1D coordinate array. Must be strictly monotonic (increasing or decreasing).
+        Nonuniform spacing is supported.
+    y : array-like
+        1D values sampled on ``x``. Must have the same shape as ``x``.
+
+    Returns
+    -------
+    F : numpy.ndarray
+        1D array of the same shape as ``x`` containing the right-sided cumulative
+        integral.
+
+    Raises
+    ------
+    ValueError
+        If ``x`` and ``y`` are not 1D arrays of the same length, if ``x`` contains
+        repeated values, or if ``x`` is not strictly monotonic.
+
+    Notes
+    -----
+    This computes the left cumulative integral ``L[i] = ∫_{x0}^{xi} y dx`` once using
+    :func:`scipy.integrate.cumulative_trapezoid` and returns ``F[i] = L[-1] - L[i]``.
+    For decreasing ``x``, the arrays are reversed for the computation and reversed back.
+    """
+    x = np.asarray(x, dtype=float).copy()
+    y = np.asarray(y, dtype=float).copy()
+
+    if x.ndim != 1 or y.ndim != 1 or x.size != y.size:
+        raise ValueError("x and y must be 1D arrays of the same length.")
+    if x.size < 2:
+        return np.zeros_like(y)
+
+    dx = np.diff(x)
+    if np.any(dx == 0):
+        raise ValueError("x contains repeated values; integration is ill-defined.")
+    inc = dx[0] > 0
+    if np.any((dx > 0) != inc):
+        raise ValueError(
+            "x must be strictly monotonic (all increasing or all decreasing)."
+        )
+
+    if not inc:
+        xw, yw = x[::-1], y[::-1]
+    else:
+        xw, yw = x, y
+
+    left = scipy.integrate.cumulative_trapezoid(yw, xw, initial=0.0)
+    right = left[-1] - left
+
+    return right[::-1] if not inc else right
+
+
+def active_shirley(
+    x: npt.NDArray,
+    peaks: list[npt.NDArray],
+    k_steps: Sequence[float],
+    *,
+    k_slope: float = 0.0,
+    lin_bkg: float = 0.0,
+    const_bkg: float = 0.0,
+) -> dict[str, npt.NDArray]:
+    r"""Evaluate a Shirley-like background from the intensity of the peaks.
+
+    The model function is a Shirley-Végh-Salvi-Castle type background
+    :cite:p:`shirley1972,vegh1988shirley,salvi1998shirley,herreragomez2014bkg` together
+    with a slope background :cite:p:`herreragomez2013slope` and a linear baseline. For
+    more information about the model function, see :cite:t:`herreragomez2014bkg`.
+
+    This function is intended for "active" fitting where the background is computed from
+    individual peak components during the fitting process, so that the background
+    updates as the peak parameters change.
+
+    The returned background is given by:
+
+    .. math::
+
+        B(x) = \underbrace{c + m x}_{\text{baseline}}
+             + \sum_i \underbrace{k_{\mathrm{step},\,i}\int_x^{x_{\mathrm{right}}}
+               P_i(x')\,dx'}_{\text{step}}
+             + \underbrace{k_{\mathrm{slope}}\int_x^{x_{\mathrm{right}}}
+               \left(\int_{x'}^{x_{\mathrm{right}}} \sum_i
+               P_i(t)\,dt\right)\,dx'}_{\text{slope}}
+
+    Parameters
+    ----------
+    x : array-like
+        1D coordinate array. Must be strictly monotonic (increasing or decreasing).
+        Nonuniform spacing is allowed, but not tested extensively.
+    peaks : list of array-like
+        List of individual peak component arrays :math:`P_i(x)`, each 1D with the same
+        shape as ``x``.
+    k_steps
+        Per-peak scattering factors for each peak component. Must have the same length
+        as ``peaks``.
+    k_slope
+        Scale factor for the slope-background.
+    lin_bkg
+        Linear baseline slope :math:`m`.
+    const_bkg
+        Constant baseline offset :math:`c`.
+
+    Returns
+    -------
+    background : dict
+        Dictionary with the following keys and values:
+          - ``"baseline"``: The linear baseline component.
+          - ``"shirley"``: The Shirley background component (if any ``k_steps`` are
+            nonzero).
+          - ``"slope"``: The slope background component (if ``k_slope`` is nonzero).
+
+    Notes
+    -----
+    - The integration endpoint, or right side, is always ``x[-1]`` (input order).
+    """
+    if x.ndim != 1:
+        raise ValueError("x must be 1D.")
+    if x.size < 2:
+        return {"baseline": (0.0 * x) + const_bkg}
+
+    n_peaks = len(peaks)
+    if n_peaks == 0:
+        return {"baseline": const_bkg + lin_bkg * x}
+
+    if len(k_steps) != n_peaks:
+        raise ValueError(f"Received {n_peaks} peaks but {len(k_steps)} k_steps.")
+
+    out = {}
+    out["baseline"] = const_bkg + lin_bkg * x
+
+    total_peaks = np.zeros_like(x, dtype=float)
+    for i, p in enumerate(peaks):
+        total_peaks = total_peaks + p
+        k_step = k_steps[i]
+        if k_step != 0.0:
+            if "shirley" not in out:
+                out["shirley"] = np.zeros_like(x, dtype=float)
+            out["shirley"] = out["shirley"] + k_step * right_integral_trapz(x, p)
+
+    if k_slope != 0.0:
+        out["slope"] = k_slope * right_integral_trapz(
+            x, right_integral_trapz(x, total_peaks)
+        )
+
+    return out
