@@ -174,7 +174,7 @@ def test_multi_peak_model() -> None:
         components["2Peak_p1"], model.func.eval_peak(1, x, **result.params.valuesdict())
     )
     assert np.allclose(
-        components["2Peak_bkg"], model.func.eval_bkg(x, **result.params.valuesdict())
+        components["2Peak_linear"], model.func.eval_bkg(x, **result.params.valuesdict())
     )
     assert np.allclose(
         components["2Peak_fd"], model.func.eval_fd(x, **result.params.valuesdict())
@@ -197,9 +197,35 @@ def test_multi_peak_model() -> None:
     segmented_model.eval(params=segmented_params, x=test_darr.x.values)
 
     # Make sure guesses work for different backgrounds
-    for background in ["constant", "linear", "polynomial", "none"]:
+    for background in ["constant", "linear", "polynomial", "none", "shirley"]:
         model = models.MultiPeakModel(npeaks=2, background=background)
         model.guess(y, x=x)
+
+
+def test_multi_peak_model_shirley_components_and_guess() -> None:
+    x = np.linspace(-2, 2, 200)
+    model = models.MultiPeakModel(
+        npeaks=1, fd=False, background="shirley", convolve=False
+    )
+    params = model.make_params()
+    params["p0_center"].set(value=0.2)
+    params["p0_height"].set(value=1.0)
+    params["p0_width"].set(value=0.4)
+    params["k_step_0"].set(value=0.5)
+    params["k_slope"].set(value=0.3)
+    params["lin_bkg"].set(value=0.1)
+    params["const_bkg"].set(value=0.2)
+
+    y = model.eval(params=params, x=x)
+    comps = model.eval_components(params=params, x=x)
+    assert "1Peak_baseline" in comps
+    assert "1Peak_shirley" in comps
+    assert "1Peak_slope" in comps
+    assert np.allclose(y, sum(comps.values()))
+
+    guess = model.guess(y, x=x)
+    assert np.isfinite(guess["k_step_0"].value)
+    assert np.isfinite(guess["const_bkg"].value)
 
 
 def test_multi_peak_model_voigt() -> None:
