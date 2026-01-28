@@ -260,6 +260,20 @@ def test_right_integral_trapz_errors() -> None:
     with pytest.raises(ValueError, match="monotonic"):
         right_integral_trapz(x, y)
 
+    x2d = np.array([[0.0, 1.0], [2.0, 3.0]])
+    with pytest.raises(ValueError, match="1D arrays"):
+        right_integral_trapz(x2d, y)
+
+    with pytest.raises(ValueError, match="same length"):
+        right_integral_trapz(np.array([0.0, 1.0, 2.0]), np.array([1.0, 2.0]))
+
+
+def test_right_integral_trapz_short_input_returns_zero() -> None:
+    x = np.array([0.0])
+    y = np.array([2.0])
+    result = right_integral_trapz(x, y)
+    assert np.allclose(result, np.zeros_like(y))
+
 
 def test_active_shirley_components() -> None:
     x = np.linspace(0.0, 4.0, 5)
@@ -282,3 +296,26 @@ def test_active_shirley_components() -> None:
         x, peaks=[], k_steps=[], k_slope=0.0, lin_bkg=0.2, const_bkg=0.1
     )
     assert set(out_no_peaks) == {"baseline"}
+
+
+def test_active_shirley_invalid_inputs_and_zero_steps() -> None:
+    x = np.linspace(0.0, 1.0, 5)
+    peak = np.ones_like(x)
+
+    with pytest.raises(ValueError, match="x must be 1D"):
+        active_shirley(x.reshape(1, -1), peaks=[peak], k_steps=[0.1])
+
+    x_short = np.array([0.0])
+    out_short = active_shirley(
+        x_short, peaks=[np.array([1.0])], k_steps=[0.1], const_bkg=0.3
+    )
+    assert set(out_short) == {"baseline"}
+    assert np.allclose(out_short["baseline"], np.array([0.3]))
+
+    with pytest.raises(ValueError, match="k_steps"):
+        active_shirley(x, peaks=[peak, peak], k_steps=[0.1])
+
+    out_zero = active_shirley(
+        x, peaks=[peak, peak], k_steps=[0.0, 0.2], k_slope=0.0, lin_bkg=0.0
+    )
+    assert "shirley" in out_zero

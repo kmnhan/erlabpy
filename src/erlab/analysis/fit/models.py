@@ -548,9 +548,8 @@ class MultiPeakModel(lmfit.Model):
            a single ``{prefix}_bkg`` entry that represented the sum of all background
            components.
         """
-        key = self._prefix
-        if len(key) < 1:
-            key = self._name
+        key = self._prefix or self._name
+        sep = "" if key.endswith("_") else "_"
 
         if params is not None:
             kwargs = kwargs | params.valuesdict()
@@ -564,13 +563,13 @@ class MultiPeakModel(lmfit.Model):
 
         out = {}
         for i in range(self.func.npeaks):
-            out[f"{key}_p{i}"] = self.func.eval_peak(i, **fargs)
+            out[f"{key}{sep}p{i}"] = self.func.eval_peak(i, **fargs)
 
         for bkg_name, bkg_comp in self.func.eval_bkg_components(**fargs).items():
-            out[f"{key}_{bkg_name}"] = bkg_comp
+            out[f"{key}{sep}{bkg_name}"] = bkg_comp
 
         if self.func.fd:
-            out[f"{key}_fd"] = self.func.eval_fd(**fargs)
+            out[f"{key}{sep}fd"] = self.func.eval_fd(**fargs)
 
         return out
 

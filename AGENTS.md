@@ -16,6 +16,8 @@ Place runtime code in `src/erlab/` (analysis routines, interactive Qt tools, IO 
 ## Documentation Workflow
 
 Sources live in `docs/source/` (MyST + Sphinx). Install extras using `uv sync --all-extras --dev --group docs`, then render locally via `uv run --directory docs make html`. Put tutorials in `docs/source/user-guide/`, guides in `docs/source/contributing.md`, and images in `docs/source/images/`. Run `make linkcheck` before pushing large doc edits to guard cross-references. The `sphinxext-rediraffe` extension is used for maintaining redirects. Add to the `rediraffe_redirects` dict in `docs/source/conf.py` when moving or renaming pages.
+When changing public API behavior, add a `.. versionchanged::` note in the relevant docstring or user-guide page so it shows up in the generated docs. The version should refer to the next release (likely a minor bump under semver), so double-check the planned version before finalizing the note.
+Use `.. versionadded::` sparingly, for user-facing features or APIs where running the same code on older versions would be confusing or yield ambiguous errors.
 
 ## Coding Style & Naming Conventions
 
@@ -28,3 +30,4 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 ## Commit & Pull Request Guidelines
 
 Follow Conventional Commits with scopes (e.g., `feat(analysis.gold): support multi-angle Fermi fits`) and reference issues via `(#123)` when relevant. PRs should summarize behavior changes, list the commands you ran, and attach screenshots or GIFs for GUI tweaks. Run `uv run ruff check`, `uv run ruff format --check`, `uv run mypy src`, and `uv run pytest` before requesting review, and mention dependent data/doc PRs in the description.
+When a user asks for a commit message, provide a Conventional Commit subject and include a longer, user-facing description paragraph if there are user-visible changes.

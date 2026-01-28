@@ -297,6 +297,31 @@ def test_multi_peak_model_guess_fallback_even_spacing() -> None:
     assert np.all(widths <= xrange)
 
 
+def test_multi_peak_model_with_prefix() -> None:
+    x = np.linspace(-1.0, 1.0, 51)
+    model = models.MultiPeakModel(
+        npeaks=1, fd=False, background="none", convolve=False, prefix="m_"
+    )
+    params = model.make_params()
+    assert "m_p0_center" in params
+    assert "m_p0_height" in params
+    assert "m_p0_width" in params
+
+    params["m_p0_center"].set(value=0.0)
+    params["m_p0_height"].set(value=1.0)
+    params["m_p0_width"].set(value=0.4)
+
+    y = model.eval(params=params, x=x)
+    comps = model.eval_components(params=params, x=x)
+    fargs = model.make_funcargs(params, {"x": x})
+    fargs_no_x = {k: v for k, v in fargs.items() if k != "x"}
+
+    expected_key = f"{model._prefix}p0"
+    assert expected_key in comps
+    assert np.allclose(comps[expected_key], model.func.eval_peak(0, x, **fargs_no_x))
+    assert np.allclose(y, sum(comps.values()))
+
+
 def test_polynomial_model() -> None:
     # Create test data
     x = np.linspace(-10, 10, 100)
