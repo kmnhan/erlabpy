@@ -464,8 +464,8 @@ def generate_hvdep_cuts(
 
     if hv_shift is None:
         shift_vals = np.zeros_like(hv)
-    elif np.isscalar(hv_shift):
-        shift_vals = np.linspace(-float(hv_shift), float(hv_shift), hv.size)
+    elif isinstance(hv_shift, float):
+        shift_vals = np.linspace(-hv_shift, hv_shift, hv.size)
     elif isinstance(hv_shift, tuple):
         shift_vals = np.linspace(hv_shift[0], hv_shift[1], hv.size)
     else:
