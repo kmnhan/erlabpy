@@ -172,6 +172,12 @@ class MultiPeakFunction(DynamicFunction):
         'shirley'     ``const_bkg``, ``lin_bkg``, ``k_slope``, and ``k_step_i``
                       with i from 0 to `npeaks` - 1
         ============  ============================================================
+
+        .. note::
+
+            The 'shirley' background is calculated by
+            :func:`erlab.analysis.fit.functions.general.active_shirley` See its
+            documentation for details about the parameters.
     degree
         The degree of the polynomial background. Only used if `background` is
         ``'polynomial'``. Default is 2.
@@ -186,13 +192,6 @@ class MultiPeakFunction(DynamicFunction):
         Flag indicating whether to convolve the model in segments. If `True`, the model
         will be convolved in segments of uniform spacing. This must be set to `True`
         when fitting data with large gaps or discontinuities in the x-axis.
-
-
-    See Also
-    --------
-    :func:`erlab.analysis.fit.functions.general.active_shirley`
-        The function used to calculate the Shirley background. See its documentation for
-        details about the parameters.
     """
 
     PEAK_SHAPES: typing.ClassVar[dict[Callable, list[str]]] = {
