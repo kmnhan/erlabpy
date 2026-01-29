@@ -1,3 +1,17 @@
+## Unreleased
+
+### ✨ Features
+
+- **analysis.fit:** add a Shirley background option to `MultiPeakModel` (#258) ([edcecb5](https://github.com/kmnhan/erlabpy/commit/edcecb5b680099f53b036c0756c95a04ce3b25e1))
+
+  `MultiPeakModel` now supports a Shirley background.
+
+  This also changes `MultiPeakModel.eval_components` to return several named background components instead of a single `_bkg` entry. This may require changes to user code that references the background.
+
+### 🐞 Bug Fixes
+
+- **qsel:** drop non-numeric coordinates silently when averaging instead of raising an error ([26b4b29](https://github.com/kmnhan/erlabpy/commit/26b4b29351c8298c7c2248248f04af1ada38092e))
+
 ## v3.19.2 (2026-01-27)
 
 ### 🐞 Bug Fixes
