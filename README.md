@@ -1,10 +1,11 @@
-<a href="https://erlabpy.readthedocs.io/">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/logo_dark.png?raw=true">
-    <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/logo_light.png?raw=true">
-    <img alt="ERLabPy" width="120" src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/logo_light.png?raw=true">
-  </picture>
-</a>
+<div align="center">
+  <a href="https://erlabpy.readthedocs.io/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/icon_dark.png?raw=true">
+      <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/icon_light.png?raw=true">
+      <img alt="ERLabPy" width="120" src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/icon_light.png?raw=true">
+    </picture>
+  </a>
 
 # ERLabPy
 
@@ -17,6 +18,8 @@
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/kmnhan/erlabpy?logo=codecov&logoColor=white)](https://codecov.io/gh/kmnhan/erlabpy)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![SPEC 1 — Lazy Loading of Submodules and Functions](https://img.shields.io/badge/SPEC-1-green?labelColor=%23004811&color=%235CA038)](https://scientific-python.org/specs/spec-0001/)
+
+</div>
 
 `erlab` provides tools to handle, manipulate, and visualize data from angle-resolved photoemission spectroscopy (ARPES) experiments.
 
