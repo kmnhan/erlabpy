@@ -114,6 +114,7 @@ class _ImageToolWrapper(QtCore.QObject):
         tool. The box ratio is calculated from the view box size of the main image.
         """
         if self.imagetool is not None:
+            self.slicer_area._update_if_delayed()
             try:
                 main_image = self.slicer_area.main_image
             except RuntimeError:
@@ -241,7 +242,9 @@ class _ImageToolWrapper(QtCore.QObject):
                 or event.type() == QtCore.QEvent.Type.WindowStateChange
             )
         ):
-            self.visibility_changed()
+            if event.type() == QtCore.QEvent.Type.Show:
+                QtCore.QTimer.singleShot(0, self.slicer_area._update_if_delayed)
+            QtCore.QTimer.singleShot(0, self.visibility_changed)
         return super().eventFilter(obj, event)
 
     def _destroyed_callback(self) -> None:
@@ -386,6 +389,11 @@ class _ImageToolWrapper(QtCore.QObject):
             self._box_ratio_archived = float("NaN")
             self._pixmap_archived = QtGui.QPixmap()
             self.manager._sigReloadLinkers.emit()
+
+    @QtCore.Slot()
+    def reload(self) -> None:
+        """Reload the data from the original source."""
+        self.slicer_area.reload()
 
     def _add_childtool(
         self, tool: erlab.interactive.utils.ToolWindow, *, show: bool = True

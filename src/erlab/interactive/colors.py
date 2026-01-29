@@ -17,6 +17,7 @@ __all__ = [
 ]
 
 import contextlib
+import functools
 import importlib.util
 import typing
 import weakref
@@ -49,9 +50,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.setToolTip("Colormap")
         self.setIconSize(QtCore.QSize(64, 16))
 
-        for name in pg_colormap_names("matplotlib", exclude_local=True):
-            self.addItem(name)
-
+        self._populated: bool = False
         self.thumbnails_loaded: bool = False
         self.loaded_all: bool = False
         self.currentIndexChanged.connect(self.load_thumbnail)
@@ -66,6 +65,19 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.customContextMenuRequested.connect(self._show_menu)
         self._menu = QtWidgets.QMenu("Menu", self)
         self._menu.addAction("Load All Colormaps", self.load_all)
+
+    @QtCore.Slot()
+    def _populate(self) -> None:
+        for name in pg_colormap_names("matplotlib", exclude_local=True):
+            self.addItem(name)
+        if self.default_cmap is not None:
+            self.setCurrentText(self.default_cmap)
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        if not self._populated:
+            self._populated = True
+            QtCore.QTimer.singleShot(0, self._populate)
 
     @QtCore.Slot(QtCore.QPoint)
     def _show_menu(self, position: QtCore.QPoint) -> None:
@@ -147,7 +159,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     def setDefaultCmap(self, cmap: str) -> None:
         self.default_cmap = cmap
-        self.setCurrentText(cmap)
+        if self._populated:
+            self.setCurrentText(cmap)
 
     def resetCmap(self) -> None:
         if self.default_cmap is None:
@@ -811,7 +824,19 @@ def pg_colormap_names(
     list of str
         Ordered, de-duplicated list of colormap names.
     """
-    global_exclude: set[str] = set(erlab.interactive.options.model.colors.cmap.exclude)
+    global_exclude = erlab.interactive.options.model.colors.cmap.exclude
+    return _pg_colormap_names_cached(
+        source, exclude_local, tuple(sorted(global_exclude))
+    )
+
+
+@functools.cache
+def _pg_colormap_names_cached(
+    source: typing.Literal["local", "all", "matplotlib"],
+    exclude_local: bool,
+    global_exclude: tuple[str, ...],
+) -> list[str]:
+    global_exclude_set = set(global_exclude)
 
     all_cmaps: list[str] = []
 
@@ -835,7 +860,7 @@ def pg_colormap_names(
     combined: list[str] = []
     seen: set[str] = set()
     for cm in all_cmaps:
-        if cm in global_exclude:
+        if cm in global_exclude_set:
             continue
         if cm not in seen:
             seen.add(cm)

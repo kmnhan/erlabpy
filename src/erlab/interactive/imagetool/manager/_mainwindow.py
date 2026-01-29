@@ -1509,6 +1509,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         kwargs: dict[str, typing.Any],
         *,
         watched_var: tuple[str, str] | None = None,
+        show: bool | None = None,
     ) -> list[bool]:
         """Slot function to receive data from the server.
 
@@ -1527,6 +1528,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         watched_var
             If the tool is created from a watched variable, this should be a tuple of
             the variable name and its unique ID.
+        show
+            Whether to show the created windows. By default, only show if `data`
+            contains only one DataArray.
 
         Returns
         -------
@@ -1553,6 +1557,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         kwargs["_in_manager"] = True
 
         load_func = kwargs.pop("load_func", None)
+        if show is None:
+            show = len(data) == 1
 
         for i, d in enumerate(data):
             # Set index-specific load function if provided
@@ -1561,7 +1567,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 indices.append(
                     self.add_imagetool(
                         ImageTool(d, **kwargs, load_func=this_load_func),
-                        activate=True,
+                        show=show,
+                        activate=show,
                         watched_var=watched_var,
                     )
                 )

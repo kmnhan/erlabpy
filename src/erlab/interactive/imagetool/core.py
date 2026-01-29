@@ -794,6 +794,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.initialize_actions()
 
         self._in_manager: bool = _in_manager  #: Internal flag for tools inside manager
+        self._update_delayed: bool = _in_manager  #: Internal flag for delayed updates
 
         self._linking_proxy: SlicerLinkProxy | None = None
 
@@ -1823,11 +1824,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         if self.current_cursor > self.n_cursors - 1:
             self.set_current_cursor(self.n_cursors - 1, update=False)
-        self.sigDataChanged.emit()
-        logger.debug("Data refresh triggered")
+        if not self._update_delayed:
+            self.sigDataChanged.emit()
+            logger.debug("Data refresh triggered")
 
         # self.refresh_current()
-        self.refresh_colormap()
+        if not self._update_delayed:
+            self.refresh_colormap()
 
         # Refresh colorbar and color limits
         self._colorbar.cb.setImageItem()
@@ -1838,6 +1841,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.levels = cached_levels
 
         self.flush_history()
+
+    def _update_if_delayed(self) -> None:
+        if self._update_delayed:
+            self._update_delayed = False
+            self.sigDataChanged.emit()
+            logger.debug("Data refresh triggered (delayed)")
+
+            self.refresh_colormap()
 
     @property
     def reloadable(self) -> bool:

@@ -62,35 +62,6 @@ def _index_of_value(
     return ind
 
 
-@numba.njit(cache=True)
-def _transposed(arr: npt.NDArray[np.floating]) -> npt.NDArray[np.floating]:
-    if arr.ndim == 2:
-        return arr.T
-    if arr.ndim == 3:
-        return arr.transpose(1, 2, 0)
-    return arr.transpose(1, 2, 3, 0)
-
-
-@numba.njit(
-    [
-        numba.boolean(numba.int32[::1]),
-        numba.boolean(numba.int64[::1]),
-        numba.boolean(numba.float32[::1]),
-        numba.boolean(numba.float64[::1]),
-    ],
-    cache=True,
-)
-def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
-    if arr.size == 1:
-        # A single-element coordinate array is considered uniform
-        return True
-    dif = np.diff(arr)
-    if dif[0] == 0.0:
-        # Treat constant coordinate array as non-uniform
-        return False
-    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
-
-
 @numba.njit(
     [
         numba.int64(numba.int32[::1], numba.int32),

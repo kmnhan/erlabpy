@@ -68,6 +68,8 @@ def clear_layout(layout: QtWidgets.QLayout | None) -> None:
 
 
 class ItoolControlsBase(QtWidgets.QWidget):
+    """Base class for ImageTool controls."""
+
     def __init__(
         self, slicer_area: ImageSlicerArea | ItoolControlsBase, *args, **kwargs
     ) -> None:
@@ -77,7 +79,13 @@ class ItoolControlsBase(QtWidgets.QWidget):
         self.initialize_layout()
         self.initialize_widgets()
         self.connect_signals()
-        self.update_content()
+        self._populated: bool = False
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        if not self._populated:
+            self._populated = True
+            QtCore.QTimer.singleShot(0, self.update_content)
 
     @property
     def data(self) -> xr.DataArray:

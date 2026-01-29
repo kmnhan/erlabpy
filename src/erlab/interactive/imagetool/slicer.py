@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import functools
-import importlib
 import typing
 
 import numpy as np
@@ -56,6 +55,17 @@ def check_cursors_compatible(old: xr.DataArray, new: xr.DataArray) -> bool:
     return True
 
 
+def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
+    if arr.size == 1:
+        # A single-element coordinate array is considered uniform
+        return True
+    dif = np.diff(arr)
+    if dif[0] == 0.0:
+        # Treat constant coordinate array as non-uniform
+        return False
+    return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
+
+
 def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
     """Ensure that all dimensions of the given DataArray are uniform.
 
@@ -76,11 +86,7 @@ def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
         A new DataArray with all dimensions made uniform.
     """
     nonuniform_dims: list[str] = [
-        str(d)
-        for d in darr.dims
-        if not erlab.interactive.imagetool.fastslicing._is_uniform(
-            darr[d].values.astype(np.float64)
-        )
+        str(d) for d in darr.dims if not _is_uniform(darr[d].values.astype(np.float64))
     ]
     for d in nonuniform_dims:
         darr = darr.assign_coords(
@@ -185,9 +191,6 @@ class ArraySlicer(QtCore.QObject):
         self.snap_act.setToolTip("Snap cursors to data points")
 
         self.set_array(xarray_obj, validate=True, reset=True)
-
-        # Preload to prevent hanging on initial bin
-        importlib.import_module("erlab.interactive.imagetool.fastbinning")
 
     @property
     def snap_to_data(self) -> bool:
