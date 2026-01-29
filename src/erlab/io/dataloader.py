@@ -636,7 +636,11 @@ class LoaderBase(metaclass=_Loader):
 
           .. code-block:: none
 
-            cwd/ ├── data/ └── example.txt
+            cwd/
+
+            ├── data/
+
+            └── example.txt
 
           The following code will load ``./example.txt`` instead of raising an error
           that ``./data/example.txt`` is missing:

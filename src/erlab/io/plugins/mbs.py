@@ -1,3 +1,9 @@
+"""Data loader for MB Scientific analyzers.
+
+Provides a base class for implementing loaders that can load ``.txt`` and ``.krax``
+filew acquired with MB Scientific analyzers. Subclass to implement the actual loading.
+"""
+
 __all__ = ["MBSLoader", "load_krax", "load_text"]
 
 import os

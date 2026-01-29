@@ -640,6 +640,7 @@ User Guide (core topics)
 - [Momentum conversion](https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html)
 - [Curve fitting](https://erlabpy.readthedocs.io/en/stable/user-guide/curve-fitting.html)
 - [Filtering](https://erlabpy.readthedocs.io/en/stable/user-guide/filtering.html)
+- [Transformations](https://erlabpy.readthedocs.io/en/stable/user-guide/transform.html)
 
 User Guide (interactive tools)
 

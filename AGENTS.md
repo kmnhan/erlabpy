@@ -19,6 +19,8 @@ Sources live in `docs/source/` (MyST + Sphinx). Install extras using `uv sync --
 When changing public API behavior, add a `.. versionchanged::` note in the relevant docstring or user-guide page so it shows up in the generated docs. The version should refer to the next release (likely a minor bump under semver), so double-check the planned version before finalizing the note.
 Use `.. versionadded::` sparingly, for user-facing features or APIs where running the same code on older versions would be confusing or yield ambiguous errors.
 
+When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md` still matches current docs/links and update it if needed.
+
 ## Coding Style & Naming Conventions
 
 Use 4-space indentation, Ruff’s 88-character limit, and double quotes. Modules/functions stay snake_case, classes use CapWords. Some Qt widgets keep co-located `.ui` files, import bindings through `qtpy`, and rely on explicit enums such as `QtCore.Qt.CheckState.Checked`. In case of Qt imports, prefer `from qtpy import QtWidgets, QtCore, QtGui`. Install `prek` so Ruff, mypy, and commitizen hooks run automatically. Docstrings use NumPy style. It is recommended to follow PEP 484 type hinting for all public APIs.
