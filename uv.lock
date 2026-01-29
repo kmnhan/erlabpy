@@ -914,6 +914,7 @@ docs = [
     { name = "sphinx-autosummary-accessors" },
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
+    { name = "sphinx-llms-txt" },
     { name = "sphinx-notfound-page" },
     { name = "sphinx-qt-documentation" },
     { name = "sphinxcontrib-bibtex" },
@@ -1010,6 +1011,7 @@ docs = [
     { name = "sphinx-autosummary-accessors", specifier = ">=2025.3.1" },
     { name = "sphinx-copybutton", specifier = ">=0.5.2" },
     { name = "sphinx-design", specifier = ">=0.6.1" },
+    { name = "sphinx-llms-txt", specifier = ">=0.7.1" },
     { name = "sphinx-notfound-page", specifier = ">=1.0.4" },
     { name = "sphinx-qt-documentation", specifier = ">=0.4.1" },
     { name = "sphinxcontrib-bibtex", specifier = ">=2.6.3" },
@@ -2033,7 +2035,7 @@ name = "macholib"
 version = "1.16.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "altgraph" },
+    { name = "altgraph", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/10/2f/97589876ea967487978071c9042518d28b958d87b17dceb7cdc1d881f963/macholib-1.16.4.tar.gz", hash = "sha256:f408c93ab2e995cd2c46e34fe328b130404be143469e41bc366c807448979362", size = 59427, upload-time = "2025-11-22T08:28:38.373Z" }
 wheels = [
@@ -4196,6 +4198,18 @@ wheels = [
 ]
 
 [[package]]
+name = "sphinx-llms-txt"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sphinx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d3/dd/6d7fa7d6f51ee20959f1734cdbd62e99880dcd87576ce554d4bb8aaabdd7/sphinx_llms_txt-0.7.1.tar.gz", hash = "sha256:b5cefec19d3fd56670aa4a28917d17d32b22c61a9feadbab8564ad11e932f5c0", size = 32464, upload-time = "2025-12-16T22:31:26.379Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c2/17/a751012a0910e3c3afa41a5d40bdf00132466d072d25891ae7ec1f70dafd/sphinx_llms_txt-0.7.1-py3-none-any.whl", hash = "sha256:8f1cfcfe5897f5be118792f33f73eeb04cbbf66fc60c4c15982ec59252522263", size = 22545, upload-time = "2025-12-16T22:31:25.075Z" },
+]
+
+[[package]]
 name = "sphinx-notfound-page"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4568,11 +4582,11 @@ wheels = [
 
 [[package]]
 name = "uncertainties"
-version = "3.2.4"
+version = "3.2.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/59/15/55707176cc0f1803efc87b36873f8b5a6df79d724ddd3c4373820c4df24a/uncertainties-3.2.4.tar.gz", hash = "sha256:52ea797bffa4947be6b0bdbcf4b3886cd32960506e2d80102e02bc27f5c4bb69", size = 162075, upload-time = "2026-01-09T23:10:12.196Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/0c/cb09f33b26955399c675ab378e4063ed7e48422d3d49f96219ab0be5eba9/uncertainties-3.2.3.tar.gz", hash = "sha256:76a5653e686f617a42922d546a239e9efce72e6b35411b7750a1d12dcba03031", size = 160492, upload-time = "2025-04-21T19:58:28.63Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/dc/77d17e732e6c7c19ea255f7058df35e737405b7498e362f299fc6695c37d/uncertainties-3.2.4-py3-none-any.whl", hash = "sha256:b124a9a15abe5cfbacef36849835107a00e92ed2ab840b51c685f10924302f5f", size = 60572, upload-time = "2026-01-09T23:10:10.552Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/5e/f1e1dd319e35e962a4e00b33150a8868b6329cc1d19fd533436ba5488f09/uncertainties-3.2.3-py3-none-any.whl", hash = "sha256:313353900d8f88b283c9bad81e7d2b2d3d4bcc330cbace35403faaed7e78890a", size = 60118, upload-time = "2025-04-21T19:58:26.864Z" },
 ]
 
 [[package]]

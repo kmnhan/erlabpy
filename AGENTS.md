@@ -17,6 +17,8 @@ Place runtime code in `src/erlab/` (analysis routines, interactive Qt tools, IO 
 
 Sources live in `docs/source/` (MyST + Sphinx). Install extras using `uv sync --all-extras --dev --group docs`, then render locally via `uv run --directory docs make html`. Put tutorials in `docs/source/user-guide/`, guides in `docs/source/contributing.md`, and images in `docs/source/images/`. Run `make linkcheck` before pushing large doc edits to guard cross-references. The `sphinxext-rediraffe` extension is used for maintaining redirects. Add to the `rediraffe_redirects` dict in `docs/source/conf.py` when moving or renaming pages.
 
+When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md` still matches current docs/links and update it if needed.
+
 ## Coding Style & Naming Conventions
 
 Use 4-space indentation, Ruff’s 88-character limit, and double quotes. Modules/functions stay snake_case, classes use CapWords. Some Qt widgets keep co-located `.ui` files, import bindings through `qtpy`, and rely on explicit enums such as `QtCore.Qt.CheckState.Checked`. In case of Qt imports, prefer `from qtpy import QtWidgets, QtCore, QtGui`. Install `prek` so Ruff, mypy, and commitizen hooks run automatically. Docstrings use NumPy style. It is recommended to follow PEP 484 type hinting for all public APIs.
