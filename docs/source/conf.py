@@ -57,6 +57,7 @@ extensions = [
     "myst_nb",
     "notfound.extension",
     "sphinxext.rediraffe",
+    "sphinx_llms_txt",
 ]
 myst_enable_extensions = ["colon_fence", "dollarmath"]
 suppress_warnings = [
@@ -517,6 +518,7 @@ language = "en"
 
 html_title = "ERLabPy"
 html_static_path = ["_static"]
+html_favicon = "_static/favicon.ico"
 html_css_files = [
     "custom.css",
     "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css",

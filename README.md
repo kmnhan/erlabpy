@@ -1,3 +1,11 @@
+<a href="https://erlabpy.readthedocs.io/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/logo_dark.png?raw=true">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/logo_light.png?raw=true">
+    <img alt="ERLabPy" width="120" src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/_static/logo_light.png?raw=true">
+  </picture>
+</a>
+
 # ERLabPy
 
 [![DOI](https://zenodo.org/badge/453256660.svg)](https://zenodo.org/badge/latestdoi/453256660)
