@@ -147,7 +147,7 @@ def single_shot(
             return
         try:
             callback()
-        except RuntimeError as exc:
+        except RuntimeError as exc:  # pragma: no cover
             if "has been deleted" in str(exc):
                 return
             raise

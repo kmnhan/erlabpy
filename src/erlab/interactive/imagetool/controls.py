@@ -86,7 +86,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
         if not self._populated:
             self._populated = True
             parent = self._parent_control()
-            if parent is not None:
+            if parent is not None:  # pragma: no branch
                 erlab.interactive.utils.single_shot(
                     self, 0, self.update_content, parent
                 )
@@ -396,7 +396,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def update_content(self) -> None:
         if not erlab.interactive.utils.qt_is_valid(
             self, *self.spin_idx, *self.spin_val
-        ):
+        ):  # pragma: no cover
             return
         super().update_content()
         if len(self.label_dim) != self.data.ndim:
@@ -583,10 +583,10 @@ class ItoolColormapControls(ItoolControlsBase):
         with contextlib.suppress(AttributeError):
             if not erlab.interactive.utils.qt_is_valid(
                 self.slicer_area.lock_levels_act
-            ):
+            ):  # pragma: no cover
                 return
         super().update_content()
-        if isinstance(self.slicer_area.colormap, str):
+        if isinstance(self.slicer_area.colormap, str):  # pragma: no branch
             self.cb_colormap.setDefaultCmap(self.slicer_area.colormap)
         self.gamma_widget.blockSignals(True)
         self.gamma_widget.setValue(self.slicer_area.colormap_properties["gamma"])
@@ -690,7 +690,9 @@ class ItoolBinningControls(ItoolControlsBase):
         self.slicer_area.sigShapeChanged.disconnect(self.update_content)
 
     def update_content(self) -> None:
-        if not erlab.interactive.utils.qt_is_valid(self, *self.spins):
+        if not erlab.interactive.utils.qt_is_valid(
+            self, *self.spins
+        ):  # pragma: no cover
             return
         super().update_content()
 

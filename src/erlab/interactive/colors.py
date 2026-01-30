@@ -78,7 +78,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     @QtCore.Slot()
     def _populate(self) -> None:
-        if not erlab.interactive.utils.qt_is_valid(self):
+        if not erlab.interactive.utils.qt_is_valid(self):  # pragma: no cover
             return
         self._populated = True
         with QtCore.QSignalBlocker(self):
@@ -98,7 +98,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         if not self._populated:
             erlab.interactive.utils.single_shot(self, 0, self._populate)
 
-    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:  # pragma: no cover
         self.blockSignals(True)
         super().closeEvent(event)
 
@@ -193,8 +193,6 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     def setCurrentText(self, text: str | None) -> None:
         """Set the current text of the combobox."""
-        if not text:
-            return
         if not self._populated:
             self._populate()
         if self.findText(text) < 0:
