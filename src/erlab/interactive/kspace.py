@@ -184,6 +184,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
         # Set up colormap controls
         self.cmap_combo.setDefaultCmap(cmap)
         self.cmap_combo.textActivated.connect(self.update_cmap)
+        self.cmap_combo._populate()
         self.gamma_widget.setValue(gamma)
         self.gamma_widget.valueChanged.connect(self.update_cmap)
         self.invert_check.stateChanged.connect(self.update_cmap)
@@ -498,18 +499,16 @@ class KspaceTool(KspaceToolGUI):
             self._roi_list[-1].set_position((x0, y0), radius)
 
         # Restore colormap
-        self.cmap_combo.blockSignals(True)
-        self.gamma_widget.blockSignals(True)
-        self.invert_check.blockSignals(True)
-        self.contrast_check.blockSignals(True)
-        self.cmap_combo.setCurrentText(status.cmap_name)
-        self.gamma_widget.setValue(status.cmap_gamma)
-        self.invert_check.setChecked(status.cmap_invert)
-        self.contrast_check.setChecked(status.cmap_highcontrast)
-        self.cmap_combo.blockSignals(False)
-        self.gamma_widget.blockSignals(False)
-        self.invert_check.blockSignals(False)
-        self.contrast_check.blockSignals(False)
+        with (
+            QtCore.QSignalBlocker(self.cmap_combo),
+            QtCore.QSignalBlocker(self.gamma_widget),
+            QtCore.QSignalBlocker(self.invert_check),
+            QtCore.QSignalBlocker(self.contrast_check),
+        ):
+            self.cmap_combo.setCurrentText(status.cmap_name)
+            self.gamma_widget.setValue(status.cmap_gamma)
+            self.invert_check.setChecked(status.cmap_invert)
+            self.contrast_check.setChecked(status.cmap_highcontrast)
 
         self.update()
         self.update_bz()

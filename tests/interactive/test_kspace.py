@@ -89,6 +89,7 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
 
     # Show imagetool
     win.show_converted()
+    win._itool.show()
     xr.testing.assert_identical(win._itool.slicer_area.data, anglemap_kconv)
     win._itool.close()
 

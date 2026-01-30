@@ -655,6 +655,8 @@ def test_manager_sync(
         qtbot.wait_until(lambda: manager.ntools == 2)
 
         win0, win1 = manager.get_imagetool(0), manager.get_imagetool(1)
+        win0.show()
+        win1.show()
 
         win1.slicer_area.set_colormap("RdYlBu", gamma=1.5)
         assert (
