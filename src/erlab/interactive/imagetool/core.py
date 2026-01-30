@@ -2389,8 +2389,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
                     if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
-                        QtCore.QTimer.singleShot(
-                            0, lambda: manager.remove_imagetool(index)
+                        erlab.interactive.utils.single_shot(
+                            manager, 0, lambda: manager.remove_imagetool(index)
                         )
 
     def add_tool_window(

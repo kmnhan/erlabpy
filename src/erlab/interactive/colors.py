@@ -78,12 +78,15 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     @QtCore.Slot()
     def _populate(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
         self._populated = True
         with QtCore.QSignalBlocker(self):
             for name in pg_colormap_names("matplotlib", exclude_local=True):
                 self.addItem(name)
             if self.default_cmap is not None:
                 self.setCurrentText(self.default_cmap)
+                self.load_thumbnail(self.currentIndex())
         self.blockSignals(False)
 
     def clear(self) -> None:
@@ -93,7 +96,7 @@ class ColorMapComboBox(QtWidgets.QComboBox):
     def showEvent(self, event: QtGui.QShowEvent | None) -> None:
         super().showEvent(event)
         if not self._populated:
-            QtCore.QTimer.singleShot(0, self._populate)
+            erlab.interactive.utils.single_shot(self, 0, self._populate)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         self.blockSignals(True)

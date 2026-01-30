@@ -85,7 +85,11 @@ class ItoolControlsBase(QtWidgets.QWidget):
         super().showEvent(event)
         if not self._populated:
             self._populated = True
-            QtCore.QTimer.singleShot(0, self.update_content)
+            parent = self._parent_control()
+            if parent is not None:
+                erlab.interactive.utils.single_shot(
+                    self, 0, self.update_content, parent
+                )
 
     @property
     def data(self) -> xr.DataArray:
@@ -390,6 +394,10 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
     @QtCore.Slot()
     def update_content(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(
+            self, *self.spin_idx, *self.spin_val
+        ):
+            return
         super().update_content()
         if len(self.label_dim) != self.data.ndim:
             # number of required cursors changed, resetting
@@ -568,6 +576,15 @@ class ItoolColormapControls(ItoolControlsBase):
         layout.addWidget(self.misc_controls)
 
     def update_content(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(
+            self, self.cb_colormap, self.gamma_widget, self.slicer_area
+        ):  # pragma: no cover
+            return
+        with contextlib.suppress(AttributeError):
+            if not erlab.interactive.utils.qt_is_valid(
+                self.slicer_area.lock_levels_act
+            ):
+                return
         super().update_content()
         if isinstance(self.slicer_area.colormap, str):
             self.cb_colormap.setDefaultCmap(self.slicer_area.colormap)
@@ -673,6 +690,8 @@ class ItoolBinningControls(ItoolControlsBase):
         self.slicer_area.sigShapeChanged.disconnect(self.update_content)
 
     def update_content(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self, *self.spins):
+            return
         super().update_content()
 
         if len(self.val_labels) != self.data.ndim:

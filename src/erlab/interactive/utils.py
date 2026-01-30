@@ -23,7 +23,7 @@ import typing
 import warnings
 import weakref
 import webbrowser
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import numpy.typing as npt
@@ -71,7 +71,9 @@ __all__ = [
     "load_fit_ui",
     "make_crosshairs",
     "parse_data",
+    "qt_is_valid",
     "save_fit_ui",
+    "single_shot",
     "wait_dialog",
     "xImageItem",
 ]
@@ -90,6 +92,67 @@ except Exception:  # pragma: no cover - varies by Qt binding
 
         def _qt_is_valid(arg__1: object) -> bool:
             return arg__1 is not None
+
+
+def qt_is_valid(*objects: object) -> bool:
+    """Return True only if every object is a valid Qt object.
+
+    For PySide, uses ``shiboken6.isValid`` to check validity.
+
+    For PyQt, uses ``sip.isdeleted``.
+
+    Parameters
+    ----------
+    *objects
+        Objects to validate. ``None`` values are ignored.
+    """
+    return all(_qt_is_valid(obj) for obj in objects)
+
+
+def single_shot(
+    receiver: QtCore.QObject,
+    msec: int,
+    callback: Callable[[], None],
+    *guards: QtCore.QObject | None,
+) -> None:
+    """Invoke a delayed callback without crashing if the receiver is deleted.
+
+    This is a safe wrapper around `QtCore.QTimer.singleShot` that checks the receiver
+    with the active Qt binding's validity predicate before invoking the callback. It
+    avoids segmentation faults that can happen when a queued callback targets a deleted
+    QObject.
+
+    In the original Qt implementation, singleShot takes a context object that is used to
+    determine whether the callback should be invoked. But for some reason, this argument
+    is not exposed in the Python bindings. This function implements similar
+    functionality by checking the validity of the receiver and any additional guard
+    objects.
+
+    Parameters
+    ----------
+    receiver
+        QObject that owns the callback. The callback is skipped if this object has been
+        destroyed.
+    msec
+        Delay in milliseconds.
+    callback
+        Zero-argument callable to invoke after the delay.
+    *guards
+        Additional QObjects that must remain valid. If any guard is deleted, the
+        callback is skipped.
+    """
+
+    def _call() -> None:
+        if not qt_is_valid(receiver, *guards):
+            return
+        try:
+            callback()
+        except RuntimeError as exc:
+            if "has been deleted" in str(exc):
+                return
+            raise
+
+    QtCore.QTimer.singleShot(msec, _call)
 
 
 def parse_data(data) -> xr.DataArray:
@@ -2248,7 +2311,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
                 if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
-                    QtCore.QTimer.singleShot(0, lambda: manager._remove_childtool(uid))
+                    single_shot(manager, 0, lambda: manager._remove_childtool(uid))
 
     @property
     def tool_status(self) -> M:

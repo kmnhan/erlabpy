@@ -808,7 +808,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             else:
                 raise KeyError(f"Tool of index '{index}' is archived")
         tool = wrapper.imagetool
-        if tool is None or not erlab.interactive.utils._qt_is_valid(tool):
+        if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
             raise KeyError(f"Tool of index '{index}' is not available")
         return tool
 
@@ -2038,7 +2038,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for idx, wrapper in self._imagetool_wrappers.items():
             if uid in wrapper._childtool_indices:
                 tool = wrapper._childtools[uid]
-                if not erlab.interactive.utils._qt_is_valid(tool):
+                if not erlab.interactive.utils.qt_is_valid(tool):
                     self._remove_childtool(uid)
                     break
                 return tool, idx

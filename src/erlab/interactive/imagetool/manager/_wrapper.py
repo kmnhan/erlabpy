@@ -120,11 +120,11 @@ class _ImageToolWrapper(QtCore.QObject):
             except RuntimeError:
                 return self._box_ratio_archived, self._pixmap_archived
 
-            if not erlab.interactive.utils._qt_is_valid(main_image):
+            if not erlab.interactive.utils.qt_is_valid(main_image):
                 return self._box_ratio_archived, self._pixmap_archived
 
             view_box = main_image.getViewBox()
-            if not erlab.interactive.utils._qt_is_valid(view_box):
+            if not erlab.interactive.utils.qt_is_valid(view_box):
                 return self._box_ratio_archived, self._pixmap_archived
 
             vb_rect = view_box.rect()
@@ -137,7 +137,7 @@ class _ImageToolWrapper(QtCore.QObject):
                 return self._box_ratio_archived, self._pixmap_archived
 
             image_item = main_image.slicer_data_items[0]
-            if not erlab.interactive.utils._qt_is_valid(image_item):
+            if not erlab.interactive.utils.qt_is_valid(image_item):
                 return self._box_ratio_archived, self._pixmap_archived
 
             try:
@@ -155,7 +155,7 @@ class _ImageToolWrapper(QtCore.QObject):
 
     @property
     def imagetool(self) -> ImageTool | None:
-        if self._imagetool is not None and not erlab.interactive.utils._qt_is_valid(
+        if self._imagetool is not None and not erlab.interactive.utils.qt_is_valid(
             self._imagetool
         ):
             self._imagetool = None
@@ -243,8 +243,12 @@ class _ImageToolWrapper(QtCore.QObject):
             )
         ):
             if event.type() == QtCore.QEvent.Type.Show:
-                QtCore.QTimer.singleShot(0, self.slicer_area._update_if_delayed)
-            QtCore.QTimer.singleShot(0, self.visibility_changed)
+                erlab.interactive.utils.single_shot(
+                    self.slicer_area, 0, self.slicer_area._update_if_delayed
+                )
+            erlab.interactive.utils.single_shot(
+                self, 0, self.visibility_changed, self.imagetool
+            )
         return super().eventFilter(obj, event)
 
     def _destroyed_callback(self) -> None:
@@ -289,8 +293,9 @@ class _ImageToolWrapper(QtCore.QObject):
 
     @QtCore.Slot()
     def visibility_changed(self) -> None:
-        tool = typing.cast("ImageTool", self.imagetool)
-        self._recent_geometry = tool.geometry()
+        tool = self.imagetool
+        if tool:  # pragma: no branch
+            self._recent_geometry = tool.geometry()
 
     @QtCore.Slot()
     def show(self) -> None:
@@ -417,6 +422,6 @@ class _ImageToolWrapper(QtCore.QObject):
         """Remove a child tool window from the current tool."""
         if uid in self._childtools:
             tool = self._childtools.pop(uid)
-            if erlab.interactive.utils._qt_is_valid(tool):
+            if erlab.interactive.utils.qt_is_valid(tool):
                 tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
                 tool.close()
