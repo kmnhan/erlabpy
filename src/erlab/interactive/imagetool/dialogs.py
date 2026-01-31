@@ -130,7 +130,7 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         """
         code = self._validate()
         if code != QtWidgets.QDialog.DialogCode.Accepted:
-            QtCore.QTimer.singleShot(0, self.reject)
+            erlab.interactive.utils.single_shot(self, 0, self.reject)
             return
         super().show()
 

@@ -69,9 +69,10 @@ jobs:
 
       - name: Upload test results to Codecov
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API && !cancelled() }}
-        uses: codecov/test-results-action@v1
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          report_type: "test_results"
 
   mypy:
     name: Static type checking

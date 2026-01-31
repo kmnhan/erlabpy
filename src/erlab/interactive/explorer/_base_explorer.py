@@ -812,7 +812,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         root_path = root_path or os.getcwd()
         self._fs_model = _DataExplorerModel(root_path, self)
         self._fs_model.modelReset.connect(
-            lambda: QtCore.QTimer.singleShot(1, self._dir_loaded)
+            lambda: erlab.interactive.utils.single_shot(self, 1, self._dir_loaded)
         )
 
         self.menu_bar: QtWidgets.QMenuBar = typing.cast(
@@ -1098,7 +1098,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
         if n_sel == 1:
             # Show loading text only if loading takes more than 100 ms
-            QtCore.QTimer.singleShot(100, self._show_loading_text_if_needed)
+            erlab.interactive.utils.single_shot(
+                self, 100, self._show_loading_text_if_needed
+            )
             worker = _ReprFetcher(
                 selected_files[0],
                 load_method=erlab.io.loaders[self.loader_name].load,

@@ -14,6 +14,7 @@ __all__ = [
 import datetime
 import itertools
 import typing
+import warnings
 
 import numpy as np
 import numpy.typing as npt
@@ -383,7 +384,11 @@ def _format_array_values(val: npt.NDArray) -> str:
 
             return f"{format_value(val[0])} to {format_value(val[-1])}"
 
-    mn, mx = tuple(format_value(v) for v in (np.nanmin(val), np.nanmax(val)))
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="All-NaN slice encountered", category=RuntimeWarning
+        )
+        mn, mx = tuple(format_value(v) for v in (np.nanmin(val), np.nanmax(val)))
     return f"min {mn} max {mx}"
 
 

@@ -1721,6 +1721,7 @@ class LoaderBase(metaclass=_Loader):
                             {k: (concat_dim, [v[idx]]) for k, v in coord_dict.items()}
                         )
                     )
+
             else:
                 concat_dim = None
 

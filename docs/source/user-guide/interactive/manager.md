@@ -88,6 +88,8 @@ Once the manager is running, you can open ImageTools in several ways:
 
 - For custom integration with other workflows, scripts can call {func}`erlab.interactive.imagetool.manager.show_in_manager` or {func}`~erlab.interactive.imagetool.manager.load_in_manager` directly (see {ref}`imagetool-manager-automation`).
 
+When you open multiple DataArrays at once, the manager adds each window to the list without automatically showing them. To bring a window to the front, double-click its entry or select it and press {guilabel}`Show`.
+
 (imagetool-manager-organize)=
 
 ## Navigating and organizing tools

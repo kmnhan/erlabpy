@@ -17,6 +17,8 @@ __all__ = [
 ]
 
 import contextlib
+import contextvars
+import functools
 import importlib.util
 import typing
 import weakref
@@ -32,26 +34,33 @@ import erlab
 if typing.TYPE_CHECKING:
     from matplotlib.typing import ColorType
 
+_ALL_COLORMAPS_LOADED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "all_colormaps_loaded", default=False
+)
+
 
 def load_all_colormaps() -> None:
     """Load all colormaps from additional sources."""
+    if _ALL_COLORMAPS_LOADED.get():
+        return
+
     import erlab.plotting
 
     for package in erlab.interactive.options.model.colors.cmap.packages:
         if importlib.util.find_spec(package):
             importlib.import_module(package)
+    _ALL_COLORMAPS_LOADED.set(True)
 
 
 class ColorMapComboBox(QtWidgets.QComboBox):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.blockSignals(True)
         self.setPlaceholderText("Select colormap...")
         self.setToolTip("Colormap")
         self.setIconSize(QtCore.QSize(64, 16))
 
-        for name in pg_colormap_names("matplotlib", exclude_local=True):
-            self.addItem(name)
-
+        self._populated: bool = False
         self.thumbnails_loaded: bool = False
         self.loaded_all: bool = False
         self.currentIndexChanged.connect(self.load_thumbnail)
@@ -66,6 +75,32 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.customContextMenuRequested.connect(self._show_menu)
         self._menu = QtWidgets.QMenu("Menu", self)
         self._menu.addAction("Load All Colormaps", self.load_all)
+
+    @QtCore.Slot()
+    def _populate(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):  # pragma: no cover
+            return
+        self._populated = True
+        with QtCore.QSignalBlocker(self):
+            for name in pg_colormap_names("matplotlib", exclude_local=True):
+                self.addItem(name)
+            if self.default_cmap is not None:
+                self.setCurrentText(self.default_cmap)
+                self.load_thumbnail(self.currentIndex())
+        self.blockSignals(False)
+
+    def clear(self) -> None:
+        with QtCore.QSignalBlocker(self):
+            super().clear()
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        if not self._populated:
+            erlab.interactive.utils.single_shot(self, 0, self._populate)
+
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:  # pragma: no cover
+        self.blockSignals(True)
+        super().closeEvent(event)
 
     @QtCore.Slot(QtCore.QPoint)
     def _show_menu(self, position: QtCore.QPoint) -> None:
@@ -147,7 +182,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     def setDefaultCmap(self, cmap: str) -> None:
         self.default_cmap = cmap
-        self.setCurrentText(cmap)
+        if self._populated:
+            self.setCurrentText(cmap)
 
     def resetCmap(self) -> None:
         if self.default_cmap is None:
@@ -157,6 +193,8 @@ class ColorMapComboBox(QtWidgets.QComboBox):
 
     def setCurrentText(self, text: str | None) -> None:
         """Set the current text of the combobox."""
+        if not self._populated:
+            self._populate()
         if self.findText(text) < 0:
             # If the value is not in the combobox, try loading all and retry
             self.load_all()
@@ -811,7 +849,21 @@ def pg_colormap_names(
     list of str
         Ordered, de-duplicated list of colormap names.
     """
-    global_exclude: set[str] = set(erlab.interactive.options.model.colors.cmap.exclude)
+    global_exclude = erlab.interactive.options.model.colors.cmap.exclude
+    loaded_all = _ALL_COLORMAPS_LOADED.get()
+    return _pg_colormap_names_cached(
+        source, exclude_local, tuple(sorted(global_exclude)), loaded_all
+    )
+
+
+@functools.cache
+def _pg_colormap_names_cached(
+    source: typing.Literal["local", "all", "matplotlib"],
+    exclude_local: bool,
+    global_exclude: tuple[str, ...],
+    loaded_all: bool,
+) -> list[str]:
+    global_exclude_set = set(global_exclude)
 
     all_cmaps: list[str] = []
 
@@ -835,7 +887,7 @@ def pg_colormap_names(
     combined: list[str] = []
     seen: set[str] = set()
     for cm in all_cmaps:
-        if cm in global_exclude:
+        if cm in global_exclude_set:
             continue
         if cm not in seen:
             seen.add(cm)
@@ -844,9 +896,7 @@ def pg_colormap_names(
     return combined
 
 
-def pg_colormap_from_name(
-    name: str, skipCache: bool = True, _loaded_all: bool = False
-) -> pg.ColorMap:
+def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
     """Get a :class:`pyqtgraph.ColorMap` from its name.
 
     Parameters
@@ -872,10 +922,10 @@ def pg_colormap_from_name(
     if not cmap:
         with contextlib.suppress(KeyError):
             cmap = pg.colormap.get(name, source="colorcet", skipCache=skipCache)
-    if not cmap and not _loaded_all:
+    if not cmap and not _ALL_COLORMAPS_LOADED.get():
         with contextlib.suppress(ValueError, FileNotFoundError, IndexError, KeyError):
             load_all_colormaps()
-            cmap = pg_colormap_from_name(name, skipCache=skipCache, _loaded_all=True)
+            cmap = pg_colormap_from_name(name, skipCache=skipCache)
     if not cmap:
         raise RuntimeError(f"Colormap '{name}' not found in any source.")
     return cmap

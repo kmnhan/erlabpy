@@ -445,14 +445,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 return
 
             image_item = child_tool.preview_imageitem
-            if image_item is None or not erlab.interactive.utils._qt_is_valid(
+            if image_item is None or not erlab.interactive.utils.qt_is_valid(
                 image_item
             ):
                 self.preview_popup.hide()
                 return
 
             view_box = image_item.getViewBox()
-            if not erlab.interactive.utils._qt_is_valid(view_box):
+            if not erlab.interactive.utils.qt_is_valid(view_box):
                 self.preview_popup.hide()
                 return
 

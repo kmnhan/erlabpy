@@ -3,10 +3,13 @@ import pytest
 from qtpy import QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._options import options
 from erlab.interactive.colors import (
     BetterColorBarItem,
     BetterImageItem,
     ColorCycleDialog,
+    ColorMapComboBox,
+    pg_colormap_names,
     pg_colormap_powernorm,
 )
 
@@ -202,3 +205,34 @@ def test_colorbar_edit_widget_applies_changes_to_images(qtbot):
         assert attrs["gamma"] == pytest.approx(0.4)
         assert attrs["reverse"] is True
         assert attrs["high_contrast"] is True
+
+
+def test_colormap_combobox_populates_on_show(qtbot):
+    names = pg_colormap_names("matplotlib", exclude_local=True)
+    assert names
+    default = names[0]
+
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.setDefaultCmap(default)
+
+    assert combo.count() == 0
+    combo.show()
+
+    qtbot.wait_until(lambda: combo.count() > 0, timeout=2000)
+    assert combo.currentText() == default
+
+
+def test_pg_colormap_names_respects_runtime_exclude():
+    names = pg_colormap_names("matplotlib", exclude_local=True)
+    assert names
+    target = names[0]
+
+    try:
+        options["colors/cmap/exclude"] = [target]
+        assert target not in pg_colormap_names("matplotlib", exclude_local=True)
+
+        options["colors/cmap/exclude"] = []
+        assert target in pg_colormap_names("matplotlib", exclude_local=True)
+    finally:
+        options.restore()

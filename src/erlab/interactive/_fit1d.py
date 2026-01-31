@@ -1876,7 +1876,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _schedule_table_width_init(self) -> None:
         if self._table_widths_initialized:
             return
-        QtCore.QTimer.singleShot(0, self._init_table_column_widths)
+        erlab.interactive.utils.single_shot(self, 0, self._init_table_column_widths)
 
     def _init_table_column_widths(self) -> None:
         if self._table_widths_initialized:

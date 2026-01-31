@@ -120,6 +120,7 @@ class _MultiFileHandler(QtCore.QObject):
         super().__init__(manager)
 
         self._manager = weakref.ref(manager)
+        self.n_total: int = len(file_list)
         self._queue: collections.deque[pathlib.Path] = collections.deque(file_list)
         self._func = func
         self._kwargs = kwargs
@@ -175,8 +176,8 @@ class _MultiFileHandler(QtCore.QObject):
         self.manager._status_bar.showMessage("")
         self.loaded.append(file_path)
         self.manager._recent_directory = str(file_path.parent)
-        QtCore.QTimer.singleShot(
-            0, lambda: self._deliver_and_queue(file_path, data_list)
+        erlab.interactive.utils.single_shot(
+            self, 0, lambda: self._deliver_and_queue(file_path, data_list)
         )
 
     def _deliver_and_queue(
@@ -190,8 +191,9 @@ class _MultiFileHandler(QtCore.QObject):
         self.manager._data_recv(
             data_list,
             kwargs={"file_path": file_path, "load_func": (func, self._kwargs.copy())},
+            show=(self.n_total == 1),
         )
-        QtCore.QTimer.singleShot(0, self._load_next)
+        erlab.interactive.utils.single_shot(self, 0, self._load_next)
 
     @QtCore.Slot(pathlib.Path, str)
     def _on_failed(self, file_path: pathlib.Path, exc_str: str) -> None:
