@@ -10,9 +10,13 @@ Data structures in ERLabPy are represented using [xarray](https://docs.xarray.de
 
 ## AI Assistance
 
-LLMs can be useful for beginners as a shortcut to common workflows and small example scripts. They are **not** a source of truth: verify API details in the documentation and validate results on your own data.
+Large Language Models (LLMs) such as ChatGPT or Claude can be useful for beginners as a shortcut to common workflows and small example scripts. They are **not** a source of truth: verify API details in the documentation and validate results on your own data.
 
-ERLabPy provides ways to integrate with various LLMs.
+ERLabPy provides several ways to leverage LLMs for assistance:
+
+- Ask questions and explore auto-generated docs at [DeepWiki](https://deepwiki.com/kmnhan/erlabpy).
+
+  Advanced users may also consider connecting the [DeepWiki MCP](https://docs.devin.ai/work-with-devin/deepwiki-mcp) ([Model Context Protocol](https://modelcontextprotocol.io/), not microchannel plates 😉) server to their LLM setup.
 
 - For ChatGPT users, a [custom GPT informed on the ERLabPy documentation](https://chatgpt.com/g/g-6962fdab53008191ac5e3307a694b0a9-arpes-analysis-assistant) is available.
 
