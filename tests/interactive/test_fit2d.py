@@ -595,3 +595,62 @@ def test_fit2d_fill_params_none_and_invalid(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(win, "_show_warning", _warn)
     win._fill_params_from(-1)
     assert warnings
+
+
+def test_fit2d_set_model_merge_params_across_indices(qtbot) -> None:
+    """Test that set_model with merge_params=True merges params at all indices."""
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    # Set specific param values at different indices
+    win.y_index_spin.setValue(0)
+    index = win.param_model.index(0, 1)
+    assert win.param_model.setData(index, "5.0", QtCore.Qt.ItemDataRole.EditRole)
+
+    win.y_index_spin.setValue(1)
+    index = win.param_model.index(0, 1)
+    assert win.param_model.setData(index, "10.0", QtCore.Qt.ItemDataRole.EditRole)
+
+    # Change model with merge_params=True
+    new_model = win._make_model_from_choice("MultiPeakModel")
+    win.set_model(new_model, merge_params=True)
+
+    # Verify params were merged at all indices
+    win.y_index_spin.setValue(0)
+    assert win.param_model.param_at(0).value == pytest.approx(5.0)
+
+    win.y_index_spin.setValue(1)
+    assert win.param_model.param_at(0).value == pytest.approx(10.0)
+
+
+def test_fit2d_refresh_multipeak_model_merges_params(qtbot) -> None:
+    """Test that _refresh_multipeak_model merges params across all indices."""
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    # Set params at current index and another index
+    win.y_index_spin.setValue(0)
+    center_row = win.param_model._param_names.index("p0_center")
+    index = win.param_model.index(center_row, 1)
+    assert win.param_model.setData(index, "0.3", QtCore.Qt.ItemDataRole.EditRole)
+    win._update_params_full()
+
+    win.y_index_spin.setValue(1)
+    index = win.param_model.index(center_row, 1)
+    assert win.param_model.setData(index, "0.5", QtCore.Qt.ItemDataRole.EditRole)
+    win._update_params_full()
+
+    # Change number of peaks (triggers _refresh_multipeak_model)
+    win.npeaks_spin.setValue(2)
+
+    # Both indices should have preserved their p0_center values
+    win.y_index_spin.setValue(0)
+    center_row = win.param_model._param_names.index("p0_center")
+    assert win.param_model.param_at(center_row).value == pytest.approx(0.3)
+
+    win.y_index_spin.setValue(1)
+    assert win.param_model.param_at(center_row).value == pytest.approx(0.5)
