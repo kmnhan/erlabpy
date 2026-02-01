@@ -298,7 +298,8 @@ def test_qsel_average_single_dim() -> None:
     np.testing.assert_allclose(result.coords["x"].data, x.mean())
 
 
-def test_qsel_average_multiple_dim() -> None:
+@pytest.mark.parametrize("avg_args", [(["x", "y"],), ()])
+def test_qsel_average_multiple_dim(avg_args) -> None:
     # Create a simple 2D DataArray with dims 'x' and 'y'
 
     x = np.array([0, 10, 20])
@@ -309,7 +310,7 @@ def test_qsel_average_multiple_dim() -> None:
     # Average over both 'x' and 'y'
     # Expected result is a scalar value: mean of all data.
     expected = data.mean()
-    result = da.qsel.average(["x", "y"])
+    result = da.qsel.average(*avg_args)
 
     # The resulting DataArray should have no dimensions.
     assert not result.dims

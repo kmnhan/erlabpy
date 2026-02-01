@@ -704,7 +704,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             out, keys=coord_order, dims_first=True
         )
 
-    def average(self, dim: str | Sequence[Hashable]) -> xr.DataArray:
+    def average(self, dim: str | Sequence[Hashable] | None = None) -> xr.DataArray:
         """Average the data along the specified dimension(s).
 
         The difference between this method and :meth:`xarray.DataArray.mean` is that
@@ -715,15 +715,18 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         Parameters
         ----------
         dim
-            The dimension(s) along which to average the data.
+            The dimension(s) along which to average the data. If `None`, all dimensions
+            are averaged.
 
         Returns
         -------
         DataArray
             The data averaged along the specified dimension(s).
         """
+        if dim is None:
+            dim = list(self._obj.dims)
         if isinstance(dim, str):
-            dim = (dim,)
+            dim = [dim]
 
         qsel_kwargs: dict[Hashable, float] = {}
         for d in dim:
