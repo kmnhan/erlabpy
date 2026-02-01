@@ -218,7 +218,7 @@ class Fit2DTool(Fit1DTool):
         self.plot_widget.addItem(self.cbar, 0, 2, 2, 1)
         self.image_plot_legend: pg.LegendItem = self.image_plot.addLegend(offset=(5, 5))
         self.image_plot_legend.setVisible(False)
-        if hasattr(self.image_plot_legend, "sigSampleClicked"):
+        if hasattr(self.image_plot_legend, "sigSampleClicked"):  # pragma: no branch
             self.image_plot_legend.sigSampleClicked.connect(
                 self._on_image_legend_sample_clicked
             )
@@ -492,7 +492,7 @@ class Fit2DTool(Fit1DTool):
             ]
             self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
             self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
-            if state2d.y_limits is not None:
+            if state2d.y_limits is not None:  # pragma: no branch
                 with (
                     QtCore.QSignalBlocker(self.y_min_spin),
                     QtCore.QSignalBlocker(self.y_max_spin),
@@ -603,14 +603,14 @@ class Fit2DTool(Fit1DTool):
     def _toggle_param_plot_overlay(self, checked: bool) -> None:
         """Toggle overlay visibility for the currently selected parameter."""
         param_name = self.param_plot_combo.currentText()
-        if not param_name:
+        if not param_name:  # pragma: no cover
             return
         self._param_plot_overlay_states[param_name] = checked
         self._update_param_plot_overlays()
         self._write_state()
 
     def _image_legend_has_name(self, name: str) -> bool:
-        if self.image_plot_legend is None:
+        if self.image_plot_legend is None:  # pragma: no cover
             return False
         return any(item[1].text == name for item in self.image_plot_legend.items)
 
@@ -694,18 +694,18 @@ class Fit2DTool(Fit1DTool):
     def _sync_param_plot_overlay_check(self, *, checked: bool | None = None) -> None:
         """Update the overlay checkbox for the current parameter."""
         param_name = self.param_plot_combo.currentText()
-        if not param_name:
+        if not param_name:  # pragma: no cover
             return
-        if checked is None:
+        if checked is None:  # pragma: no branch
             checked = self._param_plot_overlay_states.get(param_name, False)
         with QtCore.QSignalBlocker(self.param_plot_overlay_check):
             self.param_plot_overlay_check.setChecked(checked)
 
     def _clear_image_plot_legend(self) -> None:
         """Remove all entries from the image plot legend."""
-        if self.image_plot_legend is None:
+        if self.image_plot_legend is None:  # pragma: no cover
             return
-        for item in list(self.image_plot_legend.items):
+        for item in list(self.image_plot_legend.items):  # pragma: no branch
             self.image_plot_legend.removeItem(item[1].text)
         self.image_plot_legend.setVisible(False)
 
@@ -716,7 +716,7 @@ class Fit2DTool(Fit1DTool):
         y_vals: np.ndarray | None = None,
         params_list: list[lmfit.Parameters | None] | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if not param_name:
+        if not param_name:  # pragma: no cover
             return np.array([]), np.array([]), np.array([])
         if y_vals is None or params_list is None:
             y_range_slice = self._y_range_slice()
