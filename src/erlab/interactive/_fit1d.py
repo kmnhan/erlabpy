@@ -1675,6 +1675,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         reset_params_from_coord: bool = False,
     ) -> None:
         prev_params = self._params
+        prev_model = self._model
         prev_widths = dict(self._slider_widths)
         self._model = model
         self._model_load_path = model_load_path
@@ -1682,8 +1683,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if reset_params_from_coord:
             self._params_from_coord = {}
         self._params = self._model.make_params()
-        if merge_params and prev_params is not None:
-            self._merge_params(prev_params, self._params)
+        if merge_params and prev_params is not None and prev_model is not None:
+            self._merge_params(prev_params, self._params, prev_model, model)
         for k in list(self._params_from_coord.keys()):
             if k not in self._params:
                 del self._params_from_coord[k]
@@ -2154,24 +2155,132 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         return params
 
     @staticmethod
+    def _param_basename(param_name: str, model: lmfit.Model) -> str:
+        """Get the basename of a parameter, stripping prefix if present."""
+        prefix = getattr(model, "_prefix", "")
+        if prefix and param_name.startswith(prefix):
+            return param_name[len(prefix) :]
+        return param_name
+
+    @staticmethod
+    def _param_expr_is_from_hint(param_name: str, model: lmfit.Model) -> bool:
+        """Check if the parameter has an expression defined in the model's hints."""
+        hints = getattr(model, "param_hints", {})
+        if not hints:
+            return False
+        basename = Fit1DTool._param_basename(param_name, model)
+        for key in (param_name, basename):
+            hint = hints.get(key)
+            if isinstance(hint, dict) and hint.get("expr"):
+                return True
+        return False
+
+    @staticmethod
+    def _param_is_model_func_arg(param_name: str, model: lmfit.Model) -> bool:
+        """Check if the parameter is a function argument of the model."""
+        func_args = getattr(model, "_func_allargs", None)
+        if not func_args:
+            return False
+        basename = Fit1DTool._param_basename(param_name, model)
+        return basename in func_args and basename not in getattr(
+            model, "independent_vars", []
+        )
+
+    @staticmethod
+    def _is_valid_param(param: lmfit.Parameter, model: lmfit.Model) -> bool:
+        """Check if a parameter is valid (editable/transferable) for the given model.
+
+        A parameter is valid if:
+        - It is part of the model's parameters
+        - It is NOT a derived parameter with a model-defined expression constraint
+          (i.e., has an expression from param_hints and is not a function argument)
+        """
+        param_name = str(param.name)
+        if param_name not in model.param_names:
+            return False
+        # A parameter is invalid if it has an expression from hints AND is not a
+        # function argument (meaning it's a derived/constrained parameter)
+        return not (
+            Fit1DTool._param_expr_is_from_hint(param_name, model)
+            and not Fit1DTool._param_is_model_func_arg(param_name, model)
+        )
+
+    @staticmethod
+    def _can_evaluate_expr(expr: str, params: lmfit.Parameters) -> bool:
+        """Check if an expression can be evaluated with the given parameters."""
+        if not expr:
+            return False
+        try:
+            # Create a temporary parameter to test expression evaluation
+            test_params = params.copy()
+            test_param = lmfit.Parameter(name="__test__", expr=expr)
+            test_params.add(test_param)
+            # Force evaluation by accessing the value
+            _ = test_params["__test__"].value
+        except Exception:
+            return False
+        else:
+            return True
+
+    @staticmethod
     def _merge_params(
-        old_params: lmfit.Parameters, new_params: lmfit.Parameters
+        old_params: lmfit.Parameters,
+        new_params: lmfit.Parameters,
+        old_model: lmfit.Model,
+        new_model: lmfit.Model,
     ) -> None:
+        """Merge old parameters into new parameters based on validity.
+
+        Parameters are considered "valid" if they are not fixed by the model
+        (i.e., not derived parameters with model-defined expression constraints).
+
+        For parameters valid in both old and new models:
+        - Copy value, min, max, vary from old to new
+        - Copy expression only if it can be evaluated in the new params context
+
+        Parameters valid only in new model keep their defaults.
+        Parameters valid only in old model are ignored.
+        """
         for name in new_params:
             if name not in old_params:
                 continue
+
             old_param: lmfit.Parameter = old_params[name]
             new_param: lmfit.Parameter = new_params[name]
+
+            # Check validity for both old and new models
+            old_valid = Fit1DTool._is_valid_param(old_param, old_model)
+            new_valid = Fit1DTool._is_valid_param(new_param, new_model)
+
+            # Only merge if valid in both models
+            if not (old_valid and new_valid):
+                continue
+
+            # Skip if the new parameter has a model-defined expression
             if new_param.expr:
                 continue
+
+            # Handle expression transfer
             if old_param.expr:
-                continue
-            new_param.set(
-                value=old_param.value,
-                min=old_param.min,
-                max=old_param.max,
-                vary=old_param.vary,
-            )
+                # Only copy expression if it can be evaluated in new context
+                if Fit1DTool._can_evaluate_expr(old_param.expr, new_params):
+                    new_param.set(expr=old_param.expr)
+                # If expression can't be evaluated, copy the value instead
+                else:
+                    new_param.set(
+                        value=old_param.value,
+                        min=old_param.min,
+                        max=old_param.max,
+                        vary=old_param.vary,
+                    )
+            else:
+                # No expression, copy value and bounds
+                new_param.set(
+                    value=old_param.value,
+                    min=old_param.min,
+                    max=old_param.max,
+                    vary=old_param.vary,
+                )
 
     def _auto_segmented(self, convolve: bool) -> bool:
         if not convolve:
@@ -2808,43 +2917,16 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
 
     def _can_edit_expr(self, param: lmfit.Parameter) -> bool:
-        if str(param.name) not in self._model.param_names:
-            return False
-        return not (
-            self._param_expr_from_hint(param) and not self._param_is_func_arg(param)
-        )
+        """Check if a parameter's expression can be edited by the user."""
+        return self._is_valid_param(param, self._model)
 
     def _param_is_func_arg(self, param: lmfit.Parameter) -> bool:
-        func_args = getattr(self._model, "_func_allargs", None)
-        if not func_args:
-            return False
-        param_name = str(param.name)
-        prefix = getattr(self._model, "_prefix", "")
-        basename = (
-            param_name[len(prefix) :]
-            if prefix and param_name.startswith(prefix)
-            else param_name
-        )
-        return basename in func_args and basename not in getattr(
-            self._model, "independent_vars", []
-        )
+        """Check if a parameter is a function argument of the current model."""
+        return self._param_is_model_func_arg(str(param.name), self._model)
 
     def _param_expr_from_hint(self, param: lmfit.Parameter) -> bool:
-        hints = getattr(self._model, "param_hints", {})
-        if not hints:
-            return False
-        param_name = str(param.name)
-        prefix = getattr(self._model, "_prefix", "")
-        basename = (
-            param_name[len(prefix) :]
-            if prefix and param_name.startswith(prefix)
-            else param_name
-        )
-        for key in (param_name, basename):
-            hint = hints.get(key)
-            if isinstance(hint, dict) and hint.get("expr"):
-                return True
-        return False
+        """Check if a parameter has an expression from the current model's hints."""
+        return self._param_expr_is_from_hint(str(param.name), self._model)
 
     def _prompt_param_expr(self, row: int) -> None:
         param = self.param_model.param_at(row)

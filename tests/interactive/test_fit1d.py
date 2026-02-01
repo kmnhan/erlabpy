@@ -881,3 +881,389 @@ def test_fit1d_model_choice_changed_paths(qtbot, monkeypatch) -> None:
         win.model_combo.setCurrentIndex(model_idx)
     win._on_model_choice_changed(model_idx)
     assert warnings
+
+
+# Tests for _merge_params and related static helper methods
+
+
+def test_merge_params_param_basename_no_prefix() -> None:
+    """Test _param_basename without model prefix."""
+    model = lmfit.models.GaussianModel()
+    assert Fit1DTool._param_basename("amplitude", model) == "amplitude"
+    assert Fit1DTool._param_basename("center", model) == "center"
+
+
+def test_merge_params_param_basename_with_prefix() -> None:
+    """Test _param_basename with model prefix."""
+    model = lmfit.models.GaussianModel(prefix="g1_")
+    assert Fit1DTool._param_basename("g1_amplitude", model) == "amplitude"
+    assert Fit1DTool._param_basename("g1_center", model) == "center"
+    # Non-matching prefix should return unchanged
+    assert Fit1DTool._param_basename("other_param", model) == "other_param"
+
+
+def test_merge_params_expr_is_from_hint_no_hints() -> None:
+    """Test _param_expr_is_from_hint when model has no hints."""
+
+    def simple_func(x, a=1.0):
+        return a * x
+
+    model = lmfit.Model(simple_func)
+    assert Fit1DTool._param_expr_is_from_hint("a", model) is False
+
+
+def test_merge_params_expr_is_from_hint_with_hints() -> None:
+    """Test _param_expr_is_from_hint with model that has expression hints."""
+    # VoigtModel has fwhm with expr hint
+    model = lmfit.models.VoigtModel()
+    assert Fit1DTool._param_expr_is_from_hint("fwhm", model) is True
+    assert Fit1DTool._param_expr_is_from_hint("amplitude", model) is False
+
+
+def test_merge_params_is_model_func_arg() -> None:
+    """Test _param_is_model_func_arg identifies function arguments."""
+
+    def custom_func(x, real_arg=1.0, another_arg=2.0):
+        return real_arg * x + another_arg
+
+    model = lmfit.Model(custom_func)
+    assert Fit1DTool._param_is_model_func_arg("real_arg", model) is True
+    assert Fit1DTool._param_is_model_func_arg("another_arg", model) is True
+    # Independent var should not be considered
+    assert Fit1DTool._param_is_model_func_arg("x", model) is False
+
+
+def test_merge_params_is_model_func_arg_with_prefix() -> None:
+    """Test _param_is_model_func_arg with prefixed model."""
+    model = lmfit.models.GaussianModel(prefix="p1_")
+    assert Fit1DTool._param_is_model_func_arg("p1_amplitude", model) is True
+    assert Fit1DTool._param_is_model_func_arg("p1_center", model) is True
+
+
+def test_merge_params_is_valid_param_simple_model() -> None:
+    """Test _is_valid_param with a simple model (no expr hints)."""
+
+    def simple_func(x, a=1.0, b=2.0):
+        return a * x + b
+
+    model = lmfit.Model(simple_func)
+    params = model.make_params()
+    assert Fit1DTool._is_valid_param(params["a"], model) is True
+    assert Fit1DTool._is_valid_param(params["b"], model) is True
+
+
+def test_merge_params_is_valid_param_with_derived_params() -> None:
+    """Test _is_valid_param with model that has derived parameters."""
+    # VoigtModel has 'fwhm' as a derived parameter (expr from hints, not func arg)
+    model = lmfit.models.VoigtModel()
+    params = model.make_params()
+    # sigma, gamma, center, amplitude are func args -> valid
+    assert Fit1DTool._is_valid_param(params["sigma"], model) is True
+    assert Fit1DTool._is_valid_param(params["gamma"], model) is True
+    assert Fit1DTool._is_valid_param(params["center"], model) is True
+    assert Fit1DTool._is_valid_param(params["amplitude"], model) is True
+    # fwhm has expr from hints and is NOT a func arg -> invalid
+    assert Fit1DTool._is_valid_param(params["fwhm"], model) is False
+
+
+def test_merge_params_is_valid_param_not_in_model() -> None:
+    """Test _is_valid_param returns False for params not in model."""
+
+    def simple_func(x, a=1.0):
+        return a * x
+
+    model = lmfit.Model(simple_func)
+    other_param = lmfit.Parameter(name="not_in_model", value=1.0)
+    assert Fit1DTool._is_valid_param(other_param, model) is False
+
+
+def test_merge_params_can_evaluate_expr_valid() -> None:
+    """Test _can_evaluate_expr with valid expressions."""
+    params = lmfit.Parameters()
+    params.add("a", value=1.0)
+    params.add("b", value=2.0)
+    assert Fit1DTool._can_evaluate_expr("a + b", params) is True
+    assert Fit1DTool._can_evaluate_expr("2*a", params) is True
+
+
+def test_merge_params_can_evaluate_expr_invalid() -> None:
+    """Test _can_evaluate_expr with invalid expressions."""
+    params = lmfit.Parameters()
+    params.add("a", value=1.0)
+    # Reference to non-existent parameter
+    assert Fit1DTool._can_evaluate_expr("a + nonexistent", params) is False
+    # Syntax error
+    assert Fit1DTool._can_evaluate_expr("a +", params) is False
+    # Empty expression
+    assert Fit1DTool._can_evaluate_expr("", params) is False
+    assert Fit1DTool._can_evaluate_expr(None, params) is False
+
+
+def test_merge_params_basic() -> None:
+    """Test _merge_params copies values for matching valid params."""
+
+    def simple_func(x, a=1.0, b=2.0):
+        return a * x + b
+
+    old_model = lmfit.Model(simple_func)
+    new_model = lmfit.Model(simple_func)
+    old_params = old_model.make_params(a=5.0, b=10.0)
+    old_params["a"].min = 0.0
+    old_params["a"].max = 20.0
+    old_params["a"].vary = False
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    assert new_params["a"].value == pytest.approx(5.0)
+    assert new_params["a"].min == pytest.approx(0.0)
+    assert new_params["a"].max == pytest.approx(20.0)
+    assert new_params["a"].vary is False
+    assert new_params["b"].value == pytest.approx(10.0)
+
+
+def test_merge_params_skips_new_params_not_in_old() -> None:
+    """Test _merge_params leaves new params at defaults if not in old."""
+
+    def old_func(x, a=1.0):
+        return a * x
+
+    def new_func(x, a=1.0, b=2.0):
+        return a * x + b
+
+    old_model = lmfit.Model(old_func)
+    new_model = lmfit.Model(new_func)
+    old_params = old_model.make_params(a=5.0)
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    assert new_params["a"].value == pytest.approx(5.0)
+    assert new_params["b"].value == pytest.approx(2.0)  # default
+
+
+def test_merge_params_skips_invalid_old_params() -> None:
+    """Test _merge_params skips params that were invalid in old model."""
+    # VoigtModel has fwhm as derived (invalid) param
+    old_model = lmfit.models.VoigtModel()
+    new_model = lmfit.models.VoigtModel()
+    old_params = old_model.make_params()
+    old_params["sigma"].value = 0.5
+    # fwhm is derived, but let's try to set it anyway
+    # (in practice, this would be constrained by the model)
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # sigma should be merged (it's valid)
+    assert new_params["sigma"].value == pytest.approx(0.5)
+    # fwhm should NOT be merged (it's invalid/derived)
+    # It should have the default expression from the model
+    assert new_params["fwhm"].expr is not None
+
+
+def test_merge_params_transfers_expression() -> None:
+    """Test _merge_params transfers expressions when evaluable."""
+
+    def simple_func(x, a=1.0, b=2.0):
+        return a * x + b
+
+    old_model = lmfit.Model(simple_func)
+    new_model = lmfit.Model(simple_func)
+    old_params = old_model.make_params()
+    old_params["b"].expr = "2*a"
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    assert new_params["b"].expr == "2*a"
+
+
+def test_merge_params_drops_unevaluable_expression() -> None:
+    """Test _merge_params falls back to value if expression can't evaluate."""
+
+    def old_func(x, a=1.0, b=2.0, c=3.0):
+        return a * x + b + c
+
+    def new_func(x, a=1.0, b=2.0):
+        return a * x + b
+
+    old_model = lmfit.Model(old_func)
+    new_model = lmfit.Model(new_func)
+    old_params = old_model.make_params()
+    # Expression references 'c' which won't exist in new model
+    # When expr is set, the value is computed from expr (c + 1 = 4.0)
+    old_params["b"].expr = "c + 1"
+    old_params["b"].min = -10.0
+    old_params["b"].max = 10.0
+    # The value will be 4.0 (from c + 1 = 3 + 1)
+    expected_value = old_params["b"].value
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # Expression can't be evaluated, so value and bounds should be copied instead
+    assert new_params["b"].expr is None
+    assert new_params["b"].value == pytest.approx(expected_value)
+    assert new_params["b"].min == pytest.approx(-10.0)
+    assert new_params["b"].max == pytest.approx(10.0)
+
+
+def test_merge_params_preserves_new_model_expressions() -> None:
+    """Test _merge_params doesn't overwrite new model's expressions."""
+    # VoigtModel has built-in expression for fwhm
+    old_model = lmfit.models.VoigtModel()
+    new_model = lmfit.models.VoigtModel()
+    old_params = old_model.make_params()
+    new_params = new_model.make_params()
+    original_fwhm_expr = new_params["fwhm"].expr
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # fwhm expression should be preserved (not overwritten)
+    assert new_params["fwhm"].expr == original_fwhm_expr
+
+
+def test_merge_params_different_models() -> None:
+    """Test _merge_params between different model types with common params."""
+    # Both Gaussian and Lorentzian have center, sigma (or gamma), amplitude
+    old_model = lmfit.models.GaussianModel()
+    new_model = lmfit.models.LorentzianModel()
+    old_params = old_model.make_params(center=1.0, sigma=0.5, amplitude=2.0)
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # center and amplitude exist in both and should be merged
+    assert new_params["center"].value == pytest.approx(1.0)
+    assert new_params["amplitude"].value == pytest.approx(2.0)
+    # sigma only exists in Gaussian, not Lorentzian (which has sigma too actually)
+    # But let's verify sigma is merged since both have it
+    assert new_params["sigma"].value == pytest.approx(0.5)
+
+
+def test_merge_params_with_prefix_basic() -> None:
+    """Test _merge_params with prefixed parameters."""
+    old_model = lmfit.models.GaussianModel(prefix="g1_")
+    new_model = lmfit.models.GaussianModel(prefix="g1_")
+    old_params = old_model.make_params()
+    old_params["g1_center"].value = 2.5
+    old_params["g1_sigma"].value = 0.3
+    old_params["g1_amplitude"].value = 10.0
+    old_params["g1_center"].min = 0.0
+    old_params["g1_center"].max = 5.0
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    assert new_params["g1_center"].value == pytest.approx(2.5)
+    assert new_params["g1_sigma"].value == pytest.approx(0.3)
+    assert new_params["g1_amplitude"].value == pytest.approx(10.0)
+    assert new_params["g1_center"].min == pytest.approx(0.0)
+    assert new_params["g1_center"].max == pytest.approx(5.0)
+
+
+def test_merge_params_with_prefix_expression_transfer() -> None:
+    """Test _merge_params transfers expressions with prefixed parameters."""
+    old_model = lmfit.models.GaussianModel(prefix="g1_")
+    new_model = lmfit.models.GaussianModel(prefix="g1_")
+    old_params = old_model.make_params()
+    old_params["g1_sigma"].expr = "g1_center / 10"
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    assert new_params["g1_sigma"].expr == "g1_center / 10"
+
+
+def test_merge_params_with_prefix_derived_params_skipped() -> None:
+    """Test _merge_params skips derived params in prefixed models."""
+    # VoigtModel has fwhm and gamma as derived parameters (both have expr hints)
+    old_model = lmfit.models.VoigtModel(prefix="v1_")
+    new_model = lmfit.models.VoigtModel(prefix="v1_")
+    old_params = old_model.make_params()
+    old_params["v1_sigma"].value = 0.5
+    old_params["v1_center"].value = 1.5
+    old_params["v1_amplitude"].value = 3.0
+    new_params = new_model.make_params()
+    original_fwhm_expr = new_params["v1_fwhm"].expr
+    original_gamma_expr = new_params["v1_gamma"].expr
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # Valid params (sigma, center, amplitude) should be merged
+    assert new_params["v1_sigma"].value == pytest.approx(0.5)
+    assert new_params["v1_center"].value == pytest.approx(1.5)
+    assert new_params["v1_amplitude"].value == pytest.approx(3.0)
+    # fwhm and gamma (both derived) should keep their expressions
+    assert new_params["v1_fwhm"].expr == original_fwhm_expr
+    assert new_params["v1_gamma"].expr == original_gamma_expr
+
+
+def test_merge_params_different_prefixes_no_merge() -> None:
+    """Test _merge_params doesn't merge when prefixes differ."""
+    old_model = lmfit.models.GaussianModel(prefix="g1_")
+    new_model = lmfit.models.GaussianModel(prefix="g2_")
+    old_params = old_model.make_params()
+    old_params["g1_center"].value = 5.0
+    new_params = new_model.make_params()
+    default_center = new_params["g2_center"].value
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # No matching param names, so nothing should be merged
+    assert new_params["g2_center"].value == pytest.approx(default_center)
+
+
+def test_merge_params_prefix_expression_unevaluable() -> None:
+    """Test _merge_params falls back to value when prefixed expr can't evaluate."""
+
+    def custom_func(x, a=1.0, b=2.0, c=3.0):
+        return a * x + b + c
+
+    old_model = lmfit.Model(custom_func, prefix="p1_")
+
+    # Remove 'c' from new model by creating a different function
+    def custom_func_no_c(x, a=1.0, b=2.0):
+        return a * x + b
+
+    new_model = lmfit.Model(custom_func_no_c, prefix="p1_")
+    old_params = old_model.make_params()
+    # Expression references p1_c which won't exist in new model
+    old_params["p1_b"].expr = "p1_c + 1"
+    old_params["p1_b"].min = -5.0
+    old_params["p1_b"].max = 15.0
+    expected_value = old_params["p1_b"].value  # Should be 4.0 (c+1 = 3+1)
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # Expression can't be evaluated (p1_c doesn't exist), so value is used
+    assert new_params["p1_b"].expr is None
+    assert new_params["p1_b"].value == pytest.approx(expected_value)
+    assert new_params["p1_b"].min == pytest.approx(-5.0)
+    assert new_params["p1_b"].max == pytest.approx(15.0)
+
+
+def test_merge_params_composite_model_with_prefixes() -> None:
+    """Test _merge_params with composite models having different prefixes."""
+    # Create composite models
+    g1 = lmfit.models.GaussianModel(prefix="g1_")
+    g2 = lmfit.models.GaussianModel(prefix="g2_")
+    old_model = g1 + g2
+    new_model = g1 + g2
+
+    old_params = old_model.make_params()
+    old_params["g1_center"].value = 1.0
+    old_params["g1_sigma"].value = 0.1
+    old_params["g2_center"].value = 2.0
+    old_params["g2_sigma"].value = 0.2
+    new_params = new_model.make_params()
+
+    Fit1DTool._merge_params(old_params, new_params, old_model, new_model)
+
+    # Both prefixed params should be merged
+    assert new_params["g1_center"].value == pytest.approx(1.0)
+    assert new_params["g1_sigma"].value == pytest.approx(0.1)
+    assert new_params["g2_center"].value == pytest.approx(2.0)
+    assert new_params["g2_sigma"].value == pytest.approx(0.2)

@@ -551,13 +551,15 @@ class Fit2DTool(Fit1DTool):
 
     @QtCore.Slot()
     def _refresh_multipeak_model(self) -> None:
+        old_model = self._model
         super()._refresh_multipeak_model()
+        new_model = self._model
         for idx in range(self._data_full.sizes[self._y_dim_name]):
             if idx != self._current_idx:
                 prev_params = self._params_full[idx]
                 if prev_params is not None:
-                    new_params = self._model.make_params()
-                    self._merge_params(prev_params, new_params)
+                    new_params = new_model.make_params()
+                    self._merge_params(prev_params, new_params, old_model, new_model)
                     self._params_full[idx] = new_params
                     prev_params_from_coord = self._params_from_coord_full[idx]
                     for k in list(prev_params_from_coord.keys()):
@@ -622,6 +624,7 @@ class Fit2DTool(Fit1DTool):
         merge_params: bool = False,
         reset_params_from_coord: bool = False,
     ) -> None:
+        old_model = self._model
         for i in range(self._data_full.sizes[self._y_dim_name]):
             if i == self._current_idx:
                 continue
@@ -631,8 +634,8 @@ class Fit2DTool(Fit1DTool):
             if prev_params is not None:
                 prev_params = prev_params.copy()
                 new_params = model.make_params()
-                if merge_params:
-                    self._merge_params(prev_params, new_params)
+                if merge_params and old_model is not None:
+                    self._merge_params(prev_params, new_params, old_model, model)
                 self._params_full[i] = new_params
 
             if reset_params_from_coord:
