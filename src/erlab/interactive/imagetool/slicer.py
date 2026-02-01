@@ -911,16 +911,7 @@ class ArraySlicer(QtCore.QObject):
             for k, v in zip(self._obj.dims, self.get_binned(cursor), strict=True)
             if (v and (k in isel_kw))
         ]  # Select only relevant binned dimensions
-        binned_coords_averaged: dict[str, xr.DataArray] = {
-            str(k): self._obj[k][isel_kw[str(k)]].mean() for k in binned_dims
-        }
-        # TODO: we may lose some coords here, like dims that depend on the binned dims
-        sliced = (
-            self._obj.isel(isel_kw)
-            .mean(binned_dims)
-            .assign_coords(binned_coords_averaged)
-            .squeeze()  # is squeeze needed here?
-        )
+        sliced = self._obj.isel(isel_kw).qsel.average(binned_dims)
         if self._nonuniform_axes:
             return restore_nonuniform_dims(sliced)
         return sliced
