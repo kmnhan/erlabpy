@@ -76,6 +76,94 @@ def test_fit2d_tool_status_restore(qtbot, exp_decay_model) -> None:
     assert win_restored.param_model.param_at(0).value == pytest.approx(3.0)
 
 
+def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:
+    data = _make_2d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_min_spin.setValue(1)
+    win.y_max_spin.setValue(2)
+    param_name = win.param_plot_combo.itemText(0)
+    win.param_plot_combo.setCurrentText(param_name)
+    win.param_plot_overlay_check.setChecked(True)
+
+    status = win.tool_status
+    assert status.state2d is not None
+    assert status.state2d.y_limits == (1, 2)
+    assert status.state2d.param_plot_overlay_states.get(param_name) is True
+
+    win_restored = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win_restored)
+    win_restored.tool_status = status
+
+    assert win_restored.y_min_spin.value() == 1
+    assert win_restored.y_max_spin.value() == 2
+    win_restored.param_plot_combo.setCurrentText(param_name)
+    assert win_restored.param_plot_overlay_check.isChecked() is True
+
+
+def test_fit2d_overlay_legend_sync(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    param_name = win.param_plot_combo.itemText(0)
+    win.param_plot_combo.setCurrentText(param_name)
+    win.param_plot_overlay_check.setChecked(True)
+    win._update_param_plot_overlays()
+
+    errbar, scatter = win._param_plot_overlay_items[param_name]
+    scatter.setVisible(False)
+
+    class _Sample:
+        def __init__(self, item):
+            self.item = item
+
+    win._on_image_legend_sample_clicked(_Sample(scatter))
+    qtbot.waitUntil(lambda: errbar.isVisible() is False)
+    assert win._param_plot_overlay_states[param_name] is False
+    assert win.param_plot_overlay_check.isChecked() is False
+
+    scatter.setVisible(True)
+    win._sync_overlay_visibility(param_name, scatter, errbar)
+    assert errbar.isVisible() is True
+    assert win._param_plot_overlay_states[param_name] is True
+    assert win.param_plot_overlay_check.isChecked() is True
+
+
+def test_fit2d_update_param_plot_overlays_paths(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    names = [win.param_plot_combo.itemText(i) for i in range(2)]
+    for name in names:
+        win._param_plot_overlay_states[name] = True
+    win._update_param_plot_overlays()
+    assert win.image_plot_legend.isVisible() is True
+    assert set(win._param_plot_overlay_items.keys()) == set(names)
+
+    win._param_plot_overlay_states[names[0]] = False
+    win._update_param_plot_overlays()
+    assert names[0] not in win._param_plot_overlay_items
+    legend_names = {item[1].text for item in win.image_plot_legend.items}
+    assert names[0] not in legend_names
+
+    for name in names:
+        win._param_plot_overlay_states[name] = False
+    win._update_param_plot_overlays()
+    assert not win._param_plot_overlay_items
+    assert win.image_plot_legend.isVisible() is False
+
+
 def test_fit2d_run_fit(qtbot, exp_decay_model) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)

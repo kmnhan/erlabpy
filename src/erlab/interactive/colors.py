@@ -477,6 +477,7 @@ class _ColorBarEditWidget(QtWidgets.QWidget):
                 )
 
     def populate_cmap_info(self) -> None:
+        self._cmap_combo._populate()
         with (
             QtCore.QSignalBlocker(self._cmap_combo),
             QtCore.QSignalBlocker(self._gamma_widget),

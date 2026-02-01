@@ -183,6 +183,12 @@ class Fit2DTool(Fit1DTool):
         super()._build_ui()
         y_vals = self._y_values()
 
+        if not hasattr(self, "_param_plot_overlay_states"):
+            self._param_plot_overlay_states: dict[str, bool] = {}
+        self._param_plot_overlay_items: dict[
+            str, tuple[pg.ErrorBarItem, pg.ScatterPlotItem]
+        ] = {}
+
         self.transpose_button = QtWidgets.QPushButton("Transpose")
         self.transpose_button.setToolTip("Transpose the 2D data (swap axes)")
         self.transpose_button.clicked.connect(self._transpose)
@@ -210,16 +216,32 @@ class Fit2DTool(Fit1DTool):
         self.cbar.set_dimensions(vert_pad=40)
         self.cbar.setPreferredWidth(60)
         self.plot_widget.addItem(self.cbar, 0, 2, 2, 1)
+        self.image_plot_legend: pg.LegendItem = self.image_plot.addLegend(offset=(5, 5))
+        self.image_plot_legend.setVisible(False)
+        if hasattr(self.image_plot_legend, "sigSampleClicked"):  # pragma: no branch
+            self.image_plot_legend.sigSampleClicked.connect(
+                self._on_image_legend_sample_clicked
+            )
 
         self.param_plot_container = QtWidgets.QWidget()
         param_plot_layout = QtWidgets.QVBoxLayout(self.param_plot_container)
         param_plot_layout.setContentsMargins(0, 0, 0, 0)
 
+        param_plot_controls = QtWidgets.QHBoxLayout()
+        param_plot_controls.addWidget(QtWidgets.QLabel("Parameter"))
         self.param_plot_combo = QtWidgets.QComboBox()
         self.param_plot_combo.currentIndexChanged.connect(self._update_param_plot)
-        param_plot_layout.addWidget(self.param_plot_combo)
+        param_plot_controls.addWidget(self.param_plot_combo)
 
         self.param_plot_widget = pg.GraphicsLayoutWidget()
+        self.param_plot_overlay_check = QtWidgets.QCheckBox("Overlay")
+        self.param_plot_overlay_check.setToolTip(
+            "Overlay the current parameter plot on the image plot."
+        )
+        self.param_plot_overlay_check.toggled.connect(self._toggle_param_plot_overlay)
+        param_plot_controls.addWidget(self.param_plot_overlay_check)
+        param_plot_controls.addStretch()
+        param_plot_layout.addLayout(param_plot_controls)
         param_plot_layout.addWidget(self.param_plot_widget)
         self.param_plot = self.param_plot_widget.addPlot()
         self.param_plot.setDefaultPadding(0)
@@ -434,6 +456,7 @@ class Fit2DTool(Fit1DTool):
 
         self.resize(1024, 610)
         self._update_param_plot_options()
+        self._update_param_plot_overlays()
 
     @property
     def tool_status(self) -> Fit1DTool.StateModel:
@@ -450,6 +473,8 @@ class Fit2DTool(Fit1DTool):
                 'typing.Literal["previous", "extrapolate", "none"]',
                 self.fill_mode_combo.currentText().lower(),
             ),
+            y_limits=(self.y_min_spin.value(), self.y_max_spin.value()),
+            param_plot_overlay_states=self._param_plot_overlay_states.copy(),
         )
         return self.StateModel(**state_dict)
 
@@ -460,13 +485,22 @@ class Fit2DTool(Fit1DTool):
         )
         state2d = status.state2d
         if state2d is not None:  # pragma: no branch
-            self._current_idx = state2d.current_idx
             self._data_name_full = state2d.data_name_full
             self._params_from_coord_full = state2d.params_from_coord_full.copy()
             self._params_full = [
                 self._deserialize_params(params) for params in state2d.params_full
             ]
             self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
+            self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
+            if state2d.y_limits is not None:  # pragma: no branch
+                with (
+                    QtCore.QSignalBlocker(self.y_min_spin),
+                    QtCore.QSignalBlocker(self.y_max_spin),
+                ):
+                    self.y_min_spin.setValue(state2d.y_limits[0])
+                    self.y_max_spin.setValue(state2d.y_limits[1])
+                self._y_minmax_changed()
+            self._current_idx = state2d.current_idx
         self.y_index_spin.setValue(self._current_idx)
 
     @QtCore.Slot()
@@ -536,12 +570,49 @@ class Fit2DTool(Fit1DTool):
         with QtCore.QSignalBlocker(self.param_plot_combo):
             prev_param = self.param_plot_combo.currentText()
             self.param_plot_combo.clear()
-            updated_names = self._model.param_names
+            updated_names = list(self._model.param_names)
             self.param_plot_combo.addItems(updated_names)
+            if set(self._param_plot_overlay_states) != set(updated_names):
+                self._reset_param_plot_overlay_states(updated_names)
             if prev_param in updated_names:
                 self.param_plot_combo.setCurrentText(prev_param)
             else:
                 self._update_param_plot()
+        self._sync_param_plot_overlay_check()
+        self._update_param_plot_overlays()
+
+    def _apply_param_plot_overlay_states(self, states: dict[str, bool]) -> None:
+        """Apply saved overlay states and refresh overlay UI."""
+        param_names = list(self._model.param_names)
+        if set(states) != set(param_names):
+            self._reset_param_plot_overlay_states(param_names)
+            return
+        self._param_plot_overlay_states = dict(states)
+        self._sync_param_plot_overlay_check()
+        self._update_param_plot_overlays()
+
+    def _reset_param_plot_overlay_states(self, param_names: list[str]) -> None:
+        """Reset overlay state/items when parameter names change."""
+        for errbar, scatter in self._param_plot_overlay_items.values():
+            self.image_plot.removeItem(errbar)
+            self.image_plot.removeItem(scatter)
+        self._param_plot_overlay_items = {}
+        self._param_plot_overlay_states = dict.fromkeys(param_names, False)
+        self._clear_image_plot_legend()
+
+    def _toggle_param_plot_overlay(self, checked: bool) -> None:
+        """Toggle overlay visibility for the currently selected parameter."""
+        param_name = self.param_plot_combo.currentText()
+        if not param_name:  # pragma: no cover
+            return
+        self._param_plot_overlay_states[param_name] = checked
+        self._update_param_plot_overlays()
+        self._write_state()
+
+    def _image_legend_has_name(self, name: str) -> bool:
+        if self.image_plot_legend is None:  # pragma: no cover
+            return False
+        return any(item[1].text == name for item in self.image_plot_legend.items)
 
     def set_model(
         self,
@@ -586,32 +657,158 @@ class Fit2DTool(Fit1DTool):
     def _update_param_plot(self) -> None:
         param_name = self.param_plot_combo.currentText()
         self.param_plot.setLabel("bottom", param_name)
-        y_range_slice = self._y_range_slice()
+        plot_y, param_values, param_errors = self._param_plot_data(param_name)
+        self.param_plot_errbar.setData(x=param_values, y=plot_y, width=param_errors)
+        self.param_plot_scatter.setData(x=param_values, y=plot_y)
+        self._sync_param_plot_overlay_check()
+        self._update_param_plot_overlays()
+
+    def _on_image_legend_sample_clicked(self, sample, event=None) -> None:
+        """Mirror legend-driven visibility changes to error bars and state."""
+        item = getattr(sample, "item", None)
+        if item is None:
+            return
+        for name, (errbar, scatter) in self._param_plot_overlay_items.items():
+            if scatter is not item:
+                continue
+            QtCore.QTimer.singleShot(
+                0,
+                functools.partial(self._sync_overlay_visibility, name, scatter, errbar),
+            )
+            break
+
+    def _sync_overlay_visibility(
+        self,
+        name: str,
+        scatter: pg.ScatterPlotItem,
+        errbar: pg.ErrorBarItem,
+    ) -> None:
+        """Sync overlay visibility/state after legend toggles."""
+        visible = scatter.isVisible()
+        errbar.setVisible(visible)
+        self._param_plot_overlay_states[name] = visible
+        if self.param_plot_combo.currentText() == name:
+            self._sync_param_plot_overlay_check(checked=visible)
+        self._write_state()
+
+    def _sync_param_plot_overlay_check(self, *, checked: bool | None = None) -> None:
+        """Update the overlay checkbox for the current parameter."""
+        param_name = self.param_plot_combo.currentText()
+        if not param_name:  # pragma: no cover
+            return
+        if checked is None:  # pragma: no branch
+            checked = self._param_plot_overlay_states.get(param_name, False)
+        with QtCore.QSignalBlocker(self.param_plot_overlay_check):
+            self.param_plot_overlay_check.setChecked(checked)
+
+    def _clear_image_plot_legend(self) -> None:
+        """Remove all entries from the image plot legend."""
+        if self.image_plot_legend is None:  # pragma: no cover
+            return
+        for item in list(self.image_plot_legend.items):  # pragma: no branch
+            self.image_plot_legend.removeItem(item[1].text)
+        self.image_plot_legend.setVisible(False)
+
+    def _param_plot_data(
+        self,
+        param_name: str,
+        *,
+        y_vals: np.ndarray | None = None,
+        params_list: list[lmfit.Parameters | None] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if not param_name:  # pragma: no cover
+            return np.array([]), np.array([]), np.array([])
+        if y_vals is None or params_list is None:
+            y_range_slice = self._y_range_slice()
+            y_vals = self._y_values()[y_range_slice]
+            params_list = self._params_full[y_range_slice]
 
         plot_y = []
         param_values = []
         param_errors = []
-        for y, params, result_ds in zip(
-            self._y_values()[y_range_slice],
-            self._params_full[y_range_slice],
-            self._result_ds_full[y_range_slice],
-            strict=True,
-        ):
-            if (result_ds is None) or (params is None) or (param_name not in params):
+        for y, params in zip(y_vals, params_list, strict=True):
+            if (params is None) or (param_name not in params):
                 continue
             param = params[param_name]
             plot_y.append(y)
             param_values.append(param.value)
             param_errors.append(param.stderr if param.stderr is not None else 0.0)
 
-        plot_y = np.array(plot_y)
-        param_values = np.array(param_values)
-        self.param_plot_errbar.setData(
-            x=param_values,
-            y=plot_y,
-            width=np.array(param_errors),
+        return np.array(plot_y), np.array(param_values), np.array(param_errors)
+
+    def _update_param_plot_overlays(self) -> None:
+        """Update overlay items and legend for active parameters."""
+        if not any(self._param_plot_overlay_states.values()):
+            if self._param_plot_overlay_items:
+                for errbar, scatter in self._param_plot_overlay_items.values():
+                    self.image_plot.removeItem(errbar)
+                    self.image_plot.removeItem(scatter)
+                self._param_plot_overlay_items = {}
+            self._clear_image_plot_legend()
+            return
+
+        y_range_slice = self._y_range_slice()
+        y_vals = self._y_values()[y_range_slice]
+        params_list = self._params_full[y_range_slice]
+        enabled = []
+        for name, checked in self._param_plot_overlay_states.items():
+            if not checked:
+                items = self._param_plot_overlay_items.pop(name, None)
+                if items is not None:
+                    errbar, scatter = items
+                    self.image_plot.removeItem(errbar)
+                    self.image_plot.removeItem(scatter)
+                continue
+            enabled.append(name)
+            self._update_param_plot_overlay_data(
+                name, y_vals=y_vals, params_list=params_list
+            )
+
+        if self.image_plot_legend is None:
+            return
+        if not enabled:
+            self._clear_image_plot_legend()
+            return
+        for name in enabled:
+            if not self._image_legend_has_name(name):
+                scatter = self._param_plot_overlay_items.get(name, (None, None))[1]
+                if scatter is not None:
+                    self.image_plot_legend.addItem(scatter, name)
+        for item in list(self.image_plot_legend.items):
+            if item[1].text not in enabled:
+                self.image_plot_legend.removeItem(item[1].text)
+        self.image_plot_legend.setVisible(True)
+
+    def _update_param_plot_overlay_data(
+        self,
+        param_name: str,
+        *,
+        y_vals: np.ndarray | None = None,
+        params_list: list[lmfit.Parameters | None] | None = None,
+    ) -> None:
+        """Create/update overlay items for a single parameter."""
+        items = self._param_plot_overlay_items.get(param_name)
+        if items is None:
+            names = list(self._model.param_names)
+            idx = names.index(param_name) if param_name in names else 0
+            color = pg.intColor(idx, hues=max(len(names), 1), sat=128)
+            errbar = pg.ErrorBarItem(pen=pg.mkPen(color=color, width=1))
+            scatter = pg.ScatterPlotItem(
+                size=2,
+                pen=pg.mkPen(color=color),
+                brush=pg.mkBrush(color),
+                pxMode=True,
+            )
+            items = (errbar, scatter)
+            self._param_plot_overlay_items[param_name] = items
+            self.image_plot.addItem(errbar)
+            self.image_plot.addItem(scatter)
+        plot_y, param_values, param_errors = self._param_plot_data(
+            param_name, y_vals=y_vals, params_list=params_list
         )
-        self.param_plot_scatter.setData(x=param_values, y=plot_y)
+        errbar, scatter = items
+        errbar.setData(x=param_values, y=plot_y, width=param_errors)
+        scatter.setData(x=param_values, y=plot_y)
 
     def _refresh_contents_from_index(self, *, mark_fit_stale: bool = True) -> None:
         self._data = self._data_full.isel({self._y_dim_name: self._current_idx})
@@ -735,6 +932,8 @@ class Fit2DTool(Fit1DTool):
         self.y_min_line.setPos(min_val)
         self.y_max_line.setPos(max_val)
         self._update_full_fit_saveable()
+        self._update_param_plot()
+        self._write_state()
 
     def _y_range_slice(self) -> slice:
         return slice(self.y_min_spin.value(), self.y_max_spin.value() + 1)
