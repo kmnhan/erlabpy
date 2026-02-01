@@ -560,6 +560,8 @@ class _State2D(pydantic.BaseModel):
     params_full: list[list[tuple[typing.Any, ...]] | None]
     params_from_coord_full: list[dict[str, str]]
     fill_mode: typing.Literal["previous", "extrapolate", "none"]
+    y_limits: tuple[int, int] | None = None
+    param_plot_overlay_states: dict[str, bool] = pydantic.Field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -851,10 +853,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_multi_fit_data: xr.DataArray | None = None
         self._fit_multi_params: lmfit.Parameters | None = None
         self._prev_states: collections.deque[Fit1DTool.StateModel] = collections.deque(
-            maxlen=1000
+            maxlen=5000
         )
         self._next_states: collections.deque[Fit1DTool.StateModel] = collections.deque(
-            maxlen=1000
+            maxlen=5000
         )
         self._write_history = False
 
@@ -970,23 +972,19 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.domain_min_line.sigDragged.connect(self._domain_min_line_dragged)
         self.domain_max_line.sigDragged.connect(self._domain_max_line_dragged)
 
-        components_container = QtWidgets.QWidget(self.main_splitter)
-        components_layout = QtWidgets.QHBoxLayout(components_container)
-        components_layout.setContentsMargins(0, 0, 0, 0)
+        table_container = QtWidgets.QWidget(self.main_splitter)
+        table_layout = QtWidgets.QHBoxLayout(table_container)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_panel = QtWidgets.QWidget()
+        table_panel_layout = QtWidgets.QVBoxLayout(table_panel)
+        table_panel_layout.setContentsMargins(0, 0, 0, 0)
+        components_controls = QtWidgets.QHBoxLayout()
         self.components_check = QtWidgets.QCheckBox("Plot components")
         self.components_check.setChecked(False)
         self.components_check.toggled.connect(self._update_fit_curve)
-        components_layout.addWidget(self.components_check)
-        components_layout.addStretch(1)
-        components_container.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        components_container.setMaximumHeight(components_container.sizeHint().height())
-
-        table_container = QtWidgets.QWidget(self.main_splitter)
-        self._table_layout = QtWidgets.QHBoxLayout(table_container)
-        self._table_layout.setContentsMargins(0, 0, 0, 0)
+        components_controls.addWidget(self.components_check)
+        components_controls.addStretch(1)
+        table_panel_layout.addLayout(components_controls)
         self.table_splitter = QtWidgets.QSplitter(
             QtCore.Qt.Orientation.Horizontal, table_container
         )
@@ -1036,8 +1034,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             QtCore.Qt.ContextMenuPolicy.CustomContextMenu
         )
         self.param_view.customContextMenuRequested.connect(self._show_param_menu)
-        self.table_splitter.addWidget(self.param_view)
-        self._table_layout.addWidget(self.table_splitter, stretch=1)
+        table_panel_layout.addWidget(self.param_view)
+        self.table_splitter.addWidget(table_panel)
+        table_layout.addWidget(self.table_splitter)
 
         self.guess_button = QtWidgets.QPushButton("Guess")
         self.guess_button.clicked.connect(self._guess_params)

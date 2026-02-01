@@ -76,6 +76,38 @@ def test_fit2d_tool_status_restore(qtbot, exp_decay_model) -> None:
     assert win_restored.param_model.param_at(0).value == pytest.approx(3.0)
 
 
+def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:
+    data = _make_2d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_min_spin.setValue(1)
+    win.y_max_spin.setValue(2)
+    param_name = win.param_plot_combo.itemText(0)
+    win.param_plot_combo.setCurrentText(param_name)
+    win.param_plot_overlay_check.setChecked(True)
+
+    status = win.tool_status
+    assert status.state2d is not None
+    assert status.state2d.y_limits == (1, 2)
+    assert status.state2d.param_plot_overlay_states.get(param_name) is True
+
+    win_restored = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win_restored)
+    win_restored.tool_status = status
+
+    assert win_restored.y_min_spin.value() == 1
+    assert win_restored.y_max_spin.value() == 2
+    win_restored.param_plot_combo.setCurrentText(param_name)
+    assert win_restored.param_plot_overlay_check.isChecked() is True
+
+
 def test_fit2d_run_fit(qtbot, exp_decay_model) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
