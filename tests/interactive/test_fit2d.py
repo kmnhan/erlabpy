@@ -24,7 +24,7 @@ def _make_2d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("y", "x"), coords={"y": y, "x": x}, name="map")
 
 
-def test_ftool_2d_fill_and_transpose(qtbot) -> None:
+def test_ftool_2d_fill_and_transpose(qtbot, accept_dialog) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
@@ -39,7 +39,7 @@ def test_ftool_2d_fill_and_transpose(qtbot) -> None:
     assert win.param_model.param_at(0).value == pytest.approx(2.0)
 
     original_dims = win._data_full.dims
-    win._transpose()
+    accept_dialog(win._transpose)
     assert win._data_full.dims == (original_dims[1], original_dims[0])
     assert win._y_dim_name == win._data_full.dims[0]
 
