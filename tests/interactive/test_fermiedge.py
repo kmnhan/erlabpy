@@ -45,14 +45,14 @@ def test_goldtool(
 
     # Test save fit
     tmp_dir = tempfile.TemporaryDirectory()
-    filename = f"{tmp_dir.name}/fit_save.nc"
+    filename = f"{tmp_dir.name}/fit_save.h5"
 
     def _go_to_file(dialog: QtWidgets.QFileDialog):
         dialog.setDirectory(tmp_dir.name)
         dialog.selectFile(filename)
         focused = dialog.focusWidget()
         if isinstance(focused, QtWidgets.QLineEdit):
-            focused.setText("fit_save.nc")
+            focused.setText("fit_save.h5")
 
     # Save fit
     accept_dialog(win._save_poly_fit, pre_call=_go_to_file)
