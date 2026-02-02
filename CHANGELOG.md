@@ -2,6 +2,16 @@
 
 ### ✨ Features
 
+- **ftool:** improve parameter merging when changing model parameters (#264) ([e70e0e9](https://github.com/kmnhan/erlabpy/commit/e70e0e971d6120a4472c7c30c203a8bcd307a94c))
+
+  Changing model parameters now merges parameters more intelligently. Parameters that exist in both the old and new models are retained with their current values. Also, expressions are transferred if they can be evaluated with the new model's parameters; otherwise the computed value and bounds are
+
+  copied instead.
+
+- **ftool:** add overlay plot (#263) ([764379a](https://github.com/kmnhan/erlabpy/commit/764379a985ea0f87b0ba7b2509934a72706bd8d4))
+
+  Adds a parameter overlay checkbox next to the parameter selector for 2D fits that plots the selected parameter on the 2D image.
+
 - **analysis.fit:** add a Shirley background option to `MultiPeakModel` (#258) ([edcecb5](https://github.com/kmnhan/erlabpy/commit/edcecb5b680099f53b036c0756c95a04ce3b25e1))
 
   `MultiPeakModel` now supports a Shirley background.
@@ -10,7 +20,27 @@
 
 ### 🐞 Bug Fixes
 
+- **qsel.average:** average over all dimensions when no dimension is specified ([54d460b](https://github.com/kmnhan/erlabpy/commit/54d460bc3ce74473f69b0a141e44d2ea7be49e6a))
+
+  `DataArray.qsel.average()` now averages over all dimensions when `dim=None` is passed to match the behavior of `DataArray.mean()`.
+
+- **imagetool:** average coordinates when binning over non-uniform axes ([bce5a66](https://github.com/kmnhan/erlabpy/commit/bce5a66c67ebac122d38346d092f1881e2838ee7))
+
+  When binning over non-uniform axes, coordinates associated to the non-uniform dimension were dropped instead of being
+
+  averaged. This commit fixes that by using `qsel.average()` to average the coordinates along the binned dimensions.
+
 - **qsel:** drop non-numeric coordinates silently when averaging instead of raising an error ([26b4b29](https://github.com/kmnhan/erlabpy/commit/26b4b29351c8298c7c2248248f04af1ada38092e))
+
+### ⚡️ Performance
+
+- **interactive:** defer ImageTool UI updates (#262) ([e2ad0e8](https://github.com/kmnhan/erlabpy/commit/e2ad0e84aebe1f7bd9ef55386c0cbfc4849a5563))
+
+  ImageTool now lazy-populates colormap and control UI to reduce startup time, and avoids auto-showing windows when loading multiple DataArrays at once. The window contents are now computed on demand.
+
+### ♻️ Code Refactor
+
+- **ftool:** ask for confirmation before transposing data ([580c933](https://github.com/kmnhan/erlabpy/commit/580c93375980008262f99f93eb08671fd5db9561))
 
 ## v3.19.2 (2026-01-27)
 
