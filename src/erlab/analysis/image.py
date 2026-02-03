@@ -191,7 +191,7 @@ def gaussian_filter(
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
-        sigma_dict[d] / abs(darr[d].values[1] - darr[d].values[0]) for d in sigma_dict
+        sigma_dict[d] / erlab.utils.array._coord_inc(darr, d) for d in sigma_dict
     )
 
     # Convert arguments to tuples acceptable by scipy
@@ -208,7 +208,7 @@ def gaussian_filter(
 
         # Calculate radius in pixels
         radius_pix: tuple[int, ...] | None = tuple(
-            round(r / abs(darr[d].values[1] - darr[d].values[0]))
+            round(r / erlab.utils.array._coord_inc(darr, d))
             for d, r in radius_dict.items()
         )
     else:
@@ -389,8 +389,7 @@ def gaussian_laplace(
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
-        val / abs(darr[d].values[1] - darr[d].values[0])
-        for d, val in sigma_dict.items()
+        val / erlab.utils.array._coord_inc(darr, d) for d, val in sigma_dict.items()
     )
 
     return darr.copy(

@@ -10,6 +10,8 @@ import numpy as np
 import scipy.signal
 import xarray as xr
 
+import erlab
+
 
 def autocorrelate(arr, *args, **kwargs):
     """Calculate the autocorrelation of a N-dimensional array, normalized to 1.
@@ -82,8 +84,7 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
     """
     out = arr.copy(deep=True)
     acf = nanacf(out.values, mode=mode, method=method)
-    coords = [out[d].values for d in out.dims]
-    steps = [c[1] - c[0] for c in coords]
+    steps = [erlab.utils.array._coord_inc(out, d) for d in out.dims]
     out = xr.DataArray(
         acf,
         {
@@ -119,7 +120,7 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
         )
         acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
         acf_sizes = dict(zip(acf_dims, out_list[0].shape, strict=True))
-        acf_steps = tuple(arr[d].values[1] - arr[d].values[0] for d in acf_dims)
+        acf_steps = tuple(erlab.utils.array._coord_inc(arr, d) for d in acf_dims)
 
         out_sizes = stack_sizes | acf_sizes
 

@@ -471,6 +471,10 @@ def symmetrize(
     """
     if not erlab.utils.array.is_dims_uniform(darr, (dim,)):
         raise ValueError(f"Coordinate along dimension {dim} must be uniformly spaced")
+    if darr[dim].size < 2:
+        raise ValueError(
+            f"Coordinate along dimension {dim} must contain at least two values"
+        )
 
     if interp_kw is None:
         interp_kw = {}

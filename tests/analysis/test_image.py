@@ -120,6 +120,20 @@ def test_gaussian_laplace() -> None:
     xr.testing.assert_identical(result2, expected_output2)
 
 
+def test_gaussian_filters_handle_singleton_coords() -> None:
+    darr = xr.DataArray(
+        np.arange(5, dtype=float).reshape((1, 5)),
+        dims=["x", "y"],
+        coords={"x": np.array([0.0]), "y": np.arange(5, dtype=float)},
+    )
+
+    result = era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
+    result_laplace = era.image.gaussian_laplace(darr, sigma={"x": 1.0, "y": 1.0})
+
+    assert result.shape == darr.shape
+    assert result_laplace.shape == darr.shape
+
+
 def test_boxcar_filter() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
