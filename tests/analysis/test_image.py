@@ -170,6 +170,21 @@ def test_boxcar_filter() -> None:
     xr.testing.assert_identical(result, expected_output)
 
 
+def test_boxcar_filter_dask() -> None:
+    da = pytest.importorskip("dask.array")
+
+    data = np.arange(200, dtype=float).reshape((20, 10))
+    darr = xr.DataArray(data, dims=["x", "y"])
+    darr_chunked = xr.DataArray(da.from_array(data, chunks=(5, 4)), dims=["x", "y"])
+
+    result = era.image.boxcar_filter(darr, size={"x": 3, "y": 5})
+    result_chunked = era.image.boxcar_filter(
+        darr_chunked, size={"x": 3, "y": 5}
+    ).compute()
+
+    xr.testing.assert_allclose(result, result_chunked)
+
+
 def test_laplace() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
