@@ -158,6 +158,7 @@ class Fit2DTool(Fit1DTool):
     def _init_full_data_state(self, data: xr.DataArray, *, data_name: str) -> None:
         self._data_full: xr.DataArray = data
         self._y_dim_name: Hashable = data.dims[0]
+        self._y_values_cache: np.ndarray | None = None
         y_size = int(self._data_full.sizes[self._y_dim_name])
         self._current_idx: int = y_size // 2
         self._params_full = [None] * y_size
@@ -1195,10 +1196,16 @@ class Fit2DTool(Fit1DTool):
         self._update_param_plot()
 
     def _y_values(self) -> np.ndarray:
+        if self._y_values_cache is not None:
+            return self._y_values_cache
         if self._y_dim_name in self._data_full.coords:
             coords = self._data_full.coords[self._y_dim_name]
-            return np.asarray(coords.values)
-        return np.arange(self._data_full.sizes[self._y_dim_name], dtype=float)
+            self._y_values_cache = np.asarray(coords.values)
+        else:
+            self._y_values_cache = np.arange(
+                self._data_full.sizes[self._y_dim_name], dtype=float
+            )
+        return self._y_values_cache
 
     def _refresh_main_image(self) -> None:
         self.image.setDataArray(self._data_full)
