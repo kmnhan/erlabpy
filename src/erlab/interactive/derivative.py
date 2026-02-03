@@ -304,10 +304,8 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
                     self.data[self.xdim].values,
                     self.data[self.ydim].values,
                 )
-                xinc, yinc = (
-                    np.abs(xcoords[1] - xcoords[0]),
-                    np.abs(ycoords[1] - ycoords[0]),
-                )
+                xinc = np.abs(xcoords[1] - xcoords[0]) if xcoords.size > 1 else 1.0
+                yinc = np.abs(ycoords[1] - ycoords[0]) if ycoords.size > 1 else 1.0
 
                 sx_value, sy_value = (
                     round(sx_value * xinc, erlab.utils.array.effective_decimals(xinc)),
