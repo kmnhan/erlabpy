@@ -28,3 +28,21 @@ def test_nonuniform_axes_detects_generated_idx_dim(qtbot) -> None:
 
     assert str(slicer._obj.dims[0]).endswith("_idx")
     assert slicer._nonuniform_axes == [0]
+
+
+def test_set_array_shallow_copy_does_not_require_deep_copy(qtbot) -> None:
+    data1 = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+    data2 = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+
+    slicer = ArraySlicer(data1, parent=QtCore.QObject())
+    slicer.set_array(data2, validate=False, reset=True)
+
+    assert slicer._obj.equals(data2)
