@@ -24,6 +24,20 @@ def test_acf2_handles_nans_and_renames_axes() -> None:
     assert np.isclose(result.sel(qx=0.0, qy=0.0), 1.0)
 
 
+def test_acf2_singleton_coords() -> None:
+    data = xr.DataArray(
+        [[1.0]],
+        dims=("kx", "ky"),
+        coords={"kx": [0.0], "ky": [0.0]},
+    )
+
+    result = correlation.acf2(data)
+
+    assert result.dims == ("qx", "qy")
+    np.testing.assert_allclose(result.qx.values, [0.0])
+    np.testing.assert_allclose(result.qy.values, [0.0])
+
+
 def test_acf2stack_invalid_dim_count(monkeypatch) -> None:
     monkeypatch.setattr(joblib.parallel, "DEFAULT_BACKEND", "threading")
     arr = xr.DataArray(np.zeros((2, 2, 2, 2)), dims=("a", "b", "c", "d"))
