@@ -82,7 +82,7 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
     * qy       (qy) int64 152B -9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7 8 9
 
     """
-    out = arr.copy(deep=True)
+    out = arr.copy(deep=False)
     acf = nanacf(out.values, mode=mode, method=method)
     steps = [erlab.utils.array._coord_inc(out, d) for d in out.dims]
     out = xr.DataArray(
