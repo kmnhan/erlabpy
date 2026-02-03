@@ -80,7 +80,7 @@ class _WarningNotificationHandler(logging.Handler):
                 return
 
             if record.exc_info:
-                traceback_msg = "".join(traceback.format_exception(record.exc_info[1]))
+                traceback_msg = "".join(traceback.format_exception(*record.exc_info))
 
             if traceback_msg:
                 traceback_msg = erlab.interactive.utils._format_traceback(traceback_msg)
