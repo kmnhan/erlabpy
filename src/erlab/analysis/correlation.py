@@ -84,6 +84,15 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
     """
     out = arr.copy(deep=False)
     acf = nanacf(out.values, mode=mode, method=method)
+    # Check uniform spacing
+    for d in out.dims:
+        if not erlab.utils.array.is_uniform_spaced(arr[d].values):
+            raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+        if arr[d].size < 2:
+            raise ValueError(
+                f"Dimension `{d}` must have at least two coordinate values"
+            )
+
     steps = [erlab.utils.array._coord_inc(out, d) for d in out.dims]
     out = xr.DataArray(
         acf,
@@ -120,6 +129,13 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
         )
         acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
         acf_sizes = dict(zip(acf_dims, out_list[0].shape, strict=True))
+        for d in acf_dims:
+            if not erlab.utils.array.is_uniform_spaced(arr[d].values):
+                raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+            if arr[d].size < 2:
+                raise ValueError(
+                    f"Dimension `{d}` must have at least two coordinate values"
+                )
         acf_steps = tuple(erlab.utils.array._coord_inc(arr, d) for d in acf_dims)
 
         out_sizes = stack_sizes | acf_sizes
