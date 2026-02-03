@@ -153,7 +153,7 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
 def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
     """Perform 1-dimensional correlation analysis on `xarray.DataArray` s."""
     in2 = in2.interp_like(in1)
-    out = in1.copy(deep=True)
+    out = in1.copy(deep=False)
     xind = scipy.signal.correlation_lags(in1.values.size, in2.values.size, mode="same")
     xzero = np.flatnonzero(xind == 0)[0]
     out.values = scipy.signal.correlate(

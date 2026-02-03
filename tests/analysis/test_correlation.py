@@ -69,3 +69,21 @@ def test_xcorr1d_aligns_coordinate_zero() -> None:
 
     np.testing.assert_allclose(result.values, expected)
     np.testing.assert_allclose(result["x"].values, [-1.0, 0.0, 1.0])
+
+
+def test_xcorr1d_does_not_mutate_input() -> None:
+    in1 = xr.DataArray(
+        [1.0, 0.0, -1.0],
+        dims="x",
+        coords={"x": [0.0, 1.0, 2.0]},
+    )
+    in2 = xr.DataArray(
+        [0.0, 2.0, 0.0],
+        dims="x",
+        coords={"x": [0.0, 2.0, 4.0]},
+    )
+    in1_before = in1.copy(deep=True)
+
+    _ = correlation.xcorr1d(in1, in2, method="direct")
+
+    xr.testing.assert_identical(in1, in1_before)
