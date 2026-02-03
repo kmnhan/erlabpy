@@ -232,7 +232,9 @@ class ArraySlicer(QtCore.QObject):
         """
         obj_original: xr.DataArray | None = None
         if hasattr(self, "_obj"):
-            obj_original = self._obj.copy()
+            # Shallow copy is enough: we only compare dims/coords for cursor
+            # compatibility.
+            obj_original = self._obj.copy(deep=False)
             del self._obj
 
         if validate:
