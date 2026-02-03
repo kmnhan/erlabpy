@@ -13,6 +13,7 @@ from erlab.interactive.utils import (
     MessageDialog,
     PythonHighlighter,
     SingleLinePlainTextEdit,
+    array_rect,
     generate_code,
     load_fit_ui,
     save_fit_ui,
@@ -120,6 +121,19 @@ def test_identifier_validator_validate(input_str, expected_state):
     validator = IdentifierValidator()
     state, _, _ = validator.validate(input_str, 0)
     assert state == expected_state
+
+
+def test_array_rect_handles_singleton_dimension() -> None:
+    data = xr.DataArray(
+        np.zeros((1, 5)),
+        dims=("y", "x"),
+        coords={"y": np.array([2.0]), "x": np.arange(5, dtype=float)},
+    )
+
+    rect = array_rect(data)
+
+    assert rect.height() == pytest.approx(1.0)
+    assert rect.width() == pytest.approx(5.0)
 
 
 @pytest.mark.parametrize(
