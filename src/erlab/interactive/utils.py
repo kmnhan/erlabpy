@@ -1621,9 +1621,15 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
 
     def set_cut_tolerance(self, cut_tolerance) -> None:
         try:
-            self.cut_tolerance = list(cut_tolerance.__iter__)
-        except AttributeError:
+            values = list(cut_tolerance)
+        except TypeError:
             self.cut_tolerance = [cut_tolerance] * 2
+        else:
+            if len(values) == 1:
+                values = values * 2
+            elif len(values) < 2:
+                raise ValueError("cut_tolerance must have at least one value.")
+            self.cut_tolerance = values[:2]
         self.setImage(levels=self.data_cut_levels())
 
     def data_cut_levels(self, data=None):

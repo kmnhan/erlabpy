@@ -17,6 +17,7 @@ from erlab.interactive.utils import (
     generate_code,
     load_fit_ui,
     save_fit_ui,
+    xImageItem,
 )
 
 
@@ -134,6 +135,18 @@ def test_array_rect_handles_singleton_dimension() -> None:
 
     assert rect.height() == pytest.approx(1.0)
     assert rect.width() == pytest.approx(5.0)
+
+
+def test_ximageitem_set_cut_tolerance_scalar(qtbot) -> None:
+    item = xImageItem()
+    item.set_cut_tolerance(10)
+    assert item.cut_tolerance == [10, 10]
+
+
+def test_ximageitem_set_cut_tolerance_iterable(qtbot) -> None:
+    item = xImageItem()
+    item.set_cut_tolerance([5, 15])
+    assert item.cut_tolerance == [5, 15]
 
 
 @pytest.mark.parametrize(
