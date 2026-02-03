@@ -263,26 +263,6 @@ def gaussian_filter(
     )
 
 
-@cfunc(
-    types.intc(
-        types.CPointer(types.float64),
-        types.intp,
-        types.CPointer(types.float64),
-        types.voidptr,
-    )
-)
-def _boxcar_kernel_nb(values_ptr, len_values, result, data) -> int:
-    values = carray(values_ptr, (len_values,), dtype=types.float64)
-    result[0] = np.mean(values)
-    return 1
-
-
-# https://github.com/jni/llc-tools/issues/3#issuecomment-757134814
-_boxcar_func = scipy.LowLevelCallable(
-    _boxcar_kernel_nb.ctypes, signature="int (double *, npy_intp, double *, void *)"
-)
-
-
 def boxcar_filter(
     darr: xr.DataArray,
     size: int | Collection[int] | Mapping[Hashable, int],
@@ -319,15 +299,36 @@ def boxcar_filter(
         else:
             size_pix.append(1)
 
-    return darr.copy(
-        data=scipy.ndimage.generic_filter(
+    size_tuple = tuple(size_pix)
+    data = darr.data
+
+    if darr.chunks is None:
+        filtered = scipy.ndimage.uniform_filter(
             darr.values.astype(np.float64),
-            _boxcar_func,
-            size=tuple(size_pix),
+            size=size_tuple,
             mode=mode,
             cval=cval,
-        ).astype(darr.dtype)
-    )
+        )
+    else:
+        data = data.astype(np.float64)
+        depth: dict[int, int] = {
+            axis: int(size_tuple[axis] // 2) for axis in range(data.ndim)
+        }
+        filtered = data.map_overlap(
+            scipy.ndimage.uniform_filter,
+            depth=depth,
+            boundary="none",
+            trim=True,
+            meta=data._meta,
+            size=size_tuple,
+            mode=mode,
+            cval=cval,
+        )
+
+    if filtered.dtype != darr.dtype:
+        filtered = filtered.astype(darr.dtype)
+
+    return darr.copy(data=filtered)
 
 
 def gaussian_laplace(
