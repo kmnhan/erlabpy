@@ -62,7 +62,7 @@ class _WarningNotificationHandler(logging.Handler):
         traceback_header = "Traceback (most recent call last):"
         traceback_msg = ""
         try:
-            message = str(record.message)
+            message = record.getMessage()
 
             if message.strip() == traceback_header:
                 # Ignore messages that are only the traceback header
