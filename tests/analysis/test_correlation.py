@@ -31,11 +31,8 @@ def test_acf2_singleton_coords() -> None:
         coords={"kx": [0.0], "ky": [0.0]},
     )
 
-    result = correlation.acf2(data)
-
-    assert result.dims == ("qx", "qy")
-    np.testing.assert_allclose(result.qx.values, [0.0])
-    np.testing.assert_allclose(result.qy.values, [0.0])
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        correlation.acf2(data)
 
 
 def test_acf2stack_invalid_dim_count(monkeypatch) -> None:

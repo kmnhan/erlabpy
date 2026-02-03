@@ -127,11 +127,23 @@ def test_gaussian_filters_handle_singleton_coords() -> None:
         coords={"x": np.array([0.0]), "y": np.arange(5, dtype=float)},
     )
 
-    result = era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
-    result_laplace = era.image.gaussian_laplace(darr, sigma={"x": 1.0, "y": 1.0})
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        era.image.gaussian_laplace(darr, sigma={"x": 1.0, "y": 1.0})
 
-    assert result.shape == darr.shape
-    assert result_laplace.shape == darr.shape
+
+def test_gaussian_filters_handle_constant_coords() -> None:
+    darr = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=["x", "y"],
+        coords={"x": np.array([1.0, 1.0]), "y": np.array([0.0, 1.0, 2.0])},
+    )
+
+    with pytest.raises(ValueError, match="constant spacing"):
+        era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
+    with pytest.raises(ValueError, match="constant spacing"):
+        era.image.gaussian_laplace(darr, sigma={"x": 1.0, "y": 1.0})
 
 
 def test_boxcar_filter() -> None:

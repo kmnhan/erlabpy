@@ -188,6 +188,10 @@ def gaussian_filter(
     for d in sigma_dict:
         if not erlab.utils.array.is_uniform_spaced(darr[d].values):
             raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+        if darr[d].size < 2:
+            raise ValueError(
+                f"Dimension `{d}` must have at least two coordinate values"
+            )
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
@@ -383,14 +387,23 @@ def gaussian_laplace(
         allow_subset=False,
     )
 
-    # Convert mode to tuple acceptable by scipy
-    if isinstance(mode, Mapping):
-        mode = tuple(mode[d] for d in sigma_dict)
+    # Check uniform spacing
+    for d in sigma_dict:
+        if not erlab.utils.array.is_uniform_spaced(darr[d].values):
+            raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+        if darr[d].size < 2:
+            raise ValueError(
+                f"Dimension `{d}` must have at least two coordinate values"
+            )
 
     # Calculate sigma in pixels
     sigma_pix: tuple[float, ...] = tuple(
         val / erlab.utils.array._coord_inc(darr, d) for d, val in sigma_dict.items()
     )
+
+    # Convert mode to tuple acceptable by scipy
+    if isinstance(mode, Mapping):
+        mode = tuple(mode[d] for d in sigma_dict)
 
     return darr.copy(
         data=scipy.ndimage.gaussian_laplace(

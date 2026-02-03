@@ -51,7 +51,10 @@ def _coord_inc(darr: xr.DataArray, dim: Hashable) -> float:
     """
     values = darr[dim].values
     if values.size > 1:
-        return abs(values[1] - values[0])
+        inc = abs(values[1] - values[0])
+        if inc == 0:
+            raise ValueError(f"Coordinate `{dim}` has constant spacing of 0.")
+        return inc
     return 1.0
 
 

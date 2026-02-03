@@ -579,9 +579,9 @@ class KspaceTool(KspaceToolGUI):
             f"({self.data.kspace.configuration.name})"
         )
 
-        if self.data.kspace._has_eV:
+        if self.data.kspace._has_eV and self.data.eV.size > 1:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
-            eV_step = erlab.utils.array._coord_inc(self.data, "eV")
+            eV_step = float(self.data.eV[1] - self.data.eV[0])
             self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
             self.center_spin.setSingleStep(eV_step)
             self.width_spin.setRange(1, len(self.data.eV))
