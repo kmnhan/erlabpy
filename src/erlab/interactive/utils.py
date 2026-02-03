@@ -547,7 +547,9 @@ class MessageDialog(QtWidgets.QDialog):
 
 def array_rect(data):
     data_coords = tuple(data[dim].values for dim in data.dims)
-    data_incs = tuple(coord[1] - coord[0] for coord in data_coords)
+    data_incs = tuple(
+        (coord[1] - coord[0]) if coord.size > 1 else 1.0 for coord in data_coords
+    )
     data_lims = tuple((coord[0], coord[-1]) for coord in data_coords)
     y, x = data_lims[0][0] - data_incs[0], data_lims[1][0] - data_incs[1]
     h, w = data_lims[0][-1] - y, data_lims[1][-1] - x
