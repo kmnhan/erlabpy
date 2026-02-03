@@ -370,15 +370,8 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
                 self.result, levels=self.get_levels(self.result.values)
             )
 
-    def get_levels(self, data, cutoff=None) -> tuple[float, float]:
-        if cutoff is None:
-            cutoff = (self.lo_spin.value(), self.hi_spin.value())
-        else:
-            try:
-                cutoff = list(cutoff.__iter__)
-            except AttributeError:
-                cutoff = [cutoff] * 2
-
+    def get_levels(self, data) -> tuple[float, float]:
+        cutoff = (self.lo_spin.value(), self.hi_spin.value())
         pu, pl = np.percentile(data, [100 - cutoff[1], cutoff[0]])
         return max(pl, data.min()), min(pu, data.max())
 
