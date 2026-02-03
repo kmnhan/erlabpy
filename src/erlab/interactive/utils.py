@@ -1166,6 +1166,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     @QtCore.Slot(str)
     def setPrefix(self, prefix: str) -> None:
         self._prefix = prefix
+        self._updateWidth()
+        self.setValue(self.value())
 
     def prefix(self) -> str:
         return self._prefix
@@ -1174,6 +1176,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def setDecimals(self, decimals: int) -> None:
         self._decimals = decimals
         self._updateWidth()
+        self.setValue(self.value())
 
     def decimals(self) -> int:
         return self._decimals
@@ -1220,7 +1223,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         return self._min
 
     def value(self):
-        if self._only_int:
+        if self._only_int and np.isfinite(self._value):
             return int(self._value)
         return self._value
 
@@ -1321,7 +1324,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             ret = QtGui.QValidator.State.Intermediate
             try:
                 val = self.valueFromText(strn)
-                if val < self.maximum() and val > self.minimum():
+                if val <= self.maximum() and val >= self.minimum():
                     ret = QtGui.QValidator.State.Acceptable
             except ValueError:
                 # sys.excepthook(*sys.exc_info())
