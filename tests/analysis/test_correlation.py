@@ -84,3 +84,35 @@ def test_xcorr1d_does_not_mutate_input() -> None:
     _ = correlation.xcorr1d(in1, in2, method="direct")
 
     xr.testing.assert_identical(in1, in1_before)
+
+
+def test_xcorr1d_rejects_non_uniform_coords() -> None:
+    in1 = xr.DataArray(
+        [1.0, 0.0, -1.0],
+        dims="x",
+        coords={"x": [0.0, 1.0, 3.0]},
+    )
+    in2 = xr.DataArray(
+        [0.0, 2.0, 0.0],
+        dims="x",
+        coords={"x": [0.0, 2.0, 4.0]},
+    )
+
+    with pytest.raises(ValueError, match="not uniformly spaced"):
+        correlation.xcorr1d(in1, in2, method="direct")
+
+
+def test_xcorr1d_rejects_singleton_coords() -> None:
+    in1 = xr.DataArray(
+        [1.0],
+        dims="x",
+        coords={"x": [0.0]},
+    )
+    in2 = xr.DataArray(
+        [1.0],
+        dims="x",
+        coords={"x": [0.0]},
+    )
+
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        correlation.xcorr1d(in1, in2, method="direct")

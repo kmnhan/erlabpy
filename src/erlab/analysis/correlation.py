@@ -169,6 +169,11 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
 def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
     """Perform 1-dimensional correlation analysis on `xarray.DataArray` s."""
     in2 = in2.interp_like(in1)
+    dim = in1.dims[0]
+    if not erlab.utils.array.is_uniform_spaced(in1[dim].values):
+        raise ValueError(f"Dimension `{dim}` is not uniformly spaced")
+    if in1[dim].size < 2:
+        raise ValueError(f"Dimension `{dim}` must have at least two coordinate values")
     out = in1.copy(deep=False)
     xind = scipy.signal.correlation_lags(in1.values.size, in2.values.size, mode="same")
     xzero = np.flatnonzero(xind == 0)[0]
