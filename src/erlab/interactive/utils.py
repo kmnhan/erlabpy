@@ -303,9 +303,8 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog
 def _format_traceback(exc_text: str) -> str:
     """Format a traceback string with syntax highlighting if possible.
 
-    If the `pygments` package is installed, the traceback will be formatted into an HTML
-    string with syntax highlighting. If `pygments` is not installed, the traceback will
-    be returned as a plain text string wrapped in `<pre>` tags.
+    The traceback will be formatted into an HTML string with syntax highlighting using
+    `pygments`.
     """
     import pygments
     import pygments.formatters
