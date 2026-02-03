@@ -62,3 +62,19 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
         assert win.tool_status == win_restored.tool_status
         assert str(win_restored.info_text) == str(win.info_text)
         check_generated_code(win_restored)
+
+
+def test_smooth_args_handles_singleton_coords(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(5).reshape((1, 5)).astype(np.float64),
+        dims=["x", "y"],
+        coords={"x": np.array([0.0]), "y": np.arange(5, dtype=float)},
+        name="data",
+    )
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.smooth_combo.setCurrentIndex(0)
+    args = win.smooth_args
+
+    assert isinstance(args, dict)
