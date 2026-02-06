@@ -275,6 +275,9 @@ def _interp1(x, values, xc, fill_value=np.nan):
     return arr_new.reshape(out_shape)
 
 
+_interp1_serial = numba.njit(_interp1.py_func, parallel=False, cache=True)
+
+
 @numba.njit(nogil=True, parallel=True, cache=True)
 def _interp2(x, y, values, xc, yc, fill_value=np.nan):
     out_shape = xc.shape + values.shape[2:]
