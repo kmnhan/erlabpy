@@ -240,7 +240,7 @@ def rotate(
 def _ndimage_shift(arr, shift, order=3, mode="constant", cval=0.0, prefilter=False):
     if order == 1 and mode == "constant":
         x = np.arange(arr.size)
-        return erlab.analysis.interpolate._interp1(x, arr, x - shift[0], cval)
+        return erlab.analysis.interpolate._interp1_serial(x, arr, x - shift[0], cval)
 
     return scipy.ndimage.shift(
         arr, shift, order=order, mode=mode, cval=cval, prefilter=prefilter
@@ -253,6 +253,8 @@ def shift(
     along: str,
     *,
     shift_coords: bool = False,
+    keep_dim_order: bool = True,
+    assume_sorted: bool = False,
     **shift_kwargs,
 ) -> xr.DataArray:
     """Shifts the values of a DataArray along a single dimension.
@@ -278,6 +280,15 @@ def shift(
         contains all the values of the original data. If `False`, the coordinates and
         shape of the original data will be retained, and only the data will be shifted.
         Defaults to `False`.
+    keep_dim_order
+        If `True`, the ouput array will be transposed to match the input data.
+        Otherwise, the axis order may change due to the application of
+        :func:`xarray.apply_ufunc`. Default is `True`.
+    assume_sorted
+        If `False`, the data is sorted with respect to ``along`` using
+        :meth:`xarray.DataArray.sortby`. Providing `True` skips the sort. Use `True`
+        when you are already sure that the data is sorted ascending with respect to
+        ``along``.
     **shift_kwargs
         Additional keyword arguments passed onto `scipy.ndimage.shift`. The default
         values of some parameters are different from scipy. ``order`` is set to 1,
@@ -335,7 +346,7 @@ def shift(
         raise ValueError("Dimension to shift along cannot be in shift DataArray")
 
     # Sort along the target dimension
-    out = darr.sortby(along)
+    out = darr if assume_sorted else darr.sortby(along)
 
     # Get step along the dimension (must be evenly spaced, same as before)
     coord = out[along].values
@@ -387,7 +398,8 @@ def shift(
     # Apply over the `along` axis, vectorized over the rest
     # - arr has core dim [along]
     # - shift has no core dims (scalar for each outer position)
-    return xr.apply_ufunc(
+    original_dims = tuple(out.dims)
+    out = xr.apply_ufunc(
         _shift_1d,
         out,
         shift_broadcast,
@@ -396,7 +408,10 @@ def shift(
         vectorize=True,
         dask="parallelized",
         output_dtypes=[out.dtype],
-    ).transpose(*out.dims)
+    )
+    if keep_dim_order:
+        out = out.transpose(*original_dims)
+    return out
 
 
 def symmetrize(
