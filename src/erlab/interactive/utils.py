@@ -303,9 +303,8 @@ def wait_dialog(parent: QtWidgets.QWidget, message: str) -> Iterator[_WaitDialog
 def _format_traceback(exc_text: str) -> str:
     """Format a traceback string with syntax highlighting if possible.
 
-    If the `pygments` package is installed, the traceback will be formatted into an HTML
-    string with syntax highlighting. If `pygments` is not installed, the traceback will
-    be returned as a plain text string wrapped in `<pre>` tags.
+    The traceback will be formatted into an HTML string with syntax highlighting using
+    `pygments`.
     """
     import pygments
     import pygments.formatters
@@ -547,7 +546,9 @@ class MessageDialog(QtWidgets.QDialog):
 
 def array_rect(data):
     data_coords = tuple(data[dim].values for dim in data.dims)
-    data_incs = tuple(coord[1] - coord[0] for coord in data_coords)
+    data_incs = tuple(
+        (coord[1] - coord[0]) if coord.size > 1 else 1.0 for coord in data_coords
+    )
     data_lims = tuple((coord[0], coord[-1]) for coord in data_coords)
     y, x = data_lims[0][0] - data_incs[0], data_lims[1][0] - data_incs[1]
     h, w = data_lims[0][-1] - y, data_lims[1][-1] - x
@@ -1166,6 +1167,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     @QtCore.Slot(str)
     def setPrefix(self, prefix: str) -> None:
         self._prefix = prefix
+        self._updateWidth()
+        self.setValue(self.value())
 
     def prefix(self) -> str:
         return self._prefix
@@ -1174,6 +1177,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def setDecimals(self, decimals: int) -> None:
         self._decimals = decimals
         self._updateWidth()
+        self.setValue(self.value())
 
     def decimals(self) -> int:
         return self._decimals
@@ -1220,7 +1224,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         return self._min
 
     def value(self):
-        if self._only_int:
+        if self._only_int and np.isfinite(self._value):
             return int(self._value)
         return self._value
 
@@ -1321,7 +1325,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             ret = QtGui.QValidator.State.Intermediate
             try:
                 val = self.valueFromText(strn)
-                if val < self.maximum() and val > self.minimum():
+                if val <= self.maximum() and val >= self.minimum():
                     ret = QtGui.QValidator.State.Acceptable
             except ValueError:
                 # sys.excepthook(*sys.exc_info())
@@ -1616,9 +1620,15 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
 
     def set_cut_tolerance(self, cut_tolerance) -> None:
         try:
-            self.cut_tolerance = list(cut_tolerance.__iter__)
-        except AttributeError:
+            values = list(cut_tolerance)
+        except TypeError:
             self.cut_tolerance = [cut_tolerance] * 2
+        else:
+            if len(values) == 1:
+                values = values * 2
+            elif len(values) < 2:
+                raise ValueError("cut_tolerance must have at least one value.")
+            self.cut_tolerance = values[:2]
         self.setImage(levels=self.data_cut_levels())
 
     def data_cut_levels(self, data=None):

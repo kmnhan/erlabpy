@@ -28,6 +28,36 @@ import numpy.typing as npt
 import xarray as xr
 
 
+def _coord_inc(darr: xr.DataArray, dim: Hashable) -> float:
+    """Return coordinate increment for a dimension.
+
+    If a dimension has only one coordinate value, return 1.0.
+
+    This function assumes that the coordinate along the given dimension is uniformly
+    spaced.
+
+    Parameters
+    ----------
+    darr
+        Input DataArray.
+    dim
+        Dimension name to compute the increment for.
+
+    Returns
+    -------
+    float
+        Absolute difference between the first two coordinate values, or ``1.0`` if the
+        coordinate has only one value.
+    """
+    values = darr[dim].values
+    if values.size > 1:
+        inc = abs(values[1] - values[0])
+        if inc == 0:
+            raise ValueError(f"Coordinate `{dim}` has constant spacing of 0.")
+        return inc
+    return 1.0
+
+
 def broadcast_args(func: Callable) -> Callable:
     """Decorate a function to broadcast all DataArray arguments.
 

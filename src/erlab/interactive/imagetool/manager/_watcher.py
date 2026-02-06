@@ -172,6 +172,8 @@ class _Watcher:
         self._stop.clear()
         context = zmq.Context.instance()
         sock: zmq.Socket = context.socket(zmq.SUB)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.setsockopt(zmq.RCVTIMEO, 100)
         sock.setsockopt(zmq.SUBSCRIBE, b"")  # Subscribe to all messages
         try:
             logger.debug("Starting watcher recv loop...")
@@ -183,7 +185,10 @@ class _Watcher:
 
             while not self._stop.is_set():
                 logger.debug("Watcher waiting for messages...")
-                info = typing.cast("dict[str, str]", sock.recv_json())
+                try:
+                    info = typing.cast("dict[str, str]", sock.recv_json())
+                except zmq.Again:
+                    continue
                 logger.debug("Watcher received message: %s", info)
                 varname, uid, event = info["varname"], info["uid"], info["event"]
 
@@ -242,8 +247,10 @@ class _Watcher:
     def shutdown(self) -> None:
         self._stop.set()
         if hasattr(self, "_watcher_thread") and self._watcher_thread.is_alive():
-            self._watcher_thread.join(timeout=0.5)
-            self._thread_started = False
+            self._watcher_thread.join(timeout=2.0)
+            if self._watcher_thread.is_alive():
+                logger.warning("Watcher thread did not stop within timeout")
+        self._thread_started = False
 
     def __del__(self):
         self.shutdown()

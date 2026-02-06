@@ -232,7 +232,9 @@ class ArraySlicer(QtCore.QObject):
         """
         obj_original: xr.DataArray | None = None
         if hasattr(self, "_obj"):
-            obj_original = self._obj.copy()
+            # Shallow copy is enough: we only compare dims/coords for cursor
+            # compatibility.
+            obj_original = self._obj.copy(deep=False)
             del self._obj
 
         if validate:
@@ -247,11 +249,20 @@ class ArraySlicer(QtCore.QObject):
                 reset = False
             del obj_original
 
-        # TODO: This is not robust, may break if user supplies dim that ends with "_idx"
-        # Need to find a better way to handle this.
-        self._nonuniform_axes: list[int] = [
-            i for i, d in enumerate(self._obj.dims) if str(d).endswith("_idx")
-        ]
+        # Identify non-uniform axes created by make_dims_uniform while avoiding false
+        # positives when users provide their own *_idx dimensions.
+        self._nonuniform_axes = []
+        for i, d in enumerate(self._obj.dims):
+            if not str(d).endswith("_idx"):
+                continue
+            stripped = str(d).removesuffix("_idx")
+            if stripped not in self._obj.coords:
+                continue
+            coord = self._obj.coords[stripped]
+            if coord.ndim != 1 or coord.size != self._obj.sizes[d]:
+                continue
+            if not _is_uniform(coord.values.astype(np.float64)):
+                self._nonuniform_axes.append(i)
 
         self.clear_dim_cache()
         if validate:

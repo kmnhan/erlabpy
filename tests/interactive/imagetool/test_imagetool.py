@@ -1275,6 +1275,31 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_rotate_center_accepts_out_of_bounds_values(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    center = (-1.5, 9.25)
+
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: RotationDialog) -> None:
+        dialog.angle_spin.setValue(30.0)
+        dialog.center_spins[0].setValue(center[0])
+        dialog.center_spins[1].setValue(center[1])
+        assert dialog.center_spins[0].value() == center[0]
+        assert dialog.center_spins[1].value() == center[1]
+        dialog.reshape_check.setChecked(True)
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
+
+    xarray.testing.assert_allclose(
+        win.slicer_area._data,
+        erlab.analysis.transform.rotate(data, angle=30.0, center=center, reshape=True),
+    )
+    win.close()
+
+
 def set_vb_range(
     vb: pg.ViewBox, x_range: tuple[float, float], y_range: tuple[float, float]
 ) -> None:

@@ -277,3 +277,16 @@ def test_symmetrize_non_uniform() -> None:
         ValueError, match="Coordinate along dimension x must be uniformly spaced"
     ):
         symmetrize(da, "x", center=0.0)
+
+
+def test_symmetrize_singleton_coord() -> None:
+    da = xr.DataArray(
+        np.array([1.0], dtype=float),
+        dims="x",
+        coords={"x": np.array([0.0])},
+    )
+    with pytest.raises(
+        ValueError,
+        match="Coordinate along dimension x must contain at least two values",
+    ):
+        symmetrize(da, "x", center=0.0)

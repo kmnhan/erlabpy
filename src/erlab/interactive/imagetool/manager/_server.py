@@ -415,12 +415,19 @@ class _WatcherServer(QtCore.QThread):
             self._ret_val = (varname, uid, event)
             self._cv.wakeAll()
 
+    def stop(self, timeout_ms: int = 5000) -> None:
+        self.stopped.set()
+        self.send_parameters("", "", "shutdown")
+        if self.isRunning() and not self.wait(timeout_ms):
+            logger.warning("Watcher server did not stop within timeout")
+
     def run(self) -> None:
         self.stopped.clear()
         logger.debug("Starting watcher server...")
 
         ctx = zmq.Context.instance()
         sock: zmq.Socket = ctx.socket(zmq.PUB)
+        sock.setsockopt(zmq.LINGER, 0)
 
         try:
             sock.bind(f"tcp://*:{PORT_WATCH}")
@@ -429,7 +436,11 @@ class _WatcherServer(QtCore.QThread):
             while not self.stopped.is_set():
                 with QtCore.QMutexLocker(self._mutex):
                     while self._ret_val is _UNSET:
-                        self._cv.wait(self._mutex)
+                        self._cv.wait(self._mutex, 100)
+                        if self.stopped.is_set():
+                            break
+                    if self._ret_val is _UNSET:
+                        continue
                     varname, uid, event = self._ret_val
                     self._ret_val = _UNSET
 
@@ -475,14 +486,23 @@ class _ManagerServer(QtCore.QThread):
             self._ret_val = value
             self._cv.wakeAll()
 
+    def stop(self, timeout_ms: int = 5000) -> None:
+        self.stopped.set()
+        with QtCore.QMutexLocker(self._mutex):
+            self._cv.wakeAll()
+        if self.isRunning() and not self.wait(timeout_ms):
+            logger.warning("Manager server did not stop within timeout")
+
     def run(self) -> None:
         self.stopped.clear()
         logger.debug("Starting server...")
 
         ctx = zmq.Context.instance()
         sock: zmq.Socket = ctx.socket(zmq.REP)
+        sock.setsockopt(zmq.LINGER, 0)
         sock.setsockopt(zmq.SNDHWM, 0)
         sock.setsockopt(zmq.RCVHWM, 0)
+        sock.setsockopt(zmq.RCVTIMEO, 100)
 
         try:
             sock.bind(f"tcp://*:{PORT}")
@@ -490,11 +510,8 @@ class _ManagerServer(QtCore.QThread):
 
             while not self.stopped.is_set():
                 try:
-                    payload = Packet.validate_python(
-                        _recv_multipart(sock, flags=zmq.NOBLOCK)
-                    )
+                    payload = Packet.validate_python(_recv_multipart(sock))
                 except zmq.Again:
-                    self.msleep(10)
                     continue
                 except Exception:
                     logger.exception("Failed to parse incoming packet")
@@ -542,7 +559,15 @@ class _ManagerServer(QtCore.QThread):
                                 logger.debug("Getting data...")
                                 with QtCore.QMutexLocker(self._mutex):
                                     while self._ret_val is _UNSET:
-                                        self._cv.wait(self._mutex)
+                                        if self.stopped.is_set():
+                                            break
+                                        self._cv.wait(self._mutex, 100)
+                                    if self._ret_val is _UNSET:
+                                        logger.debug(
+                                            "Server stopping while waiting for data"
+                                        )
+                                        _send_multipart(sock, {"status": "error"})
+                                        break
                                     data = self._ret_val
                                     self._ret_val = _UNSET
 

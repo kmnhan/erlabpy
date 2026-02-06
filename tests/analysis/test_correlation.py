@@ -24,6 +24,17 @@ def test_acf2_handles_nans_and_renames_axes() -> None:
     assert np.isclose(result.sel(qx=0.0, qy=0.0), 1.0)
 
 
+def test_acf2_singleton_coords() -> None:
+    data = xr.DataArray(
+        [[1.0]],
+        dims=("kx", "ky"),
+        coords={"kx": [0.0], "ky": [0.0]},
+    )
+
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        correlation.acf2(data)
+
+
 def test_acf2stack_invalid_dim_count(monkeypatch) -> None:
     monkeypatch.setattr(joblib.parallel, "DEFAULT_BACKEND", "threading")
     arr = xr.DataArray(np.zeros((2, 2, 2, 2)), dims=("a", "b", "c", "d"))
@@ -55,3 +66,53 @@ def test_xcorr1d_aligns_coordinate_zero() -> None:
 
     np.testing.assert_allclose(result.values, expected)
     np.testing.assert_allclose(result["x"].values, [-1.0, 0.0, 1.0])
+
+
+def test_xcorr1d_does_not_mutate_input() -> None:
+    in1 = xr.DataArray(
+        [1.0, 0.0, -1.0],
+        dims="x",
+        coords={"x": [0.0, 1.0, 2.0]},
+    )
+    in2 = xr.DataArray(
+        [0.0, 2.0, 0.0],
+        dims="x",
+        coords={"x": [0.0, 2.0, 4.0]},
+    )
+    in1_before = in1.copy(deep=True)
+
+    _ = correlation.xcorr1d(in1, in2, method="direct")
+
+    xr.testing.assert_identical(in1, in1_before)
+
+
+def test_xcorr1d_rejects_non_uniform_coords() -> None:
+    in1 = xr.DataArray(
+        [1.0, 0.0, -1.0],
+        dims="x",
+        coords={"x": [0.0, 1.0, 3.0]},
+    )
+    in2 = xr.DataArray(
+        [0.0, 2.0, 0.0],
+        dims="x",
+        coords={"x": [0.0, 2.0, 4.0]},
+    )
+
+    with pytest.raises(ValueError, match="not uniformly spaced"):
+        correlation.xcorr1d(in1, in2, method="direct")
+
+
+def test_xcorr1d_rejects_singleton_coords() -> None:
+    in1 = xr.DataArray(
+        [1.0],
+        dims="x",
+        coords={"x": [0.0]},
+    )
+    in2 = xr.DataArray(
+        [1.0],
+        dims="x",
+        coords={"x": [0.0]},
+    )
+
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        correlation.xcorr1d(in1, in2, method="direct")

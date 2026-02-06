@@ -158,6 +158,7 @@ class Fit2DTool(Fit1DTool):
     def _init_full_data_state(self, data: xr.DataArray, *, data_name: str) -> None:
         self._data_full: xr.DataArray = data
         self._y_dim_name: Hashable = data.dims[0]
+        self._y_values_cache: np.ndarray | None = None
         y_size = int(self._data_full.sizes[self._y_dim_name])
         self._current_idx: int = y_size // 2
         self._params_full = [None] * y_size
@@ -538,25 +539,28 @@ class Fit2DTool(Fit1DTool):
 
     @QtCore.Slot(object)
     def _on_index_line_dragged(self, line: _SnapCursorLine) -> None:
-        y_vals = self._y_values()
         pos = line.temp_value
-        idx = (np.abs(y_vals - pos)).argmin()
+        idx = self._nearest_y_index(pos)
         self._set_current_index(idx)
         self._current_idx = self.y_index_spin.value()
 
     @QtCore.Slot(object)
     def _on_min_line_dragged(self, line: _SnapCursorLine) -> None:
-        y_vals = self._y_values()
         pos = line.temp_value
-        idx = (np.abs(y_vals - pos)).argmin()
-        self.y_min_spin.setValue(int(idx))
+        idx = self._nearest_y_index(pos)
+        idx = min(int(idx), self.y_max_spin.value())
+        self.y_min_spin.setValue(idx)
 
     @QtCore.Slot(object)
     def _on_max_line_dragged(self, line: _SnapCursorLine) -> None:
-        y_vals = self._y_values()
         pos = line.temp_value
-        idx = (np.abs(y_vals - pos)).argmin()
-        self.y_max_spin.setValue(int(idx))
+        idx = self._nearest_y_index(pos)
+        idx = max(int(idx), self.y_min_spin.value())
+        self.y_max_spin.setValue(idx)
+
+    def _nearest_y_index(self, value: float) -> int:
+        y_vals = self._y_values()
+        return int(np.abs(y_vals - value).argmin())
 
     @QtCore.Slot()
     def _y_index_changed(self) -> None:
@@ -948,9 +952,11 @@ class Fit2DTool(Fit1DTool):
         self.y_max_spin.setMinimum(min_idx)
         self.y_index_spin.setRange(min_idx, max_idx)
         min_val, max_val = y_vals[min_idx], y_vals[max_idx]
-        self.y_min_line.setBounds(sorted((y_vals[0], max_val)))
-        self.y_max_line.setBounds(sorted((min_val, y_vals[-1])))
-        self.index_line.setBounds(sorted((min_val, max_val)))
+        y_min, y_max = float(np.min(y_vals)), float(np.max(y_vals))
+        self.y_min_line.setBounds((y_min, y_max))
+        self.y_max_line.setBounds((y_min, y_max))
+        low, high = sorted((min_val, max_val))
+        self.index_line.setBounds((low, high))
         self.y_min_line.setPos(min_val)
         self.y_max_line.setPos(max_val)
         self._update_full_fit_saveable()
@@ -1190,10 +1196,16 @@ class Fit2DTool(Fit1DTool):
         self._update_param_plot()
 
     def _y_values(self) -> np.ndarray:
+        if self._y_values_cache is not None:
+            return self._y_values_cache
         if self._y_dim_name in self._data_full.coords:
             coords = self._data_full.coords[self._y_dim_name]
-            return np.asarray(coords.values)
-        return np.arange(self._data_full.sizes[self._y_dim_name], dtype=float)
+            self._y_values_cache = np.asarray(coords.values)
+        else:
+            self._y_values_cache = np.arange(
+                self._data_full.sizes[self._y_dim_name], dtype=float
+            )
+        return self._y_values_cache
 
     def _refresh_main_image(self) -> None:
         self.image.setDataArray(self._data_full)

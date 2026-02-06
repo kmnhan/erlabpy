@@ -10,6 +10,8 @@ import numpy as np
 import scipy.signal
 import xarray as xr
 
+import erlab
+
 
 def autocorrelate(arr, *args, **kwargs):
     """Calculate the autocorrelation of a N-dimensional array, normalized to 1.
@@ -80,10 +82,18 @@ def acf2(arr, mode: str = "full", method: str = "fft"):
     * qy       (qy) int64 152B -9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7 8 9
 
     """
-    out = arr.copy(deep=True)
+    out = arr.copy(deep=False)
     acf = nanacf(out.values, mode=mode, method=method)
-    coords = [out[d].values for d in out.dims]
-    steps = [c[1] - c[0] for c in coords]
+    # Check uniform spacing
+    for d in out.dims:
+        if not erlab.utils.array.is_uniform_spaced(arr[d].values):
+            raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+        if arr[d].size < 2:
+            raise ValueError(
+                f"Dimension `{d}` must have at least two coordinate values"
+            )
+
+    steps = [erlab.utils.array._coord_inc(out, d) for d in out.dims]
     out = xr.DataArray(
         acf,
         {
@@ -119,7 +129,14 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
         )
         acf_dims = tuple(filter(lambda d: d not in stack_dims, arr.dims))
         acf_sizes = dict(zip(acf_dims, out_list[0].shape, strict=True))
-        acf_steps = tuple(arr[d].values[1] - arr[d].values[0] for d in acf_dims)
+        for d in acf_dims:
+            if not erlab.utils.array.is_uniform_spaced(arr[d].values):
+                raise ValueError(f"Dimension `{d}` is not uniformly spaced")
+            if arr[d].size < 2:
+                raise ValueError(
+                    f"Dimension `{d}` must have at least two coordinate values"
+                )
+        acf_steps = tuple(erlab.utils.array._coord_inc(arr, d) for d in acf_dims)
 
         out_sizes = stack_sizes | acf_sizes
 
@@ -152,7 +169,12 @@ def acf2stack(arr, stack_dims=("eV",), mode: str = "full", method: str = "fft"):
 def xcorr1d(in1: xr.DataArray, in2: xr.DataArray, method="direct"):
     """Perform 1-dimensional correlation analysis on `xarray.DataArray` s."""
     in2 = in2.interp_like(in1)
-    out = in1.copy(deep=True)
+    dim = in1.dims[0]
+    if not erlab.utils.array.is_uniform_spaced(in1[dim].values):
+        raise ValueError(f"Dimension `{dim}` is not uniformly spaced")
+    if in1[dim].size < 2:
+        raise ValueError(f"Dimension `{dim}` must have at least two coordinate values")
+    out = in1.copy(deep=False)
     xind = scipy.signal.correlation_lags(in1.values.size, in2.values.size, mode="same")
     xzero = np.flatnonzero(xind == 0)[0]
     out.values = scipy.signal.correlate(

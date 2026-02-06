@@ -120,6 +120,32 @@ def test_gaussian_laplace() -> None:
     xr.testing.assert_identical(result2, expected_output2)
 
 
+def test_gaussian_filters_handle_singleton_coords() -> None:
+    darr = xr.DataArray(
+        np.arange(5, dtype=float).reshape((1, 5)),
+        dims=["x", "y"],
+        coords={"x": np.array([0.0]), "y": np.arange(5, dtype=float)},
+    )
+
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
+    with pytest.raises(ValueError, match="at least two coordinate values"):
+        era.image.gaussian_laplace(darr, sigma={"x": 1.0, "y": 1.0})
+
+
+def test_gaussian_filters_handle_constant_coords() -> None:
+    darr = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=["x", "y"],
+        coords={"x": np.array([1.0, 1.0]), "y": np.array([0.0, 1.0, 2.0])},
+    )
+
+    with pytest.raises(ValueError, match="constant spacing"):
+        era.image.gaussian_filter(darr, sigma={"x": 1.0, "y": 1.0})
+    with pytest.raises(ValueError, match="constant spacing"):
+        era.image.gaussian_laplace(darr, sigma={"x": 1.0, "y": 1.0})
+
+
 def test_boxcar_filter() -> None:
     # Create a test input DataArray
     darr = xr.DataArray(np.arange(50, step=2).reshape((5, 5)), dims=["x", "y"])
@@ -142,6 +168,21 @@ def test_boxcar_filter() -> None:
     result = era.image.boxcar_filter(darr, size={"x": 3, "y": 3})
 
     xr.testing.assert_identical(result, expected_output)
+
+
+def test_boxcar_filter_dask() -> None:
+    da = pytest.importorskip("dask.array")
+
+    data = np.arange(200, dtype=float).reshape((20, 10))
+    darr = xr.DataArray(data, dims=["x", "y"])
+    darr_chunked = xr.DataArray(da.from_array(data, chunks=(5, 4)), dims=["x", "y"])
+
+    result = era.image.boxcar_filter(darr, size={"x": 3, "y": 5})
+    result_chunked = era.image.boxcar_filter(
+        darr_chunked, size={"x": 3, "y": 5}
+    ).compute()
+
+    xr.testing.assert_allclose(result, result_chunked)
 
 
 def test_laplace() -> None:

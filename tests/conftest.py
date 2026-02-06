@@ -15,8 +15,14 @@ from collections.abc import Callable, Sequence
 import dask.distributed
 from dask.distributed import Client
 
-# Headless mode for Qt
-os.environ["QT_QPA_PLATFORM"] = "offscreen"
+# Qt platform backend for tests:
+# - Prefer xcb when a display is available (e.g. CI under Xvfb)
+# - Fall back to offscreen in truly headless environments
+if "QT_QPA_PLATFORM" not in os.environ:
+    if sys.platform.startswith("linux") and os.environ.get("DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+    else:
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 import dask
 import lmfit
@@ -187,11 +193,24 @@ def manager_context() -> Callable[
         try:
             yield erlab.interactive.imagetool.manager._manager_instance
         finally:
-            QtWidgets.QApplication.sendPostedEvents(None, 0)
-            QtWidgets.QApplication.processEvents()
-            erlab.interactive.imagetool.manager._manager_instance.remove_all_tools()
-            erlab.interactive.imagetool.manager._manager_instance.close()
-            erlab.interactive.imagetool.manager._manager_instance.deleteLater()
+            manager = erlab.interactive.imagetool.manager._manager_instance
+            if manager is not None:
+                QtWidgets.QApplication.sendPostedEvents(None, 0)
+                QtWidgets.QApplication.processEvents()
+                manager.remove_all_tools()
+                manager._stop_servers()
+                manager.close()
+                deadline = time.perf_counter() + 5.0
+                while (
+                    manager.server.isRunning() or manager.watcher_server.isRunning()
+                ) and time.perf_counter() < deadline:
+                    QtWidgets.QApplication.sendPostedEvents(None, 0)
+                    QtWidgets.QApplication.processEvents()
+                    time.sleep(0.01)
+                manager.deleteLater()
+                for _ in range(3):
+                    QtWidgets.QApplication.sendPostedEvents(None, 0)
+                    QtWidgets.QApplication.processEvents()
             erlab.interactive.imagetool.manager._manager_instance = None
             erlab.interactive.imagetool.manager._always_use_socket = False
 
