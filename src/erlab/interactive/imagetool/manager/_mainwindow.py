@@ -2118,12 +2118,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _stop_servers(self) -> None:
         """Stop the server thread properly."""
         if self.server.isRunning():  # pragma: no branch
-            self.server.stopped.set()
-            self.server.wait()
+            self.server.stop()
         if self.watcher_server.isRunning():  # pragma: no branch
-            self.watcher_server.stopped.set()
-            self._sigWatchedDataEdited.emit("", "", "shutdown")
-            self.watcher_server.wait()
+            self.watcher_server.stop()
 
     # def __del__(self):
     # """Ensure proper cleanup of server thread when the manager is deleted."""
