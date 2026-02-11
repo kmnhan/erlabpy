@@ -20,6 +20,34 @@
 
 ### 🐞 Bug Fixes
 
+- **imagetool:** allow out-of-bounds center values in RotationDialog ([e677e58](https://github.com/kmnhan/erlabpy/commit/e677e58ed2cf812c9ae3402073fa3cb0522e97e5))
+
+  Center coordinates are no longer clamped to the current data bounds. This lets users rotate around arbitrary points (including outside the visible coordinate range).
+
+- **imagetool:** improve server shutdown handling and timeout management ([f8135cd](https://github.com/kmnhan/erlabpy/commit/f8135cd4779cec12bb2e8105933cf968f0a36e05))
+
+- **analysis.image:** make `boxcar_filter` compatible with dask arrays ([ea80731](https://github.com/kmnhan/erlabpy/commit/ea8073159c3cae67b27c36bd9417a6cbf16b0bae))
+
+- **analysis:** enforce coordinate validity in filters and correlation ([c699574](https://github.com/kmnhan/erlabpy/commit/c6995746abe010f21f911e9913823e42fe6b343a))
+
+  Tighten coordinate handling in gaussian filters and autocorrelation, and raises on invalid/degenerate spacing. This prevents divide-by-zero issues and makes errors explicit for constant coordinates.
+
+- **imagetool:** correct formatting of error traceback ([8b90db8](https://github.com/kmnhan/erlabpy/commit/8b90db837e899c6de4a66e4e42a599c590da0ca1))
+
+- **analysis:** correctly handle dimensions of size 1 across various functions ([67875c6](https://github.com/kmnhan/erlabpy/commit/67875c64bb6f476ed0649b9e4526c844520d6f65))
+
+- **dtool:** handle data with dimensions of size 1 ([5d53894](https://github.com/kmnhan/erlabpy/commit/5d53894dc451c89ee253220300f085c1971c98c1))
+
+- **interactive.utils:** improve cut tolerance (histogram) handling for scalar and iterable inputs ([e5e159f](https://github.com/kmnhan/erlabpy/commit/e5e159f3775b15973e93079413c10f23b80884c2))
+
+- **interactive.utils:** handle singleton dimensions in `array_rect` ([5ea9163](https://github.com/kmnhan/erlabpy/commit/5ea9163a3dd4e1fece7f43444b293fddad8285b4))
+
+- **imagetool:** avoid false non-uniform axes for user _idx dims ([42f073e](https://github.com/kmnhan/erlabpy/commit/42f073e4afb62eb5ca7ef6fd89a12358f91af2f2))
+
+  Refine ImageTool so that non-uniform axis detection so only dims created by `make_dims_uniform` are treated as non-uniform. This prevents accidental misclassification when users provide their own `*_idx` dimensions.
+
+- **interactive:** ensure spinbox value updates and validation checks are accurate ([0c4e67e](https://github.com/kmnhan/erlabpy/commit/0c4e67e895d795e30c33fe6306274ea65811b53c))
+
 - **qsel.average:** average over all dimensions when no dimension is specified ([54d460b](https://github.com/kmnhan/erlabpy/commit/54d460bc3ce74473f69b0a141e44d2ea7be49e6a))
 
   `DataArray.qsel.average()` now averages over all dimensions when `dim=None` is passed to match the behavior of `DataArray.mean()`.
@@ -33,6 +61,16 @@
 - **qsel:** drop non-numeric coordinates silently when averaging instead of raising an error ([26b4b29](https://github.com/kmnhan/erlabpy/commit/26b4b29351c8298c7c2248248f04af1ada38092e))
 
 ### ⚡️ Performance
+
+- **analysis.transform:** disable parallel interpolation in `shift` with order 1 and add some parameters for further optimization ([b53e89f](https://github.com/kmnhan/erlabpy/commit/b53e89fea6640f1bb3648b2e51971e236840b425))
+
+  Uses serial interpolation in `shift` for compatibility with workflows that utilize multiprocessing, like dask. Also adds new parameters `keep_dim_order` and `assume_sorted` which further optimizes the graph for dask-based workflows.
+
+- **ftool:** cache y values for 2D data ([e2c4611](https://github.com/kmnhan/erlabpy/commit/e2c46114690edad60d5bfca0c10b5e3364d25400))
+
+- **analysis.correlation:** micro-optimization to use shallow copy ([d5a88b7](https://github.com/kmnhan/erlabpy/commit/d5a88b79413a6c7c3d47e56aed9a7261bd31313d))
+
+- **imagetool:** micro-optimize shallow copy when updating data ([5e7d4fe](https://github.com/kmnhan/erlabpy/commit/5e7d4fe1f46777948aa1e9faab41e2ef1143a41d))
 
 - **interactive:** defer ImageTool UI updates (#262) ([e2ad0e8](https://github.com/kmnhan/erlabpy/commit/e2ad0e84aebe1f7bd9ef55386c0cbfc4849a5563))
 
