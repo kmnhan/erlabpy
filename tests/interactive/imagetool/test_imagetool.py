@@ -258,7 +258,7 @@ def test_qsel_kwargs_multicursor_with_varying_dim(qtbot) -> None:
     win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=2, value=3.0, cursor=1)
 
-    kwargs, variable = main_image._qsel_kwargs_multicursor()
+    kwargs, variable = main_image._uniform_qsel_kwargs_multicursor()
     assert kwargs == {"beta": [1.0, 3.0]}
     assert variable == "beta"
 
@@ -278,7 +278,7 @@ def test_qsel_kwargs_multicursor_width_only_error(qtbot) -> None:
     win.array_slicer.set_bin(1, axis=2, value=1, update=True)
 
     with pytest.raises(ValueError, match="Cannot plot when"):
-        main_image._qsel_kwargs_multicursor()
+        main_image._uniform_qsel_kwargs_multicursor()
 
     win.close()
 
@@ -292,7 +292,7 @@ def test_qsel_kwargs_multicursor_rejects_nonuniform_axes(qtbot) -> None:
     main_image.display_axis = (1, 2)
 
     with pytest.raises(ValueError, match="indexing along non-uniform axes"):
-        main_image._qsel_kwargs_multicursor()
+        main_image._uniform_qsel_kwargs_multicursor()
 
     win.close()
 
@@ -309,7 +309,7 @@ def test_qsel_kwargs_multicursor_with_width_and_value_changes(qtbot) -> None:
     win.array_slicer.set_bin(0, axis=2, value=3, update=False)
     win.array_slicer.set_bin(1, axis=2, value=1, update=True)
 
-    kwargs, variable = main_image._qsel_kwargs_multicursor()
+    kwargs, variable = main_image._uniform_qsel_kwargs_multicursor()
     assert list(kwargs.keys())[:2] == ["beta", "beta_width"]
     assert kwargs["beta"] == [1.0, 3.0]
     assert kwargs["beta_width"] == [3.0, 0.0]
@@ -344,7 +344,18 @@ def test_qsel_kwargs_multicursor_rejects_multiple_varying_dims(qtbot) -> None:
         match="Cannot plot when more than one dimension has differing values"
         " across cursors",
     ):
-        main_image._qsel_kwargs_multicursor()
+        main_image._uniform_qsel_kwargs_multicursor()
+
+    win.close()
+
+
+def test_multicursor_variable_key_with_width_first(qtbot) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    assert main_image._multicursor_variable_key(["beta_width", "beta"]) == "beta"
 
     win.close()
 
@@ -367,6 +378,24 @@ def test_plot_code_multicursor_line_includes_limits_and_colors(qtbot) -> None:
     assert "line / line.mean()" in code
     assert "xlim=(1.0, 3.0)" in code
     assert "beta" not in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_line_uniform_default_colors(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    line_plot = win.slicer_area.get_axes(1)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=1, value=1.0, cursor=0)
+    win.slicer_area.set_value(axis=1, value=3.0, cursor=1)
+
+    code = line_plot._plot_code_multicursor()
+    assert "for line in " in code
+    assert 'transpose("eV", ...)' in code
+    assert "enumerate(" not in code
 
     win.close()
 
@@ -411,6 +440,187 @@ def test_plot_code_multicursor_image_includes_norm_settings(qtbot) -> None:
     assert 'axis="image"' in code
     assert 'cmap="magma_r"' in code
     assert "CenteredInversePowerNorm" in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_image_without_cursor_variation_nonuniform(qtbot) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    image_plot = win.slicer_area.get_axes(5)  # display_axis=(2, 1), non-display alpha
+
+    code = image_plot._plot_code_multicursor()
+    assert "selected = [" not in code
+    assert "selected = data." in code
+
+    win.close()
+
+
+@pytest.mark.parametrize("bin_value", [1, 3])
+def test_plot_code_multicursor_image_supports_nonuniform_hidden_axis(
+    qtbot, bin_value
+) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    image_plot = win.slicer_area.get_axes(5)  # display_axis=(2, 1), hidden alpha
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=0, value=0.1, cursor=0)
+    win.slicer_area.set_value(axis=0, value=0.8, cursor=1)
+    win.array_slicer.set_bin(0, axis=0, value=bin_value, update=False)
+    win.array_slicer.set_bin(1, axis=0, value=bin_value, update=True)
+
+    code = image_plot._plot_code_multicursor()
+    assert "selected = [" in code
+    assert "plot_slices" in code
+    assert ".isel(alpha=" in code
+    if bin_value == 1:
+        assert ".qsel.average(" not in code
+    else:
+        assert ".qsel.average(" in code
+        assert '.qsel.average("alpha")' in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_line_without_cursor_variation_nonuniform(qtbot) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    line_plot = win.slicer_area.get_axes(3)  # display_axis=(2,), non-display alpha/eV
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=0, value=0.4, cursor=0)
+    win.slicer_area.set_value(axis=0, value=0.4, cursor=1)
+    win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+    win.array_slicer.set_bin(1, axis=0, value=3, update=True)
+
+    code = line_plot._plot_code_multicursor()
+    assert "for line in" not in code
+    assert ".plot(ax=ax)" in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_line_nonuniform_custom_colors_and_widths(qtbot) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    line_plot = win.slicer_area.get_axes(3)  # display_axis=(2,), non-display alpha/eV
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=0, value=0.1, cursor=0)
+    win.slicer_area.set_value(axis=0, value=0.8, cursor=1)
+    win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+    win.array_slicer.set_bin(1, axis=0, value=1, update=True)
+    win.slicer_area.cursor_colors = [QtGui.QColor("#123456"), QtGui.QColor("#654321")]
+
+    code = line_plot._plot_code_multicursor()
+    assert "for i, line in enumerate([" in code
+    assert "line_colors" in code
+
+    win.close()
+
+
+def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(625).reshape((5, 5, 5, 5)),
+        dims=['a"b', "eV", "c", "beta"],
+        coords={
+            'a"b': np.array([0.1, 0.4, 0.5, 0.55, 0.8]),
+            "eV": np.arange(5),
+            "c": np.array([1.0, 1.2, 1.7, 2.5, 3.0]),
+            "beta": np.arange(5),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    image_plot = win.slicer_area.get_axes(7)  # display_axis=(3, 2)
+
+    win.array_slicer.set_bin(0, axis=0, value=3, update=False)
+    win.array_slicer.set_bin(0, axis=2, value=3, update=True)
+
+    expr = image_plot._selection_expr_for_cursor("data", 0, (0, 2))
+    assert ".qsel.average((" in expr
+    assert "'a\"b'" in expr
+    assert '"c"' in expr
+
+    win.close()
+
+
+def test_selection_expr_for_cursor_uniform_axis_only(qtbot) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    image_plot = win.slicer_area.get_axes(5)  # display_axis=(2, 1), non-display alpha
+
+    expr = image_plot._selection_expr_for_cursor("data", 0, (1,))
+    assert ".isel(" not in expr
+    assert ".qsel(" in expr
+
+    win.close()
+
+
+@pytest.mark.parametrize("bin_value", [1, 3])
+def test_plot_code_multicursor_line_supports_nonuniform_hidden_axis(
+    qtbot, bin_value
+) -> None:
+    data = _TEST_DATA["3D_nonuniform"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    line_plot = win.slicer_area.get_axes(3)  # display_axis=(2,), hidden alpha/eV
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_value(axis=0, value=0.1, cursor=0)
+    win.slicer_area.set_value(axis=0, value=0.8, cursor=1)
+    win.array_slicer.set_bin(0, axis=0, value=bin_value, update=False)
+    win.array_slicer.set_bin(1, axis=0, value=bin_value, update=True)
+
+    code = line_plot._plot_code_multicursor()
+    assert "for line in [" in code
+    assert ".isel(alpha=" in code
+    assert ".qsel(" in code
+    if bin_value == 1:
+        assert ".qsel.average(" not in code
+    else:
+        assert ".qsel.average(" in code
+        assert '.qsel.average("alpha")' in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_image_with_non_identifier_dim_name(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=["alpha", "eV", "k-space"],
+        coords={
+            "alpha": np.arange(5),
+            "eV": np.arange(5),
+            "k-space": np.arange(5),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    code = main_image._plot_code_multicursor()
+    assert '**{"k-space": 2.0}' in code
+
+    win.close()
+
+
+def test_plot_code_multicursor_image_includes_both_crop_limits(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0], "eV": [0.0, 2.0]})
+    code = main_image._plot_code_multicursor()
+    assert "xlim=(1.0, 3.0)" in code
+    assert "ylim=(0.0, 2.0)" in code
 
     win.close()
 
