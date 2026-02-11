@@ -327,6 +327,8 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
 
 class KspaceTool(KspaceToolGUI):
     tool_name = "ktool"
+    _sigTriggerUpdate = QtCore.Signal()
+    _UPDATE_LIMIT_HZ = 10.0
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -578,6 +580,12 @@ class KspaceTool(KspaceToolGUI):
             f"Configuration {int(self.data.kspace.configuration)} "
             f"({self.data.kspace.configuration.name})"
         )
+        self._update_proxy = pg.SignalProxy(
+            self._sigTriggerUpdate,
+            delay=1 / self._UPDATE_LIMIT_HZ,
+            rateLimit=self._UPDATE_LIMIT_HZ,
+            slot=self._flush_debounced_update,
+        )
 
         if self.data.kspace._has_eV and self.data.eV.size > 1:
             self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
@@ -585,8 +593,8 @@ class KspaceTool(KspaceToolGUI):
             self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
             self.center_spin.setSingleStep(eV_step)
             self.width_spin.setRange(1, len(self.data.eV))
-            self.center_spin.valueChanged.connect(self.update)
-            self.width_spin.valueChanged.connect(self.update)
+            self.center_spin.valueChanged.connect(self.queue_update)
+            self.width_spin.valueChanged.connect(self.queue_update)
         else:
             if "eV" in self.data.coords and self.data["eV"].size == 1:
                 fixed_energy = float(self.data.eV)
@@ -597,8 +605,8 @@ class KspaceTool(KspaceToolGUI):
 
             self.energy_group.setDisabled(True)
 
-        self.bounds_supergroup.toggled.connect(self.update)
-        self.resolution_supergroup.toggled.connect(self.update)
+        self.bounds_supergroup.toggled.connect(self.queue_update)
+        self.resolution_supergroup.toggled.connect(self.queue_update)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
 
@@ -615,7 +623,7 @@ class KspaceTool(KspaceToolGUI):
             ):
                 self._offset_spins[k].setValue(float(self.data[k].mean()))
 
-            self._offset_spins[k].valueChanged.connect(self.update)
+            self._offset_spins[k].valueChanged.connect(self.queue_update)
             self._offset_spins[k].setSuffix(self._OFFSET_UNITS[k])
             self.offsets_group.layout().addRow(
                 self._OFFSET_LABELS[k], self._offset_spins[k]
@@ -630,7 +638,7 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins["V0"].setToolTip("Inner potential of the sample.")
             with warnings.catch_warnings(action="ignore", category=UserWarning):
                 self._offset_spins["V0"].setValue(self.data.kspace.inner_potential)
-            self._offset_spins["V0"].valueChanged.connect(self.update)
+            self._offset_spins["V0"].valueChanged.connect(self.queue_update)
             self.offsets_group.layout().addRow(
                 self._OFFSET_LABELS["V0"], self._offset_spins["V0"]
             )
@@ -647,7 +655,7 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setToolTip("Work function of the system.")
         with warnings.catch_warnings(action="ignore", category=UserWarning):
             self._offset_spins["wf"].setValue(self.data.kspace.work_function)
-        self._offset_spins["wf"].valueChanged.connect(self.update)
+        self._offset_spins["wf"].valueChanged.connect(self.queue_update)
 
         self.offsets_group.layout().addRow(
             self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
@@ -665,7 +673,7 @@ class KspaceTool(KspaceToolGUI):
                     self._bound_spins[name].setRange(-10, 10)
                 self._bound_spins[name].setSingleStep(0.01)
                 self._bound_spins[name].setDecimals(4)
-                self._bound_spins[name].valueChanged.connect(self.update)
+                self._bound_spins[name].valueChanged.connect(self.queue_update)
                 self._bound_spins[name].setSuffix(" Å⁻¹")
                 self.bounds_group.layout().addRow(name, self._bound_spins[name])
 
@@ -673,7 +681,7 @@ class KspaceTool(KspaceToolGUI):
             self._resolution_spins[k].setRange(0.0001, 10)
             self._resolution_spins[k].setSingleStep(0.001)
             self._resolution_spins[k].setDecimals(5)
-            self._resolution_spins[k].valueChanged.connect(self.update)
+            self._resolution_spins[k].valueChanged.connect(self.queue_update)
             self._resolution_spins[k].setSuffix(" Å⁻¹")
             self.resolution_group.layout().addRow(k, self._resolution_spins[k])
 
@@ -724,11 +732,21 @@ class KspaceTool(KspaceToolGUI):
     @QtCore.Slot()
     def calculate_resolution(self) -> None:
         for k, spin in self._resolution_spins.items():
-            spin.setValue(
-                self.data.kspace.estimate_resolution(
-                    k, from_numpoints=self.res_npts_check.isChecked()
+            with QtCore.QSignalBlocker(spin):
+                spin.setValue(
+                    self.data.kspace.estimate_resolution(
+                        k, from_numpoints=self.res_npts_check.isChecked()
+                    )
                 )
-            )
+        self.update()
+
+    @QtCore.Slot()
+    def queue_update(self) -> None:
+        self._sigTriggerUpdate.emit()
+
+    @QtCore.Slot(object)
+    def _flush_debounced_update(self, _args: object) -> None:
+        self.update()
 
     @property
     def _work_function(self) -> float:
