@@ -24,6 +24,26 @@ def _make_2d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("y", "x"), coords={"y": y, "x": x}, name="map")
 
 
+def _configure_fit2d_for_tests(
+    win: Fit2DTool, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[tuple[str, str]], list[tuple[str, str, str | None]]]:
+    # Avoid flaky one-second fit timeout under coverage instrumentation.
+    win.timeout_spin.setValue(30.0)
+
+    warnings: list[tuple[str, str]] = []
+    errors: list[tuple[str, str, str | None]] = []
+
+    def _warn(title: str, text: str) -> None:
+        warnings.append((title, text))
+
+    def _error(title: str, text: str, detailed_text: str | None = None) -> None:
+        errors.append((title, text, detailed_text))
+
+    monkeypatch.setattr(win, "_show_warning", _warn)
+    monkeypatch.setattr(win, "_show_error", _error)
+    return warnings, errors
+
+
 def test_ftool_2d_fill_and_transpose(qtbot, accept_dialog) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
@@ -164,7 +184,7 @@ def test_fit2d_update_param_plot_overlays_paths(qtbot) -> None:
     assert win.image_plot_legend.isVisible() is False
 
 
-def test_fit2d_run_fit(qtbot, exp_decay_model) -> None:
+def test_fit2d_run_fit(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
     data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
@@ -176,6 +196,7 @@ def test_fit2d_run_fit(qtbot, exp_decay_model) -> None:
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
 
     win.y_index_spin.setValue(win.y_min_spin.value())
     win.nfev_spin.setValue(0)
@@ -185,13 +206,15 @@ def test_fit2d_run_fit(qtbot, exp_decay_model) -> None:
     )
 
     assert all(ds is not None for ds in win._result_ds_full)
+    assert not warnings
+    assert not errors
 
     code = win._copy_code_full()
     assert "modelfit" in code
     assert ".isel(" in code
 
 
-def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
+def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
     data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
@@ -203,6 +226,7 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
 
     win.y_index_spin.setValue(win.y_min_spin.value())
     win.nfev_spin.setValue(0)
@@ -211,6 +235,8 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
         lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
     )
     assert all(ds is not None for ds in win._result_ds_full)
+    assert not warnings
+    assert not errors
 
     full_ds = xr.concat(
         win._result_ds_full,
@@ -245,6 +271,7 @@ def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> 
     )
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
 
     win.y_index_spin.setValue(win.y_min_spin.value())
     win.nfev_spin.setValue(0)
@@ -275,6 +302,8 @@ def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> 
         saved["ds"].sizes[win._y_dim_name]
         == win.y_max_spin.value() - win.y_min_spin.value() + 1
     )
+    assert not warnings
+    assert not errors
 
 
 def test_fit2d_fit_cancelled_stops_sequence(qtbot, exp_decay_model) -> None:

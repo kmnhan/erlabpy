@@ -104,3 +104,35 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
 
         assert win.tool_status == win_restored.tool_status
         assert str(win_restored.info_text) == str(win.info_text)
+
+
+def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
+    win = ktool(anglemap, execute=False)
+    qtbot.addWidget(win)
+
+    # Allow any startup-triggered delayed update to finish before counting.
+    wait_ms = int(1000 / win._UPDATE_LIMIT_HZ) + 50
+    qtbot.wait(wait_ms)
+
+    call_count = 0
+    original_get_data = win.get_data
+
+    def _counting_get_data():
+        nonlocal call_count
+        call_count += 1
+        return original_get_data()
+
+    monkeypatch.setattr(win, "get_data", _counting_get_data)
+
+    spin = win._offset_spins["delta"]
+    base = spin.value()
+    spin.setValue(base + 0.01)
+    spin.setValue(base + 0.02)
+    spin.setValue(base + 0.03)
+
+    qtbot.wait_until(lambda: call_count == 1, timeout=2000)
+    qtbot.wait(wait_ms)
+    assert call_count == 1
+
+    win.update()
+    assert call_count == 2
