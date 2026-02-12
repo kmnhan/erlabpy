@@ -2,6 +2,7 @@ import concurrent.futures
 import io
 import json
 import logging
+import pathlib
 import pickle
 import sys
 import tempfile
@@ -1291,6 +1292,245 @@ def test_warning_alert(
 
         qtbot.mouseClick(clear_all_button, QtCore.Qt.MouseButton.LeftButton, delay=10)
         qtbot.wait_until(lambda: len(manager._alert_dialogs) == 0)
+
+
+def test_warning_alert_suppressed_by_log_flag(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        suppressed = logging.LogRecord(
+            name="test.warning.suppressed",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=0,
+            msg="suppressed warning",
+            args=(),
+            exc_info=None,
+        )
+        suppressed.suppress_ui_alert = True
+        manager._warning_handler.emit(suppressed)
+        QtWidgets.QApplication.processEvents()
+        assert manager._alert_dialogs == []
+
+        regular = logging.LogRecord(
+            name="test.warning.regular",
+            level=logging.WARNING,
+            pathname=__file__,
+            lineno=0,
+            msg="regular warning",
+            args=(),
+            exc_info=None,
+        )
+        manager._warning_handler.emit(regular)
+        qtbot.wait_until(lambda: len(manager._alert_dialogs) == 1)
+
+        manager._clear_all_alerts()
+        QtWidgets.QApplication.processEvents()
+
+
+def test_error_creating_imagetool_does_not_duplicate_alert_dialog(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+
+    def _fake_critical(*args, **kwargs):
+        critical_calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_fake_critical),
+    )
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        try:
+            raise RuntimeError("boom")  # noqa: TRY301
+        except RuntimeError:
+            manager._error_creating_imagetool()
+
+        QtWidgets.QApplication.processEvents()
+
+        assert len(critical_calls) == 1
+        assert manager._alert_dialogs == []
+
+
+def test_data_recv_dataset_creation_error_no_duplicate_alert(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+
+    def _fake_critical(*args, **kwargs):
+        critical_calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    def _raise_from_dataset(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_fake_critical),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._mainwindow.ImageTool,
+        "from_dataset",
+        staticmethod(_raise_from_dataset),
+    )
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        ds = xr.Dataset({"v": xr.DataArray(np.ones((2, 2)), dims=("x", "y"))})
+        flags = manager._data_recv([ds], {})
+
+        QtWidgets.QApplication.processEvents()
+
+        assert flags == [False]
+        assert len(critical_calls) == 1
+        assert manager._alert_dialogs == []
+
+
+def test_data_recv_dataarray_creation_error_no_duplicate_alert(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+
+    def _fake_critical(*args, **kwargs):
+        critical_calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    def _raise_imagetool(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_fake_critical),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._mainwindow,
+        "ImageTool",
+        _raise_imagetool,
+    )
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        flags = manager._data_recv([xr.DataArray(np.ones((2, 2)), dims=("x", "y"))], {})
+
+        QtWidgets.QApplication.processEvents()
+
+        assert flags == [False]
+        assert len(critical_calls) == 1
+        assert manager._alert_dialogs == []
+
+
+def test_load_workspace_error_no_duplicate_alert(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+    exec_calls = {"count": 0}
+
+    def _fake_critical(*args, **kwargs):
+        critical_calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    def _fake_exec(self):
+        exec_calls["count"] += 1
+        return exec_calls["count"] == 1
+
+    def _raise_open_datatree(*args, **kwargs):
+        raise RuntimeError("broken workspace")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_fake_critical),
+    )
+    monkeypatch.setattr(QtWidgets.QFileDialog, "exec", _fake_exec)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "selectedFiles",
+        lambda self: ["broken_workspace.itws"],
+    )
+    monkeypatch.setattr(xr, "open_datatree", _raise_open_datatree)
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        ImageToolManager.load(manager, native=False)
+
+        QtWidgets.QApplication.processEvents()
+
+        assert exec_calls["count"] >= 2  # One retry after the failure path.
+        assert len(critical_calls) == 1
+        assert manager._alert_dialogs == []
+
+
+def test_open_multiple_files_workspace_error_no_duplicate_alert(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+
+    def _fake_critical(*args, **kwargs):
+        critical_calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    def _fake_open_datatree(*args, **kwargs):
+        return object()
+
+    def _raise_from_datatree(*args, **kwargs):
+        raise RuntimeError("cannot restore workspace")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_fake_critical),
+    )
+    monkeypatch.setattr(xr, "open_datatree", _fake_open_datatree)
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        monkeypatch.setattr(manager, "_is_datatree_workspace", lambda *args: True)
+        monkeypatch.setattr(manager, "_from_datatree", _raise_from_datatree)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            p = pathlib.Path(tmp_dir) / "workspace.itws"
+            p.write_text("placeholder", encoding="utf-8")
+            manager.open_multiple_files([p], try_workspace=True)
+
+        QtWidgets.QApplication.processEvents()
+
+        assert len(critical_calls) == 1
+        assert manager._alert_dialogs == []
 
 
 def test_manager_progressbar_alert(
