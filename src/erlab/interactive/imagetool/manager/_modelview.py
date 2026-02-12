@@ -1200,6 +1200,13 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                 self._model.remove_rows(i, 1)
                 break
 
+    def clear_imagetools(self) -> None:
+        """Clear all top-level ImageTool rows in a single model reset."""
+        self.clearSelection()
+        self._model.beginResetModel()
+        self._model.manager._displayed_indices.clear()
+        self._model.endResetModel()
+
     def childtool_added(self, uid: str, parent_idx: int) -> None:
         """Update the list view when a new child tool is added to the manager.
 
@@ -1218,6 +1225,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             wrapper,
         ) in self._model.manager._imagetool_wrappers.items():  # pragma: no branch
             if uid in wrapper._childtool_indices:
+                if tool_idx not in self._model.manager._displayed_indices:
+                    # Parent was already removed from the model.
+                    return
                 parent_index = self._model._row_index(tool_idx)
                 for i, child_uid in enumerate(
                     wrapper._childtool_indices

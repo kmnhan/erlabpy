@@ -37,6 +37,9 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 - Prefer `accept_dialog` for real dialog interactions; use monkeypatch stubs to target hard-to-hit branches.
 - New or modified lines in touched interactive modules should be directly covered by tests, including warning/early-return branches, unless there is a clear reason a branch is untestable.
 - `ImageToolManager.main()` inspects `sys.argv[1:]` as potential file paths. For manager tests, prefer explicit test node IDs over long `-k` expressions, or patch `sys.argv` in tests, to avoid accidental file-path parsing side effects.
+- ImageTool manager tests use a fixed ZMQ port (`45555`). If tests fail with `Address already in use` or timeout, check and terminate stale manager processes before rerunning.
+- Avoid running multiple manager test jobs in parallel on the same machine unless ports are isolated.
+- For coverage runs, `--cov` is generally stable; if `--cov=<module path>` triggers local Qt import issues, use broader `--cov=erlab` and filter coverage output to target files.
 - If a code path already shows an explicit UI dialog (`MessageDialog`/`QMessageBox`), avoid duplicate manager alert popups by logging with `extra={"suppress_ui_alert": True}`.
 - `# pragma: no cover` / `# pragma: no branch` is allowed for edge cases that are hard or impractical to exercise in CI; prefer tests when feasible and add a brief comment explaining why the pragma is needed.
 

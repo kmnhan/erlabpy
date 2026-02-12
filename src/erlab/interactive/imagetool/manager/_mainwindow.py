@@ -260,6 +260,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Store progress bar widgets
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
 
+        # Deferred updates while removing multiple windows
+        self._bulk_remove_depth: int = 0
+        self._pending_linker_reload: bool = False
+
         # Initialize actions
         self.settings_action = QtWidgets.QAction("Settings", self)
         self.settings_action.triggered.connect(self.open_settings)
@@ -518,7 +522,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.sigLinkersChanged.connect(self._update_actions)
         self.sigLinkersChanged.connect(self.tree_view.refresh)
-        self._sigReloadLinkers.connect(self._cleanup_linkers)
+        self._sigReloadLinkers.connect(self._request_reload_linkers)
         self._update_actions()
         self._update_info()
 
@@ -1005,13 +1009,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.link_action.setEnabled(False)
 
     @QtCore.Slot(int)
-    def remove_imagetool(self, index: int) -> None:
+    def remove_imagetool(self, index: int, *, update_view: bool = True) -> None:
         """Remove the ImageTool window corresponding to the given index."""
-        # Remove all child tools first
-        for uid in list(self._imagetool_wrappers[index]._childtool_indices):
-            self._remove_childtool(uid)
+        wrapper = self._imagetool_wrappers[index]
 
-        self.tree_view.imagetool_removed(index)
+        # Remove all child tools first
+        for uid in list(wrapper._childtool_indices):
+            if update_view:
+                self._remove_childtool(uid)
+            else:
+                wrapper._remove_childtool(uid)
+
+        if update_view:
+            self.tree_view.imagetool_removed(index)
+
         wrapper = self._imagetool_wrappers.pop(index)
         if not wrapper.archived:
             typing.cast("ImageTool", wrapper.imagetool).removeEventFilter(wrapper)
@@ -1019,16 +1030,85 @@ class ImageToolManager(QtWidgets.QMainWindow):
         wrapper.dispose()
         wrapper.deleteLater()
 
+    @contextlib.contextmanager
+    def _bulk_remove_context(self):
+        outermost = self._bulk_remove_depth == 0
+        self._bulk_remove_depth += 1
+        if outermost:
+            self._pending_linker_reload = False
+            self.setUpdatesEnabled(False)
+            self.tree_view.setUpdatesEnabled(False)
+        try:
+            yield
+        finally:
+            self._bulk_remove_depth -= 1
+            if outermost:
+                self.tree_view.setUpdatesEnabled(True)
+                self.setUpdatesEnabled(True)
+
+                if self._pending_linker_reload:
+                    self._pending_linker_reload = False
+                    self._cleanup_linkers()
+
+                self._update_actions()
+                self._update_info()
+
+    def _remove_imagetools(
+        self,
+        indices: list[int],
+        *,
+        child_uids: list[str] | None = None,
+        clear_view: bool = False,
+    ) -> None:
+        existing_indices: list[int] = []
+        seen_indices: set[int] = set()
+        for index in indices:
+            if index in self._imagetool_wrappers and index not in seen_indices:
+                existing_indices.append(index)
+                seen_indices.add(index)
+
+        implicit_child_uids: set[str] = set()
+        for i in existing_indices:
+            implicit_child_uids.update(self._imagetool_wrappers[i]._childtool_indices)
+
+        remaining_child_uids: list[str] = []
+        seen_child_uids: set[str] = set()
+        for uid in child_uids or []:
+            if uid in implicit_child_uids or uid in seen_child_uids:
+                continue
+            seen_child_uids.add(uid)
+            remaining_child_uids.append(uid)
+
+        if len(existing_indices) == 0 and len(remaining_child_uids) == 0:
+            return
+
+        with self._bulk_remove_context():
+            if clear_view:
+                self.tree_view.clear_imagetools()
+
+            for index in existing_indices:
+                self.remove_imagetool(index, update_view=not clear_view)
+
+            for uid in remaining_child_uids:
+                self._remove_childtool(uid)
+
     def remove_all_tools(self) -> None:
         """Remove all ImageTool windows."""
-        for index in tuple(self._imagetool_wrappers.keys()):
-            self.remove_imagetool(index)
+        self._remove_imagetools(list(self._imagetool_wrappers.keys()), clear_view=True)
 
     @QtCore.Slot(int)
     def show_imagetool(self, index: int) -> None:
         """Show the ImageTool window corresponding to the given index."""
         if index in self._imagetool_wrappers:  # pragma: no branch
             self._imagetool_wrappers[index].show()
+
+    @QtCore.Slot()
+    def _request_reload_linkers(self) -> None:
+        if self._bulk_remove_depth > 0:
+            self._pending_linker_reload = True
+            return
+
+        self._cleanup_linkers()
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
@@ -1122,10 +1202,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
         if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
-            for name in indices:
-                self.remove_imagetool(name)
-            for uid in child_uids:
-                self._remove_childtool(uid)
+            self._remove_imagetools(indices, child_uids=child_uids)
 
     @property
     def _rename_dialog(self) -> _RenameDialog:
