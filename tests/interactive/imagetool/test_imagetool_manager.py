@@ -1,4 +1,5 @@
 import concurrent.futures
+import contextlib
 import io
 import json
 import logging
@@ -1016,6 +1017,144 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
     qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
 
 
+def test_childtool_remove_after_tree_clear(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        uid = manager.add_childtool(erlab.interactive.utils.ToolWindow(), 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+
+        manager.tree_view.clear_imagetools()
+        assert manager._displayed_indices == []
+
+        # Child destruction callbacks can arrive after top-level rows are reset.
+        manager._remove_childtool(uid)
+        qtbot.wait_until(
+            lambda: uid not in manager._imagetool_wrappers[0]._childtools, timeout=5000
+        )
+
+
+def test_remove_imagetool_removes_childtools() -> None:
+    uid = "child-uid-0"
+    removed_uids: list[str] = []
+    removed_rows: list[int] = []
+
+    class _DummyWrapper:
+        def __init__(self):
+            self._childtool_indices = [uid]
+            self.archived = True
+            self.disposed = False
+            self.deleted = False
+
+        def dispose(self):
+            self.disposed = True
+
+        def deleteLater(self):
+            self.deleted = True
+
+    wrapper = _DummyWrapper()
+    manager = types.SimpleNamespace(
+        _imagetool_wrappers={0: wrapper},
+        _remove_childtool=lambda child_uid: removed_uids.append(child_uid),
+        tree_view=types.SimpleNamespace(
+            imagetool_removed=lambda index: removed_rows.append(index)
+        ),
+    )
+
+    ImageToolManager.remove_imagetool(manager, 0)
+    assert removed_uids == [uid]
+    assert removed_rows == [0]
+    assert wrapper.disposed
+    assert wrapper.deleted
+    assert manager._imagetool_wrappers == {}
+
+
+def test_remove_imagetools_deduplicates_explicit_child_uids() -> None:
+    uid0 = "child-uid-0"
+    uid1 = "child-uid-1"
+
+    manager = types.SimpleNamespace(
+        _imagetool_wrappers={
+            0: types.SimpleNamespace(_childtool_indices=[uid0]),
+            1: types.SimpleNamespace(_childtool_indices=[uid1]),
+        },
+        removed_indices=[],
+        removed_uids=[],
+    )
+    manager._bulk_remove_context = contextlib.nullcontext
+    manager.remove_imagetool = (
+        lambda index, *, update_view=True: manager.removed_indices.append(
+            (index, update_view)
+        )
+    )
+    manager._remove_childtool = lambda uid: manager.removed_uids.append(uid)
+
+    ImageToolManager._remove_imagetools(manager, [0], child_uids=[uid0, uid1, uid1])
+    assert manager.removed_indices == [(0, True)]
+    assert manager.removed_uids == [uid1]
+
+
+def test_remove_selected_calls_batch_remove(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        uid = manager.add_childtool(erlab.interactive.utils.ToolWindow(), 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+
+        manager.tree_view.expandAll()
+        select_tools(manager, [0])
+        select_child_tool(manager, uid)
+
+        called: list[tuple[list[int], list[str] | None, bool]] = []
+
+        def _remove_imagetools_spy(
+            indices: list[int],
+            *,
+            child_uids: list[str] | None = None,
+            clear_view: bool = False,
+        ) -> None:
+            called.append((indices, child_uids, clear_view))
+
+        original_remove_imagetools = manager._remove_imagetools
+        manager._remove_imagetools = _remove_imagetools_spy
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "exec",
+            lambda _: QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+
+        manager.remove_selected()
+        assert called == [([0], [uid], False)]
+        manager._remove_imagetools = original_remove_imagetools
+
+
 @pytest.mark.parametrize("mode", ["dragdrop", "ask"])
 def test_manager_open_files(
     qtbot,
@@ -1454,6 +1593,7 @@ def test_load_workspace_error_no_duplicate_alert(
 ) -> None:
     critical_calls: list[tuple[typing.Any, ...]] = []
     exec_calls = {"count": 0}
+    native_opt_calls = {"count": 0}
 
     def _fake_critical(*args, **kwargs):
         critical_calls.append((args, kwargs))
@@ -1466,11 +1606,18 @@ def test_load_workspace_error_no_duplicate_alert(
     def _raise_open_datatree(*args, **kwargs):
         raise RuntimeError("broken workspace")
 
+    def _track_set_option(self, option, on=True):
+        if option == QtWidgets.QFileDialog.Option.DontUseNativeDialog and on:
+            native_opt_calls["count"] += 1
+        return original_set_option(self, option, on)
+
     monkeypatch.setattr(
         erlab.interactive.utils.MessageDialog,
         "critical",
         staticmethod(_fake_critical),
     )
+    original_set_option = QtWidgets.QFileDialog.setOption
+    monkeypatch.setattr(QtWidgets.QFileDialog, "setOption", _track_set_option)
     monkeypatch.setattr(QtWidgets.QFileDialog, "exec", _fake_exec)
     monkeypatch.setattr(
         QtWidgets.QFileDialog,
@@ -1486,8 +1633,73 @@ def test_load_workspace_error_no_duplicate_alert(
         QtWidgets.QApplication.processEvents()
 
         assert exec_calls["count"] >= 2  # One retry after the failure path.
+        assert native_opt_calls["count"] >= 2  # Retry should preserve `native=False`.
         assert len(critical_calls) == 1
         assert manager._alert_dialogs == []
+
+
+def test_open_retry_preserves_non_native_dialog(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    exec_calls = {"count": 0}
+    native_opt_calls = {"count": 0}
+    add_calls = {"count": 0}
+
+    def _fake_exec(self):
+        exec_calls["count"] += 1
+        return exec_calls["count"] == 1
+
+    def _track_set_option(self, option, on=True):
+        if option == QtWidgets.QFileDialog.Option.DontUseNativeDialog and on:
+            native_opt_calls["count"] += 1
+        return original_set_option(self, option, on)
+
+    original_set_option = QtWidgets.QFileDialog.setOption
+    monkeypatch.setattr(QtWidgets.QFileDialog, "setOption", _track_set_option)
+    monkeypatch.setattr(QtWidgets.QFileDialog, "exec", _fake_exec)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "selectedFiles",
+        lambda self: ["fake_data.h5"],
+    )
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "selectedNameFilter",
+        lambda self: "Fake Loader (*.h5)",
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda: {"Fake Loader (*.h5)": (lambda *_a, **_k: None, {})},
+    )
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        def _fake_add_from_multiple_files(
+            *,
+            loaded,
+            queued,
+            failed,
+            func,
+            kwargs,
+            retry_callback,
+        ):
+            add_calls["count"] += 1
+            if add_calls["count"] == 1:
+                retry_callback(None)
+
+        monkeypatch.setattr(
+            manager, "_add_from_multiple_files", _fake_add_from_multiple_files
+        )
+        ImageToolManager.open(manager, native=False)
+
+    assert exec_calls["count"] >= 2
+    assert native_opt_calls["count"] >= 2
 
 
 def test_open_multiple_files_workspace_error_no_duplicate_alert(

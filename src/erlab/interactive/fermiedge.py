@@ -11,7 +11,7 @@ import numpy as np
 import pydantic
 import pyqtgraph as pg
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets, uic
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 
@@ -842,7 +842,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         if (data.ndim != 2) or ("eV" not in data.dims):
             raise ValueError("Data must be 2D and have an 'eV' dimension.")
         super().__init__()
-        uic.loadUi(
+        erlab.interactive.utils.load_ui(
             str(importlib.resources.files(erlab.interactive).joinpath("restool.ui")),
             self,
         )

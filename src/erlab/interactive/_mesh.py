@@ -11,7 +11,7 @@ import pyqtgraph as pg
 import scipy.fft
 import varname
 import xarray as xr
-from qtpy import QtCore, QtWidgets, uic
+from qtpy import QtCore, QtWidgets
 
 import erlab
 
@@ -83,7 +83,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
         # Initialize UI
         super().__init__()
-        uic.loadUi(
+        erlab.interactive.utils.load_ui(
             str(importlib.resources.files(erlab.interactive).joinpath("meshtool.ui")),
             self,
         )

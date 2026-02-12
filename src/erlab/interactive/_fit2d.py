@@ -559,8 +559,7 @@ class Fit2DTool(Fit1DTool):
         self.copy_layout.addWidget(self.save_full_button, 1, 1)
 
         self.main_splitter.setStretchFactor(0, 3)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setStretchFactor(2, 2)
+        self.main_splitter.setStretchFactor(1, 2)
 
         self.resize(1024, 610)
         self._update_param_plot_options()

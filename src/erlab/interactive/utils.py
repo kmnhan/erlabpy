@@ -17,6 +17,7 @@ import os
 import pathlib
 import re
 import sys
+import threading
 import traceback
 import types
 import typing
@@ -29,7 +30,7 @@ import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import PYQT6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
 
@@ -69,6 +70,7 @@ __all__ = [
     "format_kwargs",
     "generate_code",
     "load_fit_ui",
+    "load_ui",
     "make_crosshairs",
     "parse_data",
     "qt_is_valid",
@@ -77,6 +79,8 @@ __all__ = [
     "wait_dialog",
     "xImageItem",
 ]
+
+_LOAD_UI_LOCK = threading.RLock()
 
 
 try:
@@ -153,6 +157,43 @@ def single_shot(
             raise
 
     QtCore.QTimer.singleShot(msec, _call)
+
+
+@contextlib.contextmanager
+def _without_connect_slots_by_name() -> Iterator[None]:
+    """Disable Qt auto-connect while loading .ui files on PyQt6.
+
+    PyQt6's ``uic.loadUi`` always calls ``QMetaObject.connectSlotsByName``. Under
+    coverage tracing this can deadlock while walking Python properties, so we suppress
+    auto-connect for the duration of the load.
+    """
+    if not PYQT6:
+        yield
+        return
+
+    def _noop_connect_slots_by_name(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    with _LOAD_UI_LOCK:
+        meta_object: typing.Any = QtCore.QMetaObject
+        attr_name = "connectSlotsByName"
+        connect_slots_by_name = typing.cast(
+            "Callable[..., None]", getattr(meta_object, attr_name)
+        )
+        setattr(meta_object, attr_name, _noop_connect_slots_by_name)
+        try:
+            yield
+        finally:
+            setattr(meta_object, attr_name, connect_slots_by_name)
+
+
+def load_ui(
+    uifile: str | os.PathLike[str],
+    baseinstance: QtWidgets.QWidget | None = None,
+) -> QtWidgets.QWidget:
+    """Load a Qt Designer .ui file with stable behavior under coverage tracing."""
+    with _without_connect_slots_by_name():
+        return typing.cast("QtWidgets.QWidget", uic.loadUi(uifile, baseinstance))
 
 
 def parse_data(data) -> xr.DataArray:
