@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import typing
 
 import numpy as np
@@ -88,6 +89,111 @@ def _rebuild_ui(
         return wrapper
 
     return decorator
+
+
+class _Fit2DParameterPlotItem(pg.PlotItem):
+    """Parameter plot item with context menu actions for exporting data."""
+
+    def __init__(self, tool: Fit2DTool) -> None:
+        super().__init__()
+        self._tool = tool
+        self._setup_actions()
+
+    def _setup_actions(self) -> None:
+        self.vb.menu.addSeparator()
+
+        save_values_action = self.vb.menu.addAction("Save parameter values as HDF5")
+        save_values_action.triggered.connect(self._save_parameter_values)
+
+        show_values_action = self.vb.menu.addAction(
+            "Show parameter values in ImageTool"
+        )
+        show_values_action.triggered.connect(self._show_parameter_values)
+
+        self.vb.menu.addSeparator()
+
+        save_stderr_action = self.vb.menu.addAction(
+            "Save parameter standard error as HDF5"
+        )
+        save_stderr_action.triggered.connect(self._save_parameter_stderr)
+
+        show_stderr_action = self.vb.menu.addAction(
+            "Show parameter standard error in ImageTool"
+        )
+        show_stderr_action.triggered.connect(self._show_parameter_stderr)
+
+    def _current_param_dataarray(self, *, stderr: bool) -> xr.DataArray | None:
+        param_name = self._tool.param_plot_combo.currentText().strip()
+        if not param_name:
+            self._tool._show_warning(
+                "No parameter selected",
+                "Select a parameter in the parameter plot first.",
+            )
+            return None
+
+        da = self._tool._param_plot_dataarray(param_name, stderr=stderr)
+        if da.size == 0:
+            kind = "standard errors" if stderr else "parameter values"
+            self._tool._show_warning(
+                "No data available",
+                f"No {kind} are available for the selected parameter in the "
+                "current y-range.",
+            )
+            return None
+        return da
+
+    def _save_dataarray_as_hdf5(self, data: xr.DataArray) -> None:
+        if isinstance(data.name, str):
+            default_name = data.name if data.name else "data"
+        elif data.name is None:
+            default_name = "data"
+        else:
+            default_name = str(data.name)
+
+        dialog = QtWidgets.QFileDialog(self._tool)
+        dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
+        dialog.setFileMode(QtWidgets.QFileDialog.FileMode.AnyFile)
+        dialog.setNameFilters(["xarray HDF5 Files (*.h5)", "All files (*)"])
+        dialog.setDefaultSuffix("h5")
+
+        if os.environ.get("PYTEST_VERSION") is not None:
+            dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
+
+        last_dir = pg.PlotItem.lastFileDir
+        if not last_dir:
+            last_dir = erlab.interactive.imagetool.manager._get_recent_directory()
+        if not last_dir:
+            last_dir = os.getcwd()
+        dialog.setDirectory(os.path.join(last_dir, f"{default_name}.h5"))
+
+        if dialog.exec():
+            filename = dialog.selectedFiles()[0]
+            data.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+            pg.PlotItem.lastFileDir = os.path.dirname(filename)
+
+    @QtCore.Slot()
+    def _save_parameter_values(self) -> None:
+        da = self._current_param_dataarray(stderr=False)
+        if da is not None:
+            self._save_dataarray_as_hdf5(da)
+
+    @QtCore.Slot()
+    def _show_parameter_values(self) -> None:
+        da = self._current_param_dataarray(stderr=False)
+        if da is not None:
+            self._tool._show_dataarray_in_itool(da)
+
+    @QtCore.Slot()
+    def _save_parameter_stderr(self) -> None:
+        da = self._current_param_dataarray(stderr=True)
+        if da is not None:
+            self._save_dataarray_as_hdf5(da)
+
+    @QtCore.Slot()
+    def _show_parameter_stderr(self) -> None:
+        da = self._current_param_dataarray(stderr=True)
+        if da is not None:
+            self._tool._show_dataarray_in_itool(da)
 
 
 class Fit2DTool(Fit1DTool):
@@ -244,7 +350,8 @@ class Fit2DTool(Fit1DTool):
         param_plot_controls.addStretch()
         param_plot_layout.addLayout(param_plot_controls)
         param_plot_layout.addWidget(self.param_plot_widget)
-        self.param_plot = self.param_plot_widget.addPlot()
+        self.param_plot = _Fit2DParameterPlotItem(self)
+        self.param_plot_widget.addItem(self.param_plot, row=0, col=0)
         self.param_plot.setDefaultPadding(0)
         self.param_plot.showGrid(x=True, y=True)
         self.param_plot.setLabel("left", self._y_dim_name)
@@ -761,6 +868,37 @@ class Fit2DTool(Fit1DTool):
             param_errors.append(param.stderr if param.stderr is not None else 0.0)
 
         return np.array(plot_y), np.array(param_values), np.array(param_errors)
+
+    def _param_plot_dataarray(
+        self, param_name: str, *, stderr: bool = False
+    ) -> xr.DataArray:
+        plot_y, param_values, param_errors = self._param_plot_data(param_name)
+        values = param_errors if stderr else param_values
+        kind = "stderr" if stderr else "values"
+        return xr.DataArray(
+            values,
+            coords={self._y_dim_name: plot_y},
+            dims=(self._y_dim_name,),
+            name=f"{param_name}_{kind}",
+        )
+
+    def _is_in_manager(self) -> bool:
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager is None:
+            return False
+        return any(
+            self in wrapper._childtools.values()
+            for wrapper in manager._imagetool_wrappers.values()
+        )
+
+    def _show_dataarray_in_itool(self, data: xr.DataArray) -> None:
+        tool = erlab.interactive.itool(
+            data, manager=self._is_in_manager(), execute=False
+        )
+        if isinstance(tool, QtWidgets.QWidget):
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            self._itool = tool
+            self._itool.show()
 
     def _update_param_plot_overlays(self) -> None:
         """Update overlay items and legend for active parameters."""

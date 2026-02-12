@@ -1267,9 +1267,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._right_layout.addWidget(stats_group)
         self._right_layout.addLayout(self.copy_layout)
 
-        self.main_splitter.setStretchFactor(0, 2)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setStretchFactor(2, 3)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 2)
 
         selection_model = typing.cast(
             "QtCore.QItemSelectionModel", self.param_view.selectionModel()
