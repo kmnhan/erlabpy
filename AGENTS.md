@@ -36,6 +36,8 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 - For new context-menu or file-dialog features, add tests for both accept and cancel dialog paths.
 - Prefer `accept_dialog` for real dialog interactions; use monkeypatch stubs to target hard-to-hit branches.
 - New or modified lines in touched interactive modules should be directly covered by tests, including warning/early-return branches, unless there is a clear reason a branch is untestable.
+- `ImageToolManager.main()` inspects `sys.argv[1:]` as potential file paths. For manager tests, prefer explicit test node IDs over long `-k` expressions, or patch `sys.argv` in tests, to avoid accidental file-path parsing side effects.
+- If a code path already shows an explicit UI dialog (`MessageDialog`/`QMessageBox`), avoid duplicate manager alert popups by logging with `extra={"suppress_ui_alert": True}`.
 - `# pragma: no cover` / `# pragma: no branch` is allowed for edge cases that are hard or impractical to exercise in CI; prefer tests when feasible and add a brief comment explaining why the pragma is needed.
 
 ## Commit & Pull Request Guidelines
