@@ -26,7 +26,7 @@ import numpy as np
 import numpy.typing as npt
 import pydantic
 import pyqtgraph as pg
-from qtpy import QtCore, QtGui, QtWidgets, uic
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.accessors.kspace import MomentumAccessor
@@ -149,7 +149,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
     ) -> None:
         # Initialize UI
         super().__init__()
-        uic.loadUi(
+        erlab.interactive.utils.load_ui(
             str(importlib.resources.files(erlab.interactive).joinpath("ktool.ui")), self
         )
         self.setWindowTitle("Momentum Conversion")

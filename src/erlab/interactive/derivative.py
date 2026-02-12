@@ -24,7 +24,7 @@ import numpy as np
 import pydantic
 import pyqtgraph as pg
 import xarray as xr
-from qtpy import QtCore, QtWidgets, uic
+from qtpy import QtCore, QtWidgets
 
 import erlab
 
@@ -179,7 +179,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
         # Initialize UI
         super().__init__()
-        uic.loadUi(
+        erlab.interactive.utils.load_ui(
             str(importlib.resources.files(erlab.interactive).joinpath("dtool.ui")), self
         )
 

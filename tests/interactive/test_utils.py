@@ -4,8 +4,9 @@ import lmfit
 import numpy as np
 import pytest
 import xarray as xr
-from qtpy import QtCore, QtGui, QtWidgets
+from qtpy import PYQT6, QtCore, QtGui, QtWidgets
 
+import erlab.interactive.utils
 from erlab.interactive.utils import (
     ChunkEditDialog,
     IconActionButton,
@@ -16,6 +17,7 @@ from erlab.interactive.utils import (
     array_rect,
     generate_code,
     load_fit_ui,
+    load_ui,
     save_fit_ui,
     xImageItem,
 )
@@ -103,6 +105,64 @@ def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds):
     accept_dialog(lambda: load_fit_ui(), pre_call=_go_to_file)
 
     tmp_dir.cleanup()
+
+
+def test_load_ui_temporarily_disables_autoconnect(monkeypatch) -> None:
+    restored_calls: list[object] = []
+
+    def _original_autoconnect(obj) -> None:
+        restored_calls.append(obj)
+
+    def _fake_load_ui(_uifile, baseinstance=None):
+        QtCore.QMetaObject.connectSlotsByName(baseinstance)
+        return baseinstance
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.QtCore.QMetaObject,
+        "connectSlotsByName",
+        _original_autoconnect,
+    )
+    monkeypatch.setattr(erlab.interactive.utils.uic, "loadUi", _fake_load_ui)
+
+    widget = QtWidgets.QWidget()
+    loaded = load_ui("dummy.ui", widget)
+    assert loaded is widget
+
+    if PYQT6:
+        # The autoconnect callback should be suppressed inside load_ui.
+        assert restored_calls == []
+    else:
+        assert restored_calls == [widget]
+
+    # Outside the context manager, the original callback should be restored.
+    QtCore.QMetaObject.connectSlotsByName(widget)
+    expected_restored = [widget]
+    if not PYQT6:
+        expected_restored = [widget, widget]
+    assert restored_calls == expected_restored
+
+
+def test_load_ui_restores_autoconnect_after_error(monkeypatch) -> None:
+    restored_calls: list[object] = []
+
+    def _original_autoconnect(obj) -> None:
+        restored_calls.append(obj)
+
+    def _failing_load_ui(*_args, **_kwargs):
+        raise RuntimeError("load failed")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.QtCore.QMetaObject,
+        "connectSlotsByName",
+        _original_autoconnect,
+    )
+    monkeypatch.setattr(erlab.interactive.utils.uic, "loadUi", _failing_load_ui)
+
+    with pytest.raises(RuntimeError, match="load failed"):
+        load_ui("dummy.ui", QtWidgets.QWidget())
+
+    QtCore.QMetaObject.connectSlotsByName(object())
+    assert len(restored_calls) == 1
 
 
 @pytest.mark.parametrize(
