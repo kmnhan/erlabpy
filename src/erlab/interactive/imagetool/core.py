@@ -3497,18 +3497,36 @@ class ItoolPlotItem(pg.PlotItem):
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
 
-    def _qsel_kwargs_multicursor(
+    def _uniform_qsel_kwargs_multicursor(
         self,
-    ) -> tuple[dict[Hashable, float | list[float]], Hashable]:
-        """Generate keyword arguments for :meth:`xarray.DataArray.qsel` for all cursors.
+    ) -> tuple[dict[Hashable, float | list[float]], Hashable | None]:
+        """Generate multi-cursor ``qsel`` keyword arguments for uniform axes.
 
-        Only supports varying a single dimension across cursors and uniform axes.
+        Returns
+        -------
+        tuple[dict[Hashable, float | list[float]], Hashable | None]
+            A 2-tuple of:
+
+            - ``qsel_kwargs``: keyword arguments to pass to
+              :meth:`xarray.DataArray.qsel`. Keys that vary across cursors are stored
+              as lists and ordered first.
+            - ``variable_dim``: the varying dimension key (without ``_width``), or
+              `None` if no key varies across cursors.
+
+        Raises
+        ------
+        ValueError
+            If any non-display axis is non-uniform, if more than one dimension varies
+            across cursors, or if only width keys vary across cursors.
         """
         if any(
             a in self.array_slicer._nonuniform_axes
             for a in set(range(self.slicer_area.data.ndim)) - set(self.display_axis)
         ):
-            raise ValueError("Cannot plot when indexing along non-uniform axes.")
+            raise ValueError(
+                "Cannot generate uniform qsel kwargs when indexing along "
+                "non-uniform axes."
+            )
 
         all_qsel_kws: list[dict[Hashable, float]] = [
             self.array_slicer.qsel_args(cursor, self.display_axis)
@@ -3531,6 +3549,112 @@ class ItoolPlotItem(pg.PlotItem):
                 varying.append(key)
                 result[key] = values
 
+        variable_dim_name = self._multicursor_variable_key(varying)
+
+        # Put varying keys first
+        variable_keys = (variable_dim_name, f"{variable_dim_name}_width")
+        other_keys = sorted((k for k in result if k not in variable_keys), key=str)
+        ordered_keys = [k for k in variable_keys if k in result] + other_keys
+        result = {k: result[k] for k in ordered_keys}
+
+        return result, variable_dim_name
+
+    def _multicursor_selection_plan(
+        self,
+        *,
+        data_name: str,
+        non_display_axes: tuple[int, ...],
+        has_nonuniform_non_display_axes: bool,
+    ) -> tuple[
+        dict[Hashable, float | list[float]] | None,
+        list[str] | None,
+        Hashable | None,
+        set[Hashable],
+    ]:
+        """Build a unified selection plan used by multi-cursor code generation.
+
+        Parameters
+        ----------
+        data_name
+            Variable name used in generated code (e.g. ``"data"``).
+        non_display_axes
+            Axis indices that are selected over, i.e. axes not shown in this plot.
+        has_nonuniform_non_display_axes
+            Whether any axis in ``non_display_axes`` is non-uniform.
+
+        Returns
+        -------
+        tuple
+            A 4-tuple ``(qsel_kwargs, selection_exprs, variable_dim, selected_dims)``:
+
+            - ``qsel_kwargs``: populated for uniform selection paths, else `None`.
+            - ``selection_exprs``: populated for non-uniform selection paths, else
+              `None`.
+            - ``variable_dim``: varying dimension key (without ``_width``), or `None`.
+            - ``selected_dims``: set of selected dimension keys used to infer plotted
+              dimension order.
+
+        Raises
+        ------
+        ValueError
+            Propagated from variable-key validation when cursor variation cannot be
+            represented by a single varying dimension.
+        """
+        if has_nonuniform_non_display_axes:
+            varying: list[Hashable] = []
+            for axis in non_display_axes:
+                dim_name = self._selection_dim_name(axis)
+                center_values = [
+                    self.array_slicer.get_index(cursor, axis)
+                    for cursor in range(self.slicer_area.n_cursors)
+                ]
+                width_values = [
+                    (self.array_slicer.get_bins(cursor)[axis] if binned[axis] else 0)
+                    for cursor in range(self.slicer_area.n_cursors)
+                    for binned in (self.array_slicer.get_binned(cursor),)
+                ]
+
+                if len(set(center_values)) > 1:
+                    varying.append(dim_name)
+                if len(set(width_values)) > 1:
+                    varying.append(f"{dim_name}_width")
+
+            variable_dim = self._multicursor_variable_key(varying)
+            selection_exprs = [
+                self._selection_expr_for_cursor(data_name, cursor, non_display_axes)
+                for cursor in range(self.slicer_area.n_cursors)
+            ]
+            if variable_dim is None:
+                selection_exprs = selection_exprs[:1]
+            selected_dims = {
+                self._selection_dim_name(axis) for axis in non_display_axes
+            }
+            return None, selection_exprs, variable_dim, selected_dims
+
+        qsel_kwargs, variable_dim = self._uniform_qsel_kwargs_multicursor()
+        selected_dims = set(qsel_kwargs)
+        return qsel_kwargs, None, variable_dim, selected_dims
+
+    def _multicursor_variable_key(self, varying: list[Hashable]) -> Hashable | None:
+        """Validate varying keys and return the effective varying dimension key.
+
+        Parameters
+        ----------
+        varying
+            List of keys that differ across cursors. Keys may include ``_width``
+            suffixes.
+
+        Returns
+        -------
+        Hashable or None
+            Dimension key that varies across cursors (without ``_width``), or `None`
+            when no key varies.
+
+        Raises
+        ------
+        ValueError
+            If more than one independent dimension varies, or if only width keys vary.
+        """
         if len(varying) > 1 and not (
             len(varying) == 2 and any(f"{k}_width" in varying for k in varying)
         ):
@@ -3547,35 +3671,137 @@ class ItoolPlotItem(pg.PlotItem):
 
         match len(varying):
             case 0:
-                variable_dim_name: Hashable | None = None
+                return None
             case 1:
-                variable_dim_name = varying[0]
+                return varying[0]
             case _:
-                for k in varying:
-                    if not str(k).endswith("_width"):
-                        variable_dim_name = k
-                        break
+                for key in varying:
+                    if not str(key).endswith("_width"):
+                        return key
+                return None  # pragma: no cover
 
-        # Put varying keys first
-        variable_keys = (variable_dim_name, f"{variable_dim_name}_width")
-        other_keys = sorted((k for k in result if k not in variable_keys), key=str)
-        ordered_keys = [k for k in variable_keys if k in result] + other_keys
-        result = {k: result[k] for k in ordered_keys}
+    def _selection_dim_name(self, axis: int) -> Hashable:
+        """Return user-facing dimension name for a non-display axis.
 
-        return result, variable_dim_name
+        Internal non-uniform ``*_idx`` dimensions are mapped back to their original
+        coordinate dimension names.
+        """
+        dim_name: Hashable = self.slicer_area.data.dims[axis]
+        if (
+            axis in self.array_slicer._nonuniform_axes
+            and isinstance(dim_name, str)
+            and dim_name.endswith("_idx")
+        ):
+            return dim_name.removesuffix("_idx")
+        return dim_name
+
+    def _selection_expr_for_cursor(
+        self, data_name: str, cursor: int, non_display_axes: tuple[int, ...]
+    ) -> str:
+        """Build a per-cursor mixed ``isel``/``qsel`` selection expression.
+
+        Parameters
+        ----------
+        data_name
+            Variable name used in generated code.
+        cursor
+            Cursor index used to obtain current selection and binning state.
+        non_display_axes
+            Axis indices that are selected over for this plot.
+
+        Non-uniform non-display axes are selected with ``isel`` while uniform
+        non-display axes are selected with ``qsel`` (including width terms for binned
+        selections). Binned non-uniform non-display axes are averaged via
+        ``qsel.average`` after indexing.
+
+        Returns
+        -------
+        str
+            A valid Python expression that evaluates to a selected
+            :class:`xarray.DataArray`.
+        """
+        isel_kwargs: dict[Hashable, slice | int] = {}
+        qsel_kwargs: dict[Hashable, float] = {}
+        avg_nonuniform_dims: list[str] = []
+        binned = self.array_slicer.get_binned(cursor)
+
+        for axis in non_display_axes:
+            if axis in self.array_slicer._nonuniform_axes:
+                dim_name = self._selection_dim_name(axis)
+                isel_kwargs[dim_name] = self.array_slicer._bin_slice(
+                    cursor, axis, int_if_one=True
+                )
+                if binned[axis]:
+                    avg_nonuniform_dims.append(str(dim_name))
+                continue
+
+            # Build qsel args one axis at a time so non-uniform axes are never passed
+            # into qsel_args.
+            disp_for_axis = tuple(
+                i for i in range(self.slicer_area.data.ndim) if i != axis
+            )
+            qsel_kwargs.update(self.array_slicer.qsel_args(cursor, disp_for_axis))
+
+        selected = data_name
+        if isel_kwargs:
+            selected += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
+        if qsel_kwargs:
+            selected += f".qsel({erlab.interactive.utils.format_kwargs(qsel_kwargs)})"
+        if avg_nonuniform_dims:
+
+            def _double_quoted_literal(value: str) -> str:
+                if '"' in value:
+                    return f"'{value}'"
+                return f'"{value}"'
+
+            if len(avg_nonuniform_dims) == 1:
+                avg_arg = _double_quoted_literal(avg_nonuniform_dims[0])
+            else:
+                avg_arg = (
+                    "("
+                    + ", ".join(
+                        _double_quoted_literal(dim) for dim in avg_nonuniform_dims
+                    )
+                    + ")"
+                )
+            selected += f".qsel.average({avg_arg})"
+        return selected
 
     def _plot_code_multicursor(self, *, placeholder_name: str | None = None) -> str:
-        """Generate matplotlib plot code for all cursors."""
-        result, variable_dim = self._qsel_kwargs_multicursor()
+        """Generate matplotlib plot code for all cursors.
 
+        Parameters
+        ----------
+        placeholder_name
+            Optional data variable name to use in generated code.
+
+        Returns
+        -------
+        str
+            Executable Python code that creates a matplotlib figure.
+        """
         if placeholder_name is not None:
             data_name: str = placeholder_name
         else:
             data_name = self.slicer_area.watched_data_name or "data"
 
+        non_display_axes = tuple(
+            sorted(set(range(self.slicer_area.data.ndim)) - set(self.display_axis))
+        )
+        has_nonuniform_non_display_axes = any(
+            axis in self.array_slicer._nonuniform_axes for axis in non_display_axes
+        )
+        result, selection_exprs, variable_dim, selected_dims = (
+            self._multicursor_selection_plan(
+                data_name=data_name,
+                non_display_axes=non_display_axes,
+                has_nonuniform_non_display_axes=has_nonuniform_non_display_axes,
+            )
+        )
+
         # Determine order of plotted dimensions
         dim_order_plot = list(self.slicer_area._data.dims)
-        for k in result:
+        for k in selected_dims:
             if k in dim_order_plot:
                 dim_order_plot.remove(k)
         if len(dim_order_plot) != len(self.display_axis):  # pragma: no cover
@@ -3589,20 +3815,82 @@ class ItoolPlotItem(pg.PlotItem):
 
         if self.is_image:
             return self._plot_code_image(
-                data_name, result, variable_dim, dim_order_plot
+                data_name,
+                variable_dim,
+                dim_order_plot,
+                qsel_kwargs=result,
+                selected_maps=selection_exprs,
             )
 
-        return self._plot_code_line(data_name, result, variable_dim, dim_order_plot[0])
+        return self._plot_code_line(
+            data_name,
+            variable_dim,
+            dim_order_plot[0],
+            qsel_kwargs=result,
+            selected_lines=selection_exprs,
+        )
 
     def _plot_code_line(
         self,
         data_name: str,
-        qsel_kwargs: dict[Hashable, float | list[float]],
         variable_dim: Hashable | None,
         x_dim: Hashable,
+        *,
+        qsel_kwargs: dict[Hashable, float | list[float]] | None = None,
+        selected_lines: list[str] | None = None,
     ) -> str:
-        TAB: str = "    "
-        plot_lines: list[str] = ["fig, ax = plt.subplots()"]
+        """Generate matplotlib code for 1D multi-cursor plots.
+
+        Parameters
+        ----------
+        data_name
+            Variable name used in generated code.
+        variable_dim
+            Varying dimension key across cursors, or `None` when all cursor selections
+            are equivalent.
+        x_dim
+            Dimension plotted along the x-axis.
+        qsel_kwargs
+            Uniform-path ``qsel`` kwargs.
+        selected_lines
+            Non-uniform-path selected line expressions.
+
+        Returns
+        -------
+        str
+            Executable Python code that plots one or more lines on a matplotlib axis.
+
+        Raises
+        ------
+        ValueError
+            If neither or both selection inputs are provided.
+        """
+        TAB = "    "
+        plot_lines = ["fig, ax = plt.subplots()"]
+        iterable_expr: str | None = None
+
+        if (qsel_kwargs is None) == (selected_lines is None):  # pragma: no cover
+            raise ValueError(
+                "Exactly one of qsel_kwargs or selected_lines must be provided."
+            )
+
+        if selected_lines is not None:
+            if variable_dim is None:
+                plot_lines.append(f"{selected_lines[0]}.plot(ax=ax)")
+                return "\n".join(plot_lines)
+        else:
+            qsel_kwargs_nonnull = typing.cast(
+                "dict[Hashable, float | list[float]]", qsel_kwargs
+            )
+            selected = (
+                f"{data_name}.qsel("
+                f"{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)})"
+            )
+            if variable_dim is None:
+                plot_lines.append(selected + ".plot(ax=ax)")
+                return "\n".join(plot_lines)
+            iterable_expr = selected + f'.transpose("{variable_dim}", ...)'
+            selected_lines = None
 
         colors: list[str] = [
             self.slicer_area.cursor_colors[i].name()
@@ -3611,21 +3899,10 @@ class ItoolPlotItem(pg.PlotItem):
         default_colors = erlab.interactive._options.schema.ColorOptions.model_fields[
             "cursors"
         ].default
-        colors_changed: bool = any(c not in default_colors for c in colors)
-
-        selected: str = (
-            f"{data_name}.qsel({erlab.interactive.utils.format_kwargs(qsel_kwargs)})"
-        )
+        colors_changed = any(c not in default_colors for c in colors)
         is_normalized: bool = self.slicer_data_items[
             self.slicer_area.current_cursor
         ].normalize
-
-        if variable_dim is None:
-            selected = selected + ".plot(ax=ax)"
-            plot_lines.append(selected)
-            return "\n".join(plot_lines)
-
-        selected = selected + f'.transpose("{variable_dim}", ...)'
 
         plot_code: str = erlab.interactive.utils.generate_code(
             xr.DataArray.plot,
@@ -3642,9 +3919,20 @@ class ItoolPlotItem(pg.PlotItem):
 
         if colors_changed:
             plot_lines.append(f"line_colors = {colors!s}")
-            plot_lines.append(f"for i, line in enumerate({selected}):")
+            if iterable_expr is not None:
+                plot_lines.append(f"for i, line in enumerate({iterable_expr}):")
+            else:
+                plot_lines.append("for i, line in enumerate([")
         else:
-            plot_lines.append(f"for line in {selected}:")
+            if iterable_expr is not None:
+                plot_lines.append(f"for line in {iterable_expr}:")
+            else:
+                plot_lines.append("for line in [")
+
+        if selected_lines is not None:
+            plot_lines.extend(f"{TAB}{selected}," for selected in selected_lines)
+            plot_lines.append("]):" if colors_changed else "]:")
+
         plot_lines.append(TAB + plot_code)
 
         if set_kwargs:
@@ -3655,35 +3943,117 @@ class ItoolPlotItem(pg.PlotItem):
                     matplotlib.axes.Axes.set, args=[], kwargs=set_kwargs, module="ax"
                 )
             )
+
         return "\n".join(plot_lines)
 
     def _plot_code_image(
         self,
         data_name: str,
-        qsel_kwargs: dict[Hashable, float | list[float]],
         variable_dim: Hashable | None,
         dim_order_plot: list[Hashable],
+        *,
+        qsel_kwargs: dict[Hashable, float | list[float]] | None = None,
+        selected_maps: list[str] | None = None,
     ) -> str:
-        # Setup plot keyword arguments
-        plot_args: list[typing.Any] = [f"|[{data_name}]|"]
-        if all(isinstance(k, str) and k.isidentifier() for k in qsel_kwargs):
-            plot_kwargs: dict[str, typing.Any] = {
-                str(k): v for k, v in qsel_kwargs.items()
-            }
-        else:
-            plot_kwargs = {}
-            plot_args.append(
-                f"|**{erlab.interactive.utils.format_kwargs(qsel_kwargs)}|"
+        """Generate matplotlib code for image/slice multi-cursor plots.
+
+        Parameters
+        ----------
+        data_name
+            Variable name used in generated code.
+        variable_dim
+            Varying dimension key across cursors, or `None` when selections are
+            equivalent.
+        dim_order_plot
+            Ordered plotted dimensions used to derive axis-orientation kwargs.
+        qsel_kwargs
+            Uniform-path ``qsel`` kwargs.
+        selected_maps
+            Non-uniform-path selected map expressions.
+
+        Returns
+        -------
+        str
+            Executable Python code that calls :func:`erlab.plotting.plot_slices`.
+
+        Raises
+        ------
+        ValueError
+            If neither or both selection inputs are provided.
+        """
+        plot_kwargs = self._plot_code_image_common_kwargs(dim_order_plot)
+
+        if (qsel_kwargs is None) == (selected_maps is None):  # pragma: no cover
+            raise ValueError(
+                "Exactly one of qsel_kwargs or selected_maps must be provided."
             )
 
-        if dim_order_plot[0] != self.axis_dims[0]:
+        if selected_maps is not None:
+            plot_lines: list[str] = []
+            if variable_dim is None:
+                plot_lines.append(f"selected = {selected_maps[0]}")
+            else:
+                plot_lines.append("selected = [")
+                plot_lines.extend(f"    {selected}," for selected in selected_maps)
+                plot_lines.append("]")
+            plot_lines.append(
+                erlab.interactive.utils.generate_code(
+                    erlab.plotting.plot_slices,
+                    args=["|selected|"],
+                    kwargs=plot_kwargs,
+                    module="eplt",
+                    assign=("fig", "axs" if variable_dim else "ax"),
+                )
+            )
+            return "\n".join(plot_lines)
+
+        # Setup plot keyword arguments
+        qsel_kwargs_nonnull = typing.cast(
+            "dict[Hashable, float | list[float]]", qsel_kwargs
+        )
+        plot_args: list[typing.Any] = [f"|[{data_name}]|"]
+        if all(isinstance(k, str) and k.isidentifier() for k in qsel_kwargs_nonnull):
+            plot_kwargs.update({str(k): v for k, v in qsel_kwargs_nonnull.items()})
+        else:
+            plot_args.append(
+                f"|**{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)}|"
+            )
+
+        return erlab.interactive.utils.generate_code(
+            erlab.plotting.plot_slices,
+            args=plot_args,
+            kwargs=plot_kwargs,
+            module="eplt",
+            assign=("fig", "axs" if variable_dim else "ax"),
+        )
+
+    def _plot_code_image_common_kwargs(
+        self, dim_order_plot: list[Hashable]
+    ) -> dict[str, typing.Any]:
+        """Return shared ``plot_slices`` keyword arguments for image code paths.
+
+        Parameters
+        ----------
+        dim_order_plot
+            Ordered plotted dimensions used to infer transpose and crop limits.
+
+        Returns
+        -------
+        dict[str, Any]
+            Keyword arguments shared by uniform and non-uniform image code-generation
+            paths.
+        """
+        plot_kwargs: dict[str, typing.Any] = {}
+        plot_dims = list(dim_order_plot)
+
+        if plot_dims[0] != self.axis_dims[0]:
             plot_kwargs["transpose"] = True
-            dim_order_plot.reverse()
+            plot_dims.reverse()
 
         for k, v in self._crop_indexers.items():
-            if k == dim_order_plot[0]:
+            if k == plot_dims[0]:
                 plot_kwargs["xlim"] = (float(v.start), float(v.stop))
-            elif k == dim_order_plot[1]:
+            elif k == plot_dims[1]:  # pragma: no branch
                 plot_kwargs["ylim"] = (float(v.start), float(v.stop))
 
         colormap_props = self.slicer_area.colormap_properties.copy()
@@ -3732,13 +4102,7 @@ class ItoolPlotItem(pg.PlotItem):
             )
             plot_kwargs["norm"] = f"|{norm_code}|"
 
-        return erlab.interactive.utils.generate_code(
-            erlab.plotting.plot_slices,
-            args=plot_args,
-            kwargs=plot_kwargs,
-            module="eplt",
-            assign=("fig", "axs" if variable_dim else "ax"),
-        )
+        return plot_kwargs
 
     @QtCore.Slot(bool)
     def set_normalize(self, normalize: bool) -> None:
