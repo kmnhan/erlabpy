@@ -30,6 +30,14 @@ Prefer importing top-level `erlab` in modules that already use `lazy_loader`, ev
 
 Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py` beside the code they cover. Loader plugins need regression data in `tests/io/plugins/test_<plugin>.py`; set `ERLAB_TEST_DATA_DIR` to a local clone of `erlabpy-data` so fixtures resolve. Coverage already skips legacy updater code, so aim for branch coverage elsewhere and parametrize datasets to catch multidimensional regressions.
 
+## Interactive Qt Notes
+
+- For tools launched from ImageTool, new actions that open/show data in ImageTool should be manager-aware (use manager flow when the parent tool is managed).
+- For new context-menu or file-dialog features, add tests for both accept and cancel dialog paths.
+- Prefer `accept_dialog` for real dialog interactions; use monkeypatch stubs to target hard-to-hit branches.
+- New or modified lines in touched interactive modules should be directly covered by tests, including warning/early-return branches, unless there is a clear reason a branch is untestable.
+- `# pragma: no cover` / `# pragma: no branch` is allowed for edge cases that are hard or impractical to exercise in CI; prefer tests when feasible and add a brief comment explaining why the pragma is needed.
+
 ## Commit & Pull Request Guidelines
 
 Follow Conventional Commits with scopes (e.g., `feat(analysis.gold): support multi-angle Fermi fits`) and reference issues via `(#123)` when relevant. PRs should summarize behavior changes, list the commands you ran, and attach screenshots or GIFs for GUI tweaks. Run `uv run ruff check`, `uv run ruff format --check`, `uv run mypy src`, and `uv run pytest` before requesting review, and mention dependent data/doc PRs in the description.

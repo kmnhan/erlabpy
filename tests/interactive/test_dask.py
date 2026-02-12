@@ -26,7 +26,7 @@ def cleanup_dask_client():
             client.close()
 
 
-def test_actions_visibility(main_window):
+def test_actions_visibility(main_window, monkeypatch):
     menu = DaskMenu(main_window)
 
     # No default client
@@ -37,26 +37,41 @@ def test_actions_visibility(main_window):
     assert not menu.open_dashboard_action.isEnabled()
     assert not menu.about_client_action.isEnabled()
 
-    # Create default client
-    with dask.distributed.Client(set_as_default=True):
-        menu.update_actions_visibility()
-        assert not menu.connect_existing_action.isEnabled()
-        assert not menu.create_local_action.isEnabled()
-        assert menu.close_client_action.isEnabled()
-        assert menu.open_dashboard_action.isEnabled()
-        assert menu.about_client_action.isEnabled()
+    # Simulate a default client without launching a real distributed cluster.
+    monkeypatch.setattr(dask.distributed, "default_client", lambda: object())
+    menu.update_actions_visibility()
+    assert not menu.connect_existing_action.isEnabled()
+    assert not menu.create_local_action.isEnabled()
+    assert menu.close_client_action.isEnabled()
+    assert menu.open_dashboard_action.isEnabled()
+    assert menu.about_client_action.isEnabled()
 
 
 def test_create_local_cluster(main_window, accept_dialog, cleanup_dask_client):
     menu = DaskMenu(main_window)
-    accept_dialog(menu.create_local_cluster, chained_dialogs=2)
+
+    def _configure_local_cluster(dialog):
+        if hasattr(dialog, "_processes_checkbox"):
+            dialog._processes_checkbox.setChecked(False)
+            if dialog._n_workers_widget._auto_check.isChecked():
+                dialog._n_workers_widget._auto_check.setChecked(False)
+            dialog._n_workers_widget._spin.setValue(1)
+            if dialog._threads_per_worker_widget._auto_check.isChecked():
+                dialog._threads_per_worker_widget._auto_check.setChecked(False)
+            dialog._threads_per_worker_widget._spin.setValue(1)
+
+    accept_dialog(
+        menu.create_local_cluster, chained_dialogs=2, pre_call=_configure_local_cluster
+    )
     assert dask.distributed.default_client() == menu.default_client
 
 
 def test_connect_existing_cluster(main_window, accept_dialog, cleanup_dask_client):
     menu = DaskMenu(main_window)
 
-    with dask.distributed.LocalCluster() as cluster:
+    with dask.distributed.LocalCluster(
+        processes=False, n_workers=1, threads_per_worker=1
+    ) as cluster:
 
         def populate_dialog(dialog: ClientSetupDialog):
             dialog._scheduler_address_edit.setText(cluster.scheduler_address)
