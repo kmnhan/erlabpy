@@ -1,7 +1,10 @@
+import contextlib
+
 import dask.distributed
 import pytest
 from qtpy import QtWidgets
 
+import erlab
 from erlab.interactive._dask import ClientSetupDialog, DaskMenu, _IntOrNoneWidget
 
 
@@ -47,8 +50,35 @@ def test_actions_visibility(main_window, monkeypatch):
     assert menu.about_client_action.isEnabled()
 
 
-def test_create_local_cluster(main_window, accept_dialog, cleanup_dask_client):
+def test_create_local_cluster(main_window, accept_dialog, monkeypatch):
     menu = DaskMenu(main_window)
+    created_kwargs: dict[str, object] = {}
+    fake_client: object | None = None
+
+    class _FakeClient:
+        def close(self) -> None:
+            nonlocal fake_client
+            fake_client = None
+
+    def _default_client():
+        if fake_client is None:
+            raise ValueError("No default client")
+        return fake_client
+
+    def _client_ctor(**kwargs):
+        nonlocal fake_client
+        created_kwargs.update(kwargs)
+        fake_client = _FakeClient()
+        return fake_client
+
+    @contextlib.contextmanager
+    def _wait_stub(*args, **kwargs):
+        yield None
+
+    monkeypatch.setattr(dask.distributed, "Client", _client_ctor)
+    monkeypatch.setattr(dask.distributed, "default_client", _default_client)
+    monkeypatch.setattr(erlab.interactive.utils, "wait_dialog", _wait_stub)
+    monkeypatch.setattr(menu, "show_client_info", lambda: None)
 
     def _configure_local_cluster(dialog):
         if hasattr(dialog, "_processes_checkbox"):
@@ -60,36 +90,76 @@ def test_create_local_cluster(main_window, accept_dialog, cleanup_dask_client):
                 dialog._threads_per_worker_widget._auto_check.setChecked(False)
             dialog._threads_per_worker_widget._spin.setValue(1)
 
-    accept_dialog(
-        menu.create_local_cluster, chained_dialogs=2, pre_call=_configure_local_cluster
-    )
-    assert dask.distributed.default_client() == menu.default_client
+    accept_dialog(menu.create_local_cluster, pre_call=_configure_local_cluster)
+    assert menu.default_client is fake_client
+    assert created_kwargs["set_as_default"] is True
+    assert created_kwargs["processes"] is False
+    assert created_kwargs["n_workers"] == 1
+    assert created_kwargs["threads_per_worker"] == 1
 
 
-def test_connect_existing_cluster(main_window, accept_dialog, cleanup_dask_client):
+def test_connect_existing_cluster(main_window, accept_dialog, monkeypatch):
     menu = DaskMenu(main_window)
+    fake_client: object | None = None
+    errors: list[tuple[str, str]] = []
 
-    with dask.distributed.LocalCluster(
-        processes=False, n_workers=1, threads_per_worker=1
-    ) as cluster:
+    class _Scheduler:
+        def __init__(self, address: str) -> None:
+            self.address = address
 
-        def populate_dialog(dialog: ClientSetupDialog):
-            dialog._scheduler_address_edit.setText(cluster.scheduler_address)
+    class _FakeClient:
+        def __init__(self, address: str) -> None:
+            self.scheduler = _Scheduler(address)
 
-        accept_dialog(menu.connect_existing_cluster, pre_call=populate_dialog)
-        assert menu.default_client.scheduler.address == cluster.scheduler_address
+        def close(self) -> None:
+            nonlocal fake_client
+            fake_client = None
 
-        # Close the client for next part of the test
-        menu.close_client()
+    def _default_client():
+        if fake_client is None:
+            raise ValueError("No default client")
+        return fake_client
+
+    def _client_ctor(*, address: str, timeout: int, set_as_default: bool, **kwargs):
+        del timeout, kwargs
+        nonlocal fake_client
+        if address == "nonexistent:8786":
+            raise RuntimeError("Connection failed")
+        if set_as_default:
+            fake_client = _FakeClient(address)
+        return fake_client
+
+    @contextlib.contextmanager
+    def _wait_stub(*args, **kwargs):
+        yield None
+
+    monkeypatch.setattr(dask.distributed, "Client", _client_ctor)
+    monkeypatch.setattr(dask.distributed, "default_client", _default_client)
+    monkeypatch.setattr(erlab.interactive.utils, "wait_dialog", _wait_stub)
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda parent, title, text: errors.append((title, text)),
+    )
+
+    def populate_dialog(dialog: ClientSetupDialog):
+        dialog._scheduler_address_edit.setText("tcp://host:8786")
+
+    accept_dialog(menu.connect_existing_cluster, pre_call=populate_dialog)
+    assert menu.default_client is not None
+    assert menu.default_client.scheduler.address == "tcp://host:8786"
+
+    # Close the client for next part of the test
+    menu.close_client()
+    assert menu.default_client is None
 
     def populate_dialog_fail(dialog: ClientSetupDialog):
         dialog._scheduler_address_edit.setText("nonexistent:8786")
         dialog._timeout_spin.setValue(1)
 
-    accept_dialog(
-        menu.connect_existing_cluster, chained_dialogs=2, pre_call=populate_dialog_fail
-    )
+    accept_dialog(menu.connect_existing_cluster, pre_call=populate_dialog_fail)
     assert menu.default_client is None
+    assert errors
 
 
 def test_int_or_none_widget(qapp):

@@ -67,8 +67,10 @@ QtCore.qInstallMessageHandler(_qt_msg_filter)
 # Limit numexpr to a single thread; this reduces probability of segfaults
 numexpr.set_num_threads(1)
 
-# Limit dask to a single thread; this reduces probability of segfaults
-dask.config.set(scheduler="synchronous")
+# Limit dask to a single thread and disable worker profiling to reduce segfaults
+dask.config.set(
+    {"scheduler": "synchronous", "distributed.worker.profile.enabled": False}
+)
 
 
 @pytest.fixture(scope="session")
