@@ -1593,6 +1593,7 @@ def test_load_workspace_error_no_duplicate_alert(
 ) -> None:
     critical_calls: list[tuple[typing.Any, ...]] = []
     exec_calls = {"count": 0}
+    native_opt_calls = {"count": 0}
 
     def _fake_critical(*args, **kwargs):
         critical_calls.append((args, kwargs))
@@ -1605,11 +1606,18 @@ def test_load_workspace_error_no_duplicate_alert(
     def _raise_open_datatree(*args, **kwargs):
         raise RuntimeError("broken workspace")
 
+    def _track_set_option(self, option, on=True):
+        if option == QtWidgets.QFileDialog.Option.DontUseNativeDialog and on:
+            native_opt_calls["count"] += 1
+        return original_set_option(self, option, on)
+
     monkeypatch.setattr(
         erlab.interactive.utils.MessageDialog,
         "critical",
         staticmethod(_fake_critical),
     )
+    original_set_option = QtWidgets.QFileDialog.setOption
+    monkeypatch.setattr(QtWidgets.QFileDialog, "setOption", _track_set_option)
     monkeypatch.setattr(QtWidgets.QFileDialog, "exec", _fake_exec)
     monkeypatch.setattr(
         QtWidgets.QFileDialog,
@@ -1625,8 +1633,73 @@ def test_load_workspace_error_no_duplicate_alert(
         QtWidgets.QApplication.processEvents()
 
         assert exec_calls["count"] >= 2  # One retry after the failure path.
+        assert native_opt_calls["count"] >= 2  # Retry should preserve `native=False`.
         assert len(critical_calls) == 1
         assert manager._alert_dialogs == []
+
+
+def test_open_retry_preserves_non_native_dialog(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    exec_calls = {"count": 0}
+    native_opt_calls = {"count": 0}
+    add_calls = {"count": 0}
+
+    def _fake_exec(self):
+        exec_calls["count"] += 1
+        return exec_calls["count"] == 1
+
+    def _track_set_option(self, option, on=True):
+        if option == QtWidgets.QFileDialog.Option.DontUseNativeDialog and on:
+            native_opt_calls["count"] += 1
+        return original_set_option(self, option, on)
+
+    original_set_option = QtWidgets.QFileDialog.setOption
+    monkeypatch.setattr(QtWidgets.QFileDialog, "setOption", _track_set_option)
+    monkeypatch.setattr(QtWidgets.QFileDialog, "exec", _fake_exec)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "selectedFiles",
+        lambda self: ["fake_data.h5"],
+    )
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "selectedNameFilter",
+        lambda self: "Fake Loader (*.h5)",
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda: {"Fake Loader (*.h5)": (lambda *_a, **_k: None, {})},
+    )
+
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+
+        def _fake_add_from_multiple_files(
+            *,
+            loaded,
+            queued,
+            failed,
+            func,
+            kwargs,
+            retry_callback,
+        ):
+            add_calls["count"] += 1
+            if add_calls["count"] == 1:
+                retry_callback(None)
+
+        monkeypatch.setattr(
+            manager, "_add_from_multiple_files", _fake_add_from_multiple_files
+        )
+        ImageToolManager.open(manager, native=False)
+
+    assert exec_calls["count"] >= 2
+    assert native_opt_calls["count"] >= 2
 
 
 def test_open_multiple_files_workspace_error_no_duplicate_alert(

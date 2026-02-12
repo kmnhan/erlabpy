@@ -1545,7 +1545,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     "Error",
                     "An error occurred while loading the workspace file.",
                 )
-                self.load()
+                self.load(native=native)
 
     @QtCore.Slot()
     def open(self, *, native: bool = True) -> None:
@@ -1583,7 +1583,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 failed=[],
                 func=func,
                 kwargs=kwargs,
-                retry_callback=lambda _: self.open(),
+                retry_callback=lambda _: self.open(native=native),
             )
 
     @QtCore.Slot(list, dict)
