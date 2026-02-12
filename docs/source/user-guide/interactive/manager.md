@@ -248,7 +248,7 @@ show_in_manager([data_a, data_b], link=True)
 show_in_manager(new_data, replace=3)
 ```
 
-Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>`, {func}`watch_data <erlab.interactive.imagetool.manager.watch_data>`, and {func}`unwatch_data <erlab.interactive.imagetool.manager.unwatch_data>` give you finer control when building custom acquisition pipelines.
+Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>` and {func}`watch <erlab.interactive.imagetool.manager.watch>` give you finer control when building custom acquisition pipelines.
 
 Under the hood these helpers communicate with the GUI via ZeroMQ, so they can be called from any Python process that can reach the manager (even on a different machine). See the API docs for details.
 

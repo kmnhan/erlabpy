@@ -58,6 +58,8 @@ def patch_manager(monkeypatch):
 
     # Patch manager attributes on the already-imported module namespace
     manager = watcher_mod.erlab.interactive.imagetool.manager
+    monkeypatch.setattr(manager, "_watch_data", watch_data, raising=False)
+    monkeypatch.setattr(manager, "_unwatch_data", unwatch_data, raising=False)
     monkeypatch.setattr(manager, "watch_data", watch_data, raising=False)
     monkeypatch.setattr(manager, "unwatch_data", unwatch_data, raising=False)
     monkeypatch.setattr(manager, "fetch", fetch, raising=False)
@@ -272,6 +274,252 @@ def test_stop_watching_all_with_remove(fake_shell, patch_manager, monkeypatch):
     watcher._apply_update_now("asdf", "nonexistent")  # should not raise
 
     watcher.shutdown()
+
+
+def test_watch_api_works_without_ipython_extension(patch_manager, monkeypatch):
+    namespace = {
+        "a": xr.DataArray(np.array([1, 2, 3]), dims=("x",)),
+    }
+
+    monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
+    monkeypatch.setattr(_Watcher, "start_polling", lambda self, interval_s=0.25: None)
+
+    try:
+        watched = watcher_mod.watch("a", namespace=namespace)
+        assert watched == ("a",)
+        assert watcher_mod.watched_variables(namespace=namespace) == ("a",)
+
+        namespace["a"] = xr.DataArray(np.array([9, 8, 7]), dims=("x",))
+        watcher, _ = watcher_mod._get_or_create_watcher(namespace=namespace)
+        watcher._last_send = 0.0
+        watcher_mod.maybe_push(namespace=namespace)
+
+        assert len(patch_manager["last_watch_calls"]) == 2
+        assert np.array_equal(
+            patch_manager["last_watch_calls"][-1][2].values, namespace["a"].values
+        )
+
+        watcher_mod.watch("a", namespace=namespace, stop=True, remove=True)
+        assert watcher_mod.watched_variables(namespace=namespace) == ()
+        assert patch_manager["last_unwatch_calls"][-1][1] is True
+    finally:
+        watcher_mod.shutdown(namespace=namespace)
+
+
+def test_watch_magic_delegates_to_watch_api(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    calls = []
+
+    def fake_watch(*varnames, **kwargs):
+        calls.append((varnames, kwargs))
+        return ()
+
+    monkeypatch.setattr(watcher_mod, "watch", fake_watch)
+
+    ip_shell.run_line_magic("watch", "darr")
+    assert calls[-1][0] == ("darr",)
+    assert calls[-1][1]["shell"] is ip_shell
+    assert calls[-1][1]["stop"] is False
+    assert calls[-1][1]["remove"] is False
+
+    ip_shell.run_line_magic("watch", "-d darr")
+    assert calls[-1][0] == ("darr",)
+    assert calls[-1][1]["stop"] is True
+    assert calls[-1][1]["remove"] is False
+
+    ip_shell.run_line_magic("watch", "-x darr")
+    assert calls[-1][0] == ("darr",)
+    assert calls[-1][1]["stop"] is True
+    assert calls[-1][1]["remove"] is True
+
+    ip_shell.run_line_magic("watch", "-z")
+    assert calls[-1][0] == ()
+    assert calls[-1][1]["stop_all"] is True
+    assert calls[-1][1]["remove"] is False
+
+    ip_shell.run_line_magic("watch", "-xz")
+    assert calls[-1][0] == ()
+    assert calls[-1][1]["stop_all"] is True
+    assert calls[-1][1]["remove"] is True
+
+
+def test_watch_magic_lists_currently_watched_variables(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+
+    monkeypatch.setattr(
+        watcher_mod, "watched_variables", lambda **kwargs: ("alpha", "beta")
+    )
+    monkeypatch.setattr(
+        watcher_mod,
+        "_display_message",
+        lambda message, html=None: messages.append((message, html)),
+    )
+
+    ip_shell.run_line_magic("watch", "")
+
+    assert len(messages) == 1
+    assert "Currently watched variables" in messages[0][0]
+    assert "alpha" in messages[0][0]
+    assert "beta" in messages[0][0]
+
+
+def test_watch_api_fallback_namespace_without_ipython(patch_manager, monkeypatch):
+    monkeypatch.setattr(watcher_mod, "_safe_get_ipython_shell", lambda: None)
+    monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
+    monkeypatch.setattr(_Watcher, "start_polling", lambda self, interval_s=0.25: None)
+
+    globals()["fallback_darr"] = xr.DataArray(np.array([1, 2, 3]), dims=("x",))
+
+    try:
+        watched = watcher_mod.watch("fallback_darr")
+        assert watched == ("fallback_darr",)
+        assert watcher_mod.watch() == ("fallback_darr",)
+
+        # Trigger fallback path in maybe_push/shutdown when no shell/namespace is given.
+        watcher_mod.maybe_push()
+        watcher_mod.shutdown()
+        assert watcher_mod.watched_variables() == ()
+
+        # No watcher left: should be a no-op.
+        watcher_mod.maybe_push()
+        watcher_mod.shutdown()
+    finally:
+        globals().pop("fallback_darr", None)
+        watcher_mod.shutdown(namespace=globals())
+
+
+def test_watcher_type_error_and_push_failure_cleanup(fake_shell, monkeypatch):
+    fake_shell.user_ns["not_da"] = object()
+    watcher = _Watcher(fake_shell)
+
+    with pytest.raises(TypeError, match=r"is not an xarray\.DataArray"):
+        watcher.watch("not_da")
+
+    fake_shell.user_ns["a"] = xr.DataArray(np.array([1, 2, 3]), dims=("x",))
+    monkeypatch.setattr(watcher, "start_thread", lambda: None)
+    monkeypatch.setattr(
+        watcher_mod.erlab.interactive.imagetool.manager,
+        "_watch_data",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        watcher.watch("a")
+
+    assert "a" not in watcher.watched_vars
+    watcher.shutdown()
+
+
+def test_start_polling_and_poll_loop_branches(fake_shell, monkeypatch):
+    watcher = _Watcher(fake_shell)
+
+    with pytest.raises(ValueError, match="interval_s must be > 0"):
+        watcher.start_polling(0)
+
+    started = {"count": 0}
+
+    class FakeThread:
+        def __init__(self, target, daemon):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            started["count"] += 1
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(watcher_mod.threading, "Thread", FakeThread)
+    watcher.start_polling(0.1)
+    assert started["count"] == 1
+
+    # Already-running poll thread path.
+    watcher._poll_thread = type(
+        "AliveThread",
+        (),
+        {"is_alive": lambda self: True, "join": lambda self, timeout=None: None},
+    )()
+    watcher.start_polling(0.2)
+    assert started["count"] == 1
+
+    calls = {"count": 0}
+
+    class FakeStop:
+        def __init__(self):
+            self._flags = [False, True]
+
+        def wait(self, _):
+            return self._flags.pop(0)
+
+        def set(self):
+            return None
+
+    watcher._poll_stop = FakeStop()
+
+    def _count_call() -> None:
+        calls["count"] += 1
+
+    monkeypatch.setattr(watcher, "_maybe_push", _count_call)
+    watcher._poll_loop()
+    assert calls["count"] == 1
+
+
+def test_callback_registration_failure_and_enable_auto_push_error(
+    fake_shell, monkeypatch
+):
+    watcher = _Watcher(fake_shell)
+    key = 101
+
+    class FailingEvents:
+        def register(self, *_):
+            raise RuntimeError("register failed")
+
+    fake_shell.events = FailingEvents()
+    assert (
+        watcher_mod._register_post_run_cell_callback(fake_shell, watcher, key) is False
+    )
+    assert key not in watcher_mod._POST_RUN_CELL_CALLBACKS
+
+    # events without unregister should still be handled gracefully.
+    shell_without_unregister = type("ShellNoUnregister", (), {"events": object()})()
+    watcher_mod._POST_RUN_CELL_CALLBACKS[key] = (
+        shell_without_unregister,
+        lambda: None,
+    )
+    watcher_mod._unregister_post_run_cell_callback(key)
+    assert key not in watcher_mod._POST_RUN_CELL_CALLBACKS
+
+    monkeypatch.setattr(watcher_mod, "_safe_get_ipython_shell", lambda: None)
+    with pytest.raises(RuntimeError, match="No active IPython shell found"):
+        watcher_mod.enable_ipython_auto_push()
+
+
+def test_manager_watch_transport_wrappers_are_deprecated(monkeypatch):
+    manager = watcher_mod.erlab.interactive.imagetool.manager
+    calls = {"watch": None, "unwatch": None}
+
+    def _fake_watch(varname, uid, data, show=False):
+        calls["watch"] = (varname, uid, data, show)
+
+    def _fake_unwatch(uid, remove=False):
+        calls["unwatch"] = (uid, remove)
+        return "ok"
+
+    monkeypatch.setattr(manager, "_watch_data", _fake_watch, raising=False)
+    monkeypatch.setattr(manager, "_unwatch_data", _fake_unwatch, raising=False)
+
+    darr = xr.DataArray(np.array([1, 2]), dims=("x",))
+    with pytest.deprecated_call(match="watch_data"):
+        manager.watch_data("darr", "uid-1", darr, show=True)
+    assert calls["watch"] == ("darr", "uid-1", darr, True)
+
+    with pytest.deprecated_call(match="unwatch_data"):
+        response = manager.unwatch_data("uid-1", remove=True)
+    assert response == "ok"
+    assert calls["unwatch"] == ("uid-1", True)
 
 
 def test_watcher_real(

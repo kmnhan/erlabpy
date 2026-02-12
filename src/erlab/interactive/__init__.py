@@ -60,11 +60,14 @@ def load_ipython_extension(ipython) -> None:
     ipython.register_magics(ImageToolMagics)
 
     # %watch magic
-    from erlab.interactive.imagetool.manager._watcher import WatcherMagics
+    from erlab.interactive.imagetool.manager._watcher import (
+        WatcherMagics,
+        enable_ipython_auto_push,
+    )
 
     watcher_magics = WatcherMagics(ipython)
     ipython.register_magics(watcher_magics)
-    ipython.events.register("post_run_cell", watcher_magics._watcher._maybe_push)
+    enable_ipython_auto_push(ipython)
 
     # Other tools
     from erlab.interactive._magic import InteractiveToolMagics
@@ -73,7 +76,8 @@ def load_ipython_extension(ipython) -> None:
 
 
 def unload_ipython_extension(ipython) -> None:
-    watcher_magics = ipython.magics_manager.registry.get("WatcherMagics")
-    watcher_magics._watcher.stop_watching_all()
-    watcher_magics._watcher.shutdown()
-    ipython.events.unregister("post_run_cell", watcher_magics._watcher._maybe_push)
+    from erlab.interactive.imagetool.manager._watcher import (
+        shutdown as shutdown_watcher,
+    )
+
+    shutdown_watcher(shell=ipython)

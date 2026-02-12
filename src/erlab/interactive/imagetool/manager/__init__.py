@@ -38,8 +38,7 @@ __all__ = [
     "main",
     "replace_data",
     "show_in_manager",
-    "unwatch_data",
-    "watch_data",
+    "watch",
 ]
 
 
@@ -49,6 +48,7 @@ import pathlib
 import shutil
 import sys
 import typing
+import warnings
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -62,14 +62,15 @@ from erlab.interactive.imagetool.manager._server import (
     HOST_IP,
     PORT,
     PORT_WATCH,
+    _unwatch_data,
+    _watch_data,
     fetch,
     is_running,
     load_in_manager,
     replace_data,
     show_in_manager,
-    unwatch_data,
-    watch_data,
 )
+from erlab.interactive.imagetool.manager._watcher import watch
 from erlab.interactive.utils import MessageDialog
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,36 @@ _manager_instance: ImageToolManager | None = None
 
 _always_use_socket: bool = False
 """Internal flag to use sockets within same process for test coverage."""
+
+
+def watch_data(varname: str, uid: str, data, show: bool = False) -> None:
+    """Compatibility wrapper for the internal watch transport API.
+
+    .. deprecated:: 3.20.0
+       Use :func:`watch` instead.
+    """
+    warnings.warn(
+        "`watch_data` is deprecated and will become private. "
+        "Use `erlab.interactive.imagetool.manager.watch` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    _watch_data(varname, uid, data, show=show)
+
+
+def unwatch_data(uid: str, remove: bool = False):
+    """Compatibility wrapper for the internal unwatch transport API.
+
+    .. deprecated:: 3.20.0
+       Use :func:`watch` with ``stop`` options instead.
+    """
+    warnings.warn(
+        "`unwatch_data` is deprecated and will become private. "
+        "Use `erlab.interactive.imagetool.manager.watch(..., stop=True)` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _unwatch_data(uid, remove=remove)
 
 
 class _ManagerApp(QtWidgets.QApplication):
