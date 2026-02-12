@@ -59,6 +59,10 @@ class _WarningNotificationHandler(logging.Handler):
         self._emitter = emitter
 
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(record, "suppress_ui_alert", False):
+            # A dedicated dialog already surfaced this handled condition.
+            return
+
         traceback_header = "Traceback (most recent call last):"
         traceback_msg = ""
         try:
@@ -1455,7 +1459,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     )
                 )
             except Exception:
-                logger.exception("Error while loading workspace")
+                logger.exception(
+                    "Error while loading workspace",
+                    extra={"suppress_ui_alert": True},
+                )
                 erlab.interactive.utils.MessageDialog.critical(
                     self,
                     "Error",
@@ -1546,6 +1553,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     )
                 except Exception:
                     flags.append(False)
+                    logger.exception(
+                        "Error creating ImageTool window",
+                        extra={"suppress_ui_alert": True},
+                    )
                     self._error_creating_imagetool()
                 else:
                     flags.append(True)
@@ -1577,6 +1588,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.get_imagetool(indices[-1])._update_title()
             except Exception:
                 flags.append(False)
+                logger.exception(
+                    "Error creating ImageTool window",
+                    extra={"suppress_ui_alert": True},
+                )
                 self._error_creating_imagetool()
             else:
                 flags.append(True)
@@ -1858,7 +1873,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         try:
                             self._from_datatree(dt)
                         except Exception:
-                            logger.exception("Error while loading workspace")
+                            logger.exception(
+                                "Error while loading workspace",
+                                extra={"suppress_ui_alert": True},
+                            )
                             erlab.interactive.utils.MessageDialog.critical(
                                 self,
                                 "Error",
@@ -1912,7 +1930,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _error_creating_imagetool(self) -> None:
         """Show an error message when an ImageTool window could not be created."""
-        logger.exception("Error creating ImageTool window")
         erlab.interactive.utils.MessageDialog.critical(
             self,
             "Error",

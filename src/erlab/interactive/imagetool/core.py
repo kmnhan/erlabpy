@@ -4186,7 +4186,7 @@ class ItoolPlotItem(pg.PlotItem):
     def open_in_ftool(self) -> None:
         self.slicer_area.add_tool_window(
             erlab.interactive.ftool(
-                self.current_data,
+                self.current_data.squeeze(),
                 data_name=self.get_selection_code(),
                 execute=False,
             )
