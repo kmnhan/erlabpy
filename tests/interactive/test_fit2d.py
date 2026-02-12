@@ -1,7 +1,9 @@
 import contextlib
+import os
 import re
 
 import numpy as np
+import pyqtgraph as pg
 import pytest
 import xarray as xr
 from qtpy import QtCore, QtWidgets
@@ -489,6 +491,279 @@ def test_fit2d_update_param_plot_with_results(qtbot) -> None:
     win.param_plot_combo.setCurrentText("p0_center")
     win._update_param_plot()
     assert win.param_plot_scatter.points() is not None
+
+
+def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    center_name = "p0_center"
+    params_0 = win._params.copy()
+    params_1 = win._params.copy()
+    params_2 = win._params.copy()
+    params_0[center_name].set(value=0.1)
+    params_1[center_name].set(value=0.2)
+    params_2[center_name].set(value=0.3)
+    params_0[center_name].stderr = 0.01
+    params_1[center_name].stderr = 0.02
+    params_2[center_name].stderr = None
+    win._params_full = [params_0, params_1, params_2]
+    win.param_plot_combo.setCurrentText(center_name)
+
+    values = win._param_plot_dataarray(center_name)
+    stderr = win._param_plot_dataarray(center_name, stderr=True)
+    np.testing.assert_allclose(values.values, [0.1, 0.2, 0.3])
+    np.testing.assert_allclose(stderr.values, [0.01, 0.02, 0.0])
+    assert values.name == f"{center_name}_values"
+    assert stderr.name == f"{center_name}_stderr"
+
+    saved: list[xr.DataArray] = []
+    shown: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        win.param_plot,
+        "_save_dataarray_as_hdf5",
+        lambda da: saved.append(da.copy(deep=True)),
+    )
+    monkeypatch.setattr(
+        win,
+        "_show_dataarray_in_itool",
+        lambda da: shown.append(da.copy(deep=True)),
+    )
+
+    win.param_plot._save_parameter_values()
+    win.param_plot._save_parameter_stderr()
+    win.param_plot._show_parameter_values()
+    win.param_plot._show_parameter_stderr()
+
+    assert [da.name for da in saved] == [
+        f"{center_name}_values",
+        f"{center_name}_stderr",
+    ]
+    assert [da.name for da in shown] == [
+        f"{center_name}_values",
+        f"{center_name}_stderr",
+    ]
+
+
+def test_fit2d_show_dataarray_in_itool_respects_manager_state(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    calls: list[tuple[xr.DataArray, bool | None, bool | None]] = []
+    return_widget = QtWidgets.QWidget()
+    qtbot.addWidget(return_widget)
+
+    def _itool_stub(
+        data: xr.DataArray, *, manager: bool | None = None, execute: bool | None = None
+    ) -> QtWidgets.QWidget:
+        calls.append((data, manager, execute))
+        return return_widget
+
+    monkeypatch.setattr(erlab.interactive, "itool", _itool_stub)
+    monkeypatch.setattr(win, "_is_in_manager", lambda: True)
+
+    da = xr.DataArray(np.arange(3.0), dims=("y",), coords={"y": np.arange(3)})
+    win._show_dataarray_in_itool(da)
+    assert calls
+    assert calls[0][1] is True
+    assert calls[0][2] is False
+
+
+def test_fit2d_param_plot_context_actions_missing_selection(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    warnings: list[tuple[str, str]] = []
+    saved: list[xr.DataArray] = []
+    shown: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        win, "_show_warning", lambda title, text: warnings.append((title, text))
+    )
+    monkeypatch.setattr(
+        win.param_plot, "_save_dataarray_as_hdf5", lambda da: saved.append(da)
+    )
+    monkeypatch.setattr(win, "_show_dataarray_in_itool", lambda da: shown.append(da))
+
+    win.param_plot_combo.clear()
+    win.param_plot._save_parameter_values()
+    win.param_plot._show_parameter_values()
+    win.param_plot._save_parameter_stderr()
+    win.param_plot._show_parameter_stderr()
+
+    assert len(warnings) == 4
+    assert all(title == "No parameter selected" for title, _ in warnings)
+    assert not saved
+    assert not shown
+
+
+def test_fit2d_param_plot_context_actions_no_data_available(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win, "_show_warning", lambda title, text: warnings.append((title, text))
+    )
+
+    win._params_full = [None for _ in win._params_full]
+    win.param_plot_combo.setCurrentText("p0_center")
+    win.param_plot._show_parameter_values()
+
+    assert warnings
+    assert warnings[-1][0] == "No data available"
+
+
+def test_fit2d_param_plot_save_dataarray_as_hdf5(
+    qtbot, accept_dialog, tmp_path
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    filename = tmp_path / "param_values.h5"
+    da = xr.DataArray(np.arange(3.0), dims=("y",), coords={"y": np.arange(3)})
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog) -> None:
+        dialog.setDirectory(str(tmp_path))
+        dialog.selectFile(str(filename))
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText("param_values.h5")
+
+    accept_dialog(
+        lambda: win.param_plot._save_dataarray_as_hdf5(da), pre_call=_go_to_file
+    )
+    loaded = xr.load_dataarray(filename, engine="h5netcdf")
+    xr.testing.assert_identical(da, loaded)
+
+
+def test_fit2d_param_plot_save_dataarray_as_hdf5_branches(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    real_dialog = QtWidgets.QFileDialog
+    captured_dirs: list[str] = []
+
+    class _DialogStub:
+        AcceptMode = real_dialog.AcceptMode
+        FileMode = real_dialog.FileMode
+        Option = real_dialog.Option
+
+        def __init__(self, *args, **kwargs) -> None:
+            self._selected = [str(tmp_path / "unused.h5")]
+
+        def setAcceptMode(self, mode) -> None:
+            self._accept_mode = mode
+
+        def setFileMode(self, mode) -> None:
+            self._file_mode = mode
+
+        def setNameFilters(self, name_filters) -> None:
+            self._name_filters = name_filters
+
+        def setDefaultSuffix(self, suffix) -> None:
+            self._suffix = suffix
+
+        def setOption(self, *args, **kwargs) -> None:
+            self._option = (args, kwargs)
+
+        def setDirectory(self, directory: str) -> None:
+            captured_dirs.append(directory)
+
+        def exec(self) -> bool:
+            return False
+
+        def selectedFiles(self) -> list[str]:
+            return self._selected
+
+    monkeypatch.setattr(QtWidgets, "QFileDialog", _DialogStub)
+    monkeypatch.delenv("PYTEST_VERSION", raising=False)
+
+    monkeypatch.setattr(pg.PlotItem, "lastFileDir", str(tmp_path), raising=False)
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "_get_recent_directory",
+        lambda: str(tmp_path / "recent"),
+    )
+
+    win.param_plot._save_dataarray_as_hdf5(xr.DataArray([1.0], name=""))
+    win.param_plot._save_dataarray_as_hdf5(xr.DataArray([2.0], name=5))
+    assert captured_dirs[-2].endswith("data.h5")
+    assert captured_dirs[-1].endswith("5.h5")
+
+    monkeypatch.setattr(pg.PlotItem, "lastFileDir", "", raising=False)
+    win.param_plot._save_dataarray_as_hdf5(xr.DataArray([3.0], name="named"))
+    assert captured_dirs[-1] == str(tmp_path / "recent" / "named.h5")
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_get_recent_directory", lambda: ""
+    )
+    win.param_plot._save_dataarray_as_hdf5(xr.DataArray([4.0], name="cwdname"))
+    assert captured_dirs[-1] == os.path.join(os.getcwd(), "cwdname.h5")
+
+
+def test_fit2d_is_in_manager_false_when_no_manager(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
+    assert win._is_in_manager() is False
+
+
+def test_fit2d_is_in_manager_wrapper_lookup(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _Wrapper:
+        def __init__(self, childtools: dict[str, object]) -> None:
+            self._childtools = childtools
+
+    class _Manager:
+        def __init__(self, wrappers: dict[int, _Wrapper]) -> None:
+            self._imagetool_wrappers = wrappers
+
+    manager = _Manager({0: _Wrapper({"x": object()}), 1: _Wrapper({"y": win})})
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", manager
+    )
+    assert win._is_in_manager() is True
+
+    manager = _Manager({0: _Wrapper({"x": object()})})
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager, "_manager_instance", manager
+    )
+    assert win._is_in_manager() is False
+
+
+def test_fit2d_show_dataarray_in_itool_non_widget_return(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    monkeypatch.setattr(erlab.interactive, "itool", lambda *args, **kwargs: None)
+    da = xr.DataArray(np.arange(3.0), dims=("y",), coords={"y": np.arange(3)})
+    win._show_dataarray_in_itool(da)
+    assert not hasattr(win, "_itool")
 
 
 def test_fit2d_y_range_slice(qtbot) -> None:
