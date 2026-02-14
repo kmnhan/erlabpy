@@ -200,6 +200,39 @@ If a variable is deleted or replaced with a non-`DataArray`, the manager automat
 When a notebook kernel shuts down, watched windows remain open in  but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion. Variables watched from different notebooks are color-coded for clarity.
 :::
 
+#### Outside IPython (e.g., marimo notebooks)
+
+If `%watch` is not available, use the Python API directly:
+
+```python
+from erlab.interactive.imagetool.manager import watch
+
+# Start watching a DataArray
+watch("my_data")
+
+# Stop watching one variable
+watch("my_data", stop=True)
+
+# Stop watching everything
+watch(stop_all=True)
+```
+
+In non-IPython environments, watcher updates falls back to polling, which periodically checks for changes in the watched variables. You can adjust the frequency with `poll_interval_s` if needed:
+
+```python
+watch("my_data", poll_interval_s=0.5)
+```
+
+Alternately, you can force an immediate check for changes with {func}`maybe_push <erlab.interactive.imagetool.manager.maybe_push>` instead of waiting for the next poll.
+
+Use {func}`shutdown <erlab.interactive.imagetool.manager.shutdown>` to stop threads cleanly.
+
+:::{note}
+
+{func}`watch <erlab.interactive.imagetool.manager.watch>` can infer a namespace automatically, but providing an explicit `namespace=` argument is safer when you call it indirectly (for example, from helper functions, callbacks, or wrappers) where the caller scope may not be obvious. In those cases, pass the exact mapping you want to watch, like `namespace=globals()`.
+
+:::
+
 (imagetool-manager-fetch)=
 
 ### Accessing manager data programmatically
@@ -248,7 +281,7 @@ show_in_manager([data_a, data_b], link=True)
 show_in_manager(new_data, replace=3)
 ```
 
-Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>`, {func}`watch_data <erlab.interactive.imagetool.manager.watch_data>`, and {func}`unwatch_data <erlab.interactive.imagetool.manager.unwatch_data>` give you finer control when building custom acquisition pipelines.
+Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>` and {func}`watch <erlab.interactive.imagetool.manager.watch>` give you finer control when building custom acquisition pipelines.
 
 Under the hood these helpers communicate with the GUI via ZeroMQ, so they can be called from any Python process that can reach the manager (even on a different machine). See the API docs for details.
 

@@ -12,8 +12,6 @@ __all__ = [
     "load_in_manager",
     "replace_data",
     "show_in_manager",
-    "unwatch_data",
-    "watch_data",
 ]
 
 
@@ -27,6 +25,7 @@ import pickle
 import socket
 import threading
 import typing
+import warnings
 
 import numpy as np
 import pydantic
@@ -782,7 +781,7 @@ def replace_data(
 
 
 @_manager_running
-def watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -> None:
+def _watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -> None:
     """Add or update a watched variable in the ImageToolManager.
 
     Parameters
@@ -808,7 +807,7 @@ def watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -
 
 
 @_manager_running
-def unwatch_data(uid: str, remove: bool = False) -> Response:
+def _unwatch_data(uid: str, remove: bool = False) -> Response:
     """Cancel watching a variable in the ImageToolManager.
 
     Parameters
@@ -826,6 +825,37 @@ def unwatch_data(uid: str, remove: bool = False) -> Response:
     return _query_zmq(
         CommandPacket(packet_type="command", command="unwatch-uid", command_arg=uid)
     )
+
+
+def watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -> None:
+    """Compatibility wrapper for :func:`_watch_data`.
+
+    .. deprecated:: 3.20.0
+       Use :func:`erlab.interactive.imagetool.manager.watch` instead.
+    """
+    warnings.warn(
+        "`watch_data` is deprecated and will become private. "
+        "Use `erlab.interactive.imagetool.manager.watch` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    _watch_data(varname, uid, data, show=show)
+
+
+def unwatch_data(uid: str, remove: bool = False) -> Response:
+    """Compatibility wrapper for :func:`_unwatch_data`.
+
+    .. deprecated:: 3.20.0
+       Use :func:`erlab.interactive.imagetool.manager.watch` with ``stop`` options
+       instead.
+    """
+    warnings.warn(
+        "`unwatch_data` is deprecated and will become private. "
+        "Use `erlab.interactive.imagetool.manager.watch(..., stop=True)` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _unwatch_data(uid, remove=remove)
 
 
 def _remove_idx(index: int) -> Response:
