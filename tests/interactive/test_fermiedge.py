@@ -2,6 +2,7 @@ import tempfile
 import time
 
 import joblib
+import numpy as np
 import pytest
 import scipy
 import xarray as xr
@@ -9,7 +10,13 @@ import xarray_lmfit as xlm
 from qtpy import QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.fermiedge import GoldTool, ResolutionTool, goldtool, restool
+from erlab.interactive.fermiedge import (
+    GoldTool,
+    ResolutionFitThread,
+    ResolutionTool,
+    goldtool,
+    restool,
+)
 from erlab.io.exampledata import generate_gold_edge
 
 
@@ -166,6 +173,56 @@ def test_restool_timeout_cleans_up_worker(qtbot, monkeypatch) -> None:
     assert not win.live_check.isChecked()
     assert win._fit_thread is None
     assert win._result_ds is None
+
+
+def test_restool_fit_thread_loads_result_before_emit(monkeypatch) -> None:
+    eV = np.linspace(-0.2, 0.2, 31)
+    data = xr.DataArray(np.exp(-(eV**2)), dims=("eV",), coords={"eV": eV})
+
+    thread = ResolutionFitThread(
+        data,
+        {
+            "eV_range": (-0.1, 0.1),
+            "method": "least_squares",
+            "temp": 100.0,
+            "resolution": 0.02,
+            "center": 0.0,
+            "fix_temp": True,
+            "fix_center": False,
+            "fix_resolution": False,
+            "bkg_slope": True,
+            "max_nfev": 5,
+        },
+        timeout=1.0,
+    )
+
+    class _DummyResult:
+        def __init__(self) -> None:
+            self.loaded = False
+
+        def load(self):
+            self.loaded = True
+            return self
+
+    dummy = _DummyResult()
+
+    def _quick_fit(*_args, **_kwargs):
+        return dummy
+
+    captured: dict[str, object | None] = {"result": None, "elapsed": None}
+
+    def _on_finished(result, elapsed: float) -> None:
+        captured["result"] = result
+        captured["elapsed"] = elapsed
+
+    thread.sigFinished.connect(_on_finished)
+    monkeypatch.setattr(erlab.analysis.gold, "quick_fit", _quick_fit)
+
+    thread.run()
+
+    assert dummy.loaded
+    assert captured["result"] is dummy
+    assert isinstance(captured["elapsed"], float)
 
 
 def test_restool_close_event_ignored_if_fit_thread_stuck(qtbot) -> None:
