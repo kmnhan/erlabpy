@@ -127,7 +127,7 @@ Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspac
 
 - {guilabel}`Data Explorer` – The explorer window ({guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`) provides a filesystem browser tailored for ARPES datasets. Preview metadata, queue batch loads, or open entire directories as tabs.
 
-- {guilabel}`Console` – Toggle the embedded IPython console with {kbd}`⌃+` on macOS or {kbd}`Ctrl+` on Windows/Linux, or via the {guilabel}`View` menu. The console exposes a `tools` list containing wrappers for every ImageTool. For example:
+- {guilabel}`Console` – Toggle the embedded IPython console with {kbd}`Ctrl+J` or via the {guilabel}`View` menu. The console exposes a `tools` list containing wrappers for every ImageTool. For example:
 
   ```python
   # List names of all windows

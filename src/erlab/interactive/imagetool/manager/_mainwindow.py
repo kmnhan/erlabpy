@@ -339,9 +339,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.console_action = QtWidgets.QAction("Console", self)
         self.console_action.triggered.connect(self.toggle_console)
-        self.console_action.setShortcut(
-            QtGui.QKeySequence("Meta+`" if sys.platform == "darwin" else "Ctrl+`")
-        )
+        self.console_action.setShortcut(QtGui.QKeySequence("Ctrl+J"))
         self.console_action.setToolTip("Toggle console window")
         self.console_action.setIcon(QtGui.QIcon.fromTheme("utilities-terminal"))
 
