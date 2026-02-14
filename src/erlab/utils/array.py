@@ -510,7 +510,8 @@ def sort_coord_order(
         if coord_name in coord_dict:
             ordered_coords[coord_name] = coord_dict.pop(coord_name)
 
-    out = darr.copy()
+    # Reorder coordinate mapping without deep-copying attrs/data.
+    out = darr.copy(deep=False)
     out._coords = ordered_coords | coord_dict
     return out
 

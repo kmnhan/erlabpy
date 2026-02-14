@@ -464,7 +464,10 @@ class ArraySlicer(QtCore.QObject):
             uniform index dimensions, suffixed with ``'_idx'``.
 
         """
-        data = data.copy()
+        # Keep metadata copying shallow to avoid deepcopy/GC issues.
+        # Make the backing array independent so in-place updates in
+        # ImageSlicerArea do not mutate the caller's original DataArray.
+        data = data.copy(deep=False, data=data.data.copy())
         if data.size == 0:
             raise ValueError("Data must not be empty.")
 
