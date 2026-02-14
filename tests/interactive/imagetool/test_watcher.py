@@ -1,3 +1,4 @@
+import builtins
 import threading
 import typing
 from collections.abc import Callable
@@ -393,6 +394,36 @@ def test_watch_api_fallback_namespace_without_ipython(patch_manager, monkeypatch
         watcher_mod.shutdown(namespace=globals())
 
 
+def test_watch_api_fallback_when_ipython_module_unavailable(patch_manager, monkeypatch):
+    real_import = builtins.__import__
+
+    def _blocked_import(name, globalns=None, localns=None, fromlist=(), level=0):
+        if name == "erlab.interactive.imagetool.manager._watcher._ipython":
+            raise ImportError("No module named 'IPython'")
+        return real_import(name, globalns, localns, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
+    monkeypatch.setattr(_Watcher, "start_polling", lambda self, interval_s=0.25: None)
+
+    globals()["fallback_darr_no_ipython"] = xr.DataArray(
+        np.array([1, 2, 3]), dims=("x",)
+    )
+
+    try:
+        assert watcher_core._safe_get_ipython_shell_from_package() is None
+
+        watched = watcher_mod.watch("fallback_darr_no_ipython")
+        assert watched == ("fallback_darr_no_ipython",)
+
+        watcher_mod.maybe_push()
+        watcher_mod.shutdown()
+        assert watcher_mod.watched_variables() == ()
+    finally:
+        globals().pop("fallback_darr_no_ipython", None)
+        watcher_mod.shutdown(namespace=globals())
+
+
 def test_watcher_type_error_and_push_failure_cleanup(fake_shell, monkeypatch):
     fake_shell.user_ns["not_da"] = object()
     watcher = _Watcher(fake_shell)
@@ -496,7 +527,7 @@ def test_callback_registration_failure_and_enable_auto_push_error(
 
     monkeypatch.setattr(watcher_ipy, "_safe_get_ipython_shell", lambda: None)
     with pytest.raises(RuntimeError, match="No active IPython shell found"):
-        watcher_mod.enable_ipython_auto_push()
+        watcher_ipy.enable_ipython_auto_push()
 
 
 def test_manager_watch_transport_wrappers_are_deprecated(monkeypatch):

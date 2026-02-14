@@ -26,6 +26,7 @@ When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md`
 Use 4-space indentation, Ruff’s 88-character limit, and double quotes. Modules/functions stay snake_case, classes use CapWords. Some Qt widgets keep co-located `.ui` files, import bindings through `qtpy`, and rely on explicit enums such as `QtCore.Qt.CheckState.Checked`. In case of Qt imports, prefer `from qtpy import QtWidgets, QtCore, QtGui`. Install `prek` so Ruff, mypy, and commitizen hooks run automatically. Docstrings use NumPy style. It is recommended to follow PEP 484 type hinting for all public APIs.
 Prefer importing top-level `erlab` in modules that already use `lazy_loader`, even if a narrower import is possible.
 Follow package import conventions by preferring absolute imports over relative imports.
+Use modern typing syntax as a default rule: use built-in generics (`list[str]`, `dict[str, int]`) and `collections.abc` types (for example `Callable`), and avoid deprecated `typing` aliases (deprecated since Python 3.9).
 
 ## Testing Guidelines
 

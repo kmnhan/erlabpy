@@ -217,12 +217,15 @@ watch("my_data", stop=True)
 watch(stop_all=True)
 ```
 
-In non-IPython environments, watcher updates use a polling fallback. You can adjust the
-frequency with `poll_interval_s` if needed:
+In non-IPython environments, watcher updates falls back to polling, which periodically checks for changes in the watched variables. You can adjust the frequency with `poll_interval_s` if needed:
 
 ```python
 watch("my_data", poll_interval_s=0.5)
 ```
+
+Alternately, you can force an immediate check for changes with {func}`maybe_push <erlab.interactive.imagetool.manager.maybe_push>` instead of waiting for the next poll.
+
+Use {func}`shutdown <erlab.interactive.imagetool.manager.shutdown>` to stop threads cleanly.
 
 :::{note}
 

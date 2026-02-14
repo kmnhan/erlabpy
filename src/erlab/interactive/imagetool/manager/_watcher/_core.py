@@ -9,7 +9,7 @@ import threading
 import time
 import typing
 import uuid
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 
 import xarray as xr
 import zmq
@@ -19,6 +19,26 @@ import erlab
 logger = logging.getLogger(__name__)
 
 NamespaceType = MutableMapping[str, typing.Any]
+_SHELL_PARAM_DOC = """shell
+    Shell-like object exposing ``user_ns``. This takes precedence over ``namespace``
+    when both are given.
+"""
+_NAMESPACE_PARAM_DOC = """namespace
+    Namespace mapping used only when ``shell`` is not provided (e.g. ``globals()``
+    in marimo notebooks). By default, the caller module globals are used if no
+    IPython shell is detected.
+"""
+_F = typing.TypeVar("_F", bound=Callable[..., typing.Any])
+
+
+def _inject_target_param_docs(func: _F) -> _F:
+    doc = func.__doc__
+    if doc is None:
+        return func
+    func.__doc__ = doc.replace("{shell_param_doc}", _SHELL_PARAM_DOC).replace(
+        "{namespace_param_doc}", _NAMESPACE_PARAM_DOC
+    )
+    return func
 
 
 class _ShellProtocol(typing.Protocol):
@@ -430,6 +450,7 @@ def _safe_get_ipython_shell_from_package() -> _ShellProtocol | None:
     return None
 
 
+@_inject_target_param_docs
 def watched_variables(
     *,
     shell: _ShellProtocol | None = None,
@@ -441,6 +462,16 @@ def watched_variables(
     use ``shell.user_ns`` when ``shell`` is provided, otherwise use ``namespace``.
     When neither is provided, the active IPython shell is used if available;
     otherwise caller globals are used.
+
+    Parameters
+    ----------
+    {shell_param_doc}
+    {namespace_param_doc}
+
+    Returns
+    -------
+    tuple of str
+        Names of currently watched variables.
     """
     shell, namespace = _resolve_or_infer_target(shell=shell, namespace=namespace)
 
@@ -451,6 +482,7 @@ def watched_variables(
         return tuple(watcher.watched_vars.keys())
 
 
+@_inject_target_param_docs
 def watch(
     *varnames: str,
     shell: _ShellProtocol | None = None,
@@ -490,13 +522,8 @@ def watch(
     ----------
     *varnames
         Variable names to watch or stop watching.
-    shell
-        Shell-like object exposing ``user_ns``. This takes precedence over ``namespace``
-        when both are given.
-    namespace
-        Namespace mapping used only when ``shell`` is not provided (e.g. ``globals()``
-        in marimo notebooks). By default, the caller module globals are used if no
-        IPython shell is detected.
+    {shell_param_doc}
+    {namespace_param_doc}
     stop
         If ``True``, stop watching specified variables.
     remove
@@ -536,6 +563,7 @@ def watch(
     return watched_variables(shell=shell, namespace=namespace)
 
 
+@_inject_target_param_docs
 def maybe_push(
     *,
     shell: _ShellProtocol | None = None,
@@ -547,6 +575,11 @@ def maybe_push(
     because pushes are triggered automatically after each cell. In environments that
     rely on polling (for example, marimo), this can be used to force an immediate
     check outside the polling cadence.
+
+    Parameters
+    ----------
+    {shell_param_doc}
+    {namespace_param_doc}
     """
     shell, namespace = _resolve_or_infer_target(shell=shell, namespace=namespace)
 
@@ -555,6 +588,7 @@ def maybe_push(
         watcher._maybe_push()
 
 
+@_inject_target_param_docs
 def shutdown(
     *,
     shell: _ShellProtocol | None = None,
@@ -565,6 +599,13 @@ def shutdown(
 
     This removes IPython ``post_run_cell`` callbacks when present and stops fallback
     polling threads used in non-IPython environments.
+
+    Parameters
+    ----------
+    {shell_param_doc}
+    {namespace_param_doc}
+    remove
+        If ``True``, remove watched variables from manager while shutting down.
     """
     _, namespace_obj = _resolve_or_infer_target(shell=shell, namespace=namespace)
     key = id(namespace_obj)

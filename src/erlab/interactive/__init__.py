@@ -60,7 +60,7 @@ def load_ipython_extension(ipython) -> None:
     ipython.register_magics(ImageToolMagics)
 
     # %watch magic
-    from erlab.interactive.imagetool.manager._watcher import (
+    from erlab.interactive.imagetool.manager._watcher._ipython import (
         WatcherMagics,
         enable_ipython_auto_push,
     )
