@@ -856,6 +856,40 @@ def test_fit_worker_timeout_and_cancelled(qtbot, exp_decay_model, monkeypatch) -
     assert events["timed_out"]
 
 
+def test_fit_worker_runtimeerror_interruption_treated_as_cancelled(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 1.0, 11)
+    data = xr.DataArray(np.exp(-t), dims=("t",), coords={"t": t}, name="decay")
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+
+    class _ThreadWithInterruptedWrapper(fit1d._FitWorker):
+        def isInterruptionRequested(self) -> bool:
+            raise RuntimeError("thread wrapper deleted")
+
+    worker = _ThreadWithInterruptedWrapper(
+        data,
+        "t",
+        exp_decay_model,
+        params,
+        max_nfev=5,
+        method="least_squares",
+        timeout=1.0,
+    )
+
+    cancelled = {"value": False}
+
+    def _modelfit(*_args, **kwargs):
+        kwargs["iter_cb"]()
+        raise RuntimeError("cancel")
+
+    worker.sigCancelled.connect(lambda: cancelled.__setitem__("value", True))
+    monkeypatch.setattr(data.xlm, "modelfit", _modelfit)
+
+    worker.run()
+    assert cancelled["value"]
+
+
 def test_fit_worker_loads_result_before_emit(
     qtbot, exp_decay_model, monkeypatch
 ) -> None:
@@ -898,6 +932,34 @@ def test_fit_worker_loads_result_before_emit(
 
     assert dummy.loaded
     assert finished["result"] is dummy
+
+
+def test_fit1d_finalize_fit_thread_cancelled_deletes_thread(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    class _DummyThread:
+        def __init__(self) -> None:
+            self.deleted = False
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    thread = _DummyThread()
+    cancelled = {"value": False}
+
+    win._fit_thread = thread  # type: ignore[assignment]
+    win._pending_fit_action = None
+    win._fit_cancel_requested = True
+    win._fit_cancelled = lambda: cancelled.__setitem__("value", True)  # type: ignore[method-assign]
+
+    win._finalize_fit_thread()
+
+    assert cancelled["value"]
+    assert thread.deleted
+    assert win._fit_thread is None
+    assert not win._fit_cancel_requested
 
 
 def test_snap_cursor_line_value(qtbot) -> None:
