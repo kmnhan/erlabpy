@@ -200,6 +200,36 @@ If a variable is deleted or replaced with a non-`DataArray`, the manager automat
 When a notebook kernel shuts down, watched windows remain open in  but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion. Variables watched from different notebooks are color-coded for clarity.
 :::
 
+#### Watching outside IPython (for example, marimo)
+
+If `%watch` is not available, use the Python API directly:
+
+```python
+from erlab.interactive.imagetool.manager import watch
+
+# Start watching a DataArray
+watch("my_data")
+
+# Stop watching one variable
+watch("my_data", stop=True)
+
+# Stop watching everything
+watch(stop_all=True)
+```
+
+In non-IPython environments, watcher updates use a polling fallback. You can adjust the
+frequency with `poll_interval_s` if needed:
+
+```python
+watch("my_data", poll_interval_s=0.5)
+```
+
+:::{note}
+
+{func}`watch <erlab.interactive.imagetool.manager.watch>` can infer a namespace automatically, but providing an explicit `namespace=` argument is safer when you call it indirectly (for example, from helper functions, callbacks, or wrappers) where the caller scope may not be obvious. In those cases, pass the exact mapping you want to watch, like `namespace=globals()`.
+
+:::
+
 (imagetool-manager-fetch)=
 
 ### Accessing manager data programmatically

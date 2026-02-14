@@ -25,6 +25,7 @@ When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md`
 
 Use 4-space indentation, Ruff’s 88-character limit, and double quotes. Modules/functions stay snake_case, classes use CapWords. Some Qt widgets keep co-located `.ui` files, import bindings through `qtpy`, and rely on explicit enums such as `QtCore.Qt.CheckState.Checked`. In case of Qt imports, prefer `from qtpy import QtWidgets, QtCore, QtGui`. Install `prek` so Ruff, mypy, and commitizen hooks run automatically. Docstrings use NumPy style. It is recommended to follow PEP 484 type hinting for all public APIs.
 Prefer importing top-level `erlab` in modules that already use `lazy_loader`, even if a narrower import is possible.
+Follow package import conventions by preferring absolute imports over relative imports.
 
 ## Testing Guidelines
 
@@ -43,6 +44,8 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 - Do not make runtime code behave differently under pytest (e.g., `PYTEST_VERSION`, `sys.modules["pytest"]`, or test-only env checks in `src/`). Keep production behavior explicit via function arguments/state, and implement test-specific behavior in tests/fixtures/monkeypatching instead.
 - If a code path already shows an explicit UI dialog (`MessageDialog`/`QMessageBox`), avoid duplicate manager alert popups by logging with `extra={"suppress_ui_alert": True}`.
 - `# pragma: no cover` / `# pragma: no branch` is allowed for edge cases that are hard or impractical to exercise in CI; prefer tests when feasible and add a brief comment explaining why the pragma is needed.
+- Do not export private compatibility shims only for monkeypatched tests; update tests to patch the real module/function location instead.
+- Keep watcher semantics stable for IPython users when adding non-IPython support; validate both post-run-cell (IPython) and polling fallback (e.g., marimo/plain namespace) paths in tests.
 
 ## Commit & Pull Request Guidelines
 

@@ -1,15 +1,6 @@
-"""Watch DataArray changes and synchronize them with ImageTool manager."""
+"""Core watcher logic that is independent of IPython magics."""
 
 from __future__ import annotations
-
-__all__ = [
-    "WatcherMagics",
-    "enable_ipython_auto_push",
-    "maybe_push",
-    "shutdown",
-    "watch",
-    "watched_variables",
-]
 
 import contextlib
 import inspect
@@ -25,51 +16,23 @@ import zmq
 
 import erlab
 
-try:
-    import IPython
-    from IPython.core.magic import Magics, line_magic, magics_class
-    from IPython.core.magic_arguments import argument, magic_arguments, parse_argstring
-except Exception:  # pragma: no cover - fallback for non-IPython environments
-    IPython = None
-
-    class Magics:
-        def __init__(self, shell) -> None:
-            self.shell = shell
-
-    def magics_class(cls):
-        return cls
-
-    def line_magic(func):
-        return func
-
-    def magic_arguments(*args, **kwargs):
-        def _decorator(func):
-            return func
-
-        return _decorator
-
-    def argument(*args, **kwargs):
-        def _decorator(func):
-            return func
-
-        return _decorator
-
-    def parse_argstring(*args, **kwargs):
-        raise RuntimeError("IPython is required for %watch magic support")
-
-
 logger = logging.getLogger(__name__)
 
 NamespaceType = MutableMapping[str, typing.Any]
 
 
 class _ShellProtocol(typing.Protocol):
-    user_ns: NamespaceType
+    @property
+    def user_ns(self) -> NamespaceType: ...
 
 
 class _NamespaceShell:
     def __init__(self, user_ns: NamespaceType) -> None:
-        self.user_ns = user_ns
+        self._user_ns = user_ns
+
+    @property
+    def user_ns(self) -> NamespaceType:
+        return self._user_ns
 
 
 _STATE_LOCK: threading.RLock = threading.RLock()
@@ -346,26 +309,23 @@ class _Watcher:
         self.shutdown()
 
 
-def _infer_caller_namespace() -> NamespaceType:
+def _infer_caller_namespace(stacklevel: int = 2) -> NamespaceType:
+    if stacklevel < 0:
+        raise ValueError("stacklevel must be >= 0")
+
     frame = inspect.currentframe()
     try:
-        caller = frame.f_back.f_back if frame and frame.f_back else None
+        caller = frame
+        for _ in range(stacklevel):
+            if caller is None:
+                break
+            caller = caller.f_back
         if caller is None:
             return typing.cast("NamespaceType", globals())
         return typing.cast("NamespaceType", caller.f_globals)
     finally:
+        del caller
         del frame
-
-
-def _safe_get_ipython_shell() -> _ShellProtocol | None:
-    if IPython is None:
-        return None
-
-    with contextlib.suppress(Exception):
-        shell = IPython.get_ipython()
-        if shell is not None and hasattr(shell, "user_ns"):
-            return typing.cast("_ShellProtocol", shell)
-    return None
 
 
 def _resolve_target(
@@ -377,6 +337,19 @@ def _resolve_target(
     if namespace is not None:
         return None, namespace
     raise ValueError("Either shell or namespace must be provided")
+
+
+def _resolve_or_infer_target(
+    shell: _ShellProtocol | None = None,
+    namespace: NamespaceType | None = None,
+) -> tuple[_ShellProtocol | None, NamespaceType]:
+    if shell is None and namespace is None:
+        ip_shell = _safe_get_ipython_shell_from_package()
+        if ip_shell is not None:
+            shell = ip_shell
+        else:
+            namespace = _infer_caller_namespace(stacklevel=3)
+    return _resolve_target(shell=shell, namespace=namespace)
 
 
 def _get_or_create_watcher(
@@ -447,15 +420,14 @@ def _unregister_post_run_cell_callback(key: int) -> None:
             events.unregister("post_run_cell", callback)
 
 
-def enable_ipython_auto_push(shell: _ShellProtocol | None = None) -> _Watcher:
-    """Enable post-cell synchronization for an IPython shell."""
-    shell_obj = shell or _safe_get_ipython_shell()
-    if shell_obj is None:
-        raise RuntimeError("No active IPython shell found")
+def _safe_get_ipython_shell_from_package() -> _ShellProtocol | None:
+    with contextlib.suppress(Exception):
+        from erlab.interactive.imagetool.manager._watcher._ipython import (
+            _safe_get_ipython_shell,
+        )
 
-    watcher, key = _get_or_create_watcher(shell=shell_obj)
-    _register_post_run_cell_callback(shell_obj, watcher, key)
-    return watcher
+        return _safe_get_ipython_shell()
+    return None
 
 
 def watched_variables(
@@ -463,13 +435,14 @@ def watched_variables(
     shell: _ShellProtocol | None = None,
     namespace: NamespaceType | None = None,
 ) -> tuple[str, ...]:
-    """Return currently watched variable names for the selected namespace."""
-    if shell is None and namespace is None:
-        ip_shell = _safe_get_ipython_shell()
-        if ip_shell is not None:
-            shell = ip_shell
-        else:
-            namespace = _infer_caller_namespace()
+    """Return currently watched variable names for the selected namespace.
+
+    Target resolution uses the same shell-first policy as :func:`watch`:
+    use ``shell.user_ns`` when ``shell`` is provided, otherwise use ``namespace``.
+    When neither is provided, the active IPython shell is used if available;
+    otherwise caller globals are used.
+    """
+    shell, namespace = _resolve_or_infer_target(shell=shell, namespace=namespace)
 
     watcher, _ = _get_watcher_if_exists(shell=shell, namespace=namespace)
     if watcher is None:
@@ -489,16 +462,41 @@ def watch(
 ) -> tuple[str, ...]:
     """Watch namespace variables and synchronize them with ImageTool manager.
 
+    Target resolution follows a shell-first policy:
+
+    1. If ``shell`` is provided, ``shell.user_ns`` is always used.
+    2. Else if ``namespace`` is provided, that mapping is used.
+    3. Else, try the active IPython shell.
+    4. If no IPython shell is available, fall back to the caller module globals.
+
+    In most cases, simply using ``watch("varname")`` without specifying ``shell`` or
+    ``namespace`` should work as expected in both IPython and regular Python scripts.
+
+    Synchronization behavior differs by environment:
+
+    - IPython kernels that expose a ``post_run_cell`` event use that event hook to
+      detect outbound variable changes, so synchronization is done immediately after
+      each cell execution.
+    - Other environments (for example, marimo or plain Python namespaces) use a
+      background polling thread to detect outbound changes. The polling interval can be
+      configured with ``poll_interval_s``. When using polling, changes are pushed to the
+      manager at most once per ``poll_interval_s`` seconds.
+
+    For inbound updates from the ImageTool manager, shells that expose
+    ``kernel.io_loop`` (typical IPython kernels) schedule namespace mutation on the
+    kernel event loop. Other shells apply updates directly on the watcher thread.
+
     Parameters
     ----------
     *varnames
         Variable names to watch or stop watching.
     shell
-        Shell-like object exposing ``user_ns``. If omitted, the active IPython shell
-        is used when available.
+        Shell-like object exposing ``user_ns``. This takes precedence over ``namespace``
+        when both are given.
     namespace
-        Namespace mapping used when no shell is available (e.g. ``globals()`` in
-        marimo notebooks).
+        Namespace mapping used only when ``shell`` is not provided (e.g. ``globals()``
+        in marimo notebooks). By default, the caller module globals are used if no
+        IPython shell is detected.
     stop
         If ``True``, stop watching specified variables.
     remove
@@ -506,19 +504,16 @@ def watch(
     stop_all
         If ``True``, stop watching all variables in the namespace.
     poll_interval_s
-        Polling interval used when post-run hooks are unavailable.
+        Polling interval in seconds for fallback polling when post-run hooks are
+        unavailable (for example, non-IPython environments). Must be greater than 0.
+        This value is ignored when a post-run callback is successfully registered.
 
     Returns
     -------
     tuple of str
         Currently watched variable names after applying the operation.
     """
-    if shell is None and namespace is None:
-        ip_shell = _safe_get_ipython_shell()
-        if ip_shell is not None:
-            shell = ip_shell
-        else:
-            namespace = _infer_caller_namespace()
+    shell, namespace = _resolve_or_infer_target(shell=shell, namespace=namespace)
 
     if not varnames and not stop_all and not stop and not remove:
         return watched_variables(shell=shell, namespace=namespace)
@@ -546,13 +541,14 @@ def maybe_push(
     shell: _ShellProtocol | None = None,
     namespace: NamespaceType | None = None,
 ) -> None:
-    """Push changed variables to manager for a given shell or namespace."""
-    if shell is None and namespace is None:
-        ip_shell = _safe_get_ipython_shell()
-        if ip_shell is not None:
-            shell = ip_shell
-        else:
-            namespace = _infer_caller_namespace()
+    """Push changed variables to manager for a given shell or namespace.
+
+    In IPython kernels with ``post_run_cell`` support, this is usually not required
+    because pushes are triggered automatically after each cell. In environments that
+    rely on polling (for example, marimo), this can be used to force an immediate
+    check outside the polling cadence.
+    """
+    shell, namespace = _resolve_or_infer_target(shell=shell, namespace=namespace)
 
     watcher, _ = _get_watcher_if_exists(shell=shell, namespace=namespace)
     if watcher is not None:
@@ -565,15 +561,12 @@ def shutdown(
     namespace: NamespaceType | None = None,
     remove: bool = False,
 ) -> None:
-    """Shutdown watcher for a namespace and unregister associated hooks."""
-    if shell is None and namespace is None:
-        ip_shell = _safe_get_ipython_shell()
-        if ip_shell is not None:
-            shell = ip_shell
-        else:
-            namespace = _infer_caller_namespace()
+    """Shutdown watcher for a namespace and unregister associated hooks.
 
-    _, namespace_obj = _resolve_target(shell=shell, namespace=namespace)
+    This removes IPython ``post_run_cell`` callbacks when present and stops fallback
+    polling threads used in non-IPython environments.
+    """
+    _, namespace_obj = _resolve_or_infer_target(shell=shell, namespace=namespace)
     key = id(namespace_obj)
 
     with _STATE_LOCK:
@@ -586,83 +579,3 @@ def shutdown(
 
     watcher.stop_watching_all(remove=remove)
     watcher.shutdown()
-
-
-@magics_class
-class WatcherMagics(Magics):
-    def __init__(self, shell) -> None:
-        # You must call the parent constructor
-        super().__init__(shell)
-        self._watcher, _ = _get_or_create_watcher(shell=self.shell)
-
-    @magic_arguments()
-    @argument(
-        "-d", action="store_true", help="Stop watching the specified variable(s)."
-    )
-    @argument("-x", action="store_true", help="Remove from manager.")
-    @argument("-z", action="store_true", help="Stop watching all variables.")
-    @argument("darr", nargs="*", help="DataArray variable(s) to be watched.")
-    @line_magic
-    def watch(self, line) -> None:
-        """Watch DataArray variable(s) and show in ImageTool manager.
-
-        This magic command allows you to watch one or more xarray DataArray variables in
-        your IPython environment. When a watched variable is modified, the changes are
-        applied automatically to the data shown in the ImageTool manager.
-
-        Usage:
-
-        * ``%watch``          - Show list of all watched variables
-
-        * ``%watch spam bar`` - Open the DataArray variables spam and bar and keep
-                                watching for changes
-
-        * ``%watch -d spam``  - Stop watching the variable spam
-
-        * ``%watch -x spam``  - Completely remove the variable spam from the manager
-
-        * ``%watch -z``       - Stop watching all variables
-
-        """
-        args = parse_argstring(self.watch, line)
-
-        if not args.darr and not args.z:
-            watched = watched_variables(shell=self.shell)
-            if len(watched) == 0:
-                _display_message("No variables are being watched.")
-                return
-            _display_message(
-                "Currently watched variables:\n"
-                + "\n".join([f" - {v}" for v in watched]),
-                "Currently watched variables:\n"
-                + " ".join([f"<code>{varname}</code>" for varname in watched]),
-            )
-
-            return
-
-        if args.z:
-            watch(shell=self.shell, stop_all=True, remove=args.x)
-            _display_message("Stopped watching all variables.")
-            return
-
-        watch(
-            *args.darr,
-            shell=self.shell,
-            stop=args.d or args.x,
-            remove=args.x,
-        )
-
-        if args.d or args.x:
-            _display_message(
-                f"Stopped watching {', '.join(args.darr)}",
-                "⏹️ Stopped watching "
-                + " ".join([f"<code>{varname}</code>" for varname in args.darr]),
-            )
-        else:
-            _display_message(
-                f"Watching {', '.join(args.darr)}",
-                "🔄 Watching "
-                + " ".join([f"<code>{varname}</code>" for varname in args.darr]),
-            )
-
-        return

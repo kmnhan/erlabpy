@@ -9,8 +9,10 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._watcher._core as watcher_core
+import erlab.interactive.imagetool.manager._watcher._ipython as watcher_ipy
 from erlab.interactive.imagetool.manager import _watcher as watcher_mod
-from erlab.interactive.imagetool.manager._watcher import _Watcher
+from erlab.interactive.imagetool.manager._watcher._core import _Watcher
 
 
 class FakeIOLoop:
@@ -57,7 +59,7 @@ def patch_manager(monkeypatch):
         return state["fetch_map"].get(uid)
 
     # Patch manager attributes on the already-imported module namespace
-    manager = watcher_mod.erlab.interactive.imagetool.manager
+    manager = erlab.interactive.imagetool.manager
     monkeypatch.setattr(manager, "_watch_data", watch_data, raising=False)
     monkeypatch.setattr(manager, "_unwatch_data", unwatch_data, raising=False)
     monkeypatch.setattr(manager, "watch_data", watch_data, raising=False)
@@ -181,7 +183,7 @@ def test_recv_loop_updated_event_applies_update(fake_shell, patch_manager, monke
 
     # Replace Context.instance() classmethod
     monkeypatch.setattr(
-        watcher_mod.zmq.Context, "instance", classmethod(lambda cls: FakeContext())
+        watcher_core.zmq.Context, "instance", classmethod(lambda cls: FakeContext())
     )
 
     # Run recv loop in a thread
@@ -229,7 +231,7 @@ def test_recv_loop_removed_event_removes_watch(fake_shell, patch_manager, monkey
             return FakeSocket()
 
     monkeypatch.setattr(
-        watcher_mod.zmq.Context, "instance", classmethod(lambda cls: FakeContext())
+        watcher_core.zmq.Context, "instance", classmethod(lambda cls: FakeContext())
     )
 
     t = threading.Thread(target=watcher._recv_loop, daemon=True)
@@ -290,7 +292,7 @@ def test_watch_api_works_without_ipython_extension(patch_manager, monkeypatch):
         assert watcher_mod.watched_variables(namespace=namespace) == ("a",)
 
         namespace["a"] = xr.DataArray(np.array([9, 8, 7]), dims=("x",))
-        watcher, _ = watcher_mod._get_or_create_watcher(namespace=namespace)
+        watcher, _ = watcher_core._get_or_create_watcher(namespace=namespace)
         watcher._last_send = 0.0
         watcher_mod.maybe_push(namespace=namespace)
 
@@ -315,7 +317,7 @@ def test_watch_magic_delegates_to_watch_api(
         calls.append((varnames, kwargs))
         return ()
 
-    monkeypatch.setattr(watcher_mod, "watch", fake_watch)
+    monkeypatch.setattr(watcher_ipy, "watch", fake_watch)
 
     ip_shell.run_line_magic("watch", "darr")
     assert calls[-1][0] == ("darr",)
@@ -350,10 +352,10 @@ def test_watch_magic_lists_currently_watched_variables(
     messages = []
 
     monkeypatch.setattr(
-        watcher_mod, "watched_variables", lambda **kwargs: ("alpha", "beta")
+        watcher_ipy, "watched_variables", lambda **kwargs: ("alpha", "beta")
     )
     monkeypatch.setattr(
-        watcher_mod,
+        watcher_ipy,
         "_display_message",
         lambda message, html=None: messages.append((message, html)),
     )
@@ -367,7 +369,7 @@ def test_watch_magic_lists_currently_watched_variables(
 
 
 def test_watch_api_fallback_namespace_without_ipython(patch_manager, monkeypatch):
-    monkeypatch.setattr(watcher_mod, "_safe_get_ipython_shell", lambda: None)
+    monkeypatch.setattr(watcher_ipy, "_safe_get_ipython_shell", lambda: None)
     monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
     monkeypatch.setattr(_Watcher, "start_polling", lambda self, interval_s=0.25: None)
 
@@ -401,7 +403,7 @@ def test_watcher_type_error_and_push_failure_cleanup(fake_shell, monkeypatch):
     fake_shell.user_ns["a"] = xr.DataArray(np.array([1, 2, 3]), dims=("x",))
     monkeypatch.setattr(watcher, "start_thread", lambda: None)
     monkeypatch.setattr(
-        watcher_mod.erlab.interactive.imagetool.manager,
+        erlab.interactive.imagetool.manager,
         "_watch_data",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
@@ -432,7 +434,7 @@ def test_start_polling_and_poll_loop_branches(fake_shell, monkeypatch):
         def is_alive(self):
             return False
 
-    monkeypatch.setattr(watcher_mod.threading, "Thread", FakeThread)
+    monkeypatch.setattr(watcher_core.threading, "Thread", FakeThread)
     watcher.start_polling(0.1)
     assert started["count"] == 1
 
@@ -479,26 +481,26 @@ def test_callback_registration_failure_and_enable_auto_push_error(
 
     fake_shell.events = FailingEvents()
     assert (
-        watcher_mod._register_post_run_cell_callback(fake_shell, watcher, key) is False
+        watcher_core._register_post_run_cell_callback(fake_shell, watcher, key) is False
     )
-    assert key not in watcher_mod._POST_RUN_CELL_CALLBACKS
+    assert key not in watcher_core._POST_RUN_CELL_CALLBACKS
 
     # events without unregister should still be handled gracefully.
     shell_without_unregister = type("ShellNoUnregister", (), {"events": object()})()
-    watcher_mod._POST_RUN_CELL_CALLBACKS[key] = (
+    watcher_core._POST_RUN_CELL_CALLBACKS[key] = (
         shell_without_unregister,
         lambda: None,
     )
-    watcher_mod._unregister_post_run_cell_callback(key)
-    assert key not in watcher_mod._POST_RUN_CELL_CALLBACKS
+    watcher_core._unregister_post_run_cell_callback(key)
+    assert key not in watcher_core._POST_RUN_CELL_CALLBACKS
 
-    monkeypatch.setattr(watcher_mod, "_safe_get_ipython_shell", lambda: None)
+    monkeypatch.setattr(watcher_ipy, "_safe_get_ipython_shell", lambda: None)
     with pytest.raises(RuntimeError, match="No active IPython shell found"):
         watcher_mod.enable_ipython_auto_push()
 
 
 def test_manager_watch_transport_wrappers_are_deprecated(monkeypatch):
-    manager = watcher_mod.erlab.interactive.imagetool.manager
+    manager = erlab.interactive.imagetool.manager
     calls = {"watch": None, "unwatch": None}
 
     def _fake_watch(varname, uid, data, show=False):
