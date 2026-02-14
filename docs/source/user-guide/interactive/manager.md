@@ -200,7 +200,7 @@ If a variable is deleted or replaced with a non-`DataArray`, the manager automat
 When a notebook kernel shuts down, watched windows remain open in  but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion. Variables watched from different notebooks are color-coded for clarity.
 :::
 
-#### Watching outside IPython (for example, marimo)
+#### Outside IPython (e.g., marimo notebooks)
 
 If `%watch` is not available, use the Python API directly:
 

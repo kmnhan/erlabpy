@@ -36,9 +36,12 @@ __all__ = [
     "is_running",
     "load_in_manager",
     "main",
+    "maybe_push",
     "replace_data",
     "show_in_manager",
+    "shutdown",
     "watch",
+    "watched_variables",
 ]
 
 
@@ -70,7 +73,12 @@ from erlab.interactive.imagetool.manager._server import (
     replace_data,
     show_in_manager,
 )
-from erlab.interactive.imagetool.manager._watcher import watch
+from erlab.interactive.imagetool.manager._watcher import (
+    maybe_push,
+    shutdown,
+    watch,
+    watched_variables,
+)
 from erlab.interactive.utils import MessageDialog
 
 logger = logging.getLogger(__name__)

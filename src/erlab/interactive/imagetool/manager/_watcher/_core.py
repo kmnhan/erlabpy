@@ -618,5 +618,9 @@ def shutdown(
     if watcher is None:
         return
 
-    watcher.stop_watching_all(remove=remove)
-    watcher.shutdown()
+    try:
+        watcher.stop_watching_all(remove=remove)
+    except Exception:
+        logger.exception("Failed to unwatch one or more variables during shutdown")
+    finally:
+        watcher.shutdown()

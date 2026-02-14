@@ -309,6 +309,43 @@ def test_watch_api_works_without_ipython_extension(patch_manager, monkeypatch):
         watcher_mod.shutdown(namespace=namespace)
 
 
+def test_manager_reexports_watch_helpers():
+    manager = erlab.interactive.imagetool.manager
+
+    assert manager.watch is watcher_mod.watch
+    assert manager.watched_variables is watcher_mod.watched_variables
+    assert manager.maybe_push is watcher_mod.maybe_push
+    assert manager.shutdown is watcher_mod.shutdown
+
+
+def test_watch_shutdown_stops_threads_even_if_unwatch_fails(patch_manager, monkeypatch):
+    namespace = {
+        "a": xr.DataArray(np.array([1, 2, 3]), dims=("x",)),
+    }
+
+    monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
+    monkeypatch.setattr(_Watcher, "start_polling", lambda self, interval_s=0.25: None)
+
+    watched = watcher_mod.watch("a", namespace=namespace)
+    assert watched == ("a",)
+
+    watcher, _ = watcher_core._get_or_create_watcher(namespace=namespace)
+    shutdown_called = {"count": 0}
+    monkeypatch.setattr(
+        watcher, "shutdown", lambda: shutdown_called.__setitem__("count", 1)
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "_unwatch_data",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("manager down")),
+    )
+
+    # shutdown should still complete local cleanup even if manager unwatch fails.
+    watcher_mod.shutdown(namespace=namespace)
+    assert shutdown_called["count"] == 1
+    assert watcher_mod.watched_variables(namespace=namespace) == ()
+
+
 def test_watch_magic_delegates_to_watch_api(
     ip_shell: IPython.InteractiveShell, monkeypatch
 ):
