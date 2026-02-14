@@ -1,11 +1,12 @@
 import tempfile
+import time
 
 import joblib
 import pytest
 import scipy
 import xarray as xr
 import xarray_lmfit as xlm
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool, goldtool, restool
@@ -90,6 +91,7 @@ def test_restool(qtbot) -> None:
     )
     win = restool(gold, execute=False)
     qtbot.addWidget(win)
+    win.timeout_spin.setValue(5.0)
 
     win._guess_temp()
     qtbot.wait_until(lambda: win.fit_params["temp"] == 100.0, timeout=1000)
@@ -137,6 +139,175 @@ def test_restool(qtbot) -> None:
     assert str(win_restored.info_text) == str(win.info_text)
 
     tmp_dir.cleanup()
+
+
+def test_restool_timeout_cleans_up_worker(qtbot, monkeypatch) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    def _slow_quick_fit(*args, **kwargs) -> xr.Dataset:
+        iter_cb = kwargs["iter_cb"]
+        while True:
+            if iter_cb():
+                raise RuntimeError("timed out")
+            time.sleep(0.01)
+
+    monkeypatch.setattr(erlab.analysis.gold, "quick_fit", _slow_quick_fit)
+
+    win.live_check.setChecked(True)
+    win.timeout_spin.setValue(0.1)
+    win.do_fit()
+
+    qtbot.wait_until(lambda: "Fit timed out" in win.overview_label.text(), timeout=2000)
+
+    assert not win.live_check.isChecked()
+    assert win._fit_thread is None
+    assert win._result_ds is None
+
+
+def test_restool_close_event_ignored_if_fit_thread_stuck(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _StuckThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def isRunning(self) -> bool:
+            return True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return False
+
+    stuck_thread = _StuckThread()
+    win._fit_thread = stuck_thread  # type: ignore[assignment]
+
+    event = QtGui.QCloseEvent()
+    assert event.isAccepted()
+    win.closeEvent(event)
+    assert not event.isAccepted()
+
+    assert stuck_thread.cancel_called
+    assert stuck_thread.interrupted
+    assert stuck_thread.wait_timeout_ms == 5000
+
+
+def test_restool_clear_fit_preview_keeps_line_when_live(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win.edc_fit.setData(x=[0.0, 1.0], y=[1.0, 2.0])
+    win.live_check.setChecked(True)
+    win._clear_fit_preview()
+
+    x, y = win.edc_fit.getData()
+    assert x is not None
+    assert y is not None
+    assert len(x) == 2
+    assert len(y) == 2
+
+
+def test_restool_clear_fit_preview_clears_line_when_not_live(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win.edc_fit.setData(x=[0.0, 1.0], y=[1.0, 2.0])
+    win.live_check.setChecked(False)
+    win._clear_fit_preview()
+
+    x, y = win.edc_fit.getData()
+    assert x is None
+    assert y is None
+
+
+def test_restool_invalidate_displayed_fit_clears_stale_overlay(
+    qtbot, monkeypatch
+) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win._fit_signature_displayed = ("old",)
+    win.edc_fit.setData(x=[0.0, 1.0], y=[1.0, 2.0])
+    monkeypatch.setattr(win, "_current_fit_signature", lambda: ("new",))
+
+    signature = win._invalidate_displayed_fit_if_stale()
+
+    assert signature == ("new",)
+    assert win._fit_signature_current == ("new",)
+    assert win._fit_signature_displayed is None
+    x, y = win.edc_fit.getData()
+    assert x is None
+    assert y is None
+
+
+def test_restool_handle_fit_success_ignores_stale_result(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win._result_ds = None
+    win._fit_signature_current = ("current",)
+    win._handle_fit_success(xr.Dataset(), 0.1, ("stale",))
+    assert win._result_ds is None
+
+
+def test_restool_do_fit_queues_when_thread_object_exists(qtbot, monkeypatch) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def cancel(self) -> None:
+            return
+
+        def requestInterruption(self) -> None:
+            return
+
+        def wait(self, timeout_ms: int) -> bool:
+            return True
+
+    called: list[bool] = []
+
+    def _start_fit_worker() -> bool:
+        called.append(True)
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+    win._fit_thread = _ThreadPlaceholder()  # type: ignore[assignment]
+    win._fit_queued = False
+
+    win.do_fit()
+
+    assert win._fit_queued
+    assert not called
 
 
 def test_restool_ranges_descending_coords(qtbot) -> None:

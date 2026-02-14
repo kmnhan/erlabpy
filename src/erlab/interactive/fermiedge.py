@@ -1,11 +1,13 @@
 __all__ = ["goldtool", "restool"]
 
-import concurrent.futures
 import importlib.resources
+import logging
 import os
+import threading
 import time
 import traceback
 import typing
+from collections.abc import Callable
 
 import numpy as np
 import pydantic
@@ -16,8 +18,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
-
     import joblib
     import lmfit
     import scipy.interpolate
@@ -54,6 +54,8 @@ LMFIT_METHODS = [
     # "shgo",
     # "dual_annealing",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class EdgeFitSignals(QtCore.QObject):
@@ -705,6 +707,70 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         super().closeEvent(event)
 
 
+class ResolutionFitThread(QtCore.QThread):
+    sigFinished = QtCore.Signal(object, float)
+    sigTimedOut = QtCore.Signal(float)
+    sigErrored = QtCore.Signal(str)
+    sigCancelled = QtCore.Signal()
+
+    def __init__(
+        self,
+        fit_data: xr.DataArray,
+        fit_params: dict[str, typing.Any],
+        *,
+        timeout: float,
+    ) -> None:
+        super().__init__()
+        self._fit_data = fit_data.copy()
+        self._fit_params = dict(fit_params)
+        self._timeout = timeout
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        t0 = time.perf_counter()
+        timed_out = False
+        cancelled = False
+        self._cancel.clear()
+
+        def _callback(*args, **kwargs) -> bool | None:
+            nonlocal timed_out, cancelled
+
+            if self._cancel.is_set() or self.isInterruptionRequested():
+                cancelled = True
+                return True
+
+            if self._timeout > 0 and (time.perf_counter() - t0) >= self._timeout:
+                timed_out = True
+                return True
+            return None
+
+        try:
+            result_ds = erlab.analysis.gold.quick_fit(
+                self._fit_data,
+                **self._fit_params,
+                iter_cb=_callback,
+            )
+        except Exception:
+            if timed_out:
+                self.sigTimedOut.emit(time.perf_counter() - t0)
+            elif cancelled:
+                self.sigCancelled.emit()
+            else:
+                self.sigErrored.emit(traceback.format_exc())
+            return
+
+        if cancelled:
+            self.sigCancelled.emit()
+        elif timed_out:
+            self.sigTimedOut.emit(time.perf_counter() - t0)
+        else:
+            self.sigFinished.emit(result_ds, time.perf_counter() - t0)
+
+
 class ResolutionTool(erlab.interactive.utils.ToolWindow):
     tool_name = "restool"
 
@@ -941,8 +1007,12 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.resize(800, 600)
 
         self._result_ds: xr.Dataset | None = None
-
-        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
+        self._fit_thread: ResolutionFitThread | None = None
+        self._fit_cancel_requested: bool = False
+        self._fit_queued: bool = False
+        self._pending_fit_action: Callable[[], None] | None = None
+        self._fit_signature_current: tuple[typing.Any, ...] | None = None
+        self._fit_signature_displayed: tuple[typing.Any, ...] | None = None
 
     @property
     def _x_range_ui(self) -> tuple[float, float]:
@@ -972,14 +1042,32 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             y0, y1 = y1, y0
         return y0, y1
 
-    def _shutdown_executor(self) -> None:
-        if self._executor is None:
-            return
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        self._executor = None
+    def _fit_running(self) -> bool:
+        # A non-None fit thread is considered in-flight, even if Qt has not yet
+        # flipped `isRunning()` to True. This avoids replacing/deallocating a
+        # just-starting thread.
+        return self._fit_thread is not None
+
+    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int = 5000) -> bool:
+        if self._fit_thread is not None:
+            self._fit_thread.cancel()
+            self._fit_thread.requestInterruption()
+        self._fit_cancel_requested = True
+        self._fit_queued = False
+        self._pending_fit_action = None
+        if wait and self._fit_thread is not None:
+            return self._fit_thread.wait(timeout_ms)
+        return True
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._shutdown_executor()
+        if not self._cancel_fit(wait=True):
+            logger.warning(
+                "Resolution fit worker did not stop within timeout; "
+                "aborting window close"
+            )
+            if event is not None:
+                event.ignore()
+            return
         super().closeEvent(event)
 
     def _update_edc(self) -> None:
@@ -991,6 +1079,13 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.edc_curve.setData(
             x=self.averaged_edc["eV"].values, y=self.averaged_edc.values
         )
+        self._clear_fit_preview()
+
+    def _clear_fit_preview(self) -> None:
+        # Keep the previous fit line visible during live refits to avoid flicker.
+        if self.live_check.isChecked():
+            return
+        self._fit_signature_displayed = None
         self.edc_fit.setData(x=[], y=[])
 
     @property
@@ -1029,29 +1124,140 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             f'<span style="font-weight:600; color:#ff5555;">{info_text}</span>'
         )
 
-    @QtCore.Slot()
-    def do_fit(self) -> None:
-        """Perform a fit on the averaged EDC and update results."""
-        t0 = time.perf_counter()
-
-        if self._executor is None:
-            self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-
-        # Execute in threadpool
-        future = self._executor.submit(
-            erlab.analysis.gold.quick_fit,
-            self.averaged_edc,
-            **(self.fit_params | {"max_nfev": self.nfev_spin.value()}),
+    def _current_fit_signature(self) -> tuple[typing.Any, ...]:
+        params = self.fit_params
+        return (
+            self.y_range,
+            params["eV_range"],
+            params["method"],
+            params["temp"],
+            params["resolution"],
+            params["center"],
+            params["fix_temp"],
+            params["fix_center"],
+            params["fix_resolution"],
+            params["bkg_slope"],
+            self.nfev_spin.value(),
         )
-        try:
-            self._result_ds = future.result(timeout=self.timeout_spin.value())
-        except TimeoutError:
-            future.cancel()
-            self.live_check.setChecked(False)
-            self._fit_failed(f"Fit timed out in {time.perf_counter() - t0:.2f} seconds")
+
+    def _invalidate_displayed_fit_if_stale(self) -> tuple[typing.Any, ...]:
+        signature = self._current_fit_signature()
+        self._fit_signature_current = signature
+        if (
+            self._fit_signature_displayed is not None
+            and self._fit_signature_displayed != signature
+        ):
+            self._fit_signature_displayed = None
             self.edc_fit.setData(x=[], y=[])
+        return signature
+
+    def _queue_fit_action(
+        self,
+        action: Callable[[], None],
+        *,
+        allow_when_cancelled: bool = False,
+    ) -> None:
+        if self._fit_cancel_requested and not allow_when_cancelled:
             return
-        fit_time: float = time.perf_counter() - t0
+        self._pending_fit_action = action
+        if self._fit_thread is None:
+            self._pending_fit_action = None
+            action()
+
+    def _finalize_fit_thread(self) -> None:
+        thread = self._fit_thread
+        action = self._pending_fit_action
+        self._pending_fit_action = None
+        self._fit_thread = None
+        was_cancelled = self._fit_cancel_requested
+        self._fit_cancel_requested = False
+        if action is not None:
+            action()
+        if self._fit_queued and not was_cancelled:
+            self._fit_queued = False
+            self._start_fit_worker()
+        if thread is not None:
+            thread.deleteLater()
+
+    def _start_fit_worker(self) -> bool:
+        if self._fit_thread is not None:
+            return False
+
+        fit_signature = self._fit_signature_current
+        if fit_signature is None:
+            fit_signature = self._current_fit_signature()
+
+        thread = ResolutionFitThread(
+            self.averaged_edc,
+            self.fit_params | {"max_nfev": self.nfev_spin.value()},
+            timeout=self.timeout_spin.value(),
+        )
+        if hasattr(thread, "setServiceLevel"):
+            thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
+        thread.finished.connect(self._finalize_fit_thread)
+
+        thread.sigFinished.connect(
+            lambda result_ds, fit_time: self._queue_fit_action(
+                lambda: self._handle_fit_success(result_ds, fit_time, fit_signature)
+            )
+        )
+        thread.sigTimedOut.connect(
+            lambda elapsed: self._queue_fit_action(
+                lambda: self._handle_fit_timeout(elapsed, fit_signature)
+            )
+        )
+        thread.sigErrored.connect(
+            lambda message: self._queue_fit_action(
+                lambda: self._handle_fit_error(message, fit_signature)
+            )
+        )
+        thread.sigCancelled.connect(
+            lambda: self._queue_fit_action(
+                self._handle_fit_cancelled, allow_when_cancelled=True
+            )
+        )
+
+        self._fit_thread = thread
+        self._fit_cancel_requested = False
+        thread.start()
+        return True
+
+    def _handle_fit_cancelled(self) -> None:
+        return
+
+    def _handle_fit_timeout(
+        self, elapsed: float, fit_signature: tuple[typing.Any, ...]
+    ) -> None:
+        if fit_signature != self._fit_signature_current:
+            return
+        self._result_ds = None
+        self._fit_signature_displayed = None
+        self.live_check.setChecked(False)
+        self._fit_failed(f"Fit timed out in {elapsed:.2f} seconds")
+        self.edc_fit.setData(x=[], y=[])
+
+    def _handle_fit_error(
+        self, message: str, fit_signature: tuple[typing.Any, ...]
+    ) -> None:
+        if fit_signature != self._fit_signature_current:
+            return
+        self._result_ds = None
+        self._fit_signature_displayed = None
+        self.live_check.setChecked(False)
+        self.edc_fit.setData(x=[], y=[])
+        self._fit_failed("Fit failed")
+        logger.error("Error while fitting resolution tool data:\n%s", message)
+
+    def _handle_fit_success(
+        self,
+        result_ds: xr.Dataset,
+        fit_time: float,
+        fit_signature: tuple[typing.Any, ...],
+    ) -> None:
+        if fit_signature != self._fit_signature_current:
+            return
+        self._result_ds = result_ds
+        self._fit_signature_displayed = fit_signature
 
         # Update plot
         self.edc_fit.setData(
@@ -1089,8 +1295,18 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             strict=True,
         ):
             textedit.setText(_get_param_text(param))
+        redchi: float | None = modelresult.redchi
+        self.redchi_val.setText(f"{redchi:.4f}" if redchi is not None else "—")
 
-        self.redchi_val.setText(f"{modelresult.redchi:.4f}")
+    @QtCore.Slot()
+    def do_fit(self) -> None:
+        """Perform a fit on the averaged EDC and update results."""
+        self._invalidate_displayed_fit_if_stale()
+        if self._fit_running():
+            self._fit_queued = True
+            return
+        self._fit_queued = False
+        self._start_fit_worker()
 
     def connect_signals(self) -> None:
         self.x0_spin.valueChanged.connect(self._update_region)
@@ -1160,7 +1376,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.x0_spin.setMaximum(self.x1_spin.value())
         self.x1_spin.setMinimum(self.x0_spin.value())
 
-        self.edc_fit.setData(x=[], y=[])
+        self._clear_fit_preview()
         if self.live_check.isChecked():
             self._sigTriggerFit.emit()
 
