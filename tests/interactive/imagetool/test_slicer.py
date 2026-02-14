@@ -46,3 +46,21 @@ def test_set_array_shallow_copy_does_not_require_deep_copy(qtbot) -> None:
     slicer.set_array(data2, validate=False, reset=True)
 
     assert slicer._obj.equals(data2)
+
+
+def test_validate_array_does_not_deepcopy_attrs(qtbot) -> None:
+    class _NoDeepCopy:
+        def __deepcopy__(self, memo):
+            raise RuntimeError("deepcopy should not be called")
+
+    sentinel = _NoDeepCopy()
+    data = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        attrs={"sentinel": sentinel},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    assert slicer._obj.attrs["sentinel"] is sentinel
