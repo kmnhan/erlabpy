@@ -225,6 +225,180 @@ def test_restool_fit_thread_loads_result_before_emit(monkeypatch) -> None:
     assert isinstance(captured["elapsed"], float)
 
 
+def test_restool_fit_thread_cancel_sets_event() -> None:
+    eV = np.linspace(-0.2, 0.2, 31)
+    data = xr.DataArray(np.exp(-(eV**2)), dims=("eV",), coords={"eV": eV})
+    thread = ResolutionFitThread(
+        data,
+        {
+            "eV_range": (-0.1, 0.1),
+            "method": "least_squares",
+            "temp": 100.0,
+            "resolution": 0.02,
+            "center": 0.0,
+            "fix_temp": True,
+            "fix_center": False,
+            "fix_resolution": False,
+            "bkg_slope": True,
+            "max_nfev": 5,
+        },
+        timeout=1.0,
+    )
+    thread.cancel()
+    assert thread._cancel.is_set()
+
+
+def test_restool_fit_thread_runtimeerror_interruption_treated_as_cancelled(
+    monkeypatch,
+) -> None:
+    eV = np.linspace(-0.2, 0.2, 31)
+    data = xr.DataArray(np.exp(-(eV**2)), dims=("eV",), coords={"eV": eV})
+
+    class _ThreadWithInterruptedWrapper(ResolutionFitThread):
+        def isInterruptionRequested(self) -> bool:
+            raise RuntimeError("thread wrapper deleted")
+
+    thread = _ThreadWithInterruptedWrapper(
+        data,
+        {
+            "eV_range": (-0.1, 0.1),
+            "method": "least_squares",
+            "temp": 100.0,
+            "resolution": 0.02,
+            "center": 0.0,
+            "fix_temp": True,
+            "fix_center": False,
+            "fix_resolution": False,
+            "bkg_slope": True,
+            "max_nfev": 5,
+        },
+        timeout=1.0,
+    )
+
+    events = {"cancelled": False}
+
+    def _quick_fit(*_args, **kwargs):
+        kwargs["iter_cb"]()
+        raise RuntimeError("cancel")
+
+    thread.sigCancelled.connect(lambda: events.__setitem__("cancelled", True))
+    monkeypatch.setattr(erlab.analysis.gold, "quick_fit", _quick_fit)
+
+    thread.run()
+    assert events["cancelled"]
+
+
+def test_restool_fit_thread_error_emits_errored(monkeypatch) -> None:
+    eV = np.linspace(-0.2, 0.2, 31)
+    data = xr.DataArray(np.exp(-(eV**2)), dims=("eV",), coords={"eV": eV})
+    thread = ResolutionFitThread(
+        data,
+        {
+            "eV_range": (-0.1, 0.1),
+            "method": "least_squares",
+            "temp": 100.0,
+            "resolution": 0.02,
+            "center": 0.0,
+            "fix_temp": True,
+            "fix_center": False,
+            "fix_resolution": False,
+            "bkg_slope": True,
+            "max_nfev": 5,
+        },
+        timeout=1.0,
+    )
+    events = {"errored": False}
+
+    def _quick_fit(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    thread.sigErrored.connect(lambda _msg: events.__setitem__("errored", True))
+    monkeypatch.setattr(erlab.analysis.gold, "quick_fit", _quick_fit)
+    thread.run()
+    assert events["errored"]
+
+
+def test_restool_fit_thread_cancelled_after_success_emits_cancelled(
+    monkeypatch,
+) -> None:
+    eV = np.linspace(-0.2, 0.2, 31)
+    data = xr.DataArray(np.exp(-(eV**2)), dims=("eV",), coords={"eV": eV})
+    thread = ResolutionFitThread(
+        data,
+        {
+            "eV_range": (-0.1, 0.1),
+            "method": "least_squares",
+            "temp": 100.0,
+            "resolution": 0.02,
+            "center": 0.0,
+            "fix_temp": True,
+            "fix_center": False,
+            "fix_resolution": False,
+            "bkg_slope": True,
+            "max_nfev": 5,
+        },
+        timeout=1.0,
+    )
+
+    class _DummyResult:
+        def load(self):
+            return self
+
+    events = {"cancelled": False}
+
+    def _quick_fit(*_args, **kwargs):
+        thread._cancel.set()
+        kwargs["iter_cb"]()
+        return _DummyResult()
+
+    thread.sigCancelled.connect(lambda: events.__setitem__("cancelled", True))
+    monkeypatch.setattr(erlab.analysis.gold, "quick_fit", _quick_fit)
+    thread.run()
+    assert events["cancelled"]
+
+
+def test_restool_fit_thread_timed_out_after_success_emits_timeout(
+    monkeypatch,
+) -> None:
+    eV = np.linspace(-0.2, 0.2, 31)
+    data = xr.DataArray(np.exp(-(eV**2)), dims=("eV",), coords={"eV": eV})
+    thread = ResolutionFitThread(
+        data,
+        {
+            "eV_range": (-0.1, 0.1),
+            "method": "least_squares",
+            "temp": 100.0,
+            "resolution": 0.02,
+            "center": 0.0,
+            "fix_temp": True,
+            "fix_center": False,
+            "fix_resolution": False,
+            "bkg_slope": True,
+            "max_nfev": 5,
+        },
+        timeout=1.0,
+    )
+
+    class _DummyResult:
+        def load(self):
+            return self
+
+    events = {"timed_out": False}
+
+    def _quick_fit(*_args, **kwargs):
+        kwargs["iter_cb"]()
+        return _DummyResult()
+
+    timer = iter([0.0, 2.0, 3.0])
+    monkeypatch.setattr(
+        "erlab.interactive.fermiedge.time.perf_counter", lambda: next(timer)
+    )
+    thread.sigTimedOut.connect(lambda _elapsed: events.__setitem__("timed_out", True))
+    monkeypatch.setattr(erlab.analysis.gold, "quick_fit", _quick_fit)
+    thread.run()
+    assert events["timed_out"]
+
+
 def test_restool_close_event_ignored_if_fit_thread_stuck(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
@@ -365,6 +539,166 @@ def test_restool_do_fit_queues_when_thread_object_exists(qtbot, monkeypatch) -> 
 
     assert win._fit_queued
     assert not called
+
+
+def test_restool_queue_fit_action_drops_when_cancel_requested(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    called = {"value": False}
+    win._fit_cancel_requested = True
+    win._pending_fit_action = None
+    win._queue_fit_action(lambda: called.__setitem__("value", True))
+
+    assert not called["value"]
+    assert win._pending_fit_action is None
+
+
+def test_restool_queue_fit_action_runs_immediately_when_no_thread(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    called = {"value": False}
+    win._fit_cancel_requested = False
+    win._fit_thread = None
+    win._pending_fit_action = None
+    win._queue_fit_action(lambda: called.__setitem__("value", True))
+
+    assert called["value"]
+    assert win._pending_fit_action is None
+
+
+def test_restool_start_fit_worker_returns_false_when_thread_exists(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def cancel(self) -> None:
+            return
+
+        def requestInterruption(self) -> None:
+            return
+
+        def wait(self, timeout_ms: int) -> bool:
+            return True
+
+    win._fit_thread = _ThreadPlaceholder()  # type: ignore[assignment]
+    assert not win._start_fit_worker()
+    win._fit_thread = None
+
+
+def test_restool_start_fit_worker_sets_signature_when_missing(
+    qtbot, monkeypatch
+) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _DummySignal:
+        def connect(self, *_args, **_kwargs) -> None:
+            return
+
+    class _DummyThread:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.finished = _DummySignal()
+            self.sigFinished = _DummySignal()
+            self.sigTimedOut = _DummySignal()
+            self.sigErrored = _DummySignal()
+            self.sigCancelled = _DummySignal()
+            self.started = False
+
+        def cancel(self) -> None:
+            return
+
+        def requestInterruption(self) -> None:
+            return
+
+        def wait(self, timeout_ms: int) -> bool:
+            return True
+
+        def start(self) -> None:
+            self.started = True
+
+    monkeypatch.setattr("erlab.interactive.fermiedge.ResolutionFitThread", _DummyThread)
+    monkeypatch.setattr(win, "_current_fit_signature", lambda: ("sig",))
+    win._fit_thread = None
+    win._fit_signature_current = None
+    win._fit_cancel_requested = True
+
+    assert win._start_fit_worker()
+    assert isinstance(win._fit_thread, _DummyThread)
+    assert win._fit_cancel_requested is False
+    assert win._fit_thread.started
+    win._fit_thread = None
+
+
+def test_restool_handle_fit_cancelled_returns_none(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+    assert win._handle_fit_cancelled() is None
+
+
+def test_restool_handle_fit_timeout_ignores_stale_signature(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+    win._result_ds = xr.Dataset({"x": xr.DataArray([1.0])})
+    win._fit_signature_displayed = ("current",)
+    win.live_check.setChecked(True)
+
+    win._fit_signature_current = ("current",)
+    win._handle_fit_timeout(0.1, ("stale",))
+
+    assert win._result_ds is not None
+    assert win._fit_signature_displayed == ("current",)
+    assert win.live_check.isChecked()
+
+
+def test_restool_handle_fit_error_updates_ui_for_current_signature(
+    qtbot, monkeypatch
+) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win._fit_signature_current = ("current",)
+    win._fit_signature_displayed = ("current",)
+    win._result_ds = xr.Dataset({"x": xr.DataArray([1.0])})
+    win.live_check.setChecked(True)
+    win.edc_fit.setData(x=[0.0, 1.0], y=[1.0, 2.0])
+
+    failed = {"text": None}
+    monkeypatch.setattr(
+        win, "_fit_failed", lambda text: failed.__setitem__("text", text)
+    )
+
+    win._handle_fit_error("boom", ("current",))
+
+    assert win._result_ds is None
+    assert win._fit_signature_displayed is None
+    assert not win.live_check.isChecked()
+    x, y = win.edc_fit.getData()
+    assert x is None
+    assert y is None
+    assert failed["text"] == "Fit failed"
 
 
 def test_restool_ranges_descending_coords(qtbot) -> None:
