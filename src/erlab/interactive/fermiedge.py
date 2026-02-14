@@ -739,7 +739,14 @@ class ResolutionFitThread(QtCore.QThread):
         def _callback(*args, **kwargs) -> bool | None:
             nonlocal timed_out, cancelled
 
-            if self._cancel.is_set() or self.isInterruptionRequested():
+            interruption_requested = False
+            try:
+                interruption_requested = self.isInterruptionRequested()
+            except RuntimeError:
+                # The thread wrapper can be deleted during shutdown; treat as cancel.
+                interruption_requested = True
+
+            if self._cancel.is_set() or interruption_requested:
                 cancelled = True
                 return True
 
@@ -754,6 +761,8 @@ class ResolutionFitThread(QtCore.QThread):
                 **self._fit_params,
                 iter_cb=_callback,
             )
+            # Materialize lazy fit outputs while this thread object is still alive.
+            result_ds = result_ds.load()
         except Exception:
             if timed_out:
                 self.sigTimedOut.emit(time.perf_counter() - t0)
