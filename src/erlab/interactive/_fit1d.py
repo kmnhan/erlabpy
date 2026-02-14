@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import functools
 import importlib
+import logging
 import threading
 import time
 import traceback
@@ -33,6 +34,7 @@ else:
 
 _P = typing.ParamSpec("_P")
 _R = typing.TypeVar("_R")
+logger = logging.getLogger(__name__)
 
 
 class _PythonCodeEditor(QtWidgets.QTextEdit):
@@ -572,7 +574,7 @@ class _FitRestoreState:
     result: lmfit.model.ModelResult
 
 
-class _FitWorker(QtCore.QObject):
+class _FitWorker(QtCore.QThread):
     sigFinished = QtCore.Signal(object)
     sigTimedOut = QtCore.Signal()
     sigErrored = QtCore.Signal(str)
@@ -613,10 +615,14 @@ class _FitWorker(QtCore.QObject):
         def _callback(*args, **kwargs) -> bool | None:
             nonlocal timed_out, cancelled
 
-            curr_thread = QtCore.QThread.currentThread()
-            if self._cancel.is_set() or (
-                curr_thread and curr_thread.isInterruptionRequested()
-            ):
+            interruption_requested = False
+            try:
+                interruption_requested = self.isInterruptionRequested()
+            except RuntimeError:
+                # The worker can be deleted during shutdown; treat this as cancellation.
+                interruption_requested = True
+
+            if self._cancel.is_set() or interruption_requested:
                 cancelled = True
                 return True
             if self._timeout > 0 and (time.perf_counter() - t0) >= self._timeout:
@@ -633,6 +639,9 @@ class _FitWorker(QtCore.QObject):
                 method=self._method,
                 iter_cb=_callback,
             )
+            # Resolve lazy fit outputs while the worker is alive so callbacks do not
+            # outlive the thread object.
+            result_ds = result_ds.load()
         except Exception:
             if timed_out:
                 self.sigTimedOut.emit()
@@ -801,8 +810,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             raise ValueError("`data` must be a 1D DataArray")
 
         running_thread = getattr(self, "_fit_thread", None)
-        running_worker = getattr(self, "_fit_worker", None)
-        keep_running = running_thread is not None and running_thread.isRunning()
+        keep_running = running_thread is not None
 
         self._data: xr.DataArray = data
         self._coord_name: Hashable = data.dims[0]
@@ -839,10 +847,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._slider_drag_range: tuple[float, float] | None = None
         self._fit_is_current: bool = False
         self._table_widths_initialized: bool = False
-        self._fit_thread: QtCore.QThread | None = (
-            running_thread if keep_running else None
-        )
-        self._fit_worker: _FitWorker | None = running_worker if keep_running else None
+        self._fit_thread: _FitWorker | None = running_thread if keep_running else None
         self._fit_start_time: float | None = None
         self._fit_running_multi: bool = False
         self._fit_cancel_requested: bool = keep_running
@@ -2501,7 +2506,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._set_fit_stats(restore.result)
 
     def _fit_running(self) -> bool:
-        return self._fit_thread is not None and self._fit_thread.isRunning()
+        # Consider any live thread object as running to avoid startup/teardown races.
+        return self._fit_thread is not None
 
     def _fit_timed_out(self, start_time: float) -> None:
         elapsed = time.perf_counter() - start_time
@@ -2532,7 +2538,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         on_timeout: Callable[[], None],
         on_error: Callable[[str], None],
     ) -> bool:
-        if self._fit_running():
+        if self._fit_thread is not None:
             self._show_warning("Fit running", "A fit is already running.")
             return False
 
@@ -2541,7 +2547,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_cancel_requested = False
         self._set_fit_running(True, multi=multi, step=step, total=total)
 
-        worker = _FitWorker(
+        thread = _FitWorker(
             fit_data,
             self._coord_name,
             self._model,
@@ -2550,18 +2556,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             method=self.method_combo.currentText(),
             timeout=self.timeout_spin.value(),
         )
-        thread = QtCore.QThread(self)
         if hasattr(thread, "setServiceLevel"):
             thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-
-        worker.sigFinished.connect(thread.quit)
-        worker.sigTimedOut.connect(thread.quit)
-        worker.sigErrored.connect(thread.quit)
-        worker.sigCancelled.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._finalize_fit_thread)
 
         def _queue_success(result_ds: xr.Dataset) -> None:
@@ -2572,17 +2568,16 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 lambda: on_error(erlab.interactive.utils._format_traceback(message))
             )
 
-        worker.sigFinished.connect(_queue_success)
-        worker.sigTimedOut.connect(lambda: self._queue_fit_action(on_timeout))
-        worker.sigErrored.connect(_queue_error)
-        worker.sigCancelled.connect(
+        thread.sigFinished.connect(_queue_success)
+        thread.sigTimedOut.connect(lambda: self._queue_fit_action(on_timeout))
+        thread.sigErrored.connect(_queue_error)
+        thread.sigCancelled.connect(
             lambda: self._queue_fit_action(
                 self._fit_cancelled, allow_when_cancelled=True
             )
         )
 
         self._fit_thread = thread
-        self._fit_worker = worker
         thread.start()
         return True
 
@@ -2600,17 +2595,21 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             action()
 
     def _finalize_fit_thread(self) -> None:
+        thread = self._fit_thread
         action = self._pending_fit_action
         self._pending_fit_action = None
         self._fit_thread = None
-        self._fit_worker = None
         if action is None and self._fit_cancel_requested:
             self._fit_cancel_requested = False
             self._fit_cancelled()
+            if thread is not None:
+                thread.deleteLater()
             return
         self._fit_cancel_requested = False
         if action is not None:
             action()
+        if thread is not None:
+            thread.deleteLater()
 
     def _fit_cancelled(self) -> None:
         if self._fit_multi_total is not None:
@@ -3344,15 +3343,23 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        self._cancel_fit()
+        if not self._cancel_fit(wait=True):
+            logger.warning(
+                "Fit worker did not stop within timeout; aborting window close"
+            )
+            if event is not None:
+                event.ignore()
+            return
         super().closeEvent(event)
 
-    def _cancel_fit(self) -> None:
-        if self._fit_worker is not None:
-            self._fit_worker.cancel()
+    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int = 5000) -> bool:
         if self._fit_thread is not None:
+            self._fit_thread.cancel()
             self._fit_thread.requestInterruption()
         self._fit_cancel_requested = True
         self.cancel_fit_button.setEnabled(False)
         self.cancel_fit_button.setText("Canceling...")
         self._pending_fit_action = None
+        if wait and self._fit_thread is not None:
+            return self._fit_thread.wait(timeout_ms)
+        return True

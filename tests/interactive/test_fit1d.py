@@ -632,6 +632,70 @@ def test_fit1d_fit_cancelled_single(qtbot) -> None:
     assert not win.cancel_fit_button.isEnabled()
 
 
+def test_fit1d_cancel_fit_waits_for_thread(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    class _DummyThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def isRunning(self) -> bool:
+            return True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return True
+
+    dummy_thread = _DummyThread()
+    win._fit_thread = dummy_thread  # type: ignore[assignment]
+
+    assert win._cancel_fit(wait=True)
+    assert dummy_thread.cancel_called
+    assert dummy_thread.interrupted
+    assert dummy_thread.wait_timeout_ms == 5000
+
+
+def test_fit1d_close_event_ignored_if_thread_does_not_stop(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    class _StuckThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def isRunning(self) -> bool:
+            return True
+
+        def requestInterruption(self) -> None:
+            return
+
+        def wait(self, timeout_ms: int) -> bool:
+            return False
+
+    stuck_thread = _StuckThread()
+    win._fit_thread = stuck_thread  # type: ignore[assignment]
+
+    event = QtGui.QCloseEvent()
+    assert event.isAccepted()
+    win.closeEvent(event)
+    assert not event.isAccepted()
+    assert stuck_thread.cancel_called
+
+
 def test_fit1d_slider_drag_updates_value(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)
@@ -790,6 +854,50 @@ def test_fit_worker_timeout_and_cancelled(qtbot, exp_decay_model, monkeypatch) -
     monkeypatch.setattr(data.xlm, "modelfit", _modelfit_timeout)
     worker.run()
     assert events["timed_out"]
+
+
+def test_fit_worker_loads_result_before_emit(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 1.0, 11)
+    data = xr.DataArray(np.exp(-t), dims=("t",), coords={"t": t}, name="decay")
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+
+    worker = fit1d._FitWorker(
+        data,
+        "t",
+        exp_decay_model,
+        params,
+        max_nfev=5,
+        method="least_squares",
+        timeout=1.0,
+    )
+
+    class _DummyResult:
+        def __init__(self) -> None:
+            self.loaded = False
+
+        def load(self):
+            self.loaded = True
+            return self
+
+    dummy = _DummyResult()
+
+    def _modelfit(*_args, **_kwargs):
+        return dummy
+
+    finished: dict[str, object | None] = {"result": None}
+
+    def _on_finished(result) -> None:
+        finished["result"] = result
+
+    worker.sigFinished.connect(_on_finished)
+    monkeypatch.setattr(data.xlm, "modelfit", _modelfit)
+
+    worker.run()
+
+    assert dummy.loaded
+    assert finished["result"] is dummy
 
 
 def test_snap_cursor_line_value(qtbot) -> None:
