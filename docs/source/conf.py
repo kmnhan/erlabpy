@@ -57,8 +57,9 @@ extensions = [
     "myst_nb",
     "notfound.extension",
     "sphinxext.rediraffe",
-    "sphinx_llms_txt",
+    "sphinx_llm.txt",
 ]
+llms_txt_build_parallel = False
 myst_enable_extensions = ["colon_fence", "dollarmath"]
 suppress_warnings = [
     "mystnb.unknown_mime_type",  # holoviews rendering
