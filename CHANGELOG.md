@@ -2,6 +2,18 @@
 
 ### ✨ Features
 
+- **manager:** add reusable `watch` API and deprecate low-level watch transports (#273) ([f0f5567](https://github.com/kmnhan/erlabpy/commit/f0f5567fc7b30233be60620bf1321b7e2ccb001c))
+
+  Introduces a thread-safe, module-level watcher API (`watch`, `watched_variables`, `maybe_push`, `shutdown`) that works both with and without the IPython extension (including non-IPython notebook environments like marimo). Refactors `%watch` and extension load/unload to delegate to this shared API, keeping IPython behavior consistent while adding a polling fallback when post-cell hooks are unavailable.
+
+  This does not affect behavior for existing users of `%watch` in IPython notebooks, but enables new use cases for programmatic data watching in other contexts.
+
+- **ftool:** export fit parameters (values and stderr) to HDF5 or ImageTool from the right-click menu of the parameter plot (#270) ([0d76dbb](https://github.com/kmnhan/erlabpy/commit/0d76dbb069283d8bc911182a254a5e3741734fd9))
+
+- **imagetool:** support non-uniform non-display axes in multicursor plot code (#268) ([8392e9f](https://github.com/kmnhan/erlabpy/commit/8392e9f23bf8a913b4929232175686347c5fa994))
+
+  Generate valid matplotlib code for multicursor selections when non-display axes are non-uniform by using mixed selection (`isel` for non-uniform axes, `qsel` for uniform axes) and correctly averaging binned non-uniform selections.
+
 - **ftool:** improve parameter merging when changing model parameters (#264) ([e70e0e9](https://github.com/kmnhan/erlabpy/commit/e70e0e971d6120a4472c7c30c203a8bcd307a94c))
 
   Changing model parameters now merges parameters more intelligently. Parameters that exist in both the old and new models are retained with their current values. Also, expressions are transferred if they can be evaluated with the new model's parameters; otherwise the computed value and bounds are
@@ -19,6 +31,16 @@
   This also changes `MultiPeakModel.eval_components` to return several named background components instead of a single `_bkg` entry. This may require changes to user code that references the background.
 
 ### 🐞 Bug Fixes
+
+- **restool:** ensure fit results are computed inside the thread for dask-backed inputs ([60786ae](https://github.com/kmnhan/erlabpy/commit/60786aec4a3a0a95d1247003d5028f2d6f235799))
+
+- **ftool:** fix thread lifetime handling and possible deadlock on very fast fits ([7fe75fb](https://github.com/kmnhan/erlabpy/commit/7fe75fbf20a62c9c28825952a889987d8653763d))
+
+- **restool:** resolved threading issues related to canceling fits and closing window while fit is running ([aedf5da](https://github.com/kmnhan/erlabpy/commit/aedf5da9ae305285466e688b3268e746f919f3a5))
+
+- **imagetool:** suppress duplicate UI alerts for exceptions and warnings (#271) ([68c2893](https://github.com/kmnhan/erlabpy/commit/68c2893e07a76c5fce54c4bfd60caae02d38ce2f))
+
+  This fixes an issue where multiple alert dialogs would appear for the same error condition when creating ImageTool windows or loading workspaces, leading to a hang on Windows.
 
 - **imagetool:** allow out-of-bounds center values in RotationDialog ([e677e58](https://github.com/kmnhan/erlabpy/commit/e677e58ed2cf812c9ae3402073fa3cb0522e97e5))
 
@@ -62,6 +84,14 @@
 
 ### ⚡️ Performance
 
+- **imagetool:** micro-optimization for restoring single cursor state ([09619f3](https://github.com/kmnhan/erlabpy/commit/09619f34f3dd07371af2f1cd3d17e17fc2dfd158))
+
+- **itool:** avoid unnecessary deep-copying of data ([4ef1bd2](https://github.com/kmnhan/erlabpy/commit/4ef1bd2918b9fc63ed0777ad41f54ed7a1942a2b))
+
+- **manager:** speed up closing multiple ImageTool windows (#272) ([4c334a5](https://github.com/kmnhan/erlabpy/commit/4c334a5cb901577f47b92a6849b0ea3db3a026b9))
+
+- **ktool:** ensure updates are smooth under rapid input parameter changes (#267) ([133205e](https://github.com/kmnhan/erlabpy/commit/133205ea4112195b351db9f7614125d45c7d245f))
+
 - **analysis.transform:** disable parallel interpolation in `shift` with order 1 and add some parameters for further optimization ([b53e89f](https://github.com/kmnhan/erlabpy/commit/b53e89fea6640f1bb3648b2e51971e236840b425))
 
   Uses serial interpolation in `shift` for compatibility with workflows that utilize multiprocessing, like dask. Also adds new parameters `keep_dim_order` and `assume_sorted` which further optimizes the graph for dask-based workflows.
@@ -77,6 +107,8 @@
   ImageTool now lazy-populates colormap and control UI to reduce startup time, and avoids auto-showing windows when loading multiple DataArrays at once. The window contents are now computed on demand.
 
 ### ♻️ Code Refactor
+
+- **manager:** change console toggle shortcut to `Ctrl+J` ([9ebb92f](https://github.com/kmnhan/erlabpy/commit/9ebb92f0e21120b3e041bf0fc0fea19ecd157d82))
 
 - **ftool:** ask for confirmation before transposing data ([580c933](https://github.com/kmnhan/erlabpy/commit/580c93375980008262f99f93eb08671fd5db9561))
 
