@@ -166,6 +166,9 @@ def _without_connect_slots_by_name() -> Iterator[None]:
     PyQt6's ``uic.loadUi`` always calls ``QMetaObject.connectSlotsByName``. Under
     coverage tracing this can deadlock while walking Python properties, so we suppress
     auto-connect for the duration of the load.
+
+    This is OK since we don't connect signals in .ui files. All runtime connections
+    should be made in Python code after loading.
     """
     if not PYQT6:
         yield
