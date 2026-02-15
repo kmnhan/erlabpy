@@ -360,6 +360,26 @@ def test_multicursor_variable_key_with_width_first(qtbot) -> None:
     win.close()
 
 
+def test_make_cursors_single_color_does_not_recreate_cursor(qtbot, monkeypatch) -> None:
+    data = _TEST_DATA["2D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    color = win.slicer_area.cursor_colors[0].name()
+
+    def _unexpected_add_cursor(*args, **kwargs):
+        raise AssertionError("add_cursor should not be called for one cursor")
+
+    monkeypatch.setattr(win.slicer_area, "add_cursor", _unexpected_add_cursor)
+
+    win.slicer_area.make_cursors([color], update=False)
+    win.slicer_area.make_cursors([color], update=True)
+    assert win.slicer_area.n_cursors == 1
+    assert win.slicer_area.cursor_colors[0].name() == color
+
+    win.close()
+
+
 def test_plot_code_multicursor_line_includes_limits_and_colors(qtbot) -> None:
     data = _TEST_DATA["2D"].copy()
     win = itool(data, execute=False)
