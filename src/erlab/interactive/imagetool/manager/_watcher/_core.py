@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib
 import inspect
 import logging
 import threading
@@ -24,9 +25,9 @@ _SHELL_PARAM_DOC = """shell
     when both are given.
 """
 _NAMESPACE_PARAM_DOC = """namespace
-    Namespace mapping used only when ``shell`` is not provided (e.g. ``globals()``
-    in marimo notebooks). By default, the caller module globals are used if no
-    IPython shell is detected.
+    Namespace mapping used only when ``shell`` is not provided. By default, marimo
+    kernel globals are used when running in marimo; otherwise the caller module globals
+    are used if no IPython shell is detected.
 """
 _F = typing.TypeVar("_F", bound=Callable[..., typing.Any])
 
@@ -333,6 +334,10 @@ def _infer_caller_namespace(stacklevel: int = 2) -> NamespaceType:
     if stacklevel < 0:
         raise ValueError("stacklevel must be >= 0")
 
+    marimo_namespace = _get_marimo_namespace()
+    if marimo_namespace is not None:
+        return marimo_namespace
+
     frame = inspect.currentframe()
     try:
         caller = frame
@@ -346,6 +351,22 @@ def _infer_caller_namespace(stacklevel: int = 2) -> NamespaceType:
     finally:
         del caller
         del frame
+
+
+def _get_marimo_namespace() -> NamespaceType | None:
+    if importlib.util.find_spec("marimo") is None:
+        return None
+
+    with contextlib.suppress(Exception):
+        import marimo as mo
+
+        import __main__
+
+        if mo.running_in_notebook():
+            namespace = getattr(__main__, "__dict__", None)
+            if isinstance(namespace, MutableMapping):  # pragma: no branch
+                return typing.cast("NamespaceType", namespace)
+    return None
 
 
 def _resolve_target(
@@ -499,7 +520,8 @@ def watch(
     1. If ``shell`` is provided, ``shell.user_ns`` is always used.
     2. Else if ``namespace`` is provided, that mapping is used.
     3. Else, try the active IPython shell.
-    4. If no IPython shell is available, fall back to the caller module globals.
+    4. If no IPython shell is available, use marimo kernel globals when running in
+       marimo; otherwise fall back to the caller module globals.
 
     In most cases, simply using ``watch("varname")`` without specifying ``shell`` or
     ``namespace`` should work as expected in both IPython and regular Python scripts.
