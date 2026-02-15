@@ -1,5 +1,6 @@
 import concurrent.futures
 import contextlib
+import gc
 import io
 import json
 import logging
@@ -1858,10 +1859,19 @@ def test_manager_reload(
         manager.activateWindow()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        load_in_manager(
-            [example_data_dir / "data_006.h5"], loader_name=example_loader.name
-        )
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        gc_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            load_in_manager(
+                [example_data_dir / "data_006.h5"], loader_name=example_loader.name
+            )
+            qtbot.wait_until(
+                lambda: manager.ntools == 1 and len(manager._file_handlers) == 0,
+                timeout=5000,
+            )
+        finally:
+            if gc_enabled:
+                gc.enable()
 
         # Try reload
         with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
