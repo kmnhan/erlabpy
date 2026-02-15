@@ -516,16 +516,23 @@ def cover_qthreadpool(monkeypatch, qtbot):
 def serialize_hdf5_loads():
     """Prevent non-threadsafe HDF5 wheels from crashing during threaded loads."""
     mp = pytest.MonkeyPatch()
+    from erlab.interactive.explorer import _base_explorer
     from erlab.interactive.imagetool.manager import _io
 
     lock = threading.Lock()
-    original_run = _io._DataLoader.run
+    original_data_loader_run = _io._DataLoader.run
+    original_repr_fetcher_run = _base_explorer._ReprFetcher.run
 
-    def locked_run(self):
+    def locked_data_loader_run(self):
         with lock:
-            return original_run(self)
+            return original_data_loader_run(self)
 
-    mp.setattr(_io._DataLoader, "run", locked_run)
+    def locked_repr_fetcher_run(self):
+        with lock:
+            return original_repr_fetcher_run(self)
+
+    mp.setattr(_io._DataLoader, "run", locked_data_loader_run)
+    mp.setattr(_base_explorer._ReprFetcher, "run", locked_repr_fetcher_run)
     try:
         yield
     finally:
