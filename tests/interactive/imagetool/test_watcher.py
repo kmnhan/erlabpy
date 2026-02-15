@@ -469,7 +469,7 @@ def test_watch_api_uses_marimo_globals_for_implicit_namespace(
 
         updated = xr.DataArray(np.array([4, 5, 6]), dims=("x",))
         patch_manager["fetch_map"][uid1] = updated
-        watcher = next(iter(watcher_core._WATCHERS.values()))
+        watcher, _ = watcher_core._get_or_create_watcher(namespace=marimo_ns)
         watcher._apply_update_now("marimo_darr", uid1)
         xr.testing.assert_equal(marimo_ns["marimo_darr"], updated)
     finally:
