@@ -70,6 +70,7 @@ dev = [
     "cz-changeup>=1.1.2",
     "ipykernel>=6.29.5",
     "jupyter-bokeh>=4.0.5",
+    "marimo>=0.19.11",
     "mypy[faster-cache,reports]>=1.16.0",
     "pooch>=1.8.0",
     "prek>=0.2.15",

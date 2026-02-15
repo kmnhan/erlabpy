@@ -1,5 +1,6 @@
 import builtins
 import threading
+import types
 import typing
 from collections.abc import Callable
 
@@ -429,6 +430,66 @@ def test_watch_api_fallback_namespace_without_ipython(patch_manager, monkeypatch
     finally:
         globals().pop("fallback_darr", None)
         watcher_mod.shutdown(namespace=globals())
+
+
+def test_watch_api_uses_marimo_globals_for_implicit_namespace(
+    patch_manager, monkeypatch
+):
+    monkeypatch.setattr(watcher_ipy, "_safe_get_ipython_shell", lambda: None)
+    monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
+    monkeypatch.setattr(_Watcher, "start_polling", lambda self, interval_s=0.25: None)
+
+    marimo_ns = {
+        "marimo_darr": xr.DataArray(np.array([1, 2, 3]), dims=("x",)),
+    }
+    monkeypatch.setattr(watcher_core, "_get_marimo_namespace", lambda: marimo_ns)
+
+    try:
+
+        def _invoke_watch() -> tuple[str, ...]:
+            return watcher_mod.watch("marimo_darr")
+
+        call_from_cell_1 = types.FunctionType(
+            _invoke_watch.__code__, {"watcher_mod": watcher_mod}
+        )
+        call_from_cell_1()
+        _, uid1, darr1, show1 = patch_manager["last_watch_calls"][-1]
+        assert show1 is False
+        assert np.array_equal(darr1.values, marimo_ns["marimo_darr"].values)
+
+        marimo_ns["marimo_darr"] = xr.DataArray(np.array([9, 8, 7]), dims=("x",))
+        call_from_cell_2 = types.FunctionType(
+            _invoke_watch.__code__, {"watcher_mod": watcher_mod}
+        )
+        call_from_cell_2()
+        _, uid2, darr2, show2 = patch_manager["last_watch_calls"][-1]
+        assert uid2 == uid1
+        assert show2 is True
+        assert np.array_equal(darr2.values, marimo_ns["marimo_darr"].values)
+
+        updated = xr.DataArray(np.array([4, 5, 6]), dims=("x",))
+        patch_manager["fetch_map"][uid1] = updated
+        watcher = next(iter(watcher_core._WATCHERS.values()))
+        watcher._apply_update_now("marimo_darr", uid1)
+        xr.testing.assert_equal(marimo_ns["marimo_darr"], updated)
+    finally:
+        watcher_mod.shutdown(namespace=marimo_ns)
+
+
+def test_get_marimo_namespace_returns_none_when_marimo_not_installed(monkeypatch):
+    monkeypatch.setattr(watcher_core.importlib.util, "find_spec", lambda _: None)
+    assert watcher_core._get_marimo_namespace() is None
+
+
+def test_get_marimo_namespace_returns_main_dict_when_running(monkeypatch):
+    import marimo
+
+    import __main__
+
+    monkeypatch.setattr(watcher_core.importlib.util, "find_spec", lambda _: object())
+    monkeypatch.setattr(marimo, "running_in_notebook", lambda: True)
+
+    assert watcher_core._get_marimo_namespace() is __main__.__dict__
 
 
 def test_watch_api_fallback_when_ipython_module_unavailable(patch_manager, monkeypatch):
