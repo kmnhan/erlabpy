@@ -1,6 +1,6 @@
 ---
 name: arpes-analysis
-description: Provides skills and code patterns for using the ERLabPy library to conduct ARPES (Angle-Resolved Photoemission Spectroscopy) analysis tasks, such as momentum conversion and data visualization.
+description: Use when working on ERLabPy ARPES analysis tasks (loading beamline data, qsel indexing, momentum conversion, fitting, filtering, plotting, and ImageTool manager workflows) and when troubleshooting ERLabPy analysis code.
 ---
 
 # Skill Instructions
@@ -44,11 +44,13 @@ import erlab
 # List available loaders (in a notebook cell)
 erlab.io.loaders
 
-# Load data using a specific loader
+# In some environments, you can select loader per call
 data = erlab.io.load("path/to/file", loader="loader_name")
+data = erlab.io.load(1, loader="loader_name", data_dir="path/to/directory")
 
-# For some loaders, you can pass the sequence number
-data = erlab.io.load(1, loader="loader_name", path="path/to/directory")
+# Equivalent explicit context form
+with erlab.io.loader_context("loader_name", data_dir="path/to/directory"):
+    data = erlab.io.load(1)
 
 # Auto detection is not implemented because it may lead to incorrect loading.
 
@@ -150,6 +152,8 @@ data_kconv = data.kspace.convert(
 )
 
 # Manual target coordinates
+import numpy as np
+
 data_kconv = data.kspace.convert(kx=np.linspace(-0.6, 0.6, 100))
 ```
 
@@ -411,6 +415,7 @@ import erlab
 import erlab.analysis as era
 import erlab.plotting as eplt
 import matplotlib.pyplot as plt
+import xarray as xr
 
 # Load data
 data = xr.open_dataarray("arpes_data.ibw")
@@ -622,62 +627,9 @@ When linked, cursor positions and binning are shared across all windows.
 - Use the ImageTool manager to organize workspaces with many windows and integrate with Jupyter notebooks
 - For better integration with Jupyter notebooks, use visual studio code as the editor, with the dedicated [erlab extension](https://marketplace.visualstudio.com/items?itemName=khan.erlab).
 
-## Verified ERLabPy documentation URL map (stable)
+## Documentation links
 
-Base / entry points
-
-- [Home](https://erlabpy.readthedocs.io/en/stable/index.html)
-- [Getting Started](https://erlabpy.readthedocs.io/en/stable/getting-started.html)
-- [User Guide index](https://erlabpy.readthedocs.io/en/stable/user-guide/)
-- [API Reference index](https://erlabpy.readthedocs.io/en/stable/reference.html)
-- [General Index](https://erlabpy.readthedocs.io/en/stable/genindex.html)
-
-User Guide (core topics)
-
-- [Reading & writing data](https://erlabpy.readthedocs.io/en/stable/user-guide/io.html)
-- [Selecting & indexing](https://erlabpy.readthedocs.io/en/stable/user-guide/indexing.html)
-- [Plotting](https://erlabpy.readthedocs.io/en/stable/user-guide/plotting.html)
-- [Momentum conversion](https://erlabpy.readthedocs.io/en/stable/user-guide/kconv.html)
-- [Curve fitting](https://erlabpy.readthedocs.io/en/stable/user-guide/curve-fitting.html)
-- [Filtering](https://erlabpy.readthedocs.io/en/stable/user-guide/filtering.html)
-- [Transformations](https://erlabpy.readthedocs.io/en/stable/user-guide/transform.html)
-
-User Guide (interactive tools)
-
-- [Interactive tools index](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/index.html)
-- [ImageTool](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html)
-- [ImageTool Manager](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/manager.html)
-- [Other interactive tools](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html)
-- [Configuration](https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/options.html)
-
-API landing pages (subpackages / modules)
-
-- [erlab.analysis](https://erlabpy.readthedocs.io/en/stable/erlab.analysis.html)
-- [erlab.io](https://erlabpy.readthedocs.io/en/stable/erlab.io.html)
-- [erlab.plotting](https://erlabpy.readthedocs.io/en/stable/erlab.plotting.html)
-- [erlab.interactive](https://erlabpy.readthedocs.io/en/stable/erlab.interactive.html)
-- [erlab.accessors](https://erlabpy.readthedocs.io/en/stable/erlab.accessors.html)
-- [erlab.utils](https://erlabpy.readthedocs.io/en/stable/erlab.utils.html)
-- [erlab.lattice](https://erlabpy.readthedocs.io/en/stable/erlab.lattice.html)
-- [erlab.constants](https://erlabpy.readthedocs.io/en/stable/erlab.constants.html)
-- [Contributing](https://erlabpy.readthedocs.io/en/stable/contributing.html)
-- [References](https://erlabpy.readthedocs.io/en/stable/bibliography.html)
-- [Changelog](https://erlabpy.readthedocs.io/en/stable/changelog.html)
-
-Generated API pages pattern
-
-- Many symbols use:
-  `https://erlabpy.readthedocs.io/en/stable/generated/<fully.qualified.name>.html`
-
-Accessor pages pattern
-
-- Many xarray accessors use:
-  `https://erlabpy.readthedocs.io/en/stable/accessors/<accessor.page.name>.html`
-  Examples:
-  - `https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert.html`
-  - `https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qsel.html`
-  - `https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qplot.html`
-  - `https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.qshow.html`
+- Use the stable docs link map in `references/docs-links.md`.
 
 ## Troubleshooting behavior
 
