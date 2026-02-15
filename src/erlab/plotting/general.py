@@ -647,8 +647,8 @@ def plot_slices(
     figsize: tuple[float, float] | None = None,
     *,
     transpose: bool = False,
-    xlim: float | tuple[float, float] | None = None,
-    ylim: float | tuple[float, float] | None = None,
+    xlim: float | tuple[float | None, float | None] | None = None,
+    ylim: float | tuple[float | None, float | None] | None = None,
     crop: bool = True,
     same_limits: bool | typing.Literal["row", "col", "all"] = False,
     axis: typing.Literal[
