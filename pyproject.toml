@@ -1,6 +1,6 @@
 [project]
 name = "erlab"
-version = "3.19.2"
+version = "3.20.0"
 authors = [{ name = "Kimoon Higashihira Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
