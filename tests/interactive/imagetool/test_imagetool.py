@@ -900,6 +900,7 @@ def test_itool_dtypes(
         # force compute for dask
         erlab.interactive.options["io/dask/compute_threshold"] = 0
 
+    win: ImageTool | None = None
     try:
         win = itool(data, execute=False)
         qtbot.addWidget(win)
@@ -913,8 +914,14 @@ def test_itool_dtypes(
     finally:
         if use_dask:
             erlab.interactive.options["io/dask/compute_threshold"] = old_threshold
-
-    win.close()
+        if win is not None:
+            for img in win.slicer_area.images:
+                # Prevent segfault before shutdown
+                img.disconnect_signals()
+                img.deleteLater()
+            win.close()
+            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            QtWidgets.QApplication.processEvents()
 
 
 def test_parse_data() -> None:
