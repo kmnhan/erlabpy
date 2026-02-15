@@ -34,20 +34,6 @@ binaries = []
 hiddenimports = ["PyQt6", "dask", "distributed"]
 
 if sys.platform.startswith("win"):
-    # Temporary workaround for https://github.com/pyinstaller/pyinstaller/issues/9360
-    sitepkgs = pathlib.Path(sys.prefix) / "Lib" / "site-packages"
-    dll_patterns = ("msvcp140-*.dll",)
-
-    seen = set()
-    for libs_dir in sitepkgs.glob("*.libs"):
-        for pat in dll_patterns:
-            for dll in libs_dir.glob(pat):
-                src = str(dll)
-                if src not in seen:
-                    binaries.append((src, "."))  # copy into dist root
-                    seen.add(src)
-
-if sys.platform.startswith("win"):
     # Required for numba cache directory resolution on Windows
     # Used in numba.misc.appdirs._get_win_folder_with_pywin32
     hiddenimports += ["win32com"]
