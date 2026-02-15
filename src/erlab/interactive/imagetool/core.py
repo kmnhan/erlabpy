@@ -2186,6 +2186,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         Used when restoring the state of the slicer. All existing cursors are removed.
         """
+        colors = list(colors)
+        if len(colors) == 1 and self.n_cursors == 1:
+            # Fast path for state restore. Avoid recreating the only cursor because it
+            # is expensive and can be flaky on some Qt backends.
+            color = pg.mkColor(colors[0])
+            self.cursor_colors[0] = color
+            for ax in self.axes:
+                ax.set_cursor_colors(self.cursor_colors)
+            if update:
+                self.refresh_all()
+            return
+
         while self.n_cursors > 1:
             self.remove_cursor(0, update=False)
 
