@@ -80,8 +80,9 @@ def test_explorer_general(
                 )
                 if deselect:
                     qtbot.wait_until(
-                        lambda idx=idx_end: idx
-                        not in explorer._tree_view.selectedIndexes()
+                        lambda idx=idx_end: (
+                            idx not in explorer._tree_view.selectedIndexes()
+                        )
                     )
                 else:
                     qtbot.wait_until(

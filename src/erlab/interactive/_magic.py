@@ -89,5 +89,5 @@ class InteractiveToolMagics(Magics):
             data=self.parse_expression(data),
             model=self.parse_expression(model) if model else None,
             data_name=data,
-            model_name=model if model else None,
+            model_name=model or None,
         )

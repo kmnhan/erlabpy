@@ -600,6 +600,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerCursorAct"
         ] = self.slicer_area.center_act
+        main_display_axis = self.slicer_area.main_image.display_axis
         for i, ((t, s), axis, amount) in enumerate(
             zip(
                 (
@@ -622,9 +623,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
             ] = {
                 "text": t,
                 "shortcut": s,
-                "triggered": lambda *,
-                ax=self.slicer_area.main_image.display_axis[axis],
-                d=amount: self.slicer_area.step_index(ax, d),
+                "triggered": lambda *, ax=main_display_axis[axis], d=amount: (
+                    self.slicer_area.step_index(ax, d)
+                ),
             }
         menu_kwargs["viewMenu"]["actions"]["cursorMoveMenu"]["actions"][
             "centerAllCursorsAct"
@@ -651,9 +652,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
             ] = {
                 "text": t,
                 "shortcut": s,
-                "triggered": lambda *,
-                ax=self.slicer_area.main_image.display_axis[axis],
-                d=amount: self.slicer_area.step_index_all(ax, d),
+                "triggered": lambda *, ax=main_display_axis[axis], d=amount: (
+                    self.slicer_area.step_index_all(ax, d)
+                ),
             }
         return menu_kwargs
 
