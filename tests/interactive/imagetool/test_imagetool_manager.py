@@ -206,8 +206,10 @@ def test_manager(
         manager.rename_action.trigger()
 
         qtbot.wait_until(
-            lambda: manager.tree_view.state()
-            == QtWidgets.QAbstractItemView.State.EditingState,
+            lambda: (
+                manager.tree_view.state()
+                == QtWidgets.QAbstractItemView.State.EditingState
+            ),
             timeout=5000,
         )
         delegate = manager.tree_view.itemDelegate()
@@ -293,8 +295,10 @@ def test_manager(
 
         manager.tree_view.edit(manager.tree_view._model._row_index(goldtool_uid))
         qtbot.wait_until(
-            lambda: manager.tree_view.state()
-            == QtWidgets.QAbstractItemView.State.EditingState,
+            lambda: (
+                manager.tree_view.state()
+                == QtWidgets.QAbstractItemView.State.EditingState
+            ),
             timeout=5000,
         )
         delegate = manager.tree_view.itemDelegate()
@@ -303,10 +307,12 @@ def test_manager(
         delegate._current_editor.setText("new_goldtool_name")
         qtbot.keyClick(delegate._current_editor, QtCore.Qt.Key.Key_Return)
         qtbot.wait_until(
-            lambda: next(
-                iter(manager._imagetool_wrappers[3]._childtools.values())
-            )._tool_display_name
-            == "new_goldtool_name",
+            lambda: (
+                next(
+                    iter(manager._imagetool_wrappers[3]._childtools.values())
+                )._tool_display_name
+                == "new_goldtool_name"
+            ),
             timeout=5000,
         )
 
@@ -1096,10 +1102,8 @@ def test_remove_imagetools_deduplicates_explicit_child_uids() -> None:
         removed_uids=[],
     )
     manager._bulk_remove_context = contextlib.nullcontext
-    manager.remove_imagetool = (
-        lambda index, *, update_view=True: manager.removed_indices.append(
-            (index, update_view)
-        )
+    manager.remove_imagetool = lambda index, *, update_view=True: (
+        manager.removed_indices.append((index, update_view))
     )
     manager._remove_childtool = lambda uid: manager.removed_uids.append(uid)
 

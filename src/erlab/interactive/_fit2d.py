@@ -144,7 +144,7 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
 
     def _save_dataarray_as_hdf5(self, data: xr.DataArray) -> None:
         if isinstance(data.name, str):
-            default_name = data.name if data.name else "data"
+            default_name = data.name or "data"
         elif data.name is None:
             default_name = "data"
         else:

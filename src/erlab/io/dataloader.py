@@ -2546,9 +2546,7 @@ class LoaderRegistry(_RegistryBase):
         current_loader_str = (
             self.current_loader.name if self.current_loader else "Not set"
         )
-        current_data_dir_str = (
-            self.current_data_dir if self.current_data_dir else "Not set"
-        )
+        current_data_dir_str = self.current_data_dir or "Not set"
         current_settings = (
             f"Current loader: {current_loader_str}\n"
             f"Current data directory: {current_data_dir_str}"
