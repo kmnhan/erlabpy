@@ -6,9 +6,15 @@ The canonical implementation now lives in
 
 This module re-exports previous ``core`` symbols to preserve backwards
 compatibility.
+
+.. deprecated:: 3.21.0
+   Import from :mod:`erlab.interactive.imagetool.viewer` and
+   :mod:`erlab.interactive.imagetool.plot_items` instead.
 """
 
 from __future__ import annotations
+
+import warnings
 
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
@@ -46,6 +52,14 @@ from erlab.interactive.imagetool.viewer import (
     record_history,
     suppress_history,
     suppressnanwarning,
+)
+
+warnings.warn(
+    "`erlab.interactive.imagetool.core` is deprecated and will be removed in a "
+    "future release. Import from `erlab.interactive.imagetool.viewer` (and "
+    "`erlab.interactive.imagetool.plot_items` for plot classes) instead.",
+    FutureWarning,
+    stacklevel=2,
 )
 
 __all__ = [

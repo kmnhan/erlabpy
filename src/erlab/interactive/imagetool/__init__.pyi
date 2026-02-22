@@ -3,7 +3,6 @@ __all__ = [
     "ImageTool",
     "_history",
     "controls",
-    "core",
     "dialogs",
     "fastbinning",
     "fastslicing",
@@ -16,7 +15,6 @@ __all__ = [
 from . import (
     _history,
     controls,
-    core,
     dialogs,
     fastbinning,
     fastslicing,

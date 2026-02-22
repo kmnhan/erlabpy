@@ -17,8 +17,8 @@ import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if typing.TYPE_CHECKING:
-    from erlab.interactive.imagetool.core import ImageSlicerArea
     from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 
 class _ImageToolWrapper(QtCore.QObject):
