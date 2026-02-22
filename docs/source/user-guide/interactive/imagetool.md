@@ -91,7 +91,7 @@ To integrate ImageTool windows with notebook variables—including bi-directiona
 
 ## Interface tour
 
-Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interactive.imagetool.core.ImageSlicerArea>` plus dockable control panels:
+Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interactive.imagetool.viewer.ImageSlicerArea>` plus dockable control panels:
 
 - **Main image and cross-sections** – The central pyqtgraph view renders the current 2D slice. Orthogonal slices and cursor readouts update in real time as you move the cursors.
 
