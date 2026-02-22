@@ -10,6 +10,7 @@ __all__ = [
     "itool",
     "manager",
     "slicer",
+    "viewer",
 ]
 
 from . import (
@@ -21,6 +22,7 @@ from . import (
     fastslicing,
     manager,
     slicer,
+    viewer,
 )
 from ._itool import itool
 from ._mainwindow import BaseImageTool, ImageTool

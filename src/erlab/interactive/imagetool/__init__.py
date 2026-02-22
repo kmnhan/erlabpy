@@ -9,6 +9,7 @@ Modules
    :toctree:
 
    core
+   viewer
    slicer
    fastslicing
    fastbinning

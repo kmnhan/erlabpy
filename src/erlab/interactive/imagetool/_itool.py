@@ -6,7 +6,7 @@ import numpy.typing as npt
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
+from erlab.interactive.imagetool.viewer import SlicerLinkProxy, _parse_input
 
 
 def itool(
@@ -113,7 +113,7 @@ def itool(
     **kwargs
         Additional keyword arguments to be passed onto the underlying slicer area. For a
         full list of supported arguments, see the
-        `erlab.interactive.imagetool.core.ImageSlicerArea` documentation.
+        `erlab.interactive.imagetool.viewer.ImageSlicerArea` documentation.
 
     Returns
     -------
