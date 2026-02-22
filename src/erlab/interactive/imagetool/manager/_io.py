@@ -65,7 +65,7 @@ class _DataLoader(QtCore.QRunnable):
     def run(self) -> None:
         try:
             data_list: list[xr.DataArray] = (
-                erlab.interactive.imagetool.core._parse_input(
+                erlab.interactive.imagetool.viewer._parse_input(
                     self._func(self._file_path, **self._kwargs)
                 )
             )

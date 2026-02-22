@@ -162,17 +162,17 @@ class ArraySlicer(QtCore.QObject):
     ----
     The original intent of this class was a xarray accessor. This is why `ArraySlicer`
     does not depend on a :class:`ImageSlicerArea
-    <erlab.interactive.imagetool.core.ImageSlicerArea>` but rather on the underlying
+    <erlab.interactive.imagetool.viewer.ImageSlicerArea>` but rather on the underlying
     `xarray.DataArray`. Originally, when loading a different array, a different instance
     of `ArraySlicer` had to be created. This was a terrible design choice since it
     messed up signals every time the instance was replaced. Hence, the behaviour was
     modified (23/06/19) so that the underlying `xarray.DataArray` of `ArraySlicer` could
     be swapped. As a consequence, each instance of :class:`ImageSlicerArea
-    <erlab.interactive.imagetool.core.ImageSlicerArea>` now corresponds to exactly one
+    <erlab.interactive.imagetool.viewer.ImageSlicerArea>` now corresponds to exactly one
     instance of `ArraySlicer`, regardless of the data. In the future, `ArraySlicer`
     might be changed so that it relies on its one-to-one correspondence with
-    :class:`ImageSlicerArea <erlab.interactive.imagetool.core.ImageSlicerArea>` for the
-    signals.
+    :class:`ImageSlicerArea <erlab.interactive.imagetool.viewer.ImageSlicerArea>`
+    for the signals.
 
     """
 

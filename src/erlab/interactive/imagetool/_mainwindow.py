@@ -33,7 +33,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
     """Base class for an ImageTool window.
 
     This class combines the :class:`ImageSlicerArea
-    <erlab.interactive.imagetool.core.ImageSlicerArea>` and the controls into a single
+    <erlab.interactive.imagetool.viewer.ImageSlicerArea>` and the controls into a single
     window.
 
     Use this class only if you want to extend ImageTool without the menubar or keyboard
@@ -48,7 +48,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         The parent widget.
     **kwargs
         Additional keyword arguments to the underlying :class:`ImageSlicerArea
-        <erlab.interactive.imagetool.core.ImageSlicerArea>`.
+        <erlab.interactive.imagetool.viewer.ImageSlicerArea>`.
 
     """
 
@@ -56,7 +56,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs
     ) -> None:
         super().__init__(parent=parent)
-        self._slicer_area = erlab.interactive.imagetool.core.ImageSlicerArea(
+        self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
         )
         self.setCentralWidget(self.slicer_area)
@@ -97,10 +97,10 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.slicer_area._write_history = True
 
     @property
-    def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
+    def slicer_area(self) -> erlab.interactive.imagetool.viewer.ImageSlicerArea:
         """
         The underlying :class:`ImageSlicerArea
-        <erlab.interactive.imagetool.core.ImageSlicerArea>`.
+        <erlab.interactive.imagetool.viewer.ImageSlicerArea>`.
         """  # noqa: D205
         return self._slicer_area
 
@@ -480,7 +480,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         return typing.cast("ImageTool", self.parent())
 
     @property
-    def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
+    def slicer_area(self) -> erlab.interactive.imagetool.viewer.ImageSlicerArea:
         return self.image_tool.slicer_area
 
     @property

@@ -107,7 +107,7 @@ def describe_state_diff(
 class HistoryMenu(QtWidgets.QMenu):
     def __init__(
         self,
-        slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea,
+        slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea,
         *args,
         **kwargs,
     ) -> None:
@@ -119,7 +119,7 @@ class HistoryMenu(QtWidgets.QMenu):
         self.slicer_area.sigHistoryChanged.connect(self._history_changed)
 
     @property
-    def slicer_area(self) -> erlab.interactive.imagetool.core.ImageSlicerArea:
+    def slicer_area(self) -> erlab.interactive.imagetool.viewer.ImageSlicerArea:
         """Get the parent main window."""
         slicer_area = self._slicer_area()
         if slicer_area:

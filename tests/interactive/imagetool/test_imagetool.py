@@ -19,12 +19,6 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
-from erlab.interactive.imagetool.core import (
-    _AssociatedCoordsDialog,
-    _CursorColorCoordDialog,
-    _parse_input,
-    _PolyROIEditDialog,
-)
 from erlab.interactive.imagetool.dialogs import (
     AssignCoordsDialog,
     AverageDialog,
@@ -36,6 +30,12 @@ from erlab.interactive.imagetool.dialogs import (
     ROIPathDialog,
     RotationDialog,
     SymmetrizeDialog,
+)
+from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
+from erlab.interactive.imagetool.viewer import (
+    _AssociatedCoordsDialog,
+    _CursorColorCoordDialog,
+    _parse_input,
 )
 
 logger = logging.getLogger(__name__)
@@ -950,7 +950,7 @@ def test_parse_data() -> None:
         match=r"Unsupported input type str. Expected DataArray, Dataset, DataTree, "
         r"numpy array, or a list of DataArray or numpy arrays.",
     ):
-        erlab.interactive.imagetool.core._parse_input("string")
+        erlab.interactive.imagetool.viewer._parse_input("string")
 
 
 def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
