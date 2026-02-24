@@ -4,6 +4,7 @@ import xarray as xr
 import xarray.testing
 
 from erlab.utils.array import (
+    apply_dataarray_func,
     broadcast_args,
     check_arg_has_no_nans,
     is_dims_uniform,
@@ -43,6 +44,14 @@ def test_broadcast_args() -> None:
         ),
         expected,
     )
+
+
+def test_apply_dataarray_func_invalid_data_type() -> None:
+    with pytest.raises(
+        TypeError,
+        match="data must be a DataArray, Dataset, or DataTree, but got int",
+    ):
+        apply_dataarray_func(1, lambda x: x)
 
 
 def test_is_uniform_spaced() -> None:
