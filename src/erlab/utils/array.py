@@ -600,7 +600,7 @@ def apply_dataarray_func(
         )
 
     raise TypeError(
-        "data must be a DataArray, Dataset, or DataTree, but got " + type(data)
+        f"data must be a DataArray, Dataset, or DataTree, but got {type(data).__name__}"
     )
 
 
