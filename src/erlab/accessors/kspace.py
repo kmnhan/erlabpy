@@ -817,6 +817,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         The converted data is returned as a DataArray object with updated coordinates
         and dimensions.
 
+        For non-`hv` scans, if the `eV` axis is all-positive, it is interpreted as
+        kinetic energy and converted to binding energy. For `hv`-dependent scans, the
+        `eV` axis must already be in binding energy.
+
         Examples
         --------
         Set parameters and convert with automatic bounds and resolution:
