@@ -6,6 +6,7 @@ import xarray as xr
 
 import erlab
 from erlab.interactive.kspace import KspaceTool, ktool
+from erlab.io.exampledata import generate_hvdep_cuts
 
 
 def test_ktool_compatible(anglemap) -> None:
@@ -179,3 +180,31 @@ def test_ktool_kinetic_energy_axis_preview(qtbot, anglemap) -> None:
 
     xr.testing.assert_allclose(ang, expected_ang)
     xr.testing.assert_allclose(kpreview, expected_k)
+
+
+def test_ktool_bounds_estimate_uses_current_inner_potential(qtbot) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+    data.kspace.inner_potential = 10.0
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    initial_kz_bounds = (
+        win._bound_spins["kz0"].value(),
+        win._bound_spins["kz1"].value(),
+    )
+    win._offset_spins["V0"].setValue(20.0)
+    win.calculate_bounds()
+
+    expected_data = win._assign_params(win.data.copy())
+    expected_bounds = expected_data.kspace.estimate_bounds()
+    for axis in win.data.kspace.momentum_axes:
+        for idx in range(2):
+            spin = win._bound_spins[f"{axis}{idx}"]
+            assert np.isclose(
+                spin.value(),
+                np.round(expected_bounds[axis][idx], spin.decimals()),
+            )
+
+    assert not np.isclose(win._bound_spins["kz0"].value(), initial_kz_bounds[0])
+    assert not np.isclose(win._bound_spins["kz1"].value(), initial_kz_bounds[1])

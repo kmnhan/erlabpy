@@ -741,8 +741,7 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def calculate_bounds(self) -> None:
-        data = self.data.copy()
-        data.kspace.offsets = self.offset_dict
+        data = self._assign_params(self.data.copy())
         bounds = data.kspace.estimate_bounds()
         for k in data.kspace.momentum_axes:
             for j in range(2):
