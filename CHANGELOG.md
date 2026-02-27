@@ -1,3 +1,27 @@
+## Unreleased
+
+### 🐞 Bug Fixes
+
+- **ktool:** Descending eV axes (common from some loaders) collapsed center range and selected wrong bins, producing wrong preview results ([5542cc5](https://github.com/kmnhan/erlabpy/commit/5542cc5c3793f50a22b13bfb3d14e54623eb7507))
+
+- **ktool:** "Estimate resolution" ignored current UI wf, so estimated momentum resolution could be inconsistent with actual conversion parameters ([7bf0617](https://github.com/kmnhan/erlabpy/commit/7bf06179c9dac7a4b11df14111968cd22de3298f))
+
+- **ktool:** "Estimate bounds" ignored current UI V0/wf, so low-hv and hv-dependent data could get wrong momentum bounds ([2f397c4](https://github.com/kmnhan/erlabpy/commit/2f397c40f8c2c0498e8d12cfe386fbc79f0def01))
+
+- **ktool:** fixed a bug where the result could be wrong for data with the energy axis given in kinetic energy. ([a4884b3](https://github.com/kmnhan/erlabpy/commit/a4884b3690cf165bf2e6d6a40b77d79f735ff609))
+
+- **analysis.gold:** correct parameter assignment for fixed center in `edge` ([4e043a8](https://github.com/kmnhan/erlabpy/commit/4e043a82c323e3d3732693c830ad3fa083ceedd8))
+
+- **io:** add warning for squeezing dimensions in `save_as_hdf5` with `igor_compat=True` ([1b05940](https://github.com/kmnhan/erlabpy/commit/1b0594015fd1053d8ca26138d482a6712699754d))
+
+### ♻️ Code Refactor
+
+- **imagetool:** deprecate `core` module and re-export from `viewer` and `plot_items` ([1dcc093](https://github.com/kmnhan/erlabpy/commit/1dcc0938a80a20e6327a88ea63281b2380cf38d1))
+
+- **imagetool:** split viewer internals into focused modules ([cc39a81](https://github.com/kmnhan/erlabpy/commit/cc39a813d363e683c80adb4189d15ff9723e0343))
+
+- **imagetool:** rename core module to viewer ([cbb2792](https://github.com/kmnhan/erlabpy/commit/cbb2792075dba5a313226d45911ba01140b4a2ae))
+
 ## v3.20.0 (2026-02-15)
 
 ### ✨ Features
