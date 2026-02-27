@@ -42,7 +42,7 @@ __getattr__, __dir__, __all__ = _lazy.attach_stub(__name__, __file__)
 def _load_igor_ct(
     file: str | os.PathLike | io.BytesIO, name: str, register_reversed: bool = True
 ) -> None:
-    """Load a Igor CT wave file (``.ibw``) and register as a matplotlib colormap.
+    """Load an Igor CT wave file (``.ibw``) and register as a matplotlib colormap.
 
     Parameters
     ----------

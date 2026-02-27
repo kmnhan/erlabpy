@@ -77,7 +77,7 @@ def correct_with_edge(
         function that takes an array of angles and returns the corresponding energy
         value, or a tuple of coefficients for a polynomial (lowest order first).
     along
-        The anglular dimension name in the data. If `None`, it is assumed to be
+        The angular dimension name in the data. If `None`, it is assumed to be
         ``"alpha"``.
     shift_coords
         If `True`, the coordinates of the output data will be changed so that the output

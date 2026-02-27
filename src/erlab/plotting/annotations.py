@@ -410,7 +410,7 @@ def property_labels(
 ) -> list[str]:
     """Generate labels from a dictionary of values.
 
-    Given a dictionary of values, this function generates a list of label strings  with
+    Given a dictionary of values, this function generates a list of label strings with
     the key as the dimension name and the value as the dimension value. Multiple
     key-value pairs will be separated by a newline character in each label. The name and
     unit will be automatically determined from the key.

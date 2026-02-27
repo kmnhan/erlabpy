@@ -368,8 +368,8 @@ class _DialogHandler(QtCore.QObject):
             The index of the dialog to trigger, starting from 0. If the index is greater
             than 0, ``dialog_or_trigger`` should be a dialog.
         dialog_or_trigger
-            The callable that triggers the dialog creation or a prviously created dialog
-            which will create the next dialog upon acceptance.
+            The callable that triggers the dialog creation or a previously created
+            dialog which will create the next dialog upon acceptance.
         """
         log.debug("index %d triggered", index)
 
