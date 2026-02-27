@@ -208,3 +208,23 @@ def test_ktool_bounds_estimate_uses_current_inner_potential(qtbot) -> None:
 
     assert not np.isclose(win._bound_spins["kz0"].value(), initial_kz_bounds[0])
     assert not np.isclose(win._bound_spins["kz1"].value(), initial_kz_bounds[1])
+
+
+def test_ktool_resolution_estimate_uses_current_work_function(qtbot, anglemap) -> None:
+    data = anglemap.copy().assign_coords(hv=6.0)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    initial_kx_resolution = win._resolution_spins["kx"].value()
+    win._offset_spins["wf"].setValue(3.0)
+    win.calculate_resolution()
+
+    expected_data = win._assign_params(win.data.copy())
+    for axis in win.data.kspace.momentum_axes:
+        spin = win._resolution_spins[axis]
+        expected = expected_data.kspace.estimate_resolution(
+            axis, from_numpoints=win.res_npts_check.isChecked()
+        )
+        assert np.isclose(spin.value(), np.round(expected, spin.decimals()))
+
+    assert not np.isclose(win._resolution_spins["kx"].value(), initial_kx_resolution)
