@@ -255,7 +255,9 @@ def save_as_hdf5(
             data = data.assign_attrs({k: str(v)})
 
     if igor_compat and not isinstance(data, xr.Dataset):
-        singleton_dims = [dim for dim, size in data.sizes.items() if size == 1]
+        singleton_dims: list[str] = [
+            str(dim) for dim, size in data.sizes.items() if size == 1
+        ]
         if singleton_dims:
             erlab.utils.misc.emit_user_level_warning(
                 "Dimensions with length 1 were squeezed before saving with "
