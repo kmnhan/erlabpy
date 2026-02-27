@@ -159,7 +159,7 @@ def test_ktool_kinetic_energy_axis_preview(qtbot, anglemap) -> None:
 
     ang, kpreview = win.get_data()
 
-    idx = np.searchsorted((energy_axis[:-1] + energy_axis[1:]) / 2, center)
+    idx = int(np.argmin(np.abs(energy_axis - center)))
     start = max(0, idx - win.width_spin.value() // 2)
     stop = min(
         energy_axis.size,
@@ -228,3 +228,33 @@ def test_ktool_resolution_estimate_uses_current_work_function(qtbot, anglemap) -
         assert np.isclose(spin.value(), np.round(expected, spin.decimals()))
 
     assert not np.isclose(win._resolution_spins["kx"].value(), initial_kx_resolution)
+
+
+def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
+    data = anglemap.copy().isel(eV=slice(None, None, -1))
+    data = data.assign_coords(eV=data.eV.values[::-1])
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert np.isclose(win.center_spin.minimum(), float(data.eV.min()))
+    assert np.isclose(win.center_spin.maximum(), float(data.eV.max()))
+
+    win.width_spin.setValue(5)
+    center = float(data.eV.values[len(data.eV) // 2])
+    win.center_spin.setValue(center)
+    center = win.center_spin.value()
+
+    ang, _ = win.get_data()
+
+    idx = int(np.argmin(np.abs(data.eV.values - center)))
+    start = max(0, idx - win.width_spin.value() // 2)
+    stop = min(data.eV.size, idx + (win.width_spin.value() - 1) // 2 + 1)
+    expected_ang = (
+        data.isel(eV=slice(start, stop))
+        .mean("eV", skipna=True, keep_attrs=True)
+        .assign_coords(eV=center)
+    )
+    expected_ang = win._assign_params(expected_ang)
+
+    xr.testing.assert_allclose(ang, expected_ang)

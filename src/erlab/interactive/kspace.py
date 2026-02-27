@@ -732,11 +732,14 @@ class KspaceTool(KspaceToolGUI):
             return
 
         energy_axis = self._binding_energy()
+        e_min = float(np.nanmin(energy_axis))
+        e_max = float(np.nanmax(energy_axis))
+        e_step = float(np.nanmedian(np.abs(np.diff(energy_axis))))
+
         self.center_spin.blockSignals(True)
-        self.center_spin.setRange(float(energy_axis[0]), float(energy_axis[-1]))
-        eV_step = float(energy_axis[1] - energy_axis[0])
-        self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
-        self.center_spin.setSingleStep(eV_step)
+        self.center_spin.setRange(e_min, e_max)
+        self.center_spin.setDecimals(erlab.utils.array.effective_decimals(e_step))
+        self.center_spin.setSingleStep(e_step)
         self.center_spin.blockSignals(False)
 
     @QtCore.Slot()
@@ -880,9 +883,9 @@ class KspaceTool(KspaceToolGUI):
 
             center, width = self.center_spin.value(), self.width_spin.value()
             arr = self._binding_energy()
-            idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
+            idx = int(np.argmin(np.abs(arr - center)))
             if width == 1:
-                return data_binding.isel(eV=np.clip(idx, 0, arr.size - 1))
+                return data_binding.isel(eV=idx)
 
             start = max(0, idx - width // 2)
             stop = min(arr.size, idx + (width - 1) // 2 + 1)
