@@ -7,7 +7,7 @@ import xarray as xr
 from numpy.testing import assert_allclose
 
 import erlab.analysis.gold as gold_mod
-from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
+from erlab.analysis.gold import correct_with_edge, edge, poly, quick_fit, spline
 
 
 def test_spline_forwards_along_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,6 +164,31 @@ def test_spline(gold) -> None:
     correct_with_edge(gold, spl, shift_coords=True, plot=False)
     correct_with_edge(gold, spl, shift_coords=False, plot=True)
     plt.close()
+
+
+def test_edge_fixed_center_fixes_center_parameter(gold) -> None:
+    ds = edge(
+        gold,
+        angle_range=(-15, 15),
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        vary_temp=False,
+        fixed_center=0.2,
+        normalize=False,
+        bkg_slope=True,
+        return_full=True,
+        progress=False,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+    center_coeff = ds.modelfit_coefficients.sel(param="center").values
+    finite = np.isfinite(center_coeff)
+    assert finite.any()
+    assert_allclose(center_coeff[finite], 0.2, atol=1e-12)
+
+    first = ds.modelfit_results.isel(alpha=0).item()
+    assert first.params["center"].value == 0.2
+    assert first.params["center"].vary is False
+    assert first.params["back1"].vary is True
 
 
 @pytest.mark.parametrize("bkg_slope", [True, False], ids=["slope", "no_slope"])
