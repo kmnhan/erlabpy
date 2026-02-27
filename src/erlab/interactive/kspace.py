@@ -17,7 +17,6 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
-import functools
 import importlib.resources
 import typing
 import warnings
@@ -588,10 +587,7 @@ class KspaceTool(KspaceToolGUI):
         )
 
         if self.data.kspace._has_eV and self.data.eV.size > 1:
-            self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
-            eV_step = float(self.data.eV[1] - self.data.eV[0])
-            self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
-            self.center_spin.setSingleStep(eV_step)
+            self._update_energy_controls()
             self.width_spin.setRange(1, len(self.data.eV))
             self.center_spin.valueChanged.connect(self.queue_update)
             self.width_spin.valueChanged.connect(self.queue_update)
@@ -655,6 +651,7 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setToolTip("Work function of the system.")
         with warnings.catch_warnings(action="ignore", category=UserWarning):
             self._offset_spins["wf"].setValue(self.data.kspace.work_function)
+        self._offset_spins["wf"].valueChanged.connect(self._update_energy_controls)
         self._offset_spins["wf"].valueChanged.connect(self.queue_update)
 
         self.offsets_group.layout().addRow(
@@ -712,9 +709,35 @@ class KspaceTool(KspaceToolGUI):
         if avec is not None:
             self.bz_group.setChecked(True)
 
-    @functools.cached_property
-    def _binding_energy(self) -> npt.NDArray:
-        return self.data.kspace._binding_energy.values
+    def _binding_energy(self) -> npt.NDArray[np.floating]:
+        if hasattr(self, "_offset_spins") and "wf" in self._offset_spins:
+            work_function = self._work_function
+        else:
+            work_function = self.data.kspace.work_function
+
+        if self.data.kspace._is_energy_kinetic:
+            if self.data.kspace._has_hv:
+                raise ValueError(
+                    "Energy axis of photon energy dependent data must be in "
+                    "binding energy."
+                )
+            return np.asarray(
+                self.data.eV.values - float(self.data.hv.values) + work_function
+            )
+        return np.asarray(self.data.eV.values)
+
+    @QtCore.Slot()
+    def _update_energy_controls(self) -> None:
+        if not self.data.kspace._has_eV or self.data.eV.size <= 1:
+            return
+
+        energy_axis = self._binding_energy()
+        self.center_spin.blockSignals(True)
+        self.center_spin.setRange(float(energy_axis[0]), float(energy_axis[-1]))
+        eV_step = float(energy_axis[1] - energy_axis[0])
+        self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
+        self.center_spin.setSingleStep(eV_step)
+        self.center_spin.blockSignals(False)
 
     @QtCore.Slot()
     def calculate_bounds(self) -> None:
@@ -853,20 +876,21 @@ class KspaceTool(KspaceToolGUI):
 
     def _angle_data(self) -> xr.DataArray:
         if self.data.kspace._has_eV:
-            data_binding = self.data.copy().assign_coords(eV=self._binding_energy)
+            data_binding = self.data.copy().assign_coords(eV=self._binding_energy())
 
             center, width = self.center_spin.value(), self.width_spin.value()
-            if width == 1:
-                return data_binding.isel(
-                    eV=np.argmin(np.abs(self.data.eV.values - center))
-                )
-
-            arr = self.data.eV.values
+            arr = self._binding_energy()
             idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
+            if width == 1:
+                return data_binding.isel(eV=np.clip(idx, 0, arr.size - 1))
+
+            start = max(0, idx - width // 2)
+            stop = min(arr.size, idx + (width - 1) // 2 + 1)
+            if start >= stop:
+                start = int(np.clip(idx, 0, arr.size - 1))
+                stop = int(np.clip(idx + 1, 1, arr.size))
             return (
-                data_binding.isel(
-                    eV=slice(idx - width // 2, idx + (width - 1) // 2 + 1)
-                )
+                data_binding.isel(eV=slice(start, stop))
                 .mean("eV", skipna=True, keep_attrs=True)
                 .assign_coords(eV=center)
             )
