@@ -753,10 +753,11 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def calculate_resolution(self) -> None:
+        data = self._assign_params(self.data.copy())
         for k, spin in self._resolution_spins.items():
             with QtCore.QSignalBlocker(spin):
                 spin.setValue(
-                    self.data.kspace.estimate_resolution(
+                    data.kspace.estimate_resolution(
                         k, from_numpoints=self.res_npts_check.isChecked()
                     )
                 )
