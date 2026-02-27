@@ -1036,7 +1036,7 @@ class ColorCycleDialog(QtWidgets.QDialog):
     parent
         The parent widget for the dialog.
     preview_cursors
-        If `True`, the preview will inclue cursor lines and spans with the selected
+        If `True`, the preview will include cursor lines and spans with the selected
         colors.
     opacity_values
         A tuple of four float values representing the opacity for the cursor line,

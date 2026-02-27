@@ -503,7 +503,7 @@ def set_scale(
 ) -> xr.DataArray:
     """Apply a scale to the specified dimension of the DataArray.
 
-    This is the python equivalent of Igor Pro's `SetScale` command.
+    This is the Python equivalent of Igor Pro's `SetScale` command.
 
     Parameters
     ----------

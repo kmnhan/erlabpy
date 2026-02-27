@@ -259,7 +259,7 @@ def shift(
 ) -> xr.DataArray:
     """Shifts the values of a DataArray along a single dimension.
 
-    The shift is applied using :func:scipy.ndimage.shift` which uses spline
+    The shift is applied using :func:`scipy.ndimage.shift`, which uses spline
     interpolation. By default, the spline is of order 1 (linear interpolation).
 
     Parameters
@@ -281,7 +281,7 @@ def shift(
         shape of the original data will be retained, and only the data will be shifted.
         Defaults to `False`.
     keep_dim_order
-        If `True`, the ouput array will be transposed to match the input data.
+        If `True`, the output array will be transposed to match the input data.
         Otherwise, the axis order may change due to the application of
         :func:`xarray.apply_ufunc`. Default is `True`.
     assume_sorted

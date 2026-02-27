@@ -221,7 +221,7 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
     application based on the environment (interactive or not). The function yields a
     boolean indicating whether the application is executed.
 
-    Generally, a Qt application in a python script is executed like this:
+    Generally, a Qt application in a Python script is executed like this:
 
     .. code-block:: python
 
@@ -2280,7 +2280,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
-    For full compatibility with the ImageTool manager, the following optional attributs
+    For full compatibility with the ImageTool manager, the following optional attributes
     or properties can also be set:
 
     - The class attribute `tool_name` should be set to a short string identifying the

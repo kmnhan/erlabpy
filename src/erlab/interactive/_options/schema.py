@@ -1,8 +1,8 @@
 """Schema for interactive tool options.
 
-The GUI options window are automatically generated from this schema. Whenever the
+The GUI options window is automatically generated from this schema.
 
-To facillitate this, some extra metadata is provided in the `json_schema_extra` of
+To facilitate this, some extra metadata is provided in the `json_schema_extra` of
 pydantic fields.
 
 The following trivial types have automatic GUI representations:

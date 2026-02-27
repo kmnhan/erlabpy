@@ -553,7 +553,7 @@ class LoaderBase(metaclass=_Loader):
 
         .. note::
 
-            This method is not meant to be overriden in subclasses.
+            This method is not meant to be overridden in subclasses.
 
         Parameters
         ----------
@@ -587,7 +587,7 @@ class LoaderBase(metaclass=_Loader):
             returned.
         combine
             Whether to attempt to combine multiple files into a single data object. If
-            `False`, a list of data is returned. If `True`, the loader tries to combined
+            `False`, a list of data is returned. If `True`, the loader tries to combine
             the data into a single data object and return it. Depending on the type of
             each data object, the returned object can be a `xarray.DataArray`,
             `xarray.Dataset`, or a `xarray.DataTree`.
@@ -878,7 +878,7 @@ class LoaderBase(metaclass=_Loader):
 
         .. note::
 
-            This method is not meant to be overriden in subclasses.
+            This method is not meant to be overridden in subclasses.
 
         Takes a path to a directory and summarizes the data in the directory to a table,
         much like a log file. This is useful for quickly inspecting the contents of a
@@ -1620,7 +1620,7 @@ class LoaderBase(metaclass=_Loader):
 
         Override this function to perform any necessary concatenation-specific
         pre-processing steps. The primary use case is to correct small inconsistencies
-        in the loaded data that results in broken concatenation/combination.
+        in the loaded data that result in broken concatenation/combination.
 
         For instance, ALS BL4.0.3 Merlin often produces data with the energy axis start
         and step values shifted by a small amount (typically on the order of μeV). This

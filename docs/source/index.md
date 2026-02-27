@@ -25,11 +25,11 @@
 
 :::
 
-The `erlab` package provides a complete python workflow for ARPES (Angle-Resolved
+The `erlab` package provides a complete Python workflow for ARPES (Angle-Resolved
 Photoemission Spectroscopy) experiments. It provides a wide range of tools for
 processing, analyzing, and visualizing ARPES data.
 
-*ERLabPy* is built on top of the popular scientific python libraries [numpy](https://numpy.org), [scipy](https://scipy.org), and [xarray](https://xarray.pydata.org), and is designed to be easy to use and integrate with
+*ERLabPy* is built on top of the popular scientific Python libraries [numpy](https://numpy.org), [scipy](https://scipy.org), and [xarray](https://xarray.pydata.org), and is designed to be easy to use and integrate with
 existing scientific Python workflows so that you can quickly get started with your data
 analysis.
 

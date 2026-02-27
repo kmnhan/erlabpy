@@ -591,7 +591,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         ]
 
     def _row_index(self, index_or_uid: int | str) -> QtCore.QModelIndex:
-        """Get the corresponding QModelIndex for an parent index or child UID."""
+        """Get the corresponding QModelIndex for a parent index or child UID."""
         if isinstance(index_or_uid, str):
             for (
                 tool_idx,
