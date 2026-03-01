@@ -745,6 +745,9 @@ class KspaceTool(KspaceToolGUI):
     @QtCore.Slot()
     def calculate_bounds(self) -> None:
         data = self._assign_params(self.data.copy())
+        self._validate_kinetic_energy(
+            data, context="estimating momentum bounds in ktool"
+        )
         bounds = data.kspace.estimate_bounds()
         for k in data.kspace.momentum_axes:
             for j in range(2):
@@ -757,6 +760,9 @@ class KspaceTool(KspaceToolGUI):
     @QtCore.Slot()
     def calculate_resolution(self) -> None:
         data = self._assign_params(self.data.copy())
+        self._validate_kinetic_energy(
+            data, context="estimating momentum resolution in ktool"
+        )
         for k, spin in self._resolution_spins.items():
             with QtCore.QSignalBlocker(spin):
                 spin.setValue(
@@ -792,8 +798,10 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def show_converted(self) -> None:
+        data = self._assign_params(self.data.copy())
+        self._validate_kinetic_energy(data, context="opening converted data from ktool")
         with erlab.interactive.utils.wait_dialog(self, "Converting..."):
-            data_kconv = self._assign_params(self.data.copy()).kspace.convert(
+            data_kconv = data.kspace.convert(
                 bounds=self.bounds, resolution=self.resolution
             )
 
@@ -914,9 +922,13 @@ class KspaceTool(KspaceToolGUI):
                 data.kspace.work_function = wf
         return data
 
+    def _validate_kinetic_energy(self, data: xr.DataArray, *, context: str) -> None:
+        data.kspace._check_kinetic_energy(context=context)
+
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
         # Set angle offsets
         data_ang = self._assign_params(self._angle_data())
+        self._validate_kinetic_energy(data_ang, context="updating ktool preview")
         # if "beta" in data_ang.dims:
         #     data_ang = data_ang.assign_coords(
         #         beta=data_ang.beta * self._beta_scale_spin.value()
