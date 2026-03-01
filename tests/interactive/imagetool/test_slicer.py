@@ -64,3 +64,18 @@ def test_validate_array_does_not_deepcopy_attrs(qtbot) -> None:
     slicer = ArraySlicer(data, parent=QtCore.QObject())
 
     assert slicer._obj.attrs["sentinel"] is sentinel
+
+
+def test_index_of_value_nonuniform_descending_axis(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((4, 3)),
+        dims=("x", "y"),
+        coords={"x": np.array([5.0, 3.0, 2.0, -1.0]), "y": np.arange(3)},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    for value in (6.0, 4.2, 2.4, 0.0, -2.0):
+        idx = slicer.index_of_value(0, value, uniform=False)
+        expected = int(np.argmin(np.abs(data.x.values - value)))
+        assert idx == expected
