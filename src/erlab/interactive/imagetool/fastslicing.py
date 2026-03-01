@@ -72,6 +72,14 @@ def _index_of_value(
     cache=True,
 )
 def _index_of_value_nonuniform(arr: npt.NDArray[np.floating], val: np.floating) -> int:
+    if arr.size <= 1:
+        return 0
+
+    if arr[0] > arr[-1]:
+        # Reverse descending coordinates to reuse midpoint search logic.
+        arr_rev = arr[::-1]
+        return arr.size - 1 - np.searchsorted((arr_rev[:-1] + arr_rev[1:]) / 2, val)
+
     return np.searchsorted((arr[:-1] + arr[1:]) / 2, val)
 
 
