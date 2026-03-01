@@ -230,6 +230,26 @@ def test_ktool_resolution_estimate_uses_current_work_function(qtbot, anglemap) -
     assert not np.isclose(win._resolution_spins["kx"].value(), initial_kx_resolution)
 
 
+def test_ktool_nonphysical_kinetic_energy_raises_with_tool_context(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.copy().assign_coords(hv=6.0)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    wf_spin = win._offset_spins["wf"]
+    wf_spin.blockSignals(True)
+    wf_spin.setValue(9.9)
+    wf_spin.blockSignals(False)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while estimating momentum "
+        r"resolution in ktool: min\(E_k\)=",
+    ):
+        win.calculate_resolution()
+
+
 def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
     data = anglemap.copy().isel(eV=slice(None, None, -1))
     data = data.assign_coords(eV=data.eV.values[::-1])

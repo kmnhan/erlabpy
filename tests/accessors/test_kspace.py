@@ -259,3 +259,29 @@ def test_kspace_set_existing_configuration(anglemap):
         r"configuration, use `DataArray.kspace.as_configuration`.",
     ):
         data.kspace.configuration = 4
+
+
+def test_resolution_raises_nonpositive_kinetic_energy(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    data.kspace.work_function = 49.7
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while estimating in-plane "
+        r"momentum resolution: min\(E_k\)=",
+    ):
+        _ = data.kspace.best_kp_resolution
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while estimating out-of-plane "
+        r"momentum resolution: min\(E_k\)=",
+    ):
+        _ = data.kspace.best_kz_resolution
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while converting to momentum "
+        r"space: min\(E_k\)=",
+    ):
+        _ = data.kspace.convert(silent=True)
