@@ -191,6 +191,62 @@ def test_edge_fixed_center_fixes_center_parameter(gold) -> None:
     assert first.params["back1"].vary is True
 
 
+def test_edge_fixed_center_with_normalize_sets_normalized_parameter(gold) -> None:
+    angle_range = (-15, 15)
+    eV_range = (-0.2, 0.2)
+    fixed_center = 0.04
+
+    gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+    avgx = float(gold_sel.eV.values.mean())
+    stdx = float(gold_sel.eV.values.std())
+    expected_center = (fixed_center - avgx) / stdx
+
+    ds = edge(
+        gold,
+        angle_range=angle_range,
+        eV_range=eV_range,
+        temp=100.0,
+        vary_temp=False,
+        fixed_center=fixed_center,
+        normalize=True,
+        bkg_slope=True,
+        return_full=True,
+        progress=False,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+    center_coeff = ds.modelfit_coefficients.sel(param="center").values
+    finite = np.isfinite(center_coeff)
+    assert finite.any()
+    assert_allclose(center_coeff[finite], expected_center, atol=1e-12)
+    assert_allclose(center_coeff[finite] * stdx + avgx, fixed_center, atol=1e-12)
+
+    first = ds.modelfit_results.isel(alpha=0).item()
+    assert_allclose(first.params["center"].value, expected_center, atol=1e-12)
+    assert first.params["center"].vary is False
+
+
+def test_edge_fixed_center_with_normalize_returns_physical_center(gold) -> None:
+    vals, _errs = typing.cast(
+        "tuple[xr.DataArray, xr.DataArray]",
+        edge(
+            gold,
+            angle_range=(-15, 15),
+            eV_range=(-0.2, 0.2),
+            temp=100.0,
+            vary_temp=False,
+            fixed_center=0.04,
+            normalize=True,
+            bkg_slope=True,
+            return_full=False,
+            progress=False,
+            parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+        ),
+    )
+    finite = np.isfinite(vals.values)
+    assert finite.any()
+    assert_allclose(vals.values[finite], 0.04, atol=1e-12)
+
+
 @pytest.mark.parametrize("bkg_slope", [True, False], ids=["slope", "no_slope"])
 @pytest.mark.parametrize("fix_resolution", [False, True], ids=["fix_res", "vary_res"])
 @pytest.mark.parametrize("fix_center", [False, True], ids=["fix_center", "vary_center"])

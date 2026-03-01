@@ -336,7 +336,10 @@ def edge(
         params["back1"] = lmfit.Parameter("back1", value=0, vary=False)
 
     if fixed_center is not None:
-        params["center"] = lmfit.Parameter("center", value=fixed_center, vary=False)
+        fixed_center_fit = (
+            (float(fixed_center) - avgx) / stdx if normalize else float(fixed_center)
+        )
+        params["center"] = lmfit.Parameter("center", value=fixed_center_fit, vary=False)
 
     # Assuming Poisson noise, the weights are the square root of the counts.
     weights = (1 / gold_sel.sum("eV").clip(min=1e-15)) ** 0.5
