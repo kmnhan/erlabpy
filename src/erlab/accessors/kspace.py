@@ -443,6 +443,16 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _kinetic_energy(self) -> xr.DataArray:
         return self._hv - self.work_function + self._binding_energy
 
+    @staticmethod
+    def _finite_minmax(values: np.ndarray) -> tuple[float, float]:
+        finite_mask = np.isfinite(values)
+        if not np.any(finite_mask):
+            return float("nan"), float("nan")
+        return (
+            float(np.min(values, where=finite_mask, initial=np.inf)),
+            float(np.max(values, where=finite_mask, initial=-np.inf)),
+        )
+
     def _check_kinetic_energy(
         self,
         *,
@@ -454,9 +464,9 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             kinetic_energy = self._kinetic_energy
 
         kinetic = np.asarray(kinetic_energy, dtype=float)
-        finite = kinetic[np.isfinite(kinetic)]
+        finite_mask = np.isfinite(kinetic)
 
-        if finite.size == 0:
+        if not np.any(finite_mask):
             msg = (
                 "Cannot proceed while "
                 f"{context}: kinetic energy contains no finite values."
@@ -466,19 +476,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             erlab.utils.misc.emit_user_level_warning(msg)
             return kinetic_energy
 
-        min_kinetic = float(np.min(finite))
+        min_kinetic = float(np.min(kinetic, where=finite_mask, initial=np.inf))
         if min_kinetic > 0:
             return kinetic_energy
 
-        hv_values = np.asarray(self._hv.values, dtype=float)
-        hv_finite = hv_values[np.isfinite(hv_values)]
-        hv_min = float(np.min(hv_finite)) if hv_finite.size > 0 else float("nan")
-        hv_max = float(np.max(hv_finite)) if hv_finite.size > 0 else float("nan")
-
-        e_values = np.asarray(self._binding_energy.values, dtype=float)
-        e_finite = e_values[np.isfinite(e_values)]
-        e_min = float(np.min(e_finite)) if e_finite.size > 0 else float("nan")
-        e_max = float(np.max(e_finite)) if e_finite.size > 0 else float("nan")
+        hv_min, hv_max = self._finite_minmax(np.asarray(self._hv.values, dtype=float))
+        e_min, e_max = self._finite_minmax(
+            np.asarray(self._binding_energy.values, dtype=float)
+        )
 
         msg = (
             f"Nonphysical kinetic energy detected while {context}: "

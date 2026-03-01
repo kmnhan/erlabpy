@@ -744,7 +744,7 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def calculate_bounds(self) -> None:
-        data = self._assign_params(self.data.copy())
+        data = self._assign_params(self.data.copy(deep=False))
         self._validate_kinetic_energy(
             data, context="estimating momentum bounds in ktool"
         )
@@ -759,7 +759,7 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def calculate_resolution(self) -> None:
-        data = self._assign_params(self.data.copy())
+        data = self._assign_params(self.data.copy(deep=False))
         self._validate_kinetic_energy(
             data, context="estimating momentum resolution in ktool"
         )
@@ -798,7 +798,7 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def show_converted(self) -> None:
-        data = self._assign_params(self.data.copy())
+        data = self._assign_params(self.data.copy(deep=False))
         self._validate_kinetic_energy(data, context="opening converted data from ktool")
         with erlab.interactive.utils.wait_dialog(self, "Converting..."):
             data_kconv = data.kspace.convert(
@@ -887,10 +887,11 @@ class KspaceTool(KspaceToolGUI):
 
     def _angle_data(self) -> xr.DataArray:
         if self.data.kspace._has_eV:
-            data_binding = self.data.copy().assign_coords(eV=self._binding_energy())
+            binding_energy = self._binding_energy()
+            data_binding = self.data.copy(deep=False).assign_coords(eV=binding_energy)
 
             center, width = self.center_spin.value(), self.width_spin.value()
-            arr = self._binding_energy()
+            arr = binding_energy
             idx = int(np.argmin(np.abs(arr - center)))
             if width == 1:
                 return data_binding.isel(eV=idx)
@@ -905,7 +906,7 @@ class KspaceTool(KspaceToolGUI):
                 .mean("eV", skipna=True, keep_attrs=True)
                 .assign_coords(eV=center)
             )
-        return self.data.copy()
+        return self.data.copy(deep=False)
 
     def _assign_params(self, data: xr.DataArray) -> xr.DataArray:
         data.kspace.offsets = self.offset_dict
