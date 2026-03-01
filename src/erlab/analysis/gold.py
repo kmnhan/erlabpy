@@ -890,7 +890,10 @@ def _plot_resolution_fit(
     if hasattr(modelresult, "uvars"):
         center = modelresult.uvars["center"]
         resolution = modelresult.uvars["resolution"]
-        center_bounds = ((center - resolution).n, (center + resolution).n)
+        center_bounds = (
+            (center - resolution / 2).n,
+            (center + resolution / 2).n,
+        )
 
         center_repr = (
             f"$E_F = {center * 1e3:L}$ meV"
@@ -902,7 +905,7 @@ def _plot_resolution_fit(
     else:
         center = coeffs.sel(param="center")
         resolution = coeffs.sel(param="resolution")
-        center_bounds = (center - resolution, center + resolution)
+        center_bounds = (center - resolution / 2, center + resolution / 2)
 
         center_repr = (
             f"$E_F = {center * 1e3:.3f}$ meV"

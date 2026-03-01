@@ -247,6 +247,27 @@ def test_edge_fixed_center_with_normalize_returns_physical_center(gold) -> None:
     assert_allclose(vals.values[finite], 0.04, atol=1e-12)
 
 
+def test_quick_fit_plot_fwhm_span_matches_resolution(gold) -> None:
+    fig, ax = plt.subplots()
+    ds = quick_fit(
+        gold,
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        resolution=1e-2,
+        fix_temp=True,
+        fix_resolution=True,
+        plot=True,
+        ax=ax,
+    )
+    resolution = float(ds.modelfit_coefficients.sel(param="resolution"))
+
+    assert len(ax.patches) > 0
+    span = ax.patches[-1]
+    assert_allclose(span.get_width(), resolution, atol=1e-12)
+
+    plt.close(fig)
+
+
 @pytest.mark.parametrize("bkg_slope", [True, False], ids=["slope", "no_slope"])
 @pytest.mark.parametrize("fix_resolution", [False, True], ids=["fix_res", "vary_res"])
 @pytest.mark.parametrize("fix_center", [False, True], ids=["fix_center", "vary_center"])
