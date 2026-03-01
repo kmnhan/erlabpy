@@ -247,6 +247,34 @@ def test_edge_fixed_center_with_normalize_returns_physical_center(gold) -> None:
     assert_allclose(vals.values[finite], 0.04, atol=1e-12)
 
 
+def test_edge_range_selection_follows_descending_coordinate_order(gold) -> None:
+    gold_desc = gold.isel(alpha=slice(None, None, -1), eV=slice(None, None, -1))
+    gold_desc = gold_desc.assign_coords(
+        alpha=gold.alpha.values[::-1], eV=gold.eV.values[::-1]
+    )
+
+    vals, _errs = typing.cast(
+        "tuple[xr.DataArray, xr.DataArray]",
+        edge(
+            gold_desc,
+            along="alpha",
+            angle_range=(-15, 15),
+            eV_range=(-0.2, 0.2),
+            temp=100.0,
+            vary_temp=False,
+            fixed_center=0.04,
+            normalize=False,
+            bkg_slope=True,
+            return_full=False,
+            progress=False,
+            parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+        ),
+    )
+    finite = np.isfinite(vals.values)
+    assert finite.any()
+    assert_allclose(vals.values[finite], 0.04, atol=1e-12)
+
+
 def test_quick_fit_plot_fwhm_span_matches_resolution(gold) -> None:
     fig, ax = plt.subplots()
     ds = quick_fit(
@@ -266,6 +294,38 @@ def test_quick_fit_plot_fwhm_span_matches_resolution(gold) -> None:
     assert_allclose(span.get_width(), resolution, atol=1e-12)
 
     plt.close(fig)
+
+
+def test_quick_fit_descending_eV_range_selection_matches_ascending(gold) -> None:
+    gold_desc = gold.isel(eV=slice(None, None, -1)).assign_coords(eV=gold.eV[::-1])
+
+    asc = quick_fit(
+        gold,
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        resolution=1e-2,
+        fix_temp=True,
+        fix_resolution=True,
+        plot=False,
+    )
+    desc = quick_fit(
+        gold_desc,
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        resolution=1e-2,
+        fix_temp=True,
+        fix_resolution=True,
+        plot=False,
+    )
+
+    assert desc.modelfit_data.sizes["eV"] == asc.modelfit_data.sizes["eV"]
+
+    center = float(desc.modelfit_coefficients.sel(param="center"))
+    resolution = float(desc.modelfit_coefficients.sel(param="resolution"))
+    assert np.isfinite(center)
+    assert np.isfinite(resolution)
+    assert -0.2 <= center <= 0.2
+    assert resolution > 0.0
 
 
 @pytest.mark.parametrize("bkg_slope", [True, False], ids=["slope", "no_slope"])
