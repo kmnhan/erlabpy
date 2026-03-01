@@ -230,6 +230,32 @@ def test_ktool_resolution_estimate_uses_current_work_function(qtbot, anglemap) -
     assert not np.isclose(win._resolution_spins["kx"].value(), initial_kx_resolution)
 
 
+def test_ktool_shallow_copy_paths_do_not_mutate_tool_data_attrs(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.copy().assign_coords(hv=21.2)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    original_attrs = win.data.attrs.copy()
+
+    delta_spin = win._offset_spins["delta"]
+    delta_spin.blockSignals(True)
+    delta_spin.setValue(delta_spin.value() + 0.7)
+    delta_spin.blockSignals(False)
+
+    wf_spin = win._offset_spins["wf"]
+    wf_spin.blockSignals(True)
+    wf_spin.setValue(wf_spin.value() + 0.15)
+    wf_spin.blockSignals(False)
+
+    win.calculate_bounds()
+    win.calculate_resolution()
+    win.get_data()
+
+    assert win.data.attrs == original_attrs
+
+
 def test_ktool_nonphysical_kinetic_energy_raises_with_tool_context(
     qtbot, anglemap
 ) -> None:
