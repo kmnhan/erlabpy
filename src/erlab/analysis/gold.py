@@ -50,6 +50,30 @@ def _eval_edge(modelresult: lmfit.model.ModelResult, *, evalute_at: npt.NDArray)
     return modelresult.eval(x=evalute_at)
 
 
+def _range_slice_for_coord(
+    coord: xr.DataArray, value_range: tuple[float, float]
+) -> slice:
+    start, stop = map(float, value_range)
+    values = np.asarray(coord.values)
+
+    if values.size < 2:
+        lo, hi = sorted((start, stop))
+        return slice(lo, hi)
+
+    if not erlab.utils.array.is_monotonic(values):
+        coord_name = str(coord.name) if coord.name is not None else "<unknown>"
+        raise ValueError(
+            f"Coordinate `{coord_name}` is not monotonic. "
+            "Sort the data before applying a range selection."
+        )
+
+    if values[0] <= values[-1]:
+        lo, hi = sorted((start, stop))
+    else:
+        lo, hi = sorted((start, stop), reverse=True)
+    return slice(lo, hi)
+
+
 def correct_with_edge(
     darr: xr.DataArray,
     modelresult: lmfit.model.ModelResult
@@ -77,7 +101,7 @@ def correct_with_edge(
         function that takes an array of angles and returns the corresponding energy
         value, or a tuple of coefficients for a polynomial (lowest order first).
     along
-        The anglular dimension name in the data. If `None`, it is assumed to be
+        The angular dimension name in the data. If `None`, it is assumed to be
         ``"alpha"``.
     shift_coords
         If `True`, the coordinates of the output data will be changed so that the output
@@ -295,7 +319,12 @@ def edge(
         )
         gold = gold_binned.mean()  # type: ignore[attr-defined]
 
-    gold_sel = gold.sel({along: slice(*angle_range), "eV": slice(*eV_range)})
+    gold_sel = gold.sel(
+        {
+            along: _range_slice_for_coord(gold[along], angle_range),
+            "eV": _range_slice_for_coord(gold["eV"], eV_range),
+        }
+    )
 
     if normalize:
         # Normalize energy coordinates
@@ -336,7 +365,10 @@ def edge(
         params["back1"] = lmfit.Parameter("back1", value=0, vary=False)
 
     if fixed_center is not None:
-        params["back1"] = lmfit.Parameter("center", value=fixed_center, vary=False)
+        fixed_center_fit = (
+            (float(fixed_center) - avgx) / stdx if normalize else float(fixed_center)
+        )
+        params["center"] = lmfit.Parameter("center", value=fixed_center_fit, vary=False)
 
     # Assuming Poisson noise, the weights are the square root of the counts.
     weights = (1 / gold_sel.sum("eV").clip(min=1e-15)) ** 0.5
@@ -631,7 +663,12 @@ def poly(
         )
     if correct:
         if crop_correct:
-            gold = gold.sel({along: slice(*angle_range), "eV": slice(*eV_range)})
+            gold = gold.sel(
+                {
+                    along: _range_slice_for_coord(gold[along], angle_range),
+                    "eV": _range_slice_for_coord(gold["eV"], eV_range),
+                }
+            )
         corr = correct_with_edge(gold, results, plot=False)
         return results, corr
     return results
@@ -685,7 +722,12 @@ def spline(
         )
     if correct:
         if crop_correct:
-            gold = gold.sel({along: slice(*angle_range), "eV": slice(*eV_range)})
+            gold = gold.sel(
+                {
+                    along: _range_slice_for_coord(gold[along], angle_range),
+                    "eV": _range_slice_for_coord(gold["eV"], eV_range),
+                }
+            )
         corr = correct_with_edge(gold, spl, plot=False)
         return spl, corr
     return spl
@@ -777,7 +819,11 @@ def quick_fit(
     """
     with xr.set_options(keep_attrs=True):
         data = darr.mean([d for d in darr.dims if d != "eV"])
-        data_fit = data.sel(eV=slice(*eV_range)) if eV_range is not None else data
+        data_fit = (
+            data.sel(eV=_range_slice_for_coord(data["eV"], eV_range))
+            if eV_range is not None
+            else data
+        )
 
     if temp is None:
         temp = data.qinfo.get_value("sample_temp")
@@ -887,7 +933,10 @@ def _plot_resolution_fit(
     if hasattr(modelresult, "uvars"):
         center = modelresult.uvars["center"]
         resolution = modelresult.uvars["resolution"]
-        center_bounds = ((center - resolution).n, (center + resolution).n)
+        center_bounds = (
+            (center - resolution / 2).n,
+            (center + resolution / 2).n,
+        )
 
         center_repr = (
             f"$E_F = {center * 1e3:L}$ meV"
@@ -899,7 +948,7 @@ def _plot_resolution_fit(
     else:
         center = coeffs.sel(param="center")
         resolution = coeffs.sel(param="resolution")
-        center_bounds = (center - resolution, center + resolution)
+        center_bounds = (center - resolution / 2, center + resolution / 2)
 
         center_repr = (
             f"$E_F = {center * 1e3:.3f}$ meV"
@@ -1026,8 +1075,12 @@ def resolution(
     if eV_range_fit is None:
         eV_range_fit = tuple(r - np.mean(pol.best_fit) for r in eV_range_edge)
     del pol
-    gold_roi = gold_corr.sel(alpha=slice(*angle_range))
-    edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range_fit))
+    gold_roi = gold_corr.sel(
+        alpha=_range_slice_for_coord(gold_corr["alpha"], angle_range)
+    )
+    edc_avg = gold_roi.mean("alpha").sel(
+        eV=_range_slice_for_coord(gold_roi["eV"], eV_range_fit)
+    )
 
     params = lmfit.create_params(
         temp={"value": gold_roi.attrs["sample_temp"], "vary": False},
@@ -1094,7 +1147,9 @@ def resolution_roi(
         stacklevel=1,
     )
 
-    edc_avg = gold_roi.mean("alpha").sel(eV=slice(*eV_range))
+    edc_avg = gold_roi.mean("alpha").sel(
+        eV=_range_slice_for_coord(gold_roi["eV"], eV_range)
+    )
 
     params = lmfit.create_params(
         temp={"value": gold_roi.attrs["sample_temp"], "vary": not fix_temperature},

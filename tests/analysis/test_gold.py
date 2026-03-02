@@ -7,7 +7,7 @@ import xarray as xr
 from numpy.testing import assert_allclose
 
 import erlab.analysis.gold as gold_mod
-from erlab.analysis.gold import correct_with_edge, poly, quick_fit, spline
+from erlab.analysis.gold import correct_with_edge, edge, poly, quick_fit, spline
 
 
 def test_spline_forwards_along_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,6 +164,168 @@ def test_spline(gold) -> None:
     correct_with_edge(gold, spl, shift_coords=True, plot=False)
     correct_with_edge(gold, spl, shift_coords=False, plot=True)
     plt.close()
+
+
+def test_edge_fixed_center_fixes_center_parameter(gold) -> None:
+    ds = edge(
+        gold,
+        angle_range=(-15, 15),
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        vary_temp=False,
+        fixed_center=0.2,
+        normalize=False,
+        bkg_slope=True,
+        return_full=True,
+        progress=False,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+    center_coeff = ds.modelfit_coefficients.sel(param="center").values
+    finite = np.isfinite(center_coeff)
+    assert finite.any()
+    assert_allclose(center_coeff[finite], 0.2, atol=1e-12)
+
+    first = ds.modelfit_results.isel(alpha=0).item()
+    assert first.params["center"].value == 0.2
+    assert first.params["center"].vary is False
+    assert first.params["back1"].vary is True
+
+
+def test_edge_fixed_center_with_normalize_sets_normalized_parameter(gold) -> None:
+    angle_range = (-15, 15)
+    eV_range = (-0.2, 0.2)
+    fixed_center = 0.04
+
+    gold_sel = gold.sel(alpha=slice(*angle_range), eV=slice(*eV_range))
+    avgx = float(gold_sel.eV.values.mean())
+    stdx = float(gold_sel.eV.values.std())
+    expected_center = (fixed_center - avgx) / stdx
+
+    ds = edge(
+        gold,
+        angle_range=angle_range,
+        eV_range=eV_range,
+        temp=100.0,
+        vary_temp=False,
+        fixed_center=fixed_center,
+        normalize=True,
+        bkg_slope=True,
+        return_full=True,
+        progress=False,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+    center_coeff = ds.modelfit_coefficients.sel(param="center").values
+    finite = np.isfinite(center_coeff)
+    assert finite.any()
+    assert_allclose(center_coeff[finite], expected_center, atol=1e-12)
+    assert_allclose(center_coeff[finite] * stdx + avgx, fixed_center, atol=1e-12)
+
+    first = ds.modelfit_results.isel(alpha=0).item()
+    assert_allclose(first.params["center"].value, expected_center, atol=1e-12)
+    assert first.params["center"].vary is False
+
+
+def test_edge_fixed_center_with_normalize_returns_physical_center(gold) -> None:
+    vals, _errs = typing.cast(
+        "tuple[xr.DataArray, xr.DataArray]",
+        edge(
+            gold,
+            angle_range=(-15, 15),
+            eV_range=(-0.2, 0.2),
+            temp=100.0,
+            vary_temp=False,
+            fixed_center=0.04,
+            normalize=True,
+            bkg_slope=True,
+            return_full=False,
+            progress=False,
+            parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+        ),
+    )
+    finite = np.isfinite(vals.values)
+    assert finite.any()
+    assert_allclose(vals.values[finite], 0.04, atol=1e-12)
+
+
+def test_edge_range_selection_follows_descending_coordinate_order(gold) -> None:
+    gold_desc = gold.isel(alpha=slice(None, None, -1), eV=slice(None, None, -1))
+    gold_desc = gold_desc.assign_coords(
+        alpha=gold.alpha.values[::-1], eV=gold.eV.values[::-1]
+    )
+
+    vals, _errs = typing.cast(
+        "tuple[xr.DataArray, xr.DataArray]",
+        edge(
+            gold_desc,
+            along="alpha",
+            angle_range=(-15, 15),
+            eV_range=(-0.2, 0.2),
+            temp=100.0,
+            vary_temp=False,
+            fixed_center=0.04,
+            normalize=False,
+            bkg_slope=True,
+            return_full=False,
+            progress=False,
+            parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+        ),
+    )
+    finite = np.isfinite(vals.values)
+    assert finite.any()
+    assert_allclose(vals.values[finite], 0.04, atol=1e-12)
+
+
+def test_quick_fit_plot_fwhm_span_matches_resolution(gold) -> None:
+    fig, ax = plt.subplots()
+    ds = quick_fit(
+        gold,
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        resolution=1e-2,
+        fix_temp=True,
+        fix_resolution=True,
+        plot=True,
+        ax=ax,
+    )
+    resolution = float(ds.modelfit_coefficients.sel(param="resolution"))
+
+    assert len(ax.patches) > 0
+    span = ax.patches[-1]
+    assert_allclose(span.get_width(), resolution, atol=1e-12)
+
+    plt.close(fig)
+
+
+def test_quick_fit_descending_eV_range_selection_matches_ascending(gold) -> None:
+    gold_desc = gold.isel(eV=slice(None, None, -1)).assign_coords(eV=gold.eV[::-1])
+
+    asc = quick_fit(
+        gold,
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        resolution=1e-2,
+        fix_temp=True,
+        fix_resolution=True,
+        plot=False,
+    )
+    desc = quick_fit(
+        gold_desc,
+        eV_range=(-0.2, 0.2),
+        temp=100.0,
+        resolution=1e-2,
+        fix_temp=True,
+        fix_resolution=True,
+        plot=False,
+    )
+
+    assert desc.modelfit_data.sizes["eV"] == asc.modelfit_data.sizes["eV"]
+
+    center = float(desc.modelfit_coefficients.sel(param="center"))
+    resolution = float(desc.modelfit_coefficients.sel(param="resolution"))
+    assert np.isfinite(center)
+    assert np.isfinite(resolution)
+    assert -0.2 <= center <= 0.2
+    assert resolution > 0.0
 
 
 @pytest.mark.parametrize("bkg_slope", [True, False], ids=["slope", "no_slope"])

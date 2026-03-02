@@ -187,6 +187,37 @@ def find_peaks(
     return peaks_array
 
 
+def _validate_first_order_peaks(
+    first_order_peaks: Iterable[Iterable[int]] | npt.NDArray[np.intp],
+    shape: tuple[int, int],
+) -> npt.NDArray[np.intp]:
+    peaks = np.asarray(first_order_peaks, dtype=np.intp)
+    if peaks.shape != (3, 2):
+        raise ValueError(
+            "first_order_peaks must contain exactly three [row, col] points: "
+            "the FFT center and two first-order peaks."
+        )
+
+    h, w = shape
+    rows, cols = peaks[:, 0], peaks[:, 1]
+    if np.any(rows < 0) or np.any(rows >= h) or np.any(cols < 0) or np.any(cols >= w):
+        raise ValueError(
+            "first_order_peaks contains out-of-bounds coordinates for image shape "
+            f"{shape}."
+        )
+
+    center, p0, p1 = peaks
+    if np.array_equal(center, p0) or np.array_equal(center, p1):
+        raise ValueError(
+            "first_order_peaks must contain two peaks distinct from the center."
+        )
+    if np.array_equal(p0, p1):
+        raise ValueError(
+            "first_order_peaks must contain two distinct first-order peaks."
+        )
+    return peaks
+
+
 def higher_order_peaks(
     first_order: Iterable[Iterable[int]],
     order: int,
@@ -505,6 +536,10 @@ def remove_mesh(
         `None`, auto-detection will be performed. There should be three rows, where the
         first row is the center index of the FFT image, and the next two rows are the
         first-order peaks.
+
+        .. versionchanged:: 3.21.0
+            Invalid peak sets now raise :class:`ValueError` instead of being used
+            silently. This includes failed auto-detection placeholders.
     order
         Up to which order of mesh peaks to remove.
     n_pad
@@ -591,7 +626,10 @@ def remove_mesh(
     # If peaks are not provided, find them
     if first_order_peaks is None:
         first_order_peaks = find_peaks(log_magnitude, n_peaks=2, plot=False) - n_pad
-    first_order_peaks = np.asarray(first_order_peaks, dtype=np.intp) + n_pad
+    first_order_peaks = _validate_first_order_peaks(
+        first_order_peaks, typing.cast("tuple[int, int]", original.shape)
+    )
+    first_order_peaks = first_order_peaks + n_pad
 
     # Get all peaks up to specified order
     peaks = higher_order_peaks(

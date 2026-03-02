@@ -153,7 +153,7 @@ def fingerprint_dataarray(
 
     Note
     ----
-    - Different python processes will produce different fingerprints for the same data
+    - Different Python processes will produce different fingerprints for the same data
       due to the use of the built-in :func:`hash`. Use only for comparisons within a
       single process.
     - This function is not cryptographically secure and should not be used for security

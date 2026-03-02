@@ -805,7 +805,7 @@ class ItoolCursorLine(pg.InfiniteLine):
 
 
 class pg_itool(pg.GraphicsLayoutWidget):
-    """A interactive tool based on :obj:`pyqtgraph` for exploring 3D data.
+    """An interactive tool based on :obj:`pyqtgraph` for exploring 3D data.
 
     For the tool to remain responsive you must
     keep a reference to it.

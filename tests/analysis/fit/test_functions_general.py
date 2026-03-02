@@ -95,6 +95,17 @@ def test_do_convolve_oversample_and_zero_resolution() -> None:
     assert np.allclose(result, testfunc(x))
 
 
+def test_do_convolve_descending_axis_matches_ascending() -> None:
+    x = np.linspace(-1.0, 1.0, 401)
+    xd = x[::-1]
+    params = {"center": 0.2, "temp": 30.0}
+
+    asc = do_convolve(x, fermi_dirac, resolution=0.05, **params)
+    desc = do_convolve(xd, fermi_dirac, resolution=0.05, **params)
+
+    np.testing.assert_allclose(desc[::-1], asc, atol=1e-12, rtol=1e-9)
+
+
 def test_gaussian_wh() -> None:
     x = np.linspace(0, 10, 100)
     center = 5.0
@@ -157,6 +168,19 @@ def test_fermi_dirac_broad() -> None:
         fermi_dirac_broad(x, center, temp, resolution),
         expected_result,
     )
+
+
+def test_fermi_dirac_broad_descending_axis_matches_ascending() -> None:
+    x = np.linspace(-1.0, 1.0, 401)
+    xd = x[::-1]
+    center = 0.2
+    temp = 30.0
+    resolution = 0.05
+
+    asc = fermi_dirac_broad(x, center, temp, resolution)
+    desc = fermi_dirac_broad(xd, center, temp, resolution)
+
+    np.testing.assert_allclose(desc[::-1], asc, atol=1e-12, rtol=1e-9)
 
 
 def test_fermi_dirac_linbkg_broad() -> None:

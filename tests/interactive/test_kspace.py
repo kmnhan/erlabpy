@@ -6,6 +6,7 @@ import xarray as xr
 
 import erlab
 from erlab.interactive.kspace import KspaceTool, ktool
+from erlab.io.exampledata import generate_hvdep_cuts
 
 
 def test_ktool_compatible(anglemap) -> None:
@@ -136,3 +137,170 @@ def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
 
     win.update()
     assert call_count == 2
+
+
+def test_ktool_kinetic_energy_axis_preview(qtbot, anglemap) -> None:
+    data = anglemap.copy().assign_coords(hv=6.2)
+    data = data.assign_coords(eV=data.hv - data.kspace.work_function + data.eV)
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    min0, max0 = win.center_spin.minimum(), win.center_spin.maximum()
+    win._offset_spins["wf"].setValue(win._offset_spins["wf"].value() - 0.2)
+    assert np.isclose(win.center_spin.minimum(), min0 - 0.2)
+    assert np.isclose(win.center_spin.maximum(), max0 - 0.2)
+
+    win.width_spin.setValue(5)
+    energy_axis = data.eV.values - float(data.hv.values) + win._work_function
+    center = float(energy_axis[len(energy_axis) // 2])
+    win.center_spin.setValue(center)
+    center = win.center_spin.value()
+
+    ang, kpreview = win.get_data()
+
+    idx = int(np.argmin(np.abs(energy_axis - center)))
+    start = max(0, idx - win.width_spin.value() // 2)
+    stop = min(
+        energy_axis.size,
+        idx + (win.width_spin.value() - 1) // 2 + 1,
+    )
+
+    expected_ang = (
+        data.copy()
+        .assign_coords(eV=energy_axis)
+        .isel(eV=slice(start, stop))
+        .mean("eV", skipna=True, keep_attrs=True)
+        .assign_coords(eV=center)
+    )
+    expected_ang = win._assign_params(expected_ang)
+    expected_k = expected_ang.kspace.convert(
+        bounds=win.bounds, resolution=win.resolution, silent=True
+    )
+
+    xr.testing.assert_allclose(ang, expected_ang)
+    xr.testing.assert_allclose(kpreview, expected_k)
+
+
+def test_ktool_bounds_estimate_uses_current_inner_potential(qtbot) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+    data.kspace.inner_potential = 10.0
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    initial_kz_bounds = (
+        win._bound_spins["kz0"].value(),
+        win._bound_spins["kz1"].value(),
+    )
+    win._offset_spins["V0"].setValue(20.0)
+    win.calculate_bounds()
+
+    expected_data = win._assign_params(win.data.copy())
+    expected_bounds = expected_data.kspace.estimate_bounds()
+    for axis in win.data.kspace.momentum_axes:
+        for idx in range(2):
+            spin = win._bound_spins[f"{axis}{idx}"]
+            assert np.isclose(
+                spin.value(),
+                np.round(expected_bounds[axis][idx], spin.decimals()),
+            )
+
+    assert not np.isclose(win._bound_spins["kz0"].value(), initial_kz_bounds[0])
+    assert not np.isclose(win._bound_spins["kz1"].value(), initial_kz_bounds[1])
+
+
+def test_ktool_resolution_estimate_uses_current_work_function(qtbot, anglemap) -> None:
+    data = anglemap.copy().assign_coords(hv=6.0)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    initial_kx_resolution = win._resolution_spins["kx"].value()
+    win._offset_spins["wf"].setValue(3.0)
+    win.calculate_resolution()
+
+    expected_data = win._assign_params(win.data.copy())
+    for axis in win.data.kspace.momentum_axes:
+        spin = win._resolution_spins[axis]
+        expected = expected_data.kspace.estimate_resolution(
+            axis, from_numpoints=win.res_npts_check.isChecked()
+        )
+        assert np.isclose(spin.value(), np.round(expected, spin.decimals()))
+
+    assert not np.isclose(win._resolution_spins["kx"].value(), initial_kx_resolution)
+
+
+def test_ktool_shallow_copy_paths_do_not_mutate_tool_data_attrs(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.copy().assign_coords(hv=21.2)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    original_attrs = win.data.attrs.copy()
+
+    delta_spin = win._offset_spins["delta"]
+    delta_spin.blockSignals(True)
+    delta_spin.setValue(delta_spin.value() + 0.7)
+    delta_spin.blockSignals(False)
+
+    wf_spin = win._offset_spins["wf"]
+    wf_spin.blockSignals(True)
+    wf_spin.setValue(wf_spin.value() + 0.15)
+    wf_spin.blockSignals(False)
+
+    win.calculate_bounds()
+    win.calculate_resolution()
+    win.get_data()
+
+    assert win.data.attrs == original_attrs
+
+
+def test_ktool_nonphysical_kinetic_energy_raises_with_tool_context(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.copy().assign_coords(hv=6.0)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    wf_spin = win._offset_spins["wf"]
+    wf_spin.blockSignals(True)
+    wf_spin.setValue(9.9)
+    wf_spin.blockSignals(False)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while estimating momentum "
+        r"resolution in ktool: min\(E_k\)=",
+    ):
+        win.calculate_resolution()
+
+
+def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
+    data = anglemap.copy().isel(eV=slice(None, None, -1))
+    data = data.assign_coords(eV=data.eV.values[::-1])
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert np.isclose(win.center_spin.minimum(), float(data.eV.min()))
+    assert np.isclose(win.center_spin.maximum(), float(data.eV.max()))
+
+    win.width_spin.setValue(5)
+    center = float(data.eV.values[len(data.eV) // 2])
+    win.center_spin.setValue(center)
+    center = win.center_spin.value()
+
+    ang, _ = win.get_data()
+
+    idx = int(np.argmin(np.abs(data.eV.values - center)))
+    start = max(0, idx - win.width_spin.value() // 2)
+    stop = min(data.eV.size, idx + (win.width_spin.value() - 1) // 2 + 1)
+    expected_ang = (
+        data.isel(eV=slice(start, stop))
+        .mean("eV", skipna=True, keep_attrs=True)
+        .assign_coords(eV=center)
+    )
+    expected_ang = win._assign_params(expected_ang)
+
+    xr.testing.assert_allclose(ang, expected_ang)

@@ -189,7 +189,7 @@ class ColorButton(QtWidgets.QPushButton):
 
 
 class mpl_itool(Widget):
-    """A interactive tool based on `matplotlib` for exploring 3D data.
+    """An interactive tool based on `matplotlib` for exploring 3D data.
 
     For the tool to remain responsive you must
     keep a reference to it.
@@ -207,7 +207,7 @@ class mpl_itool(Widget):
         Snaps cursor to data pixels.
     parallel : bool, default: False
         Use multithreading. Currently has no performance improvement due
-        to the python global interpreter lock.
+        to the Python global interpreter lock.
     bench : bool, default: False
         Whether to print frames per second.
 

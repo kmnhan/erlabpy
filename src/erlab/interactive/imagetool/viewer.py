@@ -409,7 +409,7 @@ class SlicerLinkProxy:
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
-    """A interactive tool based on :mod:`pyqtgraph` for exploring 3D data.
+    """An interactive tool based on :mod:`pyqtgraph` for exploring 3D data.
 
     Parameters
     ----------
@@ -449,9 +449,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     load_func
         3-tuple containing the function, a dictionary of keyword arguments, and the
         index of the data variable used when loading the data. The function is called
-        when reloading the data. If from a data loader plugin, the function may be given
-        as a string representing the loader name. If the function always returns a
-        single DataArray, the last element should be 0.
+        when reloading the data. If using a data loader plugin, the function may be as a
+        string representing the loader name. If the function always returns a single
+        DataArray, the last element should be 0.
 
     Signals
     -------
@@ -1512,9 +1512,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         load_func
             3-tuple containing the function, a dictionary of keyword arguments, and the
             index of the data variable used when loading the data. The function is
-            called when reloading the data. If from a data loader plugin, the function
-            may be given as a string representing the loader name. If the function
-            always returns a single DataArray, the last element should be 0.
+            called when reloading the data. If using a data loader plugin, the function
+            be given as a string representing the loader name. If the function always
+            returns a single DataArray, the last element should be 0.
         auto_compute
             If `True` and the data is dask-backed, automatically compute the data if its
             size is below the threshold defined in options.

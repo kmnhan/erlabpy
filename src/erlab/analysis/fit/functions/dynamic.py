@@ -110,7 +110,7 @@ class DynamicFunction:
 
 
 class PolynomialFunction(DynamicFunction):
-    """A callable class for a arbitrary degree polynomial.
+    """A callable class for an arbitrary degree polynomial.
 
     Parameters
     ----------

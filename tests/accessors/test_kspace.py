@@ -1,5 +1,6 @@
 import re
 
+import numpy as np
 import pytest
 import xarray
 import xarray.testing
@@ -259,3 +260,98 @@ def test_kspace_set_existing_configuration(anglemap):
         r"configuration, use `DataArray.kspace.as_configuration`.",
     ):
         data.kspace.configuration = 4
+
+
+def test_resolution_raises_nonpositive_kinetic_energy(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    data.kspace.work_function = 49.7
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while estimating in-plane "
+        r"momentum resolution: min\(E_k\)=",
+    ):
+        _ = data.kspace.best_kp_resolution
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while estimating out-of-plane "
+        r"momentum resolution: min\(E_k\)=",
+    ):
+        _ = data.kspace.best_kz_resolution
+
+    with pytest.raises(
+        ValueError,
+        match=r"Nonphysical kinetic energy detected while converting to momentum "
+        r"space: min\(E_k\)=",
+    ):
+        _ = data.kspace.convert(silent=True)
+
+
+def test_estimate_resolution_from_numpoints_kz_uses_adjacent_spacing(hvdep) -> None:
+    data = hvdep.copy(deep=True)
+    lims = data.kspace.estimate_bounds()["kz"]
+
+    out = data.kspace.estimate_resolution("kz", lims=lims, from_numpoints=True)
+    expected = float((lims[1] - lims[0]) / (data.hv.size - 1))
+
+    assert out == pytest.approx(expected)
+
+
+def test_estimate_resolution_from_numpoints_single_point_returns_inf(anglemap) -> None:
+    data = anglemap.isel(alpha=slice(0, 1)).copy(deep=True)
+    axis = data.kspace.slit_axis
+
+    out = data.kspace.estimate_resolution(axis, lims=(0.0, 1.0), from_numpoints=True)
+
+    assert np.isinf(out)
+
+
+def test_finite_minmax_all_nonfinite(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    mn, mx = data.kspace._finite_minmax(np.array([np.nan, np.inf, -np.inf]))
+    assert np.isnan(mn)
+    assert np.isnan(mx)
+
+
+def test_check_kinetic_energy_warns_without_raising_for_nonfinite(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    kinetic = np.array([np.nan, np.inf, -np.inf])
+    with pytest.warns(
+        UserWarning,
+        match=r"Cannot proceed while test context: kinetic energy contains no finite "
+        r"values.",
+    ):
+        result = data.kspace._check_kinetic_energy(
+            context="test context",
+            kinetic_energy=kinetic,
+            raise_on_violation=False,
+        )
+    assert result is kinetic
+
+
+def test_check_kinetic_energy_raises_for_nonfinite(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    with pytest.raises(
+        ValueError,
+        match=r"Cannot proceed while test context: kinetic energy contains no finite "
+        r"values.",
+    ):
+        _ = data.kspace._check_kinetic_energy(
+            context="test context",
+            kinetic_energy=np.array([np.nan, np.inf, -np.inf]),
+        )
+
+
+def test_check_kinetic_energy_warns_without_raising_for_nonphysical(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    data.kspace.work_function = 49.7
+    with pytest.warns(
+        UserWarning,
+        match=r"Nonphysical kinetic energy detected while test context: min\(E_k\)=",
+    ):
+        result = data.kspace._check_kinetic_energy(
+            context="test context",
+            raise_on_violation=False,
+        )
+    xarray.testing.assert_identical(result, data.kspace._kinetic_energy)

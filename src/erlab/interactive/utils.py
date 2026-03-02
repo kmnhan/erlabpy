@@ -221,7 +221,7 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
     application based on the environment (interactive or not). The function yields a
     boolean indicating whether the application is executed.
 
-    Generally, a Qt application in a python script is executed like this:
+    Generally, a Qt application in a Python script is executed like this:
 
     .. code-block:: python
 
@@ -2280,7 +2280,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
-    For full compatibility with the ImageTool manager, the following optional attributs
+    For full compatibility with the ImageTool manager, the following optional attributes
     or properties can also be set:
 
     - The class attribute `tool_name` should be set to a short string identifying the
@@ -2325,14 +2325,34 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
 
+    def _is_in_manager(self) -> bool:
+        """Check whether this tool window is currently owned by ImageTool manager."""
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager is None:
+            return False
+        return any(
+            self in wrapper._childtools.values()
+            for wrapper in manager._imagetool_wrappers.values()
+        )
+
+    def _show_warning_if_not_in_manager(self, title: str, text: str) -> bool:
+        """Show a warning dialog unless managed by ImageTool manager.
+
+        Returns
+        -------
+        bool
+            `True` if a local warning dialog was shown, `False` if the window is in
+            manager (caller should defer to manager exception handling).
+        """
+        if self._is_in_manager():
+            return False
+        QtWidgets.QMessageBox.warning(self, title, text)
+        return True
+
     @QtCore.Slot()
     def _hide_or_close(self) -> None:
         """Hide or close the tool window based on its presence in the manager."""
-        manager = erlab.interactive.imagetool.manager._manager_instance
-        if manager and any(
-            self in wrapper._childtools.values()
-            for wrapper in manager._imagetool_wrappers.values()
-        ):
+        if self._is_in_manager():
             self.hide()
         else:
             self.close()

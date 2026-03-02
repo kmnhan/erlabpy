@@ -184,7 +184,7 @@ def process_fits_dataset(ds: xr.Dataset) -> xr.Dataset:
     """Process a FITS ARPES dataset by assigning proper coordinates.
 
     Assumes a format used by beamlines 10.0.1 and 7.0.1 at ALS, and possibly others.
-    Roughly Corresponds to ``RedimAndScaleData`` in ``LoadFits7.ipf``.
+    Roughly corresponds to ``RedimAndScaleData`` in ``LoadFits7.ipf``.
     """
     # Make all auxiliary coordinates dependent on time
     coords_to_update: list[Hashable] = [

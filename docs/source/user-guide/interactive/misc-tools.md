@@ -421,7 +421,7 @@ You can reopen a saved fit by loading the dataset with {func}`xarray_lmfit.load_
 Saved fits restore the stored data, the serialized model (when available), and the fitted parameter values. For 2D fits, all slices must share the same model definition.
 
 :::{note}
-The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from a data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
+The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
 :::
 
 (guide-restool)=

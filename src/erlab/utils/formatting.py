@@ -157,7 +157,7 @@ def format_value(
         the magnitude of the value is smaller than the precision, the number will be
         printed in scientific notation.
     use_unicode_minus
-        Whether to replace the  Unicode hyphen-minus sign "-" (U+002D) with the
+        Whether to replace the Unicode hyphen-minus sign "-" (U+002D) with the
         better-looking Unicode minus sign "−" (U+2212) in the formatted value.
 
     Returns

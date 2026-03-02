@@ -50,7 +50,7 @@ class FastInterpolator(scipy.interpolate.RegularGridInterpolator):
 
     See Also
     --------
-    interpn : a convenience function which wraps `FastInterpolator`
+    interpn : a convenience function that wraps `FastInterpolator`
 
     """
 

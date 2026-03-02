@@ -443,6 +443,61 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _kinetic_energy(self) -> xr.DataArray:
         return self._hv - self.work_function + self._binding_energy
 
+    @staticmethod
+    def _finite_minmax(values: np.ndarray) -> tuple[float, float]:
+        finite_mask = np.isfinite(values)
+        if not np.any(finite_mask):
+            return float("nan"), float("nan")
+        return (
+            float(np.min(values, where=finite_mask, initial=np.inf)),
+            float(np.max(values, where=finite_mask, initial=-np.inf)),
+        )
+
+    def _check_kinetic_energy(
+        self,
+        *,
+        context: str,
+        kinetic_energy: xr.DataArray | np.ndarray | float | None = None,
+        raise_on_violation: bool = True,
+    ) -> xr.DataArray | np.ndarray | float:
+        if kinetic_energy is None:
+            kinetic_energy = self._kinetic_energy
+
+        kinetic = np.asarray(kinetic_energy, dtype=float)
+        finite_mask = np.isfinite(kinetic)
+
+        if not np.any(finite_mask):
+            msg = (
+                "Cannot proceed while "
+                f"{context}: kinetic energy contains no finite values."
+            )
+            if raise_on_violation:
+                raise ValueError(msg)
+            erlab.utils.misc.emit_user_level_warning(msg)
+            return kinetic_energy
+
+        min_kinetic = float(np.min(kinetic, where=finite_mask, initial=np.inf))
+        if min_kinetic > 0:
+            return kinetic_energy
+
+        hv_min, hv_max = self._finite_minmax(np.asarray(self._hv.values, dtype=float))
+        e_min, e_max = self._finite_minmax(
+            np.asarray(self._binding_energy.values, dtype=float)
+        )
+
+        msg = (
+            f"Nonphysical kinetic energy detected while {context}: "
+            f"min(E_k)={min_kinetic:.3f} eV <= 0. "
+            f"E_k = hv - sample_workfunction + eV (binding). "
+            f"Current ranges: hv=[{hv_min:.3f}, {hv_max:.3f}] eV, "
+            f"eV=[{e_min:.3f}, {e_max:.3f}] eV, "
+            f"sample_workfunction={self.work_function:.3f} eV."
+        )
+        if raise_on_violation:
+            raise ValueError(msg)
+        erlab.utils.misc.emit_user_level_warning(msg)
+        return kinetic_energy
+
     @property
     def _has_eV(self) -> bool:
         """Return `True` if object has an energy axis."""
@@ -565,6 +620,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
         """
+        self._check_kinetic_energy(context="estimating in-plane momentum resolution")
         min_Ek = np.amin(self._kinetic_energy.values)
         max_angle = max(np.abs(self._alpha.values))
         return float(
@@ -580,12 +636,17 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         r"""Estimated minimum out-of-plane momentum resolution.
 
         The resolution is estimated based on the mean free path :cite:p:`seah1979imfp`
-        and the kinetic energy.
+        and the kinetic energy. Note that this is a rough estimate based on the
+        universal curve of mean free path.
 
         .. math:: \Delta k_z \sim 1/\lambda
 
         """
+        self._check_kinetic_energy(
+            context="estimating out-of-plane momentum resolution"
+        )
         kin = self._kinetic_energy.values
+
         c1, c2 = 641.0, 0.096
         imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
         return float(np.amin(1 / imfp))
@@ -627,6 +688,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             values are tuples representing the minimum and maximum values.
 
         """
+        self._check_kinetic_energy(context="estimating momentum bounds")
         return {
             k: (v.values.min(), v.values.max())
             for k, v in self._get_transformed_coords().items()
@@ -654,6 +716,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             axis. If `False`, estimate the resolution based on the data, by default
             `False`
 
+            .. versionchanged:: 3.21.0
+                When ``from_numpoints=True``, the estimated step now uses adjacent-point
+                spacing over inclusive bounds: ``(max - min) / (N - 1)``. Datasets with
+                fewer than 2 points on the relevant axis return ``np.inf``.
+
         Returns
         -------
         float
@@ -680,7 +747,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             raise ValueError(f"`{axis}` is not a valid momentum axis.")
 
         if from_numpoints and (lims is not None):
-            return float((lims[1] - lims[0]) / len(self._obj[dim]))
+            n_points = len(self._obj[dim])
+            if n_points < 2:
+                return float("inf")
+            return float((lims[1] - lims[0]) / (n_points - 1))
 
         if axis == "kz":
             return self.best_kz_resolution
@@ -747,6 +817,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         xarray.DataArray
             The DataArray with transformed coordinates.
         """
+        self._check_kinetic_energy(context="converting coordinates to momentum space")
         return self._obj.assign_coords(self._get_transformed_coords())
 
     @_only_angles
@@ -817,6 +888,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         The converted data is returned as a DataArray object with updated coordinates
         and dimensions.
 
+        For non-`hv` scans, if the `eV` axis is all-positive, it is interpreted as
+        kinetic energy and converted to binding energy. For `hv`-dependent scans, the
+        `eV` axis must already be in binding energy.
+
         Examples
         --------
         Set parameters and convert with automatic bounds and resolution:
@@ -843,6 +918,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             converted_data = data.kspace.convert(bounds, resolution)
 
         """
+        self._check_kinetic_energy(context="converting to momentum space")
+
         if bounds is None:
             bounds = {}
 
@@ -1017,6 +1094,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         # Get kinetic energies for the given photon energy
         kinetic = hv - self.work_function + self._obj.eV
+        self._check_kinetic_energy(
+            context="calculating kz from photon energy",
+            kinetic_energy=kinetic,
+        )
 
         # Get momentum conversion functions
 

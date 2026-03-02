@@ -746,7 +746,7 @@ def plot_slices(
         is applied to all axes. Otherwise, a nested sequence with the same shape as the
         resulting axes can be provided to use different colormaps for different axes. If
         the slices are 1D, this argument can be used to supply valid colors as line
-        colors for differnet slices.
+        colors for different slices.
     norm
         If supplied a single :class:`matplotlib.colors.Normalize`, the norm is applied
         to all axes. Otherwise, a nested sequence with the same shape as the resulting
