@@ -288,6 +288,25 @@ def test_resolution_raises_nonpositive_kinetic_energy(anglemap) -> None:
         _ = data.kspace.convert(silent=True)
 
 
+def test_estimate_resolution_from_numpoints_kz_uses_adjacent_spacing(hvdep) -> None:
+    data = hvdep.copy(deep=True)
+    lims = data.kspace.estimate_bounds()["kz"]
+
+    out = data.kspace.estimate_resolution("kz", lims=lims, from_numpoints=True)
+    expected = float((lims[1] - lims[0]) / (data.hv.size - 1))
+
+    assert out == pytest.approx(expected)
+
+
+def test_estimate_resolution_from_numpoints_single_point_returns_inf(anglemap) -> None:
+    data = anglemap.isel(alpha=slice(0, 1)).copy(deep=True)
+    axis = data.kspace.slit_axis
+
+    out = data.kspace.estimate_resolution(axis, lims=(0.0, 1.0), from_numpoints=True)
+
+    assert np.isinf(out)
+
+
 def test_finite_minmax_all_nonfinite(anglemap) -> None:
     data = anglemap.copy(deep=True)
     mn, mx = data.kspace._finite_minmax(np.array([np.nan, np.inf, -np.inf]))
