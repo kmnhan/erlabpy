@@ -94,7 +94,7 @@ jobs:
         run: uv run mypy --install-types --non-interactive --html-report mypy-report .
 
       - name: Upload mypy results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mypy-report

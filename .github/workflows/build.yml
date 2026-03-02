@@ -99,7 +99,7 @@ jobs:
           Compress-Archive -Path $exeName -DestinationPath $zipName -Force
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ImageTool Manager (${{ matrix.SUFFIX }})
           path: ${{ steps.info.outputs.FILENAME }}.zip
