@@ -338,8 +338,7 @@ def _calc_inverse_type1(kx, ky, k_sq, k, cx, sx, cd, sd, beta0):
     kperp_expr = "sqrt(k_sq - kx**2 - ky**2)"
     alpha = ne.evaluate(f"arcsin((sx * ({kperp_expr}) - cx * (cd * kx + sd * ky)) / k)")
     beta = ne.evaluate(
-        "arctan((sd * kx - cd * ky) / "
-        f"(sx * (cd * kx + sd * ky) + cx * ({kperp_expr})))"
+        f"arctan2(sd * kx - cd * ky, sx * (cd * kx + sd * ky) + cx * ({kperp_expr}))"
     )
     return np.rad2deg(alpha), np.rad2deg(beta) + beta0
 
@@ -387,7 +386,7 @@ def _calc_inverse_type2(kx, ky, k_sq, k, cx, sx, cd, sd, beta0):
     kperp_expr = "sqrt(k_sq - kx**2 - ky**2)"
     kproj_expr = "sqrt(k_sq - (sd * kx - cd * ky) ** 2)"
     alpha = ne.evaluate(f"arcsin((sx * ({kproj_expr}) - cx * (sd * kx - cd * ky)) / k)")
-    beta = ne.evaluate(f"arctan((cd * kx + sd * ky) / ({kperp_expr}))")
+    beta = ne.evaluate(f"arctan2(cd * kx + sd * ky, {kperp_expr})")
     return np.rad2deg(alpha), np.rad2deg(beta) + beta0
 
 

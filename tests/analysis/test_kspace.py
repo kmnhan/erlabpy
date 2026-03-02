@@ -56,3 +56,24 @@ def test_transform() -> None:
         assert kx.size == ky.size == kinetic.size
         assert np.allclose(kx, 0.1)
         assert np.allclose(ky, 0.2)
+
+
+def test_inverse_type1_beta_uses_quadrant_from_arctan2() -> None:
+    kx, ky = 3.0, -1.0
+    k_sq, k = 25.0, 5.0
+    cx, sx = -1.0, 0.0
+    cd, sd = 1.0, 0.0
+    beta0 = 0.0
+
+    _, beta = erlab.analysis.kspace._calc_inverse_type1(
+        kx, ky, k_sq, k, cx, sx, cd, sd, beta0
+    )
+
+    kperp = np.sqrt(k_sq - kx**2 - ky**2)
+    num = sd * kx - cd * ky
+    den = sx * (cd * kx + sd * ky) + cx * kperp
+    expected = np.rad2deg(np.arctan2(num, den)) + beta0
+
+    assert np.isclose(beta, expected)
+    # This case previously landed in the wrong branch near -14.5°.
+    assert beta > 90.0
