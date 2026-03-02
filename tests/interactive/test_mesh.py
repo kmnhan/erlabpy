@@ -99,12 +99,11 @@ def test_meshtool_autofind_and_persistence(
     win.n_pad_spin.setValue(0)
     win.set_data_beforecalc()
 
-    expected_peaks = (
-        erlab.analysis.mesh.find_peaks(
-            win.get_reduced()[1], bins=win.bins_spin.value(), n_peaks=2, plot=False
-        )
-        - win.n_pad_spin.value()
+    valid_peaks = np.array([[16, 16], [16, 20], [16, 12]], dtype=np.intp)
+    monkeypatch.setattr(
+        erlab.analysis.mesh, "find_peaks", lambda *args, **kwargs: valid_peaks.copy()
     )
+    expected_peaks = valid_peaks - win.n_pad_spin.value()
     win.auto_find_peaks()
 
     assert win.p0_spin0.value() == expected_peaks[1, 0]
@@ -147,3 +146,76 @@ def test_meshtool_autofind_and_persistence(
 
     assert restored.tool_status == win.tool_status
     xr.testing.assert_identical(restored.tool_data, win.tool_data)
+
+
+def test_meshtool_autofind_invalid_peaks_warns_and_keeps_values(
+    qtbot, meshy_data, monkeypatch
+) -> None:
+    win: MeshTool = meshtool(meshy_data, execute=False)
+    qtbot.addWidget(win)
+
+    win.n_pad_spin.setValue(0)
+    win.set_data_beforecalc()
+
+    win.p0_spin0.setValue(8)
+    win.p0_spin1.setValue(12)
+    win.p1_spin0.setValue(10)
+    win.p1_spin1.setValue(20)
+
+    def _bad_find_peaks(*args, **kwargs):
+        return np.array([[16, 16], [0, 0], [0, 0]], dtype=np.intp)
+
+    monkeypatch.setattr(erlab.analysis.mesh, "find_peaks", _bad_find_peaks)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _fake_warning(parent, title, text):
+        warnings.append((title, text))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(_fake_warning))
+
+    win.auto_find_peaks()
+
+    assert warnings
+    assert warnings[-1][0] == "Peak detection failed"
+    assert "distinct first-order peaks" in warnings[-1][1]
+    assert win.p0_spin0.value() == 8
+    assert win.p0_spin1.value() == 12
+    assert win.p1_spin0.value() == 10
+    assert win.p1_spin1.value() == 20
+
+
+def test_meshtool_autofind_invalid_peaks_reraises_in_manager(
+    qtbot, meshy_data, monkeypatch
+) -> None:
+    win: MeshTool = meshtool(meshy_data, execute=False)
+    qtbot.addWidget(win)
+
+    win.n_pad_spin.setValue(0)
+    win.set_data_beforecalc()
+
+    win.p0_spin0.setValue(8)
+    win.p0_spin1.setValue(12)
+    win.p1_spin0.setValue(10)
+    win.p1_spin1.setValue(20)
+
+    def _bad_find_peaks(*args, **kwargs):
+        return np.array([[16, 16], [0, 0], [0, 0]], dtype=np.intp)
+
+    def _unexpected_warning(*args, **kwargs):
+        raise AssertionError("Standalone warning dialog should not be used in manager.")
+
+    monkeypatch.setattr(erlab.analysis.mesh, "find_peaks", _bad_find_peaks)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "warning", staticmethod(_unexpected_warning)
+    )
+    monkeypatch.setattr(win, "_is_in_manager", lambda: True)
+
+    with pytest.raises(ValueError, match="distinct first-order peaks"):
+        win.auto_find_peaks()
+
+    assert win.p0_spin0.value() == 8
+    assert win.p0_spin1.value() == 12
+    assert win.p1_spin0.value() == 10
+    assert win.p1_spin1.value() == 20
