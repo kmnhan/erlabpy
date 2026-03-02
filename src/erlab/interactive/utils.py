@@ -2325,14 +2325,34 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
 
+    def _is_in_manager(self) -> bool:
+        """Check whether this tool window is currently owned by ImageTool manager."""
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager is None:
+            return False
+        return any(
+            self in wrapper._childtools.values()
+            for wrapper in manager._imagetool_wrappers.values()
+        )
+
+    def _show_warning_if_not_in_manager(self, title: str, text: str) -> bool:
+        """Show a warning dialog unless managed by ImageTool manager.
+
+        Returns
+        -------
+        bool
+            `True` if a local warning dialog was shown, `False` if the window is in
+            manager (caller should defer to manager exception handling).
+        """
+        if self._is_in_manager():
+            return False
+        QtWidgets.QMessageBox.warning(self, title, text)
+        return True
+
     @QtCore.Slot()
     def _hide_or_close(self) -> None:
         """Hide or close the tool window based on its presence in the manager."""
-        manager = erlab.interactive.imagetool.manager._manager_instance
-        if manager and any(
-            self in wrapper._childtools.values()
-            for wrapper in manager._imagetool_wrappers.values()
-        ):
+        if self._is_in_manager():
             self.hide()
         else:
             self.close()
