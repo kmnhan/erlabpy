@@ -221,6 +221,33 @@ def test_remove_mesh_unknown_method_raises() -> None:
         )
 
 
+def test_remove_mesh_rejects_degenerate_first_order_peaks() -> None:
+    arr = xr.DataArray(
+        np.ones((8, 8)),
+        coords={"alpha": range(8), "eV": range(8)},
+        dims=("alpha", "eV"),
+    )
+
+    with pytest.raises(ValueError, match="distinct first-order peaks"):
+        mesh.remove_mesh(arr, first_order_peaks=[[4, 4], [0, 0], [0, 0]])
+
+
+def test_remove_mesh_rejects_invalid_auto_detected_peaks(monkeypatch) -> None:
+    arr = xr.DataArray(
+        np.ones((8, 8)),
+        coords={"alpha": range(8), "eV": range(8)},
+        dims=("alpha", "eV"),
+    )
+
+    def _bad_find_peaks(*args, **kwargs):
+        return np.array([[4, 4], [0, 0], [0, 0]], dtype=np.intp)
+
+    monkeypatch.setattr(mesh, "find_peaks", _bad_find_peaks)
+
+    with pytest.raises(ValueError, match="distinct first-order peaks"):
+        mesh.remove_mesh(arr, first_order_peaks=None, n_pad=0)
+
+
 @pytest.mark.parametrize("method", ["constant", "gaussian", "circular"])
 def test_remove_mesh_on_realistic_gold_edge_with_mesh(method) -> None:
     shape = (928, 1064)
