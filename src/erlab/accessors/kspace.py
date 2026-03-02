@@ -716,6 +716,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             axis. If `False`, estimate the resolution based on the data, by default
             `False`
 
+            .. versionchanged:: 3.21.0
+                When ``from_numpoints=True``, the estimated step now uses adjacent-point
+                spacing over inclusive bounds: ``(max - min) / (N - 1)``. Datasets with
+                fewer than 2 points on the relevant axis return ``np.inf``.
+
         Returns
         -------
         float
@@ -742,7 +747,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             raise ValueError(f"`{axis}` is not a valid momentum axis.")
 
         if from_numpoints and (lims is not None):
-            return float((lims[1] - lims[0]) / len(self._obj[dim]))
+            n_points = len(self._obj[dim])
+            if n_points < 2:
+                return float("inf")
+            return float((lims[1] - lims[0]) / (n_points - 1))
 
         if axis == "kz":
             return self.best_kz_resolution
