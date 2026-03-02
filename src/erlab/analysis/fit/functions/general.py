@@ -96,7 +96,12 @@ def _gen_kernel(
 
     x_pad = n_pad * delta_x
 
-    extended = np.linspace(x[0] - x_pad, x[-1] + x_pad, 2 * n_pad + len(x))
+    # Extend coordinates in the physical outward direction for both ascending and
+    # descending grids.
+    direction = 1.0 if x[-1] >= x[0] else -1.0
+    start = x[0] - direction * x_pad
+    stop = x[-1] + direction * x_pad
+    extended = np.linspace(start, stop, 2 * n_pad + len(x))
     gauss = np.exp(
         -(np.linspace(-x_pad, x_pad, 2 * n_pad + 1) ** 2) / _clip_tiny(2 * sigma**2)
     )
