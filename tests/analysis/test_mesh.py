@@ -36,6 +36,23 @@ def test_find_peaks_reflects_and_plots_upper_half_points() -> None:
     plt.close("all")
 
 
+def test_find_peaks_relaxes_min_distance_when_image_is_small() -> None:
+    alpha = np.linspace(-1, 1, 32)
+    ev = np.linspace(0, 1, 32)
+    yy, xx = np.meshgrid(alpha, ev, indexing="ij")
+    data = (1 + 0.2 * np.cos(2 * np.pi * xx * 4)) * (1 + 0.05 * yy)
+    arr = xr.DataArray(data, coords={"alpha": alpha, "eV": ev}, dims=("alpha", "eV"))
+
+    shifted = mesh.auto_correct_curvature(arr)[1]
+    image = mesh.pad_and_taper(shifted.fillna(0).values, 8)
+    log_magnitude = np.log(np.abs(np.fft.fftshift(np.fft.fft2(image))).clip(min=1e-15))
+
+    peaks = mesh.find_peaks(log_magnitude, n_peaks=2, plot=False) - 8
+
+    assert peaks.shape == (3, 2)
+    mesh._validate_first_order_peaks(peaks, shifted.shape)
+
+
 def test_find_local_maxima_stops_when_num_peaks_reached() -> None:
     image = np.zeros((9, 9))
     image[4, 4] = 9.0

@@ -150,12 +150,19 @@ def find_peaks(
     upper_half_sampled = _bin_image(upper_half, bins)
     fft_center = (upper_half_sampled.shape[1] // 2, upper_half_sampled.shape[0] - 1)
 
-    # Locate peaks in the binned upper half, add some extra to be safe
-    res = _find_local_maxima(
-        upper_half_sampled,
-        num_peaks=n_peaks + 5,
-        min_distance=min_distance or max(1, 40 // bins),
-    )
+    # Locate peaks in the binned upper half, add some extra to be safe.
+    # For small images, a large minimum distance may suppress all but one peak.
+    # Relax the distance adaptively so auto-peak detection remains usable.
+    current_min_distance = min_distance or max(1, 40 // bins)
+    while True:
+        res = _find_local_maxima(
+            upper_half_sampled,
+            num_peaks=n_peaks + 5,
+            min_distance=current_min_distance,
+        )
+        if len(res) >= n_peaks or current_min_distance <= 1:
+            break
+        current_min_distance = max(1, current_min_distance // 2)
     # List for peak coordinates
     resampled_peak_idx: list[tuple[int, int]] = [tuple(reversed(x)) for x in res]
 
