@@ -1,4 +1,4 @@
-"""Data loader for our homelab system."""
+"""Data loader for the low-temperature ARPES system at KAIST."""
 
 __all__ = ["ERPESLoader"]
 

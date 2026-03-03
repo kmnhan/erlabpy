@@ -583,12 +583,22 @@ latex_table_style = ["booktabs", "colorrows"]
 latex_elements = {
     "papersize": "a4paper",
     "pointsize": "10pt",
+    "sphinxsetup": "iconpackage=fontawesome",
     "fontpkg": r"""\usepackage{fontspec,unicode-math}
 \directlua{
-    luaotfload.add_fallback("monofallback", {"DejaVuSansMono:mode=harf;", })
+    luaotfload.add_fallback("mainfallback", {
+        "Noto Sans Math:mode=harf;",
+        "Noto Color Emoji:mode=harf;",
+        "DejaVuSans:mode=harf;",
+    })
+    luaotfload.add_fallback("monofallback", {
+        "Noto Sans Math:mode=harf;",
+        "Noto Color Emoji:mode=harf;",
+        "DejaVuSansMono:mode=harf;",
+    })
 }
-\setmainfont{Source Serif Pro}
-\setsansfont{IBM Plex Sans}
+\setmainfont{Source Serif Pro}[RawFeature={fallback=mainfallback}]
+\setsansfont{IBM Plex Sans}[RawFeature={fallback=mainfallback}]
 \setmonofont{IBM Plex Mono}[Scale=0.9,RawFeature={fallback=monofallback}]
 """,
 }
