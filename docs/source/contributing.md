@@ -415,3 +415,28 @@ in the terminal. You should now see a new tab pop open in your local browser sho
 documentation. The different pages of this local build of the documentation are linked
 together, so you can browse the whole documentation by following links the same way you
 would on the hosted website.
+
+### Building the PDF locally
+
+Read the Docs builds PDF docs with LaTeX. For correct display of fonts, especially for
+emoji and special symbols, ensure your machine has the same font families available:
+
+- `Noto Color Emoji`
+- `Noto Sans Math`
+- `IBM Plex Sans`
+- `IBM Plex Mono`
+- `DejaVu Sans Mono`
+
+Then build the PDF with:
+
+```sh
+uv run --directory docs make latexpdf
+```
+
+The output PDF is written to `docs/build/latex/erlab.pdf`.
+
+If you see square replacement boxes in the PDF, check for missing glyph warnings:
+
+```sh
+rg "Missing character" docs/build/latex/erlab.log
+```

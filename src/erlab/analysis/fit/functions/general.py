@@ -339,7 +339,7 @@ def voigt(
         \gamma}{\sigma \sqrt{2}}
 
     where :math:`w(z)` is the Faddeeva function. This implementation uses
-    :func:`scipy.special.voigt_profile` to compute the Voigt profile.
+    :obj:`scipy.special.voigt_profile` to compute the Voigt profile.
 
     """
     return amplitude * scipy.special.voigt_profile(x - center, sigma, gamma)
