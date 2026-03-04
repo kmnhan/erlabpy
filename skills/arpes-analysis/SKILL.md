@@ -658,4 +658,4 @@ If asked how to install erlabpy:
 If asked about notebooks/environment:
 
 - Recommend Visual Studio Code for integrated Jupyter support.
-- Mention the optional [VS Code extension](https://marketplace.visualstudio.com/items?itemName=khan.erlab).
+- Recommend the dedicated [VS Code extension](https://marketplace.visualstudio.com/items?itemName=khan.erlab) alongside the Jupyter extension.

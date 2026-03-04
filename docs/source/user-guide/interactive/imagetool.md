@@ -1,21 +1,5 @@
 # ImageTool
 
-```{image} ../../images/imagetool_light.png
-:align: center
-:alt: ImageTool window in light mode
-:class: only-light
-```
-
-:::{only} format_html
-
-```{image} ../../images/imagetool_dark.png
-:align: center
-:alt: ImageTool window in dark mode
-:class: only-dark
-```
-
-:::
-
 Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at Lawrence Berkeley National Laboratory, {class}`ImageTool <erlab.interactive.imagetool.ImageTool>` delivers the same efficient workflow, now enhanced by {mod}`xarray` and Python.
 
 (imagetool-features)=
@@ -33,7 +17,7 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 
 ## Launching ImageTool
 
-ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>` with 2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform coordinates gain parallel `_idx` indices so you can still slice by position. Supported inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire {class}`DataTree <xarray.DataTree>` objects; Dataset and DataTree inputs open one ImageTool window per valid variable.
+ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>`—with 2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform coordinates gain parallel `_idx` indices so you can still slice by position. Supported inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire {class}`DataTree <xarray.DataTree>` objects; Dataset and DataTree inputs open one ImageTool window per valid variable.
 
 (imagetool-entry-points)=
 
@@ -61,7 +45,13 @@ ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataAr
   %load_ext erlab.interactive
   ```
 
-  Then run `%itool data`. You can pass additional flags, such as `-m` or `--manager` which sends the window straight to the {ref}`manager <imagetool-manager>`. Type `%itool --help` or `%itool?` to list all supported flags.
+  Then run:
+
+  ```python
+  %itool data
+  ```
+
+  where `data` is a variable in the current namespace. You can pass additional flags, such as `-m` or `--manager` which sends the window straight to the {ref}`manager <imagetool-manager>`. Type `%itool --help` or `%itool?` to list all supported flags.
 
 - Need to open a file quickly? Use {guilabel}`File → Open…` inside ImageTool. The dialog lists every available loader, including those from data loader plugins, so you can switch between formats without writing code.
 
@@ -91,9 +81,25 @@ To integrate ImageTool windows with notebook variables—including bi-directiona
 
 ## Interface tour
 
+```{image} ../../images/imagetool_light.png
+:align: center
+:alt: ImageTool window in light mode
+:class: only-light
+```
+
+:::{only} format_html
+
+```{image} ../../images/imagetool_dark.png
+:align: center
+:alt: ImageTool window in dark mode
+:class: only-dark
+```
+
+:::
+
 Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interactive.imagetool.viewer.ImageSlicerArea>` plus dockable control panels:
 
-- **Main image and cross-sections** – The central pyqtgraph view renders the current 2D slice. Orthogonal slices and cursor readouts update in real time as you move the cursors.
+- **Main image and cross-sections** – The central plot renders the current 2D slice. Orthogonal slices and cursor readouts update in real time as you move the cursors.
 
 - **Cursor panel** – Add, remove, and modify cursors here. The coordinates of the active cursor are shown in editable text boxes.
 
@@ -107,9 +113,9 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - The order of dimensions can be swapped using the arrow buttons in the cursor panel. The direction of the arrow intuitively indicates which slice will be swapped with the main view.
 
-- Non-uniform coordinates are converted with a `_idx` suffix for plotting. Their true values are displayed in the cursor readouts. ImageTool automatically keeps track of coordinate transformations when you process the data.
+- Non-uniform coordinates are converted with a `_idx` suffix for plotting. Their true values are displayed in the cursor readouts.
 
-- Use {guilabel}`Edit → Coordinate Editor` to manually reassign coordinate values. This is just a GUI for {meth}`xarray.DataArray.assign_coords`, which lets you specify start/end values or per-point overrides.
+- Use {guilabel}`Edit → Coordinate Editor` to manually reassign coordinate values. This is just a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values or per-point overrides.
 
 - Dask-backed arrays are fully supported. The dedicated {guilabel}`Dask` menu exposes actions to compute the array into memory, rechunk automatically, or choose custom chunk shapes within ImageTool.
 

@@ -482,7 +482,7 @@ This tool accepts any DataArray with `eV` and `alpha` dimensions. When additiona
 
 - In the next section, you must specify the location of the first order mesh peaks in the FFT of the data.
 
-  - Place the two yellow targets on the FFT plot over the two first order mesh peaks by dragging them with the mouse.
+  - Drag the two yellow targets on the FFT plot over the two first order mesh peaks by dragging them with the mouse.
   - Alternatively, an automatic search can be performed by clicking {guilabel}`Find` under {guilabel}`Auto locate peaks`.
 
 - In the final section, several parameters for mesh removal are provided. For more information on these parameters, see the documentation for {func}`erlab.analysis.mesh.remove_mesh`. You may have to experiment with these parameters to achieve optimal results for your dataset.
