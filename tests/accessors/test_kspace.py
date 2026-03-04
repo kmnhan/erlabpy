@@ -355,3 +355,23 @@ def test_check_kinetic_energy_warns_without_raising_for_nonphysical(anglemap) ->
             raise_on_violation=False,
         )
     xarray.testing.assert_identical(result, data.kspace._kinetic_energy)
+
+
+def test_convert_coords_assigns_momentum_coords(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    out = data.kspace.convert_coords()
+
+    assert "kx" in out.coords
+    assert "ky" in out.coords
+    assert set(out.kx.dims) == set(data.dims)
+    assert set(out.ky.dims) == set(data.dims)
+    assert np.isfinite(out.kx.values).all()
+    assert np.isfinite(out.ky.values).all()
+
+
+def test_hv_to_kz_accepts_iterable_hv(config_1_hvdep) -> None:
+    out = config_1_hvdep.kspace.hv_to_kz([30.0, 45.0, 60.0])
+
+    assert "hv" in out.dims
+    assert out.hv.size == 3
+    assert np.isfinite(out.values).all()
