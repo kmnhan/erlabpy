@@ -49,6 +49,23 @@ def test_spline_forwards_along_dimension(monkeypatch: pytest.MonkeyPatch) -> Non
     assert isinstance(result, BSpline)
 
 
+def test_range_slice_for_coord_single_point_sorts_bounds() -> None:
+    coord = xr.DataArray([0.0], dims=("x",), coords={"x": [0.0]}, name="x")
+
+    out = gold_mod._range_slice_for_coord(coord, (1.0, -1.0))
+
+    assert out == slice(-1.0, 1.0)
+
+
+def test_range_slice_for_coord_nonmonotonic_raises() -> None:
+    coord = xr.DataArray(
+        [0.0, 2.0, 1.0], dims=("x",), coords={"x": [0.0, 2.0, 1.0]}, name="x"
+    )
+
+    with pytest.raises(ValueError, match=r"Coordinate `x` is not monotonic"):
+        _ = gold_mod._range_slice_for_coord(coord, (-1.0, 1.0))
+
+
 @pytest.mark.parametrize(
     "parallel_kw", [None, {"return_as": "list"}], ids=["generator", "list"]
 )
@@ -164,6 +181,47 @@ def test_spline(gold) -> None:
     correct_with_edge(gold, spl, shift_coords=True, plot=False)
     correct_with_edge(gold, spl, shift_coords=False, plot=True)
     plt.close()
+
+
+def test_poly_crop_correct_uses_range_slice(gold) -> None:
+    _, corr = poly(
+        gold,
+        angle_range=(10.0, -10.0),
+        eV_range=(0.2, -0.2),
+        temp=100.0,
+        fast=True,
+        vary_temp=False,
+        degree=2,
+        plot=False,
+        correct=True,
+        crop_correct=True,
+        parallel_kw={"backend": "threading", "return_as": "list"},
+    )
+
+    assert corr.alpha.min() >= -10.0
+    assert corr.alpha.max() <= 10.0
+    assert corr.alpha.size < gold.alpha.size
+    assert corr.eV.size < gold.eV.size
+
+
+def test_spline_crop_correct_uses_range_slice(gold) -> None:
+    _, corr = spline(
+        gold,
+        angle_range=(10.0, -10.0),
+        eV_range=(0.2, -0.2),
+        temp=100.0,
+        fast=True,
+        vary_temp=False,
+        plot=False,
+        correct=True,
+        crop_correct=True,
+        parallel_kw={"backend": "threading", "return_as": "list"},
+    )
+
+    assert corr.alpha.min() >= -10.0
+    assert corr.alpha.max() <= 10.0
+    assert corr.alpha.size < gold.alpha.size
+    assert corr.eV.size < gold.eV.size
 
 
 def test_edge_fixed_center_fixes_center_parameter(gold) -> None:

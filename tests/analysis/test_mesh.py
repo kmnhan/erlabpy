@@ -249,6 +249,24 @@ def test_remove_mesh_rejects_degenerate_first_order_peaks() -> None:
         mesh.remove_mesh(arr, first_order_peaks=[[4, 4], [0, 0], [0, 0]])
 
 
+def test_validate_first_order_peaks_rejects_invalid_shape() -> None:
+    with pytest.raises(
+        ValueError,
+        match="first_order_peaks must contain exactly three",
+    ):
+        mesh._validate_first_order_peaks([[4, 4], [4, 5]], (8, 8))
+
+
+def test_validate_first_order_peaks_rejects_out_of_bounds() -> None:
+    with pytest.raises(ValueError, match="out-of-bounds coordinates"):
+        mesh._validate_first_order_peaks([[4, 4], [9, 5], [3, 4]], (8, 8))
+
+
+def test_validate_first_order_peaks_rejects_center_equal_peak() -> None:
+    with pytest.raises(ValueError, match="distinct from the center"):
+        mesh._validate_first_order_peaks([[4, 4], [4, 4], [3, 5]], (8, 8))
+
+
 def test_remove_mesh_rejects_invalid_auto_detected_peaks(monkeypatch) -> None:
     arr = xr.DataArray(
         np.ones((8, 8)),
