@@ -544,7 +544,7 @@ def remove_mesh(
         first row is the center index of the FFT image, and the next two rows are the
         first-order peaks.
 
-        .. versionchanged:: 3.21.0
+        .. versionchanged:: 3.20.1
             Invalid peak sets now raise :class:`ValueError` instead of being used
             silently. This includes failed auto-detection placeholders.
     order
