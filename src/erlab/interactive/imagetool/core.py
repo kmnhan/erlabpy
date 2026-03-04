@@ -7,7 +7,7 @@ The canonical implementation now lives in
 This module re-exports previous ``core`` symbols to preserve backwards
 compatibility.
 
-.. deprecated:: 3.21.0
+.. deprecated:: 3.20.1
    Import from :mod:`erlab.interactive.imagetool.viewer` and
    :mod:`erlab.interactive.imagetool.plot_items` instead.
 """

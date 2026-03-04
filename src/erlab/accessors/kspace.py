@@ -716,7 +716,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             axis. If `False`, estimate the resolution based on the data, by default
             `False`
 
-            .. versionchanged:: 3.21.0
+            .. versionchanged:: 3.20.1
                 When ``from_numpoints=True``, the estimated step now uses adjacent-point
                 spacing over inclusive bounds: ``(max - min) / (N - 1)``. Datasets with
                 fewer than 2 points on the relevant axis return ``np.inf``.
