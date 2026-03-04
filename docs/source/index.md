@@ -40,13 +40,13 @@ analysis.
 :::{grid-item-card} Getting started
 :link: getting-started
 :link-type: doc
-The getting started guide provides installation instructions and an overview on the dependencies.
+The getting started guide covers installation, basic usage, and best practices for working with ERLabPy.
 :::
 
 :::{grid-item-card} User guide
 :link: user-guide/index
 :link-type: doc
-The user guide provides some tutorials and examples on how to use ERLabPy.
+The user guide provides tutorials and examples.
 :::
 
 :::{grid-item-card} API reference

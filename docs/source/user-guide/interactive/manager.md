@@ -37,15 +37,17 @@
 
 ## Starting the manager
 
-Run `itool-manager` in a terminal or command prompt window in an environment where ERLabPy is installed.
+- If you have a Python environment with ERLabPy installed:
+
+  Run `itool-manager` in a terminal or command prompt window in the environment where ERLabPy is installed.
+
+- You can also install the manager as an application on your operating system. See {ref}`imagetool-manager-standalone` for instructions.
 
 :::{note}
 
 - Only one manager can run per machine.
 
 - Opening an ImageTool window for the very first time after installing may take a couple of minutes as caches are built. Subsequent launches will be much faster.
-
-- The manager can be installed as a packaged build which enables some convenient features as described in {ref}`imagetool-manager-standalone`.
 
 :::
 
@@ -290,8 +292,6 @@ Under the hood these helpers communicate with the GUI via ZeroMQ, so they can be
 ## Installing as a standalone application
 
 Standalone bundles for Windows and macOS let you run the manager without managing a Python environment. They add OS-level conveniences such as opening supported files by double-clicking them (or, on macOS, dropping files onto the Dock icon). For macOS 26 and later, the app also features a dynamic icon that matches the new design language.
-
-Standalone bundles for Windows and macOS let you run the manager without managing a Python environment. They add OS-level conveniences such as opening supported files by double-clicking them (or, on macOS, dropping files onto the Dock icon) and include a macOS “liquid glass” icon for clarity.
 
 Download the latest release from the [project’s releases page](https://github.com/kmnhan/erlabpy/releases), then follow the platform-specific steps below. For other platforms, or if you prefer full control, build from source via {ref}`build-from-source`.
 

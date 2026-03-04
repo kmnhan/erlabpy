@@ -1,9 +1,10 @@
 # User Guide
 
-:::{admonition} Work in Progress
-:class: warning
+:::{admonition} Note
+:class: note
 
-The user guide is a work in progress. If you have any questions or suggestions, please feel free to open an issue on [GitHub](https://github.com/kmnhan/erlabpy/issues).
+This guide is continuously updated as ERLabPy evolves. If something is unclear or missing,
+please open an issue on [GitHub](https://github.com/kmnhan/erlabpy/issues).
 
 For the full list of packages and modules, see [](../reference.md).
 
@@ -19,18 +20,18 @@ If you are new to `erlab`, you may want to start with the [getting started guide
 :caption: Table of Contents
 :maxdepth: 2
 
-interactive/index
 io
 indexing
 plotting
 kconv
 curve-fitting
-filtering
 transform
+filtering
+interactive/index
 ```
 
 ## Further reading
 
-- [Lectures on scientific computing with Python](https://github.com/jrjohansson/scientific-python-lectures)
+- [Lectures on scientific computing with Python](https://lectures.scientific-python.org)
 - [The beginner's guide to numpy](https://numpy.org/doc/stable/user/absolute_beginners.html)
 - [Xarray tutorial](https://tutorial.xarray.dev/)
