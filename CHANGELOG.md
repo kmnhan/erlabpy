@@ -2,6 +2,24 @@
 
 ### 🐞 Bug Fixes
 
+- **kspace:** Use arctan2 for correct quadrant in inverse conversion function for very large angles ([fed778a](https://github.com/kmnhan/erlabpy/commit/fed778a98ca789dd934085a7f6e8428735b53604))
+
+- **analysis.fit:** make resolution convolution invariant to descending energy axes ([383e32c](https://github.com/kmnhan/erlabpy/commit/383e32c38eb52ca4d72f7c8de96ebe7c03477733))
+
+  `do_convolve` previously produced physically shifted broadened spectra for descending energy coordinates because kernel generation extended its padded domain assuming ascending order. This caused axis-order-dependent broadening results (for example, shifted Fermi-edge crossing positions) even though the underlying data were identical up to reversal.
+
+- **kspace:** correct kz point-count resolution spacing for momentum conversion ([67e11c2](https://github.com/kmnhan/erlabpy/commit/67e11c2f5029d555856ac485dc65cc3a6a1e254a))
+
+  `DataArray.kspace.estimate_resolution(..., from_numpoints=True)` now uses adjacent-point spacing over inclusive bounds (`(max - min) / (N - 1)`) instead of dividing by `N`, which previously underestimated `kz` step size and could generate overly dense default `kz` grids in `convert()`. The change also adds a single-point guard (`np.inf` when fewer than two points exist).
+
+- **analysis.gold:** honor coordinate order for fit-range slicing ([918db0f](https://github.com/kmnhan/erlabpy/commit/918db0f35bd4bedc4c073c3fc08aaebcb3db82b7))
+
+  Patches functions that select the fit range using input parameters to sort the input range to match the coordinate order of the input dataset. This ensures that the fit range is correctly applied regardless of the coordinate order of the input dataset. The affected functions include `edge`, `poly`, `spline`, and `quick_fit`.
+
+- **analysis.gold:** plot FWHM span with correct half-width around fitted center ([f3e20af](https://github.com/kmnhan/erlabpy/commit/f3e20af459681f21423d20e0dfca3c6f7a880299))
+
+  The fit visualization now shades the true FWHM interval. Previously, the span used center ± resolution, doubling the displayed width. It now uses the correct one (center ± resolution/2).
+
 - **analysis.gold:** normalize fixed center parameter calculation in `edge` ([3df6391](https://github.com/kmnhan/erlabpy/commit/3df639105358c8240e57f3295907cb056f4560f5))
 
 - **kspace:** add kinetic energy validation to prevent nonphysical values ([34e09aa](https://github.com/kmnhan/erlabpy/commit/34e09aa7d4e081d636fc9380d8e63bc718184b19))
@@ -29,6 +47,10 @@
 - **ktool:** improve memory efficiency and speed by using shallow copies ([51e8ad7](https://github.com/kmnhan/erlabpy/commit/51e8ad71897632e25ade09628307c6e430ca6876))
 
 ### ♻️ Code Refactor
+
+- **meshtool:** add manager-aware warning for peak detection failure ([18784b2](https://github.com/kmnhan/erlabpy/commit/18784b24f89fc47c321b8bec10cbe6e3a54be28e))
+
+- **analysis.mesh:** raise an error if invalid peaks are provided or automatic detection fails ([8289c69](https://github.com/kmnhan/erlabpy/commit/8289c69806dd15a1f487013831b333886887b7f4))
 
 - **imagetool:** deprecate `core` module and re-export from `viewer` and `plot_items` ([1dcc093](https://github.com/kmnhan/erlabpy/commit/1dcc0938a80a20e6327a88ea63281b2380cf38d1))
 
