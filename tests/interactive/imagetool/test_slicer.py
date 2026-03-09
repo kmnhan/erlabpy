@@ -79,3 +79,203 @@ def test_index_of_value_nonuniform_descending_axis(qtbot) -> None:
         idx = slicer.index_of_value(0, value, uniform=False)
         expected = int(np.argmin(np.abs(data.x.values - value)))
         assert idx == expected
+
+
+def test_array_rect_uses_uniform_limits(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4), dtype=np.float32),
+        dims=("x", "y"),
+        coords={
+            "x": np.array([1.0, 2.0, 3.0]),
+            "y": np.array([10.0, 20.0, 30.0, 40.0]),
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    np.testing.assert_allclose(slicer.array_rect(0, 1), (0.5, 5.0, 3.0, 40.0))
+
+
+def test_index_of_value_uniform_axis_clamps(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((4, 3), dtype=np.float32),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(4, dtype=np.float32),
+            "y": np.arange(3, dtype=np.float32),
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    assert slicer.index_of_value(0, -1.0) == 0
+    assert slicer.index_of_value(0, 1.6) == 2
+    assert slicer.index_of_value(0, 10.0) == 3
+
+
+def test_index_of_value_uniform_axis_preserves_round_behavior(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((5, 3), dtype=np.float32),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(5, dtype=np.float32),
+            "y": np.arange(3, dtype=np.float32),
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    assert slicer.index_of_value(0, 0.5) == 0
+    assert slicer.index_of_value(0, 1.5) == 2
+
+
+def test_bin_along_multiaxis_unbinned_axes_returns_selected_data(qtbot) -> None:
+    values = np.arange(4 * 5 * 6 * 7, dtype=np.float32).reshape(4, 5, 6, 7)
+    data = xr.DataArray(
+        values,
+        dims=("a", "b", "c", "d"),
+        coords={
+            dim: np.arange(size, dtype=np.float32)
+            for dim, size in zip(("a", "b", "c", "d"), values.shape, strict=True)
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [1, 2, 3, 4], update=False)
+
+    result = slicer._bin_along_multiaxis(0, (1, 3))
+
+    np.testing.assert_allclose(result, values[:, 2, :, 4])
+
+
+def test_bin_along_multiaxis_mixed_binned_axes_remaps_selected_axes(qtbot) -> None:
+    values = np.arange(4 * 5 * 6 * 7, dtype=np.float32).reshape(4, 5, 6, 7)
+    data = xr.DataArray(
+        values,
+        dims=("a", "b", "c", "d"),
+        coords={
+            dim: np.arange(size, dtype=np.float32)
+            for dim, size in zip(("a", "b", "c", "d"), values.shape, strict=True)
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [1, 2, 3, 4], update=False)
+    slicer.set_bin(0, 1, 3, update=False)
+
+    result = slicer._bin_along_multiaxis(0, (1, 3))
+
+    np.testing.assert_allclose(result, np.nanmean(values[:, 1:4, :, 4], axis=1))
+
+
+def test_bin_along_multiaxis_point_value_single_binned_axis_reduces_1d(qtbot) -> None:
+    values = np.arange(3 * 4 * 5, dtype=np.float32).reshape(3, 4, 5)
+    data = xr.DataArray(
+        values,
+        dims=("a", "b", "c"),
+        coords={
+            dim: np.arange(size, dtype=np.float32)
+            for dim, size in zip(("a", "b", "c"), values.shape, strict=True)
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [1, 2, 3], update=False)
+    slicer.set_bin(0, 1, 3, update=False)
+
+    result = slicer._bin_along_multiaxis(0, (0, 1, 2))
+
+    assert result == np.nanmean(values[1, 1:4, 3])
+
+
+def test_get_binned_cache_tracks_bin_updates_and_axis_swaps(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4, 5), dtype=np.float32),
+        dims=("a", "b", "c"),
+        coords={
+            dim: np.arange(size)
+            for dim, size in zip(("a", "b", "c"), (3, 4, 5), strict=True)
+        },
+    )
+
+    parent = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=parent)
+
+    assert slicer.get_binned(0) == (False, False, False)
+
+    slicer.set_bin(0, 1, 3, update=False)
+    assert slicer.get_binned(0) == (False, True, False)
+
+    slicer.swap_axes(0, 1)
+    assert slicer.get_binned(0) == (True, False, False)
+
+
+def test_clear_dim_cache_resets_dimension_memos(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4, 5), dtype=np.float32),
+        dims=("a", "b", "c"),
+        coords={
+            dim: np.arange(size, dtype=np.float32)
+            for dim, size in zip(("a", "b", "c"), (3, 4, 5), strict=True)
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    assert slicer._hidden_axes_for_disp((0, 1)) == (2,)
+    _ = slicer.uniform_index_params
+
+    assert slicer._hidden_axes_cache == {(0, 1): (2,)}
+    assert slicer._hidden_axes_has_nonuniform_cache == {(0, 1): False}
+    assert "uniform_index_params" in slicer.__dict__
+
+    slicer.clear_dim_cache()
+
+    assert slicer._hidden_axes_cache == {}
+    assert slicer._hidden_axes_has_nonuniform_cache == {}
+    assert "uniform_index_params" not in slicer.__dict__
+    assert slicer._hidden_axes_for_disp((0, 1)) == (2,)
+
+
+def test_state_restore_rebuilds_layout_caches_before_cursor_restore(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4, 5), dtype=np.float32),
+        dims=("x", "y", "z"),
+        coords={
+            "x": np.array([0.0, 1.0, 1.5], dtype=np.float32),
+            "y": np.arange(4, dtype=np.float32),
+            "z": np.arange(5, dtype=np.float32),
+        },
+    )
+
+    parent = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=parent)
+    slicer.set_indices(0, [2, 1, 3], update=False)
+    saved_state = slicer.state
+
+    slicer.swap_axes(0, 1)
+    slicer.state = saved_state
+
+    assert slicer._obj.dims == saved_state["dims"]
+    assert slicer._nonuniform_axes == [0]
+    assert slicer._nonuniform_axes_set == {0}
+    assert slicer._dim_indices[slicer._obj.dims[0]] == 0
+    assert slicer.get_indices(0) == saved_state["indices"][0]
+    np.testing.assert_allclose(slicer.get_values(0), saved_state["values"][0])
+
+
+def test_bin_along_axis_unbinned_matches_integer_index_selection(qtbot) -> None:
+    values = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
+    data = xr.DataArray(
+        values,
+        dims=("a", "b", "c"),
+        coords={
+            dim: np.arange(size, dtype=np.float32)
+            for dim, size in zip(("a", "b", "c"), values.shape, strict=True)
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [2, 3, 4], update=False)
+
+    np.testing.assert_allclose(slicer._bin_along_axis(0, 1), values[:, 3, :])
