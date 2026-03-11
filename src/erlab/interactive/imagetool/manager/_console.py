@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
+import ast
 import importlib
 import typing
 import weakref
@@ -65,6 +66,14 @@ class ToolNamespace:
     def data(self, value: xr.DataArray) -> None:
         self.tool.slicer_area.set_data(value)
         self.tool.slicer_area.sigDataEdited.emit()
+
+    def _get_data_item(self, key):
+        """Return a subset of the tool data for rewritten console assignments."""
+        return self.tool.slicer_area._data[key]
+
+    def _set_data_item(self, key, value) -> None:
+        """Safely mutate a subset of the tool data from the console."""
+        self.tool.slicer_area._set_source_item(key, value)
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
         if hasattr(self._wrapper, attr):
@@ -136,6 +145,109 @@ class ToolsNamespace:
         return "\n".join(output)
 
 
+class _ConsoleDataAssignmentTransformer(ast.NodeTransformer):
+    """Rewrite `tools[idx].data[...] = ...` into safe helper method calls."""
+
+    def __init__(self) -> None:
+        self.changed = False
+
+    @staticmethod
+    def _match_tool_data(target: ast.expr) -> ast.Subscript | None:
+        if not isinstance(target, ast.Attribute) or target.attr != "data":
+            return None
+        tool_expr = target.value
+        if not isinstance(tool_expr, ast.Subscript):
+            return None
+        if not isinstance(tool_expr.value, ast.Name) or tool_expr.value.id != "tools":
+            return None
+        return tool_expr
+
+    @classmethod
+    def _match_target(cls, target: ast.expr) -> tuple[ast.expr, ast.expr] | None:
+        if not isinstance(target, ast.Subscript):
+            return None
+        tool_expr = cls._match_tool_data(target.value)
+        if tool_expr is None:
+            return None
+        return tool_expr, target.slice
+
+    @staticmethod
+    def _helper_call(tool_expr: ast.expr, name: str, *args: ast.expr) -> ast.Call:
+        return ast.Call(
+            func=ast.Attribute(value=tool_expr, attr=name, ctx=ast.Load()),
+            args=list(args),
+            keywords=[],
+        )
+
+    def visit_Assign(self, node: ast.Assign) -> ast.Assign | ast.Expr:
+        self.generic_visit(node)
+        if len(node.targets) != 1:
+            return node
+        match = self._match_target(node.targets[0])
+        if match is None:
+            return node
+        tool_expr, key_expr = match
+        self.changed = True
+        return ast.copy_location(
+            ast.Expr(
+                value=self._helper_call(
+                    tool_expr, "_set_data_item", key_expr, node.value
+                )
+            ),
+            node,
+        )
+
+    def visit_AugAssign(
+        self, node: ast.AugAssign
+    ) -> ast.AugAssign | ast.Assign | ast.Expr:
+        self.generic_visit(node)
+        match = self._match_target(node.target)
+        if match is not None:
+            tool_expr, key_expr = match
+            current = self._helper_call(tool_expr, "_get_data_item", key_expr)
+            value = ast.BinOp(left=current, op=node.op, right=node.value)
+            self.changed = True
+            return ast.copy_location(
+                ast.Expr(
+                    value=self._helper_call(
+                        tool_expr, "_set_data_item", key_expr, value
+                    )
+                ),
+                node,
+            )
+
+        tool_data = self._match_tool_data(node.target)
+        if tool_data is None:
+            return node
+        self.changed = True
+        return ast.copy_location(
+            ast.Assign(
+                targets=[node.target],
+                value=ast.BinOp(
+                    left=ast.Attribute(value=tool_data, attr="data", ctx=ast.Load()),
+                    op=node.op,
+                    right=node.value,
+                ),
+            ),
+            node,
+        )
+
+
+def _rewrite_console_source(source: str) -> str:
+    """Rewrite console-only data item assignments without changing read semantics."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+
+    transformer = _ConsoleDataAssignmentTransformer()
+    tree = transformer.visit(tree)
+    if not transformer.changed:
+        return source
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
 class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     """A Jupyter console widget for ImageToolManager.
 
@@ -189,6 +301,13 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                     }
                 )
                 self.execute(r"xr.set_options(keep_attrs=True)", hidden=True)
+
+    def execute(
+        self, source: str | None = None, hidden: bool = False, interactive: bool = False
+    ) -> None:
+        if source is not None:
+            source = _rewrite_console_source(source)
+        super().execute(source, hidden=hidden, interactive=interactive)
 
     def store_data_as(self, tool_index: int, name: str) -> None:
         """Store the data in an ImageTool with IPython to reuse in other scripts."""

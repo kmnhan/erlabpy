@@ -1429,6 +1429,28 @@ def test_value_update(qtbot) -> None:
     win.close()
 
 
+def test_apply_func_preserves_source_data(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    win.slicer_area.apply_func(lambda darr: darr + 1)
+    xarray.testing.assert_identical(win.slicer_area._data, data)
+    xarray.testing.assert_identical(win.slicer_area.data, data + 1)
+
+    win.slicer_area.apply_func(None)
+    xarray.testing.assert_identical(win.slicer_area.data, data)
+    win.close()
+
+
 def test_value_update_errors(qtbot) -> None:
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
