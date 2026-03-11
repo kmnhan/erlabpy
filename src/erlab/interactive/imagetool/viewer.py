@@ -592,6 +592,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # Applied filter function
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
+        # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
+        # validated view used for slicing. The two share values by default and detach
+        # only when a write needs isolation.
+
+        # If the following flag is True, `self._data` shares memory with a user-provided
+        # array. It turns False when pre-processing or validations cause the data to
+        # detach from the original array.
+        self._data_shares_external_values: bool = False
+
+        # If the following flag is True, `self._data` shares memory with
+        # `self.array_slicer._obj`. It turns False when user actions such as a call to
+        # `self.apply_func` cause the data to detach.
+        self._obj_shares_data_values: bool = False
 
         # Queues to handle undo and redo
         self._prev_states: collections.deque[ImageSlicerState] = collections.deque(
@@ -723,6 +736,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._file_path: pathlib.Path | None = None
         self._load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None
         self.current_cursor: int = 0
+        self._data: xr.DataArray
+        self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer
 
         self.set_data(data, rad2deg=rad2deg, file_path=file_path, load_func=load_func)
 
@@ -991,6 +1006,65 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def data(self) -> xr.DataArray:
         return self.array_slicer._obj
+
+    @staticmethod
+    def _owned_values_copy(darr: xr.DataArray) -> typing.Any:
+        """Return a writable owned copy of the underlying values buffer."""
+        values = darr.data
+        if getattr(values, "chunks", None) is not None and hasattr(values, "compute"):
+            return values.compute()
+        if hasattr(values, "copy"):
+            return values.copy()
+        return np.array(values, copy=True)
+
+    @staticmethod
+    def _replace_data_values(darr: xr.DataArray, values: typing.Any) -> None:
+        """Swap a DataArray onto a new values buffer without changing coords/dims."""
+        darr._variable = darr.variable.copy(deep=False, data=values)
+
+    def _restore_obj_from_source(self, update: bool = True) -> None:
+        """Rebuild the internal slicer array so it shares the current source values."""
+        preserve_dims = (
+            tuple(self.array_slicer._obj.dims)
+            if hasattr(self, "_array_slicer")
+            else None
+        )
+        self.array_slicer.set_array(
+            self._data,
+            reset=False,
+            copy_values=False,
+            preserve_dims=preserve_dims,
+        )
+        self._obj_shares_data_values = True
+        if update:
+            self.refresh_all(only_plots=True)
+            self.lock_levels(self.levels_locked)
+
+    def _set_source_item(self, key, value) -> None:
+        """Safely update a subset of the public source array in place."""
+        need_restore = (
+            self._applied_func is not None or not self._obj_shares_data_values
+        )
+        self._applied_func = None
+        restored_obj = False
+
+        if self._data_shares_external_values:
+            self._replace_data_values(self._data, self._owned_values_copy(self._data))
+            self._data_shares_external_values = False
+            if self._obj_shares_data_values:
+                self._restore_obj_from_source(update=False)
+                restored_obj = True
+
+        if need_restore and not restored_obj:
+            self._restore_obj_from_source(update=False)
+
+        try:
+            self._data[key] = value
+        finally:
+            self.array_slicer.clear_val_cache()
+            self.refresh_all(only_plots=True)
+            self.lock_levels(self.levels_locked)
+            self.sigDataEdited.emit()
 
     @property
     def undoable(self) -> bool:
@@ -1548,11 +1622,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
 
         data = darr_list[0]
-        if hasattr(data.data, "flags") and not data.data.flags["WRITEABLE"]:
-            data = data.copy()
+        shares_external_values = True
+        if hasattr(self, "_data") and data is self._data:
+            shares_external_values = False
+        data = data.copy(deep=False)
+
+        if data.dtype not in (np.float32, np.float64):
+            data = data.astype(np.float64)
+            shares_external_values = False
 
         if not rad2deg:
-            self._data: xr.DataArray = data
+            source = data
         else:
             if np.iterable(rad2deg):
                 conv_dims = rad2deg
@@ -1562,15 +1642,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     for d in ("phi", "theta", "beta", "alpha", "chi", "xi")
                     if d in data.dims
                 ]
-            self._data = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
+            source = data.assign_coords({d: np.rad2deg(data[d]) for d in conv_dims})
 
         if (
             auto_compute
-            and self.data_chunked
-            and (self._data.nbytes * 1e-6)
+            and source.chunks is not None
+            and (source.nbytes * 1e-6)
             < erlab.interactive.options.model.io.dask.compute_threshold
         ):
-            self._data = self._data.compute()
+            source = source.compute()
+            shares_external_values = False
+
+        self._data = source.copy(deep=False)
+        self._data_shares_external_values = shares_external_values
+        self._obj_shares_data_values = True
+        self._applied_func = None
 
         # Save color limits so we may restore them later
         cached_levels: tuple[float, float] | None = None
@@ -1583,11 +1669,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if hasattr(self, "_array_slicer"):
                 if self._array_slicer._obj.ndim == _processed_ndim(self._data):
                     ndim_changed = False
-                cursors_reset = self._array_slicer.set_array(self._data, reset=True)
+                cursors_reset = self._array_slicer.set_array(
+                    self._data, reset=True, copy_values=False
+                )
 
             else:
-                self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer = (
-                    erlab.interactive.imagetool.slicer.ArraySlicer(self._data, self)
+                self._array_slicer = erlab.interactive.imagetool.slicer.ArraySlicer(
+                    self._data, self
                 )
                 logger.debug("Initialized ArraySlicer")
         except Exception:
@@ -1736,6 +1824,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 "Data shape does not match. Array is "
                 f"{self.data.shape} but {values.shape} given"
             )
+        if self._obj_shares_data_values:
+            # Temporary view updates must detach the slicer buffer so previews and
+            # derived views never mutate the public source array.
+            self._replace_data_values(
+                self.array_slicer._obj,
+                self._owned_values_copy(self.array_slicer._obj),
+            )
+            self._obj_shares_data_values = False
+            self.array_slicer.clear_val_cache()
         self.array_slicer._obj[:] = values
 
         if update:  # pragma: no branch
@@ -1765,12 +1862,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             If `True`, the plots are updated after setting the new values.
 
         """
-        # self._data is original data passed to `set_data`
-        # self.data is the current data transformed by ArraySlicer
+        # `self._data` is the public/source array, while `self.data` is the current
+        # validated slicer view. Temporary filters only detach the slicer view so the
+        # source array remains unchanged and can be restored cheaply.
         self._applied_func = func
 
         if self._applied_func is None:
-            self.update_values(self._data, update=update)
+            self._restore_obj_from_source(update=update)
         else:
             self.update_values(self._applied_func(self._data), update=update)
 

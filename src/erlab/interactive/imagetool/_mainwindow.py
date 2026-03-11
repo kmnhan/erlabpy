@@ -205,7 +205,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
 
         """
         kwargs["state"] = self.slicer_area.state.copy()
-        new_tool = self.__class__(self.slicer_area._data.copy(), **kwargs)
+        new_tool = self.__class__(self.slicer_area._data.copy(deep=False), **kwargs)
         new_tool.setGeometry(self.geometry())
         return new_tool
 

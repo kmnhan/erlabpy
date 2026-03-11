@@ -190,7 +190,7 @@ class ArraySlicer(QtCore.QObject):
         self.snap_act.setChecked(False)
         self.snap_act.setToolTip("Snap cursors to data points")
 
-        self.set_array(xarray_obj, validate=True, reset=True)
+        self.set_array(xarray_obj, validate=True, reset=True, copy_values=False)
 
     @property
     def snap_to_data(self) -> bool:
@@ -210,7 +210,13 @@ class ArraySlicer(QtCore.QObject):
         self.sigTwinChanged.emit()
 
     def set_array(
-        self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
+        self,
+        xarray_obj: xr.DataArray,
+        validate: bool = True,
+        reset: bool = False,
+        *,
+        copy_values: bool = True,
+        preserve_dims: Sequence[Hashable] | None = None,
     ) -> bool:
         """Set the DataArray object to be sliced.
 
@@ -224,23 +230,37 @@ class ArraySlicer(QtCore.QObject):
             transposing an already valid array.
         reset
             If True, reset cursors, bins, indices, and values.
+        copy_values
+            If `True`, copy the underlying array values while validating. Set to
+            `False` to reuse the current values buffer when the caller already manages
+            ownership.
+        preserve_dims
+            Dimension order to preserve after validation. This is used when rebuilding
+            the slicer from the public source array without disturbing the current view
+            layout.
 
         Returns
         -------
         bool
             True if the cursors were reset, False if only the data was updated.
         """
-        obj_original: xr.DataArray | None = None
-        if hasattr(self, "_obj"):
+        obj_original = getattr(self, "_obj", None)
+        if obj_original is not None:
             # Shallow copy is enough: we only compare dims/coords for cursor
             # compatibility.
-            obj_original = self._obj.copy(deep=False)
-            del self._obj
+            obj_original = obj_original.copy(deep=False)
 
         if validate:
-            self._obj: xr.DataArray = self.validate_array(xarray_obj)
+            self._obj = self.validate_array(xarray_obj, copy_values=copy_values)
         else:
             self._obj = xarray_obj
+
+        if (
+            preserve_dims is not None
+            and tuple(self._obj.dims) != tuple(preserve_dims)
+            and set(self._obj.dims) == set(preserve_dims)
+        ):
+            self._obj = self._obj.transpose(*preserve_dims)
 
         if (obj_original is not None) and reset:
             # If same coords, keep cursors
@@ -452,7 +472,7 @@ class ArraySlicer(QtCore.QObject):
         # something... reproduce by archiving a 3D array with one non-uniform axis.
 
     @staticmethod
-    def validate_array(data: xr.DataArray) -> xr.DataArray:
+    def validate_array(data: xr.DataArray, copy_values: bool = True) -> xr.DataArray:
         """Validate a given :class:`xarray.DataArray`.
 
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
@@ -467,6 +487,10 @@ class ArraySlicer(QtCore.QObject):
         ----------
         data
             Input array with at least two dimensions.
+        copy_values
+            If `True`, copy the underlying values while validating. Set to `False` when
+            the caller intentionally wants the validated array to share the same values
+            buffer as the source array.
 
         Returns
         -------
@@ -476,9 +500,11 @@ class ArraySlicer(QtCore.QObject):
 
         """
         # Keep metadata copying shallow to avoid deepcopy/GC issues.
-        # Make the backing array independent so in-place updates in
-        # ImageSlicerArea do not mutate the caller's original DataArray.
-        data = data.copy(deep=False, data=data.data.copy())
+        data = data.copy(deep=False)
+        if copy_values:
+            # Make the backing array independent so in-place updates in ImageTool do
+            # not mutate the caller's original DataArray.
+            data._variable = data.variable.copy(deep=False, data=data.data.copy())
         if data.size == 0:
             raise ValueError("Data must not be empty.")
 
