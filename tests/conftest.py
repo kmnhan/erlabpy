@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import re
+import socket
 import sys
 import threading
 import time
@@ -36,6 +37,8 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager as imagetool_manager
+import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
@@ -184,23 +187,46 @@ def gold_fine():
 def manager_context() -> Callable[
     ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
 ]:
+    def _unused_port_pair() -> tuple[int, int]:
+        sockets: list[socket.socket] = []
+        try:
+            for _ in range(2):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind(("127.0.0.1", 0))
+                sockets.append(sock)
+            return typing.cast("int", sockets[0].getsockname()[1]), typing.cast(
+                "int", sockets[1].getsockname()[1]
+            )
+        finally:
+            for sock in sockets:
+                sock.close()
+
     @contextlib.contextmanager
     def _ctx(
         use_socket: bool = False,
     ):
-        erlab.interactive.imagetool.manager._always_use_socket = use_socket
+        original_port = imagetool_manager.PORT
+        original_port_watch = imagetool_manager.PORT_WATCH
+        original_server_port = imagetool_manager_server.PORT
+        original_server_port_watch = imagetool_manager_server.PORT_WATCH
 
-        erlab.interactive.imagetool.manager.main(execute=False)
+        port, port_watch = _unused_port_pair()
+        imagetool_manager.PORT = port
+        imagetool_manager.PORT_WATCH = port_watch
+        imagetool_manager_server.PORT = port
+        imagetool_manager_server.PORT_WATCH = port_watch
+        imagetool_manager._always_use_socket = use_socket
+
+        imagetool_manager.main(execute=False)
 
         try:
-            yield erlab.interactive.imagetool.manager._manager_instance
+            yield imagetool_manager._manager_instance
         finally:
-            manager = erlab.interactive.imagetool.manager._manager_instance
+            manager = imagetool_manager._manager_instance
             if manager is not None:
                 QtWidgets.QApplication.sendPostedEvents(None, 0)
                 QtWidgets.QApplication.processEvents()
                 manager.remove_all_tools()
-                manager._stop_servers()
                 manager.close()
                 deadline = time.perf_counter() + 5.0
                 while (
@@ -213,8 +239,12 @@ def manager_context() -> Callable[
                 for _ in range(3):
                     QtWidgets.QApplication.sendPostedEvents(None, 0)
                     QtWidgets.QApplication.processEvents()
-            erlab.interactive.imagetool.manager._manager_instance = None
-            erlab.interactive.imagetool.manager._always_use_socket = False
+            imagetool_manager._manager_instance = None
+            imagetool_manager._always_use_socket = False
+            imagetool_manager.PORT = original_port
+            imagetool_manager.PORT_WATCH = original_port_watch
+            imagetool_manager_server.PORT = original_server_port
+            imagetool_manager_server.PORT_WATCH = original_server_port_watch
 
     return _ctx
 

@@ -662,7 +662,6 @@ def test_watcher_real(
     monkeypatch,
 ):
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
 
         darr = xr.DataArray(
