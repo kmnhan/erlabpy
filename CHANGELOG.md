@@ -1,3 +1,17 @@
+## Unreleased
+
+### ⚡️ Performance
+
+- **manager:** slightly improve `watch` change detection speed and remove `xxhash` optional dependency ([39c1227](https://github.com/kmnhan/erlabpy/commit/39c122756e1746993437cdc7eade5bc258b354e4))
+
+- **imagetool:** optimize data handling and memory management ([e55bb98](https://github.com/kmnhan/erlabpy/commit/e55bb98e8bf7db0b5165b171b41b23d187ad45d7))
+
+  Implements a more efficient approach where data is not copied unnecessarily. This almost halves the memory usage when opening floating point arrays, and allows in-place updates from the console without risking unintended side effects on the original data. Temporary transformations like normalization will take up more memory only when activated.
+
+- **imagetool:** micro-optimization for binning along multiple axes ([4ba898a](https://github.com/kmnhan/erlabpy/commit/4ba898a91f569a119c82720c834f805a98570d44))
+
+- **imagetool:** micro-optimization for binning along multiple axes ([79b9b6f](https://github.com/kmnhan/erlabpy/commit/79b9b6f95b2fce265d689046666308c0ace0251a))
+
 ## v3.20.1 (2026-03-04)
 
 ### 🐞 Bug Fixes
