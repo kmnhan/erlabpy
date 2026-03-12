@@ -16,6 +16,9 @@ Welcome to the `erlab` user guide! This guide provides an overview of `erlab` an
 
 If you are new to `erlab`, you may want to start with the [getting started guide](../getting-started.md).
 
+If you switch between notebooks and the interactive tools, see
+{ref}`workflow-bridge` for a side-by-side map of the GUI and Python workflows.
+
 ```{toctree}
 :caption: Table of Contents
 :maxdepth: 2
@@ -27,6 +30,7 @@ kconv
 curve-fitting
 transform
 filtering
+workflow-bridge
 interactive/index
 ```
 
