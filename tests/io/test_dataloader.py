@@ -111,8 +111,6 @@ def test_loader(
 
     # Interactive summary with imagetool manager
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         box = erlab.io.loaders.current_loader._isummarize(df)
         btn_box = box.children[0].children[0]
         assert len(btn_box.children) == 4  # prev, next, load full, imagetool
@@ -125,7 +123,6 @@ def test_loader(
         manager._imagetool_wrappers[0].archive()
         manager.remove_imagetool(0)
         qtbot.wait_until(lambda: manager.ntools == 0)
-        manager.close()
 
 
 def test_thread_safety():

@@ -44,8 +44,6 @@ from erlab.interactive.imagetool.manager._modelview import (
     _ImageToolWrapperItemModel,
 )
 from erlab.interactive.imagetool.manager._server import (
-    HOST_IP,
-    PORT,
     AddDataPacket,
     Response,
     _recv_multipart,
@@ -124,7 +122,6 @@ def test_manager(
     ],
 ) -> None:
     with manager_context(use_socket=use_socket) as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -463,7 +460,6 @@ def test_remove_from_window_shortcut(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -491,7 +487,6 @@ def test_remove_childtool_delete_shortcut(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -523,7 +518,6 @@ def test_manager_multi_data_not_shown(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -542,7 +536,6 @@ def test_manager_replace(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         # Open a tool with the manager
@@ -576,7 +569,6 @@ def test_manager_reindex(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         # Open a tool with the manager
@@ -604,7 +596,6 @@ def test_manager_server_show_remove(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -628,7 +619,6 @@ def test_manager_duplicate(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         # Open a tool with the manager
@@ -662,7 +652,6 @@ def test_manager_sync(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         itool([test_data, test_data], link=True, link_colors=True, manager=True)
@@ -711,7 +700,6 @@ def test_manager_workspace_io(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
 
@@ -773,7 +761,6 @@ def test_manager_workspace_load_legacy(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
 
@@ -811,7 +798,6 @@ def test_drop_mimedata(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
         data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
@@ -988,7 +974,6 @@ def test_drop_mimedata(
 
 def test_treeview(qtbot, accept_dialog, test_data) -> None:
     manager = ImageToolManager()
-
     qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
 
     with qtbot.waitExposed(manager):
@@ -1038,7 +1023,6 @@ def test_childtool_remove_after_tree_clear(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         test_data.qshow(manager=True)
@@ -1127,7 +1111,6 @@ def test_remove_selected_calls_batch_remove(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         test_data.qshow(manager=True)
@@ -1179,8 +1162,6 @@ def test_manager_open_files(
     with manager_context() as manager, tempfile.TemporaryDirectory() as tmp_dir_name:
         filename = f"{tmp_dir_name}/data.h5"
         test_data.to_netcdf(filename, engine="h5netcdf")
-
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
 
         with qtbot.waitExposed(manager):
             manager.show()
@@ -1262,7 +1243,6 @@ def test_manager_console(
             coords={"x": np.arange(5), "y": np.arange(5)},
         )
 
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         manager.activateWindow()
 
@@ -1357,7 +1337,6 @@ def test_tool_namespace_get_data_item(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         manager.activateWindow()
 
@@ -1408,7 +1387,6 @@ def test_manager_hover_tooltip(
     monkeypatch,
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         manager.activateWindow()
 
@@ -1478,7 +1456,6 @@ def test_warning_alert(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -1511,8 +1488,6 @@ def test_warning_alert_suppressed_by_log_flag(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         suppressed = logging.LogRecord(
             name="test.warning.suppressed",
             level=logging.WARNING,
@@ -1563,8 +1538,6 @@ def test_error_creating_imagetool_does_not_duplicate_alert_dialog(
     )
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         try:
             raise RuntimeError("boom")  # noqa: TRY301
         except RuntimeError:
@@ -1604,8 +1577,6 @@ def test_data_recv_dataset_creation_error_no_duplicate_alert(
     )
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         ds = xr.Dataset({"v": xr.DataArray(np.ones((2, 2)), dims=("x", "y"))})
         flags = manager._data_recv([ds], {})
 
@@ -1644,8 +1615,6 @@ def test_data_recv_dataarray_creation_error_no_duplicate_alert(
     )
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         flags = manager._data_recv([xr.DataArray(np.ones((2, 2)), dims=("x", "y"))], {})
 
         QtWidgets.QApplication.processEvents()
@@ -1698,7 +1667,6 @@ def test_load_workspace_error_no_duplicate_alert(
     monkeypatch.setattr(xr, "open_datatree", _raise_open_datatree)
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         ImageToolManager.load(manager, native=False)
 
         QtWidgets.QApplication.processEvents()
@@ -1749,7 +1717,6 @@ def test_open_retry_preserves_non_native_dialog(
     )
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
 
         def _fake_add_from_multiple_files(
             *,
@@ -1800,8 +1767,6 @@ def test_open_multiple_files_workspace_error_no_duplicate_alert(
     monkeypatch.setattr(xr, "open_datatree", _fake_open_datatree)
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         monkeypatch.setattr(manager, "_is_datatree_workspace", lambda *args: True)
         monkeypatch.setattr(manager, "_from_datatree", _raise_from_datatree)
 
@@ -1816,6 +1781,36 @@ def test_open_multiple_files_workspace_error_no_duplicate_alert(
         assert manager._alert_dialogs == []
 
 
+def test_manager_context_starts_cleanly_back_to_back(
+    qtbot,
+    caplog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with caplog.at_level(logging.ERROR):
+        for _ in range(2):
+            with manager_context() as manager:
+                manager.show()
+                qtbot.wait_until(
+                    lambda: (
+                        manager.server.isRunning()
+                        and manager.watcher_server.isRunning()
+                    ),
+                    timeout=5000,
+                )
+                qtbot.wait(100)
+                QtWidgets.QApplication.processEvents()
+                assert manager._alert_dialogs == []
+
+    assert "Address already in use" not in caplog.text
+    assert not any(
+        record.name == "erlab.interactive.imagetool.manager._server"
+        and record.levelno >= logging.ERROR
+        for record in caplog.records
+    )
+
+
 def test_manager_progressbar_alert(
     qtbot,
     manager_context: Callable[
@@ -1823,8 +1818,6 @@ def test_manager_progressbar_alert(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         message = "Load data:   8%|8         | 1/12 [00:00<00:07,  1.54it/s]"
         manager._show_alert("INFO", logging.INFO, message, "")
 
@@ -1865,8 +1858,6 @@ def test_manager_alert_icons(
     )
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
-
         manager._show_alert("INFO", logging.INFO, "info", "")
         manager._show_alert("WARNING", logging.WARNING, "warning", "")
         manager._show_alert("ERROR", logging.ERROR, "error", "")
@@ -1888,7 +1879,6 @@ def test_uncaught_exception_alert(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -1924,7 +1914,6 @@ def test_manager_reload(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         manager.activateWindow()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -1995,7 +1984,6 @@ def test_manager_cloudpickle(
     ],
 ) -> None:
     with manager_context(use_socket=True) as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
@@ -2017,7 +2005,11 @@ def test_manager_cloudpickle(
         sock.setsockopt(zmq.SNDHWM, 0)
         sock.setsockopt(zmq.RCVHWM, 0)
         try:
-            sock.connect(f"tcp://{HOST_IP}:{PORT}")
+            sock.connect(
+                "tcp://"
+                f"{erlab.interactive.imagetool.manager.HOST_IP}:"
+                f"{erlab.interactive.imagetool.manager.PORT}"
+            )
             frames = _create_frames(content, pickler_cls=pickle.Pickler)
             del sys.modules[modname]
             sock.send_multipart(frames, copy=False)
@@ -2100,7 +2092,6 @@ def test_manager_updated_opens_links(
     monkeypatch.setattr(webbrowser, "open", _open)
 
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
         accept_dialog(
             lambda: manager.updated(old_version=old_version, new_version=new_version),
