@@ -48,6 +48,19 @@ def test_set_array_shallow_copy_does_not_require_deep_copy(qtbot) -> None:
     assert slicer._obj.equals(data2)
 
 
+def test_set_array_preserves_requested_dimension_order(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4), dtype=np.float32),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_array(data, preserve_dims=("y", "x"))
+
+    assert slicer._obj.dims == ("y", "x")
+
+
 def test_validate_array_does_not_deepcopy_attrs(qtbot) -> None:
     class _NoDeepCopy:
         def __deepcopy__(self, memo):
@@ -64,6 +77,43 @@ def test_validate_array_does_not_deepcopy_attrs(qtbot) -> None:
     slicer = ArraySlicer(data, parent=QtCore.QObject())
 
     assert slicer._obj.attrs["sentinel"] is sentinel
+
+
+def test_validate_array_copy_values_detaches_values_buffer(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=np.float32).reshape((3, 4)),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+
+    validated = ArraySlicer.validate_array(data, copy_values=True)
+
+    validated.values[0, 0] = -1.0
+
+    assert float(data.values[0, 0]) == 0.0
+
+
+def test_refresh_array_layout_cache_ignores_invalid_generated_idx_coord(qtbot) -> None:
+    slicer = ArraySlicer(
+        xr.DataArray(
+            np.zeros((3, 4), dtype=np.float32),
+            dims=("x", "y"),
+            coords={"x": np.arange(3), "y": np.arange(4)},
+        ),
+        parent=QtCore.QObject(),
+    )
+    slicer._obj = xr.DataArray(
+        np.zeros((3, 4), dtype=np.float32),
+        dims=("x_idx", "y"),
+        coords={
+            "x_idx": np.arange(3),
+            "x": (("x_idx", "y"), np.zeros((3, 4), dtype=np.float32)),
+            "y": np.arange(4),
+        },
+    )
+    slicer._refresh_array_layout_cache()
+
+    assert slicer._nonuniform_axes == []
 
 
 def test_index_of_value_nonuniform_descending_axis(qtbot) -> None:
@@ -205,6 +255,7 @@ def test_get_binned_cache_tracks_bin_updates_and_axis_swaps(qtbot) -> None:
 
     slicer.set_bin(0, 1, 3, update=False)
     assert slicer.get_binned(0) == (False, True, False)
+    assert slicer.is_binned(0)
 
     slicer.swap_axes(0, 1)
     assert slicer.get_binned(0) == (True, False, False)
@@ -279,3 +330,65 @@ def test_bin_along_axis_unbinned_matches_integer_index_selection(qtbot) -> None:
     slicer.set_indices(0, [2, 3, 4], update=False)
 
     np.testing.assert_allclose(slicer._bin_along_axis(0, 1), values[:, 3, :])
+
+
+def test_point_value_unbinned_returns_current_scalar(qtbot) -> None:
+    values = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
+    data = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        coords={"x": np.arange(4), "y": np.arange(5)},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [2, 3], update=False)
+
+    assert slicer.point_value(0, binned=False) == values[2, 3]
+
+
+def test_value_of_index_uniform_path_on_nonuniform_axis(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((4, 3), dtype=np.float32),
+        dims=("x", "y"),
+        coords={"x": np.array([0.0, 1.0, 1.5, 2.5]), "y": np.arange(3)},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    assert slicer.value_of_index(0, 2, uniform=True) == 2
+
+
+def test_index_of_value_constant_uniform_axis_returns_zero(qtbot) -> None:
+    parent = QtCore.QObject()
+    slicer = ArraySlicer(
+        xr.DataArray(
+            np.zeros((4, 3), dtype=np.float32),
+            dims=("x", "y"),
+            coords={"x": np.arange(4), "y": np.arange(3)},
+        ),
+        parent=parent,
+    )
+    slicer.set_array(
+        xr.DataArray(
+            np.zeros((4, 3), dtype=np.float32),
+            dims=("x", "y"),
+            coords={"x": np.ones(4, dtype=np.float32), "y": np.arange(3)},
+        ),
+        validate=False,
+        reset=True,
+    )
+
+    assert slicer.index_of_value(0, 10.0) == 0
+
+
+def test_qsel_args_falls_back_to_dims_index_lookup(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((4, 5, 6), dtype=np.float32),
+        dims=("x", "y", "z"),
+        coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer._dim_indices = {}
+
+    assert slicer.qsel_args(0, (0, 1)) == {"z": 2.0}

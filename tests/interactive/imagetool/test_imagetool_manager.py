@@ -1,3 +1,4 @@
+import ast
 import concurrent.futures
 import contextlib
 import gc
@@ -27,6 +28,11 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, load_in_manager
+from erlab.interactive.imagetool.manager._console import (
+    ToolNamespace,
+    _ConsoleDataAssignmentTransformer,
+    _rewrite_console_source,
+)
 from erlab.interactive.imagetool.manager._dialogs import (
     _ConcatDialog,
     _NameFilterDialog,
@@ -1341,6 +1347,56 @@ def test_manager_console(
         # Destroy console
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_tool_namespace_get_data_item(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
+        manager.show()
+        manager.activateWindow()
+
+        itool([test_data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        xr.testing.assert_identical(
+            namespace._get_data_item((slice(None), 0)), test_data[:, 0]
+        )
+
+
+def test_console_assignment_transformer_match_helpers() -> None:
+    plain_name = typing.cast("ast.Expr", ast.parse("value").body[0]).value
+    attr_without_subscript = typing.cast(
+        "ast.Expr", ast.parse("tool.data").body[0]
+    ).value
+    other_tool = typing.cast("ast.Expr", ast.parse("other[0].data").body[0]).value
+    subscript_target = typing.cast(
+        "ast.Expr", ast.parse("other[0].data[1]").body[0]
+    ).value
+
+    assert _ConsoleDataAssignmentTransformer._match_tool_data(plain_name) is None
+    assert (
+        _ConsoleDataAssignmentTransformer._match_tool_data(attr_without_subscript)
+        is None
+    )
+    assert _ConsoleDataAssignmentTransformer._match_tool_data(other_tool) is None
+    assert _ConsoleDataAssignmentTransformer._match_target(subscript_target) is None
+
+
+def test_rewrite_console_source_handles_augassign_and_passthrough() -> None:
+    rewritten = _rewrite_console_source("tools[1].data[0, 0] += 1")
+
+    assert "_get_data_item" in rewritten
+    assert "_set_data_item" in rewritten
+
+    assert _rewrite_console_source("left = right = 1") == "left = right = 1"
+    assert _rewrite_console_source("value += 1") == "value += 1"
 
 
 def test_manager_hover_tooltip(

@@ -33,6 +33,7 @@ from erlab.interactive.imagetool.dialogs import (
 )
 from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
 from erlab.interactive.imagetool.viewer import (
+    ImageSlicerArea,
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
     _parse_input,
@@ -1448,6 +1449,66 @@ def test_apply_func_preserves_source_data(qtbot) -> None:
 
     win.slicer_area.apply_func(None)
     xarray.testing.assert_identical(win.slicer_area.data, data)
+    win.close()
+
+
+def test_set_source_item_restores_preview_before_source_write(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(np.float32),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    win.slicer_area.apply_func(lambda darr: darr + 10)
+    win.slicer_area._set_source_item((0, 0), -5.0)
+
+    assert float(data.values[0, 0]) == 0.0
+    assert float(win.slicer_area._data.values[0, 0]) == -5.0
+    assert float(win.slicer_area.data.values[0, 0]) == -5.0
+    assert win.slicer_area._applied_func is None
+    win.close()
+
+
+def test_owned_values_copy_handles_dask_and_array_fallback() -> None:
+    da = pytest.importorskip("dask.array")
+
+    darr = xr.DataArray(
+        da.from_array(np.arange(6, dtype=np.float32).reshape(2, 3), chunks=(1, 3)),
+        dims=("x", "y"),
+    )
+    copied = ImageSlicerArea._owned_values_copy(darr)
+    np.testing.assert_array_equal(copied, np.arange(6, dtype=np.float32).reshape(2, 3))
+
+    fake = types.SimpleNamespace(data=(1, 2, 3))
+    fallback = ImageSlicerArea._owned_values_copy(fake)
+    np.testing.assert_array_equal(fallback, np.array([1, 2, 3]))
+
+
+def test_set_data_rad2deg_converts_angle_coords(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(15, dtype=np.float32).reshape((3, 5)),
+        dims=("phi", "eV"),
+        coords={
+            "phi": np.deg2rad(np.array([0.0, 30.0, 60.0], dtype=np.float32)),
+            "eV": np.arange(5, dtype=np.float32),
+        },
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+        win.activateWindow()
+
+    win.slicer_area.set_data(data, rad2deg=True)
+
+    np.testing.assert_allclose(win.slicer_area._data["phi"].values, [0.0, 30.0, 60.0])
     win.close()
 
 
