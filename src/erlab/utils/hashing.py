@@ -3,6 +3,7 @@
 __all__ = ["fingerprint_dataarray"]
 
 import pickle
+import zlib
 
 import numpy as np
 import numpy.typing as npt
@@ -10,16 +11,7 @@ import xarray as xr
 
 
 def _digest_bytes(b: memoryview | bytes | bytearray) -> int:
-    try:
-        import xxhash
-    except ImportError:
-        import zlib
-
-        return zlib.adler32(b)
-    else:
-        h = xxhash.xxh64()
-        h.update(b)
-        return h.intdigest() & 0xFFFFFFFFFFFFFFFF
+    return zlib.crc32(b) & 0xFFFFFFFF
 
 
 def _meta_signature(darr: xr.DataArray) -> int:
