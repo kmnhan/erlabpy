@@ -4,8 +4,8 @@
 
 ERLabPy exposes the same analysis pipeline through two entry points:
 
-- Python-first workflows in scripts and notebooks, where code is the source of truth.
-- GUI-first workflows in ImageTool, the ImageTool manager, and the specialized helper
+- Python code-based workflows in scripts and notebooks.
+- GUI workflows in ImageTool, the ImageTool manager, and the specialized interactive
   tools, where you discover parameters interactively.
 
 The bridge between them is built into the package. GUI actions either map directly to
