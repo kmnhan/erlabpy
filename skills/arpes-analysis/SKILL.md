@@ -649,7 +649,7 @@ Ask for only what is needed:
 
 If asked how to install erlabpy:
 
-- Recommend the `uv` or `conda` approach per [getting started](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
+- Recommend the `conda` approach per [getting started](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
 
 - If the user is unfamiliar with conda, also point them to the [scikit-hep conda installation guide](https://scikit-hep.org/user/installing-conda/).
 
