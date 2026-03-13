@@ -2,6 +2,8 @@ import pytest
 import xarray as xr
 
 import erlab
+from erlab.io.plugins.da30 import DA30Loader
+from erlab.io.plugins.erpes import ERPESLoader, get_cache_file
 
 
 @pytest.fixture(scope="module")
@@ -49,3 +51,64 @@ def test_load(expected_dir, arg, index) -> None:
 
 def test_summarize(data_dir) -> None:
     erlab.io.summarize(cache=False)
+
+
+def test_load_single_use_cache_false_ignores_existing_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    file_path = tmp_path / "test0001.zip"
+    file_path.touch()
+
+    cache_file = get_cache_file(file_path)
+    cache_file.parent.mkdir()
+    cache_file.write_text("invalid cache contents")
+
+    expected = xr.DataArray([1.0, 2.0], dims=("eV",), name="spectrum")
+    calls: list[str] = []
+
+    def fake_super_load(self, file_path, *, without_values=False):
+        calls.append("super")
+        return expected.copy()
+
+    def fail_open_datatree(*args, **kwargs):
+        raise AssertionError("existing cache should not be opened when use_cache=False")
+
+    def fail_to_netcdf(self, *args, **kwargs):
+        raise AssertionError("cache should not be written when use_cache=False")
+
+    monkeypatch.setattr(DA30Loader, "load_single", fake_super_load)
+    monkeypatch.setattr(xr, "open_datatree", fail_open_datatree)
+    monkeypatch.setattr(xr.DataArray, "to_netcdf", fail_to_netcdf)
+
+    loaded = ERPESLoader().load_single(file_path, use_cache=False)
+
+    assert calls == ["super"]
+    xr.testing.assert_identical(loaded.compute(), expected)
+    assert cache_file.read_text() == "invalid cache contents"
+
+
+def test_load_single_use_cache_false_does_not_write_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    file_path = tmp_path / "test0001.zip"
+    file_path.touch()
+
+    cache_file = get_cache_file(file_path)
+    expected = xr.DataArray([1.0, 2.0], dims=("eV",), name="spectrum")
+    calls: list[str] = []
+
+    def fake_super_load(self, file_path, *, without_values=False):
+        calls.append("super")
+        return expected.copy()
+
+    def fail_to_netcdf(self, *args, **kwargs):
+        raise AssertionError("cache should not be written when use_cache=False")
+
+    monkeypatch.setattr(DA30Loader, "load_single", fake_super_load)
+    monkeypatch.setattr(xr.DataArray, "to_netcdf", fail_to_netcdf)
+
+    loaded = ERPESLoader().load_single(file_path, use_cache=False)
+
+    assert calls == ["super"]
+    xr.testing.assert_identical(loaded.compute(), expected)
+    assert not cache_file.exists()
