@@ -2,15 +2,23 @@
 
 ### ⚡️ Performance
 
-- **manager:** slightly improve `watch` change detection speed and remove `xxhash` optional dependency ([39c1227](https://github.com/kmnhan/erlabpy/commit/39c122756e1746993437cdc7eade5bc258b354e4))
+- **io.plugins.da30:** improve DA30 zip loading performance ([7bc6138](https://github.com/kmnhan/erlabpy/commit/7bc613833e01802a176df8e0dec9fba7ee98d296))
 
-- **imagetool:** optimize data handling and memory management ([e55bb98](https://github.com/kmnhan/erlabpy/commit/e55bb98e8bf7db0b5165b171b41b23d187ad45d7))
+  Rewrites `load_zip` to avoid temporary directory extraction by parsing `.ini` files directly from zip contents and reading spectrum binaries into NumPy arrays in memory.
+
+- **manager:** slightly improve `watch` change detection speed and remove `xxhash` optional dependency ([1b2c453](https://github.com/kmnhan/erlabpy/commit/1b2c4538968466e926ea15ca3e19d4069b28697e))
+
+- **imagetool:** optimize data handling and memory management ([0ba2268](https://github.com/kmnhan/erlabpy/commit/0ba22683609f9d5418a1f2c5016bdc5f43b496b7))
 
   Implements a more efficient approach where data is not copied unnecessarily. This almost halves the memory usage when opening floating point arrays, and allows in-place updates from the console without risking unintended side effects on the original data. Temporary transformations like normalization will take up more memory only when activated.
 
-- **imagetool:** micro-optimization for binning along multiple axes ([4ba898a](https://github.com/kmnhan/erlabpy/commit/4ba898a91f569a119c82720c834f805a98570d44))
+- **imagetool:** micro-optimization for binning along multiple axes ([0466bd5](https://github.com/kmnhan/erlabpy/commit/0466bd5e697416d07d96816f577d2c74f67a80fa))
 
-- **imagetool:** micro-optimization for binning along multiple axes ([79b9b6f](https://github.com/kmnhan/erlabpy/commit/79b9b6f95b2fce265d689046666308c0ace0251a))
+### ♻️ Code Refactor
+
+- remove optional `libarchive` dependency for DA30 zip file loading ([7e193b6](https://github.com/kmnhan/erlabpy/commit/7e193b6c8677fe3d49eba8b906dca452f7faa9f4))
+
+  Benchmarks show that using `libarchive` does not have a significant performance improvement when loading a single DA30 zip file, and it adds an optional dependency that can be difficult to install on some platforms. This commit removes the option to use `libarchive` for loading DA30 zip files, and simplifies the code accordingly.
 
 ## v3.20.1 (2026-03-04)
 
