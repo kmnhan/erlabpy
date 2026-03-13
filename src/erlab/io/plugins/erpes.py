@@ -178,41 +178,63 @@ class ERPESLoader(DA30Loader):
         file_path: str | os.PathLike,
         *,
         without_values: bool = False,
-        use_libarchive: bool = True,
+        use_cache: bool = True,
         chunks: int | dict | typing.Literal["auto"] | tuple[int, ...] | None = None,
     ) -> xr.DataArray | xr.DataTree:
-        """DA30 .zip files take a long time to load. Caches them as .da30 files."""
+        """Load a single file.
+
+        DA30 ``.zip`` files take a long time to load, so this loader caches them as HDF5
+        files in ``.da30_cache``.
+
+        Parameters
+        ----------
+        file_path
+            Path to the file to load.
+        without_values
+            If `True`, return a DataArray with the same coordinates and attributes as
+            the data, but with all values set to zero. This is used for loading metadata
+            without the overhead of loading the actual data values.
+        use_cache
+            If `True`, ``.zip`` loads may reuse or populate cache files. If `False`,
+            existing cache files are ignored and no cache file is written.
+        chunks
+            If provided, the chunking to use when loading the data. This is passed to
+            xarray when opening the cache file, and to the parent class when loading the
+            data.
+        """
         if pathlib.Path(file_path).suffix == ".zip":
-            cache_file = get_cache_file(file_path)
+            writable = False
 
-            if cache_file.exists():
-                dt = xr.open_datatree(cache_file, chunks=chunks, engine="h5netcdf")
-                if dt.groups == ("/",):
-                    # Single DataArray
-                    da = next(iter(dt.data_vars.values()))
-                    if without_values:
-                        return xr.DataArray(
-                            np.zeros(da.shape, dtype=np.uint8),
-                            dims=da.dims,
-                            attrs=da.attrs,
-                            name=da.name,
-                        )
-                    return da
-                return dt
+            if use_cache:
+                cache_file = get_cache_file(file_path)
 
-            writable: bool = os.access(cache_file.parent.parent, os.W_OK)
+                if cache_file.exists():
+                    dt = xr.open_datatree(cache_file, chunks=chunks, engine="h5netcdf")
+                    if dt.groups == ("/",):
+                        # Single DataArray
+                        da = next(iter(dt.data_vars.values()))
+                        if without_values:
+                            return xr.DataArray(
+                                np.zeros(da.shape, dtype=np.uint8),
+                                dims=da.dims,
+                                attrs=da.attrs,
+                                name=da.name,
+                            )
+                        return da
+                    return dt
 
-            if writable and not cache_file.parent.is_dir():
-                with contextlib.suppress(FileExistsError):
-                    cache_file.parent.mkdir(parents=True)
+                writable = os.access(cache_file.parent.parent, os.W_OK)
+
+                if writable and not cache_file.parent.is_dir():
+                    with contextlib.suppress(FileExistsError):
+                        cache_file.parent.mkdir(parents=True)
 
             if not without_values:
                 data = super().load_single(
                     file_path,
                     without_values=without_values,
-                    use_libarchive=use_libarchive,
                 )
-                if writable:
+                if use_cache and writable:
                     try:
                         data.to_netcdf(
                             cache_file, engine="h5netcdf", invalid_netcdf=True
@@ -224,14 +246,12 @@ class ERPESLoader(DA30Loader):
                         return self.load_single(
                             file_path,
                             without_values=without_values,
-                            use_libarchive=use_libarchive,
+                            use_cache=use_cache,
                             chunks=chunks,
                         )
                 return data.chunk()
 
-        return super().load_single(
-            file_path, without_values=without_values, use_libarchive=use_libarchive
-        )
+        return super().load_single(file_path, without_values=without_values)
 
     def identify(
         self, num: int, data_dir: str | os.PathLike, prefix: str | None = None
