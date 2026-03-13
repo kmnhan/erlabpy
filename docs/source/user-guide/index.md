@@ -12,9 +12,16 @@ For the full list of packages and modules, see [](../reference.md).
 
 ## Introduction
 
-Welcome to the `erlab` user guide! This guide provides an overview of `erlab` and its core features.
+Welcome to the User Guide! This guide provides an overview of the main features and
+workflows in ERLabPy.
 
-If you are new to `erlab`, you may want to start with the [getting started guide](../getting-started.md).
+If you are new, you may want to start with the [getting started
+guide](../getting-started.md).
+
+ERLabPy has both Python code-based workflows and GUI-based workflows. The two are
+designed to work together, with the GUI serving as an interactive layer on top of the
+Python APIs. See {ref}`workflow-bridge` for a side-by-side map of the GUI and Python
+equivalents for common analysis tasks.
 
 ```{toctree}
 :caption: Table of Contents
@@ -27,6 +34,7 @@ kconv
 curve-fitting
 transform
 filtering
+workflow-bridge
 interactive/index
 ```
 

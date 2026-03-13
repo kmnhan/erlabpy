@@ -77,6 +77,19 @@ If you use VS Code with the Jupyter extension, add this to your workspace or use
 
 To integrate ImageTool windows with notebook variables—including bi-directional updates—switch to the {ref}`ImageTool manager <imagetool-manager>` and use the `%watch` magic described in {ref}`working-with-notebooks`.
 
+(imagetool-round-trip)=
+
+## Round-trip
+
+Start from Python with {meth}`xarray.DataArray.qshow`,
+{func}`erlab.interactive.imagetool.itool`, or `%itool`, then use
+{guilabel}`Copy selection code` or dialog {guilabel}`Copy Code` to move the chosen
+selection or transform back into a notebook. If edits should update a live notebook
+variable instead of the clipboard, move the window to the {ref}`manager
+<imagetool-manager>` and use `%watch`.
+
+The full GUI/API mapping lives in {ref}`workflow-bridge-operations`.
+
 (imagetool-interface)=
 
 ## Interface tour
@@ -115,11 +128,11 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Non-uniform coordinates are converted with a `_idx` suffix for plotting. Their true values are displayed in the cursor readouts.
 
-- Use {guilabel}`Edit → Coordinate Editor` to manually reassign coordinate values. This is just a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values or per-point overrides.
+- Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor` dialog. This is just a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values or per-point overrides.
 
 - Dask-backed arrays are fully supported. The dedicated {guilabel}`Dask` menu exposes actions to compute the array into memory, rechunk automatically, or choose custom chunk shapes within ImageTool.
 
-- Overlay plots of non-dimensional coordinates (e.g., temperature) on the data from {guilabel}`View → Associated Coordinates`.
+- Overlay plots of non-dimensional coordinates (e.g., temperature) on the data from {guilabel}`View → Plot Associated Coordinates`.
 
 (imagetool-slicing)=
 
@@ -145,13 +158,17 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - To move all cursors simultaneously, hold {kbd}`Alt` while dragging a cursor line, or use {kbd}`Ctrl+Alt` while dragging on the image.
 
-- Right-click on the image or cut plots to open useful context menus. Common options include copying the slicing code, locking the aspect ratio, exporting the current slice to a matplotlib window or a file, or launching helpers such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, {ref}`goldtool <guide-goldtool>`, and {ref}`restool <guide-restool>`.
+- Right-click on an image plot or line plot to open a useful context menu. Common options include copying the slicing code, locking the aspect ratio on image plots, exporting the current selection, and opening helper tools.
+
+  On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`, {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
 
   :::{hint}
   Holding {kbd}`Alt` while opening the menu switches many actions to cropped mode, which crops the data to what is currently visible in the plot before performing the action. This is useful for conducting analysis on a specific region.
-  ::
+  :::
 
-- Add quick measurement aids by enabling the rotation guideline {guilabel}`View → Rotation Guidelines`. The guideline angles feed directly into the Rotate dialog so you can align your sample quickly.
+- Use {guilabel}`Edit → Rotation Guidelines` to add quick measurement aids. The guideline angles feed directly into the {guilabel}`Rotate` dialog so you can align your sample quickly.
+
+- Use {guilabel}`View → Open ktool` and {guilabel}`View → Open meshtool` for the helper tools launched from the main menu rather than the plot context menu.
 
 - The default color cycle of cursors is user configurable. See [](./options.md).
 
@@ -177,15 +194,15 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most transforms are destructive yet provide an {guilabel}`Open in New Window` checkbox so you can keep the original data. When {guilabel}`Copy Code` is available, the generated snippet is placed on your clipboard, ready to paste into a script or notebook for reproducibility.
 
-- **Rotate** – Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active the dialog pre-fills the matching angle and pivot.
-- **Average Over Dimensions** – Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
-- **Symmetrize** – Mirror a selected dimension about a specified center. Options include additive vs. subtractive symmetry, `valid` vs. `full` overlap, and whether to keep both halves or a single side.
-- **Crop** – Enter exact coordinate ranges, or choose {guilabel}`Crop to View` to grab the currently visible extent.
-- **Edge Correction** – If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
-- **Normalize** ({guilabel}`View → Normalize`) – A non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction. You can preview the effect, undo it, or reapply a different normalization later.
-- **Coordinate Editor** – Precisely reassign coordinates, including non-uniform axes, via a combination of start/end/delta controls and per-point overrides.
+- {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the matching angle and pivot.
+- {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
+- {guilabel}`Edit → Symmetrize` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
+- {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
+- {guilabel}`Edit → Correct With Edge...` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
+- {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
+- {guilabel}`Edit → Edit Coordinates` opens the {guilabel}`Coordinate Editor` dialog for precise coordinate reassignment, including non-uniform axes.
 
-Use {guilabel}`Edit → Undo/Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional helper windows opened from the context menus, so everything is closed cleanly when the main window exits.
+Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional helper windows opened from the context menus, so everything is closed cleanly when the main window exits.
 
 (imagetool-roi)=
 
@@ -218,15 +235,30 @@ Two additional context-menu actions appear upon right-clicking on a ROI:
 
 Note that both procedures work on the entire data volume, not just the visible slice.
 
+(imagetool-python-equivalent)=
+
+## Python equivalent
+
+ImageTool is the GUI counterpart to the core selection and transform APIs: `.sel(...)`,
+`.isel(...)`, {meth}`xarray.DataArray.qsel.average`,
+{func}`erlab.analysis.transform.rotate`,
+{func}`erlab.analysis.transform.symmetrize`,
+{meth}`xarray.DataArray.assign_coords`,
+{func}`erlab.analysis.interpolate.slice_along_path`, and
+{func}`erlab.analysis.mask.mask_with_polygon`.
+
+Use the tool to discover parameters quickly, then keep the exact public API call in
+Python. See {ref}`workflow-bridge-operations` for the maintained crosswalk.
+
 (imagetool-export)=
 
-## Exporting, automation, and preferences
+## Exporting and settings
 
 - {guilabel}`File → Save As…` exports the current data to NetCDF or HDF5.
 
 - {guilabel}`File → Move to Manager` hands the window off to the {ref}`ImageTool manager <imagetool-manager>`.
 
-- Keep your configuration consistent across runs via [](./options.md).
+- {guilabel}`File → Settings` opens the shared settings dialog described in [](./options.md).
 
 (imagetool-shortcuts)=
 

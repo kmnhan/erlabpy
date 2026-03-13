@@ -33,6 +33,18 @@
 - Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, and perform quick analyses through a built-in IPython console.
 - Drag-and-drop files to open them quickly, or use the integrated data explorer to browse preview data.
 
+(imagetool-manager-round-trip)=
+
+## Round-trip
+
+The manager is the live bridge between the GUI and notebook state. Enter from
+`data.qshow(manager=True)`, `eri.itool(..., manager=True)`, or
+{func}`erlab.interactive.imagetool.manager.show_in_manager`; synchronize with `%watch` or
+{func}`erlab.interactive.imagetool.manager.watch`; and pull a safe copy back into Python
+with {func}`fetch <erlab.interactive.imagetool.manager.fetch>`.
+
+See {ref}`workflow-bridge-operations` for the maintained crosswalk.
+
 (imagetool-manager-start)=
 
 ## Starting the manager
@@ -84,7 +96,7 @@ Once the manager is running, you can open ImageTools in several ways:
   For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with {guilabel}`Single File` in the dialog.
   :::
 
-- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`. Browse arbitrary folders, preview metadata, and open selected files in the manager.
+- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E` when you want directory browsing and metadata preview before opening selected files in the manager.
 
 - Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. See {ref}`working-with-notebooks`.
 
@@ -123,13 +135,35 @@ Icons next to each entry indicate special states: linked windows share a colored
 
 Choose {guilabel}`File → Save Workspace As…` to save multiple open windows to a single `.itws` file. Workspaces store not only the data, but also the ImageTool settings such as cursor locations, colormaps, window geometry, and ROIs.
 
+When supported, savable child tools opened from managed ImageTools are stored alongside the parent window as well.
+
 Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…` or by dragging the `.itws` file back into the manager to recreate your windows exactly as they were. Share the file with collaborators and they will see the identical layout.
 
-## Built-in explorer and console
+## Data Explorer and Console
 
-- {guilabel}`Data Explorer` – The explorer window ({guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`) provides a filesystem browser tailored for ARPES datasets. Preview metadata, queue batch loads, or open entire directories as tabs.
+(imagetool-manager-data-explorer)=
 
-- {guilabel}`Console` – Toggle the embedded IPython console with {kbd}`Ctrl+J` or via the {guilabel}`View` menu. The console exposes a `tools` list containing wrappers for every ImageTool. For example:
+### Data Explorer
+
+Open the explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`.
+
+Use it when you want to browse folders, preview metadata, queue batch loads, and then
+open selected files into the manager without writing code. For most day-to-day browsing
+it is faster than the interactive summary table in the I/O guide. Use
+{func}`erlab.io.summarize` instead when you want the overview as a DataFrame in Python
+or when you are developing loaders.
+
+The explorer can also be launched standalone from Python or the command line for browsing
+and previewing. Opening selected files into ImageTool analysis still requires a running
+ImageTool manager, which is why launching it from the manager is the recommended path.
+
+For the standalone tool page, see {ref}`guide-data-explorer`.
+
+### Console
+
+Toggle the embedded IPython console with {kbd}`Ctrl+J` or via the {guilabel}`View`
+menu. The console exposes a `tools` list containing wrappers for every ImageTool. For
+example:
 
   ```python
   # List names of all windows
@@ -142,7 +176,8 @@ Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspac
   tools[0].data = new_data
   ```
 
-  Run standard Python, `%magic` commands, or inspect objects with `?` exactly as you would in a notebook.
+Run standard Python, `%magic` commands, or inspect objects with `?` exactly as you would
+in a notebook.
 
 (working-with-notebooks)=
 

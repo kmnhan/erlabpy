@@ -19,7 +19,7 @@ This setup enables convenient ERLabPy actions directly from notebooks and the ed
 
 ## AI Assistance
 
-For quick guidance while working with ERLabPy:
+For quick guidance while working with ERLabPy (including installation):
 
 - Use the [ARPES Analysis Assistant custom GPT](https://chatgpt.com/g/g-6962fdab53008191ac5e3307a694b0a9-arpes-analysis-assistant) for ChatGPT-based help.
 
@@ -46,59 +46,49 @@ Parts of this section are based on [Scipy’s installation guide](https://www.sc
 
 The recommended method of installation depends on your preferred workflow. The common workflows can roughly be broken down into the following categories:
 
-- **Project-based** (e.g. ``uv``, ``pixi``) *(recommended)*
-- **Environment-based** (e.g. ``pip``, ``conda``) *(the traditional workflow)*
-- **From source** *(for debugging and development)*
+- **Environment-based** (e.g. ``pip``, ``conda``)
+- **Project-based** (e.g. ``uv``, ``pixi``)
+- **From source** (for debugging and development)
 
-In project-based workflows, a project is a directory containing a manifest file describing the project, a lock-file describing the exact dependencies of the project, and the project’s (potentially multiple) environments.
+In environment-based workflows you install packages into an environment, which you can
+activate and deactivate from any directory. These workflows are well-established and
+easy to get started with, but they can lead to issues with reproducibility and
+dependency conflicts if not managed carefully.
 
-In contrast, in environment-based workflows you install packages into an environment, which you can activate and deactivate from any directory. These workflows are well-established, but lack some reproducibility benefits of project-based workflows.
+In project-based workflows, a project is a directory containing a manifest file
+describing the project, a lock-file describing the exact dependencies of the project,
+and the project’s (potentially multiple) environments. The project-based workflow is
+more modern and has better reproducibility, but is less widely adopted and may have a
+steeper learning curve for users new to Python or package management.
 
-Choose the method that best suits your needs. If you’re unsure, start with the project-based workflow using ``uv``.
+:::{tip}
+
+If you are new to Python or unsure which method to choose, start with the
+**Environment-based** method using ``conda``.
+
+:::
 
 :::::{tab-set}
-::::{tab-item} Project Based
-
-### Installing with ``uv``
-
-Here is a step-by-step guide to setting up a project to use ``erlab``, with ``uv``, a Python package manager.
-
-1. Install uv following the instructions in the [uv documentation](https://docs.astral.sh/uv/getting-started/installation/).
-
-2. Create a new project in a new subdirectory by executing the following in a terminal:
-
-   ```bash
-   uv init my-project
-   cd my-project
-   ```
-
-   :::{hint}
-   The second command changes directory into your project’s folder. You can name the project whatever you like.
-   :::
-
-3. Add the ``erlab`` package to your project with all recommended optional dependencies:
-
-   ```bash
-   uv add "erlab[complete]"
-   ```
-
-   :::{note}
-   This will automatically install Python if you don’t already have it installed!
-   :::
-
-   :::{hint}
-   You can also add other packages to your project in the same way, e.g. ``uv add matplotlib``.
-   :::
-
-::::
-
 ::::{tab-item} Environment Based
 
-The two main tools that install Python packages are ``pip`` and ``conda``. Their functionality partially overlaps (both can install Python packages), but they also have differences:
+The two main tools that install Python packages are ``pip`` and ``conda``. Their
+functionality partially overlaps (both can install Python packages), however, they can
+also work together. We’ll discuss the major differences between pip and conda here -
+this is important to understand if you want to manage packages effectively.
 
-- **Conda** is cross-language and can install Python along with non-Python libraries and tools (e.g. compilers, CUDA, HDF5).
-- **Pip** installs packages from the Python Packaging Index (PyPI) for a particular Python install.
-- **Conda** provides an integrated solution for managing packages, dependencies and environments, whereas with **pip** you might need additional tools.
+The first difference is that conda is cross-language and it can install Python, while
+pip is installed for a particular Python on your system and installs other packages to
+that same Python install only. This also means conda can install non-Python libraries
+and tools you may need (e.g. compilers, CUDA, HDF5), while pip can’t.
+
+The second difference is that pip installs from the Python Packaging Index (PyPI), while
+conda installs from its own channels (typically “conda-forge”). PyPI is the largest
+collection of packages by far, however, all popular packages are available for conda as
+well.
+
+The third difference is that conda is an integrated solution for managing packages,
+dependencies and environments, while with pip you may need another tool (there are
+many!) for dealing with environments or complex dependencies.
 
 ### Installing with ``conda``
 
@@ -113,7 +103,7 @@ conda install -c conda-forge erlab
 Or with the recommended dependencies:
 
 ```bash
-conda install -c conda-forge erlab pyqt6 hvplot ipywidgets
+conda install -c conda-forge erlab pyqt6 ipywidgets
 ```
 
 If you require other [optional dependencies](#optional-dependencies), append them to the above command.
@@ -153,6 +143,64 @@ To prevent conda from switching back to the default libraries upon updating, see
    ```
 
 For a list of all available optional dependencies, see the [optional dependencies](#optional-dependencies) section.
+
+::::
+
+::::{tab-item} Project Based
+
+### Installing with ``uv``
+
+Here is a step-by-step guide to setting up a project to use ``erlab``, with ``uv``, a Python package manager.
+
+1. Install uv following the instructions in the [uv documentation](https://docs.astral.sh/uv/getting-started/installation/).
+
+2. Create a new project in a new subdirectory by executing the following in a terminal:
+
+   ```bash
+   uv init my-project
+   cd my-project
+   ```
+
+   :::{hint}
+   The second command changes directory into your project’s folder. You can name the project whatever you like.
+   :::
+
+3. Add the ``erlab`` package to your project with all recommended optional dependencies:
+
+   ```bash
+   uv add "erlab[complete]"
+   ```
+
+   :::{note}
+   This will automatically install Python if you don’t already have it installed!
+   :::
+
+   :::{hint}
+   You can also add other packages to your project in the same way, e.g. ``uv add matplotlib``.
+   :::
+
+### Installing with ``pixi``
+
+Here is a step-by-step guide to setting up a workspace to use ``erlab`` with ``pixi``.
+
+1. Install pixi following the instructions in the [pixi documentation](https://pixi.prefix.dev/).
+
+2. Create a new workspace in a new subdirectory by executing the following in a terminal:
+
+   ```bash
+   pixi init my-project
+   cd my-project
+   ```
+
+   :::{hint}
+   The second command changes directory into your project’s folder. You can name the project whatever you like.
+   :::
+
+3. Add ``erlab`` and the recommended dependencies to your workspace:
+
+   ```bash
+   pixi add erlab pyqt6 ipywidgets
+   ```
 
 ::::
 

@@ -35,6 +35,14 @@ Key elements are seamlessly integrated with popular scientific Python workflows.
 - **Fitting**: Functions for curve fitting, including Fermi-Dirac distributions, MDCs, EDCs, and more.
 - **Interactive Visualization**: Responsive plotting routines similar to Igor Pro.
 
+## Getting Started
+
+Start with the [Getting Started guide](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
+
+## Documentation
+
+Full documentation is available on [Read the Docs](https://erlabpy.readthedocs.io/).
+
 ## Gallery
 
 Interactive windows support dark mode.
@@ -68,14 +76,6 @@ Interactive windows support dark mode.
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/explorer_light.png?raw=true">
   <img alt="Data explorer window." src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/explorer_light.png?raw=true">
 </picture>
-
-## Getting Started
-
-Start with the [Getting Started guide](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
-
-## Documentation
-
-Full documentation is available on [Read the Docs](https://erlabpy.readthedocs.io/).
 
 ## Contributing
 
