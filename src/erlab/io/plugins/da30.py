@@ -10,9 +10,9 @@ import configparser
 import os
 import pathlib
 import re
-import tempfile
 import typing
 import zipfile
+from collections.abc import Callable
 
 import numpy as np
 import xarray as xr
@@ -146,70 +146,32 @@ def load_zip(
         Otherwise, a DataTree containing all regions is returned.
 
     """
-    zipped: bool = not os.path.isdir(filename)
+    filename = pathlib.Path(filename)
+    zipped: bool = not filename.is_dir()
 
     if zipped:
-        zf = zipfile.ZipFile(filename, mode="r", allowZip64=False)
-        f_names = zf.namelist()
+        with zipfile.ZipFile(filename, mode="r", allowZip64=False) as zf:
+            f_names = zf.namelist()
+            regions = _get_zip_regions(f_names)
+            if len(regions) == 0:
+                raise InvalidDA30ZipError(filename)
+            out = _load_zip_content(
+                regions,
+                read_ini=lambda name: _parse_ini_string(zf.read(name).decode("utf-8")),
+                read_bin=lambda name: _read_zip_array(zf, name),
+                without_values=without_values,
+            )
     else:
         f_names = os.listdir(filename)
-
-    regions: list[str] = [
-        fn[9:-4] for fn in f_names if fn.startswith("Spectrum_") and fn.endswith(".bin")
-    ]
-
-    if len(regions) == 0:
-        raise InvalidDA30ZipError(filename)
-
-    out: list[xr.DataArray] = []
-
-    for region in regions:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            if zipped:
-                required_files: set[str] = {
-                    f"Spectrum_{region}.ini",
-                    f"{region}.ini",
-                }
-                if not without_values:
-                    required_files.add(f"Spectrum_{region}.bin")
-
-                for f in required_files:
-                    zf.extract(f, tmp_dir)
-
-                unzipped = pathlib.Path(tmp_dir)
-            else:
-                unzipped = pathlib.Path(filename)
-
-            region_info = parse_ini(unzipped / f"Spectrum_{region}.ini")["spectrum"]
-            attrs = {}
-            for d in parse_ini(unzipped / f"{region}.ini").values():
-                attrs.update(d)
-
-            if not without_values:
-                arr = np.fromfile(unzipped / f"Spectrum_{region}.bin", dtype=np.float32)
-
-        shape = []
-        coords = {}
-        for d in ("depth", "height", "width"):
-            n = int(region_info[d])
-            offset = float(region_info[f"{d}offset"])
-            delta = float(region_info[f"{d}delta"])
-            shape.append(n)
-            coords[region_info[f"{d}label"]] = np.linspace(
-                offset, offset + (n - 1) * delta, n
-            )
-
-        if not without_values:
-            arr = arr.reshape(shape)
-        else:
-            arr = np.zeros(shape, dtype=np.float32)
-
-        out.append(
-            xr.DataArray(arr, coords=coords, name=region_info["name"], attrs=attrs)
+        regions = _get_zip_regions(f_names)
+        if len(regions) == 0:
+            raise InvalidDA30ZipError(filename)
+        out = _load_zip_content(
+            regions,
+            read_ini=lambda name: parse_ini(filename / name),
+            read_bin=lambda name: np.fromfile(filename / name, dtype=np.float32),
+            without_values=without_values,
         )
-
-    if zipped:
-        zf.close()
 
     if len(out) == 1:
         return out[0]
@@ -232,12 +194,64 @@ def _parse_value(value):
     return value
 
 
-def parse_ini(filename: str | os.PathLike) -> dict:
-    """Parse an ``.ini`` file into a dictionary."""
+def _parse_ini_string(content: str) -> dict:
     parser = CasePreservingConfigParser(strict=False)
     out = {}
-    with open(filename, encoding="utf-8") as f:
-        parser.read_file(f)
-        for section in parser.sections():
-            out[section] = {k: _parse_value(v) for k, v in parser.items(section)}
+    parser.read_string(content)
+    for section in parser.sections():
+        out[section] = {k: _parse_value(v) for k, v in parser.items(section)}
     return out
+
+
+def _read_zip_array(zf: zipfile.ZipFile, member: str) -> np.ndarray:
+    return np.frombuffer(zf.read(member), dtype=np.float32)
+
+
+def _get_zip_regions(f_names: list[str]) -> list[str]:
+    return [
+        fn[9:-4] for fn in f_names if fn.startswith("Spectrum_") and fn.endswith(".bin")
+    ]
+
+
+def _load_zip_content(
+    regions: list[str],
+    *,
+    read_ini: Callable[[str], dict],
+    read_bin: Callable[[str], np.ndarray],
+    without_values: bool,
+) -> list[xr.DataArray]:
+    out: list[xr.DataArray] = []
+
+    for region in regions:
+        region_info = read_ini(f"Spectrum_{region}.ini")["spectrum"]
+        attrs = {}
+        for d in read_ini(f"{region}.ini").values():
+            attrs.update(d)
+
+        shape = []
+        coords = {}
+        for d in ("depth", "height", "width"):
+            n = int(region_info[d])
+            offset = float(region_info[f"{d}offset"])
+            delta = float(region_info[f"{d}delta"])
+            shape.append(n)
+            coords[region_info[f"{d}label"]] = np.linspace(
+                offset, offset + (n - 1) * delta, n
+            )
+
+        if without_values:
+            arr = np.zeros(shape, dtype=np.float32)
+        else:
+            arr = read_bin(f"Spectrum_{region}.bin").reshape(shape)
+
+        out.append(
+            xr.DataArray(arr, coords=coords, name=region_info["name"], attrs=attrs)
+        )
+
+    return out
+
+
+def parse_ini(filename: str | os.PathLike) -> dict:
+    """Parse an ``.ini`` file into a dictionary."""
+    with open(filename, encoding="utf-8") as f:
+        return _parse_ini_string(f.read())
