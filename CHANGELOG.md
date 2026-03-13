@@ -1,8 +1,8 @@
-## Unreleased
+## v3.20.2 (2026-03-13)
 
 ### ⚡️ Performance
 
-- **io.plugins.da30:** improve DA30 zip loading performance ([7bc6138](https://github.com/kmnhan/erlabpy/commit/7bc613833e01802a176df8e0dec9fba7ee98d296))
+- **io.plugins.da30:** improve DA30 zip loading performance ([ef5b315](https://github.com/kmnhan/erlabpy/commit/ef5b3155bbee883f41e4f29e17c5b3c172aa6a35))
 
   Rewrites `load_zip` to avoid temporary directory extraction by parsing `.ini` files directly from zip contents and reading spectrum binaries into NumPy arrays in memory.
 
@@ -16,7 +16,7 @@
 
 ### ♻️ Code Refactor
 
-- remove optional `libarchive` dependency for DA30 zip file loading ([7e193b6](https://github.com/kmnhan/erlabpy/commit/7e193b6c8677fe3d49eba8b906dca452f7faa9f4))
+- remove optional `libarchive` dependency for DA30 zip file loading ([e5fd1b5](https://github.com/kmnhan/erlabpy/commit/e5fd1b519ce9d953f8d9ee755a809c73d83bd27a))
 
   Benchmarks show that using `libarchive` does not have a significant performance improvement when loading a single DA30 zip file, and it adds an optional dependency that can be difficult to install on some platforms. This commit removes the option to use `libarchive` for loading DA30 zip files, and simplifies the code accordingly.
 
