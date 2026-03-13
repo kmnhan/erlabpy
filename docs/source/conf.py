@@ -7,6 +7,7 @@
 import importlib.metadata
 import inspect
 import os
+import pathlib
 import sys
 
 import pybtex.plugin
@@ -166,9 +167,43 @@ def fix_matplotlib_set_inheritance(app, config) -> None:
     erlab.plotting.plot3d.FancyArrow3D.set.__doc__ = ""
 
 
+def write_trimmed_llms_export(app, exception) -> None:
+    """Write llms-full-no-changelog.txt next to the sphinx-llm export."""
+    if exception is not None:
+        return
+
+    llms_full = pathlib.Path(app.outdir) / "llms-full.txt"
+    if not llms_full.exists():
+        return
+
+    lines = llms_full.read_text(encoding="utf-8").splitlines()
+    start = None
+    end = len(lines)
+
+    for index, line in enumerate(lines):
+        if line == "# changelog.html.md":
+            start = index
+            continue
+        if start is not None and line.startswith("# ") and line.endswith(".html.md"):
+            end = index
+            break
+
+    if start is None:
+        trimmed = "\n".join(lines).strip() + "\n"
+    else:
+        trimmed_lines = lines[:start] + lines[end:]
+        trimmed = "\n".join(trimmed_lines).strip() + "\n"
+
+    (pathlib.Path(app.outdir) / "llms-full-no-changelog.txt").write_text(
+        trimmed,
+        encoding="utf-8",
+    )
+
+
 def setup(app) -> None:
     app.connect("config-inited", make_accessor_docs)
     app.connect("config-inited", fix_matplotlib_set_inheritance)
+    app.connect("build-finished", write_trimmed_llms_export)
 
 
 # -- Autosummary and autodoc settings ----------------------------------------
