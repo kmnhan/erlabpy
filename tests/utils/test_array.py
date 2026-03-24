@@ -5,6 +5,8 @@ import xarray as xr
 import xarray.testing
 
 from erlab.utils.array import (
+    _broadcast_args_infer_output_metadata,
+    _broadcast_args_wrap_result,
     apply_dataarray_func,
     broadcast_args,
     check_arg_has_no_nans,
@@ -119,6 +121,110 @@ def test_broadcast_args_supports_dask_tuple_outputs() -> None:
             coords={"x": x_val, "y": y_val},
         ),
     )
+
+
+def test_broadcast_args_supports_tuple_outputs_without_dask() -> None:
+    def testfunc(x, y):
+        return x + y, x - y
+
+    testfunc_ = broadcast_args(testfunc)
+
+    x_val = np.linspace(0, 1, 5)
+    y_val = np.linspace(2, 3, 10)
+    out_add, out_sub = testfunc_(
+        xr.DataArray(x_val, dims=("x",), coords={"x": x_val}),
+        xr.DataArray(y_val, dims=("y",), coords={"y": y_val}),
+    )
+
+    xr.testing.assert_identical(
+        out_add,
+        xr.DataArray(
+            x_val[:, np.newaxis] + y_val[np.newaxis, :],
+            dims=("x", "y"),
+            coords={"x": x_val, "y": y_val},
+        ),
+    )
+    xr.testing.assert_identical(
+        out_sub,
+        xr.DataArray(
+            x_val[:, np.newaxis] - y_val[np.newaxis, :],
+            dims=("x", "y"),
+            coords={"x": x_val, "y": y_val},
+        ),
+    )
+
+
+def test_broadcast_args_supports_keyword_dataarrays() -> None:
+    def testfunc(x, *, offset):
+        return x + offset
+
+    testfunc_ = broadcast_args(testfunc)
+
+    x_val = np.linspace(0, 1, 5)
+    offset_val = np.linspace(2, 3, 10)
+    result = testfunc_(
+        xr.DataArray(x_val, dims=("x",), coords={"x": x_val}),
+        offset=xr.DataArray(offset_val, dims=("y",), coords={"y": offset_val}),
+    )
+
+    xr.testing.assert_identical(
+        result,
+        xr.DataArray(
+            x_val[:, np.newaxis] + offset_val[np.newaxis, :],
+            dims=("x", "y"),
+            coords={"x": x_val, "y": offset_val},
+        ),
+    )
+
+
+def test_broadcast_args_supports_dask_keyword_dataarrays() -> None:
+    def testfunc(x, *, offset):
+        return x + offset
+
+    testfunc_ = broadcast_args(testfunc)
+
+    x_val = np.linspace(0, 1, 5)
+    offset_val = np.linspace(2, 3, 10)
+    result = testfunc_(
+        xr.DataArray(
+            da.from_array(x_val, chunks=(2,)),
+            dims=("x",),
+            coords={"x": x_val},
+        ),
+        offset=xr.DataArray(
+            da.from_array(offset_val, chunks=(4,)),
+            dims=("y",),
+            coords={"y": offset_val},
+        ),
+    )
+
+    assert result.chunks is not None
+    xr.testing.assert_identical(
+        result.compute(),
+        xr.DataArray(
+            x_val[:, np.newaxis] + offset_val[np.newaxis, :],
+            dims=("x", "y"),
+            coords={"x": x_val, "y": offset_val},
+        ),
+    )
+
+
+def test_broadcast_args_wrap_result_leaves_non_arrays_unchanged() -> None:
+    ref = xr.DataArray(np.zeros((2, 3)), dims=("x", "y"))
+    assert _broadcast_args_wrap_result("sentinel", ref) == "sentinel"
+
+
+def test_broadcast_args_infer_output_metadata_rejects_invalid_outputs() -> None:
+    ref = xr.DataArray(np.zeros((2, 3)), dims=("x", "y"))
+
+    with pytest.raises(TypeError, match="array outputs with the same broadcasted"):
+        _broadcast_args_infer_output_metadata(np.zeros((2, 1)), ref)
+
+    with pytest.raises(TypeError, match="tuple outputs whose arrays match"):
+        _broadcast_args_infer_output_metadata((np.zeros((1, 1)), np.zeros((2, 1))), ref)
+
+    with pytest.raises(TypeError, match="supports NumPy array outputs"):
+        _broadcast_args_infer_output_metadata(1, ref)
 
 
 def test_apply_dataarray_func_invalid_data_type() -> None:

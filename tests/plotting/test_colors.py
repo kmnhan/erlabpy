@@ -250,6 +250,19 @@ def test_proportional_colorbar_respects_image_only() -> None:
     plt.close(fig)
 
 
+def test_proportional_colorbar_uses_current_axes_when_ax_is_none() -> None:
+    fig, ax = plt.subplots()
+    image = ax.imshow(np.arange(4).reshape(2, 2), cmap="viridis")
+    ax.scatter([0, 1], [0, 1], c=[10.0, 20.0], cmap="magma")
+    plt.sca(ax)
+
+    cbar = eplt.proportional_colorbar(index=0, image_only=True)
+
+    assert cbar.mappable is image
+
+    plt.close(fig)
+
+
 def test_proportional_colorbar_iterable_axes_respects_index() -> None:
     fig, axs = plt.subplots(1, 2)
     axs[0].scatter([0, 1], [0, 1], c=[0.0, 1.0], cmap="viridis")
