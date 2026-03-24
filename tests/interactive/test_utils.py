@@ -18,6 +18,7 @@ from erlab.interactive.utils import (
     generate_code,
     load_fit_ui,
     load_ui,
+    qt_is_valid,
     save_fit_ui,
     xImageItem,
 )
@@ -163,6 +164,24 @@ def test_load_ui_restores_autoconnect_after_error(monkeypatch) -> None:
 
     QtCore.QMetaObject.connectSlotsByName(object())
     assert len(restored_calls) == 1
+
+
+def test_qt_is_valid_ignores_none() -> None:
+    assert qt_is_valid(None)
+
+
+def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
+    widget = QtWidgets.QWidget()
+    widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    widget.show()
+
+    assert qt_is_valid(widget, None)
+
+    widget.close()
+    QtWidgets.QApplication.sendPostedEvents(None, 0)
+    QtWidgets.QApplication.processEvents()
+
+    qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
 
 
 @pytest.mark.parametrize(
