@@ -455,7 +455,11 @@ class CenteredInversePowerNorm(CenteredPowerNorm):
 
 
 def get_mappable(
-    ax: matplotlib.axes.Axes, image_only: bool = False, silent: bool = False
+    ax: matplotlib.axes.Axes,
+    index: int = -1,
+    *,
+    image_only: bool = False,
+    silent: bool = False,
 ) -> matplotlib.cm.ScalarMappable | None:
     """Get the `matplotlib.cm.ScalarMappable` from a given `matplotlib.axes.Axes`.
 
@@ -463,6 +467,9 @@ def get_mappable(
     ----------
     ax
         Parent axes.
+    index
+        The index of the mappable to get. By default, the most recently added mappable
+        is returned.
     image_only
         Only consider images as a valid mappable, by default `False`.
     silent
@@ -476,13 +483,13 @@ def get_mappable(
     """
     if not image_only:
         try:
-            mappable: typing.Any = ax.collections[-1]
+            mappable: typing.Any = ax.collections[index]
         except (IndexError, AttributeError):
             mappable = None
 
     if image_only or mappable is None:
         try:
-            mappable = ax.get_images()[-1]
+            mappable = ax.get_images()[index]
         except (IndexError, AttributeError):
             mappable = None
 
@@ -565,6 +572,9 @@ def proportional_colorbar(
     mappable: matplotlib.cm.ScalarMappable | None = None,
     cax: matplotlib.axes.Axes | None = None,
     ax: matplotlib.axes.Axes | Iterable[matplotlib.axes.Axes] | None = None,
+    *,
+    index: int = -1,
+    image_only: bool = False,
     **kwargs,
 ) -> matplotlib.colorbar.Colorbar:
     """
@@ -580,11 +590,18 @@ def proportional_colorbar(
     cax
         Axes into which the colorbar will be drawn.
     ax
-        One or more parent axes from which space for a new colorbar axes
-        will be stolen, if `cax` is `None`.  This has no effect if `cax`
-        is set. If `mappable` is `None` and `ax` is given with more than
-        one Axes, the function will try to infer the mappable from the
-        first one.
+        One or more parent axes from which space for a new colorbar axes will be stolen,
+        if `cax` is `None`.  This has no effect if `cax` is set. If `mappable` is `None`
+        and `ax` is given with more than one Axes, the function will try to infer the
+        mappable from the first one.
+    index
+        If `mappable` is not provided, the index of the mappable to get from `ax`.
+        Passed to :func:`get_mappable`. Default is -1, i.e., the most recently added
+        mappable.
+    image_only
+        If `mappable` is not provided, whether to only consider images as valid
+        mappables when inferring from `ax`. Passed to :func:`get_mappable`. Default is
+        `False`.
     **kwargs
         Extra arguments to `matplotlib.pyplot.colorbar`: refer to the `matplotlib`
         documentation for a list of all possible arguments.
@@ -623,16 +640,21 @@ def proportional_colorbar(
         if cax is None:
             ax = plt.gca()
             if mappable is None:
-                mappable = get_mappable(ax)
+                mappable = get_mappable(ax, index=index, image_only=image_only)
     elif isinstance(ax, Iterable):
         if not isinstance(ax, np.ndarray):
             ax = np.array(ax, dtype=object)
         i = 0
         while mappable is None and i < len(ax.flat):
-            mappable = get_mappable(ax.flatten()[i], silent=(i != (len(ax.flat) - 1)))
+            mappable = get_mappable(
+                ax.flatten()[i],
+                silent=(i != (len(ax.flat) - 1)),
+                index=index,
+                image_only=image_only,
+            )
             i += 1
     elif mappable is None:
-        mappable = get_mappable(ax)
+        mappable = get_mappable(ax, index=index, image_only=image_only)
 
     if mappable is None:
         raise RuntimeError("No mappable was found to use for colorbar creation")
