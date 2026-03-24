@@ -30,7 +30,7 @@ import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import xarray as xr
-from qtpy import PYQT6, QtCore, QtGui, QtWidgets, uic
+from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
 
@@ -83,19 +83,45 @@ __all__ = [
 _LOAD_UI_LOCK = threading.RLock()
 
 
-try:
-    from shiboken6 import isValid as _qt_is_valid
-except Exception:  # pragma: no cover - varies by Qt binding
+def _qt_object_is_valid_fallback(arg__1: object) -> bool:
+    return arg__1 is not None
+
+
+def _make_qt_object_is_valid_from_sip(
+    sip_module: typing.Any,
+) -> Callable[[object], bool]:
+    def _qt_object_is_valid(arg__1: object) -> bool:
+        return arg__1 is not None and not sip_module.isdeleted(arg__1)
+
+    return _qt_object_is_valid
+
+
+_qt_object_is_valid: Callable[[object], bool] = _qt_object_is_valid_fallback
+
+
+if PYSIDE6:
     try:
-        import sip  # type: ignore[import-not-found]
+        from shiboken6 import isValid as _shiboken_is_valid
+    except Exception:  # pragma: no cover - varies by Qt binding
+        _qt_object_is_valid = _qt_object_is_valid_fallback
+    else:
 
-        def _qt_is_valid(arg__1: object) -> bool:
-            return arg__1 is not None and not sip.isdeleted(arg__1)
+        def _qt_object_is_valid(arg__1: object) -> bool:
+            return arg__1 is not None and _shiboken_is_valid(arg__1)
 
-    except Exception:  # pragma: no cover - fallback for unknown bindings
+elif PYQT6:
+    try:
+        from PyQt6 import sip as _pyqt6_sip
+    except Exception:  # pragma: no cover - fallback for older sip layouts
+        try:
+            import sip as _legacy_sip  # type: ignore[import-not-found]
+        except Exception:  # pragma: no cover - unknown binding layout
+            _qt_object_is_valid = _qt_object_is_valid_fallback
+        else:
+            _qt_object_is_valid = _make_qt_object_is_valid_from_sip(_legacy_sip)
 
-        def _qt_is_valid(arg__1: object) -> bool:
-            return arg__1 is not None
+    else:
+        _qt_object_is_valid = _make_qt_object_is_valid_from_sip(_pyqt6_sip)
 
 
 def qt_is_valid(*objects: object) -> bool:
@@ -103,14 +129,14 @@ def qt_is_valid(*objects: object) -> bool:
 
     For PySide, uses ``shiboken6.isValid`` to check validity.
 
-    For PyQt, uses ``sip.isdeleted``.
+    For PyQt6, uses ``PyQt6.sip.isdeleted``.
 
     Parameters
     ----------
     *objects
         Objects to validate. ``None`` values are ignored.
     """
-    return all(_qt_is_valid(obj) for obj in objects)
+    return all(obj is None or _qt_object_is_valid(obj) for obj in objects)
 
 
 def single_shot(
