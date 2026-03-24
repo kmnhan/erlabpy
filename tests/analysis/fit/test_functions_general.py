@@ -236,6 +236,53 @@ def test_fermi_dirac_broad_accepts_scalar_dataarray_param_with_numpy_x() -> None
     )
 
 
+def test_fermi_dirac_broad_accepts_dataarray_x_with_scalar_params() -> None:
+    x = xr.DataArray(
+        np.linspace(-0.1, 0.1, 31),
+        dims=("eV",),
+        coords={"eV": np.linspace(-0.1, 0.1, 31)},
+        attrs={"units": "eV"},
+    )
+
+    result = fermi_dirac_broad(x, center=0.0, temp=20.0, resolution=0.01)
+
+    xr.testing.assert_identical(
+        result,
+        xr.DataArray(
+            fermi_dirac_broad(x.values, center=0.0, temp=20.0, resolution=0.01),
+            dims=("eV",),
+            coords={"eV": x["eV"]},
+            attrs=x.attrs,
+        ),
+    )
+
+
+def test_fermi_dirac_broad_renames_numpy_core_dim_when_needed() -> None:
+    x = np.linspace(-0.1, 0.1, 31)
+    temp = xr.DataArray(
+        np.array([10.0, 20.0]),
+        dims=("x",),
+        coords={"x": np.array([20.0, 21.0])},
+        attrs={"source": "temperature"},
+    )
+
+    result = fermi_dirac_broad(x, center=0.0, temp=temp, resolution=0.01)
+
+    expected = xr.DataArray(
+        np.column_stack(
+            [
+                fermi_dirac_broad(x, center=0.0, temp=t, resolution=0.01)
+                for t in temp.values
+            ]
+        ),
+        dims=("_x", "x"),
+        coords={"_x": x, "x": temp["x"]},
+        attrs=temp.attrs,
+    )
+
+    xr.testing.assert_identical(result, expected)
+
+
 def test_fermi_dirac_broad_supports_dask_scalar_dataarray_param_with_numpy_x() -> None:
     x = np.linspace(-0.1, 0.1, 31)
     result = fermi_dirac_broad(
@@ -361,6 +408,13 @@ def test_fermi_dirac_broad_rejects_param_varying_along_core_dim() -> None:
         match=r"`temp` must not vary along the convolution dimension `eV`\.",
     ):
         fermi_dirac_broad(x, center=0.0, temp=temp, resolution=0.01)
+
+
+def test_fermi_dirac_broad_rejects_non_1d_dataarray_x() -> None:
+    x = xr.DataArray(np.zeros((2, 2)), dims=("row", "col"))
+
+    with pytest.raises(ValueError, match="`x` must be a 1-dimensional DataArray\\."):
+        fermi_dirac_broad(x, center=0.0, temp=20.0, resolution=0.01)
 
 
 def test_fermi_dirac_linbkg_broad() -> None:

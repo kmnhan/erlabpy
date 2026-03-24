@@ -1,8 +1,12 @@
+import importlib
+import sys
 import tempfile
+import types
 
 import lmfit
 import numpy as np
 import pytest
+import qtpy
 import xarray as xr
 from qtpy import PYQT6, QtCore, QtGui, QtWidgets
 
@@ -170,6 +174,11 @@ def test_qt_is_valid_ignores_none() -> None:
     assert qt_is_valid(None)
 
 
+def test_qt_object_is_valid_fallback() -> None:
+    assert erlab.interactive.utils._qt_object_is_valid_fallback(object())
+    assert not erlab.interactive.utils._qt_object_is_valid_fallback(None)
+
+
 def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     widget = QtWidgets.QWidget()
     widget.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -182,6 +191,33 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     QtWidgets.QApplication.processEvents()
 
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
+
+
+def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
+    sentinel = object()
+    other = object()
+    calls: list[object] = []
+    fake_shiboken6 = types.ModuleType("shiboken6")
+
+    def _fake_is_valid(obj: object) -> bool:
+        calls.append(obj)
+        return obj is sentinel
+
+    fake_shiboken6.isValid = _fake_is_valid
+
+    with monkeypatch.context() as context:
+        context.setattr(qtpy, "PYSIDE6", True, raising=False)
+        context.setattr(qtpy, "PYQT6", False, raising=False)
+        context.setitem(sys.modules, "shiboken6", fake_shiboken6)
+
+        reloaded = importlib.reload(erlab.interactive.utils)
+
+        assert reloaded._qt_object_is_valid(sentinel)
+        assert not reloaded._qt_object_is_valid(other)
+        assert not reloaded._qt_object_is_valid(None)
+        assert calls == [sentinel, other]
+
+    importlib.reload(erlab.interactive.utils)
 
 
 @pytest.mark.parametrize(
