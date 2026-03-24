@@ -1,3 +1,4 @@
+import dask.array as da
 import numpy as np
 import pytest
 import xarray as xr
@@ -43,6 +44,80 @@ def test_broadcast_args() -> None:
             xr.DataArray(y_val, coords={"y": y_val}),
         ),
         expected,
+    )
+
+
+def test_broadcast_args_supports_dask_dataarrays() -> None:
+    def testfunc(x, y):
+        return x * (y + 1)
+
+    testfunc_ = broadcast_args(testfunc)
+
+    x_val = np.linspace(0, 1, 5)
+    y_val = np.linspace(2, 3, 10)
+    result = testfunc_(
+        xr.DataArray(
+            da.from_array(x_val, chunks=(2,)),
+            dims=("x",),
+            coords={"x": x_val},
+        ),
+        xr.DataArray(
+            da.from_array(y_val, chunks=(4,)),
+            dims=("y",),
+            coords={"y": y_val},
+        ),
+    )
+
+    assert isinstance(result, xr.DataArray)
+    assert result.chunks is not None
+    xr.testing.assert_identical(
+        result.compute(),
+        xr.DataArray(
+            testfunc(x_val[:, np.newaxis], y_val[np.newaxis, :]),
+            dims=("x", "y"),
+            coords={"x": x_val, "y": y_val},
+        ),
+    )
+
+
+def test_broadcast_args_supports_dask_tuple_outputs() -> None:
+    def testfunc(x, y):
+        return x + y, x - y
+
+    testfunc_ = broadcast_args(testfunc)
+
+    x_val = np.linspace(0, 1, 5)
+    y_val = np.linspace(2, 3, 10)
+    out_add, out_sub = testfunc_(
+        xr.DataArray(
+            da.from_array(x_val, chunks=(2,)),
+            dims=("x",),
+            coords={"x": x_val},
+        ),
+        xr.DataArray(
+            da.from_array(y_val, chunks=(4,)),
+            dims=("y",),
+            coords={"y": y_val},
+        ),
+    )
+
+    assert out_add.chunks is not None
+    assert out_sub.chunks is not None
+    xr.testing.assert_identical(
+        out_add.compute(),
+        xr.DataArray(
+            x_val[:, np.newaxis] + y_val[np.newaxis, :],
+            dims=("x", "y"),
+            coords={"x": x_val, "y": y_val},
+        ),
+    )
+    xr.testing.assert_identical(
+        out_sub.compute(),
+        xr.DataArray(
+            x_val[:, np.newaxis] - y_val[np.newaxis, :],
+            dims=("x", "y"),
+            coords={"x": x_val, "y": y_val},
+        ),
     )
 
 

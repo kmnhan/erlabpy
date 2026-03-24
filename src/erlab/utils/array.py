@@ -58,6 +58,137 @@ def _coord_inc(darr: xr.DataArray, dim: Hashable) -> float:
     return 1.0
 
 
+def _broadcast_args_wrap_result(
+    result: typing.Any, broadcast_ref: xr.DataArray
+) -> typing.Any:
+    """Wrap broadcast-shaped NumPy outputs back into DataArray objects.
+
+    Parameters
+    ----------
+    result
+        Result returned by the decorated function.
+    broadcast_ref
+        Broadcasted reference array providing the output coordinates, dimensions, and
+        attributes.
+
+    Returns
+    -------
+    typing.Any
+        The original result, with broadcast-shaped NumPy arrays converted to
+        :class:`xarray.DataArray` objects.
+    """
+    if isinstance(result, np.ndarray) and result.shape == broadcast_ref.shape:
+        return xr.DataArray(
+            result,
+            coords=broadcast_ref.coords,
+            dims=broadcast_ref.dims,
+            attrs=broadcast_ref.attrs,
+        )
+
+    if isinstance(result, tuple):  # pragma: no branch
+        new_result = []
+        for value in result:
+            if isinstance(value, np.ndarray) and value.shape == broadcast_ref.shape:
+                value = xr.DataArray(
+                    value,
+                    coords=broadcast_ref.coords,
+                    dims=broadcast_ref.dims,
+                    attrs=broadcast_ref.attrs,
+                )
+            new_result.append(value)
+        return tuple(new_result)
+
+    return result
+
+
+def _broadcast_args_make_sample_args(
+    args: tuple[typing.Any, ...],
+    kwargs: dict[str, typing.Any],
+    broadcast_params: dict[int | str, xr.DataArray],
+    sample_shape: tuple[int, ...],
+) -> tuple[list[typing.Any], dict[str, typing.Any]]:
+    """Build sample NumPy arguments for output-shape and dtype inference.
+
+    Parameters
+    ----------
+    args
+        Positional arguments originally passed to the decorated function.
+    kwargs
+        Keyword arguments originally passed to the decorated function.
+    broadcast_params
+        Mapping of argument positions or names to broadcasted DataArray inputs.
+    sample_shape
+        Shape to use for synthetic NumPy arrays that replace DataArray inputs.
+
+    Returns
+    -------
+    tuple of list and dict
+        Positional and keyword arguments with broadcasted DataArray inputs replaced by
+        zero-filled NumPy arrays of the requested shape.
+    """
+    sample_args, sample_kwargs = list(args), dict(kwargs)
+    for key, value in broadcast_params.items():
+        sample_value = np.zeros(sample_shape, dtype=value.dtype)
+        if isinstance(key, int):
+            sample_args[key] = sample_value
+        else:
+            sample_kwargs[key] = sample_value
+    return sample_args, sample_kwargs
+
+
+def _broadcast_args_infer_output_metadata(
+    sample_result: typing.Any, broadcast_ref: xr.DataArray
+) -> tuple[list[tuple[()]], list[np.dtype]]:
+    """Infer gufunc output metadata for a broadcasted decorated function.
+
+    Parameters
+    ----------
+    sample_result
+        Result of calling the decorated function on synthetic NumPy inputs.
+    broadcast_ref
+        Broadcasted reference array used to validate output shapes.
+
+    Returns
+    -------
+    output_core_dims
+        Output core-dimension signatures for :func:`xarray.apply_ufunc`.
+    output_dtypes
+        Output dtypes for :func:`xarray.apply_ufunc`.
+
+    Raises
+    ------
+    TypeError
+        If the decorated function returns outputs that do not match the broadcasted
+        input shape, or returns a non-array result when DataArray inputs are present.
+    """
+    expected_shape = tuple(1 for _ in broadcast_ref.shape)
+
+    if isinstance(sample_result, np.ndarray):
+        if sample_result.shape != expected_shape:
+            raise TypeError(
+                "broadcast_args only supports array outputs with the same "
+                "broadcasted shape when DataArray inputs are provided."
+            )
+        return [()], [sample_result.dtype]
+
+    if isinstance(sample_result, tuple):
+        output_dtypes: list[np.dtype] = []
+        for value in sample_result:
+            if not isinstance(value, np.ndarray) or value.shape != expected_shape:
+                raise TypeError(
+                    "broadcast_args only supports tuple outputs whose arrays "
+                    "match the broadcasted input shape when DataArray inputs are "
+                    "provided."
+                )
+            output_dtypes.append(value.dtype)
+        return [()] * len(sample_result), output_dtypes
+
+    raise TypeError(
+        "broadcast_args only supports NumPy array outputs when DataArray inputs "
+        "are provided."
+    )
+
+
 def broadcast_args(func: Callable) -> Callable:
     """Decorate a function to broadcast all DataArray arguments.
 
@@ -77,6 +208,8 @@ def broadcast_args(func: Callable) -> Callable:
     - When used on numba functions in nopython mode, the decorated function will no
       longer be able to be called from another function compiled in nopython mode.
     - The decorated function will not be able to accept DataArray arguments.
+    - Dask-backed DataArray arguments are applied lazily so that the decorated function
+      still receives NumPy arrays.
     """
 
     @functools.wraps(func)
@@ -102,41 +235,50 @@ def broadcast_args(func: Callable) -> Callable:
         # Reference DataArray to use for creating the output DataArray
         broadcast_ref: xr.DataArray = next(iter(broadcast_params.values()))
 
-        # Replace DataArray arguments with their values
-        npy_args, npy_kwargs = list(args), dict(kwargs)
-        for k, v in broadcast_params.items():
-            if isinstance(k, int):
-                npy_args[k] = v.values
-            else:
-                npy_kwargs[k] = v.values
+        if all(v.chunks is None for v in broadcast_params.values()):
+            npy_args, npy_kwargs = list(args), dict(kwargs)
+            for k, v in broadcast_params.items():
+                if isinstance(k, int):
+                    npy_args[k] = v.data
+                else:
+                    npy_kwargs[k] = v.data
 
-        result = func(*npy_args, **npy_kwargs)
-
-        if isinstance(result, np.ndarray) and result.shape == broadcast_ref.shape:
-            result = xr.DataArray(
-                result,
-                coords=broadcast_ref.coords,
-                dims=broadcast_ref.dims,
-                attrs=broadcast_ref.attrs,
+            return _broadcast_args_wrap_result(
+                func(*npy_args, **npy_kwargs), broadcast_ref
             )
 
-        elif isinstance(result, tuple):  # pragma: no branch
-            # Support multiple return values
-            new_result = []
-            for r in result:
-                if (
-                    isinstance(r, np.ndarray) and r.shape == broadcast_ref.shape
-                ):  # pragma: no branch
-                    r = xr.DataArray(
-                        r,
-                        coords=broadcast_ref.coords,
-                        dims=broadcast_ref.dims,
-                        attrs=broadcast_ref.attrs,
-                    )
-                new_result.append(r)
-            result = tuple(new_result)
+        sample_args, sample_kwargs = _broadcast_args_make_sample_args(
+            args,
+            kwargs,
+            broadcast_params,
+            tuple(1 for _ in broadcast_ref.shape),
+        )
+        output_core_dims, output_dtypes = _broadcast_args_infer_output_metadata(
+            func(*sample_args, **sample_kwargs), broadcast_ref
+        )
+        ordered_keys = tuple(broadcast_params)
 
-        return result
+        def _apply_ufunc(*values):
+            block_args, block_kwargs = list(args), dict(kwargs)
+            for key, value in zip(ordered_keys, values, strict=False):
+                if isinstance(key, int):
+                    block_args[key] = value
+                else:
+                    block_kwargs[key] = value
+            return func(*block_args, **block_kwargs)
+
+        result = xr.apply_ufunc(
+            _apply_ufunc,
+            *broadcast_params.values(),
+            keep_attrs=True,
+            dask="parallelized",
+            output_core_dims=output_core_dims,
+            output_dtypes=output_dtypes,
+        )
+
+        if isinstance(result, tuple):
+            return tuple(value.rename(None) for value in result)
+        return result.rename(None)
 
     return _wrapper
 
