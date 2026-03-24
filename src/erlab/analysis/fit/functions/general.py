@@ -26,7 +26,9 @@ __all__ = [
     "voigt",
 ]
 
+import functools
 from collections.abc import Callable, Sequence
+from typing import cast
 
 import numba
 import numpy as np
@@ -34,6 +36,7 @@ import numpy.typing as npt
 import scipy.integrate
 import scipy.signal
 import scipy.special
+import xarray as xr
 
 from erlab.constants import TINY, kb_eV
 from erlab.utils._array_jit import _clip_tiny
@@ -119,6 +122,86 @@ def _convolve(in1, in2, mode: str = "full"):
     return scipy.signal.convolve(
         in1, in2, mode=mode, method=_choose_conv_method_na(in1, in2, mode)
     )
+
+
+def _apply_ufunc_1d(
+    x: npt.NDArray[np.float64] | xr.DataArray,
+    func: Callable[..., npt.NDArray[np.float64]],
+    **kwargs: float | xr.DataArray,
+) -> npt.NDArray[np.float64] | xr.DataArray:
+    """Apply a 1D function over `x` while broadcasting DataArray parameters."""
+    dataarray_kwargs = {
+        name: value for name, value in kwargs.items() if isinstance(value, xr.DataArray)
+    }
+
+    if isinstance(x, xr.DataArray):
+        x_darr = x
+    elif dataarray_kwargs:
+        used_dims = {dim for value in dataarray_kwargs.values() for dim in value.dims}
+        core_dim = "x"
+        while core_dim in used_dims:
+            core_dim = f"_{core_dim}"
+        x_darr = xr.DataArray(
+            np.asarray(x),
+            dims=(core_dim,),
+            coords={core_dim: x},
+            attrs=next(iter(dataarray_kwargs.values())).attrs,
+        )
+    else:
+        return func(x, **kwargs)
+
+    if x_darr.ndim != 1:
+        raise ValueError("`x` must be a 1-dimensional DataArray.")
+
+    if not dataarray_kwargs:
+        if x_darr.chunks is None:
+            result = func(x_darr.data, **kwargs)
+            return xr.DataArray(
+                result,
+                coords=x_darr.coords,
+                dims=x_darr.dims,
+                attrs=x_darr.attrs,
+            )
+
+        result = xr.apply_ufunc(
+            lambda x_1d: func(x_1d, **kwargs),
+            x_darr,
+            input_core_dims=[[x_darr.dims[0]]],
+            output_core_dims=[[x_darr.dims[0]]],
+            keep_attrs=True,
+            dask="parallelized",
+            output_dtypes=[np.float64],
+        )
+        return result.rename(None)
+
+    core_dim = cast("str", x_darr.dims[0])
+    for name, value in dataarray_kwargs.items():
+        if core_dim in value.dims:
+            raise ValueError(
+                f"`{name}` must not vary along the convolution dimension `{core_dim}`."
+            )
+
+    kw_names = tuple(kwargs)
+    broadcast_dims = xr.broadcast(x_darr, *dataarray_kwargs.values())[0].dims
+
+    def _wrapped(x_1d, *values):
+        return func(x_1d, **dict(zip(kw_names, values, strict=False)))
+
+    result = xr.apply_ufunc(
+        _wrapped,
+        x_darr,
+        *kwargs.values(),
+        input_core_dims=[[core_dim], *[[] for _ in kwargs]],
+        output_core_dims=[[core_dim]],
+        vectorize=True,
+        keep_attrs=True,
+        dask="parallelized",
+        output_dtypes=[np.float64],
+    )
+
+    if result.dims != broadcast_dims:
+        result = result.transpose(*broadcast_dims)
+    return result.rename(None)
 
 
 def do_convolve(
@@ -369,10 +452,12 @@ def fermi_dirac(
     return 1 / (1 + np.exp((1.0 * x - center) / _clip_tiny(temp * kb_eV)))
 
 
-@broadcast_args
 def fermi_dirac_broad(
-    x: npt.NDArray[np.float64], center: float, temp: float, resolution: float
-) -> npt.NDArray[np.float64]:
+    x: npt.NDArray[np.float64] | xr.DataArray,
+    center: float | xr.DataArray,
+    temp: float | xr.DataArray,
+    resolution: float | xr.DataArray,
+) -> npt.NDArray[np.float64] | xr.DataArray:
     r"""Resolution-broadened Fermi edge.
 
     The Fermi edge is calculated as:
@@ -397,18 +482,17 @@ def fermi_dirac_broad(
         The resolution of the Gaussian kernel in eV. Note that this is the FWHM of the
         Gaussian kernel, not the standard deviation.
     """
-    return do_convolve(
+    return _apply_ufunc_1d(
         x,
-        fermi_dirac,
-        resolution=resolution,
+        functools.partial(do_convolve, func=fermi_dirac),
         center=center,
         temp=temp,
+        resolution=resolution,
     )
 
 
 @broadcast_args
 # adapted and improved from KWAN Igor procedures
-@broadcast_args
 @numba.njit(cache=True)
 def fermi_dirac_linbkg(
     x: npt.NDArray[np.float64],
@@ -454,17 +538,16 @@ def fermi_dirac_linbkg(
     )
 
 
-@broadcast_args
 def fermi_dirac_linbkg_broad(
-    x: npt.NDArray[np.float64],
-    center: float,
-    temp: float,
-    resolution: float,
-    back0: float,
-    back1: float,
-    dos0: float,
-    dos1: float,
-) -> npt.NDArray[np.float64]:
+    x: npt.NDArray[np.float64] | xr.DataArray,
+    center: float | xr.DataArray,
+    temp: float | xr.DataArray,
+    resolution: float | xr.DataArray,
+    back0: float | xr.DataArray,
+    back1: float | xr.DataArray,
+    dos0: float | xr.DataArray,
+    dos1: float | xr.DataArray,
+) -> npt.NDArray[np.float64] | xr.DataArray:
     r"""Resolution-broadened Fermi edge with linear backgrounds.
 
     .. math::
@@ -473,12 +556,12 @@ def fermi_dirac_linbkg_broad(
         e^{(x-x_0)/k_B T}} \right] \otimes \text{g}(\sigma)
 
     """
-    return do_convolve(
+    return _apply_ufunc_1d(
         x,
-        fermi_dirac_linbkg,
-        resolution=resolution,
+        functools.partial(do_convolve, func=fermi_dirac_linbkg),
         center=center,
         temp=temp,
+        resolution=resolution,
         back0=back0,
         back1=back1,
         dos0=dos0,
@@ -526,16 +609,15 @@ def _tll_bare(x, amp=1.0, center=0.0, alpha=0.1, temp=10.0):
     )
 
 
-@broadcast_args
 def tll(
-    x: npt.NDArray[np.float64],
-    amp: float = 1.0,
-    center: float = 0.0,
-    alpha: float = 0.1,
-    temp: float = 10.0,
-    resolution: float = 0.01,
-    const_bkg: float = 0.0,
-) -> npt.NDArray[np.float64]:
+    x: npt.NDArray[np.float64] | xr.DataArray,
+    amp: float | xr.DataArray = 1.0,
+    center: float | xr.DataArray = 0.0,
+    alpha: float | xr.DataArray = 0.1,
+    temp: float | xr.DataArray = 10.0,
+    resolution: float | xr.DataArray = 0.01,
+    const_bkg: float | xr.DataArray = 0.0,
+) -> npt.NDArray[np.float64] | xr.DataArray:
     r"""Resolution-broadened Tomonaga-Luttinger liquid (TLL) spectral function.
 
     The TLL spectral function is calculated as :cite:p:`ohtsubo2015tll`:
@@ -574,15 +656,14 @@ def tll(
 
     """
     return (
-        do_convolve(
+        _apply_ufunc_1d(
             x,
-            _tll_bare,
-            resolution=resolution,
+            functools.partial(do_convolve, func=_tll_bare, oversample=5),
             amp=amp,
             center=center,
             alpha=alpha,
             temp=temp,
-            oversample=5,
+            resolution=resolution,
         )
         + const_bkg
     )
@@ -791,17 +872,16 @@ def _sc_spectral_function_bare(x, amp, gamma1, gamma0, delta, lin_bkg, const_bkg
     return amp * akw + (lin_bkg * np.abs(x) + const_bkg)
 
 
-@broadcast_args
 def sc_spectral_function(
-    x: npt.NDArray[np.float64],
-    amp: float = 1.0,
-    gamma1: float = 1e-5,
-    gamma0: float = 0.0,
-    delta: float = 0.0,
-    lin_bkg: float = 0.0,
-    const_bkg: float = 0.0,
-    resolution: float = 0.01,
-) -> npt.NDArray[np.float64]:
+    x: npt.NDArray[np.float64] | xr.DataArray,
+    amp: float | xr.DataArray = 1.0,
+    gamma1: float | xr.DataArray = 1e-5,
+    gamma0: float | xr.DataArray = 0.0,
+    delta: float | xr.DataArray = 0.0,
+    lin_bkg: float | xr.DataArray = 0.0,
+    const_bkg: float | xr.DataArray = 0.0,
+    resolution: float | xr.DataArray = 0.01,
+) -> npt.NDArray[np.float64] | xr.DataArray:
     r"""Resolution-broadened superconducting spectral function.
 
     The superconducting spectral function with a linear background is calculated as:
@@ -837,16 +917,16 @@ def sc_spectral_function(
         The broadening in eV. Note that this is the FWHM of the Gaussian kernel, not the
         standard deviation.
     """
-    return do_convolve(
+    return _apply_ufunc_1d(
         x,
-        _sc_spectral_function_bare,
-        resolution=resolution,
+        functools.partial(do_convolve, func=_sc_spectral_function_bare),
         amp=amp,
         gamma1=gamma1,
         gamma0=gamma0,
         delta=delta,
         lin_bkg=lin_bkg,
         const_bkg=const_bkg,
+        resolution=resolution,
     )
 
 
