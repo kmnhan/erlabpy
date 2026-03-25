@@ -28,7 +28,8 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.accessors.kspace import MomentumAccessor
+from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
+from erlab.constants import AxesConfiguration
 
 if typing.TYPE_CHECKING:
     import matplotlib
@@ -456,6 +457,7 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins[k].blockSignals(True)
             self._offset_spins[k].setValue(v)
             self._offset_spins[k].blockSignals(False)
+        self._sync_normal_emission_spins()
 
         self.bounds_supergroup.blockSignals(True)
         self.bounds_supergroup.setChecked(status.bounds_enabled)
@@ -537,6 +539,10 @@ class KspaceTool(KspaceToolGUI):
         "beta": "°",
         "V0": " eV",
         "wf": " eV",
+    }
+    _NORMAL_EMISSION_LABELS: typing.ClassVar[dict[str, str]] = {
+        "alpha": "𝛼",
+        "beta": "𝛽",
     }
 
     def __init__(
@@ -657,6 +663,24 @@ class KspaceTool(KspaceToolGUI):
         self.offsets_group.layout().addRow(
             self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
         )
+
+        self._normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        for axis, label in self._NORMAL_EMISSION_LABELS.items():
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(-360, 360)
+            spin.setSingleStep(0.01)
+            spin.setDecimals(3)
+            spin.setSuffix("°")
+            spin.setKeyboardTracking(False)
+            spin.setToolTip("Angle corresponding to sample normal emission.")
+            spin.valueChanged.connect(self._update_offsets_from_normal_emission)
+            self._normal_emission_spins[axis] = spin
+            self.normal_emission_group.layout().addRow(label, spin)
+
+        for k in self.data.kspace._valid_offset_keys:
+            self._offset_spins[k].valueChanged.connect(self._sync_normal_emission_spins)
+
+        self._sync_normal_emission_spins()
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -840,11 +864,14 @@ class KspaceTool(KspaceToolGUI):
             if not np.isclose(wf, self.data.kspace.work_function):
                 out_lines.append(f"{input_name}.kspace.work_function = {wf}")
 
-        offset_dict_repr = str(self.offset_dict).replace("'", '"')
+        alpha_normal, beta_normal = self._current_normal_emission_angles()
+        delta_offset = self.offset_dict["delta"]
 
         out_lines.extend(
             (
-                f"{input_name}.kspace.offsets = {offset_dict_repr}",
+                f"{input_name}.kspace.set_normal("
+                f"alpha={alpha_normal!r}, beta={beta_normal!r}, delta={delta_offset!r}"
+                f")",
                 erlab.interactive.utils.generate_code(
                     MomentumAccessor.convert,
                     [],
@@ -884,6 +911,58 @@ class KspaceTool(KspaceToolGUI):
             k: float(np.round(self._offset_spins[k].value(), 5))
             for k in self.data.kspace._valid_offset_keys
         }
+
+    def _current_normal_emission_angles(self) -> tuple[float, float]:
+        if "xi" not in self.data.coords:
+            raise IncompleteDataError("coord", "xi")
+
+        offsets = self.offset_dict
+        angle_params = {
+            "delta": offsets["delta"],
+            "xi": float(self.data["xi"].values),
+            "xi0": offsets["xi"],
+        }
+
+        match self.data.kspace.configuration:
+            case AxesConfiguration.Type1 | AxesConfiguration.Type2:
+                angle_params["beta0"] = offsets["beta"]
+            case _:
+                if "chi" not in self.data.coords:
+                    raise IncompleteDataError("coord", "chi")
+                angle_params["chi"] = float(self.data["chi"].values)
+                angle_params["chi0"] = offsets["chi"]
+
+        alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
+            self.data.kspace.configuration, angle_params
+        )
+        return float(alpha), float(beta)
+
+    @QtCore.Slot()
+    def _sync_normal_emission_spins(self) -> None:
+        alpha_normal, beta_normal = self._current_normal_emission_angles()
+
+        for axis, value in {"alpha": alpha_normal, "beta": beta_normal}.items():
+            spin = self._normal_emission_spins[axis]
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+
+    @QtCore.Slot()
+    def _update_offsets_from_normal_emission(self) -> None:
+        data = self._assign_params(self.data.copy(deep=False))
+        data.kspace.set_normal(
+            self._normal_emission_spins["alpha"].value(),
+            self._normal_emission_spins["beta"].value(),
+        )
+
+        for key in data.kspace._valid_offset_keys:
+            spin = self._offset_spins[key]
+            spin.blockSignals(True)
+            spin.setValue(data.kspace.offsets[key])
+            spin.blockSignals(False)
+
+        self._sync_normal_emission_spins()
+        self.queue_update()
 
     def _angle_data(self) -> xr.DataArray:
         if self.data.kspace._has_eV:

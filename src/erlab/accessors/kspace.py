@@ -151,13 +151,36 @@ class OffsetView:
             return dict(self) == dict(other)
         return False
 
+    def _normal_emission_angles(self) -> tuple[float, float] | None:
+        try:
+            alpha, beta = self._obj.kspace._normal_emission_angles()
+        except (IncompleteDataError, TypeError, ValueError):
+            return None
+        if np.isclose(alpha, 0):
+            alpha = 0.0
+        if np.isclose(beta, 0):
+            beta = 0.0
+        return alpha, beta
+
     def __repr__(self) -> str:
-        return dict(self).__repr__()
+        offsets_repr = dict(self).__repr__()
+        normal = self._normal_emission_angles()
+        if normal is None:
+            return offsets_repr
+        alpha, beta = normal
+        return f"{offsets_repr}\nnormal emission: alpha={alpha}, beta={beta}"
 
     def _repr_html_(self) -> str:
-        return erlab.utils.formatting.format_html_table(
-            [(k, str(v)) for k, v in self.items()], header_cols=1
-        )
+        rows: list[tuple[str, str]] = [(k, str(v)) for k, v in self.items()]
+        normal = self._normal_emission_angles()
+        if normal is not None:
+            rows.extend(
+                [
+                    ("normal alpha", str(normal[0])),
+                    ("normal beta", str(normal[1])),
+                ]
+            )
+        return erlab.utils.formatting.format_html_table(rows, header_cols=1)
 
     def update(
         self,
@@ -453,6 +476,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             float(np.max(values, where=finite_mask, initial=-np.inf)),
         )
 
+    @staticmethod
+    def _require_finite_scalar(value: float, name: str) -> float:
+        scalar = np.asarray(value, dtype=float)
+        if scalar.ndim != 0 or not np.isfinite(scalar):
+            raise ValueError(f"`{name}` must be a finite scalar.")
+        return float(scalar)
+
     def _check_kinetic_energy(
         self,
         *,
@@ -594,6 +624,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
           >>> data.kspace.offsets.reset()
           {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+
+        See Also
+        --------
+        :meth:`set_normal <xarray.DataArray.kspace.set_normal>`
+            Method to set angle offsets from normal emission angles.
         """
         if not hasattr(self, "_offsetview"):
             self._offsetview = OffsetView(self._obj)
@@ -607,6 +642,73 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         self._offsetview.reset()
         self._offsetview.update(offset_dict)
+
+    @_only_angles
+    def set_normal(
+        self, alpha: float, beta: float, *, delta: float | None = None
+    ) -> None:
+        r"""Set offsets from normal emission angles.
+
+        This method sets the angle offsets so that the provided normal emission angles
+        :math:`(\\alpha, \\beta)` in the data map to :math:`(k_x, k_y) = (0, 0)` in
+        momentum space.
+
+        Parameters
+        ----------
+        alpha
+            Angle :math:`\\alpha` in degrees corresponding to sample normal emission.
+        beta
+            Angle :math:`\\beta` in degrees corresponding to sample normal emission.
+        delta
+            Optional azimuthal offset :math:`\\delta` in degrees. If omitted, the
+            existing ``delta`` offset is preserved.
+
+        Examples
+        --------
+        >>> data.kspace.set_normal(alpha=1.2, beta=-0.4)
+        >>> dict(data.kspace.offsets)
+        {'delta': 0.0, 'xi': -1.2, 'beta': -0.4}
+
+        See Also
+        --------
+        :attr:`offsets <xarray.DataArray.kspace.offsets>`
+            Attribute used to manipulate angle offsets directly.
+        """
+        alpha_normal = self._require_finite_scalar(alpha, "alpha")
+        beta_normal = self._require_finite_scalar(beta, "beta")
+
+        if delta is not None:
+            self.offsets["delta"] = self._require_finite_scalar(delta, "delta")
+
+        if "xi" not in self._obj.coords:
+            raise IncompleteDataError("coord", "xi")
+        xi = float(self._obj["xi"].values)
+
+        chi: float | None = None
+        if self.configuration in (
+            AxesConfiguration.Type1DA,
+            AxesConfiguration.Type2DA,
+        ):
+            if "chi" not in self._obj.coords:
+                raise IncompleteDataError("coord", "chi")
+            chi = float(self._obj["chi"].values)
+
+        self.offsets.update(
+            erlab.analysis.kspace._offsets_from_normal_emission(
+                self.configuration,
+                alpha_normal,
+                beta_normal,
+                xi=xi,
+                chi=chi,
+            )
+        )
+
+    @_only_angles
+    def _normal_emission_angles(self) -> tuple[float, float]:
+        """Calculate the normal emission angles based on the current offsets."""
+        return erlab.analysis.kspace._normal_emission_from_angle_params(
+            self.configuration, self.angle_params
+        )
 
     @property
     @_only_angles
