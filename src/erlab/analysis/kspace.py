@@ -307,6 +307,76 @@ def get_kconv_inverse(configuration: AxesConfiguration | int) -> Callable:
             raise ValueError(f"Invalid configuration {configuration}")
 
 
+def _offsets_from_normal_emission(
+    configuration: AxesConfiguration | int,
+    alpha: float,
+    beta: float,
+    *,
+    xi: float,
+    chi: float | None = None,
+) -> dict[str, float]:
+    configuration = AxesConfiguration(configuration)
+
+    match configuration:
+        case AxesConfiguration.Type1 | AxesConfiguration.Type2:
+            return {"xi": xi - alpha, "beta": beta}
+        case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
+            if chi is None:
+                raise ValueError("`chi` is required for deflector configurations.")
+
+            if configuration == AxesConfiguration.Type1DA:
+                alpha, beta = -beta, alpha
+
+            alpha_rad = np.deg2rad(alpha)
+            beta_rad = np.deg2rad(beta)
+            radius = np.hypot(alpha_rad, beta_rad)
+            sinc_radius = _sinc(radius)
+
+            x = -beta_rad * sinc_radius
+            y = alpha_rad * sinc_radius
+            z = np.cos(radius)
+
+            xi_delta = np.rad2deg(np.arcsin(np.clip(-x, -1.0, 1.0)))
+            chi_delta = np.rad2deg(np.arctan2(y, z))
+
+            return {"xi": xi - xi_delta, "chi": chi - chi_delta}
+        case _:
+            raise ValueError(f"Invalid configuration {configuration}")
+
+
+def _normal_emission_from_angle_params(
+    configuration: AxesConfiguration | int,
+    angle_params: dict[str, float],
+) -> tuple[float, float]:
+    configuration = AxesConfiguration(configuration)
+
+    match configuration:
+        case AxesConfiguration.Type1 | AxesConfiguration.Type2:
+            return angle_params["xi"] - angle_params["xi0"], angle_params["beta0"]
+        case AxesConfiguration.Type1DA | AxesConfiguration.Type2DA:
+            xi_delta = np.deg2rad(angle_params["xi"] - angle_params["xi0"])
+            chi_delta = np.deg2rad(angle_params["chi"] - angle_params["chi0"])
+
+            x = -np.sin(xi_delta)
+            yz_norm = np.cos(xi_delta)
+            y = yz_norm * np.sin(chi_delta)
+            z = yz_norm * np.cos(chi_delta)
+
+            radius = np.arccos(np.clip(z, -1.0, 1.0))
+            if abs(radius) < 1e-12:
+                alpha = beta = 0.0
+            else:
+                sinc_radius = _sinc(radius)
+                alpha = np.rad2deg(y / sinc_radius)
+                beta = np.rad2deg(-x / sinc_radius)
+
+            if configuration == AxesConfiguration.Type1DA:
+                return beta, -alpha
+            return alpha, beta
+        case _:
+            raise ValueError(f"Invalid configuration {configuration}")
+
+
 # To use both numexpr and xarray broadcasting, we use the decorator to broadcast all
 # arguments before passing them to the function.
 

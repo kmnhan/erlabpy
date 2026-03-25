@@ -2,11 +2,89 @@ import tempfile
 
 import numpy as np
 import pytest
+import scipy.optimize
 import xarray as xr
 
 import erlab
+from erlab.constants import AxesConfiguration
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
+
+_NORMAL_EMISSION_CASES = [
+    pytest.param(
+        AxesConfiguration.Type1,
+        {"xi": 7.25},
+        {"delta": 12.5, "xi": 2.5, "beta": -3.75},
+        [4.75, -3.75],
+        id="Type1",
+    ),
+    pytest.param(
+        AxesConfiguration.Type2,
+        {"xi": -6.5},
+        {"delta": -8.0, "xi": -1.75, "beta": 2.25},
+        [-4.75, 2.25],
+        id="Type2",
+    ),
+    pytest.param(
+        AxesConfiguration.Type1DA,
+        {"xi": 5.25, "chi": 6.5},
+        {"delta": 9.0, "chi": 2.0, "xi": 1.75},
+        [3.5, -4.5],
+        id="Type1DA",
+    ),
+    pytest.param(
+        AxesConfiguration.Type2DA,
+        {"xi": 6.75, "chi": -4.0},
+        {"delta": -7.5, "chi": 1.25, "xi": 2.5},
+        [-5.25, 4.25],
+        id="Type2DA",
+    ),
+]
+
+
+def _make_ktool_data(
+    anglemap, configuration: AxesConfiguration, coords: dict[str, float]
+) -> xr.DataArray:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 3)).copy(
+        deep=True
+    )
+    data.attrs["configuration"] = int(configuration)
+    return data.assign_coords(**coords)
+
+
+def _solve_normal_emission_angles(
+    configuration: AxesConfiguration,
+    coords: dict[str, float],
+    offsets: dict[str, float],
+    initial_guess: list[float],
+) -> tuple[float, float]:
+    forward = erlab.analysis.kspace.get_kconv_forward(configuration)
+
+    if configuration in (AxesConfiguration.Type1, AxesConfiguration.Type2):
+        angle_params = {
+            "delta": offsets["delta"],
+            "xi": coords["xi"],
+            "xi0": offsets["xi"],
+            "beta0": offsets["beta"],
+        }
+    else:
+        angle_params = {
+            "delta": offsets["delta"],
+            "chi": coords["chi"],
+            "chi0": offsets["chi"],
+            "xi": coords["xi"],
+            "xi0": offsets["xi"],
+        }
+
+    result = scipy.optimize.root(
+        lambda angles: np.array(
+            [float(v) for v in forward(angles[0], angles[1], 1.0, **angle_params)]
+        ),
+        x0=np.asarray(initial_guess, dtype=float),
+    )
+
+    assert result.success, result.message
+    return float(result.x[0]), float(result.x[1])
 
 
 def test_ktool_compatible(anglemap) -> None:
@@ -69,8 +147,11 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
     anglemap_kconv = anglemap.kspace.convert()
 
     def _check_code_kconv(w: KspaceTool):
+        code = w.copy_code()
+        assert ".kspace.set_normal(" in code
+        assert ".kspace.offsets =" not in code
         namespace = {"anglemap": anglemap}
-        exec(w.copy_code(), {"__builtins__": {}}, namespace)  # noqa: S102
+        exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
         xr.testing.assert_identical(anglemap_kconv, namespace["anglemap_kconv"])
 
     _check_code_kconv(win)
@@ -105,6 +186,149 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
 
         assert win.tool_status == win_restored.tool_status
         assert str(win_restored.info_text) == str(win.info_text)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "coords", "reference_offsets", "initial_guess"),
+    _NORMAL_EMISSION_CASES,
+)
+def test_ktool_normal_emission_updates_offsets(
+    qtbot,
+    anglemap,
+    configuration: AxesConfiguration,
+    coords: dict[str, float],
+    reference_offsets: dict[str, float],
+    initial_guess: list[float],
+) -> None:
+    data = _make_ktool_data(anglemap, configuration, coords)
+    alpha_normal, beta_normal = _solve_normal_emission_angles(
+        configuration, coords, reference_offsets, initial_guess
+    )
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.normal_emission_group.title() == "Normal Emission"
+
+    win._offset_spins["delta"].setValue(reference_offsets["delta"])
+    win._normal_emission_spins["alpha"].setValue(alpha_normal)
+    win._normal_emission_spins["beta"].setValue(beta_normal)
+
+    for key, expected in reference_offsets.items():
+        assert np.isclose(win._offset_spins[key].value(), expected)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "coords", "reference_offsets", "initial_guess"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            {"xi": 7.25},
+            {"delta": 12.5, "xi": 2.5, "beta": -3.75},
+            [4.75, -3.75],
+            id="Type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            {"xi": 6.75, "chi": -4.0},
+            {"delta": -7.5, "chi": 1.25, "xi": 2.5},
+            [-5.25, 4.25],
+            id="Type2DA",
+        ),
+    ],
+)
+def test_ktool_normal_emission_spins_follow_offsets(
+    qtbot,
+    anglemap,
+    configuration: AxesConfiguration,
+    coords: dict[str, float],
+    reference_offsets: dict[str, float],
+    initial_guess: list[float],
+) -> None:
+    data = _make_ktool_data(anglemap, configuration, coords)
+    alpha_normal, beta_normal = _solve_normal_emission_angles(
+        configuration, coords, reference_offsets, initial_guess
+    )
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    for key, value in reference_offsets.items():
+        win._offset_spins[key].setValue(value)
+
+    assert win._normal_emission_spins["alpha"].value() == pytest.approx(
+        alpha_normal, abs=1e-3
+    )
+    assert win._normal_emission_spins["beta"].value() == pytest.approx(
+        beta_normal, abs=1e-3
+    )
+
+
+def test_ktool_normal_emission_zero_offsets_are_finite_for_da(qtbot, anglemap) -> None:
+    data = _make_ktool_data(
+        anglemap,
+        AxesConfiguration.Type2DA,
+        {"xi": 0.0, "chi": 0.0},
+    )
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert np.isfinite(win._normal_emission_spins["alpha"].value())
+    assert np.isfinite(win._normal_emission_spins["beta"].value())
+    assert win._normal_emission_spins["alpha"].value() == pytest.approx(0.0)
+    assert win._normal_emission_spins["beta"].value() == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "coords", "reference_offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            {"xi": 7.25},
+            {"delta": 12.5, "xi": 2.5, "beta": -3.75},
+            id="Type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            {"xi": 6.75, "chi": -4.0},
+            {"delta": -7.5, "chi": 1.25, "xi": 2.5},
+            id="Type2DA",
+        ),
+    ],
+)
+def test_ktool_copy_code_uses_set_normal(
+    qtbot,
+    anglemap,
+    configuration: AxesConfiguration,
+    coords: dict[str, float],
+    reference_offsets: dict[str, float],
+) -> None:
+    data = _make_ktool_data(anglemap, configuration, coords)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    for key, value in reference_offsets.items():
+        win._offset_spins[key].setValue(value)
+
+    code = win.copy_code()
+    assert ".kspace.set_normal(" in code
+    assert ".kspace.offsets =" not in code
+
+    input_name = str(win._argnames["data"])
+    if not input_name.isidentifier():
+        input_name = "data"
+
+    namespace = {input_name: data.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+
+    expected = win._assign_params(data.copy(deep=True)).kspace.convert(
+        bounds=win.bounds, resolution=win.resolution
+    )
+    for key, value in reference_offsets.items():
+        assert namespace[input_name].kspace.offsets[key] == pytest.approx(value)
+
+    xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
 
 
 def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
