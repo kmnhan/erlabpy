@@ -704,6 +704,34 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         )
 
     @_only_angles
+    def set_normal_like(self, other: xr.DataArray) -> None:
+        r"""Set offsets like another DataArray.
+
+        This method reads the normal emission angles implied by another DataArray's
+        current offsets and applies the same normal emission angles to the current data.
+
+        The azimuthal offset :math:`\delta` is copied as well.
+
+        Parameters
+        ----------
+        other
+            Another DataArray in angle space whose current offsets define the reference
+            normal emission position.
+
+        See Also
+        --------
+        :meth:`set_normal <xarray.DataArray.kspace.set_normal>`
+            Method used to set angle offsets from explicitly provided normal emission
+            angles.
+        """
+        if not isinstance(other, xr.DataArray):
+            raise TypeError("`other` must be an xarray.DataArray.")
+
+        self.set_normal(
+            *other.kspace._normal_emission_angles(), delta=other.kspace.offsets["delta"]
+        )
+
+    @_only_angles
     def _normal_emission_angles(self) -> tuple[float, float]:
         """Calculate the normal emission angles based on the current offsets."""
         return erlab.analysis.kspace._normal_emission_from_angle_params(

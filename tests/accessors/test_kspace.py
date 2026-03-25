@@ -337,6 +337,74 @@ def test_set_normal_overwrites_delta(anglemap) -> None:
     assert data.kspace.offsets["xi"] == pytest.approx(reference_offsets["xi"])
 
 
+@pytest.mark.parametrize(
+    ("target_configuration", "target_coords"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            {"xi": 7.25},
+            id="Type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2,
+            {"xi": -6.5},
+            id="Type2",
+        ),
+        pytest.param(
+            AxesConfiguration.Type1DA,
+            {"xi": 5.25, "chi": 6.5},
+            id="Type1DA",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            {"xi": 6.75, "chi": -4.0},
+            id="Type2DA",
+        ),
+    ],
+)
+def test_set_normal_like(
+    anglemap,
+    target_configuration: AxesConfiguration,
+    target_coords: dict[str, float],
+) -> None:
+    source_configuration = AxesConfiguration.Type1DA
+    source_coords = {"xi": 5.25, "chi": 6.5}
+    source_offsets = {"delta": 9.0, "chi": 2.0, "xi": 1.75}
+
+    source = _make_normal_emission_data(anglemap, source_configuration, source_coords)
+    source.kspace.offsets = source_offsets
+    alpha_normal, beta_normal = _solve_normal_emission_angles(
+        source_configuration, source_coords, source_offsets, [3.5, -4.5]
+    )
+
+    target = _make_normal_emission_data(anglemap, target_configuration, target_coords)
+    target.kspace.set_normal_like(source)
+
+    expected_offsets = erlab.analysis.kspace._offsets_from_normal_emission(
+        target_configuration,
+        alpha_normal,
+        beta_normal,
+        xi=target_coords["xi"],
+        chi=target_coords.get("chi"),
+    )
+    expected_offsets["delta"] = source_offsets["delta"]
+
+    for key, expected in expected_offsets.items():
+        assert target.kspace.offsets[key] == pytest.approx(expected)
+
+    kx, ky = erlab.analysis.kspace.get_kconv_forward(target_configuration)(
+        alpha_normal, beta_normal, 1.0, **target.kspace.angle_params
+    )
+
+    assert float(kx) == pytest.approx(0.0, abs=1e-10)
+    assert float(ky) == pytest.approx(0.0, abs=1e-10)
+
+
+def test_set_normal_like_rejects_non_dataarray(anglemap) -> None:
+    with pytest.raises(TypeError, match=r"`other` must be an xarray\.DataArray\."):
+        anglemap.kspace.set_normal_like(object())  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(("alpha", "beta"), [(np.nan, 0.0), (0.0, np.inf)])
 def test_set_normal_rejects_nonfinite_input(
     anglemap, alpha: float, beta: float
