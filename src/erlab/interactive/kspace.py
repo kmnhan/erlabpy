@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
+import hashlib
 import importlib.resources
 import typing
 import warnings
@@ -563,6 +564,15 @@ class KspaceTool(KspaceToolGUI):
         self._argnames: dict[str, str] = {}
 
         self._itool: QtWidgets.QWidget | None = None
+        self._bz_cache_key: typing.Any = None
+        self._bz_cache_value: (
+            tuple[
+                list[npt.NDArray[np.floating]],
+                npt.NDArray[np.floating],
+                npt.NDArray[np.floating],
+            ]
+            | None
+        ) = None
 
         if data_name is None:
             try:
@@ -1029,10 +1039,89 @@ class KspaceTool(KspaceToolGUI):
         if self.bz_group.isChecked():
             self.update_bz()
 
+    @staticmethod
+    def _bz_digest_array(values: npt.ArrayLike) -> bytes:
+        """Return a compact digest for cached BZ geometry inputs."""
+        arr = np.ascontiguousarray(np.asarray(values, dtype=float))
+        digest = hashlib.blake2b(digest_size=16)
+        digest.update(np.asarray(arr.shape, dtype=np.int64).tobytes())
+        digest.update(arr.tobytes())
+        return digest.digest()
+
+    def _bz_cache_token(self, converted_slice: xr.DataArray) -> tuple[typing.Any, ...]:
+        """Build a cache key for the currently displayed BZ overlay geometry."""
+        lattice_token = tuple(np.round(self._avec.ravel(), 8))
+        base_token: tuple[typing.Any, ...] = (
+            lattice_token,
+            self.centering_combo.currentText(),
+            round(self.rot_spin.value(), 6),
+            tuple(converted_slice.dims),
+        )
+
+        if self.data.kspace._has_hv:
+            kp_dim = next(d for d in converted_slice.dims if d != "kz")
+            other = "kx" if kp_dim == "ky" else "ky"
+            return (
+                *base_token,
+                kp_dim,
+                self._bz_digest_array(converted_slice[kp_dim].values),
+                self._bz_digest_array(converted_slice["kz"].values),
+                self._bz_digest_array(converted_slice[other].values),
+            )
+
+        return (
+            *base_token,
+            round(self.kz_spin.value(), 6),
+            self._bz_digest_array(converted_slice["kx"].values),
+            self._bz_digest_array(converted_slice["ky"].values),
+        )
+
+    def _exact_hv_bz_surface(
+        self, converted_slice: xr.DataArray
+    ) -> tuple[
+        str,
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+    ]:
+        """Build the sampled 3D momentum surface used for exact ``hv`` BZ overlays."""
+        kp_dim = next(d for d in converted_slice.dims if d != "kz")
+        plot_dims = ("kz", kp_dim)
+        kx_vals = np.asarray(
+            converted_slice["kx"]
+            .broadcast_like(converted_slice)
+            .reset_coords(drop=True)
+            .transpose(*plot_dims),
+            dtype=float,
+        )
+        ky_vals = np.asarray(
+            converted_slice["ky"]
+            .broadcast_like(converted_slice)
+            .reset_coords(drop=True)
+            .transpose(*plot_dims),
+            dtype=float,
+        )
+        kz_vals = np.asarray(
+            converted_slice["kz"]
+            .broadcast_like(converted_slice)
+            .reset_coords(drop=True)
+            .transpose(*plot_dims),
+            dtype=float,
+        )
+        surface = np.stack([kx_vals, ky_vals, kz_vals], axis=-1)
+        return (
+            typing.cast("str", kp_dim),
+            np.asarray(converted_slice[kp_dim].values, dtype=float),
+            np.asarray(converted_slice["kz"].values, dtype=float),
+            surface,
+        )
+
     def get_bz_lines(
         self,
     ) -> tuple[
-        npt.NDArray[np.floating], npt.NDArray[np.floating], npt.NDArray[np.floating]
+        list[npt.NDArray[np.floating]],
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
     ]:
         avec_primitive = erlab.lattice.to_primitive(
             self._avec, centering_type=self.centering_combo.currentText()
@@ -1040,35 +1129,70 @@ class KspaceTool(KspaceToolGUI):
         bvec = erlab.lattice.to_reciprocal(avec_primitive)
         converted_slice: xr.DataArray | None = self.images[1].data_array
         if converted_slice is None:
-            return np.zeros((0, 2)), np.zeros((0, 2)), np.zeros((0, 2))
+            return [], np.zeros((0, 2)), np.zeros((0, 2))
+
+        cache_token = self._bz_cache_token(converted_slice)
+        if cache_token == self._bz_cache_key and self._bz_cache_value is not None:
+            return self._bz_cache_value
 
         rot: float = self.rot_spin.value()
 
         if self.data.kspace._has_hv:
             kp_dim = next(d for d in converted_slice.dims if d != "kz")
             other = "kx" if kp_dim == "ky" else "ky"
-
-            kp_vals = converted_slice[kp_dim].values
-            kz_vals = converted_slice["kz"].values
-            lines, vertices, midpoints = erlab.lattice.get_out_of_plane_bz(
-                bvec,
-                k_parallel=float(converted_slice[other]),
-                angle=rot,
-                bounds=(kp_vals.min(), kp_vals.max(), kz_vals.min(), kz_vals.max()),
-                return_midpoints=True,
-            )
+            other_values = np.asarray(converted_slice[other].values, dtype=float)
+            if other_values.ndim == 0 or other_values.size == 1:
+                kp_vals = np.asarray(converted_slice[kp_dim].values, dtype=float)
+                kz_vals = np.asarray(converted_slice["kz"].values, dtype=float)
+                legacy_lines, vertices, midpoints = erlab.lattice.get_out_of_plane_bz(
+                    bvec,
+                    k_parallel=float(other_values.reshape(-1)[0]),
+                    angle=rot,
+                    bounds=(
+                        float(np.nanmin(kp_vals)),
+                        float(np.nanmax(kp_vals)),
+                        float(np.nanmin(kz_vals)),
+                        float(np.nanmax(kz_vals)),
+                    ),
+                    return_midpoints=True,
+                )
+                lines = [np.asarray(line, dtype=float) for line in legacy_lines]
+            else:
+                theta = np.deg2rad(rot)
+                bvec = bvec @ np.array(
+                    [
+                        [np.cos(theta), np.sin(theta), 0.0],
+                        [-np.sin(theta), np.cos(theta), 0.0],
+                        [0.0, 0.0, 1.0],
+                    ]
+                )
+                _, plot_x, plot_y, surface = self._exact_hv_bz_surface(converted_slice)
+                lines, vertices, midpoints = typing.cast(
+                    "tuple[list[npt.NDArray[np.floating]],"
+                    " npt.NDArray[np.floating], npt.NDArray[np.floating]]",
+                    erlab.lattice.get_surface_bz(
+                        bvec,
+                        plot_x,
+                        plot_y,
+                        surface,
+                        return_midpoints=True,
+                    ),
+                )
         else:
             kx_vals = converted_slice["kx"].values
             ky_vals = converted_slice["ky"].values
-            lines, vertices, midpoints = erlab.lattice.get_in_plane_bz(
+            legacy_lines, vertices, midpoints = erlab.lattice.get_in_plane_bz(
                 bvec,
                 kz=self.kz_spin.value() * np.pi / self.c_spin.value(),
                 angle=rot,
                 bounds=(kx_vals.min(), kx_vals.max(), ky_vals.min(), ky_vals.max()),
                 return_midpoints=True,
             )
+            lines = [np.asarray(line, dtype=float) for line in legacy_lines]
 
-        return lines, vertices, midpoints
+        self._bz_cache_key = cache_token
+        self._bz_cache_value = (lines, vertices, midpoints)
+        return self._bz_cache_value
 
 
 def ktool(

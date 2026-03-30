@@ -528,3 +528,47 @@ def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
     expected_ang = win._assign_params(expected_ang)
 
     xr.testing.assert_allclose(ang, expected_ang)
+
+
+def test_ktool_exact_hv_bz_overlay_uses_cache(qtbot, monkeypatch) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+
+    call_count = 0
+    original = erlab.lattice.get_surface_bz
+
+    def _counting_surface_bz(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(erlab.lattice, "get_surface_bz", _counting_surface_bz)
+
+    win = ktool(
+        data,
+        avec=erlab.lattice.abc2avec(6.97, 6.97, 8.685, 90, 90, 120),
+        rotate_bz=30.0,
+        execute=False,
+    )
+    qtbot.addWidget(win)
+
+    converted = win.images[1].data_array
+    assert converted is not None
+    kp_dim = next(d for d in converted.dims if d != "kz")
+    other = "kx" if kp_dim == "ky" else "ky"
+
+    assert converted[other].ndim == 2
+    assert call_count >= 1
+
+    call_count_before = call_count
+    lines, vertices, midpoints = win.get_bz_lines()
+    assert call_count == call_count_before
+    assert len(lines) > 0
+    assert all(np.isfinite(line).all() for line in lines)
+    assert vertices.size == 0 or np.isfinite(vertices).all()
+    assert midpoints.shape == (0, 2)
+
+    win.update_bz()
+    assert call_count == call_count_before
+
+    win.points_check.setChecked(not win.points_check.isChecked())
+    assert call_count == call_count_before
