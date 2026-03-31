@@ -63,13 +63,13 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results to Codecov
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API && !cancelled() }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: "test_results"
