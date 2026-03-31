@@ -1,3 +1,35 @@
+## Unreleased
+
+### ✨ Features
+
+- **kspace:** make cut conversion exact (#293) ([426ae22](https://github.com/kmnhan/erlabpy/commit/426ae225186ce9cdbced67d97b7b0a6bb2e1fb60))
+
+  Momentum conversion for cuts previously approximated the momentum perpendicular to the slit as a single value across the cut. This is exact only for cuts passing through the origin in momentum space, but can lead to errors for off-center cuts. Now, the exact momentum coordinates are calculated for each point in the output grid, allowing for accurate conversion of arbitrary cuts. The cuts also contain correct momentum coordinates.
+
+  This should not affect most use cases since many cuts of interest are taken near normal emission, and the deviation from the approximation is small for typical angles and kinetic energy ranges.
+
+  This also covers hv-dependent cuts that are measured while varying the map angle (beta). Also in this case, the Brillouin Zone overlay of `ktool` is now plotted by slicing with a curved surface in momentum space rather than a flat plane, so the overlay is more accurate for off-center cuts.
+
+  This change only affects cuts (i.e., data with only one in-plane momentum axis) since for full 2D momentum maps, the exact momentum coordinates are always calculated. Cuts through the origin are also unaffected.
+
+- **kspace:** allow setting offsets from normal emission angles in momentum conversion (#291) ([f56ad87](https://github.com/kmnhan/erlabpy/commit/f56ad875f5e6f4ddd2b888b3b50a9721c2d86e0c))
+
+  Adds a new workflow for setting angle offsets based on the normal emission angles in the data. This is accessible through a new "Normal Emission" section in `ktool`, and the underlying method `xarray.DataArray.kspace.set_normal` is now the recommended way to set angle offsets for momentum conversion. The existing `xarray.DataArray.kspace.offsets` attribute remains available for direct, dictionary-style access to angle offsets for advanced use cases. Also adds a `DataArray.kspace.set_normal_like` method to copy normal emission angles from another DataArray.
+
+- **plotting:** add fine-grained control over mappable selection for colorbars ([70442cc](https://github.com/kmnhan/erlabpy/commit/70442cc97986724e523e1418cbdbc51639447a68))
+
+  Adds a new `index` parameter to `proportional_colorbar` and `nice_colorbar` that allows users to specify which mappable to use when multiple are present. Also adds an `image_only` parameter to restrict the selection to images. This provides more flexibility in cases where multiple mappables are present in a single axes.
+
+- **analysis.fit:** properly allow multidimensional xarray broadcasting for functions that use convolution ([7c1d1ca](https://github.com/kmnhan/erlabpy/commit/7c1d1ca5a51793565e3177f4ffbf14faacf86376))
+
+  Also adds support for lazy-computing dask-based inputs.
+
+### 🐞 Bug Fixes
+
+- **interactive:** better lifecycle management of colorbar menu widgets to prevent rare crashes due to garbage collection of menu widgets from worker threads during later allocations ([37f5cc4](https://github.com/kmnhan/erlabpy/commit/37f5cc4e1c3628874892db46851fe20944476dfc))
+
+- **interactive:** fix failures when both PyQt6 and PySide6 are installed ([cf982f5](https://github.com/kmnhan/erlabpy/commit/cf982f5fbec75d72084cc5af0e75a6f87ed4ac8d))
+
 ## v3.20.2 (2026-03-13)
 
 ### ⚡️ Performance
