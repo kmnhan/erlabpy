@@ -1,4 +1,5 @@
 import tempfile
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -528,3 +529,105 @@ def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
     expected_ang = win._assign_params(expected_ang)
 
     xr.testing.assert_allclose(ang, expected_ang)
+
+
+def test_ktool_exact_hv_bz_overlay_uses_cache(qtbot, monkeypatch) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+
+    call_count = 0
+    original = erlab.lattice.get_surface_bz
+
+    def _counting_surface_bz(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(erlab.lattice, "get_surface_bz", _counting_surface_bz)
+
+    win = ktool(
+        data,
+        avec=erlab.lattice.abc2avec(6.97, 6.97, 8.685, 90, 90, 120),
+        rotate_bz=30.0,
+        execute=False,
+    )
+    qtbot.addWidget(win)
+
+    converted = win.images[1].data_array
+    assert converted is not None
+    kp_dim = next(d for d in converted.dims if d != "kz")
+    other = "kx" if kp_dim == "ky" else "ky"
+
+    assert converted[other].ndim == 2
+    assert call_count >= 1
+
+    call_count_before = call_count
+    lines, vertices, midpoints = win.get_bz_lines()
+    assert call_count == call_count_before
+    assert len(lines) > 0
+    assert all(np.isfinite(line).all() for line in lines)
+    assert vertices.size == 0 or np.isfinite(vertices).all()
+    assert midpoints.shape == (0, 2)
+
+    win.update_bz()
+    assert call_count == call_count_before
+
+    win.points_check.setChecked(not win.points_check.isChecked())
+    assert call_count == call_count_before
+
+
+def test_get_bz_lines_returns_empty_without_converted_slice() -> None:
+    stub = SimpleNamespace(
+        _avec=np.eye(3),
+        centering_combo=SimpleNamespace(currentText=lambda: "P"),
+        images=[None, SimpleNamespace(data_array=None)],
+    )
+
+    lines, vertices, midpoints = KspaceTool.get_bz_lines(stub)
+
+    assert lines == []
+    assert vertices.shape == (0, 2)
+    assert midpoints.shape == (0, 2)
+
+
+def test_get_bz_lines_uses_legacy_hv_path_for_scalar_other_axis(monkeypatch) -> None:
+    converted = xr.DataArray(
+        np.zeros((3, 4), dtype=float),
+        dims=("kz", "kx"),
+        coords={
+            "kz": [-1.0, 0.0, 1.0],
+            "kx": [-0.5, 0.0, 0.5, 1.0],
+            "ky": 0.25,
+        },
+    )
+    expected_lines = [np.array([[0.0, 0.0], [1.0, 1.0]], dtype=float)]
+    expected_vertices = np.array([[0.25, 0.5]], dtype=float)
+    expected_midpoints = np.array([[0.5, 0.5]], dtype=float)
+
+    def _mock_get_out_of_plane_bz(
+        bvec, *, k_parallel: float, angle: float, bounds, return_midpoints: bool
+    ):
+        assert np.isclose(k_parallel, 0.25)
+        assert np.isclose(angle, 15.0)
+        assert bounds == (-0.5, 1.0, -1.0, 1.0)
+        assert return_midpoints
+        return expected_lines, expected_vertices, expected_midpoints
+
+    monkeypatch.setattr(erlab.lattice, "get_out_of_plane_bz", _mock_get_out_of_plane_bz)
+
+    stub = SimpleNamespace(
+        _avec=np.eye(3),
+        centering_combo=SimpleNamespace(currentText=lambda: "P"),
+        images=[None, SimpleNamespace(data_array=converted)],
+        _bz_cache_token=lambda data: ("cache", data.sizes["kx"], data.sizes["kz"]),
+        _bz_cache_key=None,
+        _bz_cache_value=None,
+        rot_spin=SimpleNamespace(value=lambda: 15.0),
+        data=SimpleNamespace(kspace=SimpleNamespace(_has_hv=True)),
+    )
+
+    lines, vertices, midpoints = KspaceTool.get_bz_lines(stub)
+
+    assert len(lines) == 1
+    assert np.allclose(lines[0], expected_lines[0])
+    assert np.allclose(vertices, expected_vertices)
+    assert np.allclose(midpoints, expected_midpoints)

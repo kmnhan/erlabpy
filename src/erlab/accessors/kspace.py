@@ -31,6 +31,122 @@ class IncompleteDataError(ValueError):
         return f"{kind_str} '{name}' is required for momentum conversion."
 
 
+def _kxy_components(
+    slit_axis: typing.Literal["kx", "ky"],
+    slit_momentum,
+    other_momentum,
+) -> tuple[float | np.ndarray, float | np.ndarray]:
+    return (
+        (slit_momentum, other_momentum)
+        if slit_axis == "kx"
+        else (other_momentum, slit_momentum)
+    )
+
+
+def _hv_to_kz_root_candidates_1d(
+    kz_grid: np.ndarray,
+    other_momentum: np.ndarray,
+    kinetic_energy,
+    slit_momentum,
+    *,
+    inner_potential: float,
+    slit_axis: typing.Literal["kx", "ky"],
+) -> np.ndarray:
+    kz_grid = np.asarray(kz_grid, dtype=float)
+    other_momentum = np.asarray(other_momentum, dtype=float)
+    kinetic = float(kinetic_energy)
+    slit = float(slit_momentum)
+
+    if not np.isfinite(kinetic) or not np.isfinite(slit):
+        return np.array([], dtype=float)
+
+    mask = np.isfinite(kz_grid) & np.isfinite(other_momentum)
+    if not np.any(mask):
+        return np.array([], dtype=float)
+
+    kz_valid = kz_grid[mask]
+    other_valid = other_momentum[mask]
+    order = np.argsort(kz_valid)
+    kz_valid = kz_valid[order]
+    other_valid = other_valid[order]
+
+    kx, ky = _kxy_components(slit_axis, slit, other_valid)
+    residual = (
+        erlab.analysis.kspace.kz_func(kinetic, inner_potential, kx, ky) - kz_valid
+    )
+
+    exact = np.isclose(residual, 0.0, atol=1e-12, rtol=0.0)
+    candidates: list[float] = []
+
+    exact_idx = np.flatnonzero(exact)
+    if exact_idx.size:
+        split_idx = np.flatnonzero(np.diff(exact_idx) != 1) + 1
+        candidates.extend(
+            float(np.mean(kz_valid[group])) for group in np.split(exact_idx, split_idx)
+        )
+
+    brackets = np.flatnonzero(
+        ((residual[:-1] < 0.0) & (residual[1:] > 0.0))
+        | ((residual[:-1] > 0.0) & (residual[1:] < 0.0))
+    )
+    for i0 in brackets:
+        kz0, kz1 = kz_valid[int(i0)], kz_valid[int(i0) + 1]
+        f0, f1 = residual[int(i0)], residual[int(i0) + 1]
+        candidates.append(float(kz0 - f0 * (kz1 - kz0) / (f1 - f0)))
+    return np.asarray(candidates, dtype=float)
+
+
+def _solve_hv_to_kz_roots_2d(
+    kz_grid: np.ndarray,
+    other_momentum: np.ndarray,
+    kinetic_energy,
+    slit_momentum: np.ndarray,
+    *,
+    inner_potential: float,
+    slit_axis: typing.Literal["kx", "ky"],
+) -> np.ndarray:
+    other_momentum = np.asarray(other_momentum, dtype=float)
+    slit_momentum = np.asarray(slit_momentum, dtype=float)
+
+    roots = np.full(slit_momentum.shape, np.nan, dtype=float)
+    candidates = [
+        _hv_to_kz_root_candidates_1d(
+            kz_grid,
+            other_momentum[i],
+            kinetic_energy,
+            slit_momentum[i],
+            inner_potential=inner_potential,
+            slit_axis=slit_axis,
+        )
+        for i in range(slit_momentum.size)
+    ]
+
+    unique_indices = [i for i, values in enumerate(candidates) if values.size == 1]
+    if not unique_indices:
+        return roots
+
+    center = (slit_momentum.size - 1) / 2.0
+    seed = min(unique_indices, key=lambda i: abs(i - center))
+    roots[seed] = candidates[seed][0]
+
+    def _propagate(indices: range) -> None:
+        ref = roots[seed]
+        for i in indices:
+            values = candidates[i]
+            if values.size == 0:
+                continue
+            if values.size == 1 or not np.isfinite(ref):
+                roots[i] = values[0]
+            else:
+                roots[i] = values[np.argmin(np.abs(values - ref))]
+            ref = roots[i]
+
+    _propagate(range(seed + 1, slit_momentum.size))
+    _propagate(range(seed - 1, -1, -1))
+
+    return roots
+
+
 def _only_angles(method):
     """Decorate methods that require data to be in angle space.
 
@@ -650,17 +766,17 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         r"""Set offsets from normal emission angles.
 
         This method sets the angle offsets so that the provided normal emission angles
-        :math:`(\\alpha, \\beta)` in the data map to :math:`(k_x, k_y) = (0, 0)` in
+        :math:`(\alpha, \beta)` in the data map to :math:`(k_x, k_y) = (0, 0)` in
         momentum space.
 
         Parameters
         ----------
         alpha
-            Angle :math:`\\alpha` in degrees corresponding to sample normal emission.
+            Angle :math:`\alpha` in degrees corresponding to sample normal emission.
         beta
-            Angle :math:`\\beta` in degrees corresponding to sample normal emission.
+            Angle :math:`\beta` in degrees corresponding to sample normal emission.
         delta
-            Optional azimuthal offset :math:`\\delta` in degrees. If omitted, the
+            Optional azimuthal offset :math:`\delta` in degrees. If omitted, the
             existing ``delta`` offset is preserved.
 
         Examples
@@ -897,6 +1013,83 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             kx, ky, kperp, self._kinetic_energy, **self.angle_params
         )
 
+    def _broadcast_exact_targets(
+        self, out_dict: dict[str, xr.DataArray], other_coord: xr.DataArray
+    ) -> dict[str, xr.DataArray]:
+        keys = tuple(out_dict)
+        broadcasted = xr.broadcast(*(out_dict[key] for key in keys))
+        if not self._has_beta:
+            broadcasted = tuple(
+                value.squeeze("beta", drop=True) if "beta" in value.dims else value
+                for value in broadcasted
+            )
+            if "beta" in other_coord.dims:
+                other_coord = other_coord.squeeze("beta", drop=True)
+        finite_other = np.asarray(other_coord.values, dtype=float)
+        finite_other = finite_other[np.isfinite(finite_other)]
+        if finite_other.size and np.allclose(finite_other, 0.0, atol=1e-10, rtol=0.0):
+            other_coord = xr.DataArray(0.0)
+        else:
+            other_coord = other_coord.broadcast_like(broadcasted[0]).reset_coords(
+                drop=True
+            )
+        return {
+            key: value.assign_coords({self.other_axis: other_coord})
+            for key, value in zip(keys, broadcasted, strict=True)
+        }
+
+    def _inverse_exact_cut(self, slit_momentum) -> dict[str, xr.DataArray]:
+        slit_axis = self.slit_axis
+        slit_value = xr.DataArray(
+            slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+        )
+        alpha = erlab.analysis.kspace.exact_cut_alpha(
+            slit_value,
+            self._beta,
+            self._kinetic_energy,
+            self._alpha,
+            self.configuration,
+            **self.angle_params,
+        )
+        other_momentum = erlab.analysis.kspace._exact_other_axis_momentum(
+            alpha,
+            self._beta,
+            self._kinetic_energy,
+            self.configuration,
+            **self.angle_params,
+        )
+
+        out_dict: dict[str, xr.DataArray] = {"alpha": alpha}
+        if self._has_eV:
+            out_dict["eV"] = self._binding_energy
+
+        return self._broadcast_exact_targets(out_dict, other_momentum)
+
+    def _inverse_exact_hv_cut(self, slit_momentum, kz) -> dict[str, xr.DataArray]:
+        slit_axis = self.slit_axis
+        slit_value = xr.DataArray(
+            slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+        )
+        kz_value = xr.DataArray(kz, dims="kz", coords={"kz": kz})
+
+        alpha, hv, other_momentum = erlab.analysis.kspace.exact_hv_cut_coords(
+            slit_value,
+            kz_value,
+            self._beta,
+            self._hv,
+            self._kinetic_energy,
+            self._alpha,
+            self.configuration,
+            self.inner_potential,
+            **self.angle_params,
+        )
+
+        out_dict: dict[str, xr.DataArray] = {"alpha": alpha, "hv": hv}
+        if self._has_eV:
+            out_dict["eV"] = self._binding_energy
+
+        return self._broadcast_exact_targets(out_dict, other_momentum)
+
     def _inverse_broadcast(self, kx, ky, kz=None) -> dict[str, xr.DataArray]:
         kxval = xr.DataArray(kx, dims="kx", coords={"kx": kx})
         kyval = xr.DataArray(ky, dims="ky", coords={"ky": ky})
@@ -1092,11 +1285,20 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if not silent:
             print("Calculating destination coordinates")
 
-        target_dict: dict[str, xr.DataArray] = self._inverse_broadcast(
-            momentum_coords.get("kx"),
-            momentum_coords.get("ky"),
-            momentum_coords.get("kz"),
-        )
+        target_dict: dict[str, xr.DataArray]
+        if not (self._has_beta and not self._has_hv):
+            if self._has_hv:
+                target_dict = self._inverse_exact_hv_cut(
+                    momentum_coords[self.slit_axis], momentum_coords["kz"]
+                )
+            else:
+                target_dict = self._inverse_exact_cut(momentum_coords[self.slit_axis])
+        else:
+            target_dict = self._inverse_broadcast(
+                momentum_coords.get("kx"),
+                momentum_coords.get("ky"),
+                momentum_coords.get("kz"),
+            )
 
         # Coords of first value in target_dict. Output of inverse_broadcast are all
         # broadcasted to each other, so all values will have same coords
@@ -1160,6 +1362,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             keep_attrs=True,
             output_dtypes=[np.float64],
         ).assign_coords({k: v.squeeze() for k, v in coords_for_transform.items()})
+        if not self._has_beta and "beta" in out.dims:
+            out = out.squeeze("beta", drop=True)
+        if (
+            not self._has_beta
+            and "beta" in self._obj.coords
+            and "beta" not in out.coords
+        ):
+            out = out.assign_coords(beta=self._beta.squeeze(drop=True))
 
         if not silent:
             print(f"Interpolated in {time.perf_counter() - t_start:.3f} s")
@@ -1202,9 +1412,55 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         return erlab.analysis.kspace.change_configuration(self._obj, configuration)
 
+    def _hv_to_kz_legacy(self, kinetic: xr.DataArray) -> xr.DataArray:
+        ang2k, k2ang = erlab.analysis.kspace.get_kconv_func(
+            kinetic, self.configuration, self.angle_params
+        )
+        kx, ky = ang2k(*k2ang(self._obj.kx, self._obj.ky))
+        return erlab.analysis.kspace.kz_func(kinetic, self.inner_potential, kx, ky)
+
+    def _hv_to_kz_from_stored_coords(
+        self, kinetic: xr.DataArray
+    ) -> xr.DataArray | None:
+        target_order = tuple(
+            dim
+            for dim in ("hv", "eV", self.slit_axis)
+            if dim in kinetic.dims or dim == self.slit_axis
+        )
+        if self.other_axis not in self._obj.coords:
+            return None
+
+        slit_coord = self._obj[self.slit_axis]
+        other_coord = self._obj[self.other_axis]
+
+        if "kz" not in other_coord.dims:
+            kx, ky = _kxy_components(self.slit_axis, slit_coord, other_coord)
+            out = erlab.analysis.kspace.kz_func(kinetic, self.inner_potential, kx, ky)
+            return out.transpose(*target_order)
+
+        kz_coord = self._obj["kz"]
+        kz_root = xr.apply_ufunc(
+            functools.partial(
+                _solve_hv_to_kz_roots_2d,
+                inner_potential=self.inner_potential,
+                slit_axis=self.slit_axis,
+            ),
+            kz_coord,
+            other_coord,
+            kinetic,
+            slit_coord,
+            input_core_dims=[("kz",), (self.slit_axis, "kz"), (), (self.slit_axis,)],
+            output_core_dims=[(self.slit_axis,)],
+            vectorize=True,
+            dask="parallelized",
+            dask_gufunc_kwargs={"output_sizes": {self.slit_axis: slit_coord.size}},
+            output_dtypes=[np.float64],
+        )
+        return kz_root.transpose(*target_order)
+
     @_only_momentum
     def hv_to_kz(self, hv: float | Iterable[float]) -> xr.DataArray:
-        """Return :math:`k_z` for a given photon energy.
+        r"""Return :math:`k_z` for a given photon energy.
 
         Useful when creating overlays on :math:`hν`-dependent data.
 
@@ -1215,9 +1471,31 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         Note
         ----
-        This will be inexact for hv-dependent cuts that do not pass through the BZ
-        center since we lost the exact angle values, i.e. the exact momentum
-        perpendicular to the slit, during momentum conversion.
+        This method returns an overlay curve :math:`k_z(hν)` for converted momentum
+        data. The returned values depend on the requested photon energies, binding
+        energy, and in-plane momentum coordinates, but never on the converted data's
+        current ``kz`` grid.
+
+        If the carried in-plane momentum perpendicular to the slit is independent of the
+        converted ``kz`` axis, :math:`k_z` is evaluated directly from
+
+        .. math::
+
+            k_z = \sqrt{\frac{2 m_e}{\hbar^2}(E_k + V_0) - k_x^2 - k_y^2}.
+
+        If that carried orthogonal momentum depends on the converted ``kz`` axis, the
+        method solves the sampled fixed-point relation
+
+        .. math::
+
+            k_z = \sqrt{\frac{2 m_e}{\hbar^2}(E_k + V_0) - k_{\mathrm{slit}}^2 -
+            k_{\mathrm{other}}(k_z)^2}
+
+        on the stored ``kz`` grid. If several sampled roots are present, a continuous
+        branch is selected across the momentum axis along the slit. Slices with no
+        sampled solution are returned as ``NaN``. The legacy angle-roundtrip path is
+        only used when the orthogonal in-plane momentum coordinate is unavailable.
+
         """
         if isinstance(hv, Iterable) and not isinstance(hv, xr.DataArray):
             hv = xr.DataArray(np.asarray(hv), coords={"hv": hv})
@@ -1228,15 +1506,13 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             context="calculating kz from photon energy",
             kinetic_energy=kinetic,
         )
-
-        # Get momentum conversion functions
-
-        ang2k, k2ang = erlab.analysis.kspace.get_kconv_func(
-            kinetic, self.configuration, self.angle_params
-        )
-
-        # Transformation yields in-plane momentum at given photon energy
-        kx, ky = ang2k(*k2ang(self._obj.kx, self._obj.ky))
-
-        # Calculate kz
-        return erlab.analysis.kspace.kz_func(kinetic, self.inner_potential, kx, ky)
+        direct = self._hv_to_kz_from_stored_coords(kinetic)
+        if direct is not None:
+            return direct
+        try:
+            return self._hv_to_kz_legacy(kinetic)
+        except (AttributeError, KeyError) as exc:
+            raise ValueError(
+                "`hv_to_kz` requires the orthogonal in-plane momentum coordinate or "
+                "enough metadata to reconstruct it."
+            ) from exc

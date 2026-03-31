@@ -1,3 +1,4 @@
+import functools
 import re
 
 import numpy as np
@@ -6,6 +7,7 @@ import scipy.optimize
 import xarray
 import xarray.testing
 
+import erlab.accessors.kspace
 import erlab.analysis.kspace
 from erlab.accessors.kspace import IncompleteDataError
 from erlab.constants import AxesConfiguration
@@ -14,7 +16,7 @@ from erlab.io.exampledata import generate_hvdep_cuts
 
 @pytest.fixture(scope="module")
 def hvdep():
-    data = generate_hvdep_cuts((50, 250, 300), seed=1)
+    data = generate_hvdep_cuts((24, 120, 140), seed=1)
     data.kspace.inner_potential = 10.0
     return data
 
@@ -180,6 +182,281 @@ def _solve_normal_emission_angles(
 
     assert result.success, result.message
     return float(result.x[0]), float(result.x[1])
+
+
+def _make_alpha_field_cut(
+    cut: xarray.DataArray,
+    configuration: AxesConfiguration,
+    *,
+    xi: float,
+    offsets: dict[str, float],
+    beta: float | None = None,
+    chi: float | None = None,
+) -> xarray.DataArray:
+    data = cut.copy(deep=True)
+    data.attrs["configuration"] = int(configuration)
+    data = data.assign_coords(xi=xi)
+    if chi is not None:
+        data = data.assign_coords(chi=chi)
+    if beta is not None:
+        data = data.assign_coords(beta=beta)
+
+    alpha_grid = xarray.broadcast(data.eV, data.alpha)[1].transpose(*data.dims)
+    data = data.copy(data=alpha_grid.values.astype(float))
+    data.kspace.offsets = offsets
+    return data
+
+
+def _exact_cut_target_alpha(
+    data: xarray.DataArray, slit_momentum: np.ndarray
+) -> xarray.DataArray:
+    slit_axis = data.kspace.slit_axis
+    slit_value = xarray.DataArray(
+        slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+    )
+    return erlab.analysis.kspace.exact_cut_alpha(
+        slit_value,
+        data.beta,
+        data.kspace._kinetic_energy,
+        data.alpha,
+        data.kspace.configuration,
+        **data.kspace.angle_params,
+    )
+
+
+def _legacy_cut_target_alpha(
+    data: xarray.DataArray, slit_momentum: np.ndarray
+) -> xarray.DataArray:
+    slit_axis = data.kspace.slit_axis
+    other_axis = data.kspace.other_axis
+    other_lims = data.kspace.estimate_bounds()[other_axis]
+    other_mean = np.array([(other_lims[0] + other_lims[1]) / 2.0])
+
+    slit_value = xarray.DataArray(
+        slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+    )
+    other_value = xarray.DataArray(
+        other_mean, dims=other_axis, coords={other_axis: other_mean}
+    )
+
+    if slit_axis == "kx":
+        alpha, _ = data.kspace._inverse_func(slit_value, other_value)
+    else:
+        alpha, _ = data.kspace._inverse_func(other_value, slit_value)
+
+    return alpha.squeeze(other_axis, drop=True)
+
+
+def _mask_alpha_domain(
+    data: xarray.DataArray, target_alpha: xarray.DataArray
+) -> xarray.DataArray:
+    alpha_min = float(data.alpha.min())
+    alpha_max = float(data.alpha.max())
+    tol = 1e-9
+    valid = (target_alpha >= alpha_min - tol) & (target_alpha <= alpha_max + tol)
+    return target_alpha.where(valid)
+
+
+def _make_field_hvdep_cut(
+    hvdep: xarray.DataArray,
+    configuration: AxesConfiguration,
+    *,
+    field: str,
+    xi: float,
+    offsets: dict[str, float],
+    chi: float | None = None,
+) -> xarray.DataArray:
+    data = hvdep.copy(deep=True)
+    data.attrs["configuration"] = int(configuration)
+    data = data.assign_coords(xi=xi)
+    if chi is not None:
+        data = data.assign_coords(chi=chi)
+
+    alpha_grid, _, hv_grid = xarray.broadcast(data.alpha, data.eV, data.hv)
+    match field:
+        case "alpha":
+            values = alpha_grid
+        case "hv":
+            values = hv_grid
+        case _:
+            raise ValueError(f"Unsupported field '{field}'")
+
+    data = data.copy(data=values.transpose(*data.dims).values.astype(float))
+    data.kspace.offsets = offsets
+    data.kspace.inner_potential = 10.0
+    return data
+
+
+def _exact_hvdep_targets(
+    data: xarray.DataArray, slit_momentum: np.ndarray, kz: np.ndarray
+) -> tuple[xarray.DataArray, xarray.DataArray]:
+    slit_axis = data.kspace.slit_axis
+    slit_value = xarray.DataArray(
+        slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+    )
+    kz_value = xarray.DataArray(kz, dims="kz", coords={"kz": kz})
+    alpha, hv, _ = erlab.analysis.kspace.exact_hv_cut_coords(
+        slit_value,
+        kz_value,
+        data.beta,
+        data.hv,
+        data.kspace._kinetic_energy,
+        data.alpha,
+        data.kspace.configuration,
+        data.kspace.inner_potential,
+        **data.kspace.angle_params,
+    )
+    return alpha, hv
+
+
+def _exact_cut_other_coord(
+    data: xarray.DataArray,
+    alpha_target: xarray.DataArray,
+    *,
+    hv_target: xarray.DataArray | None = None,
+) -> xarray.DataArray:
+    if hv_target is None:
+        beta_target = data.beta
+        kinetic_target = data.kspace._kinetic_energy
+    else:
+        hv_dim = str(data.hv.dims[0])
+        if hv_dim in data.beta.dims:
+            beta_target = data.beta.interp({hv_dim: hv_target})
+        else:
+            beta_target = data.beta.broadcast_like(hv_target)
+        kinetic_target = (
+            hv_target - data.kspace.work_function + data.kspace._binding_energy
+        )
+
+    return erlab.analysis.kspace._exact_other_axis_momentum(
+        alpha_target,
+        beta_target,
+        kinetic_target,
+        data.kspace.configuration,
+        **data.kspace.angle_params,
+    )
+
+
+def _exact_hvdep_other_coord(
+    data: xarray.DataArray, slit_momentum: np.ndarray, kz: np.ndarray
+) -> xarray.DataArray:
+    slit_axis = data.kspace.slit_axis
+    slit_value = xarray.DataArray(
+        slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+    )
+    kz_value = xarray.DataArray(kz, dims="kz", coords={"kz": kz})
+    return erlab.analysis.kspace.exact_hv_cut_coords(
+        slit_value,
+        kz_value,
+        data.beta,
+        data.hv,
+        data.kspace._kinetic_energy,
+        data.alpha,
+        data.kspace.configuration,
+        data.kspace.inner_potential,
+        **data.kspace.angle_params,
+    )[2]
+
+
+def _overlay_subset(data: xarray.DataArray) -> xarray.DataArray:
+    slit_axis = data.kspace.slit_axis
+    slit_idx = np.unique(np.linspace(0, data.sizes[slit_axis] - 1, 4, dtype=int))
+    eV_idx = np.unique(np.linspace(0, data.sizes["eV"] - 1, 3, dtype=int))
+    return data.isel({slit_axis: slit_idx, "eV": eV_idx})
+
+
+def _legacy_hv_to_kz(data: xarray.DataArray, hv_values) -> xarray.DataArray:
+    hv = xarray.DataArray(np.asarray(hv_values), dims="hv", coords={"hv": hv_values})
+    kinetic = hv - data.kspace.work_function + data.eV
+    ang2k, k2ang = erlab.analysis.kspace.get_kconv_func(
+        kinetic, data.kspace.configuration, data.kspace.angle_params
+    )
+    kx, ky = ang2k(*k2ang(data.kx, data.ky))
+    return erlab.analysis.kspace.kz_func(kinetic, data.kspace.inner_potential, kx, ky)
+
+
+def _self_consistent_hv_to_kz(data: xarray.DataArray, hv_values) -> xarray.DataArray:
+    hv = xarray.DataArray(np.asarray(hv_values), dims="hv", coords={"hv": hv_values})
+    kinetic = hv - data.kspace.work_function + data.eV
+    slit_coord = data[data.kspace.slit_axis]
+    other_coord = data.coords[data.kspace.other_axis]
+    target_order = ("hv", "eV", data.kspace.slit_axis)
+
+    if "kz" not in other_coord.dims:
+        if data.kspace.slit_axis == "kx":
+            return erlab.analysis.kspace.kz_func(
+                kinetic, data.kspace.inner_potential, slit_coord, other_coord
+            ).transpose(*target_order)
+        return erlab.analysis.kspace.kz_func(
+            kinetic, data.kspace.inner_potential, other_coord, slit_coord
+        ).transpose(*target_order)
+
+    root = xarray.apply_ufunc(
+        functools.partial(
+            erlab.accessors.kspace._solve_hv_to_kz_roots_2d,
+            inner_potential=data.kspace.inner_potential,
+            slit_axis=data.kspace.slit_axis,
+        ),
+        data.kz,
+        other_coord,
+        kinetic,
+        slit_coord,
+        input_core_dims=[
+            ("kz",),
+            (data.kspace.slit_axis, "kz"),
+            (),
+            (data.kspace.slit_axis,),
+        ],
+        output_core_dims=[(data.kspace.slit_axis,)],
+        vectorize=True,
+        dask="parallelized",
+        dask_gufunc_kwargs={"output_sizes": {data.kspace.slit_axis: slit_coord.size}},
+        output_dtypes=[np.float64],
+    )
+    return root.transpose(*target_order)
+
+
+def _legacy_hvdep_targets(
+    data: xarray.DataArray, slit_momentum: np.ndarray, kz: np.ndarray
+) -> tuple[xarray.DataArray, xarray.DataArray]:
+    slit_axis = data.kspace.slit_axis
+    other_axis = data.kspace.other_axis
+    other_lims = data.kspace.estimate_bounds()[other_axis]
+    other_mean = np.array([(other_lims[0] + other_lims[1]) / 2.0])
+
+    slit_value = xarray.DataArray(
+        slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+    )
+    other_value = xarray.DataArray(
+        other_mean, dims=other_axis, coords={other_axis: other_mean}
+    )
+    kz_value = xarray.DataArray(kz, dims="kz", coords={"kz": kz})
+    kperp = erlab.analysis.kspace.kperp_from_kz(kz_value, data.kspace.inner_potential)
+
+    if slit_axis == "kx":
+        alpha, _ = data.kspace._inverse_func(slit_value, other_value, kperp)
+        hv = erlab.analysis.kspace.hv_func(
+            slit_value,
+            other_value,
+            kz_value,
+            data.kspace.inner_potential,
+            data.kspace.work_function,
+            data.kspace._binding_energy,
+        )
+    else:
+        alpha, _ = data.kspace._inverse_func(other_value, slit_value, kperp)
+        hv = erlab.analysis.kspace.hv_func(
+            other_value,
+            slit_value,
+            kz_value,
+            data.kspace.inner_potential,
+            data.kspace.work_function,
+            data.kspace._binding_energy,
+        )
+
+    hv = hv.squeeze(other_axis, drop=True)
+    alpha = alpha.squeeze(other_axis, drop=True).broadcast_like(hv)
+    return alpha, hv
 
 
 @pytest.mark.parametrize("data_type", ["anglemap", "cut", "hvdep"])
@@ -524,9 +801,9 @@ def test_kconv(
     elif data_type == "hvdep":
         assert len(kconv.shape) == 3 + extra_dims
         if extra_dims == 0:
-            assert set(kconv.shape) == {637, 63, 300}
+            assert set(kconv.shape) == set(expected.shape)
         else:
-            assert set(kconv.shape) == {637, 63, 300, 2}
+            assert set(kconv.shape) == {*expected.shape, 2}
 
     assert isinstance(kconv, xarray.DataArray)
     assert not kconv.isnull().all()
@@ -677,9 +954,716 @@ def test_convert_coords_assigns_momentum_coords(anglemap) -> None:
     assert np.isfinite(out.ky.values).all()
 
 
-def test_hv_to_kz_accepts_iterable_hv(config_1_hvdep) -> None:
-    out = config_1_hvdep.kspace.hv_to_kz([30.0, 45.0, 60.0])
+@pytest.mark.parametrize(
+    ("configuration", "xi", "offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            7.25,
+            {"delta": 12.5, "xi": 2.5, "beta": -3.75},
+            id="type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2,
+            -6.5,
+            {"delta": -8.0, "xi": -1.75, "beta": 2.25},
+            id="type2",
+        ),
+    ],
+)
+def test_convert_cut_uses_exact_slit_inverse_for_alpha_field(
+    cut,
+    configuration: AxesConfiguration,
+    xi: float,
+    offsets: dict[str, float],
+) -> None:
+    data = _make_alpha_field_cut(cut, configuration, xi=xi, offsets=offsets)
 
-    assert "hv" in out.dims
+    converted = data.kspace.convert(silent=True)
+    slit_axis = data.kspace.slit_axis
+
+    expected_alpha = _exact_cut_target_alpha(data, converted[slit_axis].values)
+    expected = _mask_alpha_domain(data, expected_alpha).transpose(*converted.dims)
+    legacy = _mask_alpha_domain(
+        data, _legacy_cut_target_alpha(data, converted[slit_axis].values)
+    ).transpose(*converted.dims)
+
+    finite = np.isfinite(converted.values)
+    assert finite.any()
+    assert np.allclose(converted.values[finite], expected.values[finite])
+    assert not np.allclose(
+        converted.values[finite],
+        legacy.values[finite],
+        equal_nan=True,
+    )
+    xarray.testing.assert_allclose(
+        converted.coords[data.kspace.other_axis].reset_coords(drop=True),
+        _exact_cut_other_coord(data, expected_alpha)
+        .transpose(*converted.coords[data.kspace.other_axis].dims)
+        .reset_coords(drop=True),
+    )
+
+
+def test_convert_cut_exact_slit_inverse_raises_when_multivalued(cut) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1,
+        xi=90.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+        beta=0.0,
+    )
+
+    with pytest.raises(ValueError, match="non-physical angle value or offset"):
+        data.kspace.convert(silent=True)
+
+
+def test_convert_cut_exact_slit_inverse_returns_nan_out_of_domain(cut) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1,
+        xi=7.25,
+        offsets={"delta": 12.5, "xi": 2.5, "beta": -3.75},
+    )
+
+    lims = data.kspace.estimate_bounds()["kx"]
+    out = data.kspace.convert(
+        silent=True, kx=np.linspace(lims[0] - 0.1, lims[1] + 0.1, 64)
+    )
+
+    assert out.isel(kx=0).isnull().all()
+    assert out.isel(kx=-1).isnull().all()
+    assert not out.isel(kx=slice(1, -1)).isnull().all()
+
+
+def test_convert_cut_with_singleton_beta_dim_uses_exact_path(cut) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1,
+        xi=7.25,
+        offsets={"delta": 12.5, "xi": 2.5, "beta": -3.75},
+    )
+    with_beta_dim = data.expand_dims(beta=[float(data.beta)])
+
+    converted = with_beta_dim.kspace.convert(silent=True)
+    reference = data.kspace.convert(silent=True)
+
+    assert "beta" not in converted.dims
+    xarray.testing.assert_allclose(converted, reference)
+
+
+def test_convert_cut_with_zero_other_axis_collapses_coord_to_scalar(cut) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1,
+        xi=0.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+        beta=0.0,
+    )
+
+    converted = data.kspace.convert(silent=True)
+    other_coord = converted.coords[data.kspace.other_axis]
+
+    assert other_coord.ndim == 0
+    assert np.isclose(float(other_coord), 0.0)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "xi", "chi", "offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1DA,
+            5.25,
+            6.5,
+            {"delta": 9.0, "chi": 2.0, "xi": 1.75},
+            id="type1da",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            6.75,
+            -4.0,
+            {"delta": -5.0, "chi": 1.25, "xi": 0.75},
+            id="type2da",
+        ),
+    ],
+)
+def test_convert_cut_uses_exact_da_inverse_for_alpha_field(
+    cut,
+    configuration: AxesConfiguration,
+    xi: float,
+    chi: float,
+    offsets: dict[str, float],
+) -> None:
+    data = _make_alpha_field_cut(cut, configuration, xi=xi, chi=chi, offsets=offsets)
+
+    converted = data.kspace.convert(silent=True)
+    slit_axis = data.kspace.slit_axis
+
+    expected_alpha = _mask_alpha_domain(
+        data, _exact_cut_target_alpha(data, converted[slit_axis].values)
+    ).transpose(*converted.dims)
+
+    finite = np.isfinite(converted.values)
+    assert finite.any()
+    assert np.allclose(converted.values[finite], expected_alpha.values[finite])
+    xarray.testing.assert_allclose(
+        converted.coords[data.kspace.other_axis].reset_coords(drop=True),
+        _exact_cut_other_coord(data, expected_alpha).reset_coords(drop=True),
+    )
+
+
+def test_convert_cut_exact_da_inverse_raises_when_noninvertible(
+    cut, monkeypatch
+) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1DA,
+        xi=5.25,
+        chi=6.5,
+        offsets={"delta": 9.0, "chi": 2.0, "xi": 1.75},
+    )
+
+    def _raise(*args, **kwargs):
+        raise ValueError(
+            "Exact cut conversion is multi-valued over the measured interval."
+        )
+
+    monkeypatch.setattr(erlab.analysis.kspace, "exact_cut_alpha", _raise)
+
+    with pytest.raises(ValueError, match="multi-valued"):
+        data.kspace.convert(silent=True)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "xi", "offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            0.0,
+            {"delta": 0.0, "xi": 0.0, "beta": 0.0},
+            id="type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2,
+            0.0,
+            {"delta": 0.0, "xi": 0.0, "beta": 0.0},
+            id="type2",
+        ),
+    ],
+)
+def test_convert_hv_cut_uses_exact_slit_inverse_for_alpha_field(
+    hvdep,
+    configuration: AxesConfiguration,
+    xi: float,
+    offsets: dict[str, float],
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep, configuration, field="alpha", xi=xi, offsets=offsets
+    )
+
+    converted = data.kspace.convert(silent=True)
+    slit_axis = data.kspace.slit_axis
+
+    expected_alpha, legacy_alpha = (
+        _exact_hvdep_targets(data, converted[slit_axis].values, converted.kz.values)[0],
+        _legacy_hvdep_targets(data, converted[slit_axis].values, converted.kz.values)[
+            0
+        ],
+    )
+
+    expected = expected_alpha.transpose(*converted.dims)
+    legacy = legacy_alpha.transpose(*converted.dims)
+
+    finite = np.isfinite(converted.values)
+    assert finite.any()
+    assert np.allclose(converted.values[finite], expected.values[finite])
+    assert not np.allclose(
+        converted.values[finite],
+        legacy.values[finite],
+        equal_nan=True,
+    )
+    xarray.testing.assert_allclose(
+        converted.coords[data.kspace.other_axis].reset_coords(drop=True),
+        _exact_hvdep_other_coord(
+            data, converted[slit_axis].values, converted.kz.values
+        ).reset_coords(drop=True),
+    )
+
+
+@pytest.mark.parametrize(
+    ("configuration", "xi", "offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            0.0,
+            {"delta": 0.0, "xi": 0.0, "beta": 0.0},
+            id="type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2,
+            0.0,
+            {"delta": 0.0, "xi": 0.0, "beta": 0.0},
+            id="type2",
+        ),
+    ],
+)
+def test_convert_hv_cut_uses_exact_slit_inverse_for_hv_field(
+    hvdep,
+    configuration: AxesConfiguration,
+    xi: float,
+    offsets: dict[str, float],
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep, configuration, field="hv", xi=xi, offsets=offsets
+    )
+
+    converted = data.kspace.convert(silent=True)
+    slit_axis = data.kspace.slit_axis
+
+    expected_hv, legacy_hv = (
+        _exact_hvdep_targets(data, converted[slit_axis].values, converted.kz.values)[1],
+        _legacy_hvdep_targets(data, converted[slit_axis].values, converted.kz.values)[
+            1
+        ],
+    )
+
+    expected = expected_hv.transpose(*converted.dims)
+    legacy = legacy_hv.transpose(*converted.dims)
+
+    finite = np.isfinite(converted.values)
+    assert finite.any()
+    assert np.allclose(converted.values[finite], expected.values[finite])
+    assert not np.allclose(
+        converted.values[finite],
+        legacy.values[finite],
+        equal_nan=True,
+    )
+
+
+def test_convert_hv_cut_exact_slit_inverse_raises_when_exact_hv_path_fails(
+    hvdep, monkeypatch
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep,
+        AxesConfiguration.Type1,
+        field="alpha",
+        xi=0.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+    )
+
+    def _raise(*args, **kwargs):
+        raise ValueError(
+            "Exact hv-cut conversion is multi-valued over the measured hv range."
+        )
+
+    monkeypatch.setattr(erlab.analysis.kspace, "exact_hv_cut_coords", _raise)
+
+    with pytest.raises(ValueError, match="multi-valued"):
+        data.kspace.convert(silent=True)
+
+
+def test_convert_hv_cut_exact_slit_inverse_returns_nan_out_of_domain(hvdep) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep,
+        AxesConfiguration.Type1,
+        field="hv",
+        xi=0.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+    )
+
+    lims = data.kspace.estimate_bounds()["kz"]
+    out = data.kspace.convert(
+        silent=True, kz=np.linspace(lims[0] - 0.2, lims[1] + 0.2, 64)
+    )
+
+    assert out.isel(kz=0).isnull().all()
+    assert out.isel(kz=-1).isnull().all()
+    assert not out.isel(kz=slice(1, -1)).isnull().all()
+
+
+@pytest.mark.parametrize(
+    ("configuration", "xi", "chi", "offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1DA,
+            5.25,
+            6.5,
+            {"delta": 9.0, "chi": 2.0, "xi": 1.75},
+            id="type1da",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            6.75,
+            -4.0,
+            {"delta": -5.0, "chi": 1.25, "xi": 0.75},
+            id="type2da",
+        ),
+    ],
+)
+def test_convert_hv_cut_uses_exact_da_inverse_for_alpha_field(
+    hvdep,
+    configuration: AxesConfiguration,
+    xi: float,
+    chi: float,
+    offsets: dict[str, float],
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep, configuration, field="alpha", xi=xi, chi=chi, offsets=offsets
+    )
+
+    converted = data.kspace.convert(silent=True)
+    slit_axis = data.kspace.slit_axis
+    expected_alpha, _ = _exact_hvdep_targets(
+        data, converted[slit_axis].values, converted.kz.values
+    )
+    expected = expected_alpha.transpose(*converted.dims)
+
+    finite = np.isfinite(converted.values)
+    assert finite.any()
+    assert np.allclose(converted.values[finite], expected.values[finite])
+    xarray.testing.assert_allclose(
+        converted.coords[data.kspace.other_axis].reset_coords(drop=True),
+        _exact_hvdep_other_coord(
+            data, converted[slit_axis].values, converted.kz.values
+        ).reset_coords(drop=True),
+    )
+
+
+@pytest.mark.parametrize(
+    ("configuration", "xi", "chi", "offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1DA,
+            5.25,
+            6.5,
+            {"delta": 9.0, "chi": 2.0, "xi": 1.75},
+            id="type1da",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            6.75,
+            -4.0,
+            {"delta": -5.0, "chi": 1.25, "xi": 0.75},
+            id="type2da",
+        ),
+    ],
+)
+def test_convert_hv_cut_uses_exact_da_inverse_for_hv_field(
+    hvdep,
+    configuration: AxesConfiguration,
+    xi: float,
+    chi: float,
+    offsets: dict[str, float],
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep, configuration, field="hv", xi=xi, chi=chi, offsets=offsets
+    )
+
+    converted = data.kspace.convert(silent=True)
+    slit_axis = data.kspace.slit_axis
+    expected_hv = _exact_hvdep_targets(
+        data, converted[slit_axis].values, converted.kz.values
+    )[1].transpose(*converted.dims)
+
+    finite = np.isfinite(converted.values)
+    assert finite.any()
+    assert np.allclose(converted.values[finite], expected_hv.values[finite])
+
+
+def test_convert_hv_cut_exact_da_inverse_raises_when_noninvertible(
+    hvdep, monkeypatch
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep,
+        AxesConfiguration.Type1DA,
+        field="alpha",
+        xi=5.25,
+        chi=6.5,
+        offsets={"delta": 9.0, "chi": 2.0, "xi": 1.75},
+    )
+
+    def _raise(*args, **kwargs):
+        raise ValueError(
+            "Exact cut conversion is multi-valued over the measured interval."
+        )
+
+    monkeypatch.setattr(erlab.analysis.kspace, "exact_hv_cut_coords", _raise)
+
+    with pytest.raises(ValueError, match="multi-valued"):
+        data.kspace.convert(silent=True)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "xi", "chi", "offsets"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            0.0,
+            None,
+            {"delta": 0.0, "xi": 0.0, "beta": 0.0},
+            id="type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            6.75,
+            -4.0,
+            {"delta": -5.0, "chi": 1.25, "xi": 0.75},
+            id="type2da",
+        ),
+    ],
+)
+def test_hv_to_kz_exact_off_center_cut_returns_overlay_curve(
+    hvdep,
+    configuration: AxesConfiguration,
+    xi: float,
+    chi: float | None,
+    offsets: dict[str, float],
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep, configuration, field="alpha", xi=xi, chi=chi, offsets=offsets
+    )
+    converted = _overlay_subset(data.kspace.convert(silent=True))
+    hv_values = [30.0, 45.0, 60.0]
+
+    assert "kz" in converted.coords[converted.kspace.other_axis].dims
+
+    out = converted.kspace.hv_to_kz(hv_values)
+    expected = _self_consistent_hv_to_kz(converted, hv_values)
+
+    assert "kz" not in out.dims
+    xarray.testing.assert_allclose(out, expected)
+
+
+def test_hv_to_kz_direct_formula_for_scalar_other_axis(cut) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1,
+        xi=0.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+        beta=0.0,
+    )
+    data.kspace.inner_potential = 10.0
+    converted = data.kspace.convert(silent=True)
+    hv_values = [25.0, 35.0, 45.0]
+
+    out = converted.kspace.hv_to_kz(hv_values)
+    expected = _self_consistent_hv_to_kz(converted, hv_values)
+
+    assert "kz" not in out.dims
+    assert converted.coords[data.kspace.other_axis].ndim == 0
+    xarray.testing.assert_allclose(out, expected)
+
+
+def test_hv_to_kz_falls_back_to_legacy_when_stored_coord_path_is_unavailable(
+    hvdep, monkeypatch
+) -> None:
+    data = _make_field_hvdep_cut(
+        hvdep,
+        AxesConfiguration.Type1,
+        field="alpha",
+        xi=0.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+    )
+    converted = _overlay_subset(data.kspace.convert(silent=True))
+    hv_values = [30.0, 45.0, 60.0]
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace.MomentumAccessor,
+        "_hv_to_kz_from_stored_coords",
+        lambda self, kinetic: None,
+    )
+
+    out = converted.kspace.hv_to_kz(hv_values)
+    expected = _legacy_hv_to_kz(converted, hv_values)
+
+    xarray.testing.assert_allclose(out, expected)
+
+
+def test_hv_to_kz_accepts_iterable_hv(config_1_hvdep) -> None:
+    converted = _overlay_subset(config_1_hvdep)
+    out = converted.kspace.hv_to_kz([30.0, 45.0, 60.0])
+    expected = _self_consistent_hv_to_kz(converted, [30.0, 45.0, 60.0])
+
+    assert out.dims == ("hv", "eV", converted.kspace.slit_axis)
     assert out.hv.size == 3
-    assert np.isfinite(out.values).all()
+    xarray.testing.assert_allclose(out, expected)
+
+
+def test_hv_to_kz_root_candidates_1d_rejects_nonfinite_inputs() -> None:
+    out = erlab.accessors.kspace._hv_to_kz_root_candidates_1d(
+        np.array([0.0, 1.0]),
+        np.array([0.0, 0.0]),
+        np.nan,
+        0.0,
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert out.size == 0
+
+
+def test_hv_to_kz_root_candidates_1d_groups_exact_segments(monkeypatch) -> None:
+    def _mock_kz_func(kinetic, inner_potential, kx, ky):
+        return np.array([0.0, 1.0, 6.0, 3.0, 8.0], dtype=float)
+
+    monkeypatch.setattr(erlab.analysis.kspace, "kz_func", _mock_kz_func)
+
+    out = erlab.accessors.kspace._hv_to_kz_root_candidates_1d(
+        np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
+        np.zeros(5),
+        25.0,
+        0.0,
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert np.allclose(out, [0.5, 3.0])
+
+
+def test_solve_hv_to_kz_roots_2d_returns_nan_without_unique_seed(monkeypatch) -> None:
+    lookup = {
+        0.0: np.array([], dtype=float),
+        1.0: np.array([0.25, 1.25], dtype=float),
+        2.0: np.array([0.5, 1.5], dtype=float),
+    }
+
+    def _mock_candidates(
+        kz_grid,
+        other_momentum,
+        kinetic_energy,
+        slit_momentum,
+        *,
+        inner_potential: float,
+        slit_axis: str,
+    ) -> np.ndarray:
+        return lookup[float(slit_momentum)]
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace, "_hv_to_kz_root_candidates_1d", _mock_candidates
+    )
+
+    out = erlab.accessors.kspace._solve_hv_to_kz_roots_2d(
+        np.array([0.0]),
+        np.zeros((3, 1)),
+        30.0,
+        np.array([0.0, 1.0, 2.0]),
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert np.isnan(out).all()
+
+
+def test_solve_hv_to_kz_roots_2d_propagates_closest_branch(monkeypatch) -> None:
+    lookup = {
+        0.0: np.array([0.2, 2.2], dtype=float),
+        1.0: np.array([1.0], dtype=float),
+        2.0: np.array([0.9, 3.5], dtype=float),
+        3.0: np.array([], dtype=float),
+    }
+
+    def _mock_candidates(
+        kz_grid,
+        other_momentum,
+        kinetic_energy,
+        slit_momentum,
+        *,
+        inner_potential: float,
+        slit_axis: str,
+    ) -> np.ndarray:
+        return lookup[float(slit_momentum)]
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace, "_hv_to_kz_root_candidates_1d", _mock_candidates
+    )
+
+    out = erlab.accessors.kspace._solve_hv_to_kz_roots_2d(
+        np.array([0.0]),
+        np.zeros((4, 1)),
+        30.0,
+        np.array([0.0, 1.0, 2.0, 3.0]),
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert np.allclose(out[:3], [0.2, 1.0, 0.9])
+    assert np.isnan(out[3])
+
+
+def test_inverse_exact_cut_without_energy_axis_omits_ev_output(
+    cut, monkeypatch
+) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1,
+        xi=0.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+        beta=0.0,
+    ).isel(eV=0, drop=True)
+
+    slit_axis = data.kspace.slit_axis
+    alpha = xarray.DataArray([0.0], dims=(slit_axis,), coords={slit_axis: [0.0]})
+    other = xarray.DataArray(0.0)
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace.MomentumAccessor,
+        "_kinetic_energy",
+        property(lambda self: xarray.DataArray(20.0)),
+    )
+    monkeypatch.setattr(
+        erlab.analysis.kspace,
+        "exact_cut_alpha",
+        lambda *args, **kwargs: alpha,
+    )
+    monkeypatch.setattr(
+        erlab.analysis.kspace,
+        "_exact_other_axis_momentum",
+        lambda *args, **kwargs: other,
+    )
+    monkeypatch.setattr(
+        erlab.accessors.kspace.MomentumAccessor,
+        "_broadcast_exact_targets",
+        lambda self, out_dict, other_momentum: out_dict,
+    )
+
+    out = data.kspace._inverse_exact_cut(np.array([0.0]))
+
+    assert "eV" not in out
+    assert set(out) == {"alpha"}
+
+
+def test_hv_to_kz_from_stored_coords_returns_none_without_other_axis(
+    config_1_hvdep,
+) -> None:
+    converted = _overlay_subset(config_1_hvdep)
+    converted = converted.drop_vars(converted.kspace.other_axis)
+    kinetic = (
+        xarray.DataArray([30.0], dims=("hv",), coords={"hv": [30.0]})
+        - converted.kspace.work_function
+        + converted.eV
+    )
+
+    out = converted.kspace._hv_to_kz_from_stored_coords(kinetic)
+
+    assert out is None
+
+
+def test_hv_to_kz_raises_without_stored_coord_or_legacy_metadata(
+    config_1_hvdep, monkeypatch
+) -> None:
+    converted = _overlay_subset(config_1_hvdep)
+    converted = converted.drop_vars(converted.kspace.other_axis)
+
+    def _raise(self, kinetic):
+        raise KeyError("missing-coordinate")
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace.MomentumAccessor,
+        "_hv_to_kz_legacy",
+        _raise,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="requires the orthogonal in-plane momentum coordinate or enough metadata",
+    ):
+        converted.kspace.hv_to_kz([30.0])
