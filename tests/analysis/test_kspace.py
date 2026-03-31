@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Callable
 
 import numpy as np
@@ -93,6 +94,36 @@ def test_invalid_configuration_error_for_invalid_value() -> None:
         match="get_kconv_forward received invalid configuration 999",
     ):
         erlab.analysis.kspace.get_kconv_forward(999)
+
+
+@pytest.mark.parametrize(
+    ("configuration", "context", "expected"),
+    [
+        pytest.param(
+            999, None, "Invalid configuration 999.", id="invalid-without-context"
+        ),
+        pytest.param(
+            AxesConfiguration.Type1,
+            None,
+            "Unexpected configuration Type1.",
+            id="unexpected-without-context",
+        ),
+        pytest.param(
+            AxesConfiguration.Type1,
+            "exact cut conversion",
+            "exact cut conversion received unexpected configuration Type1.",
+            id="unexpected-with-context",
+        ),
+    ],
+)
+def test_invalid_configuration_error_message_variants(
+    configuration, context: str | None, expected: str
+) -> None:
+    err = erlab.analysis.kspace.InvalidConfigurationError(
+        configuration, context=context
+    )
+
+    assert str(err).startswith(expected)
 
 
 def test_inverse_type1_beta_uses_quadrant_from_arctan2() -> None:
@@ -675,6 +706,159 @@ def test_interp_monotonic_interpn_1d_rejects_constant_curve() -> None:
             np.array([1.0, 2.0, 3.0]),
             np.array([1.0]),
         )
+
+
+def test_interp_monotonic_interpn_1d_rejects_repeated_monotonic_curve() -> None:
+    with pytest.raises(ValueError, match="not strictly monotonic"):
+        erlab.analysis.kspace._interp_monotonic_interpn_1d(
+            np.array([0.0, 1.0, 1.0, 2.0]),
+            np.array([0.0, 1.0, 2.0, 3.0]),
+            np.array([1.5]),
+        )
+
+
+def test_exact_cut_alpha_rejects_degenerate_dataarray_geometry(monkeypatch) -> None:
+    alpha_reference = xr.DataArray(np.linspace(-5.0, 5.0, 5), dims=("alpha",))
+    slit_target = xr.DataArray([0.0], dims=("kx",), coords={"kx": [0.0]})
+    beta = xr.DataArray([0.0, 1.0], dims=("hv",), coords={"hv": [24.0, 32.0]})
+    kinetic_energy = xr.DataArray([20.0, 24.0], dims=("hv",), coords={"hv": beta.hv})
+    zeros = xr.zeros_like(beta)
+
+    monkeypatch.setattr(
+        erlab.analysis.kspace,
+        "_fixed_beta_slit_coefficients",
+        lambda *args, **kwargs: (zeros, zeros),
+    )
+
+    with pytest.raises(ValueError, match="slit-axis momentum does not vary with alpha"):
+        erlab.analysis.kspace.exact_cut_alpha(
+            slit_target,
+            beta,
+            kinetic_energy,
+            alpha_reference,
+            AxesConfiguration.Type1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("alpha_reference_r", "u_reference_norm", "match"),
+    [
+        pytest.param(
+            np.zeros((2, 2)),
+            np.zeros(4),
+            "expects one-dimensional",
+            id="ndim-mismatch",
+        ),
+        pytest.param(
+            np.zeros(3),
+            np.zeros(2),
+            "matching shapes",
+            id="shape-mismatch",
+        ),
+        pytest.param(
+            np.zeros(1),
+            np.zeros(1),
+            "at least two alpha reference points",
+            id="too-short",
+        ),
+    ],
+)
+def test_select_slit_branch_1d_validates_reference_inputs(
+    alpha_reference_r: np.ndarray, u_reference_norm: np.ndarray, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        erlab.analysis.kspace._select_slit_branch_1d(
+            alpha_reference_r, u_reference_norm, 0.0
+        )
+
+
+def test_select_slit_branch_1d_rejects_effectively_constant_slit_curve() -> None:
+    with pytest.raises(ValueError, match="effectively constant slit momentum"):
+        erlab.analysis.kspace._select_slit_branch_1d(
+            np.array([0.0, 1.0]),
+            np.array([0.3, 0.3]),
+            0.0,
+        )
+
+
+def test_select_slit_branch_1d_rejects_nonfinite_inverse_branch(monkeypatch) -> None:
+    monkeypatch.setattr(
+        erlab.analysis.kspace,
+        "_candidate_alpha_from_slit",
+        lambda *args, **kwargs: np.array([np.nan, np.nan]),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with pytest.raises(
+            ValueError, match="could not determine a valid inverse branch"
+        ):
+            erlab.analysis.kspace._select_slit_branch_1d(
+                np.array([0.0, 1.0]),
+                np.array([0.0, 0.1]),
+                0.0,
+            )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pytest.param(
+            xr.DataArray(np.zeros((2, 2)), dims=("alpha", "hv")), id="dataarray"
+        ),
+        pytest.param(np.zeros((2, 2)), id="ndarray"),
+    ],
+)
+def test_exact_1d_coord_requires_one_dimensional_inputs(values) -> None:
+    with pytest.raises(ValueError, match="one-dimensional"):
+        erlab.analysis.kspace._exact_1d_coord(
+            values,
+            name="alpha_reference",
+            default_dim="alpha",
+            context="exact cut conversion",
+        )
+
+
+def test_exact_slit_target_coord_handles_alternate_dim_and_rejects_multidim() -> None:
+    alt_dim_target = xr.DataArray([0.1, 0.2], dims=("momentum",))
+    result, dim, is_dataarray = erlab.analysis.kspace._exact_slit_target_coord(
+        alt_dim_target,
+        slit_axis="kx",
+        context="exact cut conversion",
+    )
+
+    assert result.identical(alt_dim_target)
+    assert dim == "momentum"
+    assert is_dataarray
+
+    with pytest.raises(ValueError, match="one-dimensional or contain the slit-axis"):
+        erlab.analysis.kspace._exact_slit_target_coord(
+            xr.DataArray(np.zeros((2, 2)), dims=("row", "col")),
+            slit_axis="kx",
+            context="exact cut conversion",
+        )
+
+
+def test_exact_result_helpers_preserve_plain_arrays_and_skip_missing_dims() -> None:
+    values = np.array([1.0, 2.0])
+    assert (
+        erlab.analysis.kspace._unwrap_exact_result(values, target_is_dataarray=False)
+        is values
+    )
+
+    target = xr.DataArray(
+        np.arange(6).reshape(2, 3),
+        dims=("secondary", "primary"),
+    )
+    transposed = erlab.analysis.kspace._transpose_exact_target(
+        target,
+        primary_dim="primary",
+        secondary_dim="missing",
+        kinetic_energy=1.0,
+        excluded_dim="hv",
+    )
+
+    assert transposed.dims == ("primary", "secondary")
 
 
 @pytest.mark.parametrize(

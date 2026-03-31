@@ -92,8 +92,6 @@ def _hv_to_kz_root_candidates_1d(
     for i0 in brackets:
         kz0, kz1 = kz_valid[int(i0)], kz_valid[int(i0) + 1]
         f0, f1 = residual[int(i0)], residual[int(i0) + 1]
-        if np.isclose(f0, f1, atol=0.0, rtol=0.0):
-            continue
         candidates.append(float(kz0 - f0 * (kz1 - kz0) / (f1 - f0)))
     return np.asarray(candidates, dtype=float)
 

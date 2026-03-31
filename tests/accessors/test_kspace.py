@@ -1486,3 +1486,184 @@ def test_hv_to_kz_accepts_iterable_hv(config_1_hvdep) -> None:
     assert out.dims == ("hv", "eV", converted.kspace.slit_axis)
     assert out.hv.size == 3
     xarray.testing.assert_allclose(out, expected)
+
+
+def test_hv_to_kz_root_candidates_1d_rejects_nonfinite_inputs() -> None:
+    out = erlab.accessors.kspace._hv_to_kz_root_candidates_1d(
+        np.array([0.0, 1.0]),
+        np.array([0.0, 0.0]),
+        np.nan,
+        0.0,
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert out.size == 0
+
+
+def test_hv_to_kz_root_candidates_1d_groups_exact_segments(monkeypatch) -> None:
+    def _mock_kz_func(kinetic, inner_potential, kx, ky):
+        return np.array([0.0, 1.0, 6.0, 3.0, 8.0], dtype=float)
+
+    monkeypatch.setattr(erlab.analysis.kspace, "kz_func", _mock_kz_func)
+
+    out = erlab.accessors.kspace._hv_to_kz_root_candidates_1d(
+        np.array([0.0, 1.0, 2.0, 3.0, 4.0]),
+        np.zeros(5),
+        25.0,
+        0.0,
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert np.allclose(out, [0.5, 3.0])
+
+
+def test_solve_hv_to_kz_roots_2d_returns_nan_without_unique_seed(monkeypatch) -> None:
+    lookup = {
+        0.0: np.array([], dtype=float),
+        1.0: np.array([0.25, 1.25], dtype=float),
+        2.0: np.array([0.5, 1.5], dtype=float),
+    }
+
+    def _mock_candidates(
+        kz_grid,
+        other_momentum,
+        kinetic_energy,
+        slit_momentum,
+        *,
+        inner_potential: float,
+        slit_axis: str,
+    ) -> np.ndarray:
+        return lookup[float(slit_momentum)]
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace, "_hv_to_kz_root_candidates_1d", _mock_candidates
+    )
+
+    out = erlab.accessors.kspace._solve_hv_to_kz_roots_2d(
+        np.array([0.0]),
+        np.zeros((3, 1)),
+        30.0,
+        np.array([0.0, 1.0, 2.0]),
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert np.isnan(out).all()
+
+
+def test_solve_hv_to_kz_roots_2d_propagates_closest_branch(monkeypatch) -> None:
+    lookup = {
+        0.0: np.array([0.2, 2.2], dtype=float),
+        1.0: np.array([1.0], dtype=float),
+        2.0: np.array([0.9, 3.5], dtype=float),
+        3.0: np.array([], dtype=float),
+    }
+
+    def _mock_candidates(
+        kz_grid,
+        other_momentum,
+        kinetic_energy,
+        slit_momentum,
+        *,
+        inner_potential: float,
+        slit_axis: str,
+    ) -> np.ndarray:
+        return lookup[float(slit_momentum)]
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace, "_hv_to_kz_root_candidates_1d", _mock_candidates
+    )
+
+    out = erlab.accessors.kspace._solve_hv_to_kz_roots_2d(
+        np.array([0.0]),
+        np.zeros((4, 1)),
+        30.0,
+        np.array([0.0, 1.0, 2.0, 3.0]),
+        inner_potential=10.0,
+        slit_axis="kx",
+    )
+
+    assert np.allclose(out[:3], [0.2, 1.0, 0.9])
+    assert np.isnan(out[3])
+
+
+def test_inverse_exact_cut_without_energy_axis_omits_ev_output(
+    cut, monkeypatch
+) -> None:
+    data = _make_alpha_field_cut(
+        cut,
+        AxesConfiguration.Type1,
+        xi=0.0,
+        offsets={"delta": 0.0, "xi": 0.0, "beta": 0.0},
+        beta=0.0,
+    ).isel(eV=0, drop=True)
+
+    slit_axis = data.kspace.slit_axis
+    alpha = xarray.DataArray([0.0], dims=(slit_axis,), coords={slit_axis: [0.0]})
+    other = xarray.DataArray(0.0)
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace.MomentumAccessor,
+        "_kinetic_energy",
+        property(lambda self: xarray.DataArray(20.0)),
+    )
+    monkeypatch.setattr(
+        erlab.analysis.kspace,
+        "exact_cut_alpha",
+        lambda *args, **kwargs: alpha,
+    )
+    monkeypatch.setattr(
+        erlab.analysis.kspace,
+        "_exact_other_axis_momentum",
+        lambda *args, **kwargs: other,
+    )
+    monkeypatch.setattr(
+        erlab.accessors.kspace.MomentumAccessor,
+        "_broadcast_exact_targets",
+        lambda self, out_dict, other_momentum: out_dict,
+    )
+
+    out = data.kspace._inverse_exact_cut(np.array([0.0]))
+
+    assert "eV" not in out
+    assert set(out) == {"alpha"}
+
+
+def test_hv_to_kz_from_stored_coords_returns_none_without_other_axis(
+    config_1_hvdep,
+) -> None:
+    converted = _overlay_subset(config_1_hvdep)
+    converted = converted.drop_vars(converted.kspace.other_axis)
+    kinetic = (
+        xarray.DataArray([30.0], dims=("hv",), coords={"hv": [30.0]})
+        - converted.kspace.work_function
+        + converted.eV
+    )
+
+    out = converted.kspace._hv_to_kz_from_stored_coords(kinetic)
+
+    assert out is None
+
+
+def test_hv_to_kz_raises_without_stored_coord_or_legacy_metadata(
+    config_1_hvdep, monkeypatch
+) -> None:
+    converted = _overlay_subset(config_1_hvdep)
+    converted = converted.drop_vars(converted.kspace.other_axis)
+
+    def _raise(self, kinetic):
+        raise KeyError("missing-coordinate")
+
+    monkeypatch.setattr(
+        erlab.accessors.kspace.MomentumAccessor,
+        "_hv_to_kz_legacy",
+        _raise,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="requires the orthogonal in-plane momentum coordinate or enough metadata",
+    ):
+        converted.kspace.hv_to_kz([30.0])

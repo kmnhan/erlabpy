@@ -619,7 +619,7 @@ def exact_cut_alpha(
                 source_dim=alpha_dim,
                 target_dim=slit_dim,
             )
-        case _:
+        case _:  # pragma: no cover - all normalized enum values are handled above
             raise InvalidConfigurationError(  # pragma: no cover
                 configuration
             )
@@ -868,7 +868,7 @@ def _offsets_from_normal_emission(
             chi_delta = np.rad2deg(np.arctan2(y, z))
 
             return {"xi": xi - xi_delta, "chi": chi - chi_delta}
-        case _:
+        case _:  # pragma: no cover - all enum values are handled above
             raise InvalidConfigurationError(  # pragma: no cover
                 configuration
             )
@@ -903,7 +903,7 @@ def _normal_emission_from_angle_params(
             if configuration == AxesConfiguration.Type1DA:
                 return beta, -alpha
             return alpha, beta
-        case _:
+        case _:  # pragma: no cover - all enum values are handled above
             raise InvalidConfigurationError(  # pragma: no cover
                 configuration
             )
@@ -1152,7 +1152,7 @@ def _fixed_beta_slit_coefficients(
             return sd * sb + cd * sx * cb, -cd * cx
         case AxesConfiguration.Type2:
             return -cd * sx + sd * sb * cx, cd * cx + sd * sb * sx
-        case _:
+        case _:  # pragma: no cover - all normalized enum values are handled above
             raise InvalidConfigurationError(  # pragma: no cover
                 configuration
             )
