@@ -76,6 +76,11 @@ dask.config.set(
 )
 
 
+def _coverage_is_active(pytestconfig: pytest.Config) -> bool:
+    """Return whether pytest-cov is actively collecting coverage."""
+    return pytestconfig.pluginmanager.hasplugin("_cov")
+
+
 @pytest.fixture(scope="session")
 def cluster():
     with LocalCluster(
@@ -500,14 +505,15 @@ def move_and_compare_values():
 
 
 @pytest.fixture(autouse=True)
-def cover_qthreads(monkeypatch, qtbot):
+def cover_qthreads(monkeypatch, qtbot, pytestconfig):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2286288111
     from qtpy.QtCore import QThread
 
     base_constructor = QThread.__init__
+    coverage_active = _coverage_is_active(pytestconfig)
 
     def run_with_trace(self):  # pragma: no cover
-        if "coverage" in sys.modules:
+        if coverage_active:
             # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
             sys.settrace(threading._trace_hook)
         self._base_run()
@@ -521,15 +527,16 @@ def cover_qthreads(monkeypatch, qtbot):
 
 
 @pytest.fixture(autouse=True)
-def cover_qthreadpool(monkeypatch, qtbot):
+def cover_qthreadpool(monkeypatch, qtbot, pytestconfig):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2435049275
     from qtpy.QtCore import QThreadPool
 
     base_start = QThreadPool.start
     QThreadPool.globalInstance().setMaxThreadCount(1)
+    coverage_active = _coverage_is_active(pytestconfig)
 
     def start_with_trace(self, runnable, *args, **kwargs):
-        if "coverage" in sys.modules:
+        if coverage_active:
             original_run = runnable.run
 
             def wrapped_run(*a, **kw):
