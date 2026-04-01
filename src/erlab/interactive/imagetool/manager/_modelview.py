@@ -347,7 +347,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         if link_rect:
             proxy = typing.cast(
-                "erlab.interactive.imagetool.core.SlicerLinkProxy",
+                "erlab.interactive.imagetool.viewer.SlicerLinkProxy",
                 tool_wrapper.slicer_area._linking_proxy,
             )
             link_color = self.manager.color_for_linker(proxy)
@@ -591,7 +591,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         ]
 
     def _row_index(self, index_or_uid: int | str) -> QtCore.QModelIndex:
-        """Get the corresponding QModelIndex for an parent index or child UID."""
+        """Get the corresponding QModelIndex for a parent index or child UID."""
         if isinstance(index_or_uid, str):
             for (
                 tool_idx,

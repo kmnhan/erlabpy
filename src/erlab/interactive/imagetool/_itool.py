@@ -6,7 +6,7 @@ import numpy.typing as npt
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool.core import SlicerLinkProxy, _parse_input
+from erlab.interactive.imagetool.viewer import SlicerLinkProxy, _parse_input
 
 
 def itool(
@@ -78,29 +78,15 @@ def itool(
         should be replaced with the new data. If the manager is not used, this argument
         is ignored. ``replace`` can be set to:
 
-        - `None` (default):
-            No existing windows are replaced. New windows are created for the new data.
-
-        - A single integer:
-            - A valid index of an existing ImageTool window:
-                The data in the window with the specified index is replaced with the new
-                data.
-
-            - A number that is greater by 1 than the largest existing index:
-                A new ImageTool window is created with the new data. This is useful when
-                you want to add a new window on initial execution, but want to replace
-                the window with the same index on subsequent calls.
-
-            - A negative integer:
-                The index is interpreted as an index from the end of the list of
-                existing ImageTool windows, sorted by their indices. For example, ``-1``
-                refers to the window with the largest index, ``-2`` to the second
-                largest, and so on.
-
-        - A list of integers:
-            A list of integers specifying the indices of the windows to be replaced,
-            each of which is interpreted as described above. The length of the list must
-            match the number of windows ``data`` is expected to create.
+        - `None` (default): no existing windows are replaced. New windows are
+          created for the new data.
+        - A single integer: this can be a valid existing index (replace that
+          window), one greater than the current largest index (create a new
+          window), or a negative index from the end (for example, ``-1`` means
+          the largest existing index).
+        - A list of integers: each integer is interpreted as described above.
+          The list length must match the number of windows ``data`` is expected
+          to create.
 
         If this argument is used, the ``link``, ``link_colors``, and ``kwargs``
         arguments are ignored, since no new windows are created.
@@ -113,7 +99,7 @@ def itool(
     **kwargs
         Additional keyword arguments to be passed onto the underlying slicer area. For a
         full list of supported arguments, see the
-        `erlab.interactive.imagetool.core.ImageSlicerArea` documentation.
+        `erlab.interactive.imagetool.viewer.ImageSlicerArea` documentation.
 
     Returns
     -------

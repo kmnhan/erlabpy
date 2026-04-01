@@ -8,7 +8,7 @@ Modules
 .. autosummary::
    :toctree:
 
-   core
+   viewer
    slicer
    fastslicing
    fastbinning

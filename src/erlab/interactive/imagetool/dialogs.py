@@ -17,12 +17,9 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-    from erlab.interactive.imagetool.core import (
-        ColorMapState,
-        ImageSlicerArea,
-        ItoolPolyLineROI,
-    )
+    from erlab.interactive.imagetool.plot_items import ItoolPolyLineROI
     from erlab.interactive.imagetool.slicer import ArraySlicer
+    from erlab.interactive.imagetool.viewer import ColorMapState, ImageSlicerArea
 
 
 class _DataManipulationDialog(QtWidgets.QDialog):

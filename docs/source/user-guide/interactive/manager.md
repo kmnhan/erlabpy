@@ -33,19 +33,33 @@
 - Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, and perform quick analyses through a built-in IPython console.
 - Drag-and-drop files to open them quickly, or use the integrated data explorer to browse preview data.
 
+(imagetool-manager-round-trip)=
+
+## Round-trip
+
+The manager is the live bridge between the GUI and notebook state. Enter from
+`data.qshow(manager=True)`, `eri.itool(..., manager=True)`, or
+{func}`erlab.interactive.imagetool.manager.show_in_manager`; synchronize with `%watch` or
+{func}`erlab.interactive.imagetool.manager.watch`; and pull a safe copy back into Python
+with {func}`fetch <erlab.interactive.imagetool.manager.fetch>`.
+
+See {ref}`workflow-bridge-operations` for the maintained crosswalk.
+
 (imagetool-manager-start)=
 
 ## Starting the manager
 
-Run `itool-manager` in a terminal or command prompt window in an environment where ERLabPy is installed.
+- If you have a Python environment with ERLabPy installed:
+
+  Run `itool-manager` in a terminal or command prompt window in the environment where ERLabPy is installed.
+
+- You can also install the manager as an application on your operating system. See {ref}`imagetool-manager-standalone` for instructions.
 
 :::{note}
 
 - Only one manager can run per machine.
 
 - Opening an ImageTool window for the very first time after installing may take a couple of minutes as caches are built. Subsequent launches will be much faster.
-
-- The manager can be installed as a packaged build which enables some convenient features as described in {ref}`imagetool-manager-standalone`.
 
 :::
 
@@ -82,7 +96,7 @@ Once the manager is running, you can open ImageTools in several ways:
   For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with {guilabel}`Single File` in the dialog.
   :::
 
-- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`. Browse arbitrary folders, preview metadata, and open selected files in the manager.
+- Launch the built-in data explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E` when you want directory browsing and metadata preview before opening selected files in the manager.
 
 - Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. See {ref}`working-with-notebooks`.
 
@@ -121,13 +135,35 @@ Icons next to each entry indicate special states: linked windows share a colored
 
 Choose {guilabel}`File → Save Workspace As…` to save multiple open windows to a single `.itws` file. Workspaces store not only the data, but also the ImageTool settings such as cursor locations, colormaps, window geometry, and ROIs.
 
+When supported, savable child tools opened from managed ImageTools are stored alongside the parent window as well.
+
 Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…` or by dragging the `.itws` file back into the manager to recreate your windows exactly as they were. Share the file with collaborators and they will see the identical layout.
 
-## Built-in explorer and console
+## Data Explorer and Console
 
-- {guilabel}`Data Explorer` – The explorer window ({guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`) provides a filesystem browser tailored for ARPES datasets. Preview metadata, queue batch loads, or open entire directories as tabs.
+(imagetool-manager-data-explorer)=
 
-- {guilabel}`Console` – Toggle the embedded IPython console with {kbd}`Ctrl+J` or via the {guilabel}`View` menu. The console exposes a `tools` list containing wrappers for every ImageTool. For example:
+### Data Explorer
+
+Open the explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`.
+
+Use it when you want to browse folders, preview metadata, queue batch loads, and then
+open selected files into the manager without writing code. For most day-to-day browsing
+it is faster than the interactive summary table in the I/O guide. Use
+{func}`erlab.io.summarize` instead when you want the overview as a DataFrame in Python
+or when you are developing loaders.
+
+The explorer can also be launched standalone from Python or the command line for browsing
+and previewing. Opening selected files into ImageTool analysis still requires a running
+ImageTool manager, which is why launching it from the manager is the recommended path.
+
+For the standalone tool page, see {ref}`guide-data-explorer`.
+
+### Console
+
+Toggle the embedded IPython console with {kbd}`Ctrl+J` or via the {guilabel}`View`
+menu. The console exposes a `tools` list containing wrappers for every ImageTool. For
+example:
 
   ```python
   # List names of all windows
@@ -140,7 +176,8 @@ Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspac
   tools[0].data = new_data
   ```
 
-  Run standard Python, `%magic` commands, or inspect objects with `?` exactly as you would in a notebook.
+Run standard Python, `%magic` commands, or inspect objects with `?` exactly as you would
+in a notebook.
 
 (working-with-notebooks)=
 
@@ -197,7 +234,7 @@ You can also right-click a tool in the manager and choose {guilabel}`Stop Watchi
 If a variable is deleted or replaced with a non-`DataArray`, the manager automatically breaks the link and keeps the window as a regular ImageTool.
 
 :::{note}
-When a notebook kernel shuts down, watched windows remain open in  but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion. Variables watched from different notebooks are color-coded for clarity.
+When a notebook kernel shuts down, watched windows remain open in the manager but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion. Variables watched from different notebooks are color-coded for clarity.
 :::
 
 #### Outside IPython (e.g., marimo notebooks)
@@ -290,8 +327,6 @@ Under the hood these helpers communicate with the GUI via ZeroMQ, so they can be
 ## Installing as a standalone application
 
 Standalone bundles for Windows and macOS let you run the manager without managing a Python environment. They add OS-level conveniences such as opening supported files by double-clicking them (or, on macOS, dropping files onto the Dock icon). For macOS 26 and later, the app also features a dynamic icon that matches the new design language.
-
-Standalone bundles for Windows and macOS let you run the manager without managing a Python environment. They add OS-level conveniences such as opening supported files by double-clicking them (or, on macOS, dropping files onto the Dock icon) and include a macOS “liquid glass” icon for clarity.
 
 Download the latest release from the [project’s releases page](https://github.com/kmnhan/erlabpy/releases), then follow the platform-specific steps below. For other platforms, or if you prefer full control, build from source via {ref}`build-from-source`.
 

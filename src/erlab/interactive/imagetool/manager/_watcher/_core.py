@@ -312,22 +312,26 @@ class _Watcher:
             f"↩️ Updated <code>{varname}</code> from ImageTool",
         )
 
-    def shutdown(self) -> None:
+    def _shutdown(self, *, emit_timeout_warnings: bool) -> None:
         self._stop.set()
         self._poll_stop.set()
 
         if self._watcher_thread is not None and self._watcher_thread.is_alive():
             self._watcher_thread.join(timeout=2.0)
-            if self._watcher_thread.is_alive():
+            if emit_timeout_warnings and self._watcher_thread.is_alive():
                 logger.warning("Watcher thread did not stop within timeout")
         if self._poll_thread is not None and self._poll_thread.is_alive():
             self._poll_thread.join(timeout=2.0)
-            if self._poll_thread.is_alive():
+            if emit_timeout_warnings and self._poll_thread.is_alive():
                 logger.warning("Watcher poll thread did not stop within timeout")
         self._thread_started = False
 
+    def shutdown(self) -> None:
+        self._shutdown(emit_timeout_warnings=True)
+
     def __del__(self):
-        self.shutdown()
+        with contextlib.suppress(Exception):
+            self._shutdown(emit_timeout_warnings=False)
 
 
 def _infer_caller_namespace(stacklevel: int = 2) -> NamespaceType:

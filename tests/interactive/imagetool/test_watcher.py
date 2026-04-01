@@ -1,4 +1,5 @@
 import builtins
+import logging
 import threading
 import types
 import typing
@@ -598,6 +599,27 @@ def test_start_polling_and_poll_loop_branches(fake_shell, monkeypatch):
     assert calls["count"] == 1
 
 
+def test_watcher_del_suppresses_timeout_warnings(fake_shell, caplog):
+    watcher = _Watcher(fake_shell)
+
+    watcher._watcher_thread = type(
+        "AliveThread",
+        (),
+        {"is_alive": lambda self: True, "join": lambda self, timeout=None: None},
+    )()
+    watcher._poll_thread = type(
+        "AlivePollThread",
+        (),
+        {"is_alive": lambda self: True, "join": lambda self, timeout=None: None},
+    )()
+
+    with caplog.at_level(logging.WARNING, logger=watcher_core.logger.name):
+        watcher.__del__()
+
+    assert "Watcher thread did not stop within timeout" not in caplog.text
+    assert "Watcher poll thread did not stop within timeout" not in caplog.text
+
+
 def test_callback_registration_failure_and_enable_auto_push_error(
     fake_shell, monkeypatch
 ):
@@ -662,7 +684,6 @@ def test_watcher_real(
     monkeypatch,
 ):
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         manager.show()
 
         darr = xr.DataArray(

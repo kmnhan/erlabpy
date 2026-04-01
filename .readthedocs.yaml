@@ -7,6 +7,10 @@ version: 2
 # Specify os and python version
 build:
   os: "ubuntu-24.04"
+  apt_packages:
+    - fonts-dejavu-core
+    - fonts-noto-core
+    - fonts-noto-color-emoji
   tools:
     python: "3.13"
   jobs:

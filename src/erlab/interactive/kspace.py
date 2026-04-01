@@ -17,7 +17,7 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
-import functools
+import hashlib
 import importlib.resources
 import typing
 import warnings
@@ -29,7 +29,8 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.accessors.kspace import MomentumAccessor
+from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
+from erlab.constants import AxesConfiguration
 
 if typing.TYPE_CHECKING:
     import matplotlib
@@ -457,6 +458,7 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins[k].blockSignals(True)
             self._offset_spins[k].setValue(v)
             self._offset_spins[k].blockSignals(False)
+        self._sync_normal_emission_spins()
 
         self.bounds_supergroup.blockSignals(True)
         self.bounds_supergroup.setChecked(status.bounds_enabled)
@@ -539,6 +541,10 @@ class KspaceTool(KspaceToolGUI):
         "V0": " eV",
         "wf": " eV",
     }
+    _NORMAL_EMISSION_LABELS: typing.ClassVar[dict[str, str]] = {
+        "alpha": "𝛼",
+        "beta": "𝛽",
+    }
 
     def __init__(
         self,
@@ -558,6 +564,15 @@ class KspaceTool(KspaceToolGUI):
         self._argnames: dict[str, str] = {}
 
         self._itool: QtWidgets.QWidget | None = None
+        self._bz_cache_key: typing.Any = None
+        self._bz_cache_value: (
+            tuple[
+                list[npt.NDArray[np.floating]],
+                npt.NDArray[np.floating],
+                npt.NDArray[np.floating],
+            ]
+            | None
+        ) = None
 
         if data_name is None:
             try:
@@ -588,10 +603,7 @@ class KspaceTool(KspaceToolGUI):
         )
 
         if self.data.kspace._has_eV and self.data.eV.size > 1:
-            self.center_spin.setRange(self.data.eV[0], self.data.eV[-1])
-            eV_step = float(self.data.eV[1] - self.data.eV[0])
-            self.center_spin.setDecimals(erlab.utils.array.effective_decimals(eV_step))
-            self.center_spin.setSingleStep(eV_step)
+            self._update_energy_controls()
             self.width_spin.setRange(1, len(self.data.eV))
             self.center_spin.valueChanged.connect(self.queue_update)
             self.width_spin.valueChanged.connect(self.queue_update)
@@ -655,11 +667,30 @@ class KspaceTool(KspaceToolGUI):
         self._offset_spins["wf"].setToolTip("Work function of the system.")
         with warnings.catch_warnings(action="ignore", category=UserWarning):
             self._offset_spins["wf"].setValue(self.data.kspace.work_function)
+        self._offset_spins["wf"].valueChanged.connect(self._update_energy_controls)
         self._offset_spins["wf"].valueChanged.connect(self.queue_update)
 
         self.offsets_group.layout().addRow(
             self._OFFSET_LABELS["wf"], self._offset_spins["wf"]
         )
+
+        self._normal_emission_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
+        for axis, label in self._NORMAL_EMISSION_LABELS.items():
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(-360, 360)
+            spin.setSingleStep(0.01)
+            spin.setDecimals(3)
+            spin.setSuffix("°")
+            spin.setKeyboardTracking(False)
+            spin.setToolTip("Angle corresponding to sample normal emission.")
+            spin.valueChanged.connect(self._update_offsets_from_normal_emission)
+            self._normal_emission_spins[axis] = spin
+            self.normal_emission_group.layout().addRow(label, spin)
+
+        for k in self.data.kspace._valid_offset_keys:
+            self._offset_spins[k].valueChanged.connect(self._sync_normal_emission_spins)
+
+        self._sync_normal_emission_spins()
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -712,14 +743,45 @@ class KspaceTool(KspaceToolGUI):
         if avec is not None:
             self.bz_group.setChecked(True)
 
-    @functools.cached_property
-    def _binding_energy(self) -> npt.NDArray:
-        return self.data.kspace._binding_energy.values
+    def _binding_energy(self) -> npt.NDArray[np.floating]:
+        if hasattr(self, "_offset_spins") and "wf" in self._offset_spins:
+            work_function = self._work_function
+        else:
+            work_function = self.data.kspace.work_function
+
+        if self.data.kspace._is_energy_kinetic:
+            if self.data.kspace._has_hv:
+                raise ValueError(
+                    "Energy axis of photon energy dependent data must be in "
+                    "binding energy."
+                )
+            return np.asarray(
+                self.data.eV.values - float(self.data.hv.values) + work_function
+            )
+        return np.asarray(self.data.eV.values)
+
+    @QtCore.Slot()
+    def _update_energy_controls(self) -> None:
+        if not self.data.kspace._has_eV or self.data.eV.size <= 1:
+            return
+
+        energy_axis = self._binding_energy()
+        e_min = float(np.nanmin(energy_axis))
+        e_max = float(np.nanmax(energy_axis))
+        e_step = float(np.nanmedian(np.abs(np.diff(energy_axis))))
+
+        self.center_spin.blockSignals(True)
+        self.center_spin.setRange(e_min, e_max)
+        self.center_spin.setDecimals(erlab.utils.array.effective_decimals(e_step))
+        self.center_spin.setSingleStep(e_step)
+        self.center_spin.blockSignals(False)
 
     @QtCore.Slot()
     def calculate_bounds(self) -> None:
-        data = self.data.copy()
-        data.kspace.offsets = self.offset_dict
+        data = self._assign_params(self.data.copy(deep=False))
+        self._validate_kinetic_energy(
+            data, context="estimating momentum bounds in ktool"
+        )
         bounds = data.kspace.estimate_bounds()
         for k in data.kspace.momentum_axes:
             for j in range(2):
@@ -731,10 +793,14 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def calculate_resolution(self) -> None:
+        data = self._assign_params(self.data.copy(deep=False))
+        self._validate_kinetic_energy(
+            data, context="estimating momentum resolution in ktool"
+        )
         for k, spin in self._resolution_spins.items():
             with QtCore.QSignalBlocker(spin):
                 spin.setValue(
-                    self.data.kspace.estimate_resolution(
+                    data.kspace.estimate_resolution(
                         k, from_numpoints=self.res_npts_check.isChecked()
                     )
                 )
@@ -766,8 +832,10 @@ class KspaceTool(KspaceToolGUI):
 
     @QtCore.Slot()
     def show_converted(self) -> None:
+        data = self._assign_params(self.data.copy(deep=False))
+        self._validate_kinetic_energy(data, context="opening converted data from ktool")
         with erlab.interactive.utils.wait_dialog(self, "Converting..."):
-            data_kconv = self._assign_params(self.data.copy()).kspace.convert(
+            data_kconv = data.kspace.convert(
                 bounds=self.bounds, resolution=self.resolution
             )
 
@@ -806,11 +874,14 @@ class KspaceTool(KspaceToolGUI):
             if not np.isclose(wf, self.data.kspace.work_function):
                 out_lines.append(f"{input_name}.kspace.work_function = {wf}")
 
-        offset_dict_repr = str(self.offset_dict).replace("'", '"')
+        alpha_normal, beta_normal = self._current_normal_emission_angles()
+        delta_offset = self.offset_dict["delta"]
 
         out_lines.extend(
             (
-                f"{input_name}.kspace.offsets = {offset_dict_repr}",
+                f"{input_name}.kspace.set_normal("
+                f"alpha={alpha_normal!r}, beta={beta_normal!r}, delta={delta_offset!r}"
+                f")",
                 erlab.interactive.utils.generate_code(
                     MomentumAccessor.convert,
                     [],
@@ -851,26 +922,80 @@ class KspaceTool(KspaceToolGUI):
             for k in self.data.kspace._valid_offset_keys
         }
 
+    def _current_normal_emission_angles(self) -> tuple[float, float]:
+        if "xi" not in self.data.coords:
+            raise IncompleteDataError("coord", "xi")
+
+        offsets = self.offset_dict
+        angle_params = {
+            "delta": offsets["delta"],
+            "xi": float(self.data["xi"].values),
+            "xi0": offsets["xi"],
+        }
+
+        match self.data.kspace.configuration:
+            case AxesConfiguration.Type1 | AxesConfiguration.Type2:
+                angle_params["beta0"] = offsets["beta"]
+            case _:
+                if "chi" not in self.data.coords:
+                    raise IncompleteDataError("coord", "chi")
+                angle_params["chi"] = float(self.data["chi"].values)
+                angle_params["chi0"] = offsets["chi"]
+
+        alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
+            self.data.kspace.configuration, angle_params
+        )
+        return float(alpha), float(beta)
+
+    @QtCore.Slot()
+    def _sync_normal_emission_spins(self) -> None:
+        alpha_normal, beta_normal = self._current_normal_emission_angles()
+
+        for axis, value in {"alpha": alpha_normal, "beta": beta_normal}.items():
+            spin = self._normal_emission_spins[axis]
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
+
+    @QtCore.Slot()
+    def _update_offsets_from_normal_emission(self) -> None:
+        data = self._assign_params(self.data.copy(deep=False))
+        data.kspace.set_normal(
+            self._normal_emission_spins["alpha"].value(),
+            self._normal_emission_spins["beta"].value(),
+        )
+
+        for key in data.kspace._valid_offset_keys:
+            spin = self._offset_spins[key]
+            spin.blockSignals(True)
+            spin.setValue(data.kspace.offsets[key])
+            spin.blockSignals(False)
+
+        self._sync_normal_emission_spins()
+        self.queue_update()
+
     def _angle_data(self) -> xr.DataArray:
         if self.data.kspace._has_eV:
-            data_binding = self.data.copy().assign_coords(eV=self._binding_energy)
+            binding_energy = self._binding_energy()
+            data_binding = self.data.copy(deep=False).assign_coords(eV=binding_energy)
 
             center, width = self.center_spin.value(), self.width_spin.value()
+            arr = binding_energy
+            idx = int(np.argmin(np.abs(arr - center)))
             if width == 1:
-                return data_binding.isel(
-                    eV=np.argmin(np.abs(self.data.eV.values - center))
-                )
+                return data_binding.isel(eV=idx)
 
-            arr = self.data.eV.values
-            idx = np.searchsorted((arr[:-1] + arr[1:]) / 2, center)
+            start = max(0, idx - width // 2)
+            stop = min(arr.size, idx + (width - 1) // 2 + 1)
+            if start >= stop:
+                start = int(np.clip(idx, 0, arr.size - 1))
+                stop = int(np.clip(idx + 1, 1, arr.size))
             return (
-                data_binding.isel(
-                    eV=slice(idx - width // 2, idx + (width - 1) // 2 + 1)
-                )
+                data_binding.isel(eV=slice(start, stop))
                 .mean("eV", skipna=True, keep_attrs=True)
                 .assign_coords(eV=center)
             )
-        return self.data.copy()
+        return self.data.copy(deep=False)
 
     def _assign_params(self, data: xr.DataArray) -> xr.DataArray:
         data.kspace.offsets = self.offset_dict
@@ -887,9 +1012,13 @@ class KspaceTool(KspaceToolGUI):
                 data.kspace.work_function = wf
         return data
 
+    def _validate_kinetic_energy(self, data: xr.DataArray, *, context: str) -> None:
+        data.kspace._check_kinetic_energy(context=context)
+
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
         # Set angle offsets
         data_ang = self._assign_params(self._angle_data())
+        self._validate_kinetic_energy(data_ang, context="updating ktool preview")
         # if "beta" in data_ang.dims:
         #     data_ang = data_ang.assign_coords(
         #         beta=data_ang.beta * self._beta_scale_spin.value()
@@ -910,10 +1039,89 @@ class KspaceTool(KspaceToolGUI):
         if self.bz_group.isChecked():
             self.update_bz()
 
+    @staticmethod
+    def _bz_digest_array(values: npt.ArrayLike) -> bytes:
+        """Return a compact digest for cached BZ geometry inputs."""
+        arr = np.ascontiguousarray(np.asarray(values, dtype=float))
+        digest = hashlib.blake2b(digest_size=16)
+        digest.update(np.asarray(arr.shape, dtype=np.int64).tobytes())
+        digest.update(arr.tobytes())
+        return digest.digest()
+
+    def _bz_cache_token(self, converted_slice: xr.DataArray) -> tuple[typing.Any, ...]:
+        """Build a cache key for the currently displayed BZ overlay geometry."""
+        lattice_token = tuple(np.round(self._avec.ravel(), 8))
+        base_token: tuple[typing.Any, ...] = (
+            lattice_token,
+            self.centering_combo.currentText(),
+            round(self.rot_spin.value(), 6),
+            tuple(converted_slice.dims),
+        )
+
+        if self.data.kspace._has_hv:
+            kp_dim = next(d for d in converted_slice.dims if d != "kz")
+            other = "kx" if kp_dim == "ky" else "ky"
+            return (
+                *base_token,
+                kp_dim,
+                self._bz_digest_array(converted_slice[kp_dim].values),
+                self._bz_digest_array(converted_slice["kz"].values),
+                self._bz_digest_array(converted_slice[other].values),
+            )
+
+        return (
+            *base_token,
+            round(self.kz_spin.value(), 6),
+            self._bz_digest_array(converted_slice["kx"].values),
+            self._bz_digest_array(converted_slice["ky"].values),
+        )
+
+    def _exact_hv_bz_surface(
+        self, converted_slice: xr.DataArray
+    ) -> tuple[
+        str,
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
+    ]:
+        """Build the sampled 3D momentum surface used for exact ``hv`` BZ overlays."""
+        kp_dim = next(d for d in converted_slice.dims if d != "kz")
+        plot_dims = ("kz", kp_dim)
+        kx_vals = np.asarray(
+            converted_slice["kx"]
+            .broadcast_like(converted_slice)
+            .reset_coords(drop=True)
+            .transpose(*plot_dims),
+            dtype=float,
+        )
+        ky_vals = np.asarray(
+            converted_slice["ky"]
+            .broadcast_like(converted_slice)
+            .reset_coords(drop=True)
+            .transpose(*plot_dims),
+            dtype=float,
+        )
+        kz_vals = np.asarray(
+            converted_slice["kz"]
+            .broadcast_like(converted_slice)
+            .reset_coords(drop=True)
+            .transpose(*plot_dims),
+            dtype=float,
+        )
+        surface = np.stack([kx_vals, ky_vals, kz_vals], axis=-1)
+        return (
+            typing.cast("str", kp_dim),
+            np.asarray(converted_slice[kp_dim].values, dtype=float),
+            np.asarray(converted_slice["kz"].values, dtype=float),
+            surface,
+        )
+
     def get_bz_lines(
         self,
     ) -> tuple[
-        npt.NDArray[np.floating], npt.NDArray[np.floating], npt.NDArray[np.floating]
+        list[npt.NDArray[np.floating]],
+        npt.NDArray[np.floating],
+        npt.NDArray[np.floating],
     ]:
         avec_primitive = erlab.lattice.to_primitive(
             self._avec, centering_type=self.centering_combo.currentText()
@@ -921,35 +1129,70 @@ class KspaceTool(KspaceToolGUI):
         bvec = erlab.lattice.to_reciprocal(avec_primitive)
         converted_slice: xr.DataArray | None = self.images[1].data_array
         if converted_slice is None:
-            return np.zeros((0, 2)), np.zeros((0, 2)), np.zeros((0, 2))
+            return [], np.zeros((0, 2)), np.zeros((0, 2))
+
+        cache_token = self._bz_cache_token(converted_slice)
+        if cache_token == self._bz_cache_key and self._bz_cache_value is not None:
+            return self._bz_cache_value
 
         rot: float = self.rot_spin.value()
 
         if self.data.kspace._has_hv:
             kp_dim = next(d for d in converted_slice.dims if d != "kz")
             other = "kx" if kp_dim == "ky" else "ky"
-
-            kp_vals = converted_slice[kp_dim].values
-            kz_vals = converted_slice["kz"].values
-            lines, vertices, midpoints = erlab.lattice.get_out_of_plane_bz(
-                bvec,
-                k_parallel=float(converted_slice[other]),
-                angle=rot,
-                bounds=(kp_vals.min(), kp_vals.max(), kz_vals.min(), kz_vals.max()),
-                return_midpoints=True,
-            )
+            other_values = np.asarray(converted_slice[other].values, dtype=float)
+            if other_values.ndim == 0 or other_values.size == 1:
+                kp_vals = np.asarray(converted_slice[kp_dim].values, dtype=float)
+                kz_vals = np.asarray(converted_slice["kz"].values, dtype=float)
+                legacy_lines, vertices, midpoints = erlab.lattice.get_out_of_plane_bz(
+                    bvec,
+                    k_parallel=float(other_values.reshape(-1)[0]),
+                    angle=rot,
+                    bounds=(
+                        float(np.nanmin(kp_vals)),
+                        float(np.nanmax(kp_vals)),
+                        float(np.nanmin(kz_vals)),
+                        float(np.nanmax(kz_vals)),
+                    ),
+                    return_midpoints=True,
+                )
+                lines = [np.asarray(line, dtype=float) for line in legacy_lines]
+            else:
+                theta = np.deg2rad(rot)
+                bvec = bvec @ np.array(
+                    [
+                        [np.cos(theta), np.sin(theta), 0.0],
+                        [-np.sin(theta), np.cos(theta), 0.0],
+                        [0.0, 0.0, 1.0],
+                    ]
+                )
+                _, plot_x, plot_y, surface = self._exact_hv_bz_surface(converted_slice)
+                lines, vertices, midpoints = typing.cast(
+                    "tuple[list[npt.NDArray[np.floating]],"
+                    " npt.NDArray[np.floating], npt.NDArray[np.floating]]",
+                    erlab.lattice.get_surface_bz(
+                        bvec,
+                        plot_x,
+                        plot_y,
+                        surface,
+                        return_midpoints=True,
+                    ),
+                )
         else:
             kx_vals = converted_slice["kx"].values
             ky_vals = converted_slice["ky"].values
-            lines, vertices, midpoints = erlab.lattice.get_in_plane_bz(
+            legacy_lines, vertices, midpoints = erlab.lattice.get_in_plane_bz(
                 bvec,
                 kz=self.kz_spin.value() * np.pi / self.c_spin.value(),
                 angle=rot,
                 bounds=(kx_vals.min(), kx_vals.max(), ky_vals.min(), ky_vals.max()),
                 return_midpoints=True,
             )
+            lines = [np.asarray(line, dtype=float) for line in legacy_lines]
 
-        return lines, vertices, midpoints
+        self._bz_cache_key = cache_token
+        self._bz_cache_value = (lines, vertices, midpoints)
+        return self._bz_cache_value
 
 
 def ktool(

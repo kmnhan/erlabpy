@@ -6,10 +6,7 @@ In addition to ImageTool and the ImageTool manager, other interactive tools for 
 
 Most of these tools can be opened as auxiliary windows from within ImageTool, and are also integrated into the ImageTool manager, allowing you to manage them alongside your ImageTool windows.
 
-More interactive tools will be added in the near future. Current plans include:
-
-- Fourier-based automatic mesh removal
-- Experiment planner
+More interactive tools will be added in the near future.
 
 Here are some of the miscellaneous interactive tools provided:
 
@@ -37,9 +34,9 @@ There are four ways to start `ktool`.
    eri.ktool(data)
    ```
 
-3. From within ImageTool
+3. From the ImageTool View menu
 
-   Click {guilabel}`View → Open in ktool`.
+   Click {guilabel}`View → Open ktool`.
 
    The button will be disabled if the data is not compatible with {func}`ktool <erlab.interactive.ktool>`.
 
@@ -113,7 +110,7 @@ import erlab.interactive as eri
 eri.dtool(data)
 ```
 
-It can also be opened from within ImageTool from the right-click context menu of any image plot.
+It can also be opened from the right-click context menu of any image plot in ImageTool.
 
 The `%dtool` line magic (see {ref}`interactive-misc-magics`) provides the same entry point from notebooks.
 
@@ -158,7 +155,7 @@ import erlab.interactive as eri
 eri.goldtool(data)
 ```
 
-It can also be opened from within ImageTool from the right-click context menu of any image plot.
+It can also be opened from the right-click context menu of any image plot in ImageTool.
 
 Use the `%goldtool` magic (see {ref}`interactive-misc-magics`) to launch it directly from IPython.
 
@@ -184,9 +181,9 @@ There are three ways to start `ftool`.
    eri.ftool(data, model=my_model)
    ```
 
-2. From within ImageTool
+2. From the ImageTool context menu
 
-   Right-click any plot and choose {guilabel}`ftool`.
+   Right-click an image plot or line plot and choose {guilabel}`ftool`.
 
 3. From IPython using the `%ftool` magic described in
    {ref}`interactive-misc-magics`.
@@ -421,7 +418,7 @@ You can reopen a saved fit by loading the dataset with {func}`xarray_lmfit.load_
 Saved fits restore the stored data, the serialized model (when available), and the fitted parameter values. For 2D fits, all slices must share the same model definition.
 
 :::{note}
-The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from a data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
+The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
 :::
 
 (guide-restool)=
@@ -438,7 +435,7 @@ import erlab.interactive as eri
 eri.restool(data)
 ```
 
-It can also be opened from within ImageTool from the right-click context menu of any image plot that contains an energy axis.
+It can also be opened from the ImageTool image-plot context menu when the data contains an energy axis.
 
 The `%restool` magic (see {ref}`interactive-misc-magics`) provides a quick way to launch it from IPython.
 
@@ -456,7 +453,7 @@ import erlab.interactive as eri
 eri.meshtool(data)
 ```
 
-It can also be opened from within ImageTool by clicking {guilabel}`View → Open in meshtool`.
+It can also be opened from the ImageTool View menu with {guilabel}`View → Open meshtool`.
 
 The `%meshtool` magic (see {ref}`interactive-misc-magics`) provides a quick way to launch it from IPython.
 
@@ -482,7 +479,7 @@ This tool accepts any DataArray with `eV` and `alpha` dimensions. When additiona
 
 - In the next section, you must specify the location of the first order mesh peaks in the FFT of the data.
 
-  - Place the two yellow targets on the FFT plot over the two first order mesh peaks by dragging them with the mouse.
+  - Drag the two yellow targets on the FFT plot over the two first order mesh peaks by dragging them with the mouse.
   - Alternatively, an automatic search can be performed by clicking {guilabel}`Find` under {guilabel}`Auto locate peaks`.
 
 - In the final section, several parameters for mesh removal are provided. For more information on these parameters, see the documentation for {func}`erlab.analysis.mesh.remove_mesh`. You may have to experiment with these parameters to achieve optimal results for your dataset.
@@ -492,6 +489,8 @@ This tool accepts any DataArray with `eV` and `alpha` dimensions. When additiona
 :::{note}
 Mesh removal is currently experimental and may not work well for all datasets, and may introduce unwanted artifacts. Please use with caution and verify the results carefully.
 :::
+
+(guide-data-explorer)=
 
 ## Data explorer
 
@@ -511,7 +510,24 @@ Mesh removal is currently experimental and may not work well for all datasets, a
 
 :::
 
-Provides a file-browser-like interface for exploring and visualizing ARPES data stored on your disk. See {func}`erlab.interactive.data_explorer` for more information.
+Provides a file-browser-like interface for exploring and visualizing ARPES data stored on
+your disk.
+
+For most day-to-day browsing and loading, this is faster than the interactive summary
+table described in the {ref}`I/O guide <io-summarizing-data>`. Use the summary table when
+you want the overview as a DataFrame inside Python or when you are implementing loaders.
+
+You can open the explorer in several ways:
+
+1. From the {ref}`ImageTool manager <imagetool-manager-data-explorer>` with
+   {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E`.
+2. From Python with {func}`erlab.interactive.data_explorer`.
+3. From the command line with `python -m erlab.interactive.explorer`.
+
+Browsing directories and previewing metadata works in the standalone explorer. Opening
+selected files into ImageTool analysis requires a running ImageTool manager. Launching the
+explorer from the manager is therefore the recommended path for users who want
+to find a dataset and start working with it immediately.
 
 ## BZPlotter
 

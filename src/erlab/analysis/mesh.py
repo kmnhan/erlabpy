@@ -150,12 +150,19 @@ def find_peaks(
     upper_half_sampled = _bin_image(upper_half, bins)
     fft_center = (upper_half_sampled.shape[1] // 2, upper_half_sampled.shape[0] - 1)
 
-    # Locate peaks in the binned upper half, add some extra to be safe
-    res = _find_local_maxima(
-        upper_half_sampled,
-        num_peaks=n_peaks + 5,
-        min_distance=min_distance or max(1, 40 // bins),
-    )
+    # Locate peaks in the binned upper half, add some extra to be safe.
+    # For small images, a large minimum distance may suppress all but one peak.
+    # Relax the distance adaptively so auto-peak detection remains usable.
+    current_min_distance = min_distance or max(1, 40 // bins)
+    while True:
+        res = _find_local_maxima(
+            upper_half_sampled,
+            num_peaks=n_peaks + 5,
+            min_distance=current_min_distance,
+        )
+        if len(res) >= n_peaks or current_min_distance <= 1:
+            break
+        current_min_distance = max(1, current_min_distance // 2)
     # List for peak coordinates
     resampled_peak_idx: list[tuple[int, int]] = [tuple(reversed(x)) for x in res]
 
@@ -185,6 +192,37 @@ def find_peaks(
         for y, x in peaks_array:
             plt.plot(x, y, "o")
     return peaks_array
+
+
+def _validate_first_order_peaks(
+    first_order_peaks: Iterable[Iterable[int]] | npt.NDArray[np.intp],
+    shape: tuple[int, int],
+) -> npt.NDArray[np.intp]:
+    peaks = np.asarray(first_order_peaks, dtype=np.intp)
+    if peaks.shape != (3, 2):
+        raise ValueError(
+            "first_order_peaks must contain exactly three [row, col] points: "
+            "the FFT center and two first-order peaks."
+        )
+
+    h, w = shape
+    rows, cols = peaks[:, 0], peaks[:, 1]
+    if np.any(rows < 0) or np.any(rows >= h) or np.any(cols < 0) or np.any(cols >= w):
+        raise ValueError(
+            "first_order_peaks contains out-of-bounds coordinates for image shape "
+            f"{shape}."
+        )
+
+    center, p0, p1 = peaks
+    if np.array_equal(center, p0) or np.array_equal(center, p1):
+        raise ValueError(
+            "first_order_peaks must contain two peaks distinct from the center."
+        )
+    if np.array_equal(p0, p1):
+        raise ValueError(
+            "first_order_peaks must contain two distinct first-order peaks."
+        )
+    return peaks
 
 
 def higher_order_peaks(
@@ -505,6 +543,10 @@ def remove_mesh(
         `None`, auto-detection will be performed. There should be three rows, where the
         first row is the center index of the FFT image, and the next two rows are the
         first-order peaks.
+
+        .. versionchanged:: 3.20.1
+            Invalid peak sets now raise :class:`ValueError` instead of being used
+            silently. This includes failed auto-detection placeholders.
     order
         Up to which order of mesh peaks to remove.
     n_pad
@@ -591,7 +633,10 @@ def remove_mesh(
     # If peaks are not provided, find them
     if first_order_peaks is None:
         first_order_peaks = find_peaks(log_magnitude, n_peaks=2, plot=False) - n_pad
-    first_order_peaks = np.asarray(first_order_peaks, dtype=np.intp) + n_pad
+    first_order_peaks = _validate_first_order_peaks(
+        first_order_peaks, typing.cast("tuple[int, int]", original.shape)
+    )
+    first_order_peaks = first_order_peaks + n_pad
 
     # Get all peaks up to specified order
     peaks = higher_order_peaks(

@@ -252,7 +252,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._displayed_indices: list[int] = []
-        self._linkers: list[erlab.interactive.imagetool.core.SlicerLinkProxy] = []
+        self._linkers: list[erlab.interactive.imagetool.viewer.SlicerLinkProxy] = []
 
         # Stores additional analysis tools opened from child ImageTool windows
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
@@ -819,7 +819,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return tool
 
     def color_for_linker(
-        self, linker: erlab.interactive.imagetool.core.SlicerLinkProxy
+        self, linker: erlab.interactive.imagetool.viewer.SlicerLinkProxy
     ) -> QtGui.QColor:
         """Get the color that should represent the given linker."""
         idx = self._linkers.index(linker)
@@ -1349,7 +1349,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def link_imagetools(self, *indices, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""
-        linker = erlab.interactive.imagetool.core.SlicerLinkProxy(
+        linker = erlab.interactive.imagetool.viewer.SlicerLinkProxy(
             *[self.get_imagetool(t).slicer_area for t in indices],
             link_colors=link_colors,
         )
@@ -2080,7 +2080,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return uid
 
     def index_from_slicer_area(
-        self, slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea
+        self, slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea
     ) -> int | None:
         """Get the index corresponding to the given slicer area."""
         for index, wrapper in self._imagetool_wrappers.items():  # pragma: no branch
@@ -2089,7 +2089,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return None
 
     def wrapper_from_slicer_area(
-        self, slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea
+        self, slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea
     ) -> _ImageToolWrapper | None:
         """Get the ImageTool wrapper corresponding to the given slicer area."""
         index = self.index_from_slicer_area(slicer_area)
@@ -2100,7 +2100,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _add_childtool_from_slicerarea(
         self,
         tool: erlab.interactive.utils.ToolWindow,
-        parent_slicer_area: erlab.interactive.imagetool.core.ImageSlicerArea,
+        parent_slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea,
     ) -> None:
         for idx, wrapper in self._imagetool_wrappers.items():  # pragma: no branch
             if wrapper.slicer_area is parent_slicer_area:

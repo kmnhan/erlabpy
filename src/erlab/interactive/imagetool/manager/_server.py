@@ -721,7 +721,7 @@ def show_in_manager(
     elif data is None:
         input_data = []
     else:
-        input_data = erlab.interactive.imagetool.core._parse_input(data)
+        input_data = erlab.interactive.imagetool.viewer._parse_input(data)
 
     if (
         erlab.interactive.imagetool.manager._manager_instance is not None
@@ -762,7 +762,7 @@ def replace_data(
         Data to replace the existing data in the ImageTool windows. See :func:`itool
         <erlab.interactive.imagetool.itool>` for more information.
     """
-    data_list = erlab.interactive.imagetool.core._parse_input(data)
+    data_list = erlab.interactive.imagetool.viewer._parse_input(data)
 
     if isinstance(index, int):
         index = [index]

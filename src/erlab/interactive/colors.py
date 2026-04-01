@@ -551,20 +551,20 @@ class BetterColorBarItem(pg.PlotItem):
         # Add colorbar limit editor to context menu
         self.vb.menu.addSeparator()
         self._clim_menu: QtWidgets.QMenu = self.vb.menu.addMenu("Edit color limits")
-        clw = _ColorBarLimitWidget(self)
-        act = QtWidgets.QWidgetAction(self._clim_menu)
-        act.setDefaultWidget(clw)
-        self._clim_menu.addAction(act)
+        self._clim_widget = _ColorBarLimitWidget(self)
+        self._clim_action = QtWidgets.QWidgetAction(self._clim_menu)
+        self._clim_action.setDefaultWidget(self._clim_widget)
+        self._clim_menu.addAction(self._clim_action)
 
-        center_zero_action = self.vb.menu.addAction("Center zero")
-        center_zero_action.triggered.connect(clw.center_zero)
+        self._center_zero_action = self.vb.menu.addAction("Center zero")
+        self._center_zero_action.triggered.connect(self._clim_widget.center_zero)
 
         if show_colormap_edit_menu:
             self._cmap_menu: QtWidgets.QMenu = self.vb.menu.addMenu("Edit colormap")
-            cew = _ColorBarEditWidget(self)
-            act = QtWidgets.QWidgetAction(self._cmap_menu)
-            act.setDefaultWidget(cew)
-            self._cmap_menu.addAction(act)
+            self._cmap_widget = _ColorBarEditWidget(self)
+            self._cmap_action = QtWidgets.QWidgetAction(self._cmap_menu)
+            self._cmap_action.setDefaultWidget(self._cmap_widget)
+            self._cmap_menu.addAction(self._cmap_action)
 
         if image is not None:
             self.setImageItem(image)
@@ -1036,7 +1036,7 @@ class ColorCycleDialog(QtWidgets.QDialog):
     parent
         The parent widget for the dialog.
     preview_cursors
-        If `True`, the preview will inclue cursor lines and spans with the selected
+        If `True`, the preview will include cursor lines and spans with the selected
         colors.
     opacity_values
         A tuple of four float values representing the opacity for the cursor line,

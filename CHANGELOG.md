@@ -1,3 +1,117 @@
+## Unreleased
+
+### ✨ Features
+
+- **kspace:** make cut conversion exact (#293) ([426ae22](https://github.com/kmnhan/erlabpy/commit/426ae225186ce9cdbced67d97b7b0a6bb2e1fb60))
+
+  Momentum conversion for cuts previously approximated the momentum perpendicular to the slit as a single value across the cut. This is exact only for cuts passing through the origin in momentum space, but can lead to errors for off-center cuts. Now, the exact momentum coordinates are calculated for each point in the output grid, allowing for accurate conversion of arbitrary cuts. The cuts also contain correct momentum coordinates.
+
+  This should not affect most use cases since many cuts of interest are taken near normal emission, and the deviation from the approximation is small for typical angles and kinetic energy ranges.
+
+  This also covers hv-dependent cuts that are measured while varying the map angle (beta). Also in this case, the Brillouin Zone overlay of `ktool` is now plotted by slicing with a curved surface in momentum space rather than a flat plane, so the overlay is more accurate for off-center cuts.
+
+  This change only affects cuts (i.e., data with only one in-plane momentum axis) since for full 2D momentum maps, the exact momentum coordinates are always calculated. Cuts through the origin are also unaffected.
+
+- **kspace:** allow setting offsets from normal emission angles in momentum conversion (#291) ([f56ad87](https://github.com/kmnhan/erlabpy/commit/f56ad875f5e6f4ddd2b888b3b50a9721c2d86e0c))
+
+  Adds a new workflow for setting angle offsets based on the normal emission angles in the data. This is accessible through a new "Normal Emission" section in `ktool`, and the underlying method `xarray.DataArray.kspace.set_normal` is now the recommended way to set angle offsets for momentum conversion. The existing `xarray.DataArray.kspace.offsets` attribute remains available for direct, dictionary-style access to angle offsets for advanced use cases. Also adds a `DataArray.kspace.set_normal_like` method to copy normal emission angles from another DataArray.
+
+- **plotting:** add fine-grained control over mappable selection for colorbars ([70442cc](https://github.com/kmnhan/erlabpy/commit/70442cc97986724e523e1418cbdbc51639447a68))
+
+  Adds a new `index` parameter to `proportional_colorbar` and `nice_colorbar` that allows users to specify which mappable to use when multiple are present. Also adds an `image_only` parameter to restrict the selection to images. This provides more flexibility in cases where multiple mappables are present in a single axes.
+
+- **analysis.fit:** properly allow multidimensional xarray broadcasting for functions that use convolution ([7c1d1ca](https://github.com/kmnhan/erlabpy/commit/7c1d1ca5a51793565e3177f4ffbf14faacf86376))
+
+  Also adds support for lazy-computing dask-based inputs.
+
+### 🐞 Bug Fixes
+
+- **interactive:** better lifecycle management of colorbar menu widgets to prevent rare crashes due to garbage collection of menu widgets from worker threads during later allocations ([37f5cc4](https://github.com/kmnhan/erlabpy/commit/37f5cc4e1c3628874892db46851fe20944476dfc))
+
+- **interactive:** fix failures when both PyQt6 and PySide6 are installed ([cf982f5](https://github.com/kmnhan/erlabpy/commit/cf982f5fbec75d72084cc5af0e75a6f87ed4ac8d))
+
+## v3.20.2 (2026-03-13)
+
+### ⚡️ Performance
+
+- **io.plugins.da30:** improve DA30 zip loading performance ([ef5b315](https://github.com/kmnhan/erlabpy/commit/ef5b3155bbee883f41e4f29e17c5b3c172aa6a35))
+
+  Rewrites `load_zip` to avoid temporary directory extraction by parsing `.ini` files directly from zip contents and reading spectrum binaries into NumPy arrays in memory.
+
+- **manager:** slightly improve `watch` change detection speed and remove `xxhash` optional dependency ([1b2c453](https://github.com/kmnhan/erlabpy/commit/1b2c4538968466e926ea15ca3e19d4069b28697e))
+
+- **imagetool:** optimize data handling and memory management ([0ba2268](https://github.com/kmnhan/erlabpy/commit/0ba22683609f9d5418a1f2c5016bdc5f43b496b7))
+
+  Implements a more efficient approach where data is not copied unnecessarily. This almost halves the memory usage when opening floating point arrays, and allows in-place updates from the console without risking unintended side effects on the original data. Temporary transformations like normalization will take up more memory only when activated.
+
+- **imagetool:** micro-optimization for binning along multiple axes ([0466bd5](https://github.com/kmnhan/erlabpy/commit/0466bd5e697416d07d96816f577d2c74f67a80fa))
+
+### ♻️ Code Refactor
+
+- remove optional `libarchive` dependency for DA30 zip file loading ([e5fd1b5](https://github.com/kmnhan/erlabpy/commit/e5fd1b519ce9d953f8d9ee755a809c73d83bd27a))
+
+  Benchmarks show that using `libarchive` does not have a significant performance improvement when loading a single DA30 zip file, and it adds an optional dependency that can be difficult to install on some platforms. This commit removes the option to use `libarchive` for loading DA30 zip files, and simplifies the code accordingly.
+
+## v3.20.1 (2026-03-04)
+
+### 🐞 Bug Fixes
+
+- **kspace:** Use arctan2 for correct quadrant in inverse conversion function for very large angles ([d34a3f1](https://github.com/kmnhan/erlabpy/commit/d34a3f1567b56e53189d69e9da8b0213eb173050))
+
+- **analysis.fit:** make resolution convolution invariant to descending energy axes ([4e7ca4a](https://github.com/kmnhan/erlabpy/commit/4e7ca4ac818c0fb4500d15ded700e5d3e41176e4))
+
+  `do_convolve` previously produced physically shifted broadened spectra for descending energy coordinates because kernel generation extended its padded domain assuming ascending order. This caused axis-order-dependent broadening results (for example, shifted Fermi-edge crossing positions) even though the underlying data were identical up to reversal.
+
+- **kspace:** correct kz point-count resolution spacing for momentum conversion ([2e55f0a](https://github.com/kmnhan/erlabpy/commit/2e55f0ada6e73a7c4d5503f55ceb3b81201b4cfd))
+
+  `DataArray.kspace.estimate_resolution(..., from_numpoints=True)` now uses adjacent-point spacing over inclusive bounds (`(max - min) / (N - 1)`) instead of dividing by `N`, which previously underestimated `kz` step size and could generate overly dense default `kz` grids in `convert()`. The change also adds a single-point guard (`np.inf` when fewer than two points exist).
+
+- **analysis.gold:** honor coordinate order for fit-range slicing ([f956429](https://github.com/kmnhan/erlabpy/commit/f956429bea0e5ceaaf5dbd429b8c7bbdabba4d07))
+
+  Patches functions that select the fit range using input parameters to sort the input range to match the coordinate order of the input dataset. This ensures that the fit range is correctly applied regardless of the coordinate order of the input dataset. The affected functions include `edge`, `poly`, `spline`, and `quick_fit`.
+
+- **analysis.gold:** plot FWHM span with correct half-width around fitted center ([2479f31](https://github.com/kmnhan/erlabpy/commit/2479f31c15b5404770a43bb95ecba7e0d8b4c8e2))
+
+  The fit visualization now shades the true FWHM interval. Previously, the span used center ± resolution, doubling the displayed width. It now uses the correct one (center ± resolution/2).
+
+- **analysis.gold:** normalize fixed center parameter calculation in `edge` ([519f001](https://github.com/kmnhan/erlabpy/commit/519f001a32e515f7e9a17ad06283dbf3d915b11a))
+
+- **kspace:** add kinetic energy validation to prevent nonphysical values ([6bd6f47](https://github.com/kmnhan/erlabpy/commit/6bd6f4777028645a77ed6c2ec25fa578ae6863c2))
+
+  Raises `ValueError` when kinetic energy is nonpositive during resolution estimation and coordinate conversion in kspace tools and accessors. This ensures that users are informed of nonphysical conditions in their data and prevents downstream errors.
+
+- **imagetool:** properly handle non-uniform descending coordinates ([e221a92](https://github.com/kmnhan/erlabpy/commit/e221a9274b143e0c63ddb195ea11e3533bddddbe))
+
+  Non-uniform descending coordinates were not handled correctly when indexing by value or when synchronizing with different ImageTools. This commit adds support for non-uniform descending coordinates by reversing the coordinate array and adjusting the index accordingly.
+
+- **ktool:** Descending eV axes (common from some loaders) collapsed center range and selected wrong bins, producing wrong preview results ([a3442eb](https://github.com/kmnhan/erlabpy/commit/a3442eba18855277b844d9d22fb5e178ebef5df2))
+
+- **ktool:** "Estimate resolution" ignored current UI wf, so estimated momentum resolution could be inconsistent with actual conversion parameters ([515262a](https://github.com/kmnhan/erlabpy/commit/515262ab5297f9ca7a39ead63f1e81fca52d8c47))
+
+- **ktool:** "Estimate bounds" ignored current UI V0/wf, so low-hv and hv-dependent data could get wrong momentum bounds ([a57da0c](https://github.com/kmnhan/erlabpy/commit/a57da0c4503c9ffe04c926dfb534f339161aab0e))
+
+- **ktool:** fixed a bug where the result could be wrong for data with the energy axis given in kinetic energy. ([f310caf](https://github.com/kmnhan/erlabpy/commit/f310caf4315bf935ddecbdca8e2faf67f2b9ba14))
+
+- **analysis.gold:** correct parameter assignment for fixed center in `edge` ([1521908](https://github.com/kmnhan/erlabpy/commit/1521908afdcbe9f396c7d686a78f96f8dc5808af))
+
+- **io:** add warning for squeezing dimensions in `save_as_hdf5` with `igor_compat=True` ([80ef869](https://github.com/kmnhan/erlabpy/commit/80ef8698b9fddaa6985a1d8974b91a20a580a59e))
+
+### ⚡️ Performance
+
+- **ktool:** improve memory efficiency and speed by using shallow copies ([2ee88a4](https://github.com/kmnhan/erlabpy/commit/2ee88a4a69499d67a07e27ba8f8e1a1726514aac))
+
+### ♻️ Code Refactor
+
+- **meshtool:** add manager-aware warning for peak detection failure ([171d0ad](https://github.com/kmnhan/erlabpy/commit/171d0ad8592ec53e6ea2839e8758677532843994))
+
+- **analysis.mesh:** raise an error if invalid peaks are provided or automatic detection fails ([14a5500](https://github.com/kmnhan/erlabpy/commit/14a55005fea895305a20199ec1de07c4745b9cda))
+
+- **imagetool:** deprecate `core` module and re-export from `viewer` and `plot_items` ([1dcc093](https://github.com/kmnhan/erlabpy/commit/1dcc0938a80a20e6327a88ea63281b2380cf38d1))
+
+- **imagetool:** split viewer internals into focused modules ([cc39a81](https://github.com/kmnhan/erlabpy/commit/cc39a813d363e683c80adb4189d15ff9723e0343))
+
+- **imagetool:** rename core module to viewer ([cbb2792](https://github.com/kmnhan/erlabpy/commit/cbb2792075dba5a313226d45911ba01140b4a2ae))
+
 ## v3.20.0 (2026-02-15)
 
 ### ✨ Features

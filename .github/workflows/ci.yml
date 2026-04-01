@@ -34,10 +34,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: tlambert03/setup-qt-libs@v1
-      - name: Setup for Qt testing
-        run: |
-          /sbin/start-stop-daemon --start --quiet --pidfile /tmp/custom_xvfb_99.pid --make-pidfile --background --exec /usr/bin/Xvfb -- :99 -screen 0 1920x1200x24 -ac +extension GLX
+      - uses: pyvista/setup-headless-display-action@v3
+        with:
+          pyvista: false
+          qt: true
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -63,13 +63,13 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results to Codecov
         if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API && !cancelled() }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: "test_results"
@@ -94,7 +94,7 @@ jobs:
         run: uv run mypy --install-types --non-interactive --html-report mypy-report .
 
       - name: Upload mypy results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mypy-report

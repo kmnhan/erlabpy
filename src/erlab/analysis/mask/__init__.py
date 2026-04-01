@@ -296,7 +296,7 @@ def mask_with_regular_polygon(
     coordinates (specified by ``dims``) and returns a DataArray with values outside the
     polygon set to NaN (or dropped if drop=True). If ``invert=True``, the selection is
     inverted so that values inside the polygon are masked instead. The polygon is
-    oriented so that a vertice is at the top (along the positive y-axis) when
+    oriented so that a vertex is at the top (along the positive y-axis) when
     ``rotate=0``.
 
     Parameters

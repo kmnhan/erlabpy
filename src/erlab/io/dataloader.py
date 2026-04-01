@@ -553,7 +553,7 @@ class LoaderBase(metaclass=_Loader):
 
         .. note::
 
-            This method is not meant to be overriden in subclasses.
+            This method is not meant to be overridden in subclasses.
 
         Parameters
         ----------
@@ -587,7 +587,7 @@ class LoaderBase(metaclass=_Loader):
             returned.
         combine
             Whether to attempt to combine multiple files into a single data object. If
-            `False`, a list of data is returned. If `True`, the loader tries to combined
+            `False`, a list of data is returned. If `True`, the loader tries to combine
             the data into a single data object and return it. Depending on the type of
             each data object, the returned object can be a `xarray.DataArray`,
             `xarray.Dataset`, or a `xarray.DataTree`.
@@ -878,7 +878,7 @@ class LoaderBase(metaclass=_Loader):
 
         .. note::
 
-            This method is not meant to be overriden in subclasses.
+            This method is not meant to be overridden in subclasses.
 
         Takes a path to a directory and summarizes the data in the directory to a table,
         much like a log file. This is useful for quickly inspecting the contents of a
@@ -1481,22 +1481,18 @@ class LoaderBase(metaclass=_Loader):
         files : list of str or path-like
             A list of file paths.
 
-            - For scans spread over multiple files, the list must contain all files that
-              correspond to the given scan index.
+            For scans spread over multiple files, the list must contain all files
+            corresponding to the given scan index.
 
-            - For single file scans, the behavior differs based on the value of
-              :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`.
-
-              - If `True`, all files that match the given scan index should be returned.
-                In this case, only the first file will be loaded, and a warning will be
-                shown to the user.
-
-              - If `False`, there is no way to tell whether the returned files are part
-                of a valid multiple-file scan. Hence, it is up to the loader to ensure
-                that only a single file is returned and appropriate warnings are issued
-                for single file scans when multiple files for a single scan are
-                detected. See the source code of
-                :meth:`erlab.io.plugins.merlin.MERLINLoader.identify` for an example.
+            For single-file scans, behavior depends on
+            :attr:`always_single <erlab.io.dataloader.LoaderBase.always_single>`.
+            If `True`, all files matching the scan index should be returned, but
+            only the first file will be loaded and a warning will be shown.
+            If `False`, there is no way to tell whether returned files are part of a
+            valid multiple-file scan. The loader must then ensure that only a single
+            file is returned and issue appropriate warnings if multiple files are
+            detected for a single-file scan. See
+            :meth:`erlab.io.plugins.merlin.MERLINLoader.identify` for an example.
 
         coord_dict : dict of str to sequence
             A dictionary mapping scan axes names to scan coordinates.
@@ -1620,7 +1616,7 @@ class LoaderBase(metaclass=_Loader):
 
         Override this function to perform any necessary concatenation-specific
         pre-processing steps. The primary use case is to correct small inconsistencies
-        in the loaded data that results in broken concatenation/combination.
+        in the loaded data that result in broken concatenation/combination.
 
         For instance, ALS BL4.0.3 Merlin often produces data with the energy axis start
         and step values shifted by a small amount (typically on the order of μeV). This

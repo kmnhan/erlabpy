@@ -3,6 +3,7 @@
 __all__ = ["fingerprint_dataarray"]
 
 import pickle
+import zlib
 
 import numpy as np
 import numpy.typing as npt
@@ -10,16 +11,7 @@ import xarray as xr
 
 
 def _digest_bytes(b: memoryview | bytes | bytearray) -> int:
-    try:
-        import xxhash
-    except ImportError:
-        import zlib
-
-        return zlib.adler32(b)
-    else:
-        h = xxhash.xxh64()
-        h.update(b)
-        return h.intdigest() & 0xFFFFFFFFFFFFFFFF
+    return zlib.crc32(b) & 0xFFFFFFFF
 
 
 def _meta_signature(darr: xr.DataArray) -> int:
@@ -153,7 +145,7 @@ def fingerprint_dataarray(
 
     Note
     ----
-    - Different python processes will produce different fingerprints for the same data
+    - Different Python processes will produce different fingerprints for the same data
       due to the use of the built-in :func:`hash`. Use only for comparisons within a
       single process.
     - This function is not cryptographically secure and should not be used for security

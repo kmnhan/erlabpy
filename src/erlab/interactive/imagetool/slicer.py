@@ -14,7 +14,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Iterator, Sequence
+    from collections.abc import Hashable, Sequence
 
     import dask.array
 
@@ -162,17 +162,17 @@ class ArraySlicer(QtCore.QObject):
     ----
     The original intent of this class was a xarray accessor. This is why `ArraySlicer`
     does not depend on a :class:`ImageSlicerArea
-    <erlab.interactive.imagetool.core.ImageSlicerArea>` but rather on the underlying
+    <erlab.interactive.imagetool.viewer.ImageSlicerArea>` but rather on the underlying
     `xarray.DataArray`. Originally, when loading a different array, a different instance
     of `ArraySlicer` had to be created. This was a terrible design choice since it
     messed up signals every time the instance was replaced. Hence, the behaviour was
     modified (23/06/19) so that the underlying `xarray.DataArray` of `ArraySlicer` could
     be swapped. As a consequence, each instance of :class:`ImageSlicerArea
-    <erlab.interactive.imagetool.core.ImageSlicerArea>` now corresponds to exactly one
+    <erlab.interactive.imagetool.viewer.ImageSlicerArea>` now corresponds to exactly one
     instance of `ArraySlicer`, regardless of the data. In the future, `ArraySlicer`
     might be changed so that it relies on its one-to-one correspondence with
-    :class:`ImageSlicerArea <erlab.interactive.imagetool.core.ImageSlicerArea>` for the
-    signals.
+    :class:`ImageSlicerArea <erlab.interactive.imagetool.viewer.ImageSlicerArea>`
+    for the signals.
 
     """
 
@@ -190,7 +190,7 @@ class ArraySlicer(QtCore.QObject):
         self.snap_act.setChecked(False)
         self.snap_act.setToolTip("Snap cursors to data points")
 
-        self.set_array(xarray_obj, validate=True, reset=True)
+        self.set_array(xarray_obj, validate=True, reset=True, copy_values=False)
 
     @property
     def snap_to_data(self) -> bool:
@@ -210,7 +210,13 @@ class ArraySlicer(QtCore.QObject):
         self.sigTwinChanged.emit()
 
     def set_array(
-        self, xarray_obj: xr.DataArray, validate: bool = True, reset: bool = False
+        self,
+        xarray_obj: xr.DataArray,
+        validate: bool = True,
+        reset: bool = False,
+        *,
+        copy_values: bool = True,
+        preserve_dims: Sequence[Hashable] | None = None,
     ) -> bool:
         """Set the DataArray object to be sliced.
 
@@ -224,23 +230,37 @@ class ArraySlicer(QtCore.QObject):
             transposing an already valid array.
         reset
             If True, reset cursors, bins, indices, and values.
+        copy_values
+            If `True`, copy the underlying array values while validating. Set to
+            `False` to reuse the current values buffer when the caller already manages
+            ownership.
+        preserve_dims
+            Dimension order to preserve after validation. This is used when rebuilding
+            the slicer from the public source array without disturbing the current view
+            layout.
 
         Returns
         -------
         bool
             True if the cursors were reset, False if only the data was updated.
         """
-        obj_original: xr.DataArray | None = None
-        if hasattr(self, "_obj"):
+        obj_original = getattr(self, "_obj", None)
+        if obj_original is not None:
             # Shallow copy is enough: we only compare dims/coords for cursor
             # compatibility.
-            obj_original = self._obj.copy(deep=False)
-            del self._obj
+            obj_original = obj_original.copy(deep=False)
 
         if validate:
-            self._obj: xr.DataArray = self.validate_array(xarray_obj)
+            self._obj = self.validate_array(xarray_obj, copy_values=copy_values)
         else:
             self._obj = xarray_obj
+
+        if (
+            preserve_dims is not None
+            and tuple(self._obj.dims) != tuple(preserve_dims)
+            and set(self._obj.dims) == set(preserve_dims)
+        ):
+            self._obj = self._obj.transpose(*preserve_dims)
 
         if (obj_original is not None) and reset:
             # If same coords, keep cursors
@@ -249,27 +269,18 @@ class ArraySlicer(QtCore.QObject):
                 reset = False
             del obj_original
 
-        # Identify non-uniform axes created by make_dims_uniform while avoiding false
-        # positives when users provide their own *_idx dimensions.
-        self._nonuniform_axes = []
-        for i, d in enumerate(self._obj.dims):
-            if not str(d).endswith("_idx"):
-                continue
-            stripped = str(d).removesuffix("_idx")
-            if stripped not in self._obj.coords:
-                continue
-            coord = self._obj.coords[stripped]
-            if coord.ndim != 1 or coord.size != self._obj.sizes[d]:
-                continue
-            if not _is_uniform(coord.values.astype(np.float64)):
-                self._nonuniform_axes.append(i)
-
         self.clear_dim_cache()
+        self._refresh_array_layout_cache()
         if validate:
             self.clear_val_cache()
 
         if reset:
             self._bins: list[list[int]] = [[1] * self._obj.ndim]
+            # Keep an explicit boolean cache alongside the integer bin widths so the
+            # hot slicing paths do not rebuild `b != 1` tuples on every query.
+            self._binned: list[tuple[bool, ...]] = [
+                tuple(False for _ in self._all_axes)
+            ]
             self._indices: list[list[int]] = [
                 [s // 2 - (1 if s % 2 == 0 else 0) for s in self._obj.shape]
             ]
@@ -281,6 +292,10 @@ class ArraySlicer(QtCore.QObject):
                 tuple[Hashable, Hashable, str, bool, float, float] | None
             ) = None
             self.snap_to_data = False
+        else:
+            # Preserve cursor bin widths when the array is replaced, but rebuild the
+            # derived boolean cache against the current axis order.
+            self._binned = [tuple(b != 1 for b in bins) for bins in self._bins]
         return reset
 
     @functools.cached_property
@@ -383,6 +398,18 @@ class ArraySlicer(QtCore.QObject):
         """
         return tuple((coord[0], coord[-1]) for coord in self.coords_uniform)
 
+    @functools.cached_property
+    def uniform_index_params(
+        self,
+    ) -> tuple[tuple[np.floating, np.floating, int], ...]:
+        """Cached uniform-axis indexing parameters for fast value lookups."""
+        return tuple(
+            (lims[0], inc, size - 1)
+            for lims, inc, size in zip(
+                self.lims_uniform, self.incs_uniform, self._obj.shape, strict=True
+            )
+        )
+
     @property
     def nanmax(self) -> float:
         return self.limits[1]
@@ -420,6 +447,10 @@ class ArraySlicer(QtCore.QObject):
 
         self.snap_to_data = state["snap_to_data"]
         self.clear_cache()
+        # The setters below depend on eager layout lookups such as
+        # `_nonuniform_axes_set` and `_dim_indices`, so rebuild them immediately after
+        # any transpose and before restoring cursor state.
+        self._refresh_array_layout_cache()
 
         for i, (bins, indices, values) in enumerate(
             zip(state["bins"], state["indices"], state["values"], strict=True)
@@ -441,7 +472,7 @@ class ArraySlicer(QtCore.QObject):
         # something... reproduce by archiving a 3D array with one non-uniform axis.
 
     @staticmethod
-    def validate_array(data: xr.DataArray) -> xr.DataArray:
+    def validate_array(data: xr.DataArray, copy_values: bool = True) -> xr.DataArray:
         """Validate a given :class:`xarray.DataArray`.
 
         If data has two momentum axes (``kx`` and ``ky``), set them (and ``eV`` if
@@ -456,6 +487,10 @@ class ArraySlicer(QtCore.QObject):
         ----------
         data
             Input array with at least two dimensions.
+        copy_values
+            If `True`, copy the underlying values while validating. Set to `False` when
+            the caller intentionally wants the validated array to share the same values
+            buffer as the source array.
 
         Returns
         -------
@@ -465,9 +500,11 @@ class ArraySlicer(QtCore.QObject):
 
         """
         # Keep metadata copying shallow to avoid deepcopy/GC issues.
-        # Make the backing array independent so in-place updates in
-        # ImageSlicerArea do not mutate the caller's original DataArray.
-        data = data.copy(deep=False, data=data.data.copy())
+        data = data.copy(deep=False)
+        if copy_values:
+            # Make the backing array independent so in-place updates in ImageTool do
+            # not mutate the caller's original DataArray.
+            data._variable = data.variable.copy(deep=False, data=data.data.copy())
         if data.size == 0:
             raise ValueError("Data must not be empty.")
 
@@ -511,10 +548,37 @@ class ArraySlicer(QtCore.QObject):
     def _reset_property_cache(self, propname: str) -> None:
         self.__dict__.pop(propname, None)
 
+    def _refresh_array_layout_cache(self) -> None:
+        """Rebuild eager lookup tables derived from the current DataArray layout."""
+        # These small lookup caches are coupled to the current dimension order and are
+        # rebuilt wholesale whenever the backing DataArray changes.
+        # Identify non-uniform axes created by make_dims_uniform while avoiding false
+        # positives when users provide their own *_idx dimensions.
+        self._nonuniform_axes = []
+        for i, d in enumerate(self._obj.dims):
+            if not str(d).endswith("_idx"):
+                continue
+            stripped = str(d).removesuffix("_idx")
+            if stripped not in self._obj.coords:
+                continue
+            coord = self._obj.coords[stripped]
+            if coord.ndim != 1 or coord.size != self._obj.sizes[d]:
+                continue
+            if not _is_uniform(coord.values.astype(np.float64)):
+                self._nonuniform_axes.append(i)
+        self._nonuniform_axes_set: set[int] = set(self._nonuniform_axes)
+        self._all_axes: tuple[int, ...] = tuple(range(self._obj.ndim))
+        self._dim_indices: dict[Hashable, int] = {
+            dim: i for i, dim in enumerate(self._obj.dims)
+        }
+        self._hidden_axes_cache: dict[tuple[int, ...], tuple[int, ...]] = {}
+        self._hidden_axes_has_nonuniform_cache: dict[tuple[int, ...], bool] = {}
+
     def clear_dim_cache(self) -> None:
         """Clear cached properties related to dimensions.
 
-        This method clears the cached coordinate values, increments, and limits.
+        This method clears cached coordinate values, increments, limits, and the small
+        argument-keyed memo tables derived from the current dimension layout.
         """
         for prop in (
             "coords",
@@ -524,8 +588,10 @@ class ArraySlicer(QtCore.QObject):
             "incs_uniform",
             "lims",
             "lims_uniform",
+            "uniform_index_params",
         ):
             self._reset_property_cache(prop)
+        self._reset_hidden_axes_cache()
 
     def clear_val_cache(self) -> None:
         """Clear cached properties related to data values.
@@ -539,6 +605,41 @@ class ArraySlicer(QtCore.QObject):
         """Clear all cached properties."""
         self.clear_dim_cache()
         self.clear_val_cache()
+
+    def _reset_hidden_axes_cache(self) -> None:
+        """Clear memoized hidden-axis selections derived from display tuples."""
+        if hasattr(self, "_hidden_axes_cache"):
+            self._hidden_axes_cache.clear()
+        if hasattr(self, "_hidden_axes_has_nonuniform_cache"):
+            self._hidden_axes_has_nonuniform_cache.clear()
+
+    def _refresh_cursor_binned(self, cursor: int) -> None:
+        """Refresh the cached binned-state tuple after mutating bin widths."""
+        self._binned[cursor] = tuple(b != 1 for b in self._bins[cursor])
+
+    def _hidden_axes_for_disp(self, disp: Sequence[int]) -> tuple[int, ...]:
+        """Return cached hidden axes for a given displayed-axis selection."""
+        key = tuple(disp)
+        hidden = self._hidden_axes_cache.get(key)
+        if hidden is None:
+            # Display-axis combinations repeat frequently during cursor motion, so keep
+            # a tiny per-layout memo instead of rebuilding these tuples every time.
+            key_set = set(key)
+            hidden = tuple(ax for ax in self._all_axes if ax not in key_set)
+            self._hidden_axes_cache[key] = hidden
+            self._hidden_axes_has_nonuniform_cache[key] = any(
+                ax in self._nonuniform_axes_set for ax in hidden
+            )
+        return hidden
+
+    def _hidden_axes_have_nonuniform(self, disp: Sequence[int]) -> bool:
+        """Return whether any hidden axis uses non-uniform coordinates."""
+        key = tuple(disp)
+        has_nonuniform = self._hidden_axes_has_nonuniform_cache.get(key)
+        if has_nonuniform is None:
+            self._hidden_axes_for_disp(key)
+            return self._hidden_axes_has_nonuniform_cache[key]
+        return has_nonuniform
 
     def values_of_dim(self, dim: Hashable) -> npt.NDArray[np.floating]:
         """Fast equivalent of :code:`self._obj[dim].values`.
@@ -569,7 +670,7 @@ class ArraySlicer(QtCore.QObject):
 
     def get_significant(self, axis: int, uniform: bool = False) -> int:
         """Return the number of significant digits for a given axis."""
-        if uniform and axis in self._nonuniform_axes:
+        if uniform and axis in self._nonuniform_axes_set:
             return 0  # Index axis, no decimals
         step = self.incs[axis]
         if step == 0:
@@ -578,6 +679,7 @@ class ArraySlicer(QtCore.QObject):
 
     def add_cursor(self, like_cursor: int = -1, update: bool = True) -> None:
         self._bins.append(list(self.get_bins(like_cursor)))
+        self._binned.append(self._binned[like_cursor])
         new_ind = self.get_indices(like_cursor)
         self._indices.append(list(new_ind))
         self._values.append([c[i] for c, i in zip(self.coords, new_ind, strict=True)])
@@ -588,6 +690,7 @@ class ArraySlicer(QtCore.QObject):
         if self.n_cursors == 1:
             raise ValueError("There must be at least one cursor.")
         self._bins.pop(index)
+        self._binned.pop(index)
         self._indices.pop(index)
         self._values.pop(index)
         if update:
@@ -634,24 +737,20 @@ class ArraySlicer(QtCore.QObject):
         if int(value) != value:
             raise TypeError("bins must have integer type")
         self._bins[cursor][axis] = int(value)
+        self._refresh_cursor_binned(cursor)
         if update:
             self.sigBinChanged.emit(cursor, (axis,))
             return []
         return [axis]
 
-    def _binned_iter(self, cursor: int) -> Iterator[bool]:
-        """Iterate over whether each axis is binned for the given cursor."""
-        for b in self.get_bins(cursor):
-            yield b != 1
-
     @QtCore.Slot(int, result=tuple)
     def get_binned(self, cursor: int) -> tuple[bool, ...]:
         """Return whether each axis is binned for the given cursor."""
-        return tuple(self._binned_iter(cursor))
+        return self._binned[cursor]
 
     def is_binned(self, cursor: int) -> bool:
         """Return whether any axis is binned for the given cursor."""
-        return any(self._binned_iter(cursor))
+        return any(self._binned[cursor])
 
     @QtCore.Slot(int, result=list)
     def get_indices(self, cursor: int) -> list[int]:
@@ -713,7 +812,7 @@ class ArraySlicer(QtCore.QObject):
 
     @QtCore.Slot(int, int, bool, result=float)
     def get_value(self, cursor: int, axis: int, uniform: bool = False) -> float:
-        if uniform and axis in self._nonuniform_axes:
+        if uniform and axis in self._nonuniform_axes_set:
             return float(self._indices[cursor][axis])
         return float(self._values[cursor][axis])
 
@@ -737,14 +836,17 @@ class ArraySlicer(QtCore.QObject):
     ) -> list[int | None]:
         if value is None:
             return []
-        self._indices[cursor][axis] = self.index_of_value(axis, value, uniform=uniform)
-        if self.snap_to_data or (axis in self._nonuniform_axes):
-            new = self.coords[axis][self._indices[cursor][axis]]
-            if self._values[cursor][axis] == new:
+        indices = self._indices[cursor]
+        values = self._values[cursor]
+        index = self.index_of_value(axis, value, uniform=uniform)
+        indices[axis] = index
+        if self.snap_to_data or (axis in self._nonuniform_axes_set):
+            new = self.coords[axis][index]
+            if values[axis] == new:
                 return []
-            self._values[cursor][axis] = new
+            values[axis] = new
         else:
-            self._values[cursor][axis] = np.float64(value)
+            values[axis] = np.float64(value)
         if update:
             self.sigIndexChanged.emit(cursor, (axis,))
             return []
@@ -755,8 +857,8 @@ class ArraySlicer(QtCore.QObject):
         self, cursor: int, binned: bool = True
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
         if binned:
-            return self.extract_avg_slice(cursor, tuple(range(self._obj.ndim)))
-        return self._obj[tuple(self.get_indices(cursor))].values
+            return self.extract_avg_slice(cursor, self._all_axes)
+        return self._obj[tuple(self._indices[cursor])].values
 
     @QtCore.Slot(int, int)
     def swap_axes(self, ax1: int, ax2: int) -> None:
@@ -765,6 +867,7 @@ class ArraySlicer(QtCore.QObject):
                 self._bins[i][ax2],
                 self._bins[i][ax1],
             )
+            self._refresh_cursor_binned(i)
             self._values[i][ax1], self._values[i][ax2] = (
                 self._values[i][ax2],
                 self._values[i][ax1],
@@ -811,7 +914,7 @@ class ArraySlicer(QtCore.QObject):
             coordinate value at the given index is returned.
 
         """
-        if uniform or (axis not in self._nonuniform_axes):
+        if uniform or (axis not in self._nonuniform_axes_set):
             return self.coords_uniform[axis][value]
         return self.coords[axis][value]
 
@@ -831,10 +934,14 @@ class ArraySlicer(QtCore.QObject):
             returned.
 
         """
-        if uniform or (axis not in self._nonuniform_axes):
-            return erlab.interactive.imagetool.fastslicing._index_of_value(
-                axis, value, self.lims_uniform, self.incs_uniform, self._obj.shape
-            )
+        if uniform or (axis not in self._nonuniform_axes_set):
+            start, delta, upper = self.uniform_index_params[axis]
+            if delta == 0:
+                return 0
+            index = round((value - start) / delta)
+            if index <= 0:
+                return 0
+            return min(index, upper)
 
         return erlab.interactive.imagetool.fastslicing._index_of_value_nonuniform(
             self.coords[axis], value
@@ -847,11 +954,10 @@ class ArraySlicer(QtCore.QObject):
         int_if_one: bool = False,
         uniform: bool = False,
     ) -> dict[Hashable, slice | int]:
-        axis: list[int] = sorted(set(range(self._obj.ndim)) - set(disp))
         out: dict[Hashable, slice | int] = {}
-        for ax in axis:
+        for ax in self._hidden_axes_for_disp(disp):
             dim_name = self._obj.dims[ax]
-            if ax in self._nonuniform_axes and not uniform:
+            if ax in self._nonuniform_axes_set and not uniform:
                 dim_name = str(dim_name).removesuffix("_idx")
             out[dim_name] = self._bin_slice(cursor, ax, int_if_one)
         return out
@@ -861,7 +967,9 @@ class ArraySlicer(QtCore.QObject):
         binned = self.get_binned(cursor)
 
         for dim, selector in self.isel_args(cursor, disp, int_if_one=True).items():
-            axis_idx = self._obj.dims.index(dim)
+            axis_idx = self._dim_indices.get(dim)
+            if axis_idx is None:
+                axis_idx = self._obj.dims.index(dim)
             inc = self.incs[axis_idx]
             # Estimate minimum number of decimal places required to represent selection
             order = self.get_significant(axis_idx)
@@ -890,9 +998,7 @@ class ArraySlicer(QtCore.QObject):
         return out
 
     def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        if any(
-            a in self._nonuniform_axes for a in set(range(self._obj.ndim)) - set(disp)
-        ):
+        if self._hidden_axes_have_nonuniform(disp):
             # Has non-uniform axes, fallback to isel
             return self.isel_code(cursor, disp)
 
@@ -914,9 +1020,7 @@ class ArraySlicer(QtCore.QObject):
         return ""
 
     def xslice(self, cursor: int, disp: Sequence[int]) -> xr.DataArray:
-        if not any(
-            a in self._nonuniform_axes for a in set(range(self._obj.ndim)) - set(disp)
-        ):
+        if not self._hidden_axes_have_nonuniform(disp):
             return self._obj.qsel(self.qsel_args(cursor, disp))
 
         isel_kw = self.isel_args(cursor, disp, int_if_one=False, uniform=True)
@@ -938,7 +1042,7 @@ class ArraySlicer(QtCore.QObject):
         | npt.NDArray[np.floating],
         npt.NDArray[np.floating] | np.floating | dask.array.Array,
     ]:
-        axis = sorted(set(range(self._obj.ndim)) - set(disp))
+        axis = self._hidden_axes_for_disp(disp)
         data = self.extract_avg_slice(cursor, axis)
         if len(disp) == 2 and 0 in disp:
             data = data.T
@@ -966,9 +1070,9 @@ class ArraySlicer(QtCore.QObject):
     def _bin_slice(
         self, cursor: int, axis: int, int_if_one: bool = False
     ) -> slice | int:
-        center = self.get_indices(cursor)[axis]
-        if self.get_binned(cursor)[axis]:
-            window = self.get_bins(cursor)[axis]
+        center = self._indices[cursor][axis]
+        if self._binned[cursor][axis]:
+            window = self._bins[cursor][axis]
             return slice(center - window // 2, center + (window - 1) // 2 + 1)
         if int_if_one:
             return center
@@ -977,33 +1081,72 @@ class ArraySlicer(QtCore.QObject):
     def _bin_along_axis(
         self, cursor: int, axis: int
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
-        if not self.get_binned(cursor)[axis]:
-            return self._obj.data[
-                (slice(None),) * axis + (self._bin_slice(cursor, axis),)
-            ].squeeze(axis=axis)
+        center = self._indices[cursor][axis]
+        if not self._binned[cursor][axis]:
+            return self._obj.data[(slice(None),) * axis + (center,)]
+        window = self._bins[cursor][axis]
+        selection = slice(center - window // 2, center + (window - 1) // 2 + 1)
         return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
-            self._obj.data[(slice(None),) * axis + (self._bin_slice(cursor, axis),)],
+            self._obj.data[(slice(None),) * axis + (selection,)],
             axis=axis,
         )
 
     def _bin_along_multiaxis(
         self, cursor: int, axis: Sequence[int]
     ) -> npt.NDArray[np.floating] | np.floating | dask.array.Array:
-        binned: bool = self.get_binned(cursor)
-        selected = self._obj.data[
-            tuple(
-                (
-                    self._bin_slice(cursor, ax)
-                    if binned
-                    else self.get_indices(cursor)[ax]
+        """Extract and optionally average over multiple hidden axes.
+
+        Reduced axes with bin size ``1`` are indexed by integer, which drops them from
+        the selected view. Reduced axes with larger bins are sliced and then averaged.
+        The reduction axes therefore need to be remapped only in the mixed case where
+        some reduced axes are indexed away while others remain for averaging.
+
+        """
+        # Internal callers pass sorted, unique axes.
+        reduced_axes: Sequence[int] = axis
+        bins = self._bins[cursor]
+        binned = self._binned[cursor]
+        indices = self._indices[cursor]
+        selection: list[slice | int] = [slice(None)] * self._obj.ndim
+        any_binned: bool = False
+        all_binned: bool = True
+        dropped: int = 0
+        selected_axis: list[int] = []
+        for ax in reduced_axes:
+            if binned[ax]:
+                # Keep binned axes in the view and track their positions after any
+                # earlier unbinned axes have been removed by integer indexing.
+                any_binned = True
+                center = indices[ax]
+                window = bins[ax]
+                selection[ax] = slice(
+                    center - window // 2, center + (window - 1) // 2 + 1
                 )
-                if ax in axis
-                else slice(None)
-                for ax in range(self._obj.ndim)
-            )
-        ]
-        if binned:
+                selected_axis.append(ax - dropped)
+            else:
+                all_binned = False
+                selection[ax] = indices[ax]
+                dropped += 1
+
+        selected = self._obj.data[tuple(selection)]
+        if not any_binned:
+            return selected
+
+        if all_binned:
+            # No axis remapping is needed when every reduced axis is still present.
             return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
-                selected, axis=axis
+                selected, axis=reduced_axes
             )
-        return selected
+
+        if selected.ndim == 1:
+            # Mixed point-value requests can leave a single remaining binned axis.
+            return erlab.interactive.imagetool.fastbinning.fast_nanmean(
+                selected, axis=0
+            )
+
+        reduction_axis: int | tuple[int, ...] = (
+            selected_axis[0] if len(selected_axis) == 1 else tuple(selected_axis)
+        )
+        return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
+            selected, axis=reduction_axis
+        )

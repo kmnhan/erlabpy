@@ -31,6 +31,122 @@ class IncompleteDataError(ValueError):
         return f"{kind_str} '{name}' is required for momentum conversion."
 
 
+def _kxy_components(
+    slit_axis: typing.Literal["kx", "ky"],
+    slit_momentum,
+    other_momentum,
+) -> tuple[float | np.ndarray, float | np.ndarray]:
+    return (
+        (slit_momentum, other_momentum)
+        if slit_axis == "kx"
+        else (other_momentum, slit_momentum)
+    )
+
+
+def _hv_to_kz_root_candidates_1d(
+    kz_grid: np.ndarray,
+    other_momentum: np.ndarray,
+    kinetic_energy,
+    slit_momentum,
+    *,
+    inner_potential: float,
+    slit_axis: typing.Literal["kx", "ky"],
+) -> np.ndarray:
+    kz_grid = np.asarray(kz_grid, dtype=float)
+    other_momentum = np.asarray(other_momentum, dtype=float)
+    kinetic = float(kinetic_energy)
+    slit = float(slit_momentum)
+
+    if not np.isfinite(kinetic) or not np.isfinite(slit):
+        return np.array([], dtype=float)
+
+    mask = np.isfinite(kz_grid) & np.isfinite(other_momentum)
+    if not np.any(mask):
+        return np.array([], dtype=float)
+
+    kz_valid = kz_grid[mask]
+    other_valid = other_momentum[mask]
+    order = np.argsort(kz_valid)
+    kz_valid = kz_valid[order]
+    other_valid = other_valid[order]
+
+    kx, ky = _kxy_components(slit_axis, slit, other_valid)
+    residual = (
+        erlab.analysis.kspace.kz_func(kinetic, inner_potential, kx, ky) - kz_valid
+    )
+
+    exact = np.isclose(residual, 0.0, atol=1e-12, rtol=0.0)
+    candidates: list[float] = []
+
+    exact_idx = np.flatnonzero(exact)
+    if exact_idx.size:
+        split_idx = np.flatnonzero(np.diff(exact_idx) != 1) + 1
+        candidates.extend(
+            float(np.mean(kz_valid[group])) for group in np.split(exact_idx, split_idx)
+        )
+
+    brackets = np.flatnonzero(
+        ((residual[:-1] < 0.0) & (residual[1:] > 0.0))
+        | ((residual[:-1] > 0.0) & (residual[1:] < 0.0))
+    )
+    for i0 in brackets:
+        kz0, kz1 = kz_valid[int(i0)], kz_valid[int(i0) + 1]
+        f0, f1 = residual[int(i0)], residual[int(i0) + 1]
+        candidates.append(float(kz0 - f0 * (kz1 - kz0) / (f1 - f0)))
+    return np.asarray(candidates, dtype=float)
+
+
+def _solve_hv_to_kz_roots_2d(
+    kz_grid: np.ndarray,
+    other_momentum: np.ndarray,
+    kinetic_energy,
+    slit_momentum: np.ndarray,
+    *,
+    inner_potential: float,
+    slit_axis: typing.Literal["kx", "ky"],
+) -> np.ndarray:
+    other_momentum = np.asarray(other_momentum, dtype=float)
+    slit_momentum = np.asarray(slit_momentum, dtype=float)
+
+    roots = np.full(slit_momentum.shape, np.nan, dtype=float)
+    candidates = [
+        _hv_to_kz_root_candidates_1d(
+            kz_grid,
+            other_momentum[i],
+            kinetic_energy,
+            slit_momentum[i],
+            inner_potential=inner_potential,
+            slit_axis=slit_axis,
+        )
+        for i in range(slit_momentum.size)
+    ]
+
+    unique_indices = [i for i, values in enumerate(candidates) if values.size == 1]
+    if not unique_indices:
+        return roots
+
+    center = (slit_momentum.size - 1) / 2.0
+    seed = min(unique_indices, key=lambda i: abs(i - center))
+    roots[seed] = candidates[seed][0]
+
+    def _propagate(indices: range) -> None:
+        ref = roots[seed]
+        for i in indices:
+            values = candidates[i]
+            if values.size == 0:
+                continue
+            if values.size == 1 or not np.isfinite(ref):
+                roots[i] = values[0]
+            else:
+                roots[i] = values[np.argmin(np.abs(values - ref))]
+            ref = roots[i]
+
+    _propagate(range(seed + 1, slit_momentum.size))
+    _propagate(range(seed - 1, -1, -1))
+
+    return roots
+
+
 def _only_angles(method):
     """Decorate methods that require data to be in angle space.
 
@@ -151,13 +267,36 @@ class OffsetView:
             return dict(self) == dict(other)
         return False
 
+    def _normal_emission_angles(self) -> tuple[float, float] | None:
+        try:
+            alpha, beta = self._obj.kspace._normal_emission_angles()
+        except (IncompleteDataError, TypeError, ValueError):
+            return None
+        if np.isclose(alpha, 0):
+            alpha = 0.0
+        if np.isclose(beta, 0):
+            beta = 0.0
+        return alpha, beta
+
     def __repr__(self) -> str:
-        return dict(self).__repr__()
+        offsets_repr = dict(self).__repr__()
+        normal = self._normal_emission_angles()
+        if normal is None:
+            return offsets_repr
+        alpha, beta = normal
+        return f"{offsets_repr}\nnormal emission: alpha={alpha}, beta={beta}"
 
     def _repr_html_(self) -> str:
-        return erlab.utils.formatting.format_html_table(
-            [(k, str(v)) for k, v in self.items()], header_cols=1
-        )
+        rows: list[tuple[str, str]] = [(k, str(v)) for k, v in self.items()]
+        normal = self._normal_emission_angles()
+        if normal is not None:
+            rows.extend(
+                [
+                    ("normal alpha", str(normal[0])),
+                    ("normal beta", str(normal[1])),
+                ]
+            )
+        return erlab.utils.formatting.format_html_table(rows, header_cols=1)
 
     def update(
         self,
@@ -443,6 +582,68 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _kinetic_energy(self) -> xr.DataArray:
         return self._hv - self.work_function + self._binding_energy
 
+    @staticmethod
+    def _finite_minmax(values: np.ndarray) -> tuple[float, float]:
+        finite_mask = np.isfinite(values)
+        if not np.any(finite_mask):
+            return float("nan"), float("nan")
+        return (
+            float(np.min(values, where=finite_mask, initial=np.inf)),
+            float(np.max(values, where=finite_mask, initial=-np.inf)),
+        )
+
+    @staticmethod
+    def _require_finite_scalar(value: float, name: str) -> float:
+        scalar = np.asarray(value, dtype=float)
+        if scalar.ndim != 0 or not np.isfinite(scalar):
+            raise ValueError(f"`{name}` must be a finite scalar.")
+        return float(scalar)
+
+    def _check_kinetic_energy(
+        self,
+        *,
+        context: str,
+        kinetic_energy: xr.DataArray | np.ndarray | float | None = None,
+        raise_on_violation: bool = True,
+    ) -> xr.DataArray | np.ndarray | float:
+        if kinetic_energy is None:
+            kinetic_energy = self._kinetic_energy
+
+        kinetic = np.asarray(kinetic_energy, dtype=float)
+        finite_mask = np.isfinite(kinetic)
+
+        if not np.any(finite_mask):
+            msg = (
+                "Cannot proceed while "
+                f"{context}: kinetic energy contains no finite values."
+            )
+            if raise_on_violation:
+                raise ValueError(msg)
+            erlab.utils.misc.emit_user_level_warning(msg)
+            return kinetic_energy
+
+        min_kinetic = float(np.min(kinetic, where=finite_mask, initial=np.inf))
+        if min_kinetic > 0:
+            return kinetic_energy
+
+        hv_min, hv_max = self._finite_minmax(np.asarray(self._hv.values, dtype=float))
+        e_min, e_max = self._finite_minmax(
+            np.asarray(self._binding_energy.values, dtype=float)
+        )
+
+        msg = (
+            f"Nonphysical kinetic energy detected while {context}: "
+            f"min(E_k)={min_kinetic:.3f} eV <= 0. "
+            f"E_k = hv - sample_workfunction + eV (binding). "
+            f"Current ranges: hv=[{hv_min:.3f}, {hv_max:.3f}] eV, "
+            f"eV=[{e_min:.3f}, {e_max:.3f}] eV, "
+            f"sample_workfunction={self.work_function:.3f} eV."
+        )
+        if raise_on_violation:
+            raise ValueError(msg)
+        erlab.utils.misc.emit_user_level_warning(msg)
+        return kinetic_energy
+
     @property
     def _has_eV(self) -> bool:
         """Return `True` if object has an energy axis."""
@@ -539,6 +740,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
           >>> data.kspace.offsets.reset()
           {'delta': 0.0, 'xi': 0.0, 'beta': 0.0}
+
+        See Also
+        --------
+        :meth:`set_normal <xarray.DataArray.kspace.set_normal>`
+            Method to set angle offsets from normal emission angles.
         """
         if not hasattr(self, "_offsetview"):
             self._offsetview = OffsetView(self._obj)
@@ -553,6 +759,101 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         self._offsetview.reset()
         self._offsetview.update(offset_dict)
 
+    @_only_angles
+    def set_normal(
+        self, alpha: float, beta: float, *, delta: float | None = None
+    ) -> None:
+        r"""Set offsets from normal emission angles.
+
+        This method sets the angle offsets so that the provided normal emission angles
+        :math:`(\alpha, \beta)` in the data map to :math:`(k_x, k_y) = (0, 0)` in
+        momentum space.
+
+        Parameters
+        ----------
+        alpha
+            Angle :math:`\alpha` in degrees corresponding to sample normal emission.
+        beta
+            Angle :math:`\beta` in degrees corresponding to sample normal emission.
+        delta
+            Optional azimuthal offset :math:`\delta` in degrees. If omitted, the
+            existing ``delta`` offset is preserved.
+
+        Examples
+        --------
+        >>> data.kspace.set_normal(alpha=1.2, beta=-0.4)
+        >>> dict(data.kspace.offsets)
+        {'delta': 0.0, 'xi': -1.2, 'beta': -0.4}
+
+        See Also
+        --------
+        :attr:`offsets <xarray.DataArray.kspace.offsets>`
+            Attribute used to manipulate angle offsets directly.
+        """
+        alpha_normal = self._require_finite_scalar(alpha, "alpha")
+        beta_normal = self._require_finite_scalar(beta, "beta")
+
+        if delta is not None:
+            self.offsets["delta"] = self._require_finite_scalar(delta, "delta")
+
+        if "xi" not in self._obj.coords:
+            raise IncompleteDataError("coord", "xi")
+        xi = float(self._obj["xi"].values)
+
+        chi: float | None = None
+        if self.configuration in (
+            AxesConfiguration.Type1DA,
+            AxesConfiguration.Type2DA,
+        ):
+            if "chi" not in self._obj.coords:
+                raise IncompleteDataError("coord", "chi")
+            chi = float(self._obj["chi"].values)
+
+        self.offsets.update(
+            erlab.analysis.kspace._offsets_from_normal_emission(
+                self.configuration,
+                alpha_normal,
+                beta_normal,
+                xi=xi,
+                chi=chi,
+            )
+        )
+
+    @_only_angles
+    def set_normal_like(self, other: xr.DataArray) -> None:
+        r"""Set offsets like another DataArray.
+
+        This method reads the normal emission angles implied by another DataArray's
+        current offsets and applies the same normal emission angles to the current data.
+
+        The azimuthal offset :math:`\delta` is copied as well.
+
+        Parameters
+        ----------
+        other
+            Another DataArray in angle space whose current offsets define the reference
+            normal emission position.
+
+        See Also
+        --------
+        :meth:`set_normal <xarray.DataArray.kspace.set_normal>`
+            Method used to set angle offsets from explicitly provided normal emission
+            angles.
+        """
+        if not isinstance(other, xr.DataArray):
+            raise TypeError("`other` must be an xarray.DataArray.")
+
+        self.set_normal(
+            *other.kspace._normal_emission_angles(), delta=other.kspace.offsets["delta"]
+        )
+
+    @_only_angles
+    def _normal_emission_angles(self) -> tuple[float, float]:
+        """Calculate the normal emission angles based on the current offsets."""
+        return erlab.analysis.kspace._normal_emission_from_angle_params(
+            self.configuration, self.angle_params
+        )
+
     @property
     @_only_angles
     def best_kp_resolution(self) -> float:
@@ -565,6 +866,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             \Delta k_{\parallel} \sim \sqrt{2 m_e E_k/\hbar^2} \cos(\alpha) \Delta\alpha
 
         """
+        self._check_kinetic_energy(context="estimating in-plane momentum resolution")
         min_Ek = np.amin(self._kinetic_energy.values)
         max_angle = max(np.abs(self._alpha.values))
         return float(
@@ -580,12 +882,17 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         r"""Estimated minimum out-of-plane momentum resolution.
 
         The resolution is estimated based on the mean free path :cite:p:`seah1979imfp`
-        and the kinetic energy.
+        and the kinetic energy. Note that this is a rough estimate based on the
+        universal curve of mean free path.
 
         .. math:: \Delta k_z \sim 1/\lambda
 
         """
+        self._check_kinetic_energy(
+            context="estimating out-of-plane momentum resolution"
+        )
         kin = self._kinetic_energy.values
+
         c1, c2 = 641.0, 0.096
         imfp = (c1 / (kin**2) + c2 * np.sqrt(kin)) * 10
         return float(np.amin(1 / imfp))
@@ -627,6 +934,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             values are tuples representing the minimum and maximum values.
 
         """
+        self._check_kinetic_energy(context="estimating momentum bounds")
         return {
             k: (v.values.min(), v.values.max())
             for k, v in self._get_transformed_coords().items()
@@ -654,6 +962,11 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             axis. If `False`, estimate the resolution based on the data, by default
             `False`
 
+            .. versionchanged:: 3.20.1
+                When ``from_numpoints=True``, the estimated step now uses adjacent-point
+                spacing over inclusive bounds: ``(max - min) / (N - 1)``. Datasets with
+                fewer than 2 points on the relevant axis return ``np.inf``.
+
         Returns
         -------
         float
@@ -680,7 +993,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             raise ValueError(f"`{axis}` is not a valid momentum axis.")
 
         if from_numpoints and (lims is not None):
-            return float((lims[1] - lims[0]) / len(self._obj[dim]))
+            n_points = len(self._obj[dim])
+            if n_points < 2:
+                return float("inf")
+            return float((lims[1] - lims[0]) / (n_points - 1))
 
         if axis == "kz":
             return self.best_kz_resolution
@@ -696,6 +1012,83 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         return erlab.analysis.kspace.get_kconv_inverse(self.configuration)(
             kx, ky, kperp, self._kinetic_energy, **self.angle_params
         )
+
+    def _broadcast_exact_targets(
+        self, out_dict: dict[str, xr.DataArray], other_coord: xr.DataArray
+    ) -> dict[str, xr.DataArray]:
+        keys = tuple(out_dict)
+        broadcasted = xr.broadcast(*(out_dict[key] for key in keys))
+        if not self._has_beta:
+            broadcasted = tuple(
+                value.squeeze("beta", drop=True) if "beta" in value.dims else value
+                for value in broadcasted
+            )
+            if "beta" in other_coord.dims:
+                other_coord = other_coord.squeeze("beta", drop=True)
+        finite_other = np.asarray(other_coord.values, dtype=float)
+        finite_other = finite_other[np.isfinite(finite_other)]
+        if finite_other.size and np.allclose(finite_other, 0.0, atol=1e-10, rtol=0.0):
+            other_coord = xr.DataArray(0.0)
+        else:
+            other_coord = other_coord.broadcast_like(broadcasted[0]).reset_coords(
+                drop=True
+            )
+        return {
+            key: value.assign_coords({self.other_axis: other_coord})
+            for key, value in zip(keys, broadcasted, strict=True)
+        }
+
+    def _inverse_exact_cut(self, slit_momentum) -> dict[str, xr.DataArray]:
+        slit_axis = self.slit_axis
+        slit_value = xr.DataArray(
+            slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+        )
+        alpha = erlab.analysis.kspace.exact_cut_alpha(
+            slit_value,
+            self._beta,
+            self._kinetic_energy,
+            self._alpha,
+            self.configuration,
+            **self.angle_params,
+        )
+        other_momentum = erlab.analysis.kspace._exact_other_axis_momentum(
+            alpha,
+            self._beta,
+            self._kinetic_energy,
+            self.configuration,
+            **self.angle_params,
+        )
+
+        out_dict: dict[str, xr.DataArray] = {"alpha": alpha}
+        if self._has_eV:
+            out_dict["eV"] = self._binding_energy
+
+        return self._broadcast_exact_targets(out_dict, other_momentum)
+
+    def _inverse_exact_hv_cut(self, slit_momentum, kz) -> dict[str, xr.DataArray]:
+        slit_axis = self.slit_axis
+        slit_value = xr.DataArray(
+            slit_momentum, dims=slit_axis, coords={slit_axis: slit_momentum}
+        )
+        kz_value = xr.DataArray(kz, dims="kz", coords={"kz": kz})
+
+        alpha, hv, other_momentum = erlab.analysis.kspace.exact_hv_cut_coords(
+            slit_value,
+            kz_value,
+            self._beta,
+            self._hv,
+            self._kinetic_energy,
+            self._alpha,
+            self.configuration,
+            self.inner_potential,
+            **self.angle_params,
+        )
+
+        out_dict: dict[str, xr.DataArray] = {"alpha": alpha, "hv": hv}
+        if self._has_eV:
+            out_dict["eV"] = self._binding_energy
+
+        return self._broadcast_exact_targets(out_dict, other_momentum)
 
     def _inverse_broadcast(self, kx, ky, kz=None) -> dict[str, xr.DataArray]:
         kxval = xr.DataArray(kx, dims="kx", coords={"kx": kx})
@@ -747,6 +1140,7 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         xarray.DataArray
             The DataArray with transformed coordinates.
         """
+        self._check_kinetic_energy(context="converting coordinates to momentum space")
         return self._obj.assign_coords(self._get_transformed_coords())
 
     @_only_angles
@@ -817,6 +1211,10 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         The converted data is returned as a DataArray object with updated coordinates
         and dimensions.
 
+        For non-`hv` scans, if the `eV` axis is all-positive, it is interpreted as
+        kinetic energy and converted to binding energy. For `hv`-dependent scans, the
+        `eV` axis must already be in binding energy.
+
         Examples
         --------
         Set parameters and convert with automatic bounds and resolution:
@@ -843,6 +1241,8 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             converted_data = data.kspace.convert(bounds, resolution)
 
         """
+        self._check_kinetic_energy(context="converting to momentum space")
+
         if bounds is None:
             bounds = {}
 
@@ -885,11 +1285,20 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         if not silent:
             print("Calculating destination coordinates")
 
-        target_dict: dict[str, xr.DataArray] = self._inverse_broadcast(
-            momentum_coords.get("kx"),
-            momentum_coords.get("ky"),
-            momentum_coords.get("kz"),
-        )
+        target_dict: dict[str, xr.DataArray]
+        if not (self._has_beta and not self._has_hv):
+            if self._has_hv:
+                target_dict = self._inverse_exact_hv_cut(
+                    momentum_coords[self.slit_axis], momentum_coords["kz"]
+                )
+            else:
+                target_dict = self._inverse_exact_cut(momentum_coords[self.slit_axis])
+        else:
+            target_dict = self._inverse_broadcast(
+                momentum_coords.get("kx"),
+                momentum_coords.get("ky"),
+                momentum_coords.get("kz"),
+            )
 
         # Coords of first value in target_dict. Output of inverse_broadcast are all
         # broadcasted to each other, so all values will have same coords
@@ -953,6 +1362,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
             keep_attrs=True,
             output_dtypes=[np.float64],
         ).assign_coords({k: v.squeeze() for k, v in coords_for_transform.items()})
+        if not self._has_beta and "beta" in out.dims:
+            out = out.squeeze("beta", drop=True)
+        if (
+            not self._has_beta
+            and "beta" in self._obj.coords
+            and "beta" not in out.coords
+        ):
+            out = out.assign_coords(beta=self._beta.squeeze(drop=True))
 
         if not silent:
             print(f"Interpolated in {time.perf_counter() - t_start:.3f} s")
@@ -995,9 +1412,55 @@ class MomentumAccessor(ERLabDataArrayAccessor):
         """
         return erlab.analysis.kspace.change_configuration(self._obj, configuration)
 
+    def _hv_to_kz_legacy(self, kinetic: xr.DataArray) -> xr.DataArray:
+        ang2k, k2ang = erlab.analysis.kspace.get_kconv_func(
+            kinetic, self.configuration, self.angle_params
+        )
+        kx, ky = ang2k(*k2ang(self._obj.kx, self._obj.ky))
+        return erlab.analysis.kspace.kz_func(kinetic, self.inner_potential, kx, ky)
+
+    def _hv_to_kz_from_stored_coords(
+        self, kinetic: xr.DataArray
+    ) -> xr.DataArray | None:
+        target_order = tuple(
+            dim
+            for dim in ("hv", "eV", self.slit_axis)
+            if dim in kinetic.dims or dim == self.slit_axis
+        )
+        if self.other_axis not in self._obj.coords:
+            return None
+
+        slit_coord = self._obj[self.slit_axis]
+        other_coord = self._obj[self.other_axis]
+
+        if "kz" not in other_coord.dims:
+            kx, ky = _kxy_components(self.slit_axis, slit_coord, other_coord)
+            out = erlab.analysis.kspace.kz_func(kinetic, self.inner_potential, kx, ky)
+            return out.transpose(*target_order)
+
+        kz_coord = self._obj["kz"]
+        kz_root = xr.apply_ufunc(
+            functools.partial(
+                _solve_hv_to_kz_roots_2d,
+                inner_potential=self.inner_potential,
+                slit_axis=self.slit_axis,
+            ),
+            kz_coord,
+            other_coord,
+            kinetic,
+            slit_coord,
+            input_core_dims=[("kz",), (self.slit_axis, "kz"), (), (self.slit_axis,)],
+            output_core_dims=[(self.slit_axis,)],
+            vectorize=True,
+            dask="parallelized",
+            dask_gufunc_kwargs={"output_sizes": {self.slit_axis: slit_coord.size}},
+            output_dtypes=[np.float64],
+        )
+        return kz_root.transpose(*target_order)
+
     @_only_momentum
     def hv_to_kz(self, hv: float | Iterable[float]) -> xr.DataArray:
-        """Return :math:`k_z` for a given photon energy.
+        r"""Return :math:`k_z` for a given photon energy.
 
         Useful when creating overlays on :math:`hν`-dependent data.
 
@@ -1008,24 +1471,48 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         Note
         ----
-        This will be inexact for hv-dependent cuts that do not pass through the BZ
-        center since we lost the exact angle values, i.e. the exact momentum
-        perpendicular to the slit, during momentum conversion.
+        This method returns an overlay curve :math:`k_z(hν)` for converted momentum
+        data. The returned values depend on the requested photon energies, binding
+        energy, and in-plane momentum coordinates, but never on the converted data's
+        current ``kz`` grid.
+
+        If the carried in-plane momentum perpendicular to the slit is independent of the
+        converted ``kz`` axis, :math:`k_z` is evaluated directly from
+
+        .. math::
+
+            k_z = \sqrt{\frac{2 m_e}{\hbar^2}(E_k + V_0) - k_x^2 - k_y^2}.
+
+        If that carried orthogonal momentum depends on the converted ``kz`` axis, the
+        method solves the sampled fixed-point relation
+
+        .. math::
+
+            k_z = \sqrt{\frac{2 m_e}{\hbar^2}(E_k + V_0) - k_{\mathrm{slit}}^2 -
+            k_{\mathrm{other}}(k_z)^2}
+
+        on the stored ``kz`` grid. If several sampled roots are present, a continuous
+        branch is selected across the momentum axis along the slit. Slices with no
+        sampled solution are returned as ``NaN``. The legacy angle-roundtrip path is
+        only used when the orthogonal in-plane momentum coordinate is unavailable.
+
         """
         if isinstance(hv, Iterable) and not isinstance(hv, xr.DataArray):
             hv = xr.DataArray(np.asarray(hv), coords={"hv": hv})
 
         # Get kinetic energies for the given photon energy
         kinetic = hv - self.work_function + self._obj.eV
-
-        # Get momentum conversion functions
-
-        ang2k, k2ang = erlab.analysis.kspace.get_kconv_func(
-            kinetic, self.configuration, self.angle_params
+        self._check_kinetic_energy(
+            context="calculating kz from photon energy",
+            kinetic_energy=kinetic,
         )
-
-        # Transformation yields in-plane momentum at given photon energy
-        kx, ky = ang2k(*k2ang(self._obj.kx, self._obj.ky))
-
-        # Calculate kz
-        return erlab.analysis.kspace.kz_func(kinetic, self.inner_potential, kx, ky)
+        direct = self._hv_to_kz_from_stored_coords(kinetic)
+        if direct is not None:
+            return direct
+        try:
+            return self._hv_to_kz_legacy(kinetic)
+        except (AttributeError, KeyError) as exc:
+            raise ValueError(
+                "`hv_to_kz` requires the orthogonal in-plane momentum coordinate or "
+                "enough metadata to reconstruct it."
+            ) from exc

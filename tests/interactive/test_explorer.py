@@ -20,7 +20,6 @@ def test_explorer_general(
     ],
 ) -> None:
     with manager_context() as manager:
-        qtbot.addWidget(manager, before_close_func=lambda w: w.remove_all_tools())
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
 

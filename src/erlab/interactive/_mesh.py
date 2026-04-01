@@ -337,15 +337,25 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def auto_find_peaks(self) -> None:
+        reduced, log_magnitude = self.get_reduced()
         peaks = (
             erlab.analysis.mesh.find_peaks(
-                self.get_reduced()[1],
+                log_magnitude,
                 bins=self.bins_spin.value(),
                 n_peaks=2,
                 plot=False,
             )
             - self.tool_status.n_pad
         )
+        try:
+            erlab.analysis.mesh._validate_first_order_peaks(
+                peaks, typing.cast("tuple[int, int]", reduced.shape)
+            )
+        except ValueError as exc:
+            if self._show_warning_if_not_in_manager("Peak detection failed", str(exc)):
+                return
+            raise
+
         self.p0_spin0.setValue(int(peaks[1, 0]))
         self.p0_spin1.setValue(int(peaks[1, 1]))
         self.p1_spin0.setValue(int(peaks[2, 0]))

@@ -161,6 +161,29 @@ def test_unify_clim_with_target() -> None:
     plt.close(fig)
 
 
+def test_get_mappable_respects_index_and_image_only() -> None:
+    fig, ax = plt.subplots()
+    scatter = ax.scatter([0, 1], [0, 1], c=[0.0, 1.0], cmap="viridis")
+    image0 = ax.imshow(
+        np.arange(4).reshape(2, 2),
+        extent=(0, 1, 0, 1),
+        cmap="magma",
+        alpha=0.5,
+    )
+    image1 = ax.imshow(
+        np.arange(4, 8).reshape(2, 2),
+        extent=(0, 1, 0, 1),
+        cmap="plasma",
+        alpha=0.5,
+    )
+
+    assert eplt.get_mappable(ax) is scatter
+    assert eplt.get_mappable(ax, image_only=True) is image1
+    assert eplt.get_mappable(ax, index=0, image_only=True) is image0
+
+    plt.close(fig)
+
+
 @pytest.mark.parametrize("orientation", ["vertical", "horizontal"])
 @pytest.mark.parametrize("floating", [False, True], ids=["no_floating", "floating"])
 @pytest.mark.parametrize("minmax", [False, True], ids=["minmax", "no_minmax"])
@@ -212,4 +235,42 @@ def test_nice_colorbar_box_aspect():
     # Check box aspect
     box_aspect = cbar.ax.get_box_aspect()
     assert box_aspect == 4
+    plt.close(fig)
+
+
+def test_proportional_colorbar_respects_image_only() -> None:
+    fig, ax = plt.subplots()
+    image = ax.imshow(np.arange(4).reshape(2, 2), cmap="viridis")
+    ax.scatter([0, 1], [0, 1], c=[10.0, 20.0], cmap="magma")
+
+    cbar = eplt.proportional_colorbar(ax=ax, image_only=True)
+
+    assert cbar.mappable is image
+
+    plt.close(fig)
+
+
+def test_proportional_colorbar_uses_current_axes_when_ax_is_none() -> None:
+    fig, ax = plt.subplots()
+    image = ax.imshow(np.arange(4).reshape(2, 2), cmap="viridis")
+    ax.scatter([0, 1], [0, 1], c=[10.0, 20.0], cmap="magma")
+    plt.sca(ax)
+
+    cbar = eplt.proportional_colorbar(index=0, image_only=True)
+
+    assert cbar.mappable is image
+
+    plt.close(fig)
+
+
+def test_proportional_colorbar_iterable_axes_respects_index() -> None:
+    fig, axs = plt.subplots(1, 2)
+    axs[0].scatter([0, 1], [0, 1], c=[0.0, 1.0], cmap="viridis")
+    image0 = axs[1].imshow(np.arange(4).reshape(2, 2), cmap="magma", alpha=0.5)
+    axs[1].imshow(np.arange(4, 8).reshape(2, 2), cmap="plasma", alpha=0.5)
+
+    cbar = eplt.proportional_colorbar(ax=axs, index=0, image_only=True)
+
+    assert cbar.mappable is image0
+
     plt.close(fig)

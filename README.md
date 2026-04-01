@@ -18,6 +18,7 @@
 [![Codecov Coverage](https://img.shields.io/codecov/c/github/kmnhan/erlabpy?logo=codecov&logoColor=white)](https://codecov.io/gh/kmnhan/erlabpy)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![SPEC 1 — Lazy Loading of Submodules and Functions](https://img.shields.io/badge/SPEC-1-green?labelColor=%23004811&color=%235CA038)](https://scientific-python.org/specs/spec-0001/)
+[![Custom GPT](https://img.shields.io/badge/ChatGPT-ARPES%20Analysis%20Assistant-10a37f?logo=openai&logoColor=white)](https://chatgpt.com/g/g-6962fdab53008191ac5e3307a694b0a9-arpes-analysis-assistant)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/kmnhan/erlabpy)
 
 </div>
@@ -33,6 +34,14 @@ Key elements are seamlessly integrated with popular scientific Python workflows.
 - **Plotting**: Functions for 2D and 3D publication-quality plots.
 - **Fitting**: Functions for curve fitting, including Fermi-Dirac distributions, MDCs, EDCs, and more.
 - **Interactive Visualization**: Responsive plotting routines similar to Igor Pro.
+
+## Getting Started
+
+Start with the [Getting Started guide](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
+
+## Documentation
+
+Full documentation is available on [Read the Docs](https://erlabpy.readthedocs.io/).
 
 ## Gallery
 
@@ -67,14 +76,6 @@ Interactive windows support dark mode.
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/explorer_light.png?raw=true">
   <img alt="Data explorer window." src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/explorer_light.png?raw=true">
 </picture>
-
-## Getting Started
-
-See [installation instructions](https://erlabpy.readthedocs.io/en/stable/getting-started.html).
-
-## Documentation
-
-Full documentation is available on [Read the Docs](https://erlabpy.readthedocs.io/).
 
 ## Contributing
 

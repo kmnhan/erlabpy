@@ -334,7 +334,8 @@ to be calculated.
 
 
 def fast_nanmean(
-    a: npt.NDArray[np.float32 | np.float64], axis: int | Collection[int] | None = None
+    a: "npt.NDArray[np.float32 | np.float64] | dask.array.Array",
+    axis: int | Collection[int] | None = None,
 ) -> npt.NDArray[np.float32 | np.float64] | np.float64:
     """Compute the mean for floating point arrays while ignoring NaNs.
 
@@ -370,6 +371,10 @@ def fast_nanmean(
       `numpy.nanmean`.
 
     """
+    if not isinstance(a, np.ndarray):
+        import dask.array
+
+        return dask.array.nanmean(a, axis=axis)
     if a.ndim == 1 or axis is None:
         return _nanmean_all(a)
     if a.ndim > 4:

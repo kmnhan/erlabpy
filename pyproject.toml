@@ -1,6 +1,6 @@
 [project]
 name = "erlab"
-version = "3.20.0"
+version = "3.20.2"
 authors = [{ name = "Kimoon Higashihira Han", email = "khan@kaist.ac.kr" }]
 description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
@@ -23,7 +23,7 @@ dependencies = [
     "dask[distributed]>=2024.4.1",
     "findiff>=0.12.0",
     "h5netcdf>=1.7.1",
-    "igor2>=0.5.12",
+    "igor2>=0.5.13",
     "igorwriter>=0.6.1",
     "joblib>=1.3.2",
     "lazy-loader>=0.4",
@@ -56,11 +56,10 @@ complete = ["erlab[viz,io,perf,misc]"]
 viz = ["hvplot>=0.11.0,!=0.12.0", "ipywidgets"]
 io = [
     "astropy>=5.1.1",
-    "libarchive-c>=5.2",
     "nexusformat>=1.0.6",
     "zarr>=3.1.2",
 ]
-perf = ["numbagg>=0.8.1", "xxhash>=3.5.0"]
+perf = ["numbagg>=0.8.1"]
 misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0", "numdifftools>=0.9.42"]
 
 [dependency-groups]

@@ -181,6 +181,19 @@ def test_colorbar_edit_widget_populates_from_primary_image(qtbot):
     assert edit_widget._high_contrast_check.isChecked()
 
 
+def test_colorbar_keeps_menu_widget_action_references() -> None:
+    image = BetterImageItem(np.arange(16, dtype=float).reshape(4, 4))
+    image.set_colormap("viridis", gamma=1.0)
+    colorbar = BetterColorBarItem(image=image)
+
+    assert colorbar._clim_menu.actions()[0] is colorbar._clim_action
+    assert colorbar._clim_action.defaultWidget() is colorbar._clim_widget
+    assert colorbar._center_zero_action in colorbar.vb.menu.actions()
+
+    assert colorbar._cmap_menu.actions()[0] is colorbar._cmap_action
+    assert colorbar._cmap_action.defaultWidget() is colorbar._cmap_widget
+
+
 def test_colorbar_edit_widget_applies_changes_to_images(qtbot):
     data = np.linspace(0, 1, 25, dtype=float).reshape(5, 5)
     images = [BetterImageItem(data + offset) for offset in (0.0, 1.0)]

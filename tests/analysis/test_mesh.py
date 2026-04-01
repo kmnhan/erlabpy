@@ -36,6 +36,23 @@ def test_find_peaks_reflects_and_plots_upper_half_points() -> None:
     plt.close("all")
 
 
+def test_find_peaks_relaxes_min_distance_when_image_is_small() -> None:
+    alpha = np.linspace(-1, 1, 32)
+    ev = np.linspace(0, 1, 32)
+    yy, xx = np.meshgrid(alpha, ev, indexing="ij")
+    data = (1 + 0.2 * np.cos(2 * np.pi * xx * 4)) * (1 + 0.05 * yy)
+    arr = xr.DataArray(data, coords={"alpha": alpha, "eV": ev}, dims=("alpha", "eV"))
+
+    shifted = mesh.auto_correct_curvature(arr)[1]
+    image = mesh.pad_and_taper(shifted.fillna(0).values, 8)
+    log_magnitude = np.log(np.abs(np.fft.fftshift(np.fft.fft2(image))).clip(min=1e-15))
+
+    peaks = mesh.find_peaks(log_magnitude, n_peaks=2, plot=False) - 8
+
+    assert peaks.shape == (3, 2)
+    mesh._validate_first_order_peaks(peaks, shifted.shape)
+
+
 def test_find_local_maxima_stops_when_num_peaks_reached() -> None:
     image = np.zeros((9, 9))
     image[4, 4] = 9.0
@@ -219,6 +236,51 @@ def test_remove_mesh_unknown_method_raises() -> None:
             first_order_peaks=[[4, 4], [4, 5], [5, 4]],
             method="invalid",  # type: ignore[arg-type]
         )
+
+
+def test_remove_mesh_rejects_degenerate_first_order_peaks() -> None:
+    arr = xr.DataArray(
+        np.ones((8, 8)),
+        coords={"alpha": range(8), "eV": range(8)},
+        dims=("alpha", "eV"),
+    )
+
+    with pytest.raises(ValueError, match="distinct first-order peaks"):
+        mesh.remove_mesh(arr, first_order_peaks=[[4, 4], [0, 0], [0, 0]])
+
+
+def test_validate_first_order_peaks_rejects_invalid_shape() -> None:
+    with pytest.raises(
+        ValueError,
+        match="first_order_peaks must contain exactly three",
+    ):
+        mesh._validate_first_order_peaks([[4, 4], [4, 5]], (8, 8))
+
+
+def test_validate_first_order_peaks_rejects_out_of_bounds() -> None:
+    with pytest.raises(ValueError, match="out-of-bounds coordinates"):
+        mesh._validate_first_order_peaks([[4, 4], [9, 5], [3, 4]], (8, 8))
+
+
+def test_validate_first_order_peaks_rejects_center_equal_peak() -> None:
+    with pytest.raises(ValueError, match="distinct from the center"):
+        mesh._validate_first_order_peaks([[4, 4], [4, 4], [3, 5]], (8, 8))
+
+
+def test_remove_mesh_rejects_invalid_auto_detected_peaks(monkeypatch) -> None:
+    arr = xr.DataArray(
+        np.ones((8, 8)),
+        coords={"alpha": range(8), "eV": range(8)},
+        dims=("alpha", "eV"),
+    )
+
+    def _bad_find_peaks(*args, **kwargs):
+        return np.array([[4, 4], [0, 0], [0, 0]], dtype=np.intp)
+
+    monkeypatch.setattr(mesh, "find_peaks", _bad_find_peaks)
+
+    with pytest.raises(ValueError, match="distinct first-order peaks"):
+        mesh.remove_mesh(arr, first_order_peaks=None, n_pad=0)
 
 
 @pytest.mark.parametrize("method", ["constant", "gaussian", "circular"])

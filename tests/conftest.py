@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import re
+import socket
 import sys
 import threading
 import time
@@ -36,6 +37,8 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager as imagetool_manager
+import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
 from erlab.io.exampledata import generate_data_angles, generate_gold_edge
@@ -71,6 +74,11 @@ numexpr.set_num_threads(1)
 dask.config.set(
     {"scheduler": "synchronous", "distributed.worker.profile.enabled": False}
 )
+
+
+def _coverage_is_active(pytestconfig: pytest.Config) -> bool:
+    """Return whether pytest-cov is actively collecting coverage."""
+    return pytestconfig.pluginmanager.hasplugin("_cov")
 
 
 @pytest.fixture(scope="session")
@@ -184,23 +192,46 @@ def gold_fine():
 def manager_context() -> Callable[
     ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
 ]:
+    def _unused_port_pair() -> tuple[int, int]:
+        sockets: list[socket.socket] = []
+        try:
+            for _ in range(2):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind(("127.0.0.1", 0))
+                sockets.append(sock)
+            return typing.cast("int", sockets[0].getsockname()[1]), typing.cast(
+                "int", sockets[1].getsockname()[1]
+            )
+        finally:
+            for sock in sockets:
+                sock.close()
+
     @contextlib.contextmanager
     def _ctx(
         use_socket: bool = False,
     ):
-        erlab.interactive.imagetool.manager._always_use_socket = use_socket
+        original_port = imagetool_manager.PORT
+        original_port_watch = imagetool_manager.PORT_WATCH
+        original_server_port = imagetool_manager_server.PORT
+        original_server_port_watch = imagetool_manager_server.PORT_WATCH
 
-        erlab.interactive.imagetool.manager.main(execute=False)
+        port, port_watch = _unused_port_pair()
+        imagetool_manager.PORT = port
+        imagetool_manager.PORT_WATCH = port_watch
+        imagetool_manager_server.PORT = port
+        imagetool_manager_server.PORT_WATCH = port_watch
+        imagetool_manager._always_use_socket = use_socket
+
+        imagetool_manager.main(execute=False)
 
         try:
-            yield erlab.interactive.imagetool.manager._manager_instance
+            yield imagetool_manager._manager_instance
         finally:
-            manager = erlab.interactive.imagetool.manager._manager_instance
+            manager = imagetool_manager._manager_instance
             if manager is not None:
                 QtWidgets.QApplication.sendPostedEvents(None, 0)
                 QtWidgets.QApplication.processEvents()
                 manager.remove_all_tools()
-                manager._stop_servers()
                 manager.close()
                 deadline = time.perf_counter() + 5.0
                 while (
@@ -213,8 +244,12 @@ def manager_context() -> Callable[
                 for _ in range(3):
                     QtWidgets.QApplication.sendPostedEvents(None, 0)
                     QtWidgets.QApplication.processEvents()
-            erlab.interactive.imagetool.manager._manager_instance = None
-            erlab.interactive.imagetool.manager._always_use_socket = False
+            imagetool_manager._manager_instance = None
+            imagetool_manager._always_use_socket = False
+            imagetool_manager.PORT = original_port
+            imagetool_manager.PORT_WATCH = original_port_watch
+            imagetool_manager_server.PORT = original_server_port
+            imagetool_manager_server.PORT_WATCH = original_server_port_watch
 
     return _ctx
 
@@ -368,8 +403,8 @@ class _DialogHandler(QtCore.QObject):
             The index of the dialog to trigger, starting from 0. If the index is greater
             than 0, ``dialog_or_trigger`` should be a dialog.
         dialog_or_trigger
-            The callable that triggers the dialog creation or a prviously created dialog
-            which will create the next dialog upon acceptance.
+            The callable that triggers the dialog creation or a previously created
+            dialog which will create the next dialog upon acceptance.
         """
         log.debug("index %d triggered", index)
 
@@ -470,14 +505,15 @@ def move_and_compare_values():
 
 
 @pytest.fixture(autouse=True)
-def cover_qthreads(monkeypatch, qtbot):
+def cover_qthreads(monkeypatch, qtbot, pytestconfig):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2286288111
     from qtpy.QtCore import QThread
 
     base_constructor = QThread.__init__
+    coverage_active = _coverage_is_active(pytestconfig)
 
     def run_with_trace(self):  # pragma: no cover
-        if "coverage" in sys.modules:
+        if coverage_active:
             # https://github.com/nedbat/coveragepy/issues/686#issuecomment-634932753
             sys.settrace(threading._trace_hook)
         self._base_run()
@@ -491,15 +527,16 @@ def cover_qthreads(monkeypatch, qtbot):
 
 
 @pytest.fixture(autouse=True)
-def cover_qthreadpool(monkeypatch, qtbot):
+def cover_qthreadpool(monkeypatch, qtbot, pytestconfig):
     # https://github.com/nedbat/coveragepy/issues/686#issuecomment-2435049275
     from qtpy.QtCore import QThreadPool
 
     base_start = QThreadPool.start
     QThreadPool.globalInstance().setMaxThreadCount(1)
+    coverage_active = _coverage_is_active(pytestconfig)
 
     def start_with_trace(self, runnable, *args, **kwargs):
-        if "coverage" in sys.modules:
+        if coverage_active:
             original_run = runnable.run
 
             def wrapped_run(*a, **kw):

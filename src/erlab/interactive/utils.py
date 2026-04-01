@@ -30,7 +30,7 @@ import numpy as np
 import numpy.typing as npt
 import pyqtgraph as pg
 import xarray as xr
-from qtpy import PYQT6, QtCore, QtGui, QtWidgets, uic
+from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
 
@@ -83,19 +83,45 @@ __all__ = [
 _LOAD_UI_LOCK = threading.RLock()
 
 
-try:
-    from shiboken6 import isValid as _qt_is_valid
-except Exception:  # pragma: no cover - varies by Qt binding
+def _qt_object_is_valid_fallback(arg__1: object) -> bool:
+    return arg__1 is not None
+
+
+def _make_qt_object_is_valid_from_sip(
+    sip_module: typing.Any,
+) -> Callable[[object], bool]:
+    def _qt_object_is_valid(arg__1: object) -> bool:
+        return arg__1 is not None and not sip_module.isdeleted(arg__1)
+
+    return _qt_object_is_valid
+
+
+_qt_object_is_valid: Callable[[object], bool] = _qt_object_is_valid_fallback
+
+
+if PYSIDE6:
     try:
-        import sip  # type: ignore[import-not-found]
+        from shiboken6 import isValid as _shiboken_is_valid
+    except Exception:  # pragma: no cover - varies by Qt binding
+        _qt_object_is_valid = _qt_object_is_valid_fallback
+    else:
 
-        def _qt_is_valid(arg__1: object) -> bool:
-            return arg__1 is not None and not sip.isdeleted(arg__1)
+        def _qt_object_is_valid(arg__1: object) -> bool:
+            return arg__1 is not None and _shiboken_is_valid(arg__1)
 
-    except Exception:  # pragma: no cover - fallback for unknown bindings
+elif PYQT6:
+    try:
+        from PyQt6 import sip as _pyqt6_sip
+    except Exception:  # pragma: no cover - fallback for older sip layouts
+        try:
+            import sip as _legacy_sip  # type: ignore[import-not-found]
+        except Exception:  # pragma: no cover - unknown binding layout
+            _qt_object_is_valid = _qt_object_is_valid_fallback
+        else:
+            _qt_object_is_valid = _make_qt_object_is_valid_from_sip(_legacy_sip)
 
-        def _qt_is_valid(arg__1: object) -> bool:
-            return arg__1 is not None
+    else:
+        _qt_object_is_valid = _make_qt_object_is_valid_from_sip(_pyqt6_sip)
 
 
 def qt_is_valid(*objects: object) -> bool:
@@ -103,14 +129,14 @@ def qt_is_valid(*objects: object) -> bool:
 
     For PySide, uses ``shiboken6.isValid`` to check validity.
 
-    For PyQt, uses ``sip.isdeleted``.
+    For PyQt6, uses ``PyQt6.sip.isdeleted``.
 
     Parameters
     ----------
     *objects
         Objects to validate. ``None`` values are ignored.
     """
-    return all(_qt_is_valid(obj) for obj in objects)
+    return all(obj is None or _qt_object_is_valid(obj) for obj in objects)
 
 
 def single_shot(
@@ -221,7 +247,7 @@ def setup_qapp(execute: bool | None = None) -> Iterator[bool]:
     application based on the environment (interactive or not). The function yields a
     boolean indicating whether the application is executed.
 
-    Generally, a Qt application in a python script is executed like this:
+    Generally, a Qt application in a Python script is executed like this:
 
     .. code-block:: python
 
@@ -2280,7 +2306,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
-    For full compatibility with the ImageTool manager, the following optional attributs
+    For full compatibility with the ImageTool manager, the following optional attributes
     or properties can also be set:
 
     - The class attribute `tool_name` should be set to a short string identifying the
@@ -2325,14 +2351,34 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
 
+    def _is_in_manager(self) -> bool:
+        """Check whether this tool window is currently owned by ImageTool manager."""
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager is None:
+            return False
+        return any(
+            self in wrapper._childtools.values()
+            for wrapper in manager._imagetool_wrappers.values()
+        )
+
+    def _show_warning_if_not_in_manager(self, title: str, text: str) -> bool:
+        """Show a warning dialog unless managed by ImageTool manager.
+
+        Returns
+        -------
+        bool
+            `True` if a local warning dialog was shown, `False` if the window is in
+            manager (caller should defer to manager exception handling).
+        """
+        if self._is_in_manager():
+            return False
+        QtWidgets.QMessageBox.warning(self, title, text)
+        return True
+
     @QtCore.Slot()
     def _hide_or_close(self) -> None:
         """Hide or close the tool window based on its presence in the manager."""
-        manager = erlab.interactive.imagetool.manager._manager_instance
-        if manager and any(
-            self in wrapper._childtools.values()
-            for wrapper in manager._imagetool_wrappers.values()
-        ):
+        if self._is_in_manager():
             self.hide()
         else:
             self.close()

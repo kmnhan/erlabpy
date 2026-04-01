@@ -1,4 +1,7 @@
-"""Widgets for controlling :class:`erlab.interactive.imagetool.core.ImageSlicerArea`."""
+"""Widgets for controlling ImageTool slicers.
+
+See :class:`erlab.interactive.imagetool.viewer.ImageSlicerArea`.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +17,8 @@ import erlab
 if typing.TYPE_CHECKING:
     import xarray as xr
 
-    from erlab.interactive.imagetool.core import ImageSlicerArea
     from erlab.interactive.imagetool.slicer import ArraySlicer
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 
 _ICON_ALIASES: dict[str, str] = {
