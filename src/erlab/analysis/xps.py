@@ -91,7 +91,26 @@ def _validate_kinetic_energy_inputs(
 
 @dataclass(frozen=True)
 class CoreLevelEdge:
-    """Absorption edge and harmonic kinetic energies for one core level."""
+    """Absorption edge and harmonic kinetic energies for one core level.
+
+    Attributes
+    ----------
+    edge
+        Absorption edge in eV.
+    kinetic_energies
+        Mapping from harmonic order to photoelectron kinetic energy in eV.
+
+    Examples
+    --------
+    >>> import erlab.analysis as era
+    >>> au_4f = era.xps.CoreLevelEdge.from_edge(
+    ...     84.0, photon_energy=1486.6, workfunction=4.5, max_harmonic=3
+    ... )
+    >>> au_4f.edge
+    84.0
+    >>> au_4f.kinetic_energies
+    {1: 1398.1, 2: 2884.7}
+    """
 
     edge: float
     kinetic_energies: dict[int, float]
@@ -105,7 +124,35 @@ class CoreLevelEdge:
         workfunction: float = 0.0,
         max_harmonic: int = 1,
     ) -> CoreLevelEdge:
-        """Build harmonic kinetic energies from an absorption edge."""
+        """Build a :class:`CoreLevelEdge` from an absorption edge value.
+
+        Parameters
+        ----------
+        edge
+            Absorption edge in eV.
+        photon_energy
+            Fundamental photon energy in eV.
+        workfunction
+            Work function in eV subtracted from each harmonic kinetic energy.
+        max_harmonic
+            Highest harmonic order to include. The returned mapping contains orders
+            ``1`` through ``max_harmonic``.
+
+        Returns
+        -------
+        CoreLevelEdge
+            A record containing the absorption edge and the per-harmonic kinetic
+            energies.
+
+        Examples
+        --------
+        >>> import erlab.analysis as era
+        >>> edge = era.xps.CoreLevelEdge.from_edge(
+        ...     706.8, photon_energy=1486.6, workfunction=4.5, max_harmonic=2
+        ... )
+        >>> edge.kinetic_energies[1]
+        775.3
+        """
         _validate_kinetic_energy_inputs(
             photon_energy,
             work_function=workfunction,
@@ -169,6 +216,10 @@ def _cross_section_array(
 def get_cross_section(element: str | int) -> dict[str, xr.DataArray]:
     """Get the photoionization cross section curves for a given element.
 
+    Data are based on the `Elettra WebCrossSections
+    <https://vuo.elettra.eu/services/elements/WebElements.html>`_ service, which is
+    based on :cite:t:`yeh1985photoionization`.
+
     Parameters
     ----------
     element
@@ -181,11 +232,13 @@ def get_cross_section(element: str | int) -> dict[str, xr.DataArray]:
         A dictionary mapping subshell orbital labels to 1D DataArrays with coordinate
         ``hv`` (photon energy in eV).
 
-    Notes
-    -----
-    The returned curves come from the bundled ``yeh_lindau_1985_pics.npz`` archive,
-    generated from the Elettra WebCrossSections downloads of the Yeh-Lindau atomic
-    photoionization tables.
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import erlab.analysis as era
+    >>> curves = era.xps.get_cross_section("Cu")
+    >>> list(curves.keys())
+    ['2s', '2p', '3s', '3p', '3d', '4s']
     """
     symbol = xraydb.atomic_symbol(element)
     z = _xsection_data()
@@ -201,6 +254,10 @@ def get_cross_section(element: str | int) -> dict[str, xr.DataArray]:
 def get_total_cross_section(element: str | int) -> xr.DataArray:
     """Get the total photoionization cross section curve for a given element.
 
+    Data are based on the `Elettra WebCrossSections
+    <https://vuo.elettra.eu/services/elements/WebElements.html>`_ service, which is
+    based on :cite:t:`yeh1985photoionization`.
+
     Parameters
     ----------
     element
@@ -211,12 +268,6 @@ def get_total_cross_section(element: str | int) -> xr.DataArray:
     -------
     DataArray
         A 1D DataArray with coordinate ``hv`` (photon energy in eV).
-
-    Notes
-    -----
-    The returned curve comes from the bundled ``yeh_lindau_1985_pics.npz`` archive,
-    generated from the Elettra WebCrossSections downloads of the Yeh-Lindau atomic
-    photoionization tables.
     """
     symbol = xraydb.atomic_symbol(element)
     return _cross_section_array(symbol, "total", _xsection_data())
@@ -296,6 +347,24 @@ def get_edge(
     -----
     The returned values come from `xraydb`. In many XPS contexts these numbers are close
     to, and interpreted similarly to, core-level binding energies.
+
+    Examples
+    --------
+    >>> import erlab.analysis as era
+    >>> edges = era.xps.get_edge("Fe")
+    >>> edges["2p3/2"]
+    706.8
+    >>> edges["3p3/2"]
+    52.7
+
+    >>> edges_ke = era.xps.get_edge(
+    ...     "Fe", photon_energy=1486.6, work_function=4.5, max_harmonic=2
+    ... )
+    >>> fe_2p = edges_ke["2p3/2"]
+    >>> fe_2p.edge
+    706.8
+    >>> fe_2p.kinetic_energies
+    {1: 775.3, 2: 2261.9}
 
     """
     out = _edge_map(element)

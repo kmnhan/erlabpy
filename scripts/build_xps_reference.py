@@ -16,6 +16,7 @@ import ssl
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import numpy as np
@@ -187,11 +188,11 @@ def build_reference_archive(
     for symbol in empty_symbols:
         z_by_symbol.pop(symbol, None)
 
-    for symbol, subshells in successful_subshells.items():
-        if not subshells:
+    for symbol, symbol_subshells in successful_subshells.items():
+        if not symbol_subshells:
             continue
         arrays[f"{symbol}__subshells"] = np.array(
-            sorted(subshells, key=subshell_sort_key), dtype="U8"
+            sorted(symbol_subshells, key=subshell_sort_key), dtype="U8"
         )
 
     if not z_by_symbol:
@@ -209,7 +210,8 @@ def write_reference_archive(
     """Write the archive contents to disk."""
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(path, **arrays)
+    archive_arrays: Any = arrays
+    np.savez_compressed(file=path, **archive_arrays)
 
 
 def build_ssl_context() -> ssl.SSLContext:
