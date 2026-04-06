@@ -17,6 +17,7 @@ Various functions for data analysis.
    kspace
    mesh
    transform
+   xps
 
 """
 

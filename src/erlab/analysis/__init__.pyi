@@ -8,6 +8,18 @@ __all__ = [
     "mask",
     "mesh",
     "transform",
+    "xps",
 ]
 
-from . import correlation, fit, gold, image, interpolate, kspace, mask, mesh, transform
+from . import (
+    correlation,
+    fit,
+    gold,
+    image,
+    interpolate,
+    kspace,
+    mask,
+    mesh,
+    transform,
+    xps,
+)

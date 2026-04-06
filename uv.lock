@@ -875,6 +875,7 @@ dependencies = [
     { name = "varname" },
     { name = "xarray" },
     { name = "xarray-lmfit" },
+    { name = "xraydb" },
 ]
 
 [package.optional-dependencies]
@@ -999,6 +1000,7 @@ requires-dist = [
     { name = "varname", specifier = ">=0.13.0" },
     { name = "xarray", specifier = ">=2024.10.0" },
     { name = "xarray-lmfit", specifier = ">=0.5.4" },
+    { name = "xraydb", specifier = ">=4.5.8" },
     { name = "zarr", marker = "extra == 'io'", specifier = ">=3.1.2" },
 ]
 provides-extras = ["complete", "viz", "io", "perf", "misc"]
@@ -5134,6 +5136,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f8/fe/e18b87e83569fb41ad1a0730d7a1d9c3beeb25c7e2634b5358ec69c742a0/xarray_lmfit-0.5.4.tar.gz", hash = "sha256:fa802cf085de1a53f8f2661542b54559daea3fc539b79c76b39f7ae622626d75", size = 38871, upload-time = "2026-01-05T06:56:15.652Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4d/ec/6898b3186d9bf659a2f8a51f5164a0bc534b6634178058ddfd79f34626fa/xarray_lmfit-0.5.4-py3-none-any.whl", hash = "sha256:acc5c664959e3389bcbbc93ee574cd42e6706ac82d0a5bada79133de19b57f45", size = 26417, upload-time = "2026-01-05T06:56:14.276Z" },
+]
+
+[[package]]
+name = "xraydb"
+version = "4.5.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "platformdirs" },
+    { name = "scipy" },
+    { name = "sqlalchemy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/22/01/267954e2e0342418edadf3dea7f85f0edd92a3b065e6ef5daeaae36d4b79/xraydb-4.5.8.tar.gz", hash = "sha256:4414474c10be6dd8f273062fe57c1342e7a9f4c8f8c2c86881acd2ce013182ff", size = 3851174, upload-time = "2025-07-18T19:58:33.885Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/8b/7ec325b4e9e78beefc2d025b01ee8a2fde771ef7c957c3bff99b9e1fbffa/xraydb-4.5.8-py3-none-any.whl", hash = "sha256:2215baafa6a03d00d0254a94525aafc6493c8c285e4ac4477fbd6271b25e6a51", size = 3858878, upload-time = "2025-07-18T19:58:31.528Z" },
 ]
 
 [[package]]
