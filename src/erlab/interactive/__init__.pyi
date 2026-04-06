@@ -16,6 +16,7 @@ __all__ = [
     "ktool",
     "meshtool",
     "options",
+    "ptable",
     "restool",
     "utils",
 ]
@@ -40,3 +41,4 @@ from .explorer import data_explorer
 from .fermiedge import goldtool, restool
 from .imagetool import itool
 from .kspace import ktool
+from .ptable import ptable

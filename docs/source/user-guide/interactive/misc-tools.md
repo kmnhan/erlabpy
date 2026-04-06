@@ -82,7 +82,13 @@ Clicking {guilabel}`Copy code` will copy the code for conversion to the clipboar
 
 :::
 
-The second tab provides visualization options. You can overlay Brillouin zones and high symmetry points on the result, adjust colors, apply binning, and more.
+The second tab provides visualization options. You can overlay Brillouin zones and high symmetry points on the result, adjust colors, and optionally preview n-fold symmetrized constant energy contours for maps.
+
+:::{note}
+
+The symmetrization is a visual aid that only affects the displayed image in `ktool`. {guilabel}`Open in ImageTool` and {guilabel}`Copy code` still use the unsymmetrized momentum-converted data.
+
+:::
 
 The {guilabel}`Add Circle ROI` button allows you to add a circular region of interest to the image, which can be edited by dragging or right-clicking on it.
 
@@ -528,6 +534,74 @@ Browsing directories and previewing metadata works in the standalone explorer. O
 selected files into ImageTool analysis requires a running ImageTool manager. Launching the
 explorer from the manager is therefore the recommended path for users who want
 to find a dataset and start working with it immediately.
+
+(guide-ptable)=
+
+## Periodic Table
+
+```{image} ../../images/ptable_light.png
+:align: center
+:alt: Periodic table window in light mode
+:class: only-light
+```
+
+:::{only} format_html
+
+```{image} ../../images/ptable_dark.png
+:align: center
+:alt: Periodic table window in dark mode
+:class: only-dark
+```
+
+:::
+
+GUI that shows the periodic table of the elements. It provides information on orbital
+configurations, atomic mass, x-ray absorption edges (core-level binding energies) and
+photoionization cross sections for individual elements, which are useful for planning
+and interpreting core-level measurements.
+
+`ptable` can be started with {func}`erlab.interactive.ptable`:
+
+```python
+import erlab.interactive as eri
+
+eri.ptable()
+```
+
+It can also be started directly from the command line:
+
+```bash
+python -m erlab.interactive.ptable
+```
+
+If the {ref}`ImageTool manager <imagetool-manager>` is running, you can also open it
+from {guilabel}`Apps → Periodic Table` or {kbd}`Ctrl+Shift+P`.
+
+- Each element card shows the symbol, element name, atomic mass, and ground-state
+  electron configuration.
+
+- The search bar highlights matching elements by symbol or name and offers autocomplete
+  suggestions that select the chosen element. Entering a comma- or space-separated
+  list of exact symbols adds a multi-selection entry that selects all listed elements
+  at once.
+
+- Hovering an element previews it in the side panel when nothing is selected or only a
+  single element is selected.
+
+- Clicking selects one element, and {kbd}`Ctrl`/{kbd}`Cmd`-click adds or removes
+  elements from the selection. Clicking the table background clears the selection, and
+  arrow keys move the current selection.
+
+- The spreadsheet below the periodic table lists x-ray absorption edges, which include
+  core-level binding energies for each element. When a photon energy is entered, the
+  table can also show kinetic energies.
+
+- Use {guilabel}`Harmonics up to` to calculate the kinetic energies for additional
+  higher harmonics of the photon energy.
+
+- The side panel includes a log-log plot of photoionization cross sections for the
+  selected element. If a photon energy is entered, the plot can also show markers for
+  the fundamental and higher harmonics.
 
 ## BZPlotter
 

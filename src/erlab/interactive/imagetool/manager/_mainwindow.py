@@ -12,6 +12,7 @@ import threading
 import traceback
 import typing
 import uuid
+from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph
@@ -37,6 +38,9 @@ from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
+
+    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+    from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +148,17 @@ _always_use_socket: bool = False
 
 class ItoolManagerParseError(Exception):
     """Raised when the data received from the client cannot be parsed."""
+
+
+@dataclass(frozen=True)
+class _StandaloneAppSpec:
+    key: str
+    menu: typing.Literal["file", "apps"]
+    text: str
+    tooltip: str
+    factory: Callable[[], QtWidgets.QWidget]
+    shortcut: str | None = None
+    icon_name: str | None = None
 
 
 class _SingleImagePreview(QtWidgets.QGraphicsView):
@@ -256,6 +271,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Stores additional analysis tools opened from child ImageTool windows
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
+        self._standalone_app_windows: dict[str, QtWidgets.QWidget] = {}
+        self._standalone_app_specs: dict[str, _StandaloneAppSpec] = {
+            "explorer": _StandaloneAppSpec(
+                key="explorer",
+                menu="file",
+                text="Data Explorer",
+                tooltip="Show the data explorer window",
+                shortcut="Ctrl+E",
+                icon_name="drive-harddisk",
+                factory=self._create_explorer_window,
+            ),
+            "ptable": _StandaloneAppSpec(
+                key="ptable",
+                menu="apps",
+                text="Periodic Table",
+                tooltip="Show the periodic table window",
+                shortcut="Ctrl+Shift+P",
+                factory=self._create_ptable_window,
+            ),
+        }
+        self._standalone_app_actions: dict[str, QtWidgets.QAction] = {}
 
         # Store progress bar widgets
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
@@ -351,11 +387,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.store_action.triggered.connect(self.store_selected)
         self.store_action.setToolTip("Store selected data with IPython")
 
-        self.explorer_action = QtWidgets.QAction("Data Explorer", self)
-        self.explorer_action.triggered.connect(self.show_explorer)
-        self.explorer_action.setShortcut(QtGui.QKeySequence("Ctrl+E"))
-        self.explorer_action.setToolTip("Show the data explorer window")
-        self.explorer_action.setIcon(QtGui.QIcon.fromTheme("drive-harddisk"))
+        self.explorer_action = self._create_standalone_app_action("explorer")
+        self.ptable_action = self._create_standalone_app_action("ptable")
 
         self.concat_action = QtWidgets.QAction("Concatenate", self)
         self.concat_action.triggered.connect(self.concat_selected)
@@ -432,6 +465,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction(self.preview_action)
         view_menu.addSeparator()
+
+        self.apps_menu: QtWidgets.QMenu = typing.cast(
+            "QtWidgets.QMenu", self.menu_bar.addMenu("&Apps")
+        )
+        self.apps_menu.addAction(self.ptable_action)
 
         self._dask_menu = DaskMenu(self, "Dask")
         self.menu_bar.addMenu(self._dask_menu)
@@ -1116,6 +1154,74 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 linker.unlink_all()
                 self._linkers.remove(linker)
         self.sigLinkersChanged.emit()
+
+    @property
+    def explorer(self) -> _TabbedExplorer:
+        widget = self._standalone_app_windows.get("explorer")
+        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
+            raise AttributeError("Data explorer is not initialized.")
+        return typing.cast("_TabbedExplorer", widget)
+
+    @property
+    def ptable_window(self) -> PeriodicTableWindow:
+        widget = self._standalone_app_windows.get("ptable")
+        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
+            raise AttributeError("Periodic table window is not initialized.")
+        return typing.cast("PeriodicTableWindow", widget)
+
+    def _create_explorer_window(self) -> QtWidgets.QWidget:
+        from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+
+        return _TabbedExplorer(
+            root_path=self._recent_directory, loader_name=self._recent_loader_name
+        )
+
+    def _create_ptable_window(self) -> QtWidgets.QWidget:
+        from erlab.interactive.ptable import PeriodicTableWindow
+
+        return PeriodicTableWindow()
+
+    def _create_standalone_app_action(self, key: str) -> QtWidgets.QAction:
+        spec = self._standalone_app_specs[key]
+        action = QtWidgets.QAction(spec.text, self)
+        action.triggered.connect(
+            lambda _checked=False, app_key=key: self._show_standalone_app(app_key)
+        )
+        if spec.shortcut is not None:
+            action.setShortcut(spec.shortcut)
+        action.setToolTip(spec.tooltip)
+        if spec.icon_name is not None:
+            action.setIcon(QtGui.QIcon.fromTheme(spec.icon_name))
+        self._standalone_app_actions[key] = action
+        return action
+
+    def _create_standalone_app_window(self, key: str) -> QtWidgets.QWidget:
+        widget = self._standalone_app_specs[key].factory()
+        widget.destroyed.connect(
+            lambda _=None, app_key=key: self._standalone_app_windows.pop(app_key, None)
+        )
+        self._standalone_app_windows[key] = widget
+        return widget
+
+    def _ensure_standalone_app(self, key: str) -> QtWidgets.QWidget:
+        widget = self._standalone_app_windows.get(key)
+        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
+            widget = self._create_standalone_app_window(key)
+        return widget
+
+    def _show_standalone_app(self, key: str) -> QtWidgets.QWidget:
+        widget = self._ensure_standalone_app(key)
+        widget.show()
+        widget.activateWindow()
+        widget.raise_()
+        return widget
+
+    def _close_standalone_apps(self) -> None:
+        for widget in tuple(self._standalone_app_windows.values()):
+            if erlab.interactive.utils.qt_is_valid(widget):
+                widget.close()
+                widget.deleteLater()
+        self._standalone_app_windows.clear()
 
     @QtCore.Slot()
     def show_selected(self) -> None:
@@ -1806,20 +1912,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def ensure_explorer_initialized(self) -> None:
         """Ensure that the data explorer window is initialized."""
-        if not hasattr(self, "explorer"):
-            from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-
-            self.explorer = _TabbedExplorer(
-                root_path=self._recent_directory, loader_name=self._recent_loader_name
-            )
+        self._ensure_standalone_app("explorer")
 
     @QtCore.Slot()
     def show_explorer(self) -> None:
         """Show data explorer window."""
-        self.ensure_explorer_initialized()
-        self.explorer.show()
-        self.explorer.activateWindow()
-        self.explorer.raise_()
+        self._show_standalone_app("explorer")
+
+    @QtCore.Slot()
+    def show_ptable(self) -> None:
+        """Show the periodic-table explorer window."""
+        self._show_standalone_app("ptable")
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
         """Handle drag-and-drop operations entering the window."""
@@ -1972,9 +2075,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if len(valid_loaders) == 0:
             if all(file_path.is_dir() for file_path in queued):
                 # If all dropped paths are directories, open them in the explorer
-                self.show_explorer()
+                explorer = typing.cast(
+                    "_TabbedExplorer", self._show_standalone_app("explorer")
+                )
                 for file_path in queued:
-                    self.explorer.add_tab(root_path=file_path)
+                    explorer.add_tab(root_path=file_path)
                 return
 
             singular: bool = n_files == 1
@@ -2280,10 +2385,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.console.close()
             self.console.deleteLater()
 
-        if hasattr(self, "explorer"):
-            logger.debug("Closing data explorer...")
-            self.explorer.close()
-            self.explorer.deleteLater()
+        if self._standalone_app_windows:
+            logger.debug("Closing standalone apps...")
+            self._close_standalone_apps()
 
         logger.debug("Cleaning up temporary directory...")
         self._tmp_dir.cleanup()

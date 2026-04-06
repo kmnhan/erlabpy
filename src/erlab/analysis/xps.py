@@ -312,11 +312,12 @@ def get_edge(
 ) -> dict[str, float] | dict[str, CoreLevelEdge]:
     """Get the x-ray absorption edges for a given element.
 
-    The values are taken from ``xraydb``, and the values for core-level edges can be
-    treated as the binding energies of the corresponding electrons. When
-    ``photon_energy`` is provided, a conversion to kinetic energies is performed for
-    each edge and its harmonics up to ``max_harmonic``, using the provided work
-    function.
+    The values are taken from :mod:`xraydb` :cite:p:`newville2023xraydb`, using the
+    underlying X-ray level compilation described by :cite:t:`elam2002xraydb`. The values
+    for core-level edges can be treated as the binding energies of the corresponding
+    electrons. When ``photon_energy`` is provided, a conversion to kinetic energies is
+    performed for each edge and its harmonics up to ``max_harmonic``, using the provided
+    work function.
 
     Parameters
     ----------
