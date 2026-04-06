@@ -12,8 +12,8 @@ from qtpy import QtCore, QtGui, QtTest, QtWidgets
 import erlab
 import erlab.interactive.ptable.__main__
 import erlab.interactive.ptable._window
-from erlab.interactive import PeriodicTableWindow
 from erlab.interactive import ptable as launch_ptable
+from erlab.interactive.ptable import PeriodicTableWindow
 from erlab.interactive.ptable._inspector import CompactElementChip, RichTextHeaderView
 from erlab.interactive.ptable._metadata import (
     CATEGORY_COLORS,
