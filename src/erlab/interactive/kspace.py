@@ -998,7 +998,7 @@ class KspaceTool(KspaceToolGUI):
         alpha, beta = erlab.analysis.kspace._normal_emission_from_angle_params(
             self.data.kspace.configuration, angle_params
         )
-        return float(alpha), float(beta)
+        return float(np.round(alpha, 5)), float(np.round(beta, 5))
 
     @QtCore.Slot()
     def _sync_normal_emission_spins(self) -> None:

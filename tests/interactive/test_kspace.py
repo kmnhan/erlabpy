@@ -411,7 +411,9 @@ def test_ktool_copy_code_uses_set_normal(
         bounds=win.bounds, resolution=win.resolution
     )
     for key, value in reference_offsets.items():
-        assert namespace[input_name].kspace.offsets[key] == pytest.approx(value)
+        assert np.round(namespace[input_name].kspace.offsets[key], 5) == pytest.approx(
+            value
+        )
 
     xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
 
