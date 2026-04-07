@@ -65,6 +65,7 @@ misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0", "numdifftools>=0.9.42"]
 
 [dependency-groups]
 dev = [
+    "colorspacious>=1.1.2",
     "commitizen>=4.3.0",
     "coverage>=7.10.5",
     "cz-changeup>=1.1.2",

@@ -25,6 +25,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, load_in_manager
@@ -49,7 +50,9 @@ from erlab.interactive.imagetool.manager._server import (
     _recv_multipart,
     _remove_idx,
     _show_idx,
+    _WatcherServer,
 )
+from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +112,14 @@ def bring_manager_to_top(bot, manager):
         manager.hide_all()  # Prevent windows from obstructing the manager
         manager.activateWindow()
         manager.raise_()
+
+
+def action_map(menu: QtWidgets.QMenu) -> dict[str, QtWidgets.QAction]:
+    return {
+        action.text().replace("&", ""): action
+        for action in menu.actions()
+        if not action.isSeparator()
+    }
 
 
 @pytest.mark.parametrize("use_socket", [False, True], ids=["no_socket", "socket"])
@@ -1811,6 +1822,62 @@ def test_manager_context_starts_cleanly_back_to_back(
     )
 
 
+def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -> None:
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.bound: list[str] = []
+            self.closed = False
+            self.sent: list[dict[str, str]] = []
+
+        def setsockopt(self, *args) -> None:
+            return None
+
+        def bind(self, address: str) -> None:
+            self.bound.append(address)
+
+        def send_json(self, payload: dict[str, str]) -> None:
+            self.sent.append(payload)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _DummySocket) -> None:
+            self._socket = socket
+
+        def socket(self, *_args) -> _DummySocket:
+            return self._socket
+
+    class _DummyWaitCondition:
+        def __init__(self, server: _WatcherServer) -> None:
+            self.server = server
+            self.calls = 0
+
+        def wait(self, *_args) -> bool:
+            self.calls += 1
+            self.server.stopped.set()
+            return True
+
+        def wakeAll(self) -> None:
+            return None
+
+    socket = _DummySocket()
+    monkeypatch.setattr(
+        zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
+    )
+
+    server = _WatcherServer()
+    wait_condition = _DummyWaitCondition(server)
+    server._cv = wait_condition
+
+    server.run()
+
+    assert wait_condition.calls == 1
+    assert socket.bound == [f"tcp://*:{erlab.interactive.imagetool.manager.PORT_WATCH}"]
+    assert socket.sent == []
+    assert socket.closed
+
+
 def test_manager_progressbar_alert(
     qtbot,
     manager_context: Callable[
@@ -2099,3 +2166,124 @@ def test_manager_updated_opens_links(
         )
 
     assert opened == [expected_url]
+
+
+def test_manager_standalone_app_menus(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        menus = {
+            action.text().replace("&", ""): typing.cast(
+                "QtWidgets.QMenu", action.menu()
+            )
+            for action in manager.menu_bar.actions()
+            if action.menu() is not None
+        }
+
+        assert "File" in menus
+        assert "Apps" in menus
+        assert "Data Explorer" in action_map(menus["File"])
+
+        apps_actions = action_map(menus["Apps"])
+        assert "Periodic Table" in apps_actions
+        assert (
+            apps_actions["Periodic Table"]
+            .shortcut()
+            .toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+            == "Ctrl+Shift+P"
+        )
+
+
+def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with (
+        manager_context() as manager,
+        tempfile.TemporaryDirectory() as recent_dir,
+        tempfile.TemporaryDirectory() as dropped_dir,
+    ):
+        manager._recent_directory = recent_dir
+
+        manager.ensure_explorer_initialized()
+        explorer = manager.explorer
+
+        assert isinstance(explorer, _TabbedExplorer)
+        assert hasattr(manager, "explorer")
+        assert explorer.tab_widget.count() == 1
+
+        explorer.hide()
+        manager.show_explorer()
+        qtbot.wait_until(explorer.isVisible)
+        assert manager.explorer is explorer
+
+        explorer.close()
+        qtbot.wait_until(lambda: not explorer.isVisible())
+        manager.show_explorer()
+        qtbot.wait_until(explorer.isVisible)
+        assert manager.explorer is explorer
+
+        manager.open_multiple_files([pathlib.Path(dropped_dir)], try_workspace=True)
+
+        qtbot.wait_until(lambda: explorer.tab_widget.count() == 2)
+        assert explorer.current_explorer is not None
+        assert explorer.current_explorer.current_directory == pathlib.Path(dropped_dir)
+
+
+def test_manager_ptable_launcher_reuses_instance_without_affecting_tree(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        initial_ntools = manager.ntools
+        initial_rows = manager.tree_view.model().rowCount(QtCore.QModelIndex())
+
+        manager.show_ptable()
+        ptable = manager.ptable_window
+
+        qtbot.wait_until(ptable.isVisible)
+        assert isinstance(ptable, PeriodicTableWindow)
+        assert manager.ntools == initial_ntools
+        assert manager.tree_view.model().rowCount(QtCore.QModelIndex()) == initial_rows
+
+        ptable.hide()
+        manager.show_ptable()
+        qtbot.wait_until(ptable.isVisible)
+        assert manager.ptable_window is ptable
+
+        ptable.close()
+        qtbot.wait_until(lambda: not ptable.isVisible())
+        manager.show_ptable()
+        qtbot.wait_until(ptable.isVisible)
+        assert manager.ptable_window is ptable
+        assert manager.ntools == initial_ntools
+
+
+def test_manager_close_event_closes_standalone_apps(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show_explorer()
+        manager.show_ptable()
+
+        explorer = manager.explorer
+        ptable = manager.ptable_window
+
+        qtbot.wait_until(explorer.isVisible)
+        qtbot.wait_until(ptable.isVisible)
+
+        manager.close()
+        QtWidgets.QApplication.sendPostedEvents(None, 0)
+        QtWidgets.QApplication.processEvents()
+
+        assert manager._standalone_app_windows == {}
+        assert not erlab.interactive.utils.qt_is_valid(explorer, ptable)

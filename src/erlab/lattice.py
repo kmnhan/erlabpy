@@ -984,11 +984,6 @@ def get_surface_bz(
 ):
     """Get Brillouin zone boundaries on an arbitrary sampled 2D momentum surface.
 
-    .. versionadded:: 3.21.0
-
-        Support for exact Brillouin-zone overlays on sampled curved momentum surfaces
-        such as ``hv``-dependent cuts in :func:`erlab.interactive.ktool`.
-
     This function evaluates the repeated-zone Brillouin-zone boundaries on a regular
     2D display grid whose points are embedded in 3D momentum space. Unlike
     :func:`get_bz_slice`, the sampled surface does not need to be planar; each point in

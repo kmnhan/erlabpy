@@ -70,7 +70,7 @@ def test_get_edge_can_calculate_harmonic_kinetic_energies() -> None:
 
     levels = xps.get_edge(
         "Li",
-        photon_energy=60.0,
+        hv=60.0,
         work_function=4.5,
         max_harmonic=3,
     )
@@ -90,11 +90,11 @@ def test_get_edge_can_calculate_harmonic_kinetic_energies() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
-        ({"photon_energy": None, "work_function": 1.0}, "work_function requires"),
-        ({"photon_energy": None, "max_harmonic": 2}, "max_harmonic requires"),
-        ({"photon_energy": 0.0}, "photon_energy must be positive"),
-        ({"photon_energy": 10.0, "work_function": -1.0}, "work_function must be"),
-        ({"photon_energy": 10.0, "max_harmonic": 0}, "max_harmonic must be"),
+        ({"hv": None, "work_function": 1.0}, "work_function requires"),
+        ({"hv": None, "max_harmonic": 2}, "max_harmonic requires"),
+        ({"hv": 0.0}, "hv must be positive"),
+        ({"hv": 10.0, "work_function": -1.0}, "work_function must be"),
+        ({"hv": 10.0, "max_harmonic": 0}, "max_harmonic must be"),
     ],
 )
 def test_get_edge_validates_harmonic_inputs(kwargs, match: str) -> None:

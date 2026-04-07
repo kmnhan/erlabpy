@@ -141,6 +141,9 @@ Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspac
 
 ## Data Explorer and Console
 
+In addition to ImageTool windows and child analysis tools, the manager can also launch
+standalone helper apps that stay outside the tree view and workspace files.
+
 (imagetool-manager-data-explorer)=
 
 ### Data Explorer
@@ -158,6 +161,15 @@ and previewing. Opening selected files into ImageTool analysis still requires a 
 ImageTool manager, which is why launching it from the manager is the recommended path.
 
 For the standalone tool page, see {ref}`guide-data-explorer`.
+
+### Periodic Table
+
+Open the periodic table from {guilabel}`Apps → Periodic Table` or {kbd}`Ctrl+Shift+P`.
+
+Use it when you want quick reference for core-level energies photoionization cross
+sections.
+
+For the standalone tool page, see {ref}`guide-ptable`.
 
 ### Console
 
