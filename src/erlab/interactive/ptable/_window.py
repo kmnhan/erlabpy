@@ -386,7 +386,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
     def __init__(
         self,
         *,
-        photon_energy: float | None = None,
+        hv: float | None = None,
         workfunction: float | None = None,
         max_harmonic: int = 1,
         notation: str | None = None,
@@ -491,31 +491,29 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self.inspector.plot_target_changed.connect(self._handle_plot_target_changed)
         root_layout.addWidget(self.inspector, 1)
 
-        self.photon_energy_label = QtWidgets.QLabel(
+        self.hv_label = QtWidgets.QLabel(
             "h\u03bd", self.inspector.levels_controls_frame
         )
-        photon_energy_label_font = self.photon_energy_label.font()
-        photon_energy_label_font.setItalic(True)
-        self.photon_energy_label.setFont(photon_energy_label_font)
-        self.photon_energy_label.setToolTip(_PHOTON_ENERGY_TOOLTIP)
-        self.inspector.levels_controls_layout.addWidget(self.photon_energy_label)
+        hv_label_font = self.hv_label.font()
+        hv_label_font.setItalic(True)
+        self.hv_label.setFont(hv_label_font)
+        self.hv_label.setToolTip(_PHOTON_ENERGY_TOOLTIP)
+        self.inspector.levels_controls_layout.addWidget(self.hv_label)
 
-        self.photon_energy_edit = _SuffixLineEdit(
-            "eV", self.inspector.levels_controls_frame
-        )
-        self.photon_energy_edit.setObjectName("ptable-photon-energy")
-        self.photon_energy_edit.setSizePolicy(
+        self.hv_edit = _SuffixLineEdit("eV", self.inspector.levels_controls_frame)
+        self.hv_edit.setObjectName("ptable-photon-energy")
+        self.hv_edit.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
-        self.photon_energy_edit.setMinimumWidth(77)
-        self.photon_energy_edit.setClearButtonEnabled(True)
-        self.photon_energy_edit.setToolTip(_PHOTON_ENERGY_TOOLTIP)
-        self.photon_energy_label.setBuddy(self.photon_energy_edit)
-        if photon_energy is not None:
-            self.photon_energy_edit.setText(str(photon_energy))
-        self.photon_energy_edit.textChanged.connect(self._handle_energy_inputs_changed)
-        self.inspector.levels_controls_layout.addWidget(self.photon_energy_edit, 1)
+        self.hv_edit.setMinimumWidth(77)
+        self.hv_edit.setClearButtonEnabled(True)
+        self.hv_edit.setToolTip(_PHOTON_ENERGY_TOOLTIP)
+        self.hv_label.setBuddy(self.hv_edit)
+        if hv is not None:
+            self.hv_edit.setText(str(hv))
+        self.hv_edit.textChanged.connect(self._handle_energy_inputs_changed)
+        self.inspector.levels_controls_layout.addWidget(self.hv_edit, 1)
 
         self.workfunction_label = QtWidgets.QLabel(
             "\u03a6", self.inspector.levels_controls_frame
@@ -633,8 +631,8 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         return _element_records()[atomic_number]
 
     @property
-    def photon_energy(self) -> float | None:
-        return _parse_positive_float(self.photon_energy_edit.text().strip())
+    def hv(self) -> float | None:
+        return _parse_positive_float(self.hv_edit.text().strip())
 
     @property
     def max_harmonic(self) -> int:
@@ -675,7 +673,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         _set_foreground(self.header, theme.text)
         for widget in (
             self.search_edit,
-            self.photon_energy_edit,
+            self.hv_edit,
             self.workfunction_edit,
         ):
             palette = QtGui.QPalette(widget.palette())
@@ -727,7 +725,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             theme.disabled_text,
         )
         self.max_harmonic_label.setPalette(harmonic_label_palette)
-        _set_foreground(self.photon_energy_label, theme.text)
+        _set_foreground(self.hv_label, theme.text)
         _set_foreground(self.workfunction_label, theme.text)
         _set_foreground(self.notation_label, theme.text)
         notation_combo_palette = QtGui.QPalette(self.notation_combo.palette())
@@ -969,10 +967,10 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self._hide_search_popup(reset_navigation=True)
 
     def _refresh_inputs(self) -> None:
-        photon_text = self.photon_energy_edit.text().strip()
+        photon_text = self.hv_edit.text().strip()
         workfunction_text = self.workfunction_edit.text().strip()
         self._set_line_edit_invalid_state(
-            self.photon_energy_edit,
+            self.hv_edit,
             photon_text != "" and _parse_positive_float(photon_text) is None,
         )
         if workfunction_text == "":
@@ -1061,7 +1059,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             active_record=current_record,
             plot_record=plot_record,
             notation=self.current_notation,
-            photon_energy=self.photon_energy,
+            hv=self.hv,
             workfunction=self.workfunction,
             max_harmonic=self.max_harmonic,
             preview=preview,
@@ -1393,7 +1391,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
 
 def ptable(
     *,
-    photon_energy: float | None = None,
+    hv: float | None = None,
     workfunction: float | None = None,
     max_harmonic: int = 1,
     notation: str | None = None,
@@ -1402,14 +1400,14 @@ def ptable(
     r"""Open the periodic table window.
 
     The periodic table provides an interactive reference for XPS-relevant elemental
-    properties, including core-level binding energies and photoionization cross
-    sections.
+    properties, including x-ray absorption edges, ground-state electron configurations,
+    and photoionization cross sections.
 
     See :ref:`guide-ptable` for an overview of the features and user interface.
 
     Parameters
     ----------
-    photon_energy
+    hv
         Optional photon energy in eV. When given, the inspector also shows kinetic
         energies and marks the photon energy on the cross-section plot.
     workfunction
@@ -1417,7 +1415,7 @@ def ptable(
         energy.
     max_harmonic
         Highest harmonic order to include when kinetic energies are shown. Harmonics are
-        integer multiples of ``photon_energy`` from ``1`` through ``max_harmonic``.
+        integer multiples of ``hv`` from ``1`` through ``max_harmonic``.
     notation
         Initial energy-level notation. When omitted, the most recently used notation is
         restored. Explicit values should be either ``"orbital"`` or ``"iupac"``.
@@ -1428,23 +1426,20 @@ def ptable(
     -----
     The periodic table combines several reference datasets.
 
-    - Element symbols, names, atomic masses, and the absorption-edge values shown in the
-      core-level table are loaded at runtime from :mod:`xraydb`
-      :cite:p:`newville2023xraydb`, using the underlying X-ray level compilation
-      described by :cite:t:`elam2002xraydb`. These absorption edges are closely related
-      to, and in many XPS workflows interpreted similarly to, core-level binding
-      energies.
+    - Element symbols, names, atomic masses, and the absorption-edge values are loaded
+      from :mod:`xraydb` :cite:p:`newville2023xraydb`, which is based on the compilation
+      described by :cite:t:`elam2002xraydb`.
     - Photoionization cross sections shown by
       :func:`erlab.analysis.xps.get_cross_section` use the bundled
       ``yeh_lindau_1985_pics.npz`` archive, obtained from the `Elettra WebCrossSections
       <https://vuo.elettra.eu/services/elements/WebElements.html>`_ service based on of
       the original Yeh-Lindau subshell tables :cite:p:`yeh1985photoionization`.
-    - Ground-state shell configurations for elements :math:`Z=1\ldots108` are taken
-      from the NIST Atomic Spectra Database :cite:p:`kramida2024asd`.
+    - Ground-state shell configurations for elements :math:`Z=1\ldots108` are taken from
+      the NIST Atomic Spectra Database :cite:p:`kramida2024asd`.
     """
     with erlab.interactive.utils.setup_qapp(execute):
         win = PeriodicTableWindow(
-            photon_energy=photon_energy,
+            hv=hv,
             workfunction=workfunction,
             max_harmonic=max_harmonic,
             notation=notation,

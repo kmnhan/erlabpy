@@ -76,13 +76,13 @@ IUPAC_TO_XPS: dict[str, str] = {
 
 
 def _validate_kinetic_energy_inputs(
-    photon_energy: float,
+    hv: float,
     *,
     work_function: float,
     max_harmonic: int,
 ) -> None:
-    if photon_energy <= 0.0:
-        raise ValueError("photon_energy must be positive")
+    if hv <= 0.0:
+        raise ValueError("hv must be positive")
     if work_function < 0.0:
         raise ValueError("work_function must be non-negative")
     if max_harmonic < 1:
@@ -104,7 +104,7 @@ class CoreLevelEdge:
     --------
     >>> import erlab.analysis as era
     >>> au_4f = era.xps.CoreLevelEdge.from_edge(
-    ...     84.0, photon_energy=1486.6, workfunction=4.5, max_harmonic=3
+    ...     84.0, hv=1486.6, workfunction=4.5, max_harmonic=3
     ... )
     >>> au_4f.edge
     84.0
@@ -120,7 +120,7 @@ class CoreLevelEdge:
         cls,
         edge: float,
         *,
-        photon_energy: float,
+        hv: float,
         workfunction: float = 0.0,
         max_harmonic: int = 1,
     ) -> CoreLevelEdge:
@@ -130,7 +130,7 @@ class CoreLevelEdge:
         ----------
         edge
             Absorption edge in eV.
-        photon_energy
+        hv
             Fundamental photon energy in eV.
         workfunction
             Work function in eV subtracted from each harmonic kinetic energy.
@@ -148,13 +148,13 @@ class CoreLevelEdge:
         --------
         >>> import erlab.analysis as era
         >>> edge = era.xps.CoreLevelEdge.from_edge(
-        ...     706.8, photon_energy=1486.6, workfunction=4.5, max_harmonic=2
+        ...     706.8, hv=1486.6, workfunction=4.5, max_harmonic=2
         ... )
         >>> edge.kinetic_energies[1]
         775.3
         """
         _validate_kinetic_energy_inputs(
-            photon_energy,
+            hv,
             work_function=workfunction,
             max_harmonic=max_harmonic,
         )
@@ -162,7 +162,7 @@ class CoreLevelEdge:
         return cls(
             edge=edge_value,
             kinetic_energies={
-                order: (float(photon_energy) * order) - edge_value - float(workfunction)
+                order: (float(hv) * order) - edge_value - float(workfunction)
                 for order in range(1, max_harmonic + 1)
             },
         )
@@ -287,7 +287,7 @@ def _edge_map(element: str | int) -> dict[str, float]:
 def get_edge(
     element: str | int,
     *,
-    photon_energy: None = None,
+    hv: None = None,
     work_function: float = 0.0,
     max_harmonic: int = 1,
 ) -> dict[str, float]: ...
@@ -297,7 +297,7 @@ def get_edge(
 def get_edge(
     element: str | int,
     *,
-    photon_energy: float,
+    hv: float,
     work_function: float = 0.0,
     max_harmonic: int = 1,
 ) -> dict[str, CoreLevelEdge]: ...
@@ -306,43 +306,41 @@ def get_edge(
 def get_edge(
     element: str | int,
     *,
-    photon_energy: float | None = None,
+    hv: float | None = None,
     work_function: float = 0.0,
     max_harmonic: int = 1,
 ) -> dict[str, float] | dict[str, CoreLevelEdge]:
     """Get the x-ray absorption edges for a given element.
 
-    The values are taken from :mod:`xraydb` :cite:p:`newville2023xraydb`, using the
-    underlying X-ray level compilation described by :cite:t:`elam2002xraydb`. The values
-    for core-level edges can be treated as the binding energies of the corresponding
-    electrons. When ``photon_energy`` is provided, a conversion to kinetic energies is
-    performed for each edge and its harmonics up to ``max_harmonic``, using the provided
-    work function.
+    The values are taken from :mod:`xraydb` :cite:p:`newville2023xraydb` which is based
+    on the compilation described by :cite:t:`elam2002xraydb`. The values for core level
+    edges can be treated as the binding energies of the corresponding electrons. When
+    ``hv`` is provided, a conversion to kinetic energies is performed for each edge and
+    its harmonics up to ``max_harmonic``, using the provided work function.
 
     Parameters
     ----------
     element
         The element symbol, name, or atomic number. For example, ``"Fe"``, ``"Iron"``,
         or ``26``.
-    photon_energy
+    hv
         Optional photon energy in eV. When provided, the returned mapping contains
         :class:`CoreLevelEdge` records with kinetic energies computed from each edge for
         the fundamental and higher harmonics up to ``max_harmonic``.
     work_function
         Work function in eV used for the kinetic-energy conversion. Only valid when
-        ``photon_energy`` is provided.
+        ``hv`` is provided.
     max_harmonic
         Highest harmonic order to include in the kinetic-energy calculation. Harmonics
-        are computed as integer multiples of ``photon_energy`` from ``1`` through
-        ``max_harmonic``. Only valid when ``photon_energy`` is provided.
+        are computed as integer multiples of ``hv`` from ``1`` through ``max_harmonic``.
+        Only valid when ``hv`` is provided.
 
     Returns
     -------
     dict
-        A dictionary mapping subshell labels to absorption edges in eV when
-        ``photon_energy`` is omitted. When ``photon_energy`` is provided, the mapping
-        values are :class:`CoreLevelEdge` objects containing the absorption edge and
-        per-harmonic kinetic energies.
+        A dictionary mapping subshell labels to absorption edges in eV when ``hv`` is
+        omitted. When ``hv`` is provided, the mapping values are :class:`CoreLevelEdge`
+        objects containing the absorption edge and per-harmonic kinetic energies.
 
     Notes
     -----
@@ -358,9 +356,7 @@ def get_edge(
     >>> edges["3p3/2"]
     52.7
 
-    >>> edges_ke = era.xps.get_edge(
-    ...     "Fe", photon_energy=1486.6, work_function=4.5, max_harmonic=2
-    ... )
+    >>> edges_ke = era.xps.get_edge("Fe", hv=1486.6, work_function=4.5, max_harmonic=2)
     >>> fe_2p = edges_ke["2p3/2"]
     >>> fe_2p.edge
     706.8
@@ -369,26 +365,22 @@ def get_edge(
 
     """
     out = _edge_map(element)
-    if photon_energy is None:
+    if hv is None:
         if work_function != 0.0:
-            raise ValueError(
-                "work_function requires photon_energy to calculate kinetic energies"
-            )
+            raise ValueError("work_function requires hv to calculate kinetic energies")
         if max_harmonic != 1:
-            raise ValueError(
-                "max_harmonic requires photon_energy to calculate kinetic energies"
-            )
+            raise ValueError("max_harmonic requires hv to calculate kinetic energies")
         return out
 
     _validate_kinetic_energy_inputs(
-        photon_energy,
+        hv,
         work_function=work_function,
         max_harmonic=max_harmonic,
     )
     return {
         label: CoreLevelEdge.from_edge(
             edge,
-            photon_energy=photon_energy,
+            hv=hv,
             workfunction=work_function,
             max_harmonic=max_harmonic,
         )

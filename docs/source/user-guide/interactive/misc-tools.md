@@ -537,7 +537,7 @@ to find a dataset and start working with it immediately.
 
 (guide-ptable)=
 
-## Periodic Table
+## Periodic table
 
 ```{image} ../../images/ptable_light.png
 :align: center
@@ -574,19 +574,15 @@ It can also be started directly from the command line:
 python -m erlab.interactive.ptable
 ```
 
-If the {ref}`ImageTool manager <imagetool-manager>` is running, you can also open it
-from {guilabel}`Apps → Periodic Table` or {kbd}`Ctrl+Shift+P`.
-
-- Each element card shows the symbol, element name, atomic mass, and ground-state
-  electron configuration.
+In the {ref}`ImageTool manager <imagetool-manager>`, you can open it from
+{guilabel}`Apps → Periodic Table` or with the keyboard shortcut {kbd}`Ctrl+Shift+P`.
 
 - The search bar highlights matching elements by symbol or name and offers autocomplete
   suggestions that select the chosen element. Entering a comma- or space-separated
   list of exact symbols adds a multi-selection entry that selects all listed elements
   at once.
 
-- Hovering an element previews it in the side panel when nothing is selected or only a
-  single element is selected.
+- Hovering an element previews it in the side panel.
 
 - Clicking selects one element, and {kbd}`Ctrl`/{kbd}`Cmd`-click adds or removes
   elements from the selection. Clicking the table background clears the selection, and

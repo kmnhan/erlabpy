@@ -1122,10 +1122,10 @@ class CrossSectionPlot(QtWidgets.QWidget):
         self,
         symbol: str,
         notation: str,
-        photon_energy: float | None,
+        hv: float | None,
         max_harmonic: int = 1,
     ) -> None:
-        state = (symbol, notation, photon_energy, max_harmonic)
+        state = (symbol, notation, hv, max_harmonic)
         if state == self._last_state:
             return
 
@@ -1194,9 +1194,9 @@ class CrossSectionPlot(QtWidgets.QWidget):
             )
 
         harmonic_marker_energies: list[float] = []
-        if photon_energy is not None:
+        if hv is not None:
             for order in range(1, max_harmonic + 1):
-                marker_energy = photon_energy * order
+                marker_energy = hv * order
                 if not self._X_RANGE[0] <= marker_energy <= self._X_RANGE[1]:
                     continue
                 self.plot_item.plot(
@@ -1216,8 +1216,8 @@ class CrossSectionPlot(QtWidgets.QWidget):
                 )
                 harmonic_marker_energies.append(marker_energy)
             self.photon_line_energies = tuple(harmonic_marker_energies)
-            if photon_energy in self.photon_line_energies:
-                self.photon_line_energy = photon_energy
+            if hv in self.photon_line_energies:
+                self.photon_line_energy = hv
 
         self._set_fixed_ranges()
         self.legend_labels = tuple(legend_labels)

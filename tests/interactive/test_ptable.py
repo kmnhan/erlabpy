@@ -232,13 +232,11 @@ def _hover_sequence_from_widget_to_point(
 def _move_cross_section_hover(
     plot: CrossSectionPlot,
     *,
-    photon_energy: float,
+    hv: float,
     sigma: float,
 ) -> None:
     view_box = plot.plot_item.getViewBox()
-    scene_pos = view_box.mapViewToScene(
-        QtCore.QPointF(np.log10(photon_energy), np.log10(sigma))
-    )
+    scene_pos = view_box.mapViewToScene(QtCore.QPointF(np.log10(hv), np.log10(sigma)))
     plot._handle_plot_hover((scene_pos,))
     QtWidgets.QApplication.processEvents()
 
@@ -810,7 +808,7 @@ def test_ptable_launcher_and_search_highlight(
     assert header_layout.indexOf(win.search_edit) < header_layout.indexOf(
         win.notation_frame
     )
-    assert header_layout.indexOf(win.photon_energy_edit) == -1
+    assert header_layout.indexOf(win.hv_edit) == -1
     assert header_layout.indexOf(win.workfunction_edit) == -1
     assert header_layout.indexOf(win.harmonic_frame) == -1
     assert side_layout.contentsMargins().left() == 0
@@ -847,8 +845,8 @@ def test_ptable_launcher_and_search_highlight(
     assert levels_header_layout.indexOf(
         win.inspector.copy_values_button
     ) < levels_header_layout.indexOf(win.inspector.copy_table_button)
-    assert win.photon_energy_label.parent() is win.inspector.levels_controls_frame
-    assert win.photon_energy_edit.parent() is win.inspector.levels_controls_frame
+    assert win.hv_label.parent() is win.inspector.levels_controls_frame
+    assert win.hv_edit.parent() is win.inspector.levels_controls_frame
     assert win.workfunction_label.parent() is win.inspector.levels_controls_frame
     assert win.workfunction_edit.parent() is win.inspector.levels_controls_frame
     assert win.harmonic_frame.parent() is win.inspector.levels_controls_frame
@@ -861,15 +859,15 @@ def test_ptable_launcher_and_search_highlight(
         win.inspector.copy_values_button.geometry().left()
         > win.inspector.levels_controls_frame.geometry().right()
     )
-    assert levels_controls_layout.indexOf(win.photon_energy_label) >= 0
+    assert levels_controls_layout.indexOf(win.hv_label) >= 0
     assert levels_controls_layout.indexOf(
-        win.photon_energy_label
-    ) < levels_controls_layout.indexOf(win.photon_energy_edit)
-    assert levels_controls_layout.indexOf(win.photon_energy_edit) >= 0
+        win.hv_label
+    ) < levels_controls_layout.indexOf(win.hv_edit)
+    assert levels_controls_layout.indexOf(win.hv_edit) >= 0
     assert levels_controls_layout.indexOf(win.workfunction_label) >= 0
-    assert levels_controls_layout.indexOf(
-        win.photon_energy_edit
-    ) < levels_controls_layout.indexOf(win.workfunction_label)
+    assert levels_controls_layout.indexOf(win.hv_edit) < levels_controls_layout.indexOf(
+        win.workfunction_label
+    )
     assert levels_controls_layout.indexOf(
         win.workfunction_label
     ) < levels_controls_layout.indexOf(win.workfunction_edit)
@@ -878,7 +876,7 @@ def test_ptable_launcher_and_search_highlight(
     assert levels_controls_layout.indexOf(
         win.workfunction_edit
     ) < levels_controls_layout.indexOf(win.harmonic_frame)
-    assert getattr(win.photon_energy_edit, "suffix", None) == "eV"
+    assert getattr(win.hv_edit, "suffix", None) == "eV"
     assert getattr(win.workfunction_edit, "suffix", None) == "eV"
     for frame in (
         win.inspector.side_panel,
@@ -1322,7 +1320,7 @@ def test_ptable_plot_legend_does_not_overlap_when_window_shrinks(
         _many_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
     QtWidgets.QApplication.processEvents()
@@ -1665,7 +1663,7 @@ def test_ptable_hover_preview_does_not_flicker_back_to_selection(
     win.close()
 
 
-def test_ptable_notation_toggle_and_photon_energy_display(
+def test_ptable_notation_toggle_and_hv_display(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -1676,7 +1674,7 @@ def test_ptable_notation_toggle_and_photon_energy_display(
     )
     monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
 
-    win = PeriodicTableWindow(photon_energy=100.0, workfunction=4.5)
+    win = PeriodicTableWindow(hv=100.0, workfunction=4.5)
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -1807,7 +1805,7 @@ def test_ptable_harmonic_rows_expand_from_spinbox(
     )
     monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -1860,22 +1858,22 @@ def test_ptable_copy_actions_and_invalid_inputs(
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
 
-    assert win.photon_energy_label.text() == "hν"
+    assert win.hv_label.text() == "hν"
     assert win.workfunction_label.text() == "Φ"
-    assert win.photon_energy_edit.placeholderText() == ""
+    assert win.hv_edit.placeholderText() == ""
     assert win.workfunction_edit.placeholderText() == "0"
-    assert win.photon_energy_edit.isClearButtonEnabled() is True
+    assert win.hv_edit.isClearButtonEnabled() is True
     assert win.workfunction_edit.isClearButtonEnabled() is True
-    assert getattr(win.photon_energy_edit, "suffix", None) == "eV"
+    assert getattr(win.hv_edit, "suffix", None) == "eV"
     assert getattr(win.workfunction_edit, "suffix", None) == "eV"
-    initial_photon_margin = win.photon_energy_edit.textMargins().right()
-    initial_photon_width = win.photon_energy_edit.width()
+    initial_photon_margin = win.hv_edit.textMargins().right()
+    initial_photon_width = win.hv_edit.width()
     initial_workfunction_width = win.workfunction_edit.width()
-    assert win.photon_energy_label.toolTip().startswith("<qt>")
-    assert "<i>" in win.photon_energy_label.toolTip()
-    assert "<sub>" in win.photon_energy_label.toolTip()
-    assert "−" in win.photon_energy_label.toolTip()
-    assert win.photon_energy_edit.toolTip() == win.photon_energy_label.toolTip()
+    assert win.hv_label.toolTip().startswith("<qt>")
+    assert "<i>" in win.hv_label.toolTip()
+    assert "<sub>" in win.hv_label.toolTip()
+    assert "−" in win.hv_label.toolTip()
+    assert win.hv_edit.toolTip() == win.hv_label.toolTip()
     assert "Spectrometer work function" in win.workfunction_label.toolTip()
     assert "Leave blank to treat Φ as 0 eV." in win.workfunction_label.toolTip()
     assert win.workfunction_label.toolTip().startswith("<qt>")
@@ -1902,38 +1900,37 @@ def test_ptable_copy_actions_and_invalid_inputs(
     assert copied[0] == "12\n3.5"
     assert copied[1].splitlines()[0] == "Metric\t1s\t2p3/2"
 
-    win.photon_energy_edit.setText("12345678901234567890123456789012345678901234567890")
+    win.hv_edit.setText("12345678901234567890123456789012345678901234567890")
     qtbot.waitUntil(
         lambda: any(
             button.isVisible()
-            for button in win.photon_energy_edit.findChildren(QtWidgets.QAbstractButton)
-            if button.parent() is win.photon_energy_edit
+            for button in win.hv_edit.findChildren(QtWidgets.QAbstractButton)
+            if button.parent() is win.hv_edit
         )
     )
 
     photon_suffix = next(
         label
-        for label in win.photon_energy_edit.findChildren(QtWidgets.QLabel)
+        for label in win.hv_edit.findChildren(QtWidgets.QLabel)
         if label.objectName() == "suffix"
     )
     photon_cursor_right = (
-        win.photon_energy_edit.cursorRect().x()
-        + win.photon_energy_edit.cursorRect().width()
+        win.hv_edit.cursorRect().x() + win.hv_edit.cursorRect().width()
     )
 
-    assert win.photon_energy_edit.textMargins().right() == initial_photon_margin
+    assert win.hv_edit.textMargins().right() == initial_photon_margin
     assert (
         photon_suffix.geometry().x() - photon_cursor_right
-        <= win.photon_energy_edit.fontMetrics().horizontalAdvance(" ")
+        <= win.hv_edit.fontMetrics().horizontalAdvance(" ")
     )
 
-    win.photon_energy_edit.setText("invalid")
+    win.hv_edit.setText("invalid")
     win.workfunction_edit.setText("-1")
 
-    assert win.photon_energy_edit.width() == initial_photon_width
+    assert win.hv_edit.width() == initial_photon_width
     assert win.workfunction_edit.width() == initial_workfunction_width
-    assert win.photon_energy is None
-    assert win.photon_energy_edit.property("invalid") is True
+    assert win.hv is None
+    assert win.hv_edit.property("invalid") is True
     assert win.workfunction_edit.property("invalid") is True
     assert win.harmonic_frame.isEnabled() is False
     assert win.max_harmonic_spin.isEnabled() is False
@@ -1955,7 +1952,7 @@ def test_ptable_levels_table_match_highlights_retheme_live_on_palette_change(
     original_palette = QtGui.QPalette(app.palette())
     app.setPalette(_light_palette())
     try:
-        win = PeriodicTableWindow(photon_energy=80.0, max_harmonic=2)
+        win = PeriodicTableWindow(hv=80.0, max_harmonic=2)
         _show_window(qtbot, win)
         win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2047,7 +2044,7 @@ def test_ptable_plot_ranges_and_metadata_snapshot(
     monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 5.0})
     monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
     plot = win.inspector.cross_section_plot
@@ -2277,7 +2274,7 @@ def test_ptable_uses_direct_total_cross_section(
     monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 5.0})
     monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
 
     render_data = win.inspector.cross_section_plot._get_render_data("H")
@@ -2309,7 +2306,7 @@ def test_ptable_plot_legend_wraps_and_hover_emphasizes_curve(
         _many_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2376,7 +2373,7 @@ def test_ptable_plot_legend_click_toggles_multi_selection(
         _many_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2442,7 +2439,7 @@ def test_ptable_plot_legend_toggles_persist_across_hover_preview(
         _preview_persistence_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2512,7 +2509,7 @@ def test_ptable_plot_legend_toggles_ignore_missing_preview_series(
         _preview_persistence_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2572,7 +2569,7 @@ def test_ptable_plot_legend_toggles_survive_notation_switch(
         _preview_persistence_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2617,7 +2614,7 @@ def test_ptable_plot_legend_hover_tracking_is_directionally_stable(
         _many_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2654,7 +2651,7 @@ def test_ptable_plot_legend_upward_hover_exit_clears_active_label(
         _many_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -2697,14 +2694,14 @@ def test_ptable_plot_hover_crosshair_snaps_to_nearest_sampled_point(
         _mismatched_total_cross_section,
     )
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(79, QtCore.Qt.KeyboardModifier.NoModifier)
 
     plot = win.inspector.cross_section_plot
     assert not hasattr(plot, "_hover_overlay")
 
-    _move_cross_section_hover(plot, photon_energy=19.0, sigma=0.11)
+    _move_cross_section_hover(plot, hv=19.0, sigma=0.11)
 
     assert plot._hover_energy_eV == 20.0
     assert plot._hover_cursor_sigma == 0.2
@@ -2714,7 +2711,7 @@ def test_ptable_plot_hover_crosshair_snaps_to_nearest_sampled_point(
     assert plot._hover_y_badge.text() == plot._format_hover_sigma(0.2)
     assert plot._active_legend_label is None
 
-    _move_cross_section_hover(plot, photon_energy=19.0, sigma=0.25)
+    _move_cross_section_hover(plot, hv=19.0, sigma=0.25)
 
     assert plot._hover_energy_eV == 15.0
     assert plot._hover_cursor_sigma == 0.24
@@ -2724,7 +2721,7 @@ def test_ptable_plot_hover_crosshair_snaps_to_nearest_sampled_point(
     first_cursor_sigma = plot._hover_cursor_sigma
     assert first_cursor_sigma is not None
 
-    _move_cross_section_hover(plot, photon_energy=19.0, sigma=10.0)
+    _move_cross_section_hover(plot, hv=19.0, sigma=10.0)
 
     assert plot._hover_energy_eV == 20.0
     assert plot._hover_cursor_sigma == 1.8
@@ -2733,7 +2730,7 @@ def test_ptable_plot_hover_crosshair_snaps_to_nearest_sampled_point(
         plot._hover_cursor_sigma
     )
 
-    _move_cross_section_hover(plot, photon_energy=29.0, sigma=0.33)
+    _move_cross_section_hover(plot, hv=29.0, sigma=0.33)
 
     assert plot._hover_energy_eV == 30.0
     assert plot._hover_cursor_sigma == 0.28
@@ -2750,7 +2747,7 @@ def test_ptable_plot_hover_crosshair_snaps_to_nearest_sampled_point(
     assert plot._hover_x_badge.isHidden()
     assert plot._hover_y_badge.isHidden()
 
-    _move_cross_section_hover(plot, photon_energy=19.0, sigma=0.11)
+    _move_cross_section_hover(plot, hv=19.0, sigma=0.11)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
 
     assert plot._hover_energy_eV is None
@@ -2779,7 +2776,7 @@ def test_ptable_multi_select_summary_and_plot_picker(
     )
     monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
     plot_height_single = win.inspector.cross_section_plot.height()
@@ -3037,7 +3034,7 @@ def test_ptable_multi_select_levels_table_clipboard_and_notation(
         ),
     )
 
-    win = PeriodicTableWindow(photon_energy=20.0, workfunction=1.0)
+    win = PeriodicTableWindow(hv=20.0, workfunction=1.0)
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
 
@@ -3126,7 +3123,7 @@ def test_ptable_harmonic_plot_markers_refresh_when_only_order_changes(
     monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 5.0})
     monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
 
-    win = PeriodicTableWindow(photon_energy=80.0)
+    win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
 

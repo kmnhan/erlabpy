@@ -906,7 +906,7 @@ class ElementInspector(QtWidgets.QWidget):
         active_record: ElementRecord | None,
         plot_record: ElementRecord | None,
         notation: str,
-        photon_energy: float | None,
+        hv: float | None,
         workfunction: float,
         max_harmonic: int,
         preview: bool,
@@ -939,7 +939,7 @@ class ElementInspector(QtWidgets.QWidget):
             records,
             active_record,
             notation,
-            photon_energy,
+            hv,
             workfunction,
             max_harmonic,
             preview=preview,
@@ -955,7 +955,7 @@ class ElementInspector(QtWidgets.QWidget):
         self.cross_section_plot.set_element(
             plot_record.symbol,
             notation,
-            photon_energy,
+            hv,
             max_harmonic,
         )
 
@@ -1061,7 +1061,7 @@ class ElementInspector(QtWidgets.QWidget):
         records: tuple[ElementRecord, ...],
         active_record: ElementRecord,
         notation: str,
-        photon_energy: float | None,
+        hv: float | None,
         workfunction: float,
         max_harmonic: int,
         *,
@@ -1071,7 +1071,7 @@ class ElementInspector(QtWidgets.QWidget):
             self._update_multi_levels(
                 records,
                 notation,
-                photon_energy,
+                hv,
                 workfunction,
                 max_harmonic,
             )
@@ -1079,7 +1079,7 @@ class ElementInspector(QtWidgets.QWidget):
         self._update_single_levels(
             active_record,
             notation,
-            photon_energy,
+            hv,
             workfunction,
             max_harmonic,
         )
@@ -1119,14 +1119,14 @@ class ElementInspector(QtWidgets.QWidget):
         self,
         edges: dict[str, float],
         *,
-        photon_energy: float,
+        hv: float,
         workfunction: float,
         max_harmonic: int,
     ) -> dict[str, erlab.analysis.xps.CoreLevelEdge]:
         return {
             label: erlab.analysis.xps.CoreLevelEdge.from_edge(
                 edge,
-                photon_energy=photon_energy,
+                hv=hv,
                 workfunction=workfunction,
                 max_harmonic=max_harmonic,
             )
@@ -1181,7 +1181,7 @@ class ElementInspector(QtWidgets.QWidget):
         self,
         record: ElementRecord,
         notation: str,
-        photon_energy: float | None,
+        hv: float | None,
         workfunction: float,
         max_harmonic: int,
     ) -> None:
@@ -1196,7 +1196,7 @@ class ElementInspector(QtWidgets.QWidget):
 
         rows = sorted(levels.items(), key=lambda item: item[1], reverse=True)
         self._single_level_rows = []
-        show_ke = photon_energy is not None
+        show_ke = hv is not None
         harmonic_orders = tuple(range(1, max_harmonic + 1)) if show_ke else ()
         self._single_level_has_ke = show_ke
         self._single_level_harmonic_orders = harmonic_orders
@@ -1212,19 +1212,17 @@ class ElementInspector(QtWidgets.QWidget):
         core_edges = (
             self._core_level_edges(
                 levels,
-                photon_energy=photon_energy,
+                hv=hv,
                 workfunction=workfunction,
                 max_harmonic=max_harmonic,
             )
-            if photon_energy is not None
+            if hv is not None
             else {}
         )
 
         for label, edge in rows:
             display_label = _edge_label(label, notation)
-            kinetic_energies = (
-                {} if photon_energy is None else core_edges[label].kinetic_energies
-            )
+            kinetic_energies = {} if hv is None else core_edges[label].kinetic_energies
             self._single_level_rows.append(
                 (display_label, edge, dict(kinetic_energies))
             )
@@ -1271,7 +1269,7 @@ class ElementInspector(QtWidgets.QWidget):
         self,
         records: tuple[ElementRecord, ...],
         notation: str,
-        photon_energy: float | None,
+        hv: float | None,
         workfunction: float,
         max_harmonic: int,
     ) -> None:
@@ -1295,7 +1293,7 @@ class ElementInspector(QtWidgets.QWidget):
             _edge_label(label, notation) for label in columns_raw
         )
         self._multi_level_rows = []
-        show_ke = photon_energy is not None
+        show_ke = hv is not None
         harmonic_orders = tuple(range(1, max_harmonic + 1)) if show_ke else ()
         table_rows: list[_LevelsTableRow] = []
         for record in records:
@@ -1311,11 +1309,11 @@ class ElementInspector(QtWidgets.QWidget):
             core_edges = (
                 self._core_level_edges(
                     levels,
-                    photon_energy=photon_energy,
+                    hv=hv,
                     workfunction=workfunction,
                     max_harmonic=max_harmonic,
                 )
-                if photon_energy is not None
+                if hv is not None
                 else {}
             )
             for label in columns_raw:
@@ -1323,7 +1321,7 @@ class ElementInspector(QtWidgets.QWidget):
                 edge_values.append(edge)
                 kinetic_energies = (
                     {}
-                    if edge is None or photon_energy is None
+                    if edge is None or hv is None
                     else core_edges[label].kinetic_energies
                 )
                 highlight = any(energy > 0.0 for energy in kinetic_energies.values())
