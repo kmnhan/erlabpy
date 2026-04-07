@@ -216,6 +216,121 @@ def test_fit2d_run_fit(qtbot, exp_decay_model, monkeypatch) -> None:
     assert ".isel(" in code
 
 
+def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _DummyResult:
+        nfev = 1
+
+    class _DummyResults:
+        def compute(self):
+            return self
+
+        def item(self):
+            return _DummyResult()
+
+    class _DummyDataset:
+        modelfit_results = _DummyResults()
+
+    started_steps: list[int] = []
+
+    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
+    monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        win._fit_start_time = 0.0
+        if step == 1:
+            on_success(_DummyDataset())
+            return True
+        return False
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win._run_fit_2d("up")
+
+    assert started_steps == [1]
+    qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
+
+
+def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _DummyResult:
+        nfev = 1
+
+    class _DummyResults:
+        def compute(self):
+            return self
+
+        def item(self):
+            return _DummyResult()
+
+    class _DummyDataset:
+        modelfit_results = _DummyResults()
+
+    started_steps: list[int] = []
+
+    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
+    monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        win._fit_start_time = 0.0
+        if step == 1:
+            on_success(_DummyDataset())
+            return True
+        return False
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win._run_fit_2d("up")
+    assert started_steps == [1]
+
+    assert win._cancel_fit()
+    qtbot.waitUntil(
+        lambda: win._fit_2d_total == 0 and not win._fit_2d_indices,
+        timeout=1000,
+    )
+    assert started_steps == [1]
+
+
 def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)

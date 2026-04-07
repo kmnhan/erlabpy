@@ -1257,6 +1257,9 @@ class Fit2DTool(Fit1DTool):
             self._start_next_fit_2d()
 
     def _start_next_fit_2d(self) -> None:
+        if self._fit_cancel_requested:
+            self._finish_fit_2d_sequence()
+            return
         if not self._fit_2d_indices:
             self._finish_fit_2d_sequence()
             return
@@ -1297,7 +1300,7 @@ class Fit2DTool(Fit1DTool):
                 )
                 self._finish_fit_2d_sequence()
                 return
-            self._start_next_fit_2d()
+            erlab.interactive.utils.single_shot(self, 0, self._start_next_fit_2d)
 
         def _on_timeout() -> None:
             if self._fit_start_time is None:
