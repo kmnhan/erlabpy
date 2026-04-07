@@ -233,25 +233,24 @@ CATEGORY_REFERENCES: dict[str, CategoryReference] = {
     "noble_gas": CategoryReference(
         title="Noble gases",
         blurb=(
-            "This category covers the Group 18 noble-gas family. The cited Gold "
-            "Book entry describes noble gases as unreactive toward most species "
-            "under ordinary conditions."
+            "This category covers the Group 18 noble gas family. "
+            "Noble gases are unreactive toward most species under ordinary conditions."
         ),
         references=(_RED_BOOK_REFERENCE, _INERT_GAS_REFERENCE),
     ),
     "lanthanoid": CategoryReference(
         title="Lanthanoids",
         blurb=(
-            "This category covers La-Lu. The IUPAC Red Book prefers lanthanoid "
-            "over lanthanide for this set."
+            "This category covers La-Lu. The IUPAC recommends lanthanoid over "
+            "lanthanide as the name for this series, although both are widely used."
         ),
         references=(_RED_BOOK_REFERENCE,),
     ),
     "actinoid": CategoryReference(
         title="Actinoids",
         blurb=(
-            "This category covers Ac-Lr. The IUPAC Red Book prefers actinoid "
-            "over actinide for this set."
+            "This category covers Ac-Lr. The IUPAC recommends actinoid over "
+            "actinide as the name for this series, although both are widely used."
         ),
         references=(_RED_BOOK_REFERENCE,),
     ),

@@ -967,7 +967,9 @@ class ElementInspector(QtWidgets.QWidget):
         self._section_header_update_pending = True
         QtCore.QTimer.singleShot(0, self._update_section_header_fonts)
 
-    def _section_title_samples(self) -> tuple[tuple[str, float, float | None], ...]:
+    def _section_title_samples(
+        self,
+    ) -> tuple[tuple[str, float, float | None, bool], ...]:
         self._plot_header_layout.activate()
         self._levels_header_layout.activate()
         samples: list[tuple[str, float, float | None, bool]] = []
