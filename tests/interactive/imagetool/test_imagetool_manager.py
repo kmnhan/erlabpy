@@ -50,6 +50,7 @@ from erlab.interactive.imagetool.manager._server import (
     _recv_multipart,
     _remove_idx,
     _show_idx,
+    _WatcherServer,
 )
 from erlab.interactive.ptable import PeriodicTableWindow
 
@@ -1819,6 +1820,62 @@ def test_manager_context_starts_cleanly_back_to_back(
         and record.levelno >= logging.ERROR
         for record in caplog.records
     )
+
+
+def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -> None:
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.bound: list[str] = []
+            self.closed = False
+            self.sent: list[dict[str, str]] = []
+
+        def setsockopt(self, *args) -> None:
+            return None
+
+        def bind(self, address: str) -> None:
+            self.bound.append(address)
+
+        def send_json(self, payload: dict[str, str]) -> None:
+            self.sent.append(payload)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _DummySocket) -> None:
+            self._socket = socket
+
+        def socket(self, *_args) -> _DummySocket:
+            return self._socket
+
+    class _DummyWaitCondition:
+        def __init__(self, server: _WatcherServer) -> None:
+            self.server = server
+            self.calls = 0
+
+        def wait(self, *_args) -> bool:
+            self.calls += 1
+            self.server.stopped.set()
+            return True
+
+        def wakeAll(self) -> None:
+            return None
+
+    socket = _DummySocket()
+    monkeypatch.setattr(
+        zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
+    )
+
+    server = _WatcherServer()
+    wait_condition = _DummyWaitCondition(server)
+    server._cv = wait_condition
+
+    server.run()
+
+    assert wait_condition.calls == 1
+    assert socket.bound == [f"tcp://*:{erlab.interactive.imagetool.manager.PORT_WATCH}"]
+    assert socket.sent == []
+    assert socket.closed
 
 
 def test_manager_progressbar_alert(
