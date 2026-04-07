@@ -706,26 +706,17 @@ def test_set_normal_missing_chi(anglemap) -> None:
         data.kspace.set_normal(0.0, 0.0)
 
 
-@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no-dask"])
-@pytest.mark.parametrize("energy_axis", ["kinetic", "binding"])
-@pytest.mark.parametrize("data_type", ["anglemap", "cut", "hvdep"])
-@pytest.mark.parametrize(
-    "configuration", AxesConfiguration, ids=[c.name for c in AxesConfiguration]
-)
-@pytest.mark.parametrize("extra_dims", [0, 1, 2], ids=["extra0", "extra1", "extra2"])
-def test_kconv(
+def _assert_kconv_case(
+    request: pytest.FixtureRequest,
+    *,
     use_dask: bool,
     energy_axis: str,
     data_type: str,
     configuration: AxesConfiguration,
     extra_dims: int,
-    request,
+    expect_error: bool = False,
 ) -> None:
     data = request.getfixturevalue(data_type).copy(deep=True)
-
-    expected = request.getfixturevalue(
-        f"config_{configuration.value}_{data_type.replace('angle', 'k')}"
-    )
 
     if energy_axis == "kinetic":
         data = data.assign_coords(eV=data.hv - data.kspace.work_function + data.eV)
@@ -754,16 +745,20 @@ def test_kconv(
     if data_type == "hvdep":
         data.kspace.inner_potential = 10.0
 
-    if energy_axis == "kinetic":
-        if data_type == "hvdep":
-            with pytest.raises(
-                ValueError,
-                match=r"Energy axis of photon energy dependent data must be in "
-                r"binding energy.",
-            ):
-                kconv = data.kspace.convert(silent=False)
-            return
+    if expect_error:
+        with pytest.raises(
+            ValueError,
+            match=r"Energy axis of photon energy dependent data must be in "
+            r"binding energy.",
+        ):
+            data.kspace.convert(silent=False)
+        return
 
+    expected = request.getfixturevalue(
+        f"config_{configuration.value}_{data_type.replace('angle', 'k')}"
+    )
+
+    if energy_axis == "kinetic":
         with pytest.warns(
             UserWarning,
             match="The energy axis seems to be in terms of kinetic energy, "
@@ -807,6 +802,95 @@ def test_kconv(
 
     assert isinstance(kconv, xarray.DataArray)
     assert not kconv.isnull().all()
+
+
+@pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no-dask"])
+@pytest.mark.parametrize("energy_axis", ["kinetic", "binding"])
+@pytest.mark.parametrize("data_type", ["anglemap", "cut"])
+@pytest.mark.parametrize(
+    "configuration", AxesConfiguration, ids=[c.name for c in AxesConfiguration]
+)
+@pytest.mark.parametrize("extra_dims", [0, 1, 2], ids=["extra0", "extra1", "extra2"])
+def test_kconv(
+    use_dask: bool,
+    energy_axis: str,
+    data_type: str,
+    configuration: AxesConfiguration,
+    extra_dims: int,
+    request: pytest.FixtureRequest,
+) -> None:
+    _assert_kconv_case(
+        request,
+        use_dask=use_dask,
+        energy_axis=energy_axis,
+        data_type=data_type,
+        configuration=configuration,
+        extra_dims=extra_dims,
+    )
+
+
+@pytest.mark.parametrize(
+    ("configuration", "use_dask", "extra_dims"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            False,
+            0,
+            id="Type1-binding-no-dask-extra0",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            True,
+            1,
+            id="Type2DA-binding-dask-extra1",
+        ),
+    ],
+)
+def test_kconv_hvdep_binding_smoke(
+    configuration: AxesConfiguration,
+    use_dask: bool,
+    extra_dims: int,
+    request: pytest.FixtureRequest,
+) -> None:
+    _assert_kconv_case(
+        request,
+        use_dask=use_dask,
+        energy_axis="binding",
+        data_type="hvdep",
+        configuration=configuration,
+        extra_dims=extra_dims,
+    )
+
+
+@pytest.mark.parametrize(
+    ("configuration", "use_dask"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            False,
+            id="Type1-kinetic-no-dask",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            True,
+            id="Type2DA-kinetic-dask",
+        ),
+    ],
+)
+def test_kconv_hvdep_kinetic_rejects(
+    configuration: AxesConfiguration,
+    use_dask: bool,
+    request: pytest.FixtureRequest,
+) -> None:
+    _assert_kconv_case(
+        request,
+        use_dask=use_dask,
+        energy_axis="kinetic",
+        data_type="hvdep",
+        configuration=configuration,
+        extra_dims=0,
+        expect_error=True,
+    )
 
 
 @pytest.mark.parametrize("missing_coord", ["alpha", "beta", "chi", "xi", "eV", "hv"])
