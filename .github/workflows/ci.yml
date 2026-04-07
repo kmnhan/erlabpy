@@ -1,34 +1,158 @@
-name: Test
+name: CI
 
 on:
   push:
     branches: ["main"]
   pull_request:
   workflow_dispatch:
-  schedule:
-    # Every friday at 22:00 UTC (Every saturday at 07:00 KST/JST)
-    - cron: "0 22 * * FRI"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 permissions:
   contents: read
+
 env:
   FORCE_COLOR: 1
 
 jobs:
-  test:
-    name: Test Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
+  partition-check:
+    name: Verify Test Partition
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+
+      - name: Verify coverage shard partition
+        run: uv run --no-sync python -m scripts.ci_test_groups --check-partition
+
+  coverage:
+    name: Coverage ${{ matrix.group }}
+    needs: partition-check
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout-minutes }}
     env:
       DISPLAY: ":99.0"
-      COV_VERSION: "3.13"
-      COV_QT_API: "pyqt6"
+      QT_API: "pyqt6"
+      PYTEST_QT_API: "pyqt6"
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-        qt-api: ["pyqt6", "pyside6"]
+        include:
+          - group: "cov-core-a"
+            timeout-minutes: 25
+            use-xdist: true
+          - group: "cov-core-b"
+            timeout-minutes: 25
+            use-xdist: true
+          - group: "cov-io"
+            timeout-minutes: 25
+            use-xdist: false
+          - group: "cov-qt-imagetool"
+            timeout-minutes: 30
+            use-xdist: false
+          - group: "cov-qt-tools"
+            timeout-minutes: 25
+            use-xdist: false
+          - group: "cov-qt-ux"
+            timeout-minutes: 25
+            use-xdist: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pyvista/setup-headless-display-action@v4
+        with:
+          pyvista: false
+          qt: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.13"
+
+      - name: Install project with test dependencies
+        run: uv sync --all-extras --dev --group pyqt6
+
+      - name: Resolve test targets
+        run: uv run python -m scripts.ci_test_groups ${{ matrix.group }} > "$RUNNER_TEMP/targets.txt"
+
+      - name: Run coverage shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t targets < "$RUNNER_TEMP/targets.txt"
+          pytest_args=(
+            -o faulthandler_timeout=300
+            --cov erlab
+            --cov-report=
+            --junitxml "junit-${{ matrix.group }}.xml"
+            -o junit_family=legacy
+          )
+          if [[ "${{ matrix.use-xdist }}" == "true" ]]; then
+            pytest_args+=(-n auto --dist=worksteal)
+          fi
+          uv run pytest "${pytest_args[@]}" "${targets[@]}"
+
+      - name: Package shard artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/artifacts/${{ matrix.group }}"
+          mkdir -p "$artifact_dir"
+          cp "junit-${{ matrix.group }}.xml" "$artifact_dir/"
+          shopt -s nullglob
+          coverage_files=(.coverage*)
+          if ((${#coverage_files[@]} == 0)); then
+            echo "No coverage data files were produced." >&2
+            exit 1
+          fi
+          coverage_index=0
+          for coverage_file in "${coverage_files[@]}"; do
+            cp \
+              "$coverage_file" \
+              "$artifact_dir/coverage-data-${{ matrix.group }}-${coverage_index}"
+            coverage_index=$((coverage_index + 1))
+          done
+
+      - name: Upload coverage shard artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-${{ matrix.group }}
+          path: ${{ runner.temp }}/artifacts/${{ matrix.group }}/
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
+    needs: partition-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DISPLAY: ":99.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.11"
+            qt-api: "pyqt6"
+          - python-version: "3.14"
+            qt-api: "pyqt6"
+          - python-version: "3.11"
+            qt-api: "pyside6"
+          - python-version: "3.13"
+            qt-api: "pyside6"
+          - python-version: "3.14"
+            qt-api: "pyside6"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -46,29 +170,83 @@ jobs:
           cache-dependency-glob: "uv.lock"
           python-version: ${{ matrix.python-version }}
 
-      - name: Install project with all extras
+      - name: Install project with test dependencies
+        run: uv sync --all-extras --dev --group ${{ matrix.qt-api }}
+
+      - name: Resolve smoke targets
+        run: uv run python -m scripts.ci_test_groups compat > "$RUNNER_TEMP/targets.txt"
+
+      - name: Run compatibility smoke tests
+        shell: bash
         run: |
-          uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
-          export QT_API=${{ matrix.qt-api }}
+          set -euo pipefail
+          mapfile -t targets < "$RUNNER_TEMP/targets.txt"
+          PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
+            uv run pytest \
+            -m compat \
+            -o faulthandler_timeout=300 \
+            --junitxml "junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
+            -o junit_family=legacy \
+            "${targets[@]}"
 
-      - name: Test with pytest
-        if: ${{ matrix.python-version != env.COV_VERSION || matrix.qt-api != env.COV_QT_API }}
-        run: PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} uv run pytest -v -s -o log_cli=1 --log-cli-level=INFO -o faulthandler_timeout=300
-        timeout-minutes: 20
+      - name: Upload smoke JUnit artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}
+          path: junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
+          if-no-files-found: error
 
-      - name: Test with pytest with coverage
-        if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
-        run: PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} uv run pytest -v -s -o log_cli=1 --log-cli-level=INFO -o faulthandler_timeout=300 --cov erlab --cov-report=xml --junitxml=junit.xml -o junit_family=legacy
-        timeout-minutes: 20
+  coverage-combine:
+    name: Combine Coverage
+    needs: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.13"
+
+      - name: Install coverage dependencies
+        run: uv sync --dev
+
+      - name: Download coverage shard artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Combine coverage and JUnit reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t coverage_files < <(find artifacts -type f -name 'coverage-data-*' | sort)
+          mapfile -t junit_files < <(find artifacts -type f -name 'junit-*.xml' | sort)
+          if ((${#coverage_files[@]} == 0)); then
+            echo "No coverage files found." >&2
+            exit 1
+          fi
+          if ((${#junit_files[@]} == 0)); then
+            echo "No JUnit files found." >&2
+            exit 1
+          fi
+          uv run coverage combine "${coverage_files[@]}"
+          uv run coverage xml -o coverage.xml
+          uv run python -m scripts.merge_junit_xml "${junit_files[@]}" --output junit.xml
 
       - name: Upload coverage to Codecov
-        if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API }}
         uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
 
       - name: Upload test results to Codecov
-        if: ${{ matrix.python-version == env.COV_VERSION && matrix.qt-api == env.COV_QT_API && !cancelled() }}
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -94,7 +272,7 @@ jobs:
         run: uv run mypy --install-types --non-interactive --html-report mypy-report .
 
       - name: Upload mypy results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: mypy-report

@@ -6,13 +6,13 @@ description = "Python package for ARPES data analysis and visualization."
 readme = "README.md"
 requires-python = ">=3.11"
 keywords = ["Condensed Matter Physics", "ARPES"]
-license = { file = "LICENSE" }
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Physics",
     "Topic :: Scientific/Engineering :: Visualization",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -80,6 +80,7 @@ dev = [
     "pytest-datadir>=1.5.0",
     "pytest-env>=1.1.5",
     "pytest-qt>=4.4.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.15.1",
 ]
 docs = [
@@ -277,6 +278,11 @@ qt_log_ignore = [
     "This plugin does not support raise()",
     "This plugin does not support propagateSizeHints()",
     "Populating font family aliases.*",
+]
+markers = [
+    "compat: compatibility smoke tests for non-primary CI lanes",
+    "gui: tests that require Qt or GUI-related infrastructure",
+    "serial: tests that should not be run under pytest-xdist",
 ]
 
 [tool.pytest_env]

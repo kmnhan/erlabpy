@@ -1,0 +1,66 @@
+name: Compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every friday at 22:00 UTC (Every saturday at 07:00 KST/JST)
+    - cron: "0 22 * * FRI"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_COLOR: 1
+
+jobs:
+  compat:
+    name: Compat Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DISPLAY: ":99.0"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        qt-api: ["pyqt6", "pyside6"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: pyvista/setup-headless-display-action@v4
+        with:
+          pyvista: false
+          qt: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install project with upgraded dependencies
+        run: uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
+
+      - name: Run compatibility suite
+        run: |
+          PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
+            uv run pytest \
+            -v \
+            -o faulthandler_timeout=300 \
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
+            -o junit_family=legacy
+
+      - name: Upload compatibility JUnit artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: compat-${{ matrix.python-version }}-${{ matrix.qt-api }}
+          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
+          if-no-files-found: error
