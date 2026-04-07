@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import typing
 import weakref
 
@@ -20,6 +21,8 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.plot_items import ItoolPolyLineROI
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ColorMapState, ImageSlicerArea
+
+_GAUSSIAN_FWHM_FACTOR: float = 2 * math.sqrt(2 * math.log(2))
 
 
 class _DataManipulationDialog(QtWidgets.QDialog):
@@ -836,6 +839,181 @@ class NormalizeDialog(DataFilterDialog):
             return data - minimum
 
         return (data - minimum) / area
+
+
+class GaussianFilterDialog(DataFilterDialog):
+    title = "Gaussian Filter"
+    enable_copy = True
+
+    def setup_widgets(self) -> None:
+        self._source_data = self.slicer_area._data
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+        self.sigma_spins: dict[Hashable, erlab.interactive.utils.BetterSpinBox] = {}
+        self.fwhm_spins: dict[Hashable, erlab.interactive.utils.BetterSpinBox] = {}
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QGridLayout()
+        dim_group.setLayout(dim_layout)
+
+        dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
+        dim_layout.addWidget(QtWidgets.QLabel("Sigma"), 0, 1)
+        dim_layout.addWidget(QtWidgets.QLabel("FWHM"), 0, 2)
+
+        for row, dim in enumerate(self._source_data.dims, start=1):
+            check = QtWidgets.QCheckBox(str(dim))
+            sigma_spin = erlab.interactive.utils.BetterSpinBox(compact=False)
+            fwhm_spin = erlab.interactive.utils.BetterSpinBox(compact=False)
+
+            sigma_spin.setMinimum(0.0)
+            fwhm_spin.setMinimum(0.0)
+
+            support_reason = self._unsupported_reason(dim)
+            if support_reason is None:
+                step = self._coord_step(dim)
+                sigma_spin.setSingleStep(step)
+                fwhm_spin.setSingleStep(step * _GAUSSIAN_FWHM_FACTOR)
+
+                sigma_spin.setDecimals(self._sigma_decimals(dim))
+                fwhm_spin.setDecimals(self._fwhm_decimals(dim, step))
+
+                sigma_spin.setValue(step)
+                fwhm_spin.setValue(step * _GAUSSIAN_FWHM_FACTOR)
+
+                sigma_spin.setEnabled(False)
+                fwhm_spin.setEnabled(False)
+
+                check.toggled.connect(sigma_spin.setEnabled)
+                check.toggled.connect(fwhm_spin.setEnabled)
+                sigma_spin.valueChanged.connect(
+                    lambda _value, dim=dim: self._sync_from_sigma(dim)
+                )
+                fwhm_spin.valueChanged.connect(
+                    lambda _value, dim=dim: self._sync_from_fwhm(dim)
+                )
+            else:
+                for widget in (check, sigma_spin, fwhm_spin):
+                    widget.setToolTip(support_reason)
+                    widget.setEnabled(False)
+
+            self.dim_checks[dim] = check
+            self.sigma_spins[dim] = sigma_spin
+            self.fwhm_spins[dim] = fwhm_spin
+
+            dim_layout.addWidget(check, row, 0)
+            dim_layout.addWidget(sigma_spin, row, 1)
+            dim_layout.addWidget(fwhm_spin, row, 2)
+
+        self.layout_.addRow(dim_group)
+
+    def _unsupported_reason(self, dim: Hashable) -> str | None:
+        coord = np.asarray(self._source_data[dim].values, dtype=np.float64)
+        if coord.size < 2:
+            return "Gaussian filtering requires at least two coordinate values."
+        if np.allclose(np.diff(coord), 0.0):
+            return "Gaussian filtering does not support constant coordinates."
+        if not erlab.utils.array.is_uniform_spaced(coord):
+            return "Gaussian filtering requires uniformly spaced coordinates."
+        return None
+
+    def _coord_step(self, dim: Hashable) -> float:
+        coord = np.asarray(self._source_data[dim].values, dtype=np.float64)
+        return float(np.abs(coord[1] - coord[0]))
+
+    def _sigma_decimals(self, dim: Hashable) -> int:
+        return erlab.utils.array.effective_decimals(
+            np.asarray(self._source_data[dim].values, dtype=np.float64)
+        )
+
+    def _fwhm_decimals(self, dim: Hashable, sigma: float) -> int:
+        sigma_decimals = self._sigma_decimals(dim)
+        fwhm_decimals = max(
+            sigma_decimals,
+            erlab.utils.array.effective_decimals(sigma * _GAUSSIAN_FWHM_FACTOR),
+        )
+
+        sigma_literal = self._format_literal(sigma, sigma_decimals)
+        while (
+            fwhm_decimals < 15
+            and self._roundtrip_sigma_literal(
+                sigma_literal, sigma_decimals, fwhm_decimals
+            )
+            != sigma_literal
+        ):
+            fwhm_decimals += 1
+        return fwhm_decimals
+
+    def _format_literal(self, value: float, decimals: int) -> str:
+        return np.format_float_positional(
+            value, precision=decimals, unique=False, fractional=True, trim="k"
+        )
+
+    def _roundtrip_sigma_literal(
+        self, sigma_literal: str, sigma_decimals: int, fwhm_decimals: int
+    ) -> str:
+        fwhm_literal = self._format_literal(
+            float(sigma_literal) * _GAUSSIAN_FWHM_FACTOR, fwhm_decimals
+        )
+        return self._format_literal(
+            float(fwhm_literal) / _GAUSSIAN_FWHM_FACTOR, sigma_decimals
+        )
+
+    def _spin_literal(self, spin: erlab.interactive.utils.BetterSpinBox) -> str:
+        return spin.text().removeprefix(spin.prefix())
+
+    def _spin_value(self, spin: erlab.interactive.utils.BetterSpinBox) -> float:
+        return float(self._spin_literal(spin))
+
+    def _commit_numeric_inputs(self) -> None:
+        for spin in (*self.sigma_spins.values(), *self.fwhm_spins.values()):
+            line = spin.lineEdit()
+            if line is None or not line.isModified():
+                continue
+            spin.editingFinishedEvent()
+            line.setModified(False)
+
+    @QtCore.Slot()
+    def _sync_from_sigma(self, dim: Hashable) -> None:
+        value = self._spin_value(self.sigma_spins[dim]) * _GAUSSIAN_FWHM_FACTOR
+        with QtCore.QSignalBlocker(self.fwhm_spins[dim]):
+            self.fwhm_spins[dim].setValue(value)
+
+    @QtCore.Slot()
+    def _sync_from_fwhm(self, dim: Hashable) -> None:
+        value = self._spin_value(self.fwhm_spins[dim]) / _GAUSSIAN_FWHM_FACTOR
+        with QtCore.QSignalBlocker(self.sigma_spins[dim]):
+            self.sigma_spins[dim].setValue(value)
+
+    def _sigma_values(self) -> tuple[dict[Hashable, float], dict[Hashable, str]]:
+        self._commit_numeric_inputs()
+
+        sigma_values: dict[Hashable, float] = {}
+        sigma_literals: dict[Hashable, str] = {}
+        for dim in self._source_data.dims:
+            if not self.dim_checks[dim].isChecked():
+                continue
+            sigma_literal = self._spin_literal(self.sigma_spins[dim])
+            sigma_literals[dim] = sigma_literal
+            sigma_values[dim] = float(sigma_literal)
+        return sigma_values, sigma_literals
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        sigma_values, _ = self._sigma_values()
+        if not sigma_values:
+            return data
+        return erlab.analysis.image.gaussian_filter(data, sigma=sigma_values)
+
+    def make_code(self) -> str:
+        _, sigma_literals = self._sigma_values()
+        if not sigma_literals:
+            return ""
+
+        placeholder = self.slicer_area.watched_data_name or " "
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.image.gaussian_filter,
+            [f"|{placeholder}|"],
+            {"sigma": {dim: f"|{literal}|" for dim, literal in sigma_literals.items()}},
+            module="era.image",
+        )
 
 
 class _CoordinateWidget(QtWidgets.QWidget):
