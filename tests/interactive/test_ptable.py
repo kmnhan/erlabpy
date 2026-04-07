@@ -81,6 +81,95 @@ def _table_child_center_is_visible_in_viewport(
     return win.table_view.viewport().rect().adjusted(1, 1, -1, -1).contains(view_center)
 
 
+def _label_height_for_width(label: QtWidgets.QLabel, width: int) -> int:
+    if label.isHidden():
+        return 0
+    if label.hasHeightForWidth():
+        return label.heightForWidth(width)
+    return label.sizeHint().height()
+
+
+def _symbol_ink_rect(label: QtWidgets.QLabel) -> QtCore.QRectF:
+    return QtGui.QFontMetricsF(label.font()).tightBoundingRect(label.text())
+
+
+def _card_symbol_limits(card) -> tuple[float, float]:
+    layout = card.layout()
+    assert layout is not None
+    margins = layout.contentsMargins()
+    contents_width = max(1, card.width() - margins.left() - margins.right())
+    lower_text_height = sum(
+        _label_height_for_width(label, max(16, contents_width))
+        for label in (card.name_label, card.mass_label, card.config_label)
+    )
+    available_height = max(
+        1,
+        card.height() - margins.top() - margins.bottom() - lower_text_height,
+    )
+    top_row = layout.itemAt(0).layout()
+    assert top_row is not None
+    available_width = max(
+        1,
+        contents_width
+        - card.atomic_number_label.sizeHint().width()
+        - top_row.spacing(),
+    )
+    return (float(available_width), float(available_height))
+
+
+def _chip_symbol_limits(chip: CompactElementChip) -> tuple[float, float]:
+    layout = chip.layout()
+    assert layout is not None
+    margins = layout.contentsMargins()
+    text_width = max(16, chip.width() - margins.left() - margins.right())
+    visible_labels = [
+        label
+        for label in (chip.name_label, chip.mass_label, chip.config_label)
+        if label.isVisible()
+    ]
+    lower_text_height = sum(
+        _label_height_for_width(label, text_width) for label in visible_labels
+    )
+    visible_item_count = 1 + len(visible_labels)
+    spacing_total = layout.spacing() * max(visible_item_count - 1, 0)
+    available_height = max(
+        1,
+        chip.height()
+        - margins.top()
+        - margins.bottom()
+        - lower_text_height
+        - spacing_total,
+    )
+    top_row = layout.itemAt(0).layout()
+    assert top_row is not None
+    available_width = max(
+        1,
+        text_width - chip.atomic_number_label.sizeHint().width() - top_row.spacing(),
+    )
+    return (float(available_width), float(available_height))
+
+
+def _assert_symbol_ink_fits(
+    label: QtWidgets.QLabel,
+    *,
+    available_width: float,
+    available_height: float,
+) -> None:
+    ink_rect = _symbol_ink_rect(label)
+    assert ink_rect.width() <= available_width + 1.0
+    assert ink_rect.height() <= available_height + 1.0
+
+
+def _alternate_font(base_font: QtGui.QFont) -> QtGui.QFont:
+    current_family = base_font.family()
+    for family in QtGui.QFontDatabase.families():
+        if family != current_family:
+            font = QtGui.QFont(base_font)
+            font.setFamily(family)
+            return font
+    pytest.skip("No alternate font family available for font-change regression test")
+
+
 def _search_completion_texts(win: PeriodicTableWindow) -> list[str]:
     model = win.search_completer.model()
     assert model is not None
@@ -654,7 +743,6 @@ def test_ptable_launcher_and_search_highlight(
         hydrogen.atomic_number_label.y() <= hydrogen_layout.contentsMargins().top() + 4
     )
     assert hydrogen.atomic_number_label.font().pointSizeF() >= 13.5
-    assert hydrogen.symbol_label.font().pointSizeF() >= 38.0
     assert hydrogen._CORNER_RADIUS == 0.0
     assert hydrogen._draw_border is False
     assert hydrogen._border_width == 0
@@ -662,6 +750,13 @@ def test_ptable_launcher_and_search_highlight(
     assert hydrogen.mass_label.font().pointSizeF() >= 12.6
     assert hydrogen.config_label.font().pointSizeF() >= 10.4
     assert hydrogen.config_label.wordWrap() is False
+    hydrogen_symbol_width, hydrogen_symbol_height = _card_symbol_limits(hydrogen)
+    _assert_symbol_ink_fits(
+        hydrogen.symbol_label,
+        available_width=hydrogen_symbol_width,
+        available_height=hydrogen_symbol_height,
+    )
+    assert hydrogen.symbol_label.contentsMargins().top() <= 0
     assert hydrogen.symbol_label.palette().color(
         QtGui.QPalette.ColorRole.WindowText
     ) == hydrogen.name_label.palette().color(QtGui.QPalette.ColorRole.WindowText)
@@ -1133,6 +1228,14 @@ def test_ptable_hover_preview_and_click_lock(
     )
     assert len(win.inspector._summary_cards) == 1
     assert win.inspector._summary_cards[0].symbol_label.text() == "He"
+    preview_symbol_width, preview_symbol_height = _chip_symbol_limits(
+        win.inspector._summary_cards[0]
+    )
+    _assert_symbol_ink_fits(
+        win.inspector._summary_cards[0].symbol_label,
+        available_width=preview_symbol_width,
+        available_height=preview_symbol_height,
+    )
     assert win.inspector.levels_table.horizontalHeader().isVisible() is True
     assert win.inspector.levels_table.rowCount() == 1
     assert win.inspector.levels_table.verticalHeaderItem(0).text() == "He"
@@ -1159,6 +1262,60 @@ def test_ptable_hover_preview_and_click_lock(
     assert win.inspector.mode_label.text() == "Selected"
     assert win.inspector.height() == initial_height
     assert win.inspector.plot_frame.width() == initial_plot_width
+
+    win.close()
+
+
+def test_ptable_symbol_layout_recomputes_on_font_change(qtbot) -> None:
+    win = PeriodicTableWindow()
+    _show_window(qtbot, win)
+
+    win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
+    hydrogen = win.periodic_table.cards[1]
+    summary_card = win.inspector._summary_cards[0]
+    initial_table_family = hydrogen.symbol_label.font().family()
+    initial_chip_family = summary_card.symbol_label.font().family()
+    initial_table_point_size = hydrogen.symbol_label.font().pointSizeF()
+    initial_chip_point_size = summary_card.symbol_label.font().pointSizeF()
+    initial_table_margin = hydrogen.symbol_label.contentsMargins().top()
+    initial_chip_margin = summary_card.symbol_label.contentsMargins().top()
+
+    new_font = _alternate_font(win.font())
+    new_font.setPointSizeF(max(new_font.pointSizeF(), 13.0))
+    hydrogen.setFont(new_font)
+    summary_card.setFont(new_font)
+    QtWidgets.QApplication.processEvents()
+
+    qtbot.waitUntil(
+        lambda: (
+            hydrogen.symbol_label.font().family() == new_font.family()
+            and summary_card.symbol_label.font().family() == new_font.family()
+        )
+    )
+
+    assert hydrogen.symbol_label.font().family() != initial_table_family
+    assert summary_card.symbol_label.font().family() != initial_chip_family
+    assert hydrogen.symbol_label.contentsMargins().top() <= 0
+    assert summary_card.symbol_label.contentsMargins().top() <= 0
+    assert (
+        hydrogen.symbol_label.font().pointSizeF() != initial_table_point_size
+        or summary_card.symbol_label.font().pointSizeF() != initial_chip_point_size
+        or hydrogen.symbol_label.contentsMargins().top() != initial_table_margin
+        or summary_card.symbol_label.contentsMargins().top() != initial_chip_margin
+    )
+
+    table_symbol_width, table_symbol_height = _card_symbol_limits(hydrogen)
+    _assert_symbol_ink_fits(
+        hydrogen.symbol_label,
+        available_width=table_symbol_width,
+        available_height=table_symbol_height,
+    )
+    chip_symbol_width, chip_symbol_height = _chip_symbol_limits(summary_card)
+    _assert_symbol_ink_fits(
+        summary_card.symbol_label,
+        available_width=chip_symbol_width,
+        available_height=chip_symbol_height,
+    )
 
     win.close()
 
@@ -2826,15 +2983,20 @@ def test_ptable_multi_select_summary_and_plot_picker(
     assert chip_layout.contentsMargins().top() == 4
     assert chip_layout.contentsMargins().bottom() == 7
     assert chip_layout.spacing() == 0
-    assert win.inspector._summary_cards[0].symbol_label.contentsMargins().top() == -1
     chip_text_width = (
         win.inspector._summary_cards[0].width()
         - chip_layout.contentsMargins().left()
         - chip_layout.contentsMargins().right()
     )
-    assert win.inspector._summary_cards[0].name_label.font().pointSizeF() > 11.0
-    assert win.inspector._summary_cards[0].mass_label.font().pointSizeF() > 10.2
-    assert win.inspector._summary_cards[0].config_label.font().pointSizeF() > 9.8
+    chip_symbol_width, chip_symbol_height = _chip_symbol_limits(
+        win.inspector._summary_cards[0]
+    )
+    _assert_symbol_ink_fits(
+        win.inspector._summary_cards[0].symbol_label,
+        available_width=chip_symbol_width,
+        available_height=chip_symbol_height,
+    )
+    assert win.inspector._summary_cards[0].symbol_label.contentsMargins().top() <= 0
     assert (
         win.inspector._summary_cards[0].name_label.sizeHint().width() <= chip_text_width
     )

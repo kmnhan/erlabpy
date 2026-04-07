@@ -93,6 +93,61 @@ class CrossSectionRenderData:
     empty_message: str | None = None
 
 
+@dataclass(frozen=True)
+class _FittedSymbolFont:
+    font: QtGui.QFont
+    top_margin: int
+
+
+def _effective_point_size(font: QtGui.QFont) -> float:
+    point_size = font.pointSizeF()
+    if point_size > 0.0:
+        return point_size
+    resolved = float(QtGui.QFontInfo(font).pointSizeF())
+    return resolved if resolved > 0.0 else 12.0
+
+
+def _fit_symbol_font(
+    base_font: QtGui.QFont,
+    text: str,
+    *,
+    max_width: float,
+    max_height: float,
+    preferred_point_size: float,
+    minimum_point_size: float,
+    step: float = 0.2,
+) -> _FittedSymbolFont:
+    fitted_font = QtGui.QFont(base_font)
+    fitted_font.setBold(True)
+    if text == "":
+        fitted_font.setPointSizeF(max(preferred_point_size, minimum_point_size))
+        return _FittedSymbolFont(fitted_font, 0)
+
+    width_limit = max(1.0, max_width)
+    height_limit = max(1.0, max_height)
+    point_size = max(preferred_point_size, minimum_point_size)
+
+    while point_size >= minimum_point_size - 1e-6:
+        fitted_font.setPointSizeF(point_size)
+        ink_rect = QtGui.QFontMetricsF(fitted_font).tightBoundingRect(text)
+        if (
+            ink_rect.width() <= width_limit + 1e-6
+            and ink_rect.height() <= height_limit + 1e-6
+        ):
+            break
+        point_size -= step
+    else:
+        fitted_font.setPointSizeF(minimum_point_size)
+
+    metrics = QtGui.QFontMetricsF(fitted_font)
+    ink_rect = metrics.tightBoundingRect(text)
+    bounding_rect = metrics.boundingRect(text)
+    top_headroom = max(0.0, ink_rect.top() - bounding_rect.top())
+    max_negative_top_margin = max(1, round(height_limit * 0.08))
+    top_margin = -min(max_negative_top_margin, max(0, round(top_headroom * 0.2)))
+    return _FittedSymbolFont(fitted_font, top_margin)
+
+
 def _blend_colors(
     base: QtGui.QColor,
     overlay: QtGui.QColor,
