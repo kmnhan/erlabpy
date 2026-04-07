@@ -25,6 +25,7 @@ from erlab.interactive.imagetool.dialogs import (
     CropDialog,
     CropToViewDialog,
     EdgeCorrectionDialog,
+    GaussianFilterDialog,
     NormalizeDialog,
     ROIMaskDialog,
     ROIPathDialog,
@@ -2516,6 +2517,13 @@ def normalize(data, norm_dims, option):
             return (data - minimum) / area
 
 
+def _set_spinbox_text(spin: erlab.interactive.utils.BetterSpinBox, text: str) -> None:
+    line = spin.lineEdit()
+    assert line is not None
+    line.setText(text)
+    spin.editingFinishedEvent()
+
+
 def test_itool_assign_coords(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(60).reshape((3, 4, 5)).astype(float),
@@ -2578,6 +2586,113 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
     )
     xarray.testing.assert_identical(win.slicer_area.data, data)
 
+    win.close()
+
+
+def test_itool_gaussian_filter_sigma_path(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_normalize_params(dialog: NormalizeDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+
+    accept_dialog(win.mnb._normalize, pre_call=_set_normalize_params)
+    xarray.testing.assert_identical(win.slicer_area.data, normalize(data, ("x",), 0))
+
+    sigma_literal = "0.015"
+
+    def _set_gaussian_params(dialog: GaussianFilterDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        _set_spinbox_text(dialog.sigma_spins["x"], sigma_literal)
+        assert dialog.sigma_spins["x"].text() == sigma_literal
+        assert dialog.fwhm_spins["x"].text() == "0.035"
+        dialog._preview()
+
+    accept_dialog(win.mnb._gaussian_filter, pre_call=_set_gaussian_params)
+
+    xarray.testing.assert_identical(
+        win.slicer_area.data,
+        erlab.analysis.image.gaussian_filter(data, sigma={"x": float(sigma_literal)}),
+    )
+
+    win.mnb._reset_filters()
+    xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    accept_dialog(
+        win.mnb._gaussian_filter,
+        pre_call=_set_gaussian_params,
+        accept_call=lambda d: d.reject(),
+    )
+    xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    win.close()
+
+
+def test_itool_gaussian_filter_fwhm_path_and_code(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = GaussianFilterDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    dialog.dim_checks["x"].setChecked(True)
+    _set_spinbox_text(dialog.fwhm_spins["x"], "0.035")
+
+    sigma_literal = dialog.sigma_spins["x"].text()
+    assert sigma_literal == "0.015"
+    assert dialog.fwhm_spins["x"].text() == "0.035"
+
+    code = dialog.make_code()
+    assert 'sigma={"x": 0.015}' in code
+
+    xarray.testing.assert_identical(
+        dialog.process_data(data),
+        erlab.analysis.image.gaussian_filter(data, sigma={"x": float(sigma_literal)}),
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_itool_gaussian_filter_disables_unsupported_dimensions(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(125).reshape((1, 5, 5, 5)).astype(float),
+        dims=["x", "y", "z", "t"],
+        coords={
+            "x": [0.0],
+            "y": np.full(5, 0.5),
+            "z": np.array([0.0, 0.2, 0.5, 0.7, 1.0]),
+            "t": np.arange(5, dtype=float),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = GaussianFilterDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert not dialog.dim_checks["x"].isEnabled()
+    assert "at least two coordinate values" in dialog.dim_checks["x"].toolTip()
+    assert not dialog.dim_checks["y"].isEnabled()
+    assert "constant coordinates" in dialog.dim_checks["y"].toolTip()
+    assert not dialog.dim_checks["z"].isEnabled()
+    assert "uniformly spaced coordinates" in dialog.dim_checks["z"].toolTip()
+
+    assert dialog.dim_checks["t"].isEnabled()
+    assert not dialog.sigma_spins["t"].isEnabled()
+    assert not dialog.fwhm_spins["t"].isEnabled()
+
+    dialog.close()
     win.close()
 
 

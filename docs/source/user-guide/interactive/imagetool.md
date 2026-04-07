@@ -202,6 +202,7 @@ Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
 - {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
 - {guilabel}`Edit → Correct With Edge...` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
 - {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
+- {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, a non-destructive filter that applies coordinate-aware Gaussian broadening along selected dimensions.
 - {guilabel}`Edit → Edit Coordinates` opens the {guilabel}`Coordinate Editor` dialog for precise coordinate reassignment, including non-uniform axes.
 
 Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional helper windows opened from the context menus, so everything is closed cleanly when the main window exits.

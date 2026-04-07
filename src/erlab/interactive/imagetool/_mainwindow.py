@@ -583,6 +583,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "ktoolAct": self.slicer_area.ktool_act,
                     "meshtoolAct": self.slicer_area.meshtool_act,
                     "sep4": {"separator": True},
+                    "Gaussian Filter": {"triggered": self._gaussian_filter},
                     "Normalize": {"triggered": self._normalize},
                     "resetAct": {
                         "text": "Reset",
@@ -727,6 +728,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _crop_to_view(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CropToViewDialog)
+
+    @QtCore.Slot()
+    def _gaussian_filter(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.GaussianFilterDialog)
 
     @QtCore.Slot()
     def _normalize(self) -> None:
