@@ -82,6 +82,20 @@ def _press_alt(monkeypatch):
     )
 
 
+def _assert_guideline_state(
+    plot_item, *, count: int, angle: float, offset: tuple[float, float]
+) -> None:
+    assert plot_item.is_guidelines_visible
+    assert len(plot_item._guidelines_items) == count + 1
+    assert plot_item._guideline_angle == angle
+    assert tuple(plot_item._guideline_offset) == offset
+    assert plot_item._serializable_state["guideline_state"] == {
+        "count": count,
+        "angle": angle,
+        "offset": offset,
+    }
+
+
 @pytest.mark.parametrize(
     "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
 )
@@ -1591,6 +1605,118 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     qtbot.wait_until(
         lambda: not win.slicer_area.main_image.is_guidelines_visible, timeout=1000
     )
+
+    win.close()
+
+
+def test_itool_guideline_state_roundtrip(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    state_without_guidelines = copy.deepcopy(plot_item._serializable_state)
+
+    plot_item.set_guidelines(3)
+    plot_item._guidelines_items[0].setAngle(60.0)
+    plot_item._guidelines_items[-1].setPos((3.0, 3.1))
+
+    state_with_guidelines = copy.deepcopy(plot_item._serializable_state)
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+
+    plot_item._serializable_state = state_without_guidelines
+    assert not plot_item.is_guidelines_visible
+
+    plot_item._serializable_state = state_with_guidelines
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+
+    win.close()
+
+
+def test_itool_guideline_state_dataset_roundtrip(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.set_guidelines(3)
+    plot_item._guidelines_items[0].setAngle(60.0)
+    plot_item._guidelines_items[-1].setPos((3.0, 3.1))
+
+    restored = ImageTool.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+
+    _assert_guideline_state(
+        restored.slicer_area.main_image,
+        count=3,
+        angle=-30.0,
+        offset=(3.0, 3.1),
+    )
+
+    restored.close()
+    win.close()
+
+
+def test_itool_guideline_undo_redo(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    area = win.slicer_area
+    plot_item = area.main_image
+
+    plot_item.set_guidelines(3)
+    assert area.undoable
+
+    area.undo()
+    assert not plot_item.is_guidelines_visible
+
+    area.redo()
+    initial_offset = tuple(plot_item._guideline_offset)
+    _assert_guideline_state(plot_item, count=3, angle=0.0, offset=initial_offset)
+
+    plot_item._guidelines_items[0]._sigAngleDragStarted.emit()
+    plot_item._guidelines_items[0].setAngle(60.0)
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=initial_offset)
+
+    area.undo()
+    _assert_guideline_state(plot_item, count=3, angle=0.0, offset=initial_offset)
+
+    area.redo()
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=initial_offset)
+
+    plot_item._guidelines_items[-1].sigPositionDragStarted.emit()
+    plot_item._guidelines_items[-1].setPos((3.0, 3.1))
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+
+    area.undo()
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=initial_offset)
+
+    area.redo()
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+
+    win.close()
+
+
+def test_itool_guideline_transpose_undo_redo(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.set_guidelines(3)
+    plot_item._guidelines_items[0].setAngle(60.0)
+    plot_item._guidelines_items[-1].setPos((3.0, 3.1))
+
+    win.slicer_area.swap_axes(0, 1)
+    qtbot.wait_until(lambda: not plot_item.is_guidelines_visible, timeout=1000)
+
+    win.slicer_area.undo()
+    qtbot.wait_until(lambda: plot_item.is_guidelines_visible, timeout=1000)
+    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+
+    win.slicer_area.redo()
+    qtbot.wait_until(lambda: not plot_item.is_guidelines_visible, timeout=1000)
 
     win.close()
 

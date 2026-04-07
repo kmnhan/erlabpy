@@ -18,6 +18,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.imagetool.viewer import (
+    GuidelineState,
     PlotItemState,
     _make_cursor_colors,
     record_history,
@@ -780,13 +781,22 @@ class ItoolPlotItem(pg.PlotItem):
     def _serializable_state(self) -> PlotItemState:
         """Subset of the state of the underlying viewbox that should be restorable."""
         vb_state = self.getViewBox().getState()
-        return {
+        state: PlotItemState = {
             "vb_aspect_locked": vb_state["aspectLocked"],
             "vb_x_inverted": vb_state["xInverted"],
             "vb_y_inverted": vb_state["yInverted"],
             "vb_autorange": tuple(vb_state["autoRange"]),
             "roi_states": [roi.saveState() for roi in self._roi_list],
         }
+        if self.is_image and self.is_guidelines_visible:
+            state["guideline_state"] = {
+                "count": typing.cast(
+                    "typing.Literal[1, 2, 3]", len(self._guidelines_items) - 1
+                ),
+                "angle": float(self._guideline_angle),
+                "offset": tuple(self._guideline_offset),
+            }
+        return state
 
     @_serializable_state.setter
     def _serializable_state(self, state: PlotItemState) -> None:
@@ -801,10 +811,11 @@ class ItoolPlotItem(pg.PlotItem):
             state_dict["autoRange"] = list(autorange)
         vb.state.update()
 
-        if "roi_states" in state:
-            self.clear_rois()
+        with self.slicer_area.history_suppressed():
+            self._restore_guideline_state(state.get("guideline_state", None))
 
-            with self.slicer_area.history_suppressed():
+            if "roi_states" in state:
+                self.clear_rois()
                 for s in state["roi_states"]:
                     roi = ItoolPolyLineROI(self, positions=s["points"])
                     self._roi_list.append(roi)
@@ -971,6 +982,89 @@ class ItoolPlotItem(pg.PlotItem):
     @property
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
+
+    def _set_guideline_action_checked(self, n: typing.Literal[0, 1, 2, 3]) -> None:
+        for i, action in enumerate(self._guideline_actions):
+            action.blockSignals(True)
+            action.setChecked(i == n)
+            action.blockSignals(False)
+
+    def _update_guideline_title(self, line: typing.Any) -> None:
+        line_pos = line.pos()
+        self._guideline_angle = line.angle_effective
+        self._guideline_offset = [line_pos.x(), line_pos.y()]
+        for i in range(2):
+            self._guideline_offset[i] = float(
+                np.round(
+                    self._guideline_offset[i],
+                    self.array_slicer.get_significant(
+                        self.display_axis[i], uniform=True
+                    ),
+                )
+            )
+
+        self.setTitle(
+            f"{self._guideline_angle}° "
+            + str(tuple(self._guideline_offset)).replace("-", "−")
+        )
+
+    def _connect_guideline_history(self) -> None:
+        for item in self._guidelines_items[:-1]:
+            typing.cast("typing.Any", item)._sigAngleDragStarted.connect(
+                self.slicer_area.sigWriteHistory.emit
+            )
+        typing.cast(
+            "typing.Any", self._guidelines_items[-1]
+        ).sigPositionDragStarted.connect(self.slicer_area.sigWriteHistory.emit)
+
+    def _create_guidelines(
+        self,
+        n: typing.Literal[1, 2, 3],
+        pos: pg.Point | tuple[float, float] | None = None,
+        angle: float | None = None,
+    ) -> None:
+        for item in erlab.interactive.utils.make_crosshairs(n):
+            self.addItem(item)
+            self._guidelines_items.append(item)
+
+        self._connect_guideline_history()
+
+        line = typing.cast("typing.Any", self._guidelines_items[0])
+        target = typing.cast("typing.Any", self._guidelines_items[-1])
+
+        line.sigAngleChanged.connect(lambda *_: self._update_guideline_title(line))
+        line.sigPositionChanged.connect(lambda *_: self._update_guideline_title(line))
+
+        if pos is None:
+            pos = (
+                self.slicer_area.get_current_value(0, uniform=True),
+                self.slicer_area.get_current_value(1, uniform=True),
+            )
+        target.setPos(pos)
+
+        if angle is not None:
+            line.setAngle(angle)
+
+        self._update_guideline_title(line)
+
+    def _restore_guideline_state(self, state: GuidelineState | None) -> None:
+        if not self.is_image:
+            return
+
+        if state is None:
+            self._set_guideline_action_checked(0)
+            self._remove_guidelines()
+            return
+
+        count = typing.cast("typing.Literal[1, 2, 3]", int(state["count"]))
+        self._set_guideline_action_checked(count)
+        self._remove_guidelines()
+        self._create_guidelines(count)
+
+        target = typing.cast("typing.Any", self._guidelines_items[-1])
+        line = typing.cast("typing.Any", self._guidelines_items[0])
+        target.setPos(tuple(float(v) for v in state["offset"]))
+        line.setAngle(float(state["angle"]) + 90.0)
 
     def _uniform_qsel_kwargs_multicursor(
         self,
@@ -2028,61 +2122,25 @@ class ItoolPlotItem(pg.PlotItem):
         self.set_guidelines(0)
 
     @QtCore.Slot(int)
+    @record_history
     def _set_guidelines(self, n: typing.Literal[0, 1, 2, 3]) -> None:
         if self.is_image:  # pragma: no branch
             if n == 0:
                 self._remove_guidelines()
                 return
 
+            if self.is_guidelines_visible and len(self._guidelines_items) == n + 1:
+                return
+
             old_pos: pg.Point | None = None
-            if len(self._guidelines_items) != n + 1 and self.is_guidelines_visible:
-                old_pos = self._guidelines_items[0].pos()
-                old_angle = float(
-                    self._guidelines_items[0].angle - self._guidelines_items[0].offset
-                )
+            old_angle: float | None = None
+            if self.is_guidelines_visible:
+                line = typing.cast("typing.Any", self._guidelines_items[0])
+                old_pos = line.pos()
+                old_angle = float(line.angle - line.offset)
                 self._remove_guidelines()
 
-            for w in erlab.interactive.utils.make_crosshairs(n):
-                self.addItem(w)
-                self._guidelines_items.append(w)
-
-            # Select first line since moving any line will move all lines
-            line = self._guidelines_items[0]
-            target = self._guidelines_items[-1]
-
-            if old_pos is None:
-                target.setPos(
-                    (
-                        self.slicer_area.get_current_value(0, uniform=True),
-                        self.slicer_area.get_current_value(1, uniform=True),
-                    )
-                )
-            else:
-                target.setPos(old_pos)
-                line.setAngle(old_angle)
-
-            def _print_angle():
-                line_pos = line.pos()
-                self._guideline_angle = line.angle_effective
-                self._guideline_offset = [line_pos.x(), line_pos.y()]
-                for i in range(2):
-                    self._guideline_offset[i] = float(
-                        np.round(
-                            self._guideline_offset[i],
-                            self.array_slicer.get_significant(
-                                self.display_axis[i], uniform=True
-                            ),
-                        )
-                    )
-
-                self.setTitle(
-                    f"{self._guideline_angle}° "
-                    + str(tuple(self._guideline_offset)).replace("-", "−")
-                )
-
-            line.sigAngleChanged.connect(lambda: _print_angle())
-            line.sigPositionChanged.connect(lambda: _print_angle())
-            _print_angle()
+            self._create_guidelines(n, pos=old_pos, angle=old_angle)
 
     @QtCore.Slot()
     def _remove_guidelines(self) -> None:

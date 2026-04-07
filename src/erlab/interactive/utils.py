@@ -3233,6 +3233,21 @@ class IdentifierValidator(QtGui.QValidator):
         return fixed
 
 
+class _GuidelineTargetItem(pg.TargetItem):
+    """Target item that emits a signal when a drag starts."""
+
+    sigPositionDragStarted = QtCore.Signal()  #: :meta private:
+
+    def mouseDragEvent(self, ev) -> None:
+        if (
+            self.movable
+            and ev.button() == QtCore.Qt.MouseButton.LeftButton
+            and ev.isStart()
+        ):
+            self.sigPositionDragStarted.emit()
+        super().mouseDragEvent(ev)
+
+
 class RotatableLine(pg.InfiniteLine):
     """:class:`pyqtgraph.InfiniteLine` that rotates under drag.
 
@@ -3259,6 +3274,7 @@ class RotatableLine(pg.InfiniteLine):
 
     sigAngleChanged = QtCore.Signal(float)  #: :meta private:
     _sigAngleChangeStarted = QtCore.Signal(float)  #: :meta private:
+    _sigAngleDragStarted = QtCore.Signal()  #: :meta private:
 
     def __init__(
         self, offset: float = 0.0, target: pg.TargetItem | None = None, **kwargs
@@ -3321,6 +3337,7 @@ class RotatableLine(pg.InfiniteLine):
                 self.moving = True
                 self.cursorOffset = self.pos() - self.mapToParent(ev.buttonDownPos())
                 self.startPosition = self.pos()
+                self._sigAngleDragStarted.emit()
             ev.accept()
 
             if not self.moving:
@@ -3361,7 +3378,7 @@ def make_crosshairs(
     else:
         angles = (0, 120, 240)
 
-    target = pg.TargetItem()
+    target = _GuidelineTargetItem()
     lines = [RotatableLine(a, target, movable=True) for a in angles]
 
     for ln in lines:
