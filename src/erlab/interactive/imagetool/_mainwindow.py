@@ -489,6 +489,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     def _generate_menu_kwargs(self) -> dict:
         guideline_actions = self.slicer_area.main_image._guideline_actions
+        guideline_follow_action = self.slicer_area.main_image._guideline_follow_action
         release_notes_action, open_docs_action, report_issue_action = (
             erlab.interactive.utils.make_help_actions(self.image_tool)
         )
@@ -539,7 +540,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "Rotate": {"triggered": self._rotate},
                     "Rotation Guidelines": {
                         "actions": {
-                            f"guide{i}": act for i, act in enumerate(guideline_actions)
+                            **{
+                                f"guide{i}": act
+                                for i, act in enumerate(guideline_actions)
+                            },
+                            "sep": {"separator": True},
+                            "followGuidelinesAct": guideline_follow_action,
                         },
                         "sep_after": True,
                     },

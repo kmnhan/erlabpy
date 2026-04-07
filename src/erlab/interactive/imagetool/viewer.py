@@ -71,6 +71,7 @@ class GuidelineState(typing.TypedDict):
     count: typing.Literal[1, 2, 3]
     angle: float
     offset: tuple[float, float]
+    follow_cursor: bool
 
 
 class PlotItemState(typing.TypedDict):
@@ -861,6 +862,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         logger.debug("Restored current cursor")
 
         self.array_slicer.state = state["slice"]
+        for ax in self.axes:
+            if ax.is_image:
+                ax.sync_guidelines_to_active_cursor()
         logger.debug("Restored array slicer state")
 
         file_path = state.get("file_path", None)
@@ -2375,12 +2379,56 @@ class ImageSlicerArea(QtWidgets.QWidget):
             cmap = None
             gamma = 0.5
 
+        dim_values = {
+            str(dim): float(value)
+            for dim, value in zip(self.data.dims, self.current_values, strict=True)
+        }
+        if "alpha" in dim_values and "beta" in dim_values:
+            initial_normal_emission: tuple[float, float] | None = (
+                dim_values["alpha"],
+                dim_values["beta"],
+            )
+            initial_delta: float | None = None
+            guideline_dims = tuple(
+                str(self.data.dims[axis]) for axis in self.main_image.display_axis
+            )
+            if self.main_image.is_guidelines_visible and set(guideline_dims) == {
+                "alpha",
+                "beta",
+            }:
+                guideline_values: dict[str, float] = {}
+                for axis, value in zip(
+                    self.main_image.display_axis,
+                    self.main_image._guideline_offset,
+                    strict=True,
+                ):
+                    dim = str(self.data.dims[axis])
+                    if axis in self.array_slicer._nonuniform_axes_set:
+                        value = float(
+                            np.interp(
+                                value,
+                                self.array_slicer.coords_uniform[axis],
+                                self.array_slicer.coords[axis],
+                            )
+                        )
+                    guideline_values[dim] = float(value)
+                initial_normal_emission = (
+                    guideline_values["alpha"],
+                    guideline_values["beta"],
+                )
+                initial_delta = -self.main_image._guideline_angle
+        else:
+            initial_normal_emission = None
+            initial_delta = None
+
         self.add_tool_window(
             erlab.interactive.ktool(
                 self.data,
                 cmap=cmap,
                 gamma=gamma,
                 data_name=self.watched_data_name,
+                initial_normal_emission=initial_normal_emission,
+                initial_delta=initial_delta,
                 execute=False,
             )
         )

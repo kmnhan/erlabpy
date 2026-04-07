@@ -40,6 +40,10 @@ There are four ways to start `ktool`.
 
    The button will be disabled if the data is not compatible with {func}`ktool <erlab.interactive.ktool>`.
 
+   When the source ImageTool data contains both `alpha` and `beta` dimensions, the normal emission values are set from the active cursor position.
+
+   If a rotation guideline is visible on the main image, the guideline's angle and center will be applied instead.
+
 4. From IPython using the `%ktool` magic described in {ref}`interactive-misc-magics`.
 
 The GUI is divided into two tabs.

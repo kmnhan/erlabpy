@@ -428,6 +428,7 @@ class ItoolPlotItem(pg.PlotItem):
 
             self._guideline_angle: float = 0.0
             self._guideline_offset: list[float] = [0.0, 0.0]
+            self._guideline_follow_cursor: bool = True
 
             for i, text in enumerate(["None", "C2", "C4", "C6"]):
                 qact = QtWidgets.QAction(text)
@@ -438,6 +439,15 @@ class ItoolPlotItem(pg.PlotItem):
                 qact.setActionGroup(self._action_group)
                 self._guideline_actions.append(qact)
             self._guideline_actions[0].setChecked(True)
+
+            self._guideline_follow_action = QtWidgets.QAction("Follow Active Cursor")
+            self._guideline_follow_action.setCheckable(True)
+            self._guideline_follow_action.toggled.connect(
+                self._set_guidelines_follow_cursor
+            )
+            self._guideline_follow_action.blockSignals(True)
+            self._guideline_follow_action.setChecked(True)
+            self._guideline_follow_action.blockSignals(False)
 
             self._rotate_action = QtWidgets.QAction("Apply Rotation")
 
@@ -597,6 +607,12 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
         if self.is_image:
+            self.slicer_area.sigIndexChanged.connect(
+                self._follow_guidelines_on_index_change
+            )
+            self.slicer_area.sigCurrentCursorChanged.connect(
+                self._follow_guidelines_on_cursor_change
+            )
             self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
             self.slicer_area.sigShapeChanged.connect(self.clear_rois)
         else:
@@ -610,6 +626,12 @@ class ItoolPlotItem(pg.PlotItem):
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
         if self.is_image:
+            self.slicer_area.sigIndexChanged.disconnect(
+                self._follow_guidelines_on_index_change
+            )
+            self.slicer_area.sigCurrentCursorChanged.disconnect(
+                self._follow_guidelines_on_cursor_change
+            )
             self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
             self.slicer_area.sigShapeChanged.disconnect(self.clear_rois)
         else:
@@ -794,7 +816,10 @@ class ItoolPlotItem(pg.PlotItem):
                     "typing.Literal[1, 2, 3]", len(self._guidelines_items) - 1
                 ),
                 "angle": float(self._guideline_angle),
-                "offset": tuple(self._guideline_offset),
+                "offset": typing.cast(
+                    "tuple[float, float]", tuple(self._guideline_offset)
+                ),
+                "follow_cursor": bool(self._guideline_follow_cursor),
             }
         return state
 
@@ -989,6 +1014,11 @@ class ItoolPlotItem(pg.PlotItem):
             action.setChecked(i == n)
             action.blockSignals(False)
 
+    def _set_guideline_follow_action_checked(self, follow: bool) -> None:
+        self._guideline_follow_action.blockSignals(True)
+        self._guideline_follow_action.setChecked(follow)
+        self._guideline_follow_action.blockSignals(False)
+
     def _update_guideline_title(self, line: typing.Any) -> None:
         line_pos = line.pos()
         self._guideline_angle = line.angle_effective
@@ -1007,6 +1037,18 @@ class ItoolPlotItem(pg.PlotItem):
             f"{self._guideline_angle}° "
             + str(tuple(self._guideline_offset)).replace("-", "−")
         )
+
+    def sync_guidelines_to_active_cursor(self) -> None:
+        if self._guideline_follow_cursor and self.is_guidelines_visible:
+            target = typing.cast("typing.Any", self._guidelines_items[-1])
+            target.setPos(
+                tuple(
+                    self.array_slicer.get_value(
+                        self.slicer_area.current_cursor, axis, uniform=True
+                    )
+                    for axis in self.display_axis
+                )
+            )
 
     def _connect_guideline_history(self) -> None:
         for item in self._guidelines_items[:-1]:
@@ -1036,9 +1078,11 @@ class ItoolPlotItem(pg.PlotItem):
         line.sigPositionChanged.connect(lambda *_: self._update_guideline_title(line))
 
         if pos is None:
-            pos = (
-                self.slicer_area.get_current_value(0, uniform=True),
-                self.slicer_area.get_current_value(1, uniform=True),
+            pos = tuple(
+                self.array_slicer.get_value(
+                    self.slicer_area.current_cursor, axis, uniform=True
+                )
+                for axis in self.display_axis
             )
         target.setPos(pos)
 
@@ -1046,6 +1090,11 @@ class ItoolPlotItem(pg.PlotItem):
             line.setAngle(angle)
 
         self._update_guideline_title(line)
+        self.sync_guidelines_to_active_cursor()
+        target.movable = not self._guideline_follow_cursor
+        target.setVisible(not self._guideline_follow_cursor)
+        if self._guideline_follow_cursor and hasattr(target, "setMouseHover"):
+            target.setMouseHover(False)
 
     def _restore_guideline_state(self, state: GuidelineState | None) -> None:
         if not self.is_image:
@@ -1053,11 +1102,16 @@ class ItoolPlotItem(pg.PlotItem):
 
         if state is None:
             self._set_guideline_action_checked(0)
+            self._set_guideline_follow_action_checked(True)
+            self._guideline_follow_cursor = True
             self._remove_guidelines()
             return
 
         count = typing.cast("typing.Literal[1, 2, 3]", int(state["count"]))
         self._set_guideline_action_checked(count)
+        follow_cursor = bool(state.get("follow_cursor", True))
+        self._set_guideline_follow_action_checked(follow_cursor)
+        self._guideline_follow_cursor = follow_cursor
         self._remove_guidelines()
         self._create_guidelines(count)
 
@@ -1065,6 +1119,53 @@ class ItoolPlotItem(pg.PlotItem):
         line = typing.cast("typing.Any", self._guidelines_items[0])
         target.setPos(tuple(float(v) for v in state["offset"]))
         line.setAngle(float(state["angle"]) + 90.0)
+        self.sync_guidelines_to_active_cursor()
+        target.movable = not self._guideline_follow_cursor
+        target.setVisible(not self._guideline_follow_cursor)
+        if self._guideline_follow_cursor and hasattr(target, "setMouseHover"):
+            target.setMouseHover(False)
+
+    def _set_guidelines_follow_cursor_impl(self, follow: bool) -> None:
+        self._guideline_follow_cursor = follow
+        if self.is_guidelines_visible:
+            target = typing.cast("typing.Any", self._guidelines_items[-1])
+            self.sync_guidelines_to_active_cursor()
+            target.movable = not self._guideline_follow_cursor
+            target.setVisible(not self._guideline_follow_cursor)
+            if self._guideline_follow_cursor and hasattr(target, "setMouseHover"):
+                target.setMouseHover(False)
+
+    @QtCore.Slot(bool)
+    def set_guidelines_follow_cursor(self, follow: bool) -> None:
+        if self.is_image:  # pragma: no branch
+            self._guideline_follow_action.setChecked(follow)
+
+    @QtCore.Slot(bool)
+    @record_history
+    def _set_guidelines_follow_cursor(self, follow: bool) -> None:
+        if self.is_image:  # pragma: no branch
+            self._set_guidelines_follow_cursor_impl(follow)
+
+    @QtCore.Slot(int)
+    def _follow_guidelines_on_cursor_change(self, _cursor: int) -> None:
+        self.sync_guidelines_to_active_cursor()
+
+    @QtCore.Slot(int, object)
+    @QtCore.Slot(object, object)
+    def _follow_guidelines_on_index_change(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None = None
+    ) -> None:
+        if not self._guideline_follow_cursor or not self.is_guidelines_visible:
+            return
+        current_cursor = self.slicer_area.current_cursor
+        if isinstance(cursor, tuple):
+            if current_cursor not in cursor:
+                return
+        elif cursor != current_cursor:
+            return
+        if axes is not None and not any(axis in self.display_axis for axis in axes):
+            return
+        self.sync_guidelines_to_active_cursor()
 
     def _uniform_qsel_kwargs_multicursor(
         self,
