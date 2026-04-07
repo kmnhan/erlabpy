@@ -207,11 +207,12 @@ Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
 - {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the angle and center from the guideline.
 - {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
 - {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`, `sum`, or `median`.
+- {guilabel}`Edit → Thin` opens the {guilabel}`Thin Data` dialog which uses {meth}`xarray.DataArray.thin`.
 - {guilabel}`Edit → Symmetrize` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
 - {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
 - {guilabel}`Edit → Correct With Edge...` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
-- {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
-- {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, a non-destructive filter that applies coordinate-aware Gaussian broadening along selected dimensions.
+- {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, which applies a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
+- {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, which applies a non-destructive filter that applies coordinate-aware Gaussian broadening along selected dimensions.
 
 Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional helper windows opened from the context menus, so everything is closed cleanly when the main window exits.
 
