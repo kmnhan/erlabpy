@@ -4,6 +4,7 @@ import pathlib
 import re
 import threading
 import time
+import typing
 
 import numpy as np
 import pytest
@@ -12,9 +13,7 @@ import erlab
 from erlab.io.dataloader import LoaderNotFoundError, UnsupportedFileError
 
 
-def test_loader(
-    qtbot, example_loader, example_data_dir: pathlib.Path, manager_context
-) -> None:
+def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> None:
     wrong_file = example_data_dir / "data_010.nc"
 
     with erlab.io.loader_context("example", example_data_dir):
@@ -109,20 +108,23 @@ def test_loader(
     btn_box.children[1].click()  # next
     del box, btn_box
 
-    # Interactive summary with imagetool manager
-    with manager_context() as manager:
-        box = erlab.io.loaders.current_loader._isummarize(df)
-        btn_box = box.children[0].children[0]
-        assert len(btn_box.children) == 4  # prev, next, load full, imagetool
-        assert box.children[0].children[1].value == "data_001_S001"
-        btn_box.children[3].click()  # imagetool
+    shown_data: list[typing.Any] = []
 
-        qtbot.wait_until(lambda: manager.ntools == 1)
+    monkeypatch.setattr(erlab.interactive.imagetool.manager, "is_running", lambda: True)
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "show_in_manager",
+        lambda data: shown_data.append(data),
+    )
 
-        # Archive nd remove
-        manager._imagetool_wrappers[0].archive()
-        manager.remove_imagetool(0)
-        qtbot.wait_until(lambda: manager.ntools == 0)
+    box = erlab.io.loaders.current_loader._isummarize(df)
+    btn_box = box.children[0].children[0]
+    assert len(btn_box.children) == 4  # prev, next, load full, imagetool
+    assert box.children[0].children[1].value == "data_001_S001"
+    btn_box.children[3].click()  # imagetool
+
+    assert len(shown_data) == 1
+    assert shown_data[0].name == "data_001_S001"
 
 
 def test_thread_safety():

@@ -106,8 +106,13 @@ reflected in the package without having to reinstall it. Before installing:
 2. Run:
 
    ```sh
-   uv sync --all-extras --dev
+   uv sync --all-extras --dev --group pyqt6
    ```
+
+   This installs the default development environment used by local test runs, including
+   the primary Qt binding used in the fast CI workflow. If you need to reproduce the
+   weekly compatibility matrix locally with PySide6, add `--group pyside6` to the
+   command.
 
 ### Updating the editable installation
 
@@ -194,6 +199,37 @@ branch` in the GitHub repo.
 
 4. Build the documentation for documentation changes. See the [documentation section](#building-the-documentation-locally) for more information.
 
+### Running tests locally
+
+The repository uses two complementary CI workflows:
+
+- A fast PR workflow that runs the full suite once with coverage on locked dependencies
+  (`Python 3.13 + PyQt6`), split into multiple shards.
+- A weekly compatibility workflow that keeps the broader upgraded dependency matrix
+  (`Python 3.11-3.14 x PyQt6/PySide6`).
+
+For local development, the most useful commands are:
+
+```sh
+uv run pytest
+uv run pytest -m compat
+uv run python -m scripts.ci_test_groups --check-partition
+```
+
+The `compat` marker selects the compatibility smoke tests used on non-primary CI lanes.
+The partition check verifies that the fast CI coverage shards still cover every test
+file exactly once.
+
+The shard definitions live in `scripts/_ci_test_groups.py`. If you add a new top-level
+test module under `tests/analysis/`, `tests/interactive/`, `tests/io/`, or directly
+under `tests/`, update that file so the new module is assigned to exactly one coverage
+shard. Add it to the compatibility smoke targets only when it provides broad
+cross-version or cross-binding signal.
+
+`tests/conftest.py` assigns the `compat`, `gui`, and `serial` markers during collection
+from those centralized rules. Keep the grouping logic there rather than scattering CI
+only markers across unrelated test modules.
+
 ### Commit and push your changes
 
 1. To commit all modified files into the local copy of your repo, do `git commit -am 'A
@@ -253,6 +289,10 @@ these steps:
    ```sh
    uv run pytest tests/io/plugins/test_<plugin_name>.py
    ```
+
+   If the new test module is not under an already grouped directory such as
+   `tests/io/plugins/`, update `scripts/_ci_test_groups.py` so the fast CI coverage
+   partition stays complete.
 
 7. Now, it's time to apply your changes. First, push your changes to your fork of
    [erlabpy-data](https://github.com/kmnhan/erlabpy-data) and create a pull request to
@@ -318,7 +358,7 @@ these steps:
   - When using Qt Designer, place the `.ui` files in the same directory as the Python
     file that uses them. The files must be imported using `qtpy.uic.loadUiType`.
 
-    For instance, if you place `mywidget.py` and `mywidget.ui` in
+  - For instance, if you place `mywidget.py` and `mywidget.ui` in
     `src/erlab/interactive/`, `mywidget.py` should look like this:
 
     ```python
@@ -338,6 +378,11 @@ these steps:
             super().__init__()
             self.setupUi(self)
     ```
+
+  - For tests, only start the real ImageTool manager when the behavior under test
+    depends on an active manager instance. If you only need to cover manager-aware
+    dispatch paths, prefer patching `erlab.interactive.imagetool.manager.is_running`
+    and `show_in_manager` instead.
 
 (documentation)=
 

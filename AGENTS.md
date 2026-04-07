@@ -8,6 +8,8 @@ Place runtime code in `src/erlab/` (analysis routines, interactive Qt tools, IO 
 
 - `uv sync --all-extras --dev --group pyqt6` — editable env with every optional feature and Qt bindings installed for GUI tests.
 - `uv run pytest` — whole suite with coverage configuration from `pyproject.toml`.
+- `uv run python -m scripts.ci_test_groups --check-partition` — verify that the fast CI coverage shards still cover every test file exactly once.
+- `uv run python -m scripts.ci_test_groups compat` — print the compatibility smoke targets used in non-primary CI lanes.
 - `uv run ruff format .` and `uv run ruff check --fix .` after every change to keep style consistent. Prefer automatic fixes instead of manual lint cleanups.
 - `uv run mypy src` — static typing pass.
 - `uv run pyinstaller manager.spec` — bundle the ImageTool manager app.
@@ -32,6 +34,11 @@ Use modern typing syntax as a default rule: use built-in generics (`list[str]`, 
 
 Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py` beside the code they cover. Loader plugins need regression data in `tests/io/plugins/test_<plugin>.py`; set `ERLAB_TEST_DATA_DIR` to a local clone of `erlabpy-data` so fixtures resolve. Coverage already skips legacy updater code, so aim for branch coverage elsewhere and parametrize datasets to catch multidimensional regressions.
 
+- The fast PR workflow runs one fully covered, sharded `3.13 + pyqt6` lane plus smaller compatibility smoke jobs. The weekly compatibility workflow keeps the full upgraded `3.11-3.14 x pyqt6/pyside6` matrix.
+- Test grouping is centralized in `scripts/_ci_test_groups.py`. When adding a new top-level test module under `tests/analysis/`, `tests/interactive/`, `tests/io/`, or `tests/`, update that file so the new test lands in exactly one coverage shard and, if appropriate, in the compatibility smoke set.
+- `tests/conftest.py` assigns the `compat`, `gui`, and `serial` markers during collection based on the centralized grouping rules. Keep those markers semantically meaningful; do not scatter ad hoc CI-only marker assignments across unrelated test files.
+- Run `uv run python -m scripts.ci_test_groups --check-partition` after changing the test tree or CI grouping rules.
+
 ## Interactive Qt Notes
 
 - For tools launched from ImageTool, new actions that open/show data in ImageTool should be manager-aware (use manager flow when the parent tool is managed).
@@ -41,6 +48,7 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 - `ImageToolManager.main()` inspects `sys.argv[1:]` as potential file paths. For manager tests, prefer explicit test node IDs over long `-k` expressions, or patch `sys.argv` in tests, to avoid accidental file-path parsing side effects.
 - ImageTool manager tests use a fixed ZMQ port (`45555`). If tests fail with `Address already in use` or timeout, check and terminate stale manager processes before rerunning.
 - Avoid running multiple manager test jobs in parallel on the same machine unless ports are isolated.
+- If a test only needs to cover manager integration branches, prefer patching `erlab.interactive.imagetool.manager.is_running` and `show_in_manager` over launching the real manager. Reserve `manager_context` for behavior that genuinely depends on a live manager instance.
 - For coverage runs, `--cov` is generally stable; if `--cov=<module path>` triggers local Qt import issues, use broader `--cov=erlab` and filter coverage output to target files.
 - Do not make runtime code behave differently under pytest (e.g., `PYTEST_VERSION`, `sys.modules["pytest"]`, or test-only env checks in `src/`). Keep production behavior explicit via function arguments/state, and implement test-specific behavior in tests/fixtures/monkeypatching instead.
 - If a code path already shows an explicit UI dialog (`MessageDialog`/`QMessageBox`), avoid duplicate manager alert popups by logging with `extra={"suppress_ui_alert": True}`.
@@ -50,5 +58,5 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 
 ## Commit & Pull Request Guidelines
 
-Follow Conventional Commits with scopes (e.g., `feat(analysis.gold): support multi-angle Fermi fits`) and reference issues via `(#123)` when relevant. PRs should summarize behavior changes, list the commands you ran, and attach screenshots or GIFs for GUI tweaks. Run `uv run ruff check`, `uv run ruff format --check`, `uv run mypy src`, and `uv run pytest` before requesting review, and mention dependent data/doc PRs in the description.
+Follow Conventional Commits with scopes (e.g., `feat(analysis.gold): support multi-angle Fermi fits`) and reference issues via `(#123)` when relevant. PRs should summarize behavior changes, list the commands you ran, and attach screenshots or GIFs for GUI tweaks. Run `uv run ruff check`, `uv run ruff format --check`, `uv run mypy src`, `uv run pytest`, and `uv run python -m scripts.ci_test_groups --check-partition` when you change CI grouping or add new top-level test modules, and mention dependent data/doc PRs in the description.
 When a user asks for a commit message, provide a Conventional Commit subject and include a longer, user-facing description paragraph if there are user-visible changes.

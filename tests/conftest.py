@@ -2,6 +2,7 @@ import contextlib
 import csv
 import datetime
 import functools
+import importlib.util
 import logging
 import os
 import pathlib
@@ -50,6 +51,27 @@ DATA_KNOWN_HASH = "1236511ac3b6b6f85a07246f6df52db2580404a56679ac63cabe4dc246b2b
 """The SHA-256 checksum of the `.tar.gz` file."""
 
 log = logging.getLogger(__name__)
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _load_ci_test_groups_module():
+    module_path = REPO_ROOT / "scripts" / "_ci_test_groups.py"
+    spec = importlib.util.spec_from_file_location("_ci_test_groups", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            f"Unable to load CI test group definitions from {module_path}"
+        )
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_CI_TEST_GROUPS = _load_ci_test_groups_module()
+is_compat_nodeid = _CI_TEST_GROUPS.is_compat_nodeid
+is_compat_path = _CI_TEST_GROUPS.is_compat_path
+is_gui_path = _CI_TEST_GROUPS.is_gui_path
+is_serial_path = _CI_TEST_GROUPS.is_serial_path
 
 
 def _qt_msg_filter(msg_type, context, message):
@@ -79,6 +101,18 @@ dask.config.set(
 def _coverage_is_active(pytestconfig: pytest.Config) -> bool:
     """Return whether pytest-cov is actively collecting coverage."""
     return pytestconfig.pluginmanager.hasplugin("_cov")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        rel_path = pathlib.Path(item.path).resolve().relative_to(REPO_ROOT).as_posix()
+
+        if is_gui_path(rel_path):
+            item.add_marker(pytest.mark.gui)
+        if is_serial_path(rel_path):
+            item.add_marker(pytest.mark.serial)
+        if is_compat_path(rel_path) or is_compat_nodeid(item.nodeid):
+            item.add_marker(pytest.mark.compat)
 
 
 @pytest.fixture(scope="session")
