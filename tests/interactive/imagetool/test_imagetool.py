@@ -22,6 +22,7 @@ from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.dialogs import (
     AssignCoordsDialog,
     AverageDialog,
+    CoarsenDialog,
     CropDialog,
     CropToViewDialog,
     EdgeCorrectionDialog,
@@ -2399,6 +2400,92 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_coarsen(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(120).reshape((5, 6, 4)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(5), "y": np.arange(6), "z": np.arange(4)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: CoarsenDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.dim_checks["y"].setChecked(True)
+        dialog.window_spins["x"].setValue(2)
+        dialog.window_spins["y"].setValue(4)
+        dialog.boundary_combo.setCurrentText("trim")
+        dialog.side_combo.setCurrentText("right")
+        dialog.coord_func_combo.setCurrentText("min")
+        dialog.reducer_combo.setCurrentText("sum")
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._coarsen, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None),
+        data.coarsen(x=2, y=4, boundary="trim", side="right", coord_func="min").sum(),
+    )
+
+    assert (
+        pyperclip.paste()
+        == '.coarsen(x=2, y=4, boundary="trim", side="right", coord_func="min").sum()'
+    )
+    win.close()
+
+
+def test_itool_coarsen_nonuniform_public_dims(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(30).reshape((5, 6)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.array([0.0, 0.3, 0.9, 1.4, 2.2]), "y": np.arange(6)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+
+    def _set_dialog_params(dialog: CoarsenDialog) -> None:
+        assert "x" in dialog.dim_checks
+        assert "x_idx" not in dialog.dim_checks
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.window_spins["x"].setValue(2)
+        assert dialog.boundary_combo.currentText() == "trim"
+        assert dialog.coord_func_combo.currentText() == "mean"
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._coarsen, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None),
+        data.coarsen(x=2, boundary="trim", side="left", coord_func="mean").mean(),
+    )
+
+    win.close()
+
+
+def test_coarsen_dialog_make_code_uses_watched_data_name(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(12).reshape((3, 4)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = CoarsenDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.window_spins["x"].setValue(2)
+
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "my_data"),
+    )
+
+    assert dialog.make_code() == 'my_data.coarsen(x=2, boundary="trim").mean()'
+
+    dialog.close()
+    win.close()
+
+
 def test_itool_symmetrize(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(60).reshape((3, 4, 5)).astype(float),
@@ -2699,6 +2786,97 @@ def test_swap_dims_dialog_accept_requires_changes(qtbot, monkeypatch) -> None:
 
     assert warnings == [
         ("No Dimensions Changed", "Choose at least one dimension to swap.")
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+def test_coarsen_dialog_requires_selected_dimension(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(12).reshape((3, 4)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = CoarsenDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings == [
+        ("No Dimensions Selected", "You need to select at least one dimension.")
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+def test_coarsen_dialog_rejects_exact_incompatible_windows(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(10).reshape((5, 2)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = CoarsenDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.window_spins["x"].setValue(3)
+    dialog.boundary_combo.setCurrentText("exact")
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings == [
+        (
+            "Incompatible Window Size",
+            "Window sizes must evenly divide the selected dimensions when boundary "
+            "is exact: x. Try trim or pad instead.",
+        )
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+def test_coarsen_dialog_rejects_trim_without_output_blocks(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(4).reshape((2, 2)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = CoarsenDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.window_spins["x"].setValue(3)
+    dialog.boundary_combo.setCurrentText("trim")
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings == [
+        ("No Output Blocks", "Trim boundary would remove all data along: x.")
     ]
     xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
 
