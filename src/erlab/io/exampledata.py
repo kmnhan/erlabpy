@@ -3,6 +3,7 @@
 __all__ = [
     "generate_data",
     "generate_data_angles",
+    "generate_data_dirac",
     "generate_gold_edge",
     "generate_hvdep_cuts",
     "make_mesh_pattern",
@@ -68,6 +69,71 @@ def _add_fd_norm(image, eV, temp=30, efermi=0, count=1e7, const_bkg=1e-3) -> Non
         image *= _fermi_dirac(eV - efermi, temp)[None, None, :]
     image *= count
     image += const_bkg * count
+
+
+def _dirac_matrix_element(
+    kx: np.ndarray,
+    ky: np.ndarray,
+    k_tot: np.ndarray,
+    alpha_coeff: float,
+    beta_coeff: float,
+    branch_sign: int,
+    spin: typing.Literal["integrated", "up", "down"],
+) -> np.ndarray:
+    """Angular part of the surface-state matrix element."""
+    inv_k_tot = np.divide(1.0, k_tot, out=np.zeros_like(k_tot), where=k_tot > 0)
+    inv_k_tot_sq = inv_k_tot**2
+    k_par_sq = kx**2 + ky**2
+
+    if spin == "integrated":
+        out = alpha_coeff**2 * (1 + branch_sign * kx * inv_k_tot)
+        out += (
+            0.5
+            * beta_coeff**2
+            * (
+                k_par_sq * inv_k_tot_sq
+                + branch_sign * (3 * ky**2 - kx**2) * kx * inv_k_tot_sq * inv_k_tot
+            )
+        )
+    else:
+        out = 0.5 * alpha_coeff**2
+        out += 0.25 * beta_coeff**2 * k_par_sq * inv_k_tot_sq
+        interference = (
+            alpha_coeff * beta_coeff / np.sqrt(2) * (kx**2 - ky**2) * inv_k_tot_sq
+        )
+        if spin == "up":
+            out += branch_sign * interference
+        else:
+            out -= branch_sign * interference
+
+    return np.clip(out, 0.0, None)
+
+
+def _surface_polarization_weight(
+    kx: np.ndarray,
+    ky: np.ndarray,
+    kinetic_energy: np.ndarray,
+    polarization: Sequence[float],
+    inner_potential: float,
+) -> np.ndarray:
+    """Free-electron final-state polarization factor."""
+    pol = np.asarray(polarization, dtype=float)
+    if pol.shape != (3,):
+        raise ValueError("polarization must be a length-3 vector")
+    pol_norm = np.linalg.norm(pol)
+    if pol_norm == 0:
+        raise ValueError("polarization vector must be non-zero")
+    pol /= pol_norm
+
+    c1, c2 = 143.0, 0.054
+    imfp = (c1 / (kinetic_energy**2) + c2 * np.sqrt(kinetic_energy)) * 10
+    kz = erlab.analysis.kspace.kz_func(kinetic_energy, inner_potential, kx, ky)
+    k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
+    k_perp = np.sqrt(np.clip(k_tot**2 - kx**2 - ky**2, a_min=0, a_max=None))
+
+    numerator = 1j * kx * pol[0] + 1j * ky * pol[1] + (1j * kz - 1 / imfp) * pol[2]
+    denominator = 1j * (k_perp - kz) + 1 / imfp
+    return np.abs(numerator / denominator) ** 2
 
 
 # Changing default values may break tests
@@ -394,6 +460,233 @@ def generate_data_angles(
     if assign_attributes:
         out = out.assign_attrs(
             configuration=int(configuration), sample_temp=temp, sample_workfunction=4.5
+        )
+
+    return out.squeeze()
+
+
+def generate_data_dirac(
+    shape: tuple[int, int, int] = (500, 60, 500),
+    *,
+    angrange: float | tuple[float, float] | dict[str, tuple[float, float]] = 15.0,
+    Erange: tuple[float, float] = (-0.45, 0.12),
+    hv: float = 50.0,
+    configuration: (
+        erlab.constants.AxesConfiguration | int
+    ) = erlab.constants.AxesConfiguration.Type1,
+    temp: float = 20.0,
+    dirac_velocity: float = 0.3,
+    curvature: float = 0.0,
+    gap: float = 0.0,
+    bandshift: float = 0.0,
+    Sreal: float = 0.0,
+    Simag: float = 0.03,
+    alpha_coeff: float = 1.0,
+    beta_coeff: float = 0.6,
+    branch: typing.Literal["both", "upper", "lower"] = "both",
+    spin: typing.Literal["integrated", "up", "down"] = "integrated",
+    angres: float = 0.1,
+    Eres: float = 10.0e-3,
+    noise: bool = True,
+    seed: int | None = None,
+    count: int = 100000000,
+    ccd_sigma: float = 0.6,
+    const_bkg: float = 1e-3,
+    assign_attributes: bool = False,
+    extended: bool = True,
+    polarization: Sequence[float] = (0.0, 0.0, 1.0),
+    inner_potential: float = 10.0,
+) -> xr.DataArray:
+    """Generate simulated topological surface-state ARPES data in angle space.
+
+    The surface-state dispersion follows a minimal Dirac/Rashba Hamiltonian with an
+    optional quadratic curvature and mass gap. The matrix-element texture follows the
+    spin-integrated and spin-filtered angular factors discussed by Moser for
+    spin-orbit-coupled surface states.
+
+    .. versionadded:: 3.21.0
+
+    Parameters
+    ----------
+    shape
+        The shape of the generated data as ``(alpha, beta, eV)``.
+    angrange
+        Angle range in degrees. Can be a single float, a tuple of floats representing
+        the range, or a dictionary with ``alpha`` and ``beta`` keys mapping to tuples
+        representing the range for each dimension, by default 15.0.
+    Erange
+        Binding energy range in electronvolts, by default (-0.45, 0.12).
+    hv
+        The photon energy in eV. The sample work function is assumed to be 4.5 eV.
+    configuration
+        The experimental configuration, by default ``Type1``.
+    temp
+        The temperature in kelvins for the Fermi-Dirac cutoff. If 0, no cutoff is
+        applied.
+    dirac_velocity
+        Linear Dirac or Rashba coefficient in eV A.
+    curvature
+        Quadratic curvature coefficient in eV A^2.
+    gap
+        Dirac mass term in eV. The full gap at the Dirac point is ``2 * gap``.
+    bandshift
+        The rigid energy shift in eV.
+    Sreal
+        The real part of the self energy.
+    Simag
+        The imaginary part of the self energy.
+    alpha_coeff
+        Weight of the out-of-plane ``spz`` orbital contribution in the matrix element.
+    beta_coeff
+        Weight of the in-plane orbital contribution in the matrix element.
+    branch
+        Which branch of the surface state to include: ``"upper"``, ``"lower"``, or
+        ``"both"``.
+    spin
+        Matrix-element channel: spin-integrated (default) or one spin-projected
+        component (``"up"`` or ``"down"``).
+    angres
+        Broadening in angle in degrees.
+    Eres
+        Broadening in energy in electronvolts.
+    noise
+        Whether to add noise to the generated data.
+    seed
+        Seed for the random number generator for the noise.
+    count
+        Determines the signal-to-noise ratio when ``noise`` is ``True``.
+    ccd_sigma
+        The sigma value for CCD noise generation when ``noise`` is ``True``.
+    const_bkg
+        Constant background as a fraction of the count.
+    assign_attributes
+        Whether to assign attributes to the generated data.
+    extended
+        Whether to include the free-electron final-state polarization prefactor.
+    polarization
+        Photon polarization vector. Only used if ``extended`` is ``True``.
+    inner_potential
+        Inner potential in eV. Only used if ``extended`` is ``True``.
+
+    Returns
+    -------
+    xarray.DataArray
+        The generated data with coordinates for alpha, beta, and eV.
+
+    """
+    if isinstance(angrange, dict):
+        alpha = np.linspace(*angrange["alpha"], shape[0])
+        beta = np.linspace(*angrange["beta"], shape[1])
+    elif isinstance(angrange, tuple):
+        alpha = np.linspace(*angrange, shape[0])
+        beta = np.linspace(*angrange, shape[1])
+    else:
+        alpha = np.linspace(-angrange, angrange, shape[0])
+        beta = np.linspace(-angrange, angrange, shape[1])
+
+    if branch not in {"both", "upper", "lower"}:
+        raise ValueError("branch must be 'both', 'upper', or 'lower'")
+    if spin not in {"integrated", "up", "down"}:
+        raise ValueError("spin must be 'integrated', 'up', or 'down'")
+
+    eV = np.linspace(*Erange, shape[2])
+    eV_extended, gaussian_kernel = erlab.analysis.fit.functions.general._gen_kernel(
+        eV, float(Eres), pad=5
+    )
+    kinetic_energy = hv - 4.5 + eV_extended[None, None, :]
+    if np.any(kinetic_energy <= 0):
+        raise ValueError(
+            "Photon energy and energy range must give positive photoelectron energy"
+        )
+
+    a_mesh, b_mesh = np.meshgrid(alpha, beta, indexing="ij")
+    a_mesh, b_mesh = a_mesh[:, :, None], b_mesh[:, :, None]
+    kxv, kyv = erlab.analysis.kspace.get_kconv_forward(configuration)(
+        a_mesh, b_mesh, kinetic_energy
+    )
+
+    k_tot = erlab.constants.rel_kconv * np.sqrt(kinetic_energy)
+    k_par_sq = kxv**2 + kyv**2
+    k_par = np.sqrt(k_par_sq)
+    dirac_split = np.sqrt((dirac_velocity * k_par) ** 2 + gap**2)
+    energy_upper = curvature * k_par_sq + dirac_split
+    energy_lower = curvature * k_par_sq - dirac_split
+
+    spectral_upper = _spectral_function(
+        eV_extended, energy_upper + bandshift, Sreal, Simag
+    )
+    spectral_lower = _spectral_function(
+        eV_extended, energy_lower + bandshift, Sreal, Simag
+    )
+
+    if extended:
+        pol_weight = _surface_polarization_weight(
+            kxv, kyv, kinetic_energy, polarization, inner_potential
+        )
+    else:
+        pol_weight = np.ones_like(spectral_upper)
+
+    out = np.zeros_like(spectral_upper)
+    if branch in {"both", "upper"}:
+        out += spectral_upper * _dirac_matrix_element(
+            kxv, kyv, k_tot, alpha_coeff, beta_coeff, +1, spin
+        )
+    if branch in {"both", "lower"}:
+        out += spectral_lower * _dirac_matrix_element(
+            kxv, kyv, k_tot, alpha_coeff, beta_coeff, -1, spin
+        )
+    out *= pol_weight
+
+    out = scipy.ndimage.gaussian_filter(
+        out,
+        sigma=[
+            angres / (axis[1] - axis[0]) if len(axis) > 1 else 0
+            for axis in (alpha, beta)
+        ]
+        + [0],
+        truncate=5.0,
+    )
+
+    _add_fd_norm(
+        out,
+        eV_extended,
+        efermi=0,
+        temp=temp,
+        count=count * 1e-6,
+        const_bkg=const_bkg,
+    )
+    out = np.apply_along_axis(
+        lambda m: np.convolve(m, gaussian_kernel, mode="valid"), axis=-1, arr=out
+    )
+
+    if noise:
+        rng = np.random.default_rng(seed)
+        out = scipy.ndimage.gaussian_filter(
+            rng.poisson(out).astype(float), ccd_sigma, truncate=10.0, axes=(0, 2)
+        )
+
+    out = xr.DataArray(out, coords={"alpha": alpha, "beta": beta, "eV": eV})
+    out = out.assign_coords(xi=0.0, delta=0.0, hv=hv)
+
+    match configuration:
+        case (
+            erlab.constants.AxesConfiguration.Type1DA
+            | erlab.constants.AxesConfiguration.Type2DA
+        ):
+            out = out.assign_coords(chi=0.0)
+
+    if assign_attributes:
+        out = out.assign_attrs(
+            configuration=int(configuration),
+            sample_temp=temp,
+            sample_workfunction=4.5,
+            dirac_velocity=dirac_velocity,
+            curvature=curvature,
+            dirac_gap=gap,
+            dirac_branch=branch,
+            dirac_spin=spin,
+            dirac_alpha_coeff=alpha_coeff,
+            dirac_beta_coeff=beta_coeff,
         )
 
     return out.squeeze()

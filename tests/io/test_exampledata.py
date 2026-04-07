@@ -3,6 +3,7 @@ import numpy as np
 from erlab.io.exampledata import (
     generate_data,
     generate_data_angles,
+    generate_data_dirac,
     generate_gold_edge,
     generate_hvdep_cuts,
 )
@@ -125,3 +126,69 @@ def test_generate_hvdep_cuts() -> None:
     np.testing.assert_allclose(data.eV.values, np.array([-0.45, -0.165, 0.12]))
     np.testing.assert_allclose(data.hv.values, np.array([40, 50, 60]))
     np.testing.assert_allclose(data.alpha.values, np.array([-15.0, 0.0, 15.0]))
+
+
+def test_generate_data_dirac() -> None:
+    data = generate_data_dirac(
+        (3, 3, 3), noise=False, temp=0, seed=1, assign_attributes=True
+    )
+
+    np.testing.assert_allclose(
+        data.values,
+        np.array(
+            [
+                [
+                    [6656.18118342, 1343.59264981, 1426.80072988],
+                    [1656.67581261, 4968.02848953, 4148.18055093],
+                    [6656.18118342, 1343.59264981, 1426.80072988],
+                ],
+                [
+                    [2126.69563286, 6398.92197193, 3497.00148285],
+                    [736.99071449, 5380.40885929, 9984.87072098],
+                    [2126.69563286, 6398.92197193, 3497.00148285],
+                ],
+                [
+                    [11165.50429819, 1975.45108131, 1055.44064151],
+                    [2596.71545311, 7829.81545433, 2845.82241477],
+                    [11165.50429819, 1975.45108131, 1055.44064151],
+                ],
+            ]
+        ),
+    )
+    np.testing.assert_allclose(data.alpha.values, np.array([-15.0, 0.0, 15.0]))
+    np.testing.assert_allclose(data.beta.values, np.array([-15.0, 0.0, 15.0]))
+    np.testing.assert_allclose(data.eV.values, np.array([-0.45, -0.165, 0.12]))
+
+    assert data.attrs["dirac_branch"] == "both"
+    assert data.attrs["dirac_spin"] == "integrated"
+    assert data.attrs["dirac_velocity"] == 0.3
+    assert data.attrs["dirac_beta_coeff"] == 0.6
+
+
+def test_generate_data_dirac_spin_projection() -> None:
+    data = generate_data_dirac(
+        (3, 3, 3), noise=False, temp=0, spin="up", branch="upper"
+    )
+
+    np.testing.assert_allclose(
+        data.values,
+        np.array(
+            [
+                [
+                    [46.67909038, 109.71512571, 491.81472787],
+                    [70.40086871, 194.25547082, 1603.95759444],
+                    [46.67909038, 109.71512571, 491.81472787],
+                ],
+                [
+                    [62.92411626, 173.60633207, 1433.38152019],
+                    [184.32267862, 1345.17721482, 2496.29268024],
+                    [62.92411626, 173.60633207, 1433.38152019],
+                ],
+                [
+                    [46.67909038, 109.71512571, 491.81472787],
+                    [70.40086871, 194.25547082, 1603.95759444],
+                    [46.67909038, 109.71512571, 491.81472787],
+                ],
+            ]
+        ),
+    )
