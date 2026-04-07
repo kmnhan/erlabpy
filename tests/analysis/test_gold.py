@@ -57,6 +57,29 @@ def test_range_slice_for_coord_single_point_sorts_bounds() -> None:
     assert out == slice(-1.0, 1.0)
 
 
+@pytest.mark.parametrize(
+    ("coord_values", "value_range", "expected"),
+    [
+        ([-2.0, -1.0, 0.0, 1.0, 2.0], (None, 0.0), [-2.0, -1.0, 0.0]),
+        ([-2.0, -1.0, 0.0, 1.0, 2.0], (0.0, None), [0.0, 1.0, 2.0]),
+        ([2.0, 1.0, 0.0, -1.0, -2.0], (None, 0.0), [0.0, -1.0, -2.0]),
+        ([2.0, 1.0, 0.0, -1.0, -2.0], (0.0, None), [2.0, 1.0, 0.0]),
+    ],
+)
+def test_range_slice_for_coord_supports_open_bounds(
+    coord_values: list[float],
+    value_range: tuple[float | None, float | None],
+    expected: list[float],
+) -> None:
+    coord = xr.DataArray(
+        coord_values, dims=("x",), coords={"x": coord_values}, name="x"
+    )
+
+    out = coord.sel(x=gold_mod._range_slice_for_coord(coord, value_range))
+
+    assert out.x.values.tolist() == expected
+
+
 def test_range_slice_for_coord_nonmonotonic_raises() -> None:
     coord = xr.DataArray(
         [0.0, 2.0, 1.0], dims=("x",), coords={"x": [0.0, 2.0, 1.0]}, name="x"
@@ -331,6 +354,27 @@ def test_edge_range_selection_follows_descending_coordinate_order(gold) -> None:
     finite = np.isfinite(vals.values)
     assert finite.any()
     assert_allclose(vals.values[finite], 0.04, atol=1e-12)
+
+
+def test_poly_plot_supports_open_bounds(gold) -> None:
+    fig = plt.figure()
+
+    res = poly(
+        gold,
+        angle_range=(None, 15.0),
+        eV_range=(-0.2, None),
+        temp=100.0,
+        vary_temp=False,
+        degree=2,
+        fast=True,
+        plot=True,
+        fig=fig,
+        parallel_kw={"backend": "threading", "n_jobs": 1, "return_as": "list"},
+    )
+
+    assert isinstance(res, xr.Dataset)
+
+    plt.close(fig)
 
 
 def test_quick_fit_plot_fwhm_span_matches_resolution(gold) -> None:

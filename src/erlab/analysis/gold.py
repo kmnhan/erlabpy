@@ -50,15 +50,25 @@ def _eval_edge(modelresult: lmfit.model.ModelResult, *, evalute_at: npt.NDArray)
     return modelresult.eval(x=evalute_at)
 
 
+def _normalize_range_bounds(
+    value_range: tuple[float | None, float | None],
+) -> tuple[float | None, float | None]:
+    lower, upper = value_range
+    lower = None if lower is None else float(lower)
+    upper = None if upper is None else float(upper)
+    if lower is not None and upper is not None and lower > upper:
+        lower, upper = upper, lower
+    return lower, upper
+
+
 def _range_slice_for_coord(
-    coord: xr.DataArray, value_range: tuple[float, float]
+    coord: xr.DataArray, value_range: tuple[float | None, float | None]
 ) -> slice:
-    start, stop = map(float, value_range)
+    lower, upper = _normalize_range_bounds(value_range)
     values = np.asarray(coord.values)
 
     if values.size < 2:
-        lo, hi = sorted((start, stop))
-        return slice(lo, hi)
+        return slice(lower, upper)
 
     if not erlab.utils.array.is_monotonic(values):
         coord_name = str(coord.name) if coord.name is not None else "<unknown>"
@@ -68,10 +78,18 @@ def _range_slice_for_coord(
         )
 
     if values[0] <= values[-1]:
-        lo, hi = sorted((start, stop))
+        start, stop = lower, upper
     else:
-        lo, hi = sorted((start, stop), reverse=True)
-    return slice(lo, hi)
+        start, stop = upper, lower
+    return slice(start, stop)
+
+
+def _range_limits_for_coord(
+    coord: xr.DataArray, value_range: tuple[float | None, float | None]
+) -> tuple[float, float]:
+    coord_sel = coord.sel({coord.dims[0]: _range_slice_for_coord(coord, value_range)})
+    values = np.asarray(coord_sel.values, dtype=float)
+    return float(np.min(values)), float(np.max(values))
 
 
 def correct_with_edge(
@@ -528,10 +546,12 @@ def _plot_gold_fit(
     else:
         gold.T.qplot(ax=ax0, cmap="copper", gamma=0.5)
 
+    angle_lims = _range_limits_for_coord(gold[along], angle_range)
+    eV_lims = _range_limits_for_coord(gold["eV"], eV_range)
     rect = matplotlib.patches.Rectangle(
-        (angle_range[0], eV_range[0]),
-        np.diff(angle_range)[0],
-        np.diff(eV_range)[0],
+        (angle_lims[0], eV_lims[0]),
+        angle_lims[1] - angle_lims[0],
+        eV_lims[1] - eV_lims[0],
         ec="w",
         alpha=0.5,
         lw=0.75,
@@ -1095,10 +1115,12 @@ def resolution(
         plt.show()
         ax = plt.gca()
         gold_corr.qplot(ax=ax, cmap="copper", gamma=0.5)
+        angle_lims = _range_limits_for_coord(gold_corr["alpha"], angle_range)
+        eV_lims = _range_limits_for_coord(gold_roi["eV"], eV_range_fit)
         rect = matplotlib.patches.Rectangle(
-            (angle_range[0], eV_range_fit[0]),
-            np.diff(angle_range)[0],
-            np.diff(eV_range_fit)[0],
+            (angle_lims[0], eV_lims[0]),
+            angle_lims[1] - angle_lims[0],
+            eV_lims[1] - eV_lims[0],
             ec="w",
             alpha=0.5,
             lw=0.75,
@@ -1167,10 +1189,11 @@ def resolution_roi(
     if plot:
         ax = plt.gca()
         gold_roi.qplot(ax=ax, cmap="copper", gamma=0.5)
+        eV_lims = _range_limits_for_coord(gold_roi["eV"], eV_range)
         ax.fill_between(
             gold_roi.alpha,
-            eV_range[0],
-            eV_range[1],
+            eV_lims[0],
+            eV_lims[1],
             ec="w",
             fc="none",
             alpha=0.4,
