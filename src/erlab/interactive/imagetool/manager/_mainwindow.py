@@ -466,10 +466,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu.addAction(self.preview_action)
         view_menu.addSeparator()
 
-        self.apps_menu: QtWidgets.QMenu = typing.cast(
+        apps_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&Apps")
         )
-        self.apps_menu.addAction(self.ptable_action)
+        apps_menu.addAction(self.ptable_action)
 
         self._dask_menu = DaskMenu(self, "Dask")
         self.menu_bar.addMenu(self._dask_menu)
