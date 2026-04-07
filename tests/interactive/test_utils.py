@@ -78,6 +78,18 @@ def test_icon_action_button_toggle(qtbot, action) -> None:
     assert not button.isChecked()
 
 
+def test_icon_action_button_ignores_deleted_action(qtbot, action) -> None:
+    button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
+    qtbot.addWidget(button)
+
+    action.deleteLater()
+    qtbot.waitUntil(lambda: not qt_is_valid(action))
+
+    button.refresh_icons()
+
+    assert button._action is None
+
+
 @pytest.fixture
 def fit_result_ds():
     rng = np.random.default_rng(1)
