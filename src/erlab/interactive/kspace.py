@@ -595,6 +595,8 @@ class KspaceTool(KspaceToolGUI):
         cmap: str | None = None,
         gamma: float | None = None,
         data_name: str | None = None,
+        initial_normal_emission: tuple[float, float] | None = None,
+        initial_delta: float | None = None,
     ) -> None:
         super().__init__(
             avec=avec, rotate_bz=rotate_bz, centering=centering, cmap=cmap, gamma=gamma
@@ -732,6 +734,16 @@ class KspaceTool(KspaceToolGUI):
             self._offset_spins[k].valueChanged.connect(self._sync_normal_emission_spins)
 
         self._sync_normal_emission_spins()
+        if initial_normal_emission is not None:
+            self.data.kspace.set_normal(
+                initial_normal_emission[0],
+                initial_normal_emission[1],
+                delta=initial_delta,
+            )
+            for key in self.data.kspace._valid_offset_keys:
+                with QtCore.QSignalBlocker(self._offset_spins[key]):
+                    self._offset_spins[key].setValue(self.data.kspace.offsets[key])
+            self._sync_normal_emission_spins()
 
         self._bound_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
         self._resolution_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
@@ -1283,6 +1295,8 @@ def ktool(
     cmap: str | None = None,
     gamma: float | None = None,
     data_name: str | None = None,
+    initial_normal_emission: tuple[float, float] | None = None,
+    initial_delta: float | None = None,
     execute: bool | None = None,
 ) -> KspaceTool:
     """Interactive momentum conversion tool.
@@ -1314,6 +1328,11 @@ def ktool(
     data_name
         Name of the data variable in the generated code. If not provided, the name is
         automatically determined.
+    initial_normal_emission
+        Optional pair of ``(alpha, beta)`` values used once during initialization to
+        seed the normal emission controls and derived angle offsets.
+    initial_delta
+        Optional delta value to apply alongside ``initial_normal_emission``.
 
     """
     if data_name is None:
@@ -1331,6 +1350,8 @@ def ktool(
             cmap=cmap,
             gamma=gamma,
             data_name=data_name,
+            initial_normal_emission=initial_normal_emission,
+            initial_delta=initial_delta,
         )
         win.show()
         win.raise_()

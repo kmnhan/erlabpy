@@ -166,7 +166,9 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
   Holding {kbd}`Alt` while opening the menu switches many actions to cropped mode, which crops the data to what is currently visible in the plot before performing the action. This is useful for conducting analysis on a specific region.
   :::
 
-- Use {guilabel}`Edit → Rotation Guidelines` to add quick measurement aids. The guideline angles feed directly into the {guilabel}`Rotate` dialog so you can align your sample quickly.
+- Use {guilabel}`Edit → Rotation Guidelines` to add guidelines for azimuthal offsets or symmetry operations.
+
+  The guideline center moves together with the cursor. The center and the angle of the guidelines feed directly into the {guilabel}`Rotate` dialog and {guilabel}`ktool` for fast alignment.
 
 - Use {guilabel}`View → Open ktool` and {guilabel}`View → Open meshtool` for the helper tools launched from the main menu rather than the plot context menu.
 
@@ -194,7 +196,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most transforms are destructive yet provide an {guilabel}`Open in New Window` checkbox so you can keep the original data. When {guilabel}`Copy Code` is available, the generated snippet is placed on your clipboard, ready to paste into a script or notebook for reproducibility.
 
-- {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the matching angle and pivot.
+- {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the angle and center from the guideline.
 - {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
 - {guilabel}`Edit → Symmetrize` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
 - {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.

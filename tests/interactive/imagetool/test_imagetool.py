@@ -83,7 +83,12 @@ def _press_alt(monkeypatch):
 
 
 def _assert_guideline_state(
-    plot_item, *, count: int, angle: float, offset: tuple[float, float]
+    plot_item,
+    *,
+    count: int,
+    angle: float,
+    offset: tuple[float, float],
+    follow_cursor: bool = True,
 ) -> None:
     assert plot_item.is_guidelines_visible
     assert len(plot_item._guidelines_items) == count + 1
@@ -93,6 +98,7 @@ def _assert_guideline_state(
         "count": count,
         "angle": angle,
         "offset": offset,
+        "follow_cursor": follow_cursor,
     }
 
 
@@ -1609,6 +1615,81 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_guidelines_start_at_active_cursor(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    area = win.slicer_area
+    plot_item = area.main_image
+
+    area.add_cursor()
+    area.set_value(0, 1.0)
+    area.set_value(1, 3.0)
+    plot_item.set_guidelines(3)
+
+    _assert_guideline_state(plot_item, count=3, angle=0.0, offset=(1.0, 3.0))
+
+    win.close()
+
+
+def test_itool_guidelines_follow_active_cursor(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    area = win.slicer_area
+    plot_item = area.main_image
+    plot_item.set_guidelines(3)
+    plot_item.set_guidelines_follow_cursor(True)
+
+    target = plot_item._guidelines_items[-1]
+    assert not target.isVisible()
+    assert not target.movable
+    _assert_guideline_state(
+        plot_item, count=3, angle=0.0, offset=(2.0, 2.0), follow_cursor=True
+    )
+    assert all(item.pos() == target.pos() for item in plot_item._guidelines_items[:-1])
+
+    area.set_value(0, 4.0)
+    area.set_value(1, 1.0)
+    _assert_guideline_state(
+        plot_item, count=3, angle=0.0, offset=(4.0, 1.0), follow_cursor=True
+    )
+    assert all(item.pos() == target.pos() for item in plot_item._guidelines_items[:-1])
+
+    area.add_cursor()
+    area.set_value(0, 0.0)
+    area.set_value(1, 3.0)
+    _assert_guideline_state(
+        plot_item, count=3, angle=0.0, offset=(0.0, 3.0), follow_cursor=True
+    )
+    assert all(item.pos() == target.pos() for item in plot_item._guidelines_items[:-1])
+
+    plot_item.set_guidelines_follow_cursor(False)
+    assert target.isVisible()
+    assert target.movable
+    _assert_guideline_state(
+        plot_item, count=3, angle=0.0, offset=(0.0, 3.0), follow_cursor=False
+    )
+
+    area.set_value(0, 2.0)
+    area.set_value(1, 4.0)
+    _assert_guideline_state(
+        plot_item, count=3, angle=0.0, offset=(0.0, 3.0), follow_cursor=False
+    )
+
+    win.close()
+
+
 def test_itool_guideline_state_roundtrip(qtbot) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
     win = itool(data, execute=False)
@@ -1619,16 +1700,19 @@ def test_itool_guideline_state_roundtrip(qtbot) -> None:
 
     plot_item.set_guidelines(3)
     plot_item._guidelines_items[0].setAngle(60.0)
-    plot_item._guidelines_items[-1].setPos((3.0, 3.1))
 
     state_with_guidelines = copy.deepcopy(plot_item._serializable_state)
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+    _assert_guideline_state(
+        plot_item, count=3, angle=-30.0, offset=(2.0, 2.0), follow_cursor=True
+    )
 
     plot_item._serializable_state = state_without_guidelines
     assert not plot_item.is_guidelines_visible
 
     plot_item._serializable_state = state_with_guidelines
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+    _assert_guideline_state(
+        plot_item, count=3, angle=-30.0, offset=(2.0, 2.0), follow_cursor=True
+    )
 
     win.close()
 
@@ -1641,7 +1725,6 @@ def test_itool_guideline_state_dataset_roundtrip(qtbot) -> None:
     plot_item = win.slicer_area.main_image
     plot_item.set_guidelines(3)
     plot_item._guidelines_items[0].setAngle(60.0)
-    plot_item._guidelines_items[-1].setPos((3.0, 3.1))
 
     restored = ImageTool.from_dataset(win.to_dataset())
     qtbot.addWidget(restored)
@@ -1650,10 +1733,96 @@ def test_itool_guideline_state_dataset_roundtrip(qtbot) -> None:
         restored.slicer_area.main_image,
         count=3,
         angle=-30.0,
-        offset=(3.0, 3.1),
+        offset=(2.0, 2.0),
+        follow_cursor=True,
     )
 
     restored.close()
+    win.close()
+
+
+def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    captured: dict[str, object] = {}
+    tool = QtWidgets.QWidget()
+
+    def fake_ktool(data, **kwargs):
+        captured["data"] = data
+        captured["kwargs"] = kwargs
+        return tool
+
+    monkeypatch.setattr(erlab.interactive, "ktool", fake_ktool)
+
+    win.slicer_area.set_value(0, 1.0)
+    win.slicer_area.set_value(2, 4.0)
+    win.slicer_area.open_in_ktool()
+
+    assert captured["data"] is win.slicer_area.data
+    assert captured["kwargs"]["initial_normal_emission"] == (1.0, 4.0)
+    assert captured["kwargs"]["initial_delta"] is None
+
+    win.close()
+
+
+def test_itool_open_in_ktool_uses_guideline_seed_on_alpha_beta_plane(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["3D"].qsel(eV=2.0).copy(), execute=False)
+    qtbot.addWidget(win)
+
+    captured: dict[str, object] = {}
+    tool = QtWidgets.QWidget()
+
+    def fake_ktool(data, **kwargs):
+        captured["data"] = data
+        captured["kwargs"] = kwargs
+        return tool
+
+    monkeypatch.setattr(erlab.interactive, "ktool", fake_ktool)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.set_guidelines(3)
+    plot_item._guidelines_items[0].setAngle(60.0)
+    plot_item._guidelines_items[-1].setPos((1.0, 4.0))
+    win.slicer_area.open_in_ktool()
+
+    assert captured["kwargs"]["initial_normal_emission"] == (1.0, 4.0)
+    assert captured["kwargs"]["initial_delta"] == pytest.approx(30.0)
+
+    win.close()
+
+
+def test_itool_open_in_ktool_ignores_non_alpha_beta_guidelines(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    captured: dict[str, object] = {}
+    tool = QtWidgets.QWidget()
+
+    def fake_ktool(data, **kwargs):
+        captured["data"] = data
+        captured["kwargs"] = kwargs
+        return tool
+
+    monkeypatch.setattr(erlab.interactive, "ktool", fake_ktool)
+
+    win.slicer_area.set_value(0, 4.0)
+    win.slicer_area.set_value(2, 1.0)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.set_guidelines(3)
+    plot_item._guidelines_items[0].setAngle(60.0)
+    plot_item._guidelines_items[-1].setPos((0.0, 3.0))
+
+    win.slicer_area.open_in_ktool()
+
+    assert captured["kwargs"]["initial_normal_emission"] == (4.0, 1.0)
+    assert captured["kwargs"]["initial_delta"] is None
+
     win.close()
 
 
@@ -1666,34 +1835,69 @@ def test_itool_guideline_undo_redo(qtbot) -> None:
     plot_item = area.main_image
 
     plot_item.set_guidelines(3)
+    plot_item.set_guidelines_follow_cursor(False)
     assert area.undoable
 
     area.undo()
-    assert not plot_item.is_guidelines_visible
+    _assert_guideline_state(plot_item, count=3, angle=0.0, offset=(2.0, 2.0))
 
     area.redo()
     initial_offset = tuple(plot_item._guideline_offset)
-    _assert_guideline_state(plot_item, count=3, angle=0.0, offset=initial_offset)
+    _assert_guideline_state(
+        plot_item, count=3, angle=0.0, offset=initial_offset, follow_cursor=False
+    )
 
     plot_item._guidelines_items[0]._sigAngleDragStarted.emit()
     plot_item._guidelines_items[0].setAngle(60.0)
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=initial_offset)
+    _assert_guideline_state(
+        plot_item,
+        count=3,
+        angle=-30.0,
+        offset=initial_offset,
+        follow_cursor=False,
+    )
 
     area.undo()
-    _assert_guideline_state(plot_item, count=3, angle=0.0, offset=initial_offset)
+    _assert_guideline_state(
+        plot_item, count=3, angle=0.0, offset=initial_offset, follow_cursor=False
+    )
 
     area.redo()
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=initial_offset)
+    _assert_guideline_state(
+        plot_item,
+        count=3,
+        angle=-30.0,
+        offset=initial_offset,
+        follow_cursor=False,
+    )
 
     plot_item._guidelines_items[-1].sigPositionDragStarted.emit()
     plot_item._guidelines_items[-1].setPos((3.0, 3.1))
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+    _assert_guideline_state(
+        plot_item,
+        count=3,
+        angle=-30.0,
+        offset=(3.0, 3.1),
+        follow_cursor=False,
+    )
 
     area.undo()
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=initial_offset)
+    _assert_guideline_state(
+        plot_item,
+        count=3,
+        angle=-30.0,
+        offset=initial_offset,
+        follow_cursor=False,
+    )
 
     area.redo()
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+    _assert_guideline_state(
+        plot_item,
+        count=3,
+        angle=-30.0,
+        offset=(3.0, 3.1),
+        follow_cursor=False,
+    )
 
     win.close()
 
@@ -1705,6 +1909,7 @@ def test_itool_guideline_transpose_undo_redo(qtbot) -> None:
 
     plot_item = win.slicer_area.main_image
     plot_item.set_guidelines(3)
+    plot_item.set_guidelines_follow_cursor(False)
     plot_item._guidelines_items[0].setAngle(60.0)
     plot_item._guidelines_items[-1].setPos((3.0, 3.1))
 
@@ -1713,7 +1918,13 @@ def test_itool_guideline_transpose_undo_redo(qtbot) -> None:
 
     win.slicer_area.undo()
     qtbot.wait_until(lambda: plot_item.is_guidelines_visible, timeout=1000)
-    _assert_guideline_state(plot_item, count=3, angle=-30.0, offset=(3.0, 3.1))
+    _assert_guideline_state(
+        plot_item,
+        count=3,
+        angle=-30.0,
+        offset=(3.0, 3.1),
+        follow_cursor=False,
+    )
 
     win.slicer_area.redo()
     qtbot.wait_until(lambda: not plot_item.is_guidelines_visible, timeout=1000)

@@ -287,6 +287,85 @@ def test_ktool_normal_emission_zero_offsets_are_finite_for_da(qtbot, anglemap) -
 
 
 @pytest.mark.parametrize(
+    ("configuration", "coords", "reference_offsets", "initial_guess"),
+    [
+        pytest.param(
+            AxesConfiguration.Type1,
+            {"xi": 7.25},
+            {"delta": 12.5, "xi": 2.5, "beta": -3.75},
+            [4.75, -3.75],
+            id="Type1",
+        ),
+        pytest.param(
+            AxesConfiguration.Type2DA,
+            {"xi": 6.75, "chi": -4.0},
+            {"delta": -7.5, "chi": 1.25, "xi": 2.5},
+            [-5.25, 4.25],
+            id="Type2DA",
+        ),
+    ],
+)
+def test_ktool_initial_normal_emission_seed(
+    qtbot,
+    anglemap,
+    configuration: AxesConfiguration,
+    coords: dict[str, float],
+    reference_offsets: dict[str, float],
+    initial_guess: list[float],
+) -> None:
+    data = _make_ktool_data(anglemap, configuration, coords)
+    alpha_normal, beta_normal = _solve_normal_emission_angles(
+        configuration, coords, reference_offsets, initial_guess
+    )
+    expected = data.copy(deep=True)
+    expected.kspace.set_normal(alpha_normal, beta_normal)
+
+    win = ktool(
+        data,
+        execute=False,
+        initial_normal_emission=(alpha_normal, beta_normal),
+    )
+    qtbot.addWidget(win)
+
+    assert win._normal_emission_spins["alpha"].value() == pytest.approx(
+        alpha_normal, abs=1e-3
+    )
+    assert win._normal_emission_spins["beta"].value() == pytest.approx(
+        beta_normal, abs=1e-3
+    )
+    for key in expected.kspace._valid_offset_keys:
+        assert win._offset_spins[key].value() == pytest.approx(
+            expected.kspace.offsets[key]
+        )
+
+
+def test_ktool_initial_delta_overrides_delta(qtbot, anglemap) -> None:
+    data = _make_ktool_data(anglemap, AxesConfiguration.Type2, {"xi": -6.5})
+    alpha_normal, beta_normal = _solve_normal_emission_angles(
+        AxesConfiguration.Type2,
+        {"xi": -6.5},
+        {"delta": -8.0, "xi": -1.75, "beta": 2.25},
+        [-4.75, 2.25],
+    )
+    expected = data.copy(deep=True)
+    expected.kspace.set_normal(alpha_normal, beta_normal, delta=14.5)
+
+    win = ktool(
+        data,
+        execute=False,
+        initial_normal_emission=(alpha_normal, beta_normal),
+        initial_delta=14.5,
+    )
+    qtbot.addWidget(win)
+
+    assert win._offset_spins["delta"].value() == pytest.approx(14.5)
+    for key in expected.kspace._valid_offset_keys:
+        assert win._offset_spins[key].value() == pytest.approx(
+            expected.kspace.offsets[key]
+        )
+
+
+@pytest.mark.parametrize(
     ("configuration", "coords", "reference_offsets"),
     [
         pytest.param(
