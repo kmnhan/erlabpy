@@ -26,7 +26,12 @@ from erlab.interactive.ptable._shared import (
     _set_foreground,
     _theme_colors,
 )
-from erlab.interactive.ptable._table import PeriodicTableView, PeriodicTableWidget
+from erlab.interactive.ptable._table import (
+    PeriodicTableView,
+    PeriodicTableWidget,
+    _CategoryReferenceDialog,
+    _popup_font,
+)
 
 __all__ = ["PeriodicTableWindow", "ptable"]
 
@@ -196,15 +201,15 @@ class _SuffixLineEdit(QtWidgets.QLineEdit):
 
 
 class _SearchPopup(QtWidgets.QListWidget):
-    activated = QtCore.Signal((str,), (QtCore.QModelIndex,))
-    highlighted = QtCore.Signal((QtCore.QModelIndex,))
+    completion_index_activated = QtCore.Signal(QtCore.QModelIndex)
+    completion_index_highlighted = QtCore.Signal(QtCore.QModelIndex)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self._complete_handler: Callable[[], None] | None = None
         self._max_visible_items = 10
 
         self.setObjectName("ptable-search-popup")
+        self.setFont(_popup_font())
         self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -221,34 +226,10 @@ class _SearchPopup(QtWidgets.QListWidget):
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
         self.hide()
 
-        self.itemActivated.connect(self._emit_item_activated)
-        # Use the item-view press signal as the primary click activation path.
-        # The popup viewport owns mouse interaction, so relying only on the
-        # Python-level mousePressEvent override can miss real user clicks.
+        # The popup viewport owns mouse interaction, so the view emits model indexes
+        # directly and leaves "completer" semantics to the controller object.
         self.pressed.connect(self._handle_pressed_index)
         self.currentRowChanged.connect(self._emit_highlighted_index)
-
-    def popup(self) -> _SearchPopup:
-        return self
-
-    def complete(self) -> None:
-        if self._complete_handler is not None:
-            self._complete_handler()
-
-    def set_complete_handler(self, handler: Callable[[], None]) -> None:
-        self._complete_handler = handler
-
-    def setCaseSensitivity(self, _: object) -> None:
-        return None
-
-    def setCompletionMode(self, _: object) -> None:
-        return None
-
-    def setFilterMode(self, _: object) -> None:
-        return None
-
-    def setCompletionPrefix(self, _: str) -> None:
-        return None
 
     def setMaxVisibleItems(self, value: int) -> None:
         self._max_visible_items = max(1, int(value))
@@ -283,7 +264,7 @@ class _SearchPopup(QtWidgets.QListWidget):
             return
         if index.row() != self.currentRow():
             self.setCurrentRow(index.row())
-        self.activated[QtCore.QModelIndex].emit(index)
+        self.completion_index_activated.emit(index)
 
     def _set_current_index_from_point(self, point: QtCore.QPoint) -> None:
         index = self.indexAt(point)
@@ -291,24 +272,66 @@ class _SearchPopup(QtWidgets.QListWidget):
         if target_row != self.currentRow():
             self.setCurrentRow(target_row)
 
-    def _emit_item_activated(self, item: QtWidgets.QListWidgetItem) -> None:
-        row = self.row(item)
-        if row < 0:
-            return
-        model = self.model()
-        if model is None:
-            return
-        model_index = model.index(row, 0)
-        self.activated[QtCore.QModelIndex].emit(model_index)
-
     def _emit_highlighted_index(self, row: int) -> None:
         if row < 0:
-            self.highlighted[QtCore.QModelIndex].emit(QtCore.QModelIndex())
+            self.completion_index_highlighted.emit(QtCore.QModelIndex())
             return
         model = self.model()
         if model is None:
             return
-        self.highlighted[QtCore.QModelIndex].emit(model.index(row, 0))
+        self.completion_index_highlighted.emit(model.index(row, 0))
+
+
+class _SearchCompleter(QtCore.QObject):
+    activated = QtCore.Signal((str,), (QtCore.QModelIndex,))
+    highlighted = QtCore.Signal((QtCore.QModelIndex,))
+
+    def __init__(
+        self,
+        popup: _SearchPopup,
+        parent: QtCore.QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._popup = popup
+        self._complete_handler: Callable[[], None] | None = None
+
+        self._popup.completion_index_activated.connect(
+            self.activated[QtCore.QModelIndex].emit
+        )
+        self._popup.completion_index_highlighted.connect(
+            self.highlighted[QtCore.QModelIndex].emit
+        )
+
+    def popup(self) -> _SearchPopup:
+        return self._popup
+
+    def model(self) -> QtCore.QAbstractItemModel | None:
+        return self._popup.model()
+
+    def complete(self) -> None:
+        if self._complete_handler is not None:
+            self._complete_handler()
+
+    def set_complete_handler(self, handler: Callable[[], None]) -> None:
+        self._complete_handler = handler
+
+    def setCaseSensitivity(self, _: object) -> None:
+        return None
+
+    def setCompletionMode(self, _: object) -> None:
+        return None
+
+    def setFilterMode(self, _: object) -> None:
+        return None
+
+    def setCompletionPrefix(self, _: str) -> None:
+        return None
+
+    def setMaxVisibleItems(self, value: int) -> None:
+        self._popup.setMaxVisibleItems(value)
+
+    def maxVisibleItems(self) -> int:
+        return self._popup.maxVisibleItems()
 
 
 @dataclass(frozen=True)
@@ -411,7 +434,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self.search_edit.completion_key_handler = self._handle_search_key_press
         self.search_edit.focus_in_handler = self._handle_search_focus_in
         self.search_popup = _SearchPopup(self)
-        self.search_completer = self.search_popup
+        self.search_completer = _SearchCompleter(self.search_popup, self)
         self.search_completer.set_complete_handler(self._show_search_popup)
         self.search_completer.setCaseSensitivity(
             QtCore.Qt.CaseSensitivity.CaseInsensitive
@@ -551,6 +574,8 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
 
         self.periodic_table = PeriodicTableWidget()
         self.category_legend = self.periodic_table.category_legend
+        self.reference_dialog = _CategoryReferenceDialog(self)
+        self.category_legend.set_reference_dialog(self.reference_dialog)
         self.table_view = PeriodicTableView(self.periodic_table, self.table_panel)
         self.periodic_table.hovered.connect(self._handle_card_hovered)
         self.periodic_table.selected.connect(self._handle_card_selected)
@@ -745,6 +770,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
                 self._application.focusChanged.disconnect(
                     self._handle_application_focus_changed
                 )
+        self.category_legend.cleanup()
         self._hide_search_popup(reset_navigation=False)
         super().closeEvent(event)
 
@@ -830,11 +856,15 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
 
     def _is_search_popup_target(self, watched: QtCore.QObject | None) -> bool:
         widget = watched if isinstance(watched, QtWidgets.QWidget) else None
-        while widget is not None:
-            if widget in {self.search_edit, self.search_popup}:
-                return True
-            widget = widget.parentWidget()
-        return False
+        return bool(
+            widget is not None
+            and (
+                widget is self.search_edit
+                or self.search_edit.isAncestorOf(widget)
+                or widget is self.search_popup
+                or self.search_popup.isAncestorOf(widget)
+            )
+        )
 
     def _search_completion_at(self, row: int) -> _SearchCompletion | None:
         if 0 <= row < len(self._search_completions):

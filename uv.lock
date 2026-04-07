@@ -910,6 +910,7 @@ viz = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "colorspacious" },
     { name = "commitizen" },
     { name = "coverage" },
     { name = "cz-changeup" },
@@ -1007,6 +1008,7 @@ provides-extras = ["complete", "viz", "io", "perf", "misc"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "colorspacious", specifier = ">=1.1.2" },
     { name = "commitizen", specifier = ">=4.3.0" },
     { name = "coverage", specifier = ">=7.10.5" },
     { name = "cz-changeup", specifier = ">=1.1.2" },

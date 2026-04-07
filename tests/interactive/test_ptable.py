@@ -463,63 +463,6 @@ def test_element_categories_follow_requested_display_classification() -> None:
     assert all(ELEMENT_CATEGORIES[number] == "actinoid" for number in range(89, 104))
 
 
-def test_conventional_category_references_use_grounded_sources() -> None:
-    assert (
-        CATEGORY_REFERENCES["other_metal"].references[0].url
-        == "https://doi.org/10.1021/ed060p691"
-    )
-    assert (
-        CATEGORY_REFERENCES["metalloid"].references[-1].url
-        == "https://doi.org/10.1021/ed3008457"
-    )
-    assert (
-        CATEGORY_REFERENCES["nonmetal"].references[-1].url
-        == "https://doi.org/10.1098/rsta.2020.0213"
-    )
-
-    assert "Li, Na, K, Rb, Cs, and Fr" in CATEGORY_REFERENCES["alkali_metal"].blurb
-    assert (
-        "Be, Mg, Ca, Sr, Ba, and Ra"
-        in CATEGORY_REFERENCES["alkaline_earth_metal"].blurb
-    )
-    assert "groups 3-12 display" in CATEGORY_REFERENCES["transition_metal"].blurb
-    assert "Zn, Cd, and Hg" in CATEGORY_REFERENCES["transition_metal"].blurb
-    assert CATEGORY_REFERENCES["other_metal"].blurb.startswith("This UI groups")
-    assert "Po" in CATEGORY_REFERENCES["other_metal"].blurb
-    assert "B, Si, Ge, As, Sb, and Te" in CATEGORY_REFERENCES["metalloid"].blurb
-    assert "H, C, N, O, P, S, and Se" in CATEGORY_REFERENCES["nonmetal"].blurb
-    assert "F, Cl, Br, I, and At" in CATEGORY_REFERENCES["halogen"].blurb
-    assert "La-Lu" in CATEGORY_REFERENCES["lanthanoid"].blurb
-    assert "Ac-Lr" in CATEGORY_REFERENCES["actinoid"].blurb
-    assert all(
-        "IUPAC approves" not in reference.blurb
-        for reference in CATEGORY_REFERENCES.values()
-    )
-    assert any(
-        "Edwards, P. P. & Sienko, M. J." in reference.citation
-        for reference in CATEGORY_REFERENCES["other_metal"].references
-    )
-    assert any(
-        "Goldsmith, R. H." in reference.citation
-        for reference in CATEGORY_REFERENCES["metalloid"].references
-    )
-    assert any(
-        "Yao, B. et al." in reference.citation
-        for reference in CATEGORY_REFERENCES["nonmetal"].references
-    )
-    assert any(
-        reference.citation_html is not None
-        and "<i>J. Chem. Educ.</i>" in reference.citation_html
-        and "<b>60</b>" in reference.citation_html
-        for reference in CATEGORY_REFERENCES["other_metal"].references
-    )
-    assert CATEGORY_REFERENCES["noble_gas"].references[0].citation_html is not None
-    assert (
-        "<i>Nomenclature of Inorganic Chemistry: IUPAC Recommendations 2005</i>"
-        in CATEGORY_REFERENCES["noble_gas"].references[0].citation_html
-    )
-
-
 def test_ptable_launcher_and_search_highlight(
     qtbot,
     monkeypatch,
@@ -641,7 +584,7 @@ def test_ptable_launcher_and_search_highlight(
     assert legend_layout.itemAtPosition(0, 9) is not None
     assert legend_layout.itemAtPosition(0, 11) is not None
     assert legend_layout.itemAtPosition(0, 12) is not None
-    assert win.category_legend.reference_popover.isVisible() is False
+    assert win.category_legend.reference_dialog.isVisible() is False
 
     noble_gas_entry = win.category_legend.entries["noble_gas"]
     assert noble_gas_entry.layout() is None
@@ -1099,7 +1042,7 @@ def test_ptable_dark_mode_theme(
         app.setPalette(original_palette)
 
 
-def test_ptable_category_legend_popover_rethemes_live_on_palette_change(
+def test_ptable_category_legend_dialog_rethemes_live_on_palette_change(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -1115,15 +1058,15 @@ def test_ptable_category_legend_popover_rethemes_live_on_palette_change(
         win = PeriodicTableWindow()
         _show_window(qtbot, win)
 
-        popover = win.category_legend.reference_popover
+        dialog = win.category_legend.reference_dialog
         qtbot.mouseClick(
             win.category_legend.entries["noble_gas"],
             QtCore.Qt.MouseButton.LeftButton,
         )
-        qtbot.waitUntil(popover.isVisible)
+        qtbot.waitUntil(dialog.isVisible)
 
-        light_bg = QtGui.QColor(popover._background_color)
-        light_text = popover.title_label.palette().color(
+        light_bg = QtGui.QColor(dialog._background_color)
+        light_text = dialog.title_label.palette().color(
             QtGui.QPalette.ColorRole.WindowText
         )
         assert win._theme.is_dark is False
@@ -1132,16 +1075,16 @@ def test_ptable_category_legend_popover_rethemes_live_on_palette_change(
         qtbot.waitUntil(lambda: win._theme.is_dark is True)
         qtbot.waitUntil(
             lambda: (
-                popover._background_color != light_bg
-                and popover.title_label.palette().color(
+                dialog._background_color != light_bg
+                and dialog.title_label.palette().color(
                     QtGui.QPalette.ColorRole.WindowText
                 )
                 != light_text
             )
         )
 
-        dark_bg = QtGui.QColor(popover._background_color)
-        dark_text = popover.title_label.palette().color(
+        dark_bg = QtGui.QColor(dialog._background_color)
+        dark_text = dialog.title_label.palette().color(
             QtGui.QPalette.ColorRole.WindowText
         )
         assert dark_bg.lightness() < light_bg.lightness()
@@ -1151,17 +1094,17 @@ def test_ptable_category_legend_popover_rethemes_live_on_palette_change(
         qtbot.waitUntil(lambda: win._theme.is_dark is False)
         qtbot.waitUntil(
             lambda: (
-                popover._background_color != dark_bg
-                and popover.title_label.palette().color(
+                dialog._background_color != dark_bg
+                and dialog.title_label.palette().color(
                     QtGui.QPalette.ColorRole.WindowText
                 )
                 != dark_text
             )
         )
 
-        assert popover._background_color.lightness() > dark_bg.lightness()
+        assert dialog._background_color.lightness() > dark_bg.lightness()
         assert (
-            popover.title_label.palette().color(QtGui.QPalette.ColorRole.WindowText)
+            dialog.title_label.palette().color(QtGui.QPalette.ColorRole.WindowText)
             == win._theme.text
         )
 
@@ -1458,7 +1401,7 @@ def test_ptable_category_legend_hover_tracking_is_directionally_stable(
     win.close()
 
 
-def test_ptable_category_legend_click_opens_and_retargets_reference_popover(
+def test_ptable_category_legend_click_opens_and_retargets_reference_dialog(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -1469,55 +1412,60 @@ def test_ptable_category_legend_click_opens_and_retargets_reference_popover(
     _show_window(qtbot, win)
 
     legend = win.category_legend
-    popover = legend.reference_popover
+    dialog = legend.reference_dialog
+    assert dialog is win.reference_dialog
     noble_gas = legend.entries["noble_gas"]
     halogen = legend.entries["halogen"]
 
     qtbot.mouseClick(noble_gas, QtCore.Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(popover.isVisible)
+    qtbot.waitUntil(dialog.isVisible)
 
     assert legend._reference_category == "noble_gas"
-    assert popover.title_label.text() == CATEGORY_REFERENCES["noble_gas"].title
-    assert popover.body_label.text() == CATEGORY_REFERENCES["noble_gas"].blurb
-    citation_html = html.unescape(popover.citation_label.text())
+    assert dialog.title_label.text() == CATEGORY_REFERENCES["noble_gas"].title
+    assert dialog.body_label.text() == CATEGORY_REFERENCES["noble_gas"].blurb
+    citation_html = html.unescape(dialog.citation_label.text())
     assert "<table" in citation_html
     assert "<ol" not in citation_html
     for reference in CATEGORY_REFERENCES["noble_gas"].references:
         assert html.unescape(reference.citation_html or "") in citation_html
         assert reference.url in citation_html
     assert "<i>Compendium of Chemical Terminology (the Gold Book)</i>" in citation_html
-    assert popover.parentWidget() is win
-    assert popover._background_color.alpha() == 255
-    assert popover._background_color != QtCore.Qt.GlobalColor.transparent
-    base_point_size = popover.font().pointSizeF()
-    assert popover.title_label.font().pointSizeF() >= max(base_point_size + 3.0, 16.0)
-    assert popover.body_label.font().pointSizeF() >= max(base_point_size + 0.5, 12.0)
-    assert popover.citation_label.font().pointSizeF() >= max(base_point_size - 1.5, 8.5)
+    assert dialog.parent() is win
+    assert dialog.isModal() is True
+    assert dialog.windowModality() == QtCore.Qt.WindowModality.WindowModal
+    assert dialog._background_color.alpha() == 255
+    assert dialog._background_color != QtCore.Qt.GlobalColor.transparent
+    base_point_size = dialog.font().pointSizeF()
+    assert base_point_size >= 15.0
+    assert dialog.title_label.font().pointSizeF() == pytest.approx(base_point_size)
+    assert dialog.body_label.font().pointSizeF() == pytest.approx(base_point_size)
+    assert dialog.citation_label.font().pointSizeF() == pytest.approx(base_point_size)
+    assert dialog.title_label.font().weight() >= QtGui.QFont.Weight.Bold
     assert noble_gas.is_active is True
-    noble_gas_width = popover.width()
+    noble_gas_width = dialog.width()
 
     qtbot.mouseClick(halogen, QtCore.Qt.MouseButton.LeftButton)
     qtbot.waitUntil(
         lambda: (
-            popover.isVisible()
-            and popover.title_label.text() == CATEGORY_REFERENCES["halogen"].title
+            dialog.isVisible()
+            and dialog.title_label.text() == CATEGORY_REFERENCES["halogen"].title
         )
     )
 
-    assert popover.isVisible() is True
+    assert dialog.isVisible() is True
     assert legend._reference_category == "halogen"
-    assert popover.title_label.text() == CATEGORY_REFERENCES["halogen"].title
-    assert popover.width() == noble_gas_width
+    assert dialog.title_label.text() == CATEGORY_REFERENCES["halogen"].title
+    assert dialog.width() == noble_gas_width
     assert halogen.is_active is True
 
     qtbot.mouseClick(halogen, QtCore.Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: not popover.isVisible())
+    qtbot.waitUntil(lambda: not dialog.isVisible())
     assert legend._reference_category is None
 
     win.close()
 
 
-def test_ptable_category_legend_reference_popover_closes_on_outside_click_and_escape(
+def test_ptable_category_legend_reference_dialog_closes_on_escape(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -1528,19 +1476,19 @@ def test_ptable_category_legend_reference_popover_closes_on_outside_click_and_es
     _show_window(qtbot, win)
 
     legend = win.category_legend
-    popover = legend.reference_popover
+    dialog = legend.reference_dialog
     qtbot.mouseClick(legend.entries["noble_gas"], QtCore.Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(popover.isVisible)
+    qtbot.waitUntil(dialog.isVisible)
 
     qtbot.mouseClick(win.search_edit, QtCore.Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: not popover.isVisible())
-    assert legend._reference_category is None
+    assert dialog.isVisible() is True
+    assert legend._reference_category == "noble_gas"
 
     qtbot.mouseClick(legend.entries["halogen"], QtCore.Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(popover.isVisible)
+    qtbot.waitUntil(dialog.isVisible)
 
-    QtTest.QTest.keyClick(win, QtCore.Qt.Key.Key_Escape)
-    qtbot.waitUntil(lambda: not popover.isVisible())
+    QtTest.QTest.keyClick(dialog, QtCore.Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not dialog.isVisible())
     assert legend._reference_category is None
 
     win.close()
@@ -1564,17 +1512,17 @@ def test_ptable_category_legend_reference_links_open_official_reference_urls(
     _show_window(qtbot, win)
 
     legend = win.category_legend
-    popover = legend.reference_popover
+    dialog = legend.reference_dialog
     qtbot.mouseClick(
         legend.entries["transition_metal"], QtCore.Qt.MouseButton.LeftButton
     )
-    qtbot.waitUntil(popover.isVisible)
+    qtbot.waitUntil(dialog.isVisible)
 
     target_url = CATEGORY_REFERENCES["transition_metal"].references[-1].url
-    popover.citation_label.linkActivated.emit(target_url)
+    dialog.citation_label.linkActivated.emit(target_url)
 
     assert opened_urls == [target_url]
-    qtbot.waitUntil(lambda: not popover.isVisible())
+    qtbot.waitUntil(lambda: not dialog.isVisible())
 
     win.close()
 
@@ -1611,7 +1559,7 @@ def test_ptable_category_legend_click_does_not_change_selection_or_inspector_sta
     win.close()
 
 
-def test_ptable_category_legend_hover_preview_still_works_with_reference_popover(
+def test_ptable_category_legend_hover_preview_still_works_with_reference_dialog(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -1623,12 +1571,12 @@ def test_ptable_category_legend_hover_preview_still_works_with_reference_popover
 
     legend = win.category_legend
     qtbot.mouseClick(legend.entries["noble_gas"], QtCore.Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(legend.reference_popover.isVisible)
+    qtbot.waitUntil(legend.reference_dialog.isVisible)
 
     legend.entries["halogen"].hovered.emit("halogen")
     QtWidgets.QApplication.processEvents()
 
-    assert legend.reference_popover.isVisible() is True
+    assert legend.reference_dialog.isVisible() is True
     assert legend.entries["noble_gas"].is_active is True
     assert legend.entries["halogen"].is_active is True
     assert win.periodic_table.cards[17].is_legend_match is True

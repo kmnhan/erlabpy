@@ -184,7 +184,7 @@ CATEGORY_REFERENCES: dict[str, CategoryReference] = {
     "transition_metal": CategoryReference(
         title="Transition metals",
         blurb=(
-            "This UI uses the common groups 3-12 display for transition metals. "
+            "This app uses the common groups 3-12 display for transition metals. "
             "That includes Zn, Cd, and Hg, although stricter definitions do not "
             "always treat group 12 as transition elements."
         ),
@@ -193,7 +193,7 @@ CATEGORY_REFERENCES: dict[str, CategoryReference] = {
     "other_metal": CategoryReference(
         title="Other metals",
         blurb=(
-            "This UI groups Al, Ga, In, Sn, Tl, Pb, Bi, Po, Nh, Fl, Mc, and Lv as "
+            "This app groups Al, Ga, In, Sn, Tl, Pb, Bi, Po, Nh, Fl, Mc, and Lv as "
             "other metals. It is a display category for the remaining p-block "
             "metals, including polonium."
         ),
@@ -202,7 +202,7 @@ CATEGORY_REFERENCES: dict[str, CategoryReference] = {
     "metalloid": CategoryReference(
         title="Metalloids",
         blurb=(
-            "This UI uses the common six-element metalloid set: B, Si, Ge, As, Sb, "
+            "This app uses the common six-element metalloid set: B, Si, Ge, As, Sb, "
             "and Te. Borderline cases such as polonium are not included."
         ),
         references=(
@@ -214,7 +214,7 @@ CATEGORY_REFERENCES: dict[str, CategoryReference] = {
     "nonmetal": CategoryReference(
         title="Non-metals",
         blurb=(
-            "This UI groups H, C, N, O, P, S, and Se as non-metals after "
+            "This app groups H, C, N, O, P, S, and Se as non-metals after "
             "separating the halogens and noble gases. It is a display label for "
             "the remaining nonmetallic elements."
         ),

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab
 from erlab.interactive.ptable._metadata import (
     CATEGORY_COLORS,
     CATEGORY_REFERENCES,
@@ -33,6 +34,12 @@ from erlab.interactive.ptable._shared import (
 _CONFIG_TOOLTIP_PATTERN = re.compile(
     r"(?P<shell>\d+)(?P<orb>[spdfg])(?P<sup><sup>\d+</sup>)?"
 )
+
+
+def _popup_font(*, minimum_point_size: float = 15.0) -> QtGui.QFont:
+    font = QtGui.QFont(QtWidgets.QApplication.font())
+    font.setPointSizeF(max(font.pointSizeF(), minimum_point_size))
+    return font
 
 
 def _configuration_tooltip_html(configuration: str) -> str:
@@ -162,10 +169,9 @@ class _LegendTextLabel(QtWidgets.QLabel):
         )
 
 
-class _CategoryReferencePopover(QtWidgets.QFrame):
+class _CategoryReferenceDialog(QtWidgets.QDialog):
     closed = QtCore.Signal()
-    _MAX_TEXT_COLUMNS = 36
-    _CORNER_RADIUS = 10.0
+    _MAX_TEXT_COLUMNS = 48
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -175,30 +181,29 @@ class _CategoryReferencePopover(QtWidgets.QFrame):
         self._applying_theme = False
         self._background_color = QtGui.QColor(self._theme.panel_alt)
         self._border_color = QtGui.QColor(self._theme.border)
-        self.setObjectName("ptable-category-reference-popover")
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.setObjectName("ptable-category-reference-dialog")
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.setModal(True)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(QtCore.Qt.WindowType.WindowContextHelpButtonHint, False)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Maximum,
-            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Preferred,
         )
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetFixedSize)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
 
-        base_font = QtGui.QFont(QtWidgets.QApplication.font())
+        base_font = _popup_font()
         self.setFont(base_font)
 
         title_font = QtGui.QFont(base_font)
-        title_font.setPointSizeF(max(title_font.pointSizeF() + 3.0, 16.0))
         title_font.setWeight(QtGui.QFont.Weight.Bold)
 
         body_font = QtGui.QFont(base_font)
-        body_font.setPointSizeF(max(body_font.pointSizeF() + 0.5, 12.0))
 
         citation_font = QtGui.QFont(base_font)
-        citation_font.setPointSizeF(max(citation_font.pointSizeF() - 1.5, 8.5))
 
         self.title_label = QtWidgets.QLabel(self)
         self.title_label.setFont(title_font)
@@ -235,6 +240,14 @@ class _CategoryReferencePopover(QtWidgets.QFrame):
         )
         layout.addWidget(self.citation_label)
 
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Close,
+            parent=self,
+        )
+        self.button_box.rejected.connect(self.reject)
+        self.button_box.accepted.connect(self.accept)
+        layout.addWidget(self.button_box)
+
         self._apply_native_layout_metrics()
         self._apply_content_width_limits()
         self.apply_theme(self._theme)
@@ -253,37 +266,40 @@ class _CategoryReferencePopover(QtWidgets.QFrame):
             )
             self._background_color = QtGui.QColor(background)
             self._border_color = QtGui.QColor(theme.border)
+            palette = QtGui.QPalette(self.palette())
+            palette.setColor(QtGui.QPalette.ColorRole.Window, self._background_color)
+            palette.setColor(QtGui.QPalette.ColorRole.WindowText, theme.text)
+            self.setPalette(palette)
+            self.setStyleSheet(
+                f"""
+                QDialog#ptable-category-reference-dialog {{
+                    background: {_css_rgba(self._background_color)};
+                    border: 1px solid {_css_rgba(self._border_color)};
+                }}
+                """
+            )
             _set_foreground(self.title_label, theme.text)
             _set_foreground(self.body_label, theme.text)
             _set_foreground(self.citation_label, theme.muted_text)
             self._refresh_reference_html()
-            self.update()
+            self.adjustSize()
         finally:
             self._applying_theme = False
 
-    def show_for_entry(self, entry: QtWidgets.QWidget, category: str) -> None:
+    def show_for_category(self, category: str) -> None:
         reference = CATEGORY_REFERENCES[category]
-        host = self._overlay_host(entry)
-        if self.parentWidget() is not host:
-            self.setParent(host)
         self.apply_theme(_theme_colors())
         self._reference = reference
         self._category = category
+        self.setWindowTitle(reference.title)
         self.title_label.setText(reference.title)
         self.body_label.setText(reference.blurb)
         self._refresh_reference_html()
         self.adjustSize()
-        self.resize(self.sizeHint())
-        self._position_next_to_entry(entry)
+        self._center_on_owner()
         self.show()
         self.raise_()
-
-    def keyPressEvent(self, event: QtGui.QKeyEvent | None) -> None:
-        if event is not None and event.key() == QtCore.Qt.Key.Key_Escape:
-            self.hide()
-            event.accept()
-            return
-        super().keyPressEvent(event)
+        self.activateWindow()
 
     def changeEvent(self, event: QtCore.QEvent | None) -> None:
         super().changeEvent(event)
@@ -306,15 +322,6 @@ class _CategoryReferencePopover(QtWidgets.QFrame):
             and not self._applying_theme
         ):
             self.apply_theme(_theme_colors())
-
-    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        rect = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        painter.setPen(QtGui.QPen(self._border_color, 1.0))
-        painter.setBrush(QtGui.QBrush(self._background_color))
-        painter.drawRoundedRect(rect, self._CORNER_RADIUS, self._CORNER_RADIUS)
-        super().paintEvent(event)
 
     def hideEvent(self, event: QtGui.QHideEvent | None) -> None:
         super().hideEvent(event)
@@ -360,7 +367,7 @@ class _CategoryReferencePopover(QtWidgets.QFrame):
             return
         if not QtGui.QDesktopServices.openUrl(QtCore.QUrl(url)):
             webbrowser.open(url)
-        self.hide()
+        self.close()
 
     def _apply_native_layout_metrics(self) -> None:
         layout = self.layout()
@@ -407,41 +414,29 @@ class _CategoryReferencePopover(QtWidgets.QFrame):
         font_metrics = QtGui.QFontMetrics(self.body_label.font())
         content_width = font_metrics.horizontalAdvance("M" * self._MAX_TEXT_COLUMNS)
         for widget in (self.title_label, self.body_label, self.citation_label):
-            widget.setFixedWidth(content_width)
+            widget.setMinimumWidth(content_width)
 
     @staticmethod
-    def _overlay_host(entry: QtWidgets.QWidget) -> QtWidgets.QWidget:
-        embedded_root = entry.window()
-        proxy = (
-            embedded_root.graphicsProxyWidget()
-            if isinstance(embedded_root, QtWidgets.QWidget)
-            else None
-        )
-        scene = proxy.scene() if proxy is not None else None
-        if scene is not None:
-            for view in scene.views():
-                host = view.window()
-                if isinstance(host, QtWidgets.QWidget):
-                    return host
-        active_window = QtWidgets.QApplication.activeWindow()
-        if isinstance(active_window, QtWidgets.QWidget):
-            return active_window
-        if isinstance(embedded_root, QtWidgets.QWidget):
-            return embedded_root
-        return entry
+    def _available_geometry(anchor: QtCore.QPoint) -> QtCore.QRect:
+        screen = QtGui.QGuiApplication.screenAt(anchor)
+        if screen is None:
+            screen = QtGui.QGuiApplication.primaryScreen()
+        if screen is None:  # pragma: no cover
+            return QtCore.QRect(anchor, QtCore.QSize(1, 1))
+        return screen.availableGeometry().adjusted(8, 8, -8, -8)
 
-    def _position_next_to_entry(self, entry: QtWidgets.QWidget) -> None:
-        host = self.parentWidget()
-        if host is None:  # pragma: no cover
-            return
-        anchor = host.mapFromGlobal(entry.mapToGlobal(entry.rect().topRight()))
-        left_anchor = host.mapFromGlobal(entry.mapToGlobal(entry.rect().topLeft()))
+    def _center_on_owner(self) -> None:
+        owner = self.parent()
+        owner_widget = owner if isinstance(owner, QtWidgets.QWidget) else None
+        owner_window = owner_widget.window() if owner_widget is not None else None
+        if owner_window is not None and owner_window.isVisible():
+            anchor = owner_window.mapToGlobal(owner_window.rect().center())
+        else:
+            anchor = QtGui.QCursor.pos()
+        available = self._available_geometry(anchor)
         size = self.sizeHint()
-        available = host.rect().adjusted(8, 8, -8, -8)
-        x = anchor.x() + 12
-        y = anchor.y()
-        if x + size.width() > available.right():
-            x = left_anchor.x() - size.width() - 12
+        x = anchor.x() - (size.width() // 2)
+        y = anchor.y() - (size.height() // 2)
         x = max(available.left(), min(x, available.right() - size.width()))
         y = max(available.top(), min(y, available.bottom() - size.height()))
         self.move(QtCore.QPoint(x, y))
@@ -1424,8 +1419,6 @@ class PeriodicTableView(QtWidgets.QGraphicsView):
         scene_pos = self.mapToScene(position)
         local_pos = self._proxy.mapFromScene(scene_pos).toPoint()
         widget = self.table_widget.childAt(local_pos)
-        while widget is not None and not isinstance(widget, ElementCard):
-            widget = widget.parentWidget()
         return widget if isinstance(widget, ElementCard) else None
 
 
@@ -1658,11 +1651,9 @@ class CategoryLegend(QtWidgets.QWidget):
         self.marker_frames: list[QtWidgets.QFrame] = []
         self._active_category: str | None = None
         self._reference_category: str | None = None
-        self._app_event_filter_installed = False
+        self.reference_dialog: _CategoryReferenceDialog | None = None
         self.setMouseTracking(True)
         self.installEventFilter(self)
-        self.reference_popover = _CategoryReferencePopover(self)
-        self.reference_popover.closed.connect(self._handle_reference_popover_closed)
 
         layout = QtWidgets.QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1696,7 +1687,22 @@ class CategoryLegend(QtWidgets.QWidget):
     def apply_theme(self, theme: ThemeColors) -> None:
         for entry in self.entries.values():
             entry.apply_theme(theme)
-        self.reference_popover.apply_theme(theme)
+        if self.reference_dialog is not None:
+            self.reference_dialog.apply_theme(theme)
+
+    def set_reference_dialog(self, dialog: _CategoryReferenceDialog) -> None:
+        if self.reference_dialog is dialog:
+            return
+        if self.reference_dialog is not None:
+            blocker = QtCore.QSignalBlocker(self.reference_dialog)
+            self.reference_dialog.close()
+            del blocker
+            self.reference_dialog.closed.disconnect(
+                self._handle_reference_dialog_closed
+            )
+        self.reference_dialog = dialog
+        self.reference_dialog.closed.connect(self._handle_reference_dialog_closed)
+        self.reference_dialog.apply_theme(_theme_colors())
 
     def sizeHint(self) -> QtCore.QSize:
         return QtCore.QSize(770, 184)
@@ -1710,24 +1716,12 @@ class CategoryLegend(QtWidgets.QWidget):
         self._active_category = category
         self._refresh_entry_states()
 
-    @staticmethod
-    def _entry_from_widget(widget: QtWidgets.QWidget | None) -> LegendEntry | None:
-        while widget is not None and not isinstance(widget, LegendEntry):
-            widget = widget.parentWidget()
-        return widget if isinstance(widget, LegendEntry) else None
-
-    def _widget_in_reference_popover(self, widget: QtWidgets.QWidget | None) -> bool:
-        while widget is not None:
-            if widget is self.reference_popover:
-                return True
-            widget = widget.parentWidget()
-        return False
-
     def _entry_at_cursor(self) -> LegendEntry | None:
         local_pos = self.mapFromGlobal(QtGui.QCursor.pos())
         if not self.rect().contains(local_pos):
             return None
-        return self._entry_from_widget(self.childAt(local_pos))
+        widget = self.childAt(local_pos)
+        return widget if isinstance(widget, LegendEntry) else None
 
     def _set_hovered_category(self, category: str | None) -> None:
         if category == self._active_category:
@@ -1746,61 +1740,25 @@ class CategoryLegend(QtWidgets.QWidget):
                 or entry_category == self._reference_category
             )
 
-    def _install_app_event_filter(self) -> None:
-        app = QtWidgets.QApplication.instance()
-        if app is None or self._app_event_filter_installed:
-            return
-        app.installEventFilter(self)
-        self._app_event_filter_installed = True
-
-    def _remove_app_event_filter(self) -> None:
-        app = QtWidgets.QApplication.instance()
-        if app is None or not self._app_event_filter_installed:
-            return
-        app.removeEventFilter(self)
-        self._app_event_filter_installed = False
-
-    def _close_reference_popover(self) -> None:
+    def _close_reference_dialog(self) -> None:
         self._reference_category = None
         self._refresh_entry_states()
-        self.reference_popover.hide()
-        self._remove_app_event_filter()
+        if self.reference_dialog is not None:
+            self.reference_dialog.close()
 
-    def _show_reference_popover(self, category: str) -> None:
-        if self._reference_category != category:
+    def _show_reference_dialog(self, category: str) -> None:
+        if self._reference_category != category or self.reference_dialog is None:
             return
-        self.reference_popover.show_for_entry(self.entries[category], category)
-        self._install_app_event_filter()
+        self.reference_dialog.show_for_category(category)
+
+    def cleanup(self) -> None:
+        self._close_reference_dialog()
 
     def eventFilter(
         self,
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
-        if (
-            self._app_event_filter_installed
-            and event is not None
-            and self.reference_popover.isVisible()
-        ):
-            if event.type() == QtCore.QEvent.Type.MouseButtonPress and isinstance(
-                event, QtGui.QMouseEvent
-            ):
-                global_pos = QtGui.QCursor.pos()
-                widget = watched if isinstance(watched, QtWidgets.QWidget) else None
-                if widget is None:
-                    widget = QtWidgets.QApplication.widgetAt(global_pos)
-                inside_legend = self.rect().contains(self.mapFromGlobal(global_pos))
-                if (
-                    not inside_legend
-                    and self._entry_from_widget(widget) is None
-                    and not self._widget_in_reference_popover(widget)
-                ):
-                    self._close_reference_popover()
-            elif event.type() == QtCore.QEvent.Type.KeyPress and isinstance(
-                event, QtGui.QKeyEvent
-            ):
-                if event.key() == QtCore.Qt.Key.Key_Escape:
-                    self._close_reference_popover()
         if (
             event is not None
             and event.type()
@@ -1822,19 +1780,30 @@ class CategoryLegend(QtWidgets.QWidget):
             self._set_hovered_category(None)
 
     def _handle_entry_clicked(self, category: str) -> None:
-        if self._reference_category == category and self.reference_popover.isVisible():
-            self._close_reference_popover()
+        if (
+            self.reference_dialog is not None
+            and self._reference_category == category
+            and self.reference_dialog.isVisible()
+        ):
+            self._close_reference_dialog()
             return
         self._reference_category = category
         self._refresh_entry_states()
-        QtCore.QTimer.singleShot(
+        if self.reference_dialog is None:
+            return
+
+        def _show_reference_dialog() -> None:
+            self._show_reference_dialog(category)
+
+        erlab.interactive.utils.single_shot(
+            self,
             0,
-            lambda category=category: self._show_reference_popover(category),
+            _show_reference_dialog,
+            self.reference_dialog,
         )
 
-    def _handle_reference_popover_closed(self) -> None:
-        if self._reference_category is None and not self._app_event_filter_installed:
+    def _handle_reference_dialog_closed(self) -> None:
+        if self._reference_category is None:
             return
         self._reference_category = None
         self._refresh_entry_states()
-        self._remove_app_event_filter()

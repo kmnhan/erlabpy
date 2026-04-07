@@ -642,7 +642,7 @@ class ElementInspector(QtWidgets.QWidget):
         self.levels_controls_layout.setContentsMargins(0, 0, 0, 0)
         self.levels_controls_layout.setSpacing(8)
         levels_header.addWidget(self.levels_controls_frame, 1)
-        levels_header.addSpacing(12)
+        levels_header.addSpacing(8)
 
         self.copy_values_button = QtWidgets.QPushButton(
             "Copy absorption edges", self.levels_frame
