@@ -98,6 +98,18 @@ def _text_ink_rect(label: QtWidgets.QLabel) -> QtCore.QRectF:
     return QtGui.QFontMetricsF(label.font()).tightBoundingRect(label.text())
 
 
+def _wrapped_text_size(label: QtWidgets.QLabel) -> QtCore.QSizeF:
+    document = QtGui.QTextDocument()
+    document.setDefaultFont(label.font())
+    document.setDocumentMargin(0.0)
+    text_option = document.defaultTextOption()
+    text_option.setWrapMode(QtGui.QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    document.setDefaultTextOption(text_option)
+    document.setPlainText(label.text())
+    document.setTextWidth(label.width())
+    return document.size()
+
+
 def _card_symbol_limits(card) -> tuple[float, float]:
     layout = card.layout()
     assert layout is not None
@@ -1446,6 +1458,14 @@ def test_ptable_headers_and_legend_fonts_fit_on_font_change(
     assert alkaline_entry.label.geometry().top() > 0
     assert alkaline_entry.label.geometry().right() < alkaline_entry.width()
     assert alkaline_entry.label.geometry().bottom() < alkaline_entry.height()
+
+    transition_entry = win.category_legend.entries["transition_metal"]
+    transition_text_size = _wrapped_text_size(transition_entry.label)
+    transition_metrics = QtGui.QFontMetricsF(transition_entry.label.font())
+    assert transition_entry.label.wordWrap() is True
+    assert transition_text_size.width() <= transition_entry.label.width() + 1.0
+    assert transition_text_size.height() <= transition_entry.label.height() + 1.0
+    assert transition_text_size.height() > transition_metrics.height() + 1.0
 
     win.close()
 

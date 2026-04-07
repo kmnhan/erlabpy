@@ -1777,11 +1777,13 @@ class LegendEntry(QtWidgets.QWidget):
             return self.rect()
         return rect
 
-    def label_fit_samples(self) -> tuple[tuple[str, float, float | None], ...]:
+    def label_fit_samples(self) -> tuple[tuple[str, float, float | None, bool], ...]:
         rect = self._label_rect()
         if self._vertical_label:
-            return ((self.label.text(), float(rect.height()), float(rect.width())),)
-        return ((self.label.text(), float(rect.width()), float(rect.height())),)
+            return (
+                (self.label.text(), float(rect.height()), float(rect.width()), False),
+            )
+        return ((self.label.text(), float(rect.width()), float(rect.height()), True),)
 
     def apply_label_font(self, font: QtGui.QFont) -> None:
         self.label.setFont(font)

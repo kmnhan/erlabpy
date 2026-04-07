@@ -164,7 +164,7 @@ def _fit_symbol_font(
 
 def _fit_text_font(
     base_font: QtGui.QFont,
-    samples: tuple[tuple[str, float, float | None], ...],
+    samples: tuple[tuple[str, float, float | None, bool], ...],
     *,
     preferred_point_size: float,
     minimum_point_size: float,
@@ -185,21 +185,44 @@ def _fit_text_font(
         fitted_font.setPointSizeF(point_size)
         metrics = QtGui.QFontMetricsF(fitted_font)
         if all(
-            (
-                metrics.tightBoundingRect(text).width() <= max(1.0, max_width - 1.0)
-                and (
-                    max_height is None
-                    or metrics.tightBoundingRect(text).height()
-                    <= max(1.0, max_height - 1.0)
-                )
-            )
-            for text, max_width, max_height in samples
+            _text_sample_fits(metrics, fitted_font, text, max_width, max_height, wrap)
+            for text, max_width, max_height, wrap in samples
             if text != ""
         ):
             return fitted_font
         point_size -= step
     fitted_font.setPointSizeF(minimum_point_size)
     return fitted_font
+
+
+def _text_sample_fits(
+    metrics: QtGui.QFontMetricsF,
+    font: QtGui.QFont,
+    text: str,
+    max_width: float,
+    max_height: float | None,
+    wrap: bool,
+) -> bool:
+    width_limit = max(1.0, max_width - 1.0)
+    height_limit = None if max_height is None else max(1.0, max_height - 1.0)
+    if not wrap:
+        rect = metrics.tightBoundingRect(text)
+        return rect.width() <= width_limit and (
+            height_limit is None or rect.height() <= height_limit
+        )
+
+    document = QtGui.QTextDocument()
+    document.setDefaultFont(font)
+    document.setDocumentMargin(0.0)
+    text_option = document.defaultTextOption()
+    text_option.setWrapMode(QtGui.QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+    document.setDefaultTextOption(text_option)
+    document.setPlainText(text)
+    document.setTextWidth(width_limit)
+    size = document.size()
+    return size.width() <= width_limit + 1e-6 and (
+        height_limit is None or size.height() <= height_limit + 1e-6
+    )
 
 
 def _blend_colors(

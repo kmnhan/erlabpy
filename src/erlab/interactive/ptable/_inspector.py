@@ -970,11 +970,11 @@ class ElementInspector(QtWidgets.QWidget):
     def _section_title_samples(self) -> tuple[tuple[str, float, float | None], ...]:
         self._plot_header_layout.activate()
         self._levels_header_layout.activate()
-        samples: list[tuple[str, float, float | None]] = []
+        samples: list[tuple[str, float, float | None, bool]] = []
         for label in (self.plot_title, self.levels_title):
             if label.width() <= 0:
                 continue
-            samples.append((label.text(), float(label.width()), None))
+            samples.append((label.text(), float(label.width()), None, False))
         return tuple(samples)
 
     def _update_section_header_fonts(self) -> None:
