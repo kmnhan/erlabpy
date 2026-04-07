@@ -130,6 +130,8 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor` dialog. This is just a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values or per-point overrides.
 
+- Use {guilabel}`Edit → Swap Dimensions` to open the {guilabel}`Swap Dimensions` dialog. This is an interface for {meth}`xarray.DataArray.swap_dims`.
+
 - Dask-backed arrays are fully supported. The dedicated {guilabel}`Dask` menu exposes actions to compute the array into memory, rechunk automatically, or choose custom chunk shapes within ImageTool.
 
 - Overlay plots of non-dimensional coordinates (e.g., temperature) on the data from {guilabel}`View → Plot Associated Coordinates`.
@@ -203,7 +205,6 @@ Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
 - {guilabel}`Edit → Correct With Edge...` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
 - {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
 - {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, a non-destructive filter that applies coordinate-aware Gaussian broadening along selected dimensions.
-- {guilabel}`Edit → Edit Coordinates` opens the {guilabel}`Coordinate Editor` dialog for precise coordinate reassignment, including non-uniform axes.
 
 Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional helper windows opened from the context menus, so everything is closed cleanly when the main window exits.
 

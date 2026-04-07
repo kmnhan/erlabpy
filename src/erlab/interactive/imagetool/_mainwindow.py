@@ -535,6 +535,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     },
                     "Edit Coordinates": {
                         "triggered": self._assign_coords,
+                    },
+                    "Swap Dimensions": {
+                        "triggered": self._swap_dims,
                         "sep_after": True,
                     },
                     "Rotate": {"triggered": self._rotate},
@@ -740,6 +743,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _assign_coords(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.AssignCoordsDialog)
+
+    @QtCore.Slot()
+    def _swap_dims(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.SwapDimsDialog)
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:

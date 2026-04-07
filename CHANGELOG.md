@@ -2,7 +2,19 @@
 
 ### ✨ Features
 
-- **ktool:** add symmetrization preview ([39cec40](https://github.com/kmnhan/erlabpy/commit/39cec40933d21e82538c2b01a3457bd0edb4c519))
+- **imagetool:** add Gaussian filter (#301) ([9d2e49a](https://github.com/kmnhan/erlabpy/commit/9d2e49a4ae8cd68192b4d9b96482c1686687c7f3))
+
+  Adds a Gaussian filter dialog with the same preview/reset behavior as the normalization dialog.
+
+- **imagetool:** make rotation guidelines more useful ([e30341a](https://github.com/kmnhan/erlabpy/commit/e30341adf92251f77f8ccb747053f24dad9a81dd))
+
+  Rotation guidelines now move together with the cursor by default, making it easier to manipulate them. The guidelines can still be used as fixed reference lines when the "Follow Active Cursor" option is disabled.
+
+  Also, the center and angle of the rotation guidelins are now also fed into `ktool` as normal emission angles and azimuthal offset if a `ktool` is opened from an ImageTool window with a visible rotation guideline on a `alpha`-`beta` slice.
+
+- **imagetool:** make rotation guidelines undoable and restorable ([3217138](https://github.com/kmnhan/erlabpy/commit/3217138fa01d06c33eaa009942102e111c7ffddc))
+
+- **ktool:** add symmetrization preview ([522f554](https://github.com/kmnhan/erlabpy/commit/522f5543b6edb3ca5b7689031f83fb66e65df0f8))
 
   Adds the ability to preview n-fold symmetrized constant-energy surfaces to `ktool`.
 
@@ -36,7 +48,7 @@
 
 ### 🐞 Bug Fixes
 
-- **analysis.gold:** fix regression where open bounds (`None`) was not avaliable in range slicing and plotting functions ([93dc2fb](https://github.com/kmnhan/erlabpy/commit/93dc2fb8d83165c97d8c45d9c3ce33bf697667ee))
+- **analysis.gold:** fix regression where open bounds (`None`) was not avaliable in range slicing and plotting functions ([4fdc856](https://github.com/kmnhan/erlabpy/commit/4fdc856bfa1907d4f1e07cfbc8e0f2de78b3082b))
 
 - **interactive:** better lifecycle management of colorbar menu widgets to prevent rare crashes due to garbage collection of menu widgets from worker threads during later allocations ([37f5cc4](https://github.com/kmnhan/erlabpy/commit/37f5cc4e1c3628874892db46851fe20944476dfc))
 

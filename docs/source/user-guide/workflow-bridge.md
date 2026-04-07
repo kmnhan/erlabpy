@@ -49,6 +49,9 @@ code for reproducibility and batch processing.
 - - Reassign coordinates
   - {ref}`Coordinate editing dialog <imagetool-data>`
   - {meth}`xarray.DataArray.assign_coords`
+- - Swap dimensions
+  - {ref}`Coordinate editing dialog <imagetool-data>`
+  - {meth}`xarray.DataArray.swap_dims`
 - - Normalize interactively
   - {ref}`ImageTool normalization dialog <imagetool-editing>`
   - Expressions like `data / data.mean(...)`
