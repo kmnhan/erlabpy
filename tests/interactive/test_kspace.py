@@ -170,6 +170,11 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
     roi_control_widget.r_spin.setValue(0.3)
     assert roi.get_position() == (0.0, 0.2, 0.3)
 
+    assert win.preview_symmetry_group.isEnabled()
+    win.preview_symmetry_fold_spin.setValue(4)
+    win.preview_symmetry_group.setChecked(True)
+    win.update()
+
     # Show imagetool
     win.show_converted()
     win._itool.show()
@@ -529,6 +534,100 @@ def test_ktool_descending_energy_axis_preview(qtbot, anglemap) -> None:
     expected_ang = win._assign_params(expected_ang)
 
     xr.testing.assert_allclose(ang, expected_ang)
+
+
+@pytest.mark.parametrize(
+    ("avec", "expected"),
+    [
+        pytest.param(erlab.lattice.abc2avec(3.5, 3.5, 5.0, 90.0, 90.0, 120.0), 6),
+        pytest.param(erlab.lattice.abc2avec(3.5, 3.5, 5.0, 90.0, 90.0, 90.0), 4),
+        pytest.param(erlab.lattice.abc2avec(3.5, 4.2, 5.0, 90.0, 90.0, 110.0), 2),
+    ],
+)
+def test_ktool_preview_symmetry_default_fold(qtbot, anglemap, avec, expected) -> None:
+    win = ktool(anglemap.qsel(eV=-0.1), avec=avec, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.preview_symmetry_fold_spin.value() == expected
+
+
+def test_ktool_preview_symmetry_is_preview_only(qtbot, anglemap) -> None:
+    data = anglemap.qsel(eV=-0.1).copy(deep=True)
+    data.values[2, 7] += 500.0
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    raw_k = win.get_data()[1]
+    raw_preview = raw_k.T
+
+    assert win.preview_symmetry_group.isEnabled()
+    win.preview_symmetry_group.setChecked(True)
+    win.update()
+
+    displayed_preview = win.images[1].data_array
+    assert displayed_preview is not None
+    assert not np.allclose(displayed_preview.values, raw_preview.values, equal_nan=True)
+    xr.testing.assert_allclose(win.get_data()[1], raw_k)
+
+    win.show_converted()
+    assert win._itool is not None
+    xr.testing.assert_allclose(win._itool.slicer_area.data, raw_k)
+    win._itool.close()
+
+
+def test_ktool_preview_symmetry_rotates_and_averages(
+    qtbot, anglemap, monkeypatch
+) -> None:
+    win = ktool(anglemap, execute=False)
+    qtbot.addWidget(win)
+
+    dummy_ang = anglemap.qsel(eV=-0.1)
+    raw_k = xr.DataArray(
+        np.zeros((5, 5), dtype=float),
+        dims=("kx", "ky"),
+        coords={
+            "kx": np.arange(-2.0, 3.0, dtype=float),
+            "ky": np.arange(-2.0, 3.0, dtype=float),
+        },
+    )
+    raw_k.loc[{"kx": 1.0, "ky": 0.0}] = 1.0
+
+    expected = xr.DataArray(
+        np.zeros((5, 5), dtype=float),
+        dims=("ky", "kx"),
+        coords={
+            "ky": np.arange(-2.0, 3.0, dtype=float),
+            "kx": np.arange(-2.0, 3.0, dtype=float),
+        },
+    )
+    for ky, kx in ((0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)):
+        expected.loc[{"ky": ky, "kx": kx}] = 0.25
+
+    monkeypatch.setattr(win, "get_data", lambda: (dummy_ang, raw_k))
+
+    win.preview_symmetry_fold_spin.setValue(4)
+    win.preview_symmetry_group.setChecked(True)
+    win.update()
+
+    displayed_preview = win.images[1].data_array
+    assert displayed_preview is not None
+    xr.testing.assert_allclose(displayed_preview, expected)
+
+
+def test_ktool_preview_symmetry_disabled_for_non_in_plane_preview(qtbot) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert not win.preview_symmetry_group.isEnabled()
+    assert not win.preview_symmetry_group.isChecked()
+
+    win.preview_symmetry_group.setChecked(True)
+    win.update()
+
+    assert not win.preview_symmetry_group.isChecked()
 
 
 def test_ktool_exact_hv_bz_overlay_uses_cache(qtbot, monkeypatch) -> None:

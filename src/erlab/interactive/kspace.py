@@ -140,6 +140,10 @@ class _MovableCircleROI(pg.CircleROI):
 
 
 class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
+    _PREVIEW_SYMMETRY_ABS_TOL = 0.05
+    _PREVIEW_SYMMETRY_REL_TOL = 0.02
+    _PREVIEW_SYMMETRY_ANGLE_TOL = 5.0
+
     def __init__(
         self,
         avec: npt.NDArray | None = None,
@@ -212,6 +216,7 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
 
         self._roi_list: list[_MovableCircleROI] = []
         self.add_circle_btn.clicked.connect(self._add_circle)
+        self.preview_symmetry_group.setEnabled(False)
 
         if rotate_bz is None:
             rotate_bz = opts.ktool.bz.default_rot
@@ -235,6 +240,10 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
                 opts.ktool.bz.default_gamma,
             )
         self._avec = avec
+        with QtCore.QSignalBlocker(self.preview_symmetry_fold_spin):
+            self.preview_symmetry_fold_spin.setValue(
+                self._default_preview_symmetry_fold()
+            )
 
     @property
     def _avec(self) -> npt.NDArray:
@@ -267,6 +276,24 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
             self.alpha_spin.setValue(alpha)
             self.beta_spin.setValue(beta)
             self.gamma_spin.setValue(gamma)
+
+    def _default_preview_symmetry_fold(self) -> int:
+        a, b, _, _, _, gamma = erlab.lattice.avec2abc(self._avec)
+        same_in_plane = np.isclose(
+            a,
+            b,
+            rtol=self._PREVIEW_SYMMETRY_REL_TOL,
+            atol=self._PREVIEW_SYMMETRY_ABS_TOL,
+        )
+        if same_in_plane and np.isclose(
+            gamma, 120.0, atol=self._PREVIEW_SYMMETRY_ANGLE_TOL
+        ):
+            return 6
+        if same_in_plane and np.isclose(
+            gamma, 90.0, atol=self._PREVIEW_SYMMETRY_ANGLE_TOL
+        ):
+            return 4
+        return 2
 
     @QtCore.Slot()
     def _add_circle(self) -> None:
@@ -355,6 +382,8 @@ class KspaceTool(KspaceToolGUI):
         cmap_gamma: float
         cmap_invert: bool
         cmap_highcontrast: bool
+        preview_symmetry_enabled: bool = False
+        preview_symmetry_fold: int | None = None
         show_angle_plot: bool
 
     @property
@@ -439,6 +468,8 @@ class KspaceTool(KspaceToolGUI):
             cmap_gamma=self.gamma_widget.value(),
             cmap_invert=self.invert_check.isChecked(),
             cmap_highcontrast=self.contrast_check.isChecked(),
+            preview_symmetry_enabled=self.preview_symmetry_group.isChecked(),
+            preview_symmetry_fold=self.preview_symmetry_fold_spin.value(),
             show_angle_plot=self.angle_plot_check.isChecked(),
         )
 
@@ -513,6 +544,14 @@ class KspaceTool(KspaceToolGUI):
             self.gamma_widget.setValue(status.cmap_gamma)
             self.invert_check.setChecked(status.cmap_invert)
             self.contrast_check.setChecked(status.cmap_highcontrast)
+
+        with (
+            QtCore.QSignalBlocker(self.preview_symmetry_group),
+            QtCore.QSignalBlocker(self.preview_symmetry_fold_spin),
+        ):
+            if status.preview_symmetry_fold is not None:
+                self.preview_symmetry_fold_spin.setValue(status.preview_symmetry_fold)
+            self.preview_symmetry_group.setChecked(status.preview_symmetry_enabled)
 
         self.update()
         self.update_bz()
@@ -619,6 +658,8 @@ class KspaceTool(KspaceToolGUI):
 
         self.bounds_supergroup.toggled.connect(self.queue_update)
         self.resolution_supergroup.toggled.connect(self.queue_update)
+        self.preview_symmetry_group.toggled.connect(self.queue_update)
+        self.preview_symmetry_fold_spin.valueChanged.connect(self.queue_update)
 
         self._offset_spins: dict[str, QtWidgets.QDoubleSpinBox] = {}
 
@@ -1015,6 +1056,39 @@ class KspaceTool(KspaceToolGUI):
     def _validate_kinetic_energy(self, data: xr.DataArray, *, context: str) -> None:
         data.kspace._check_kinetic_energy(context=context)
 
+    @staticmethod
+    def _preview_supports_symmetry(preview_data: xr.DataArray) -> bool:
+        return preview_data.ndim == 2 and set(preview_data.dims) == {"kx", "ky"}
+
+    def _set_preview_symmetry_available(self, available: bool) -> None:
+        if not available:
+            with QtCore.QSignalBlocker(self.preview_symmetry_group):
+                self.preview_symmetry_group.setChecked(False)
+        self.preview_symmetry_group.setEnabled(available)
+
+    def _symmetrized_preview(self, preview_data: xr.DataArray) -> xr.DataArray:
+        import xarray as xr
+
+        preview_data = preview_data.transpose("ky", "kx")
+        fold = self.preview_symmetry_fold_spin.value()
+        rotated = [
+            erlab.analysis.transform.rotate(
+                preview_data,
+                360.0 * idx / fold,
+                axes=("ky", "kx"),
+                center={"ky": 0.0, "kx": 0.0},
+                reshape=False,
+                order=1,
+                mode="constant",
+                cval=np.nan,
+                prefilter=False,
+            )
+            for idx in range(fold)
+        ]
+        return xr.concat(rotated, dim="_preview_symmetry").mean(
+            "_preview_symmetry", skipna=True, keep_attrs=True
+        )
+
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:
         # Set angle offsets
         data_ang = self._assign_params(self._angle_data())
@@ -1033,8 +1107,13 @@ class KspaceTool(KspaceToolGUI):
     @QtCore.Slot()
     def update(self) -> None:
         ang, k = self.get_data()
+        k_preview = k.T
+        preview_symmetry_available = self._preview_supports_symmetry(k_preview)
+        self._set_preview_symmetry_available(preview_symmetry_available)
+        if preview_symmetry_available and self.preview_symmetry_group.isChecked():
+            k_preview = self._symmetrized_preview(k_preview)
         self.images[0].setDataArray(ang.T)
-        self.images[1].setDataArray(k.T)
+        self.images[1].setDataArray(k_preview)
         self.sigInfoChanged.emit()
         if self.bz_group.isChecked():
             self.update_bz()
