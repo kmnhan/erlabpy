@@ -559,6 +559,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     },
                     "Average": {"triggered": self._average},
                     "Coarsen": {"triggered": self._coarsen},
+                    "Thin": {"triggered": self._thin},
                     "Symmetrize": {"triggered": self._symmetrize},
                     "Correct With Edge...": {"triggered": self._correct_with_edge},
                 },
@@ -724,6 +725,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _coarsen(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CoarsenDialog)
+
+    @QtCore.Slot()
+    def _thin(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.ThinDialog)
 
     @QtCore.Slot()
     def _symmetrize(self) -> None:

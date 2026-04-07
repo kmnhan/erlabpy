@@ -33,6 +33,7 @@ from erlab.interactive.imagetool.dialogs import (
     RotationDialog,
     SwapDimsDialog,
     SymmetrizeDialog,
+    ThinDialog,
 )
 from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
 from erlab.interactive.imagetool.viewer import (
@@ -2486,6 +2487,87 @@ def test_coarsen_dialog_make_code_uses_watched_data_name(qtbot, monkeypatch) -> 
     win.close()
 
 
+def test_itool_thin(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(120).reshape((5, 6, 4)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(5), "y": np.arange(6), "z": np.arange(4)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: ThinDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.factor_spins["x"].setValue(1)
+        dialog.dim_checks["y"].setChecked(True)
+        dialog.factor_spins["y"].setValue(3)
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None),
+        data.thin(y=3),
+    )
+
+    assert pyperclip.paste() == ".thin(y=3)"
+    win.close()
+
+
+def test_itool_thin_global_factor(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(120).reshape((5, 6, 4)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(5), "y": np.arange(6), "z": np.arange(4)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: ThinDialog) -> None:
+        dialog.global_radio.setChecked(True)
+        dialog.global_spin.setValue(2)
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None),
+        data.thin(2),
+    )
+
+    assert pyperclip.paste() == ".thin(2)"
+    win.close()
+
+
+def test_itool_thin_nonuniform_public_dims(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(30).reshape((5, 6)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.array([0.0, 0.3, 0.9, 1.4, 2.2]), "y": np.arange(6)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+
+    def _set_dialog_params(dialog: ThinDialog) -> None:
+        assert "x" in dialog.dim_checks
+        assert "x_idx" not in dialog.dim_checks
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.factor_spins["x"].setValue(2)
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None),
+        data.thin(x=2),
+    )
+
+    win.close()
+
+
 def test_itool_symmetrize(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(60).reshape((3, 4, 5)).astype(float),
@@ -2877,6 +2959,71 @@ def test_coarsen_dialog_rejects_trim_without_output_blocks(qtbot, monkeypatch) -
 
     assert warnings == [
         ("No Output Blocks", "Trim boundary would remove all data along: x.")
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+def test_thin_dialog_requires_selected_dimension(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(12).reshape((3, 4)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = ThinDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings == [
+        ("No Dimensions Selected", "You need to select at least one dimension.")
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+@pytest.mark.parametrize("global_mode", [False, True], ids=["per_dim", "global"])
+def test_thin_dialog_rejects_noop_factors(qtbot, monkeypatch, global_mode) -> None:
+    data = xr.DataArray(np.arange(12).reshape((3, 4)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = ThinDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    if global_mode:
+        dialog.global_radio.setChecked(True)
+        dialog.global_spin.setValue(1)
+    else:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.factor_spins["x"].setValue(1)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings == [
+        (
+            "No Thinning Requested",
+            "Choose at least one thinning factor greater than 1.",
+        )
     ]
     xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
 

@@ -635,6 +635,142 @@ class CoarsenDialog(DataTransformDialog):
         )
 
 
+class ThinDialog(DataTransformDialog):
+    title = "Thin Data"
+    suffix = "_thin"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+
+        mode_group = QtWidgets.QGroupBox("Mode")
+        mode_layout = QtWidgets.QVBoxLayout()
+        mode_group.setLayout(mode_layout)
+
+        self.per_dim_radio = QtWidgets.QRadioButton("Thin selected dimensions")
+        self.global_radio = QtWidgets.QRadioButton("Thin all dimensions equally")
+        self.per_dim_radio.setChecked(True)
+
+        mode_layout.addWidget(self.per_dim_radio)
+        mode_layout.addWidget(self.global_radio)
+
+        self._mode_group = QtWidgets.QButtonGroup(self)
+        self._mode_group.addButton(self.per_dim_radio)
+        self._mode_group.addButton(self.global_radio)
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QGridLayout()
+        dim_group.setLayout(dim_layout)
+
+        dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
+        dim_layout.addWidget(QtWidgets.QLabel("Factor"), 0, 1)
+
+        self.dim_group = dim_group
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+        self.factor_spins: dict[Hashable, QtWidgets.QSpinBox] = {}
+
+        for row, dim in enumerate(self._source_data.dims, start=1):
+            check = QtWidgets.QCheckBox(str(dim))
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(1, 2_147_483_647)
+            spin.setValue(2)
+            spin.setEnabled(False)
+            check.toggled.connect(spin.setEnabled)
+
+            self.dim_checks[dim] = check
+            self.factor_spins[dim] = spin
+
+            dim_layout.addWidget(check, row, 0)
+            dim_layout.addWidget(spin, row, 1)
+
+        global_group = QtWidgets.QGroupBox("Global Factor")
+        global_layout = QtWidgets.QFormLayout()
+        global_group.setLayout(global_layout)
+
+        self.global_group = global_group
+        self.global_spin = QtWidgets.QSpinBox()
+        self.global_spin.setRange(1, 2_147_483_647)
+        self.global_spin.setValue(2)
+        global_layout.addRow("Factor", self.global_spin)
+
+        self.per_dim_radio.toggled.connect(self._update_mode)
+        self.global_radio.toggled.connect(self._update_mode)
+
+        self.layout_.addRow(mode_group)
+        self.layout_.addRow(dim_group)
+        self.layout_.addRow(global_group)
+        self._update_mode()
+
+    @property
+    def _use_global_mode(self) -> bool:
+        return self.global_radio.isChecked()
+
+    @property
+    def _selected_factors(self) -> dict[Hashable, int]:
+        return {
+            dim: self.factor_spins[dim].value()
+            for dim, check in self.dim_checks.items()
+            if check.isChecked()
+        }
+
+    @property
+    def _effective_factors(self) -> dict[Hashable, int]:
+        if self._use_global_mode:
+            return {
+                dim: self.global_spin.value()
+                for dim in self._source_data.dims
+                if self.global_spin.value() > 1
+            }
+        return {
+            dim: factor for dim, factor in self._selected_factors.items() if factor > 1
+        }
+
+    @QtCore.Slot()
+    def _update_mode(self) -> None:
+        self.dim_group.setEnabled(not self._use_global_mode)
+        self.global_group.setEnabled(self._use_global_mode)
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        if self._use_global_mode:
+            return data.thin(self.global_spin.value())
+        return data.thin(self._effective_factors)
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if not self._use_global_mode and not self._selected_factors:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Dimensions Selected",
+                "You need to select at least one dimension.",
+            )
+            return
+
+        if not self._effective_factors:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Thinning Requested",
+                "Choose at least one thinning factor greater than 1.",
+            )
+            return
+
+        super().accept()
+
+    def make_code(self) -> str:
+        placeholder = self.slicer_area.watched_data_name or ""
+        if self._use_global_mode:
+            if self.global_spin.value() <= 1:
+                return ""
+            return f"{placeholder}.thin({self.global_spin.value()})"
+
+        if not self._effective_factors:
+            return ""
+        kwargs = erlab.interactive.utils.format_kwargs(self._effective_factors)
+        return f"{placeholder}.thin({kwargs})"
+
+
 class SymmetrizeDialog(DataTransformDialog):
     title = "Symmetrize"
     enable_copy = True
