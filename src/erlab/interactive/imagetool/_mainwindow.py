@@ -558,6 +558,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "tooltip": "Crop to the current axes view range",
                     },
                     "Average": {"triggered": self._average},
+                    "Coarsen": {"triggered": self._coarsen},
                     "Symmetrize": {"triggered": self._symmetrize},
                     "Correct With Edge...": {"triggered": self._correct_with_edge},
                 },
@@ -719,6 +720,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _average(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.AverageDialog)
+
+    @QtCore.Slot()
+    def _coarsen(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.CoarsenDialog)
 
     @QtCore.Slot()
     def _symmetrize(self) -> None:

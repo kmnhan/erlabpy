@@ -886,6 +886,11 @@ def _handle_xarray_dict_or_kwargs(
     arg_name = param_order[0]
     kwarg_name = param_order[0] + "_kwargs"
 
+    if func.__name__ == "coarsen" and arg_name == "dim" and kwarg_name not in params:
+        # DataArray.coarsen is a special case where the positional arg is 'dim' but the
+        # kwargs name is 'window_kwargs'
+        kwarg_name = "window_kwargs"
+
     if (
         (kwarg_name not in params)
         or (params[kwarg_name].kind != inspect.Parameter.VAR_KEYWORD)

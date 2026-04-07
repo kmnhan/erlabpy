@@ -39,6 +39,10 @@ code for reproducibility and batch processing.
 - - Average over dimensions
   - {ref}`Averaging dialog <imagetool-editing>`
   - {meth}`xarray.DataArray.qsel.average`
+- - Coarsen data in blocks
+  - {ref}`Coarsen dialog <imagetool-editing>`
+  - {meth}`xarray.DataArray.coarsen` followed by a reducer such as `.mean()` or
+    `.sum()`
 - - Crop data
   - {ref}`Crop dialogs <imagetool-editing>`
   - {meth}`xarray.DataArray.sel`, {meth}`xarray.DataArray.isel`

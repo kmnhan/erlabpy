@@ -455,6 +455,186 @@ class AverageDialog(DataTransformDialog):
         return f".qsel.average({arg})"
 
 
+class CoarsenDialog(DataTransformDialog):
+    title = "Coarsen"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    _REDUCERS: tuple[str, ...] = (
+        "all",
+        "any",
+        "count",
+        "max",
+        "mean",
+        "median",
+        "min",
+        "prod",
+        "std",
+        "sum",
+        "var",
+    )
+
+    @property
+    def suffix(self) -> str:
+        return f"_coarsen_{self._reducer}"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QGridLayout()
+        dim_group.setLayout(dim_layout)
+
+        dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
+        dim_layout.addWidget(QtWidgets.QLabel("Window Size"), 0, 1)
+
+        self.dim_checks: dict[Hashable, QtWidgets.QCheckBox] = {}
+        self.window_spins: dict[Hashable, QtWidgets.QSpinBox] = {}
+
+        for row, dim in enumerate(self._source_data.dims, start=1):
+            check = QtWidgets.QCheckBox(str(dim))
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(1, 2_147_483_647)
+            spin.setValue(3)
+            spin.setEnabled(False)
+            check.toggled.connect(spin.setEnabled)
+
+            self.dim_checks[dim] = check
+            self.window_spins[dim] = spin
+
+            dim_layout.addWidget(check, row, 0)
+            dim_layout.addWidget(spin, row, 1)
+
+        options_group = QtWidgets.QGroupBox("Options")
+        options_layout = QtWidgets.QFormLayout()
+        options_group.setLayout(options_layout)
+
+        self.boundary_combo = QtWidgets.QComboBox()
+        self.boundary_combo.addItems(["exact", "trim", "pad"])
+        self.boundary_combo.setCurrentText("trim")
+        options_layout.addRow("Boundary", self.boundary_combo)
+
+        self.side_combo = QtWidgets.QComboBox()
+        self.side_combo.addItems(["left", "right"])
+        options_layout.addRow("Side", self.side_combo)
+
+        self.coord_func_combo = QtWidgets.QComboBox()
+        self.coord_func_combo.addItems(
+            ["mean", "median", "min", "max", "first", "last"]
+        )
+        self.coord_func_combo.setCurrentText("mean")
+        options_layout.addRow("Coordinate Function", self.coord_func_combo)
+
+        self.reducer_combo = QtWidgets.QComboBox()
+        self.reducer_combo.addItems(list(self._REDUCERS))
+        self.reducer_combo.setCurrentText("mean")
+        options_layout.addRow("Reducer", self.reducer_combo)
+
+        self.layout_.addRow(dim_group)
+        self.layout_.addRow(options_group)
+
+    @property
+    def _selected_windows(self) -> dict[Hashable, int]:
+        return {
+            dim: self.window_spins[dim].value()
+            for dim, check in self.dim_checks.items()
+            if check.isChecked()
+        }
+
+    @property
+    def _coord_func(self) -> str:
+        return self.coord_func_combo.currentText().strip()
+
+    @property
+    def _reducer(self) -> str:
+        return self.reducer_combo.currentText()
+
+    @property
+    def _coarsen_kwargs(self) -> dict[str, typing.Any]:
+        kwargs: dict[str, typing.Any] = {}
+        kwargs["dim"] = self._selected_windows
+        kwargs["boundary"] = self.boundary_combo.currentText()
+        kwargs["side"] = self.side_combo.currentText()
+        kwargs["coord_func"] = self._coord_func
+        return kwargs
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        coarsened = data.coarsen(**self._coarsen_kwargs)
+        return typing.cast("xr.DataArray", getattr(coarsened, self._reducer)())
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if not self._selected_windows:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Dimensions Selected",
+                "You need to select at least one dimension.",
+            )
+            return
+
+        if self.boundary_combo.currentText() == "exact":
+            invalid_dims = [
+                str(dim)
+                for dim, window in self._selected_windows.items()
+                if self._source_data.sizes[dim] % window != 0
+            ]
+            if invalid_dims:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Incompatible Window Size",
+                    "Window sizes must evenly divide the selected dimensions when "
+                    "boundary is exact: "
+                    f"{', '.join(invalid_dims)}. Try trim or pad instead.",
+                )
+                return
+
+        if self.boundary_combo.currentText() == "trim":
+            empty_dims = [
+                str(dim)
+                for dim, window in self._selected_windows.items()
+                if self._source_data.sizes[dim] // window == 0
+            ]
+            if empty_dims:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "No Output Blocks",
+                    "Trim boundary would remove all data along: "
+                    f"{', '.join(empty_dims)}.",
+                )
+                return
+
+        super().accept()
+
+    def make_code(self) -> str:
+        if not self._selected_windows:
+            return ""
+        placeholder = self.slicer_area.watched_data_name or ""
+
+        kwargs = self._coarsen_kwargs.copy()
+        if all(
+            isinstance(k, str) for k in self._coarsen_kwargs["dim"]
+        ):  # pragma: no branch
+            window_kwargs = kwargs.pop("dim")
+            kwargs = dict(**window_kwargs, **kwargs)
+
+        return (
+            erlab.interactive.utils.generate_code(
+                type(self._source_data).coarsen,
+                args=[],
+                kwargs=kwargs,
+                module=placeholder,
+            )
+            + f".{self._reducer}()"
+        )
+
+
 class SymmetrizeDialog(DataTransformDialog):
     title = "Symmetrize"
     enable_copy = True
@@ -1119,9 +1299,10 @@ class SwapDimsDialog(DataTransformDialog):
     def make_code(self) -> str:
         if not self._swap_mapping:
             return ""
-        return (
-            f".swap_dims({erlab.interactive.utils.format_kwargs(self._swap_mapping)})"
-        )
+
+        placeholder = self.slicer_area.watched_data_name or ""
+        kwargs = erlab.interactive.utils.format_kwargs(self._swap_mapping)
+        return f"{placeholder}.swap_dims({kwargs})"
 
 
 class _CoordinateWidget(QtWidgets.QWidget):

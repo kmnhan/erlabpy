@@ -146,6 +146,12 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - When binning is enabled, the data shown are an average over the specified bin widths, which are indicated by shaded regions near the cursor lines.
 
+  :::{hint}
+
+  To reduce the underlying data instead of displaying binned slices, use the {guilabel}`Edit → Average` dialog or the {guilabel}`Coarsen` dialog for more options.
+
+  :::
+
 - When comparing data in several ImageTool windows, you can link them either at creation (`eri.itool([data1, data2], link=True)`) or inside the manager. Linked windows maintain synchronized slicing positions, bin widths, and cursor counts.
 
 (imagetool-cursors)=
@@ -200,6 +206,7 @@ Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
 
 - {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the angle and center from the guideline.
 - {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
+- {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`, `sum`, or `median`.
 - {guilabel}`Edit → Symmetrize` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
 - {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
 - {guilabel}`Edit → Correct With Edge...` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
