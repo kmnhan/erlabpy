@@ -238,7 +238,7 @@ def _stress_font(base_font: QtGui.QFont) -> QtGui.QFont:
 
 
 def _search_completion_texts(win: PeriodicTableWindow) -> list[str]:
-    model = win.search_completer.model()
+    model = win.search_popup.model()
     assert model is not None
     return [str(model.index(row, 0).data()) for row in range(model.rowCount())]
 
@@ -658,6 +658,9 @@ def test_ptable_launcher_and_search_highlight(
     assert root_layout.contentsMargins().left() <= 8
     assert root_layout.contentsMargins().top() <= 8
     assert root_layout.spacing() <= 8
+    assert _effective_point_size(win.search_popup.font()) == pytest.approx(
+        _effective_point_size(QtWidgets.QListWidget().font())
+    )
     empty_summary_height = win.inspector.summary_frame.height()
     table_container_layout = win.inspector.table_container.layout()
     assert table_container_layout is not None
@@ -991,6 +994,10 @@ def test_ptable_launcher_and_search_highlight(
     assert levels_header_layout.indexOf(win.inspector.levels_controls_frame) >= 0
     assert levels_header_layout.indexOf(win.inspector.copy_values_button) >= 0
     assert levels_header_layout.indexOf(win.inspector.copy_table_button) >= 0
+    assert win.inspector._plot_header_layout.indexOf(win.inspector.plot_title) >= 0
+    assert (
+        win.inspector._plot_header_layout.indexOf(win.inspector.plot_target_combo) >= 0
+    )
     assert levels_header_layout.indexOf(
         win.inspector.levels_title
     ) < levels_header_layout.indexOf(win.inspector.levels_controls_frame)
@@ -1033,6 +1040,15 @@ def test_ptable_launcher_and_search_highlight(
     ) < levels_controls_layout.indexOf(win.harmonic_frame)
     assert getattr(win.hv_edit, "suffix", None) == "eV"
     assert getattr(win.workfunction_edit, "suffix", None) == "eV"
+    default_point_size = _effective_point_size(win.inspector.font())
+    assert _effective_point_size(win.inspector.levels_title.font()) == pytest.approx(
+        default_point_size
+    )
+    assert _effective_point_size(win.inspector.plot_title.font()) == pytest.approx(
+        default_point_size
+    )
+    assert win.inspector.levels_title.font().weight() >= QtGui.QFont.Weight.Bold
+    assert win.inspector.plot_title.font().weight() >= QtGui.QFont.Weight.Bold
     for frame in (
         win.inspector.side_panel,
         win.inspector.bottom_panel,
@@ -1673,7 +1689,9 @@ def test_ptable_category_legend_click_opens_and_retargets_reference_dialog(
     assert dialog._background_color.alpha() == 255
     assert dialog._background_color != QtCore.Qt.GlobalColor.transparent
     base_point_size = dialog.font().pointSizeF()
+    standard_dialog_font = QtWidgets.QDialog().font().pointSizeF()
     assert base_point_size > 0.0
+    assert base_point_size == pytest.approx(standard_dialog_font)
     assert dialog.title_label.font().pointSizeF() == pytest.approx(base_point_size)
     assert dialog.body_label.font().pointSizeF() == pytest.approx(base_point_size)
     assert dialog.citation_label.font().pointSizeF() == pytest.approx(base_point_size)
@@ -3075,6 +3093,12 @@ def test_ptable_multi_select_summary_and_plot_picker(
         win.inspector.plot_target_combo.itemText(index)
         for index in range(win.inspector.plot_target_combo.count())
     ] == ["H", "He"]
+    QtWidgets.QApplication.processEvents()
+    assert (
+        win.inspector.plot_title.geometry().right()
+        < win.inspector.plot_target_combo.geometry().left()
+    )
+    assert _title_text_fits(win.inspector.plot_title)
     assert win.inspector.summary_frame.height() == one_row_summary_height
     assert (
         2 * CompactElementChip._DETAILED_HEIGHT
@@ -3351,12 +3375,12 @@ def test_ptable_search_autocomplete_updates_selection(
     win.search_edit.setText("gol")
 
     assert win.selected_atomic_numbers == (1,)
-    assert win.search_completer.popup().isVisible() is False
+    assert win.search_popup.isVisible() is False
     assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 0
     assert _search_completion_texts(win)[0] == "Au - Gold"
 
-    completion_index = win.search_completer.model().index(0, 0)
-    win.search_completer.activated[QtCore.QModelIndex].emit(completion_index)
+    completion_index = win.search_popup.model().index(0, 0)
+    win.search_completer.activated.emit(completion_index)
 
     assert win.search_edit.text() == "Au"
     assert win.selected_atomic_numbers == (79,)
@@ -3389,8 +3413,8 @@ def test_ptable_search_activation_scrolls_selected_element_into_view(
     assert _table_child_center_is_visible_in_viewport(win, helium) is False
 
     win.search_edit.setText("heli")
-    completion_index = win.search_completer.model().index(0, 0)
-    win.search_completer.activated[QtCore.QModelIndex].emit(completion_index)
+    completion_index = win.search_popup.model().index(0, 0)
+    win.search_completer.activated.emit(completion_index)
 
     qtbot.waitUntil(lambda: win.selected_atomic_number == 2)
     qtbot.waitUntil(lambda: _table_child_center_is_visible_in_viewport(win, helium))
@@ -3441,6 +3465,9 @@ def test_ptable_search_popup_completion_helpers_respect_focus_state(
 def test_ptable_search_popup_widget_helpers_emit_indexes(qtbot) -> None:
     popup = erlab.interactive.ptable._window._SearchPopup()
     qtbot.addWidget(popup)
+    assert _effective_point_size(popup.font()) == pytest.approx(
+        _effective_point_size(QtWidgets.QListWidget().font())
+    )
     popup.addItem(QtWidgets.QListWidgetItem("Au - Gold"))
     popup.addItem(QtWidgets.QListWidgetItem("Cu - Copper"))
     popup.resize(220, 96)
@@ -3473,10 +3500,27 @@ def test_ptable_search_popup_widget_helpers_emit_indexes(qtbot) -> None:
     assert popup.currentRow() == 1
     assert highlighted_rows[-1] == 1
 
-    first_index = popup.model().index(0, 0)
-    popup._handle_pressed_index(first_index)
+    first_item = popup.item(0)
+    assert first_item is not None
+    press_pos = popup.visualItemRect(first_item).center()
+    QtTest.QTest.mousePress(
+        popup.viewport(),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        press_pos,
+    )
 
     assert popup.currentRow() == 0
+    assert highlighted_rows[-1] == 0
+    assert activated_rows == []
+
+    QtTest.QTest.mouseRelease(
+        popup.viewport(),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        press_pos,
+    )
+
     assert activated_rows[-1] == 0
 
     popup.viewportEvent(QtCore.QEvent(QtCore.QEvent.Type.Leave))
@@ -3497,7 +3541,7 @@ def test_ptable_search_controller_tracks_highlight_and_keyboard_activation(
     monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
     win.search_edit.setText("cu")
 
-    popup = win.search_completer.popup()
+    popup = win.search_popup
     assert _search_completion_texts(win)[:3] == [
         "Cu - Copper",
         "Cm - Curium",
@@ -3508,7 +3552,7 @@ def test_ptable_search_controller_tracks_highlight_and_keyboard_activation(
     assert win.periodic_table.cards[96].is_search_match is True
     assert win.periodic_table.cards[80].is_search_match is True
 
-    completion_index = win.search_completer.model().index(1, 0)
+    completion_index = win.search_popup.model().index(1, 0)
     win._handle_search_highlighted_index(completion_index)
 
     assert win._search_completion_row == 1
@@ -3552,8 +3596,8 @@ def test_ptable_symbol_list_search_selects_multiple_elements(
     assert _search_completion_texts(win)[0] == "Select: F, Cl, Br"
     assert win._search_matches == {9, 17, 35}
 
-    completion_index = win.search_completer.model().index(0, 0)
-    win.search_completer.activated[QtCore.QModelIndex].emit(completion_index)
+    completion_index = win.search_popup.model().index(0, 0)
+    win.search_completer.activated.emit(completion_index)
 
     assert win.search_edit.text() == "F, Cl, Br"
     assert win.selected_atomic_numbers == (9, 17, 35)
@@ -3578,10 +3622,10 @@ def test_ptable_search_popup_hides_for_external_focus_and_clicks(
     monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
     win.search_edit.setText("cu")
 
-    popup = win.search_completer.popup()
+    popup = win.search_popup
     assert popup.isVisible() is True
 
-    win._handle_search_highlighted_index(win.search_completer.model().index(1, 0))
+    win._handle_search_highlighted_index(win.search_popup.model().index(1, 0))
     assert win._search_matches == {96}
 
     win._handle_application_focus_changed(None, win.table_view)

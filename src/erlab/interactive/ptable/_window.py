@@ -30,7 +30,6 @@ from erlab.interactive.ptable._table import (
     PeriodicTableView,
     PeriodicTableWidget,
     _CategoryReferenceDialog,
-    _popup_font,
 )
 
 __all__ = ["PeriodicTableWindow", "ptable"]
@@ -207,28 +206,34 @@ class _SearchPopup(QtWidgets.QListWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self._max_visible_items = 10
+        self._pressed_row: int | None = None
 
         self.setObjectName("ptable-search-popup")
-        self.setFont(_popup_font())
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
+        )
         self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         self.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollMode(
             QtWidgets.QAbstractItemView.ScrollMode.ScrollPerPixel
         )
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoMousePropagation, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoMouseReplay, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
         viewport = self.viewport()
         if viewport is not None:
             viewport.setMouseTracking(True)
+            viewport.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoMousePropagation, True)
         self.setUniformItemSizes(True)
         self.setFrameShape(QtWidgets.QFrame.Shape.Box)
         self.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
         self.hide()
 
-        # The popup viewport owns mouse interaction, so the view emits model indexes
-        # directly and leaves "completer" semantics to the controller object.
-        self.pressed.connect(self._handle_pressed_index)
         self.currentRowChanged.connect(self._emit_highlighted_index)
 
     def setMaxVisibleItems(self, value: int) -> None:
@@ -243,21 +248,49 @@ class _SearchPopup(QtWidgets.QListWidget):
                 mouse_event = event if isinstance(event, QtGui.QMouseEvent) else None
                 if mouse_event is not None:
                     self._set_current_index_from_point(mouse_event.position().toPoint())
+            elif event.type() == QtCore.QEvent.Type.MouseButtonPress:
+                mouse_event = event if isinstance(event, QtGui.QMouseEvent) else None
+                if (
+                    mouse_event is not None
+                    and mouse_event.button() == QtCore.Qt.MouseButton.LeftButton
+                ):
+                    index = self.indexAt(mouse_event.position().toPoint())
+                    self._pressed_row = index.row() if index.isValid() else None
+                    self._set_current_index_from_point(mouse_event.position().toPoint())
+                    event.accept()
+                    return True
+            elif event.type() == QtCore.QEvent.Type.MouseButtonRelease:
+                mouse_event = event if isinstance(event, QtGui.QMouseEvent) else None
+                if (
+                    mouse_event is not None
+                    and mouse_event.button() == QtCore.Qt.MouseButton.LeftButton
+                ):
+                    index = self.indexAt(mouse_event.position().toPoint())
+                    pressed_row = self._pressed_row
+                    self._pressed_row = None
+                    if (
+                        pressed_row is not None
+                        and index.isValid()
+                        and index.row() == pressed_row
+                    ):
+                        self._handle_pressed_index(index)
+                    else:
+                        self._set_current_index_from_point(
+                            mouse_event.position().toPoint()
+                        )
+                    event.accept()
+                    return True
+            elif event.type() == QtCore.QEvent.Type.MouseButtonDblClick:
+                mouse_event = event if isinstance(event, QtGui.QMouseEvent) else None
+                if (
+                    mouse_event is not None
+                    and mouse_event.button() == QtCore.Qt.MouseButton.LeftButton
+                ):
+                    event.accept()
+                    return True
             elif event.type() == QtCore.QEvent.Type.Leave and self.currentRow() >= 0:
                 self.setCurrentRow(-1)
         return super().viewportEvent(event)
-
-    def mousePressEvent(self, event: QtGui.QMouseEvent | None) -> None:
-        if event is None:
-            super().mousePressEvent(event)
-            return
-        point = event.position().toPoint()
-        index = self.indexAt(point)
-        if event.button() == QtCore.Qt.MouseButton.LeftButton and index.isValid():
-            self._handle_pressed_index(index)
-            event.accept()
-            return
-        super().mousePressEvent(event)
 
     def _handle_pressed_index(self, index: QtCore.QModelIndex) -> None:
         if not index.isValid():
@@ -283,7 +316,7 @@ class _SearchPopup(QtWidgets.QListWidget):
 
 
 class _SearchCompleter(QtCore.QObject):
-    activated = QtCore.Signal((str,), (QtCore.QModelIndex,))
+    activated = QtCore.Signal(QtCore.QModelIndex)
     highlighted = QtCore.Signal((QtCore.QModelIndex,))
 
     def __init__(
@@ -295,18 +328,10 @@ class _SearchCompleter(QtCore.QObject):
         self._popup = popup
         self._complete_handler: Callable[[], None] | None = None
 
-        self._popup.completion_index_activated.connect(
-            self.activated[QtCore.QModelIndex].emit
-        )
+        self._popup.completion_index_activated.connect(self.activated.emit)
         self._popup.completion_index_highlighted.connect(
             self.highlighted[QtCore.QModelIndex].emit
         )
-
-    def popup(self) -> _SearchPopup:
-        return self._popup
-
-    def model(self) -> QtCore.QAbstractItemModel | None:
-        return self._popup.model()
 
     def complete(self) -> None:
         if self._complete_handler is not None:
@@ -314,24 +339,6 @@ class _SearchCompleter(QtCore.QObject):
 
     def set_complete_handler(self, handler: Callable[[], None]) -> None:
         self._complete_handler = handler
-
-    def setCaseSensitivity(self, _: object) -> None:
-        return None
-
-    def setCompletionMode(self, _: object) -> None:
-        return None
-
-    def setFilterMode(self, _: object) -> None:
-        return None
-
-    def setCompletionPrefix(self, _: str) -> None:
-        return None
-
-    def setMaxVisibleItems(self, value: int) -> None:
-        self._popup.setMaxVisibleItems(value)
-
-    def maxVisibleItems(self) -> int:
-        return self._popup.maxVisibleItems()
 
 
 @dataclass(frozen=True)
@@ -436,18 +443,8 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self.search_popup = _SearchPopup(self)
         self.search_completer = _SearchCompleter(self.search_popup, self)
         self.search_completer.set_complete_handler(self._show_search_popup)
-        self.search_completer.setCaseSensitivity(
-            QtCore.Qt.CaseSensitivity.CaseInsensitive
-        )
-        self.search_completer.setCompletionMode(
-            QtWidgets.QCompleter.CompletionMode.PopupCompletion
-        )
-        self.search_completer.setFilterMode(QtCore.Qt.MatchFlag.MatchContains)
-        self.search_completer.setMaxVisibleItems(10)
-        self.search_completer.activated[str].connect(self._handle_search_completion)
-        self.search_completer.activated[QtCore.QModelIndex].connect(
-            self._handle_search_completion_index
-        )
+        self.search_popup.setMaxVisibleItems(10)
+        self.search_completer.activated.connect(self._handle_search_completion_index)
         self.search_completer.highlighted[QtCore.QModelIndex].connect(
             self._handle_search_highlighted_index
         )
@@ -782,18 +779,16 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
                 self._hide_search_popup(reset_navigation=True)
             elif event.type() == QtCore.QEvent.Type.MouseButtonPress:
                 mouse_event = event if isinstance(event, QtGui.QMouseEvent) else None
-                if self._is_search_popup_target(watched):
-                    return super().eventFilter(watched, event)
                 if mouse_event is not None:
                     global_pos = mouse_event.globalPosition().toPoint()
-                    if not (
-                        self.search_popup.frameGeometry().contains(global_pos)
-                        or QtCore.QRect(
-                            self.search_edit.mapToGlobal(QtCore.QPoint(0, 0)),
-                            self.search_edit.size(),
-                        ).contains(global_pos)
-                    ):
-                        self._hide_search_popup(reset_navigation=True)
+                    if self.search_popup.frameGeometry().contains(
+                        global_pos
+                    ) or QtCore.QRect(
+                        self.search_edit.mapToGlobal(QtCore.QPoint(0, 0)),
+                        self.search_edit.size(),
+                    ).contains(global_pos):
+                        return super().eventFilter(watched, event)
+                    self._hide_search_popup(reset_navigation=True)
                 elif not self._is_search_popup_target(watched):
                     self._hide_search_popup(reset_navigation=True)
         return super().eventFilter(watched, event)
@@ -921,9 +916,8 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             + (self.search_popup.frameWidth() * 2)
             + 8
         )
-        top_left = self.search_edit.mapTo(
-            self,
-            QtCore.QPoint(0, self.search_edit.height() + 2),
+        top_left = self.search_edit.mapToGlobal(
+            QtCore.QPoint(0, self.search_edit.height() + 2)
         )
         self.search_popup.setGeometry(
             top_left.x(),
@@ -1276,14 +1270,6 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             return
         self._hide_search_popup(reset_navigation=False)
 
-    def _handle_search_completion(self, text: str) -> None:
-        completion = self._search_completion_at(self.search_popup.currentRow()) or next(
-            (entry for entry in self._search_completions if entry.display_text == text),
-            None,
-        )
-        if completion is not None:
-            self._activate_search_completion(completion)
-
     def _handle_search_completion_index(self, index: QtCore.QModelIndex) -> None:
         completion = self._search_completion_at(index.row())
         if completion is None:
@@ -1328,9 +1314,6 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         if not self.search_popup.isVisible():
             self.search_completer.complete()
         return True
-
-    def _sync_search_popup_index(self) -> None:
-        return None
 
     def _handle_search_return_pressed(self) -> None:
         completion = (
