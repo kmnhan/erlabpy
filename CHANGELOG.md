@@ -2,6 +2,16 @@
 
 ### ✨ Features
 
+- **ktool:** add symmetrization preview ([39cec40](https://github.com/kmnhan/erlabpy/commit/39cec40933d21e82538c2b01a3457bd0edb4c519))
+
+  Adds the ability to preview n-fold symmetrized constant-energy surfaces to `ktool`.
+
+- **interactive.ptable:** add periodic table app (#297) ([7e77064](https://github.com/kmnhan/erlabpy/commit/7e77064c3cfa6abffeddf2eb749c704834772de0))
+
+  Adds a new interactive periodic table app, `erlab.interactive.ptable`, that provides x-ray absorption edge tables, and photoionization cross-section plots. The app is also accessible from the ImageTool manager's `Apps` menu.
+
+- **analysis.xps:** add module that provides x-ray cross sections and absorption edge energies for core-level photoemission analysis (#296) ([dd7d824](https://github.com/kmnhan/erlabpy/commit/dd7d824f3284130f28308b1ebb692c4996b05490))
+
 - **kspace:** make cut conversion exact (#293) ([426ae22](https://github.com/kmnhan/erlabpy/commit/426ae225186ce9cdbced67d97b7b0a6bb2e1fb60))
 
   Momentum conversion for cuts previously approximated the momentum perpendicular to the slit as a single value across the cut. This is exact only for cuts passing through the origin in momentum space, but can lead to errors for off-center cuts. Now, the exact momentum coordinates are calculated for each point in the output grid, allowing for accurate conversion of arbitrary cuts. The cuts also contain correct momentum coordinates.
@@ -25,6 +35,8 @@
   Also adds support for lazy-computing dask-based inputs.
 
 ### 🐞 Bug Fixes
+
+- **analysis.gold:** fix regression where open bounds (`None`) was not avaliable in range slicing and plotting functions ([93dc2fb](https://github.com/kmnhan/erlabpy/commit/93dc2fb8d83165c97d8c45d9c3ce33bf697667ee))
 
 - **interactive:** better lifecycle management of colorbar menu widgets to prevent rare crashes due to garbage collection of menu widgets from worker threads during later allocations ([37f5cc4](https://github.com/kmnhan/erlabpy/commit/37f5cc4e1c3628874892db46851fe20944476dfc))
 
