@@ -109,7 +109,7 @@ def _effective_point_size(font: QtGui.QFont) -> float:
 
 def _fit_symbol_font(
     base_font: QtGui.QFont,
-    text: str,
+    text: str | tuple[str, ...],
     *,
     max_width: float,
     max_height: float,
@@ -119,20 +119,26 @@ def _fit_symbol_font(
 ) -> _FittedSymbolFont:
     fitted_font = QtGui.QFont(base_font)
     fitted_font.setBold(True)
-    if text == "":
+    sample_texts = (text,) if isinstance(text, str) else tuple(text)
+    sample_texts = tuple(sample for sample in sample_texts if sample != "")
+    if len(sample_texts) == 0:
         fitted_font.setPointSizeF(max(preferred_point_size, minimum_point_size))
         return _FittedSymbolFont(fitted_font, 0)
 
-    width_limit = max(1.0, max_width)
-    height_limit = max(1.0, max_height)
+    raster_guard = 1.0
+    width_limit = max(1.0, max_width - raster_guard)
+    height_limit = max(1.0, max_height - raster_guard)
     point_size = max(preferred_point_size, minimum_point_size)
 
     while point_size >= minimum_point_size - 1e-6:
         fitted_font.setPointSizeF(point_size)
-        ink_rect = QtGui.QFontMetricsF(fitted_font).tightBoundingRect(text)
-        if (
-            ink_rect.width() <= width_limit + 1e-6
-            and ink_rect.height() <= height_limit + 1e-6
+        metrics = QtGui.QFontMetricsF(fitted_font)
+        if all(
+            (
+                metrics.tightBoundingRect(sample).width() <= width_limit + 1e-6
+                and metrics.tightBoundingRect(sample).height() <= height_limit + 1e-6
+            )
+            for sample in sample_texts
         ):
             break
         point_size -= step
@@ -140,9 +146,17 @@ def _fit_symbol_font(
         fitted_font.setPointSizeF(minimum_point_size)
 
     metrics = QtGui.QFontMetricsF(fitted_font)
-    ink_rect = metrics.tightBoundingRect(text)
-    bounding_rect = metrics.boundingRect(text)
-    top_headroom = max(0.0, ink_rect.top() - bounding_rect.top())
+    top_headroom = max(
+        (
+            max(
+                0.0,
+                metrics.tightBoundingRect(sample).top()
+                - metrics.boundingRect(sample).top(),
+            )
+            for sample in sample_texts
+        ),
+        default=0.0,
+    )
     max_negative_top_margin = max(1, round(height_limit * 0.08))
     top_margin = -min(max_negative_top_margin, max(0, round(top_headroom * 0.2)))
     return _FittedSymbolFont(fitted_font, top_margin)
@@ -612,3 +626,8 @@ def _element_records() -> dict[int, ElementRecord]:
             configuration=GROUND_STATE_CONFIGURATIONS.get(symbol, ""),
         )
     return records
+
+
+@functools.cache
+def _element_symbols() -> tuple[str, ...]:
+    return tuple(record.symbol for record in _element_records().values())

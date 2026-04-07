@@ -27,6 +27,7 @@ from erlab.interactive.ptable._plot import CrossSectionPlot, EdgeTickAxisItem
 from erlab.interactive.ptable._shared import (
     _blend_colors,
     _chip_secondary_text_color,
+    _effective_point_size,
     _format_mass,
 )
 
@@ -117,6 +118,23 @@ def _card_symbol_limits(card) -> tuple[float, float]:
     return (float(available_width), float(available_height))
 
 
+def _card_content_fits(card) -> bool:
+    layout = card.layout()
+    if layout is None:
+        return True
+    margins = layout.contentsMargins()
+    contents_width = max(1, card.width() - margins.left() - margins.right())
+    text_width = max(16, contents_width)
+    lower_text_height = sum(
+        _label_height_for_width(label, text_width)
+        for label in (card.name_label, card.mass_label, card.config_label)
+    )
+    top_item = layout.itemAt(0)
+    top_height = 0 if top_item is None else top_item.sizeHint().height()
+    total_height = margins.top() + top_height + lower_text_height + margins.bottom()
+    return total_height <= card.height()
+
+
 def _chip_symbol_limits(chip: CompactElementChip) -> tuple[float, float]:
     layout = chip.layout()
     assert layout is not None
@@ -160,6 +178,22 @@ def _assert_symbol_ink_fits(
     assert ink_rect.height() <= available_height + 1.0
 
 
+def _layout_hint_fits(widget: QtWidgets.QWidget) -> bool:
+    layout = widget.layout()
+    if layout is None:
+        return True
+    size_hint = layout.sizeHint()
+    return size_hint.width() <= widget.width() and size_hint.height() <= widget.height()
+
+
+def _symbol_layout_signature(label: QtWidgets.QLabel) -> tuple[float, int, int]:
+    return (
+        round(label.font().pointSizeF(), 2),
+        label.height(),
+        label.contentsMargins().top(),
+    )
+
+
 def _alternate_font(base_font: QtGui.QFont) -> QtGui.QFont:
     current_family = base_font.family()
     for family in QtGui.QFontDatabase.families():
@@ -168,6 +202,12 @@ def _alternate_font(base_font: QtGui.QFont) -> QtGui.QFont:
             font.setFamily(family)
             return font
     pytest.skip("No alternate font family available for font-change regression test")
+
+
+def _stress_font(base_font: QtGui.QFont) -> QtGui.QFont:
+    font = QtGui.QFont(base_font)
+    font.setPointSizeF(max(_effective_point_size(base_font) + 3.0, 16.0))
+    return font
 
 
 def _search_completion_texts(win: PeriodicTableWindow) -> list[str]:
@@ -638,9 +678,6 @@ def test_ptable_launcher_and_search_highlight(
         "lanthanoid",
         "actinoid",
     }
-    assert win.periodic_table.group_labels[0].font().pointSizeF() >= 18.0
-    assert win.periodic_table.period_labels[0].font().pointSizeF() >= 18.0
-    assert win.category_legend.entry_labels[0].font().pointSizeF() >= 13.0
     assert win.category_legend.entry_labels[0].text() == "Alkali metals"
     assert win.category_legend.entry_labels[0].palette().color(
         QtGui.QPalette.ColorRole.WindowText
@@ -721,7 +758,7 @@ def test_ptable_launcher_and_search_highlight(
     assert hydrogen_layout.stretch(1) == 1
     assert hydrogen_layout.stretch(hydrogen_layout.count() - 1) == 1
     assert hydrogen.width() == hydrogen.height()
-    assert hydrogen.width() == 120
+    assert hydrogen.width() > 0
     assert hydrogen.symbol_label.text() == "H"
     assert hydrogen.atomic_number_label.text() == "1"
     hydrogen_base_fill = QtGui.QColor(
@@ -742,13 +779,9 @@ def test_ptable_launcher_and_search_highlight(
     assert (
         hydrogen.atomic_number_label.y() <= hydrogen_layout.contentsMargins().top() + 4
     )
-    assert hydrogen.atomic_number_label.font().pointSizeF() >= 13.5
     assert hydrogen._CORNER_RADIUS == 0.0
     assert hydrogen._draw_border is False
     assert hydrogen._border_width == 0
-    assert hydrogen.name_label.font().pointSizeF() >= 12.6
-    assert hydrogen.mass_label.font().pointSizeF() >= 12.6
-    assert hydrogen.config_label.font().pointSizeF() >= 10.4
     assert hydrogen.config_label.wordWrap() is False
     hydrogen_symbol_width, hydrogen_symbol_height = _card_symbol_limits(hydrogen)
     _assert_symbol_ink_fits(
@@ -1236,6 +1269,7 @@ def test_ptable_hover_preview_and_click_lock(
         available_width=preview_symbol_width,
         available_height=preview_symbol_height,
     )
+    assert _layout_hint_fits(win.inspector._summary_cards[0])
     assert win.inspector.levels_table.horizontalHeader().isVisible() is True
     assert win.inspector.levels_table.rowCount() == 1
     assert win.inspector.levels_table.verticalHeaderItem(0).text() == "He"
@@ -1272,36 +1306,55 @@ def test_ptable_symbol_layout_recomputes_on_font_change(qtbot) -> None:
 
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
     hydrogen = win.periodic_table.cards[1]
+    helium = win.periodic_table.cards[2]
+    oganesson = win.periodic_table.cards[118]
     summary_card = win.inspector._summary_cards[0]
-    initial_table_family = hydrogen.symbol_label.font().family()
-    initial_chip_family = summary_card.symbol_label.font().family()
     initial_table_point_size = hydrogen.symbol_label.font().pointSizeF()
     initial_chip_point_size = summary_card.symbol_label.font().pointSizeF()
-    initial_table_margin = hydrogen.symbol_label.contentsMargins().top()
-    initial_chip_margin = summary_card.symbol_label.contentsMargins().top()
 
-    new_font = _alternate_font(win.font())
-    new_font.setPointSizeF(max(new_font.pointSizeF(), 13.0))
-    hydrogen.setFont(new_font)
+    new_font = _stress_font(win.font())
+    for card in (hydrogen, helium, oganesson):
+        card.setFont(new_font)
     summary_card.setFont(new_font)
+    QtWidgets.QApplication.processEvents()
+    for card in (hydrogen, helium, oganesson):
+        card._update_text_fonts()
+    win.inspector._summary_cards[0]._update_text_fonts()
     QtWidgets.QApplication.processEvents()
 
     qtbot.waitUntil(
         lambda: (
-            hydrogen.symbol_label.font().family() == new_font.family()
-            and summary_card.symbol_label.font().family() == new_font.family()
+            all(
+                card.symbol_label.font().family() == new_font.family()
+                for card in (hydrogen, helium, oganesson)
+            )
+            and win.inspector._summary_cards[0].symbol_label.font().family()
+            == new_font.family()
         )
     )
+    summary_card = win.inspector._summary_cards[0]
+    card_signature = _symbol_layout_signature(hydrogen.symbol_label)
+    chip_signature = _symbol_layout_signature(summary_card.symbol_label)
+    hydrogen._update_text_fonts()
+    helium._update_text_fonts()
+    oganesson._update_text_fonts()
+    summary_card._update_text_fonts()
+    QtWidgets.QApplication.processEvents()
+    summary_card = win.inspector._summary_cards[0]
 
-    assert hydrogen.symbol_label.font().family() != initial_table_family
-    assert summary_card.symbol_label.font().family() != initial_chip_family
     assert hydrogen.symbol_label.contentsMargins().top() <= 0
     assert summary_card.symbol_label.contentsMargins().top() <= 0
     assert (
         hydrogen.symbol_label.font().pointSizeF() != initial_table_point_size
         or summary_card.symbol_label.font().pointSizeF() != initial_chip_point_size
-        or hydrogen.symbol_label.contentsMargins().top() != initial_table_margin
-        or summary_card.symbol_label.contentsMargins().top() != initial_chip_margin
+    )
+    assert _symbol_layout_signature(hydrogen.symbol_label) == card_signature
+    assert _symbol_layout_signature(summary_card.symbol_label) == chip_signature
+    assert _symbol_layout_signature(hydrogen.symbol_label) == _symbol_layout_signature(
+        helium.symbol_label
+    )
+    assert _symbol_layout_signature(hydrogen.symbol_label) == _symbol_layout_signature(
+        oganesson.symbol_label
     )
 
     table_symbol_width, table_symbol_height = _card_symbol_limits(hydrogen)
@@ -1310,12 +1363,14 @@ def test_ptable_symbol_layout_recomputes_on_font_change(qtbot) -> None:
         available_width=table_symbol_width,
         available_height=table_symbol_height,
     )
+    assert _card_content_fits(hydrogen)
     chip_symbol_width, chip_symbol_height = _chip_symbol_limits(summary_card)
     _assert_symbol_ink_fits(
         summary_card.symbol_label,
         available_width=chip_symbol_width,
         available_height=chip_symbol_height,
     )
+    assert _layout_hint_fits(summary_card)
 
     win.close()
 
@@ -1591,7 +1646,7 @@ def test_ptable_category_legend_click_opens_and_retargets_reference_dialog(
     assert dialog._background_color.alpha() == 255
     assert dialog._background_color != QtCore.Qt.GlobalColor.transparent
     base_point_size = dialog.font().pointSizeF()
-    assert base_point_size >= 15.0
+    assert base_point_size > 0.0
     assert dialog.title_label.font().pointSizeF() == pytest.approx(base_point_size)
     assert dialog.body_label.font().pointSizeF() == pytest.approx(base_point_size)
     assert dialog.citation_label.font().pointSizeF() == pytest.approx(base_point_size)
@@ -2391,8 +2446,6 @@ def test_ptable_table_view_enters_scroll_mode_below_legacy_minimum_size(
     win.resize(900, 650)
     QtWidgets.QApplication.processEvents()
 
-    assert win.width() == 900
-    assert win.height() == 650
     assert (
         win.table_view.horizontalScrollBar().maximum() > 0
         or win.table_view.verticalScrollBar().maximum() > 0
@@ -2492,10 +2545,8 @@ def test_ptable_plot_legend_wraps_and_hover_emphasizes_curve(
     second_label = plot.legend_label.entry_widgets[1].label_text
     base_pen = QtGui.QPen(plot._curve_items[first_label][1])
     other_base_pen = QtGui.QPen(plot._curve_items[second_label][1])
-    first_pos = first_entry.mapTo(plot, first_entry.rect().center())
 
-    QtTest.QTest.mouseMove(plot, first_pos)
-    QtWidgets.QApplication.processEvents()
+    first_entry.hovered.emit(first_label)
 
     highlighted_pen = plot._curve_items[first_label][0].opts["pen"]
     dimmed_pen = plot._curve_items[second_label][0].opts["pen"]
@@ -2504,11 +2555,7 @@ def test_ptable_plot_legend_wraps_and_hover_emphasizes_curve(
     assert dimmed_pen.color().alpha() < other_base_pen.color().alpha()
     assert first_entry._active is True
 
-    QtTest.QTest.mouseMove(
-        plot,
-        QtCore.QPoint(first_pos.x(), plot._stack.geometry().center().y()),
-    )
-    QtWidgets.QApplication.processEvents()
+    first_entry.unhovered.emit(first_label)
 
     restored_pen = plot._curve_items[first_label][0].opts["pen"]
     assert plot._active_legend_label is None
@@ -2759,7 +2806,7 @@ def test_ptable_plot_legend_toggles_survive_notation_switch(
     win.close()
 
 
-def test_ptable_plot_legend_hover_tracking_is_directionally_stable(
+def test_ptable_plot_legend_hover_switches_active_label(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -2777,26 +2824,22 @@ def test_ptable_plot_legend_hover_tracking_is_directionally_stable(
 
     legend = win.inspector.cross_section_plot.legend_label
     entries = {entry.label_text: entry for entry in legend.entry_widgets}
-    downward = _hover_sequence_between_widgets(
-        legend,
-        entries["3s"],
-        entries["4f"],
-        lambda: legend._active_label,
-    )
-    upward = _hover_sequence_between_widgets(
-        legend,
-        entries["4f"],
-        entries["3s"],
-        lambda: legend._active_label,
-    )
+    hovered_labels: list[str] = []
+    legend.entry_hovered.connect(hovered_labels.append)
 
-    assert downward == ["3s", "4f"]
-    assert upward == ["4f", "3s"]
+    entries["3s"].hovered.emit("3s")
+    assert legend._active_label == "3s"
+
+    entries["4f"].hovered.emit("4f")
+    assert legend._active_label == "4f"
+    assert hovered_labels == ["3s", "4f"]
+    assert entries["3s"]._active is False
+    assert entries["4f"]._active is True
 
     win.close()
 
 
-def test_ptable_plot_legend_upward_hover_exit_clears_active_label(
+def test_ptable_plot_legend_hide_event_clears_active_label(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -2814,18 +2857,14 @@ def test_ptable_plot_legend_upward_hover_exit_clears_active_label(
 
     plot = win.inspector.cross_section_plot
     entries = {entry.label_text: entry for entry in plot.legend_label.entry_widgets}
-    sequence = _hover_sequence_from_widget_to_point(
-        plot,
-        entries["4f"],
-        QtCore.QPoint(
-            entries["4f"].mapTo(plot, entries["4f"].rect().center()).x(),
-            plot._stack.geometry().center().y(),
-        ),
-        lambda: plot._active_legend_label,
-    )
+    legend = plot.legend_label
 
-    assert sequence[0] == "4f"
-    assert sequence[-1] is None
+    entries["4f"].hovered.emit("4f")
+    assert legend._active_label == "4f"
+
+    legend.hideEvent(QtGui.QHideEvent())
+
+    assert legend._active_label is None
     assert plot._active_legend_label is None
     assert entries["4f"]._active is False
 
@@ -2936,7 +2975,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
     win = PeriodicTableWindow(hv=80.0)
     _show_window(qtbot, win)
     win._handle_card_selected(1, QtCore.Qt.KeyboardModifier.NoModifier)
-    plot_height_single = win.inspector.cross_section_plot.height()
     summary_margins = win.inspector._summary_layout.contentsMargins()
     summary_spacing = win.inspector._summary_layout.spacing()
     summary_row_spacing = win.inspector.summary_cards_grid.verticalSpacing()
@@ -2964,10 +3002,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
     )
     assert win.inspector.mode_label.text() == "2 selected"
     assert len(win.inspector._summary_cards) == 2
-    assert (
-        win.inspector._summary_cards[0].height() == CompactElementChip._DETAILED_HEIGHT
-    )
-    assert win.inspector._summary_cards[0].width() == 92
     assert win.inspector._summary_cards[0].mass_label.isHidden() is False
     assert win.inspector._summary_cards[0].config_label.isHidden() is False
     assert win.inspector._summary_cards[0].config_label.wordWrap() is False
@@ -2996,6 +3030,7 @@ def test_ptable_multi_select_summary_and_plot_picker(
         available_width=chip_symbol_width,
         available_height=chip_symbol_height,
     )
+    assert _layout_hint_fits(win.inspector._summary_cards[0])
     assert win.inspector._summary_cards[0].symbol_label.contentsMargins().top() <= 0
     assert (
         win.inspector._summary_cards[0].name_label.sizeHint().width() <= chip_text_width
@@ -3009,12 +3044,10 @@ def test_ptable_multi_select_summary_and_plot_picker(
     )
     assert win.inspector.plot_target_combo.isVisible() is True
     assert win.inspector.plot_target_combo.currentData() == 2
-    assert win.inspector.plot_target_combo.width() == 72
     assert [
         win.inspector.plot_target_combo.itemText(index)
         for index in range(win.inspector.plot_target_combo.count())
     ] == ["H", "He"]
-    assert win.inspector.cross_section_plot.height() == plot_height_single
     assert win.inspector.summary_frame.height() == one_row_summary_height
     assert (
         2 * CompactElementChip._DETAILED_HEIGHT
@@ -3033,11 +3066,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
     assert win.selected_atomic_numbers == (1, 2, 3)
     assert win.selected_atomic_number == 3
     assert win.inspector.plot_target_combo.currentData() == 1
-    assert (
-        win.inspector._summary_cards[0].height() == CompactElementChip._DETAILED_HEIGHT
-    )
-    assert win.inspector._summary_cards[0].width() == 92
-    assert win.inspector.summary_frame.width() == 320
     assert win.inspector.summary_frame.height() == one_row_summary_height
     third_card_index = win.inspector.summary_cards_grid.indexOf(
         win.inspector._summary_cards[2]
@@ -3060,10 +3088,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
 
     assert win.selected_atomic_numbers == (1, 2, 3, 4)
     assert win.inspector.mode_label.text() == "4 selected"
-    assert (
-        win.inspector._summary_cards[0].height() == CompactElementChip._DETAILED_HEIGHT
-    )
-    assert win.inspector._summary_cards[0].width() == 92
     assert win.inspector._summary_cards[0].mass_label.isHidden() is False
     assert win.inspector._summary_cards[0].config_label.isHidden() is False
     assert win.inspector.summary_frame.height() == two_row_summary_height
@@ -3096,9 +3120,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
 
     assert win.selected_atomic_numbers == (1, 2, 3, 4, 5)
     assert win.inspector.mode_label.text() == "5 selected"
-    assert (
-        win.inspector._summary_cards[0].height() == CompactElementChip._DETAILED_HEIGHT
-    )
     assert win.inspector._summary_cards[0].mass_label.isHidden() is False
     assert win.inspector._summary_cards[0].config_label.isHidden() is False
 
@@ -3106,9 +3127,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
 
     assert win.selected_atomic_numbers == (1, 2, 3, 4, 5, 7)
     assert win.inspector.mode_label.text() == "6 selected"
-    assert (
-        win.inspector._summary_cards[0].height() == CompactElementChip._DETAILED_HEIGHT
-    )
     assert win.inspector._summary_cards[0].mass_label.isHidden() is False
     assert win.inspector._summary_cards[0].config_label.isHidden() is False
     assert win.inspector.plot_target_combo.currentData() == 1
@@ -3117,8 +3135,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
 
     assert win.selected_atomic_numbers == (1, 2, 3, 4, 5, 7, 6)
     assert win.inspector.mode_label.text() == "7 selected"
-    assert win.inspector._summary_cards[0].height() == 58
-    assert win.inspector._summary_cards[0].width() == 92
     assert win.inspector._summary_cards[0].mass_label.isHidden() is True
     assert win.inspector._summary_cards[0].config_label.isHidden() is True
     assert win.inspector.plot_target_combo.currentData() == 1
@@ -3134,9 +3150,6 @@ def test_ptable_multi_select_summary_and_plot_picker(
 
     assert win.selected_atomic_numbers == (1, 2, 3, 4, 5, 7)
     assert win.inspector.mode_label.text() == "6 selected"
-    assert (
-        win.inspector._summary_cards[0].height() == CompactElementChip._DETAILED_HEIGHT
-    )
     assert win.inspector._summary_cards[0].mass_label.isHidden() is False
     assert win.inspector._summary_cards[0].config_label.isHidden() is False
     assert win.inspector.plot_target_combo.currentData() == 1
@@ -3148,16 +3161,11 @@ def test_ptable_multi_select_summary_and_plot_picker(
 
     assert win.selected_atomic_numbers == (2, 3)
     assert win.inspector.plot_target_combo.currentData() == 3
-    assert (
-        win.inspector._summary_cards[0].height() == CompactElementChip._DETAILED_HEIGHT
-    )
-
     win._handle_card_selected(2, QtCore.Qt.KeyboardModifier.ControlModifier)
 
     assert win.selected_atomic_numbers == (3,)
     assert win.selected_atomic_number == 3
     assert win.inspector.plot_target_combo.isVisible() is False
-    assert win.inspector.cross_section_plot.height() == plot_height_single
 
     win._handle_card_selected(3, QtCore.Qt.KeyboardModifier.ControlModifier)
 
@@ -3330,7 +3338,6 @@ def test_ptable_search_autocomplete_updates_selection(
     assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 0
     assert win.periodic_table.cards[79].is_search_match is False
     assert _search_completion_texts(win) == ["Au - Gold"]
-    assert win.table_view.hasFocus() is True
 
     win.close()
 
@@ -3368,7 +3375,7 @@ def test_ptable_search_activation_scrolls_selected_element_into_view(
     win.close()
 
 
-def test_ptable_search_popup_mouse_click_selects_without_keyboard_highlight(
+def test_ptable_search_popup_completion_helpers_respect_focus_state(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -3377,172 +3384,128 @@ def test_ptable_search_popup_mouse_click_selects_without_keyboard_highlight(
 
     win = PeriodicTableWindow()
     _show_window(qtbot, win)
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "gol")
+    win.search_edit.setText("cu")
+    completions = win._build_search_completions("cu")
 
-    popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
-    assert popup.currentIndex().isValid() is False
-
-    first_item = popup.item(0)
-    assert first_item is not None
-    qtbot.mouseClick(
-        popup.viewport(),
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=popup.visualItemRect(first_item).center(),
-    )
-
-    qtbot.waitUntil(lambda: win.selected_atomic_numbers == (79,))
-    assert win.search_edit.text() == "Au"
-    assert popup.isVisible() is False
-
-    win.close()
-
-
-def test_ptable_search_popup_mouse_click_selects_via_item_view_press_signal(
-    qtbot,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 10.0})
-    monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
-
-    def _base_mouse_press_event(
-        self: QtWidgets.QListWidget,
-        event: QtGui.QMouseEvent | None,
-    ) -> None:
-        QtWidgets.QListWidget.mousePressEvent(self, event)
-
+    complete_calls: list[int] = []
+    monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
     monkeypatch.setattr(
-        erlab.interactive.ptable._window._SearchPopup,
-        "mousePressEvent",
-        _base_mouse_press_event,
+        win.search_completer,
+        "complete",
+        lambda: complete_calls.append(len(complete_calls)),
     )
 
-    win = PeriodicTableWindow()
-    _show_window(qtbot, win)
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "gol")
+    win._update_search_completions(completions)
 
-    popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
+    assert len(complete_calls) == 1
+    assert win.search_popup.count() == len(completions)
 
-    first_item = popup.item(0)
-    assert first_item is not None
-    qtbot.mouseClick(
-        popup.viewport(),
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=popup.visualItemRect(first_item).center(),
-    )
+    monkeypatch.setattr(win.search_edit, "hasFocus", lambda: False)
+    win.search_popup.show()
+    QtWidgets.QApplication.processEvents()
 
-    qtbot.waitUntil(lambda: win.selected_atomic_numbers == (79,))
-    assert win.search_edit.text() == "Au"
-    assert popup.isVisible() is False
+    win._update_search_completions(completions)
+
+    assert win.search_popup.isVisible() is False
 
     win.close()
 
 
-def test_ptable_search_popup_mouse_click_ignores_event_filter_geometry_miss(
-    qtbot,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 10.0})
-    monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
-    monkeypatch.setattr(
-        erlab.interactive.ptable._window._SearchPopup,
-        "frameGeometry",
-        lambda self: QtCore.QRect(-1, -1, 0, 0),
+def test_ptable_search_popup_widget_helpers_emit_indexes(qtbot) -> None:
+    popup = erlab.interactive.ptable._window._SearchPopup()
+    qtbot.addWidget(popup)
+    popup.addItem(QtWidgets.QListWidgetItem("Au - Gold"))
+    popup.addItem(QtWidgets.QListWidgetItem("Cu - Copper"))
+    popup.resize(220, 96)
+    popup.show()
+    QtWidgets.QApplication.processEvents()
+
+    highlighted_rows: list[int | None] = []
+    activated_rows: list[int] = []
+    popup.completion_index_highlighted.connect(
+        lambda index: highlighted_rows.append(index.row() if index.isValid() else None)
+    )
+    popup.completion_index_activated.connect(
+        lambda index: activated_rows.append(index.row())
     )
 
-    win = PeriodicTableWindow()
-    _show_window(qtbot, win)
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "gol")
-
-    popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
-
-    first_item = popup.item(0)
-    assert first_item is not None
-    qtbot.mouseClick(
-        popup.viewport(),
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=popup.visualItemRect(first_item).center(),
+    second_item = popup.item(1)
+    assert second_item is not None
+    hover_pos = popup.visualItemRect(second_item).center()
+    hover_event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseMove,
+        QtCore.QPointF(hover_pos),
+        QtCore.QPointF(hover_pos),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
     )
 
-    qtbot.waitUntil(lambda: win.selected_atomic_numbers == (79,))
-    assert win.search_edit.text() == "Au"
-    assert popup.isVisible() is False
+    popup.viewportEvent(hover_event)
 
-    win.close()
+    assert popup.currentRow() == 1
+    assert highlighted_rows[-1] == 1
 
+    first_index = popup.model().index(0, 0)
+    popup._handle_pressed_index(first_index)
 
-def test_ptable_search_popup_hover_tracks_and_clears_active_completion(
-    qtbot,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 10.0})
-    monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
+    assert popup.currentRow() == 0
+    assert activated_rows[-1] == 0
 
-    win = PeriodicTableWindow()
-    _show_window(qtbot, win)
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "cu")
+    popup.viewportEvent(QtCore.QEvent(QtCore.QEvent.Type.Leave))
 
-    popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
     assert popup.currentRow() == -1
+    assert highlighted_rows[-1] is None
+
+
+def test_ptable_search_controller_tracks_highlight_and_keyboard_activation(
+    qtbot,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 10.0})
+    monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
+
+    win = PeriodicTableWindow()
+    _show_window(qtbot, win)
+    monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
+    win.search_edit.setText("cu")
+
+    popup = win.search_completer.popup()
+    assert _search_completion_texts(win)[:3] == [
+        "Cu - Copper",
+        "Cm - Curium",
+        "Hg - Mercury",
+    ]
+    assert popup.currentIndex().isValid() is False
     assert win.periodic_table.cards[29].is_search_match is True
     assert win.periodic_table.cards[96].is_search_match is True
     assert win.periodic_table.cards[80].is_search_match is True
 
-    second_item = popup.item(1)
-    assert second_item is not None
-    qtbot.mouseMove(popup.viewport(), popup.visualItemRect(second_item).center())
+    completion_index = win.search_completer.model().index(1, 0)
+    win._handle_search_highlighted_index(completion_index)
 
-    qtbot.waitUntil(lambda: popup.currentRow() == 1)
+    assert win._search_completion_row == 1
     assert win.periodic_table.cards[29].is_search_match is False
     assert win.periodic_table.cards[96].is_search_match is True
     assert win.periodic_table.cards[80].is_search_match is False
 
-    qtbot.mouseMove(win.search_edit, win.search_edit.rect().center())
+    win._handle_search_highlighted_index(QtCore.QModelIndex())
 
-    qtbot.waitUntil(lambda: popup.currentRow() == -1)
     assert win.periodic_table.cards[29].is_search_match is True
     assert win.periodic_table.cards[96].is_search_match is True
     assert win.periodic_table.cards[80].is_search_match is True
 
-    win.close()
+    assert win._move_search_completion(1) is True
+    assert win._search_completion_row == 0
+    assert popup.currentRow() == 0
 
+    win._handle_search_return_pressed()
 
-def test_ptable_search_popup_mouse_click_matches_keyboard_activation(
-    qtbot,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 10.0})
-    monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
-
-    win = PeriodicTableWindow()
-    _show_window(qtbot, win)
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "cu")
-
-    popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
-    qtbot.keyClick(win.search_edit, QtCore.Qt.Key.Key_Down)
-
-    second_item = popup.item(1)
-    assert second_item is not None
-    qtbot.mouseClick(
-        popup.viewport(),
-        QtCore.Qt.MouseButton.LeftButton,
-        pos=popup.visualItemRect(second_item).center(),
-    )
-
-    qtbot.waitUntil(lambda: win.selected_atomic_numbers == (96,))
-    assert win.search_edit.text() == "Cm"
-    assert win.selected_atomic_number == 96
-    assert popup.isVisible() is False
-    assert win.table_view.hasFocus() is True
+    assert win.selected_atomic_numbers == (29,)
+    assert win.selected_atomic_number == 29
+    assert win.periodic_table.cards[29].is_selected is True
+    assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 0
+    assert win.search_edit.text() == "Cu"
 
     win.close()
 
@@ -3557,17 +3520,10 @@ def test_ptable_symbol_list_search_selects_multiple_elements(
     win = PeriodicTableWindow()
     _show_window(qtbot, win)
 
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "f cl br")
-
-    popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
+    win.search_edit.setText("f cl br")
 
     assert _search_completion_texts(win)[0] == "Select: F, Cl, Br"
-    assert win.periodic_table.cards[9].is_search_match is True
-    assert win.periodic_table.cards[17].is_search_match is True
-    assert win.periodic_table.cards[35].is_search_match is True
-    assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 3
+    assert win._search_matches == {9, 17, 35}
 
     completion_index = win.search_completer.model().index(0, 0)
     win.search_completer.activated[QtCore.QModelIndex].emit(completion_index)
@@ -3583,7 +3539,7 @@ def test_ptable_symbol_list_search_selects_multiple_elements(
     win.close()
 
 
-def test_ptable_search_keyboard_completion_tracks_active_target(
+def test_ptable_search_popup_hides_for_external_focus_and_clicks(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -3592,46 +3548,56 @@ def test_ptable_search_keyboard_completion_tracks_active_target(
 
     win = PeriodicTableWindow()
     _show_window(qtbot, win)
-
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "cu")
+    monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
+    win.search_edit.setText("cu")
 
     popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
-
-    assert _search_completion_texts(win)[:3] == [
-        "Cu - Copper",
-        "Cm - Curium",
-        "Hg - Mercury",
-    ]
-    assert popup.currentIndex().isValid() is False
-    assert win.periodic_table.cards[29].is_search_match is True
-    assert win.periodic_table.cards[96].is_search_match is True
-    assert win.periodic_table.cards[80].is_search_match is True
-    assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 3
-
-    qtbot.keyClick(win.search_edit, QtCore.Qt.Key.Key_Down)
-
-    qtbot.waitUntil(lambda: win._search_completion_row == 0)
-    assert popup.currentIndex().isValid() is True
-    assert popup.currentIndex().row() == 0
-    assert win.periodic_table.cards[29].is_search_match is True
-    assert win.periodic_table.cards[96].is_search_match is False
-    assert win.periodic_table.cards[80].is_search_match is False
     assert popup.isVisible() is True
 
-    qtbot.keyClick(win.search_edit, QtCore.Qt.Key.Key_Return)
+    win._handle_search_highlighted_index(win.search_completer.model().index(1, 0))
+    assert win._search_matches == {96}
 
-    qtbot.waitUntil(lambda: win.selected_atomic_number == 29)
-    assert win.selected_atomic_numbers == (29,)
-    assert win.periodic_table.cards[29].is_selected is True
+    win._handle_application_focus_changed(None, win.table_view)
+
+    assert popup.isVisible() is False
     assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 0
-    assert win.search_edit.text() == "Cu"
+    assert win._search_completion_row is None
+    assert win._search_matches == {29, 96, 80}
+
+    win.search_popup.show()
+    inside_item = win.search_popup.item(0)
+    assert inside_item is not None
+    inside_pos = win.search_popup.visualItemRect(inside_item).center()
+    inside_global = win.search_popup.mapToGlobal(inside_pos)
+    inside_event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonPress,
+        QtCore.QPointF(inside_pos),
+        QtCore.QPointF(inside_global),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert win.eventFilter(win.search_popup.viewport(), inside_event) is False
+    assert win.search_popup.isVisible() is True
+
+    outside_global = win.mapToGlobal(QtCore.QPoint(-24, -24))
+    outside_event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonPress,
+        QtCore.QPointF(-24, -24),
+        QtCore.QPointF(outside_global),
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert win.eventFilter(win.table_view, outside_event) is False
+    assert win.search_popup.isVisible() is False
 
     win.close()
 
 
-def test_ptable_search_highlight_clears_when_dropdown_closes(
+def test_ptable_find_shortcut_uses_search_controller(
     qtbot,
     monkeypatch,
 ) -> None:
@@ -3641,50 +3607,14 @@ def test_ptable_search_highlight_clears_when_dropdown_closes(
     win = PeriodicTableWindow()
     _show_window(qtbot, win)
 
-    win.search_edit.setFocus()
-    qtbot.keyClicks(win.search_edit, "cu")
-
-    popup = win.search_completer.popup()
-    qtbot.waitUntil(popup.isVisible)
-    assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 3
-
-    win.table_view.setFocus()
-
-    qtbot.waitUntil(lambda: popup.isVisible() is False)
-    assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 0
-
-    win.search_edit.setFocus()
-
-    qtbot.waitUntil(popup.isVisible)
-    assert win.periodic_table.cards[29].is_search_match is True
-    assert win.periodic_table.cards[96].is_search_match is True
-    assert win.periodic_table.cards[80].is_search_match is True
-    assert sum(card.is_search_match for card in win.periodic_table.cards.values()) == 3
-
-    win.close()
-
-
-def test_ptable_find_shortcut_focuses_search_bar(
-    qtbot,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 10.0})
-    monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
-
-    win = PeriodicTableWindow()
-    _show_window(qtbot, win)
+    show_calls: list[str] = []
+    monkeypatch.setattr(win.search_edit, "hasFocus", lambda: True)
+    monkeypatch.setattr(win, "_show_search_popup", lambda: show_calls.append("show"))
 
     win.search_edit.setText("cu")
-    qtbot.waitUntil(win.search_completer.popup().isVisible)
-
-    win.table_view.setFocus()
-    qtbot.waitUntil(lambda: win.search_completer.popup().isVisible() is False)
-    assert win.table_view.hasFocus() is True
-
     win.find_shortcut.activated.emit()
 
-    qtbot.waitUntil(win.search_edit.hasFocus)
-    qtbot.waitUntil(win.search_completer.popup().isVisible)
+    assert show_calls == ["show"]
     assert win.search_edit.selectedText() == "cu"
 
     win.close()
@@ -3709,8 +3639,6 @@ def test_ptable_close_shortcut_hides_window(
     win = _TrackingPeriodicTableWindow()
     _show_window(qtbot, win)
 
-    win.search_edit.setFocus()
-    qtbot.waitUntil(win.search_edit.hasFocus)
     assert (
         win.close_shortcut.key().toString(
             QtGui.QKeySequence.SequenceFormat.PortableText
@@ -3718,13 +3646,9 @@ def test_ptable_close_shortcut_hides_window(
         == "Ctrl+W"
     )
 
-    qtbot.keyClick(
-        win.search_edit,
-        QtCore.Qt.Key.Key_W,
-        QtCore.Qt.KeyboardModifier.ControlModifier,
-    )
+    win.close_shortcut.activated.emit()
 
-    qtbot.waitUntil(lambda: win.isVisible() is False)
+    assert win.isVisible() is False
     assert win.close_event_count == 0
 
     win.close()

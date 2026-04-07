@@ -26,6 +26,7 @@ from erlab.interactive.ptable._shared import (
     _css_rgba,
     _effective_point_size,
     _element_records,
+    _element_symbols,
     _fit_symbol_font,
     _format_mass,
     _set_background,
@@ -451,6 +452,13 @@ class ElementCard(QtWidgets.QFrame):
     _CORNER_RADIUS = 0.0
     _ANIMATION_DURATION_MS = 140
     _SYMBOL_FONT_FIT_STEP = 0.2
+    _FONT_SCALE_STEP = 0.02
+    _MIN_LAYOUT_SCALE = 0.5
+    _SECONDARY_FONT_ABS_MIN = 7.2
+    _CONFIG_FONT_ABS_MIN = 6.4
+    _SYMBOL_FONT_ABS_MIN = 18.0
+    _ATOMIC_NUMBER_FONT_ABS_MIN = 7.0
+    _SYMBOL_STACK_RATIO = 0.43
 
     def __init__(
         self,
@@ -642,21 +650,105 @@ class ElementCard(QtWidgets.QFrame):
         font.setBold(bold)
         return font
 
-    def _symbol_layout_limits(self) -> tuple[float, float]:
+    def _fit_plain_text_font(
+        self,
+        template: QtGui.QFont,
+        text: str,
+        *,
+        max_width: int,
+        min_size: float,
+        max_size: float,
+    ) -> QtGui.QFont:
+        fitted = QtGui.QFont(template)
+        point_size = max_size
+        while point_size >= min_size - 1e-6:
+            fitted.setPointSizeF(point_size)
+            if QtGui.QFontMetricsF(fitted).horizontalAdvance(text) <= max_width:
+                return fitted
+            point_size -= self._SYMBOL_FONT_FIT_STEP
+        fitted.setPointSizeF(min_size)
+        return fitted
+
+    def _fit_rich_text_font(
+        self,
+        template: QtGui.QFont,
+        html_text: str,
+        *,
+        max_width: int,
+        min_size: float,
+        max_size: float,
+    ) -> QtGui.QFont:
+        fitted = QtGui.QFont(template)
+        point_size = max_size
+        while point_size >= min_size - 1e-6:
+            fitted.setPointSizeF(point_size)
+            document = QtGui.QTextDocument()
+            document.setDefaultFont(fitted)
+            document.setDocumentMargin(0.0)
+            document.setHtml(html_text)
+            if document.idealWidth() <= max_width:
+                return fitted
+            point_size -= self._SYMBOL_FONT_FIT_STEP
+        fitted.setPointSizeF(min_size)
+        return fitted
+
+    def _content_geometry(self) -> tuple[int, int, int]:
         layout = self.layout()
         if layout is None:
-            return (1.0, 1.0)
+            return (1, 1, 0)
         margins = layout.contentsMargins()
         contents_width = max(1, self.width() - margins.left() - margins.right())
-        label_width = max(16, contents_width)
-        lower_text_height = sum(
-            self._label_height_for_width(label, label_width)
+        contents_height = max(1, self.height() - margins.top() - margins.bottom())
+        spacing_total = layout.spacing() * 3
+        return (contents_width, contents_height, spacing_total)
+
+    def _lower_text_height(self, text_width: int) -> int:
+        return sum(
+            self._label_height_for_width(label, text_width)
             for label in (self.name_label, self.mass_label, self.config_label)
         )
-        available_height = max(
-            1,
-            self.height() - margins.top() - margins.bottom() - lower_text_height,
+
+    def _detail_height_budget(self) -> float:
+        _, contents_height, spacing_total = self._content_geometry()
+        return max(
+            1.0,
+            (contents_height - spacing_total) * (1.0 - self._SYMBOL_STACK_RATIO),
         )
+
+    def _symbol_height_budget(self) -> float:
+        _, contents_height, spacing_total = self._content_geometry()
+        return max(1.0, (contents_height - spacing_total) * self._SYMBOL_STACK_RATIO)
+
+    def _atomic_number_font(
+        self, base_font: QtGui.QFont, *, scale: float
+    ) -> QtGui.QFont:
+        base_point_size = _effective_point_size(base_font)
+        config_preferred = max(
+            base_point_size + self._config_font_delta,
+            self._config_font_min,
+        )
+        atomic_number_font = QtGui.QFont(base_font)
+        atomic_number_font.setPointSizeF(
+            max(
+                self._ATOMIC_NUMBER_FONT_ABS_MIN,
+                max(config_preferred + 0.8, self._config_font_min + 0.8) * 1.5 * scale,
+            )
+        )
+        atomic_number_font.setWeight(QtGui.QFont.Weight.Bold)
+        return atomic_number_font
+
+    def _atomic_number_width_reserve(self, base_font: QtGui.QFont) -> int:
+        metrics = QtGui.QFontMetricsF(self._atomic_number_font(base_font, scale=1.0))
+        widest = max(
+            metrics.horizontalAdvance(str(record.atomic_number))
+            for record in _element_records().values()
+        )
+        return round(widest)
+
+    def _symbol_layout_limits(self, base_font: QtGui.QFont) -> tuple[float, float]:
+        contents_width, contents_height, spacing_total = self._content_geometry()
+        del contents_height, spacing_total
+        available_height = max(1.0, self._symbol_height_budget())
         if not self._chip_text_layout:
             return (float(contents_width), float(available_height))
         top_row_spacing = (
@@ -665,55 +757,110 @@ class ElementCard(QtWidgets.QFrame):
         available_width = max(
             1,
             contents_width
-            - self.atomic_number_label.sizeHint().width()
+            - self._atomic_number_width_reserve(base_font)
             - top_row_spacing,
         )
         return (float(available_width), float(available_height))
 
-    def _update_text_fonts(self) -> None:
-        base_font = QtGui.QFont(self.font())
-        secondary_font = self._font_with_delta(
-            base_font,
-            delta=self._secondary_font_delta,
-            minimum_point_size=self._secondary_font_min,
-        )
-        config_font = self._font_with_delta(
-            base_font,
-            delta=self._config_font_delta,
-            minimum_point_size=self._config_font_min,
-        )
-        atomic_number_font = QtGui.QFont(base_font)
-        atomic_number_font.setPointSizeF(
-            max(config_font.pointSizeF() + 0.8, self._config_font_min + 0.8) * 1.5
-        )
-        atomic_number_font.setWeight(QtGui.QFont.Weight.Bold)
-        self.atomic_number_label.setFont(atomic_number_font)
-        self.name_label.setFont(secondary_font)
-        self.mass_label.setFont(secondary_font)
-        self.config_label.setFont(config_font)
+    def _details_fit_for_current_fonts(self) -> bool:
+        contents_width, _, _ = self._content_geometry()
+        text_width = max(16, contents_width)
+        return self._lower_text_height(text_width) <= self._detail_height_budget() + 1.0
 
-        preferred_symbol_size = max(
-            _effective_point_size(base_font) + self._symbol_font_delta,
+    def _apply_text_fonts_for_scale(self, scale: float) -> None:
+        base_font = QtGui.QFont(self.font())
+        base_point_size = _effective_point_size(base_font)
+        secondary_preferred = max(
+            base_point_size + self._secondary_font_delta,
+            self._secondary_font_min,
+        )
+        config_preferred = max(
+            base_point_size + self._config_font_delta,
+            self._config_font_min,
+        )
+        secondary_max = max(
+            self._SECONDARY_FONT_ABS_MIN,
+            secondary_preferred * scale,
+        )
+        config_max = max(self._CONFIG_FONT_ABS_MIN, config_preferred * scale)
+        secondary_font = QtGui.QFont(base_font)
+        secondary_font.setPointSizeF(secondary_max)
+        config_font = QtGui.QFont(base_font)
+        config_font.setPointSizeF(config_max)
+        self.atomic_number_label.setFont(
+            self._atomic_number_font(base_font, scale=scale)
+        )
+        contents_width, _, _ = self._content_geometry()
+        text_width = max(16, contents_width)
+        secondary_min = min(self._SECONDARY_FONT_ABS_MIN, secondary_max)
+        config_min = min(self._CONFIG_FONT_ABS_MIN, config_max)
+        self.name_label.setFont(
+            self._fit_plain_text_font(
+                secondary_font,
+                self.name_label.text(),
+                max_width=text_width,
+                min_size=secondary_min,
+                max_size=secondary_max,
+            )
+        )
+        self.mass_label.setFont(
+            self._fit_plain_text_font(
+                secondary_font,
+                self.mass_label.text(),
+                max_width=text_width,
+                min_size=secondary_min,
+                max_size=secondary_max,
+            )
+        )
+        self.config_label.setFont(
+            self._fit_rich_text_font(
+                config_font,
+                self.config_label.text(),
+                max_width=text_width,
+                min_size=config_min,
+                max_size=config_max,
+            )
+        )
+
+        symbol_preferred = max(
+            base_point_size + self._symbol_font_delta,
             self._symbol_font_min,
         )
-        symbol_width, symbol_height = self._symbol_layout_limits()
+        symbol_width, symbol_height = self._symbol_layout_limits(base_font)
         fitted_symbol = _fit_symbol_font(
             base_font,
-            self.symbol_label.text(),
+            _element_symbols(),
             max_width=symbol_width,
             max_height=symbol_height,
-            preferred_point_size=preferred_symbol_size,
-            minimum_point_size=self._symbol_font_min,
+            preferred_point_size=max(self._SYMBOL_FONT_ABS_MIN, symbol_preferred),
+            minimum_point_size=self._SYMBOL_FONT_ABS_MIN,
             step=self._SYMBOL_FONT_FIT_STEP,
         )
         self.symbol_label.setFont(fitted_symbol.font)
         symbol_top_margin = fitted_symbol.top_margin if self._chip_text_layout else 0
         self.symbol_label.setContentsMargins(0, symbol_top_margin, 0, 0)
+        self.symbol_label.setFixedHeight(max(1, round(symbol_height)))
 
         layout = self.layout()
         if layout is not None:
             layout.invalidate()
         self._position_atomic_number_label()
+
+    def _update_text_fonts(self) -> None:
+        if self.width() <= 0 or self.height() <= 0:
+            return
+        chosen_scale = self._MIN_LAYOUT_SCALE
+        scale = 1.0 - self._FONT_SCALE_STEP
+        self._apply_text_fonts_for_scale(1.0)
+        if self._details_fit_for_current_fonts():
+            return
+        while scale >= self._MIN_LAYOUT_SCALE - 1e-6:
+            self._apply_text_fonts_for_scale(scale)
+            chosen_scale = scale
+            if self._details_fit_for_current_fonts():
+                break
+            scale -= self._FONT_SCALE_STEP
+        self._apply_text_fonts_for_scale(chosen_scale)
 
     def apply_theme(self, theme: ThemeColors) -> None:
         self._theme = theme
@@ -743,6 +890,10 @@ class ElementCard(QtWidgets.QFrame):
             QtCore.QEvent.Type.StyleChange,
         }:
             self._update_text_fonts()
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        self._update_text_fonts()
 
     def _tooltip_html(self) -> str:
         primary_color = self._theme.text.name()
