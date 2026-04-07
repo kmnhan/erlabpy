@@ -2174,19 +2174,21 @@ def test_manager_standalone_app_menus(
     ],
 ) -> None:
     with manager_context() as manager:
-        menus = {
-            action.text().replace("&", ""): typing.cast(
-                "QtWidgets.QMenu", action.menu()
-            )
+        menu_actions = {
+            action.text().replace("&", ""): action
             for action in manager.menu_bar.actions()
             if action.menu() is not None
         }
 
-        assert "File" in menus
-        assert "Apps" in menus
-        assert "Data Explorer" in action_map(menus["File"])
+        assert "File" in menu_actions
+        assert "Apps" in menu_actions
+        assert "Data Explorer" in action_map(
+            typing.cast("QtWidgets.QMenu", menu_actions["File"].menu())
+        )
 
-        apps_actions = action_map(menus["Apps"])
+        apps_actions = action_map(
+            typing.cast("QtWidgets.QMenu", menu_actions["Apps"].menu())
+        )
         assert "Periodic Table" in apps_actions
         assert (
             apps_actions["Periodic Table"]
