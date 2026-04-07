@@ -30,6 +30,7 @@ from erlab.interactive.imagetool.dialogs import (
     ROIMaskDialog,
     ROIPathDialog,
     RotationDialog,
+    SwapDimsDialog,
     SymmetrizeDialog,
 )
 from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
@@ -2547,6 +2548,162 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
+
+
+def test_itool_swap_dims(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(24).reshape((2, 3, 4)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(2),
+            "y": np.arange(3),
+            "z": np.arange(4),
+            "u": ("x", [5.0, 6.0]),
+            "v": ("y", [10.0, 11.0, 12.0]),
+            "w": ("z", [20.0, 21.0, 22.0, 23.0]),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: SwapDimsDialog) -> None:
+        dialog.target_combos["x"].setCurrentText("u")
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.swap_dims({"x": "u"})
+    )
+
+    win.close()
+
+
+def test_itool_swap_dims_multiple_and_code(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(24).reshape((2, 3, 4)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(2),
+            "y": np.arange(3),
+            "z": np.arange(4),
+            "u": ("x", [5.0, 6.0]),
+            "v": ("y", [10.0, 11.0, 12.0]),
+            "w": ("z", [20.0, 21.0, 22.0, 23.0]),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: SwapDimsDialog) -> None:
+        dialog.target_combos["x"].setCurrentText("u")
+        dialog.target_combos["y"].setCurrentText("v")
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.swap_dims({"x": "u", "y": "v"})
+    )
+
+    code = pyperclip.paste()
+    assert code == '.swap_dims(x="u", y="v")'
+    assert "z=" not in code
+    assert '"z"' not in code
+
+    win.close()
+
+
+def test_itool_swap_dims_nonuniform_public_dims(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(15).reshape((3, 5)).astype(float),
+        dims=["x", "y"],
+        coords={
+            "x": np.array([0.0, 0.4, 1.0]),
+            "y": np.arange(5),
+            "temperature": ("x", [100.0, 101.0, 102.0]),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+
+    def _set_dialog_params(dialog: SwapDimsDialog) -> None:
+        assert "x" in dialog.target_combos
+        assert "x_idx" not in dialog.target_combos
+        dialog.target_combos["x"].setCurrentText("temperature")
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.swap_dims({"x": "temperature"})
+    )
+
+    win.close()
+
+
+def test_swap_dims_dialog_rejects_unswappable_data(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = SwapDimsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    assert dialog._validate() == QtWidgets.QDialog.DialogCode.Rejected
+    assert warnings == [
+        (
+            "Nothing to Swap",
+            "No compatible 1D coordinates are available for any dimension.",
+        )
+    ]
+
+    dialog.close()
+    win.close()
+
+
+def test_swap_dims_dialog_accept_requires_changes(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4), "u": ("x", [5.0, 6.0, 7.0])},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = SwapDimsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings == [
+        ("No Dimensions Changed", "Choose at least one dimension to swap.")
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
 
 
 @pytest.mark.parametrize("option", [0, 1, 2, 3])

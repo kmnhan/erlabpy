@@ -1016,6 +1016,114 @@ class GaussianFilterDialog(DataFilterDialog):
         )
 
 
+class SwapDimsDialog(DataTransformDialog):
+    title = "Swap Dimensions"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+        public_dims = tuple(
+            dim.removesuffix("_idx")
+            if isinstance(dim, str) and dim.endswith("_idx")
+            else dim
+            for dim in self.slicer_area.data.dims
+        )
+        if tuple(self._source_data.dims) != public_dims and set(
+            self._source_data.dims
+        ) == set(public_dims):
+            self._source_data = self._source_data.transpose(*public_dims)
+
+        dim_group = QtWidgets.QGroupBox("Dimensions")
+        dim_layout = QtWidgets.QGridLayout()
+        dim_group.setLayout(dim_layout)
+
+        dim_layout.addWidget(QtWidgets.QLabel("Dimension"), 0, 0)
+        dim_layout.addWidget(QtWidgets.QLabel("Target"), 0, 1)
+
+        self.source_labels: dict[Hashable, QtWidgets.QLabel] = {}
+        self.target_combos: dict[Hashable, QtWidgets.QComboBox] = {}
+        self.target_options: dict[Hashable, tuple[Hashable, ...]] = {}
+
+        for row, dim in enumerate(self._source_data.dims, start=1):
+            label = QtWidgets.QLabel(str(dim))
+            combo = QtWidgets.QComboBox()
+
+            targets = [dim]
+            targets.extend(
+                name
+                for name, coord in self._source_data.coords.items()
+                if name != dim and coord.ndim == 1 and coord.dims == (dim,)
+            )
+            self.target_options[dim] = tuple(targets)
+
+            for target in self.target_options[dim]:
+                combo.addItem(str(target), userData=target)
+
+            if len(self.target_options[dim]) == 1:
+                tooltip = (
+                    "No compatible 1D coordinates are available for this dimension."
+                )
+                label.setToolTip(tooltip)
+                combo.setToolTip(tooltip)
+                combo.setEnabled(False)
+
+            self.source_labels[dim] = label
+            self.target_combos[dim] = combo
+
+            dim_layout.addWidget(label, row, 0)
+            dim_layout.addWidget(combo, row, 1)
+
+        self.layout_.addRow(dim_group)
+
+    @property
+    def _swap_mapping(self) -> dict[Hashable, Hashable]:
+        mapping: dict[Hashable, Hashable] = {}
+        for dim, combo in self.target_combos.items():
+            if not combo.isEnabled():
+                continue
+            target = typing.cast(
+                "Hashable | None",
+                combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+            )
+            if target is not None and target != dim:
+                mapping[dim] = target
+        return mapping
+
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
+        if not any(combo.isEnabled() for combo in self.target_combos.values()):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Nothing to Swap",
+                "No compatible 1D coordinates are available for any dimension.",
+            )
+            return QtWidgets.QDialog.DialogCode.Rejected
+        return super()._validate()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if not self._swap_mapping:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Dimensions Changed",
+                "Choose at least one dimension to swap.",
+            )
+            return
+        super().accept()
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return data.swap_dims(self._swap_mapping)
+
+    def make_code(self) -> str:
+        if not self._swap_mapping:
+            return ""
+        return (
+            f".swap_dims({erlab.interactive.utils.format_kwargs(self._swap_mapping)})"
+        )
+
+
 class _CoordinateWidget(QtWidgets.QWidget):
     def __init__(self, values: npt.NDArray) -> None:
         super().__init__()
