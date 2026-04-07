@@ -162,6 +162,46 @@ def _fit_symbol_font(
     return _FittedSymbolFont(fitted_font, top_margin)
 
 
+def _fit_text_font(
+    base_font: QtGui.QFont,
+    samples: tuple[tuple[str, float, float | None], ...],
+    *,
+    preferred_point_size: float,
+    minimum_point_size: float,
+    step: float = 0.2,
+    weight: QtGui.QFont.Weight | None = None,
+) -> QtGui.QFont:
+    fitted_font = QtGui.QFont(base_font)
+    if weight is None:
+        fitted_font.setBold(False)
+    else:
+        fitted_font.setWeight(weight)
+    if len(samples) == 0:
+        fitted_font.setPointSizeF(max(preferred_point_size, minimum_point_size))
+        return fitted_font
+
+    point_size = max(preferred_point_size, minimum_point_size)
+    while point_size >= minimum_point_size - 1e-6:
+        fitted_font.setPointSizeF(point_size)
+        metrics = QtGui.QFontMetricsF(fitted_font)
+        if all(
+            (
+                metrics.tightBoundingRect(text).width() <= max(1.0, max_width - 1.0)
+                and (
+                    max_height is None
+                    or metrics.tightBoundingRect(text).height()
+                    <= max(1.0, max_height - 1.0)
+                )
+            )
+            for text, max_width, max_height in samples
+            if text != ""
+        ):
+            return fitted_font
+        point_size -= step
+    fitted_font.setPointSizeF(minimum_point_size)
+    return fitted_font
+
+
 def _blend_colors(
     base: QtGui.QColor,
     overlay: QtGui.QColor,

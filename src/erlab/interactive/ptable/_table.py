@@ -4,6 +4,7 @@ import html
 import re
 import webbrowser
 from dataclasses import dataclass
+from typing import ClassVar
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -28,6 +29,8 @@ from erlab.interactive.ptable._shared import (
     _element_records,
     _element_symbols,
     _fit_symbol_font,
+    _fit_text_font,
+    _FittedSymbolFont,
     _format_mass,
     _set_background,
     _set_foreground,
@@ -459,6 +462,9 @@ class ElementCard(QtWidgets.QFrame):
     _SYMBOL_FONT_ABS_MIN = 18.0
     _ATOMIC_NUMBER_FONT_ABS_MIN = 7.0
     _SYMBOL_STACK_RATIO = 0.43
+    _SHARED_SYMBOL_LAYOUT_CACHE: ClassVar[
+        dict[tuple[str, str, float, float, float, bool], tuple[QtGui.QFont, int]]
+    ] = {}
 
     def __init__(
         self,
@@ -762,6 +768,35 @@ class ElementCard(QtWidgets.QFrame):
         )
         return (float(available_width), float(available_height))
 
+    def _shared_symbol_font(self, base_font: QtGui.QFont) -> _FittedSymbolFont:
+        symbol_width, symbol_height = self._symbol_layout_limits(base_font)
+        cache_key = (
+            base_font.toString(),
+            QtGui.QFontInfo(base_font).family(),
+            round(_effective_point_size(base_font), 3),
+            round(symbol_width, 3),
+            round(symbol_height, 3),
+            self._chip_text_layout,
+        )
+        cached = self._SHARED_SYMBOL_LAYOUT_CACHE.get(cache_key)
+        if cached is None:
+            symbol_preferred = max(
+                _effective_point_size(base_font) + self._symbol_font_delta,
+                self._symbol_font_min,
+            )
+            fitted = _fit_symbol_font(
+                base_font,
+                _element_symbols(),
+                max_width=symbol_width,
+                max_height=symbol_height,
+                preferred_point_size=max(self._SYMBOL_FONT_ABS_MIN, symbol_preferred),
+                minimum_point_size=self._SYMBOL_FONT_ABS_MIN,
+                step=self._SYMBOL_FONT_FIT_STEP,
+            )
+            cached = (QtGui.QFont(fitted.font), fitted.top_margin)
+            self._SHARED_SYMBOL_LAYOUT_CACHE[cache_key] = cached
+        return _FittedSymbolFont(QtGui.QFont(cached[0]), cached[1])
+
     def _details_fit_for_current_fonts(self) -> bool:
         contents_width, _, _ = self._content_geometry()
         text_width = max(16, contents_width)
@@ -822,20 +857,8 @@ class ElementCard(QtWidgets.QFrame):
             )
         )
 
-        symbol_preferred = max(
-            base_point_size + self._symbol_font_delta,
-            self._symbol_font_min,
-        )
-        symbol_width, symbol_height = self._symbol_layout_limits(base_font)
-        fitted_symbol = _fit_symbol_font(
-            base_font,
-            _element_symbols(),
-            max_width=symbol_width,
-            max_height=symbol_height,
-            preferred_point_size=max(self._SYMBOL_FONT_ABS_MIN, symbol_preferred),
-            minimum_point_size=self._SYMBOL_FONT_ABS_MIN,
-            step=self._SYMBOL_FONT_FIT_STEP,
-        )
+        _, symbol_height = self._symbol_layout_limits(base_font)
+        fitted_symbol = self._shared_symbol_font(base_font)
         self.symbol_label.setFont(fitted_symbol.font)
         symbol_top_margin = fitted_symbol.top_margin if self._chip_text_layout else 0
         self.symbol_label.setContentsMargins(0, symbol_top_margin, 0, 0)
@@ -1670,6 +1693,10 @@ class LegendEntry(QtWidgets.QWidget):
     _CORNER_RADIUS_PX = 0
     _INACTIVE_BORDER_WIDTH_PX = 1.0
     _ACTIVE_BORDER_WIDTH_PX = 2.0
+    _LABEL_HORIZONTAL_PADDING = 6
+    _LABEL_VERTICAL_PADDING = 3
+    _VERTICAL_LABEL_HORIZONTAL_PADDING = 6
+    _VERTICAL_LABEL_VERTICAL_PADDING = 5
 
     def __init__(
         self,
@@ -1718,14 +1745,9 @@ class LegendEntry(QtWidgets.QWidget):
         )
         self.marker.lower()
 
-        legend_font = QtGui.QFont(self.font())
-        legend_font.setPointSizeF(max(legend_font.pointSizeF() + 2.9, 13.6))
-        legend_font.setWeight(QtGui.QFont.Weight.ExtraBold)
-
         self.label = _LegendTextLabel(
             CATEGORY_TITLES[category], self, vertical=vertical_label
         )
-        self.label.setFont(legend_font)
         self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.label.setAttribute(
             QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
@@ -1735,6 +1757,35 @@ class LegendEntry(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
         self.apply_theme(self._theme, animate=False)
+
+    def _label_rect(self) -> QtCore.QRect:
+        if self._vertical_label:
+            horizontal_padding = self._VERTICAL_LABEL_HORIZONTAL_PADDING
+            vertical_padding = self._VERTICAL_LABEL_VERTICAL_PADDING
+        else:
+            horizontal_padding = self._LABEL_HORIZONTAL_PADDING
+            vertical_padding = self._LABEL_VERTICAL_PADDING
+        max_horizontal_padding = max(0, (self.width() - 1) // 2)
+        max_vertical_padding = max(0, (self.height() - 1) // 2)
+        rect = self.rect().adjusted(
+            min(horizontal_padding, max_horizontal_padding),
+            min(vertical_padding, max_vertical_padding),
+            -min(horizontal_padding, max_horizontal_padding),
+            -min(vertical_padding, max_vertical_padding),
+        )
+        if rect.width() <= 0 or rect.height() <= 0:
+            return self.rect()
+        return rect
+
+    def label_fit_samples(self) -> tuple[tuple[str, float, float | None], ...]:
+        rect = self._label_rect()
+        if self._vertical_label:
+            return ((self.label.text(), float(rect.height()), float(rect.width())),)
+        return ((self.label.text(), float(rect.width()), float(rect.height())),)
+
+    def apply_label_font(self, font: QtGui.QFont) -> None:
+        self.label.setFont(font)
+        self.label.setGeometry(self._label_rect())
 
     def set_active(self, active: bool) -> None:
         if self.is_active == active:
@@ -1848,10 +1899,7 @@ class LegendEntry(QtWidgets.QWidget):
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
         super().resizeEvent(event)
         self.marker.setGeometry(self.rect())
-        if self._vertical_label:
-            self.label.setGeometry(self.rect().adjusted(4, 3, -4, -3))
-            return
-        self.label.setGeometry(self.rect().adjusted(6, 3, -6, -3))
+        self.label.setGeometry(self._label_rect())
 
     def enterEvent(self, event: QtGui.QEnterEvent | None) -> None:
         self.hovered.emit(self.category)
@@ -1883,6 +1931,10 @@ class LegendEntry(QtWidgets.QWidget):
 class CategoryLegend(QtWidgets.QWidget):
     category_hovered = QtCore.Signal(object)
     _COLUMN_COUNT = 13
+    _LABEL_FONT_DELTA = 2.9
+    _LABEL_FONT_MIN = 13.6
+    _LABEL_FONT_ABS_MIN = 9.0
+    _LABEL_FONT_STEP = 0.2
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1923,12 +1975,61 @@ class CategoryLegend(QtWidgets.QWidget):
         for column in range(self._COLUMN_COUNT):
             layout.setColumnStretch(column, 1)
         self.apply_theme(_theme_colors())
+        self._update_entry_label_fonts()
+
+    def _update_entry_label_fonts(self) -> None:
+        layout = self.layout()
+        if not isinstance(layout, QtWidgets.QGridLayout):
+            return
+        layout.activate()
+        samples = tuple(
+            sample
+            for entry in self.entries.values()
+            for sample in entry.label_fit_samples()
+            if sample[1] > 0 and (sample[2] is None or sample[2] > 0)
+        )
+        if len(samples) == 0:
+            return
+        base_font = QtGui.QFont(self.font())
+        preferred_point_size = max(
+            _effective_point_size(base_font) + self._LABEL_FONT_DELTA,
+            self._LABEL_FONT_MIN,
+        )
+        legend_font = _fit_text_font(
+            base_font,
+            samples,
+            preferred_point_size=preferred_point_size,
+            minimum_point_size=self._LABEL_FONT_ABS_MIN,
+            step=self._LABEL_FONT_STEP,
+            weight=QtGui.QFont.Weight.ExtraBold,
+        )
+        for entry in self.entries.values():
+            entry.apply_label_font(QtGui.QFont(legend_font))
 
     def apply_theme(self, theme: ThemeColors) -> None:
         for entry in self.entries.values():
             entry.apply_theme(theme)
         if self.reference_dialog is not None:
             self.reference_dialog.apply_theme(theme)
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        super().changeEvent(event)
+        if event is None:
+            return
+        if event.type() in {
+            QtCore.QEvent.Type.ApplicationFontChange,
+            QtCore.QEvent.Type.FontChange,
+            QtCore.QEvent.Type.StyleChange,
+        }:
+            self._update_entry_label_fonts()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._update_entry_label_fonts()
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        self._update_entry_label_fonts()
 
     def set_reference_dialog(self, dialog: _CategoryReferenceDialog) -> None:
         if self.reference_dialog is dialog:

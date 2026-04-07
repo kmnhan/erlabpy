@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -24,6 +25,8 @@ from erlab.interactive.ptable._shared import (
     _element_records,
     _element_symbols,
     _fit_symbol_font,
+    _fit_text_font,
+    _FittedSymbolFont,
     _format_energy,
     _format_mass,
     _rich_orbital_label_html,
@@ -65,6 +68,9 @@ class CompactElementChip(QtWidgets.QFrame):
     _SYMBOL_FONT_ABS_MIN = 15.0
     _DETAILED_SYMBOL_STACK_RATIO = 0.44
     _COMPACT_SYMBOL_STACK_RATIO = 0.7
+    _SHARED_SYMBOL_LAYOUT_CACHE: ClassVar[
+        dict[tuple[str, str, float, float, float, bool], tuple[QtGui.QFont, int]]
+    ] = {}
 
     def __init__(self, record: ElementRecord, *, detailed: bool = False) -> None:
         super().__init__()
@@ -245,6 +251,35 @@ class CompactElementChip(QtWidgets.QFrame):
         )
         return (float(available_width), float(available_height))
 
+    def _shared_symbol_font(self, base_font: QtGui.QFont) -> _FittedSymbolFont:
+        symbol_width, symbol_height = self._symbol_layout_limits(base_font)
+        cache_key = (
+            base_font.toString(),
+            QtGui.QFontInfo(base_font).family(),
+            round(_effective_point_size(base_font), 3),
+            round(symbol_width, 3),
+            round(symbol_height, 3),
+            self._detailed,
+        )
+        cached = self._SHARED_SYMBOL_LAYOUT_CACHE.get(cache_key)
+        if cached is None:
+            preferred_symbol_size = max(_effective_point_size(base_font) + 12.0, 22.0)
+            fitted = _fit_symbol_font(
+                base_font,
+                _element_symbols(),
+                max_width=symbol_width,
+                max_height=symbol_height,
+                preferred_point_size=max(
+                    self._SYMBOL_FONT_ABS_MIN,
+                    preferred_symbol_size,
+                ),
+                minimum_point_size=self._SYMBOL_FONT_ABS_MIN,
+                step=self._FONT_FIT_STEP,
+            )
+            cached = (QtGui.QFont(fitted.font), fitted.top_margin)
+            self._SHARED_SYMBOL_LAYOUT_CACHE[cache_key] = cached
+        return _FittedSymbolFont(QtGui.QFont(cached[0]), cached[1])
+
     def _details_fit_for_current_fonts(self) -> bool:
         text_width, _, _ = self._content_geometry()
         return self._lower_text_height(text_width) <= self._detail_height_budget() + 1.0
@@ -252,7 +287,6 @@ class CompactElementChip(QtWidgets.QFrame):
     def _apply_text_fonts_for_scale(self, scale: float) -> None:
         self._rebuild_font_templates()
         base_font = QtGui.QFont(self.font())
-        base_point_size = _effective_point_size(base_font)
         self.atomic_number_label.setFont(
             self._atomic_number_font(base_font, scale=scale)
         )
@@ -297,20 +331,8 @@ class CompactElementChip(QtWidgets.QFrame):
                 max_size=config_max,
             )
         )
-        preferred_symbol_size = max(base_point_size + 12.0, 22.0)
-        symbol_width, symbol_height = self._symbol_layout_limits(base_font)
-        fitted_symbol = _fit_symbol_font(
-            base_font,
-            _element_symbols(),
-            max_width=symbol_width,
-            max_height=symbol_height,
-            preferred_point_size=max(
-                self._SYMBOL_FONT_ABS_MIN,
-                preferred_symbol_size,
-            ),
-            minimum_point_size=self._SYMBOL_FONT_ABS_MIN,
-            step=self._FONT_FIT_STEP,
-        )
+        _, symbol_height = self._symbol_layout_limits(base_font)
+        fitted_symbol = self._shared_symbol_font(base_font)
         self.symbol_label.setFont(fitted_symbol.font)
         self.symbol_label.setContentsMargins(0, fitted_symbol.top_margin, 0, 0)
         self.symbol_label.setFixedHeight(max(1, round(symbol_height)))
@@ -554,10 +576,15 @@ class ElementInspector(QtWidgets.QWidget):
     _SUMMARY_DETAILED_MAX_ROWS = 2
     _SUMMARY_COMPACT_VISIBLE_ROWS = 3
     _SUMMARY_CARD_SPACING = 6
+    _SECTION_TITLE_FONT_DELTA = 3.0
+    _SECTION_TITLE_FONT_MIN = 16.0
+    _SECTION_TITLE_FONT_ABS_MIN = 10.0
+    _SECTION_TITLE_FONT_STEP = 0.2
 
     def __init__(self) -> None:
         super().__init__()
         self._theme = _theme_colors()
+        self._section_header_update_pending = False
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -711,10 +738,11 @@ class ElementInspector(QtWidgets.QWidget):
         self.plot_title = QtWidgets.QLabel(
             "Photoionization cross sections", self.plot_frame
         )
-        section_font = QtGui.QFont(self.font())
-        section_font.setPointSizeF(max(section_font.pointSizeF() + 3.0, 16.0))
-        section_font.setBold(True)
-        self.plot_title.setFont(section_font)
+        self.plot_title.setMinimumWidth(0)
+        self.plot_title.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
         self._plot_header_layout.addWidget(self.plot_title)
         self._plot_header_layout.addStretch(1)
 
@@ -784,10 +812,11 @@ class ElementInspector(QtWidgets.QWidget):
         self.levels_title = QtWidgets.QLabel(
             "X-ray absorption edges", self.levels_frame
         )
-        section_font = QtGui.QFont(self.font())
-        section_font.setPointSizeF(max(section_font.pointSizeF() + 3.0, 16.0))
-        section_font.setBold(True)
-        self.levels_title.setFont(section_font)
+        self.levels_title.setMinimumWidth(0)
+        self.levels_title.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
         levels_header.addWidget(self.levels_title)
         levels_header.addStretch(1)
 
@@ -893,6 +922,26 @@ class ElementInspector(QtWidgets.QWidget):
         self.copy_values_button.setEnabled(False)
         self.copy_table_button.setEnabled(False)
         self.apply_theme(self._theme)
+        self._schedule_section_header_font_update()
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        super().changeEvent(event)
+        if event is None:
+            return
+        if event.type() in {
+            QtCore.QEvent.Type.ApplicationFontChange,
+            QtCore.QEvent.Type.FontChange,
+            QtCore.QEvent.Type.StyleChange,
+        }:
+            self._schedule_section_header_font_update()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._schedule_section_header_font_update()
+
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        self._schedule_section_header_font_update()
 
     def set_table_panel(self, widget: QtWidgets.QWidget) -> None:
         while self._table_container_layout.count():
@@ -911,6 +960,44 @@ class ElementInspector(QtWidgets.QWidget):
         label.setAlignment(prototype.alignment())
         label.ensurePolished()
         return label.sizeHint().height()
+
+    def _schedule_section_header_font_update(self) -> None:
+        if self._section_header_update_pending:
+            return
+        self._section_header_update_pending = True
+        QtCore.QTimer.singleShot(0, self._update_section_header_fonts)
+
+    def _section_title_samples(self) -> tuple[tuple[str, float, float | None], ...]:
+        self._plot_header_layout.activate()
+        self._levels_header_layout.activate()
+        samples: list[tuple[str, float, float | None]] = []
+        for label in (self.plot_title, self.levels_title):
+            if label.width() <= 0:
+                continue
+            samples.append((label.text(), float(label.width()), None))
+        return tuple(samples)
+
+    def _update_section_header_fonts(self) -> None:
+        self._section_header_update_pending = False
+        samples = self._section_title_samples()
+        if len(samples) == 0:
+            return
+        base_font = QtGui.QFont(self.font())
+        preferred_point_size = max(
+            _effective_point_size(base_font) + self._SECTION_TITLE_FONT_DELTA,
+            self._SECTION_TITLE_FONT_MIN,
+        )
+        section_font = _fit_text_font(
+            base_font,
+            samples,
+            preferred_point_size=preferred_point_size,
+            minimum_point_size=self._SECTION_TITLE_FONT_ABS_MIN,
+            step=self._SECTION_TITLE_FONT_STEP,
+            weight=QtGui.QFont.Weight.Bold,
+        )
+        self.plot_title.setFont(QtGui.QFont(section_font))
+        self.levels_title.setFont(QtGui.QFont(section_font))
+        self._sync_plot_frame_minimum_height()
 
     def _summary_fixed_height_for_cards(
         self, card_count: int, *, detailed_cards: bool
@@ -1190,6 +1277,7 @@ class ElementInspector(QtWidgets.QWidget):
             self.plot_target_combo.blockSignals(True)
             self.plot_target_combo.clear()
             self.plot_target_combo.blockSignals(False)
+            self._schedule_section_header_font_update()
             return
         self.plot_target_combo.blockSignals(True)
         self.plot_target_combo.clear()
@@ -1199,6 +1287,7 @@ class ElementInspector(QtWidgets.QWidget):
         if target_index >= 0:
             self.plot_target_combo.setCurrentIndex(target_index)
         self.plot_target_combo.blockSignals(False)
+        self._schedule_section_header_font_update()
 
     def _emit_plot_target_changed(self, index: int) -> None:
         atomic_number = self.plot_target_combo.itemData(index)
