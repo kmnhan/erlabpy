@@ -42,12 +42,6 @@ _CONFIG_TOOLTIP_PATTERN = re.compile(
 )
 
 
-def _popup_font(*, minimum_point_size: float = 15.0) -> QtGui.QFont:
-    font = QtGui.QFont(QtWidgets.QApplication.font())
-    font.setPointSizeF(max(font.pointSizeF(), minimum_point_size))
-    return font
-
-
 def _configuration_tooltip_html(configuration: str) -> str:
     config_html = configuration_to_html(configuration)
     if not config_html:
@@ -201,8 +195,7 @@ class _CategoryReferenceDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetMinimumSize)
 
-        base_font = _popup_font()
-        self.setFont(base_font)
+        base_font = QtGui.QFont(self.font())
 
         title_font = QtGui.QFont(base_font)
         title_font.setWeight(QtGui.QFont.Weight.Bold)

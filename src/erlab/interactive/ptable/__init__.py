@@ -10,6 +10,10 @@ __all__ = ["PeriodicTableWindow", "ptable"]
 
 
 class _CallableModule(types.ModuleType):
+    # Importing the submodule first can cause ``erlab.interactive.ptable`` on the
+    # parent package to resolve to this module object instead of the launcher
+    # function. Keeping the module callable preserves ``erlab.interactive.ptable()``
+    # regardless of import order.
     def __call__(self, *args: Any, **kwargs: Any) -> PeriodicTableWindow:
         return ptable(*args, **kwargs)
 

@@ -25,7 +25,6 @@ from erlab.interactive.ptable._shared import (
     _element_records,
     _element_symbols,
     _fit_symbol_font,
-    _fit_text_font,
     _FittedSymbolFont,
     _format_energy,
     _format_mass,
@@ -576,15 +575,10 @@ class ElementInspector(QtWidgets.QWidget):
     _SUMMARY_DETAILED_MAX_ROWS = 2
     _SUMMARY_COMPACT_VISIBLE_ROWS = 3
     _SUMMARY_CARD_SPACING = 6
-    _SECTION_TITLE_FONT_DELTA = 3.0
-    _SECTION_TITLE_FONT_MIN = 16.0
-    _SECTION_TITLE_FONT_ABS_MIN = 10.0
-    _SECTION_TITLE_FONT_STEP = 0.2
 
     def __init__(self) -> None:
         super().__init__()
         self._theme = _theme_colors()
-        self._section_header_update_pending = False
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -740,11 +734,10 @@ class ElementInspector(QtWidgets.QWidget):
         )
         self.plot_title.setMinimumWidth(0)
         self.plot_title.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.MinimumExpanding,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
-        self._plot_header_layout.addWidget(self.plot_title)
-        self._plot_header_layout.addStretch(1)
+        self._plot_header_layout.addWidget(self.plot_title, 1)
 
         self.plot_target_combo = QtWidgets.QComboBox(self.plot_frame)
         self.plot_target_combo.setObjectName("ptable-plot-target")
@@ -755,14 +748,13 @@ class ElementInspector(QtWidgets.QWidget):
         )
         combo_policy = self.plot_target_combo.sizePolicy()
         combo_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Policy.Fixed)
-        combo_policy.setRetainSizeWhenHidden(True)
         self.plot_target_combo.setSizePolicy(combo_policy)
         self.plot_target_combo.setFixedWidth(self._PLOT_TARGET_COMBO_WIDTH)
         self.plot_target_combo.currentIndexChanged.connect(
             self._emit_plot_target_changed
         )
         self.plot_target_combo.setVisible(False)
-        self._plot_header_layout.addWidget(self.plot_target_combo)
+        self._plot_header_layout.addWidget(self.plot_target_combo, 0)
 
         self.cross_section_plot = CrossSectionPlot()
         self.cross_section_plot.setFixedWidth(self._PLOT_CONTENT_WIDTH)
@@ -819,6 +811,7 @@ class ElementInspector(QtWidgets.QWidget):
         )
         levels_header.addWidget(self.levels_title)
         levels_header.addStretch(1)
+        self._apply_section_header_fonts()
 
         self.levels_controls_frame = QtWidgets.QFrame(self.levels_frame)
         self.levels_controls_frame.setObjectName("ptable-levels-controls")
@@ -922,7 +915,6 @@ class ElementInspector(QtWidgets.QWidget):
         self.copy_values_button.setEnabled(False)
         self.copy_table_button.setEnabled(False)
         self.apply_theme(self._theme)
-        self._schedule_section_header_font_update()
 
     def changeEvent(self, event: QtCore.QEvent | None) -> None:
         super().changeEvent(event)
@@ -933,15 +925,7 @@ class ElementInspector(QtWidgets.QWidget):
             QtCore.QEvent.Type.FontChange,
             QtCore.QEvent.Type.StyleChange,
         }:
-            self._schedule_section_header_font_update()
-
-    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
-        super().resizeEvent(event)
-        self._schedule_section_header_font_update()
-
-    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
-        super().showEvent(event)
-        self._schedule_section_header_font_update()
+            self._apply_section_header_fonts()
 
     def set_table_panel(self, widget: QtWidgets.QWidget) -> None:
         while self._table_container_layout.count():
@@ -961,42 +945,9 @@ class ElementInspector(QtWidgets.QWidget):
         label.ensurePolished()
         return label.sizeHint().height()
 
-    def _schedule_section_header_font_update(self) -> None:
-        if self._section_header_update_pending:
-            return
-        self._section_header_update_pending = True
-        QtCore.QTimer.singleShot(0, self._update_section_header_fonts)
-
-    def _section_title_samples(
-        self,
-    ) -> tuple[tuple[str, float, float | None, bool], ...]:
-        self._plot_header_layout.activate()
-        self._levels_header_layout.activate()
-        samples: list[tuple[str, float, float | None, bool]] = []
-        for label in (self.plot_title, self.levels_title):
-            if label.width() <= 0:
-                continue
-            samples.append((label.text(), float(label.width()), None, False))
-        return tuple(samples)
-
-    def _update_section_header_fonts(self) -> None:
-        self._section_header_update_pending = False
-        samples = self._section_title_samples()
-        if len(samples) == 0:
-            return
-        base_font = QtGui.QFont(self.font())
-        preferred_point_size = max(
-            _effective_point_size(base_font) + self._SECTION_TITLE_FONT_DELTA,
-            self._SECTION_TITLE_FONT_MIN,
-        )
-        section_font = _fit_text_font(
-            base_font,
-            samples,
-            preferred_point_size=preferred_point_size,
-            minimum_point_size=self._SECTION_TITLE_FONT_ABS_MIN,
-            step=self._SECTION_TITLE_FONT_STEP,
-            weight=QtGui.QFont.Weight.Bold,
-        )
+    def _apply_section_header_fonts(self) -> None:
+        section_font = QtGui.QFont(self.font())
+        section_font.setBold(True)
         self.plot_title.setFont(QtGui.QFont(section_font))
         self.levels_title.setFont(QtGui.QFont(section_font))
         self._sync_plot_frame_minimum_height()
@@ -1279,7 +1230,6 @@ class ElementInspector(QtWidgets.QWidget):
             self.plot_target_combo.blockSignals(True)
             self.plot_target_combo.clear()
             self.plot_target_combo.blockSignals(False)
-            self._schedule_section_header_font_update()
             return
         self.plot_target_combo.blockSignals(True)
         self.plot_target_combo.clear()
@@ -1289,7 +1239,6 @@ class ElementInspector(QtWidgets.QWidget):
         if target_index >= 0:
             self.plot_target_combo.setCurrentIndex(target_index)
         self.plot_target_combo.blockSignals(False)
-        self._schedule_section_header_font_update()
 
     def _emit_plot_target_changed(self, index: int) -> None:
         atomic_number = self.plot_target_combo.itemData(index)
