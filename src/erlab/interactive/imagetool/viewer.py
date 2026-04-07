@@ -65,6 +65,14 @@ class ColorMapState(typing.TypedDict):
     levels: typing.NotRequired[tuple[float, float]]
 
 
+class GuidelineState(typing.TypedDict):
+    """A dictionary containing the state of rotation guidelines."""
+
+    count: typing.Literal[1, 2, 3]
+    angle: float
+    offset: tuple[float, float]
+
+
 class PlotItemState(typing.TypedDict):
     """A dictionary containing the state of a `PlotItem` instance."""
 
@@ -73,6 +81,7 @@ class PlotItemState(typing.TypedDict):
     vb_y_inverted: bool
     vb_autorange: typing.NotRequired[tuple[bool, bool]]
     roi_states: typing.NotRequired[list[dict[str, typing.Any]]]
+    guideline_state: typing.NotRequired[GuidelineState]
 
 
 class ImageSlicerState(typing.TypedDict):
