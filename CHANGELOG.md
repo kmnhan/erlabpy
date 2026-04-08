@@ -2,6 +2,26 @@
 
 ### ✨ Features
 
+- **imagetool:** add interface for `symmetrize_nfold` ([07eb6c8](https://github.com/kmnhan/erlabpy/commit/07eb6c86bd8cfb58bb7501e5f10b5922ec8d702c))
+
+  Adds a new `Edit → Symmetrize → Rotational...` dialog to ImageTool as an interface to `era.transform.symmetrize_nfold`. The interface for `era.transform.symmetrize` is moved to `Edit → Symmetrize → Mirror...`.
+
+- **analysis.transform:** add n-fold rotational symmetrization ([468f967](https://github.com/kmnhan/erlabpy/commit/468f96712878b3e3c2e357693d7f3cc25cc429ce))
+
+  Add `era.transform.symmetrize_nfold` as a public transform API for rotational averaging with arbitrary rotational symmetry.
+
+- **imagetool:** add interface for `thin` ([d973702](https://github.com/kmnhan/erlabpy/commit/d97370238878b4ab0d5584b356a44db284db34b5))
+
+  Adds a new `Edit → Thin` dialog to ImageTool for resampling with `xarray.DataArray.thin`.
+
+- **imagetool:** add interface for `coarsen` ([5e2e672](https://github.com/kmnhan/erlabpy/commit/5e2e672a6db67943e53a4395266afb19d21b448e))
+
+  Adds a new `Edit → Coarsen` dialog to ImageTool for block-wise reduction with `xarray.DataArray.coarsen`.
+
+- **imagetool:** add interface for `swap_dims` ([a36a5d3](https://github.com/kmnhan/erlabpy/commit/a36a5d356621cd3d06f97f605e4220f336f2c8b0))
+
+  Adds an `Edit → Swap Dimensions` dialog to ImageTool as a GUI for `xarray.DataArray.swap_dims`.
+
 - **imagetool:** add Gaussian filter (#301) ([9d2e49a](https://github.com/kmnhan/erlabpy/commit/9d2e49a4ae8cd68192b4d9b96482c1686687c7f3))
 
   Adds a Gaussian filter dialog with the same preview/reset behavior as the normalization dialog.
@@ -47,6 +67,12 @@
   Also adds support for lazy-computing dask-based inputs.
 
 ### 🐞 Bug Fixes
+
+- **imagetool:** properly include watched data name in generated code for average and crop dialogs ([1e1d4ef](https://github.com/kmnhan/erlabpy/commit/1e1d4ef8342191062a6d5eb75405fcc1532d5fa9))
+
+- **interactive:** defer `ftool` 2D stepped fits to next event loop turn ([7abb9a3](https://github.com/kmnhan/erlabpy/commit/7abb9a313b385a5230d25fb14d9d6d056a366ef5))
+
+  Defer the next slice in `ftool` 2D up/down fit sequences with a queued Qt callback so cursor and fit overlays have a chance to repaint between steps.
 
 - **analysis.gold:** fix regression where open bounds (`None`) was not avaliable in range slicing and plotting functions ([4fdc856](https://github.com/kmnhan/erlabpy/commit/4fdc856bfa1907d4f1e07cfbc8e0f2de78b3082b))
 
