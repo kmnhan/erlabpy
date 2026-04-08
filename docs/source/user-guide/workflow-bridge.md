@@ -50,9 +50,11 @@ code for reproducibility and batch processing.
   - {ref}`Crop dialogs <imagetool-editing>`
   - {meth}`xarray.DataArray.sel`, {meth}`xarray.DataArray.isel`
 - - Rotate or symmetrize
-  - {ref}`Transform dialogs <imagetool-editing>`
+  - {ref}`Transform dialogs <imagetool-editing>` including {guilabel}`Edit → Rotate` and
+    {guilabel}`Edit → Symmetrize`
   - {func}`erlab.analysis.transform.rotate`,
-    {func}`erlab.analysis.transform.symmetrize`
+    {func}`erlab.analysis.transform.symmetrize`,
+    {func}`erlab.analysis.transform.symmetrize_nfold`
 - - Reassign coordinates
   - {ref}`Coordinate editing dialog <imagetool-data>`
   - {meth}`xarray.DataArray.assign_coords`

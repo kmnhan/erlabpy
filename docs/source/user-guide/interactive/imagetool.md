@@ -208,7 +208,8 @@ Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
 - {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
 - {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`, `sum`, or `median`.
 - {guilabel}`Edit → Thin` opens the {guilabel}`Thin Data` dialog which uses {meth}`xarray.DataArray.thin`.
-- {guilabel}`Edit → Symmetrize` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
+- {guilabel}`Edit → Symmetrize → Mirror...` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
+- {guilabel}`Edit → Symmetrize → Rotational...` opens the rotational symmetrization dialog. If a rotation guideline is visible, the dialog pre-fills the center and fold count based on the guideline.
 - {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
 - {guilabel}`Edit → Correct With Edge...` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
 - {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, which applies a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.

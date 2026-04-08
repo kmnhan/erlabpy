@@ -881,6 +881,99 @@ class SymmetrizeDialog(DataTransformDialog):
         )
 
 
+class SymmetrizeNfoldDialog(DataTransformDialog):
+    title = "Rotational Symmetrize"
+    enable_copy = True
+
+    @property
+    def suffix(self) -> str:
+        return f"_symC{self._params['fold']}"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    @property
+    def _params(self) -> dict[str, typing.Any]:
+        return {
+            "fold": self.fold_spin.value(),
+            "axes": self._axes,
+            "center": {
+                dim: float(np.round(spin.value(), spin.decimals()))
+                for dim, spin in zip(self._axes, self.center_spins, strict=True)
+            },
+            "reshape": self.reshape_check.isChecked(),
+            "order": self.order_spin.value(),
+        }
+
+    def setup_widgets(self) -> None:
+        main_image = self.slicer_area.main_image
+
+        self._axes: tuple[str, str] = (
+            str(main_image.axis_dims_uniform[0]),
+            str(main_image.axis_dims_uniform[1]),
+        )
+
+        plane_group = QtWidgets.QGroupBox("Rotation plane")
+        plane_layout = QtWidgets.QHBoxLayout()
+        plane_group.setLayout(plane_layout)
+        plane_dims = ", ".join(self._axes)
+        plane_label = QtWidgets.QLabel(plane_dims)
+        plane_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        plane_layout.addWidget(plane_label)
+        self.layout_.addRow(plane_group)
+
+        self.fold_spin = QtWidgets.QSpinBox()
+        self.fold_spin.setRange(2, 99)
+        self.fold_spin.setValue(4)
+        self.layout_.addRow("Fold", self.fold_spin)
+
+        self.center_spins = (
+            erlab.interactive.utils.BetterSpinBox(compact=False),
+            erlab.interactive.utils.BetterSpinBox(compact=False),
+        )
+        for i in range(2):
+            axis = main_image.display_axis[i]
+            dim = str(main_image.axis_dims_uniform[i])
+            self.center_spins[i].setDecimals(
+                self.array_slicer.get_significant(axis, uniform=True)
+            )
+            self.center_spins[i].setSingleStep(float(self.array_slicer.incs_uniform[i]))
+            self.center_spins[i].setValue(self.slicer_area.current_values_uniform[axis])
+            self.layout_.addRow(f"Center {dim}", self.center_spins[i])
+
+        self.order_spin = QtWidgets.QSpinBox()
+        self.order_spin.setRange(0, 5)
+        self.order_spin.setValue(1)
+        self.layout_.addRow("Spline Order", self.order_spin)
+
+        self.reshape_check = QtWidgets.QCheckBox("Reshape")
+        self.reshape_check.setChecked(True)
+        self.layout_.addRow(self.reshape_check)
+
+        if main_image.is_guidelines_visible:
+            for spin, val in zip(
+                self.center_spins, main_image._guideline_offset, strict=True
+            ):
+                spin.setValue(val)
+            self.fold_spin.setValue(2 * (len(main_image._guidelines_items) - 1))
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.transform.symmetrize_nfold(data, **self._params)
+
+    def make_code(self) -> str:
+        placeholder = self.slicer_area.watched_data_name or " "
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.transform.symmetrize_nfold,
+            [f"|{placeholder}|"],
+            self._params,
+            module="era.transform",
+        )
+
+
 class EdgeCorrectionDialog(DataTransformDialog):
     title = "Edge Correction"
     suffix = "_corr"

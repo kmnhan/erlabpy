@@ -33,6 +33,7 @@ from erlab.interactive.imagetool.dialogs import (
     RotationDialog,
     SwapDimsDialog,
     SymmetrizeDialog,
+    SymmetrizeNfoldDialog,
     ThinDialog,
 )
 from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
@@ -2597,6 +2598,109 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
     )
 
     assert pyperclip.paste() == 'era.transform.symmetrize(, dim="z", center=2.0)'
+    win.close()
+
+
+def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["y", "x"],
+        coords={
+            "y": np.arange(-2.0, 3.0, dtype=float),
+            "x": np.arange(-2.0, 3.0, dtype=float),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: SymmetrizeNfoldDialog) -> None:
+        assert dialog._axes == ("y", "x")
+        assert dialog.fold_spin.value() == 4
+        assert dialog.center_spins[0].value() == 0.0
+        assert dialog.center_spins[1].value() == 0.0
+        dialog.fold_spin.setValue(6)
+        dialog.center_spins[0].setValue(1.0)
+        dialog.center_spins[1].setValue(-1.0)
+        dialog.reshape_check.setChecked(False)
+        dialog.order_spin.setValue(3)
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.new_window_check.setChecked(False)
+
+    accept_dialog(win.mnb._symmetrize_nfold, pre_call=_set_dialog_params)
+    xarray.testing.assert_allclose(
+        win.slicer_area._data.rename(None),
+        erlab.analysis.transform.symmetrize_nfold(
+            data,
+            6,
+            axes=("y", "x"),
+            center={"y": 1.0, "x": -1.0},
+            reshape=False,
+            order=3,
+        ),
+    )
+
+    copied = pyperclip.paste()
+    assert copied.startswith("era.transform.symmetrize_nfold(")
+    assert "fold=6" in copied
+    assert "axes=('y', 'x')" in copied
+    assert 'center={"y": 1.0, "x": -1.0}' in copied
+    assert "reshape=False" in copied
+    assert "order=3" in copied
+    win.close()
+
+
+def test_itool_symmetrize_nfold_guideline_prefill_defaults(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["y", "x"],
+        coords={"y": np.arange(5, dtype=float), "x": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = SymmetrizeNfoldDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog._axes == ("y", "x")
+    assert dialog.fold_spin.value() == 4
+    assert dialog.center_spins[0].value() == 2.0
+    assert dialog.center_spins[1].value() == 2.0
+    assert dialog.reshape_check.isChecked()
+    assert dialog.order_spin.value() == 1
+
+    dialog.close()
+    win.close()
+
+
+@pytest.mark.parametrize(
+    ("guideline_count", "expected_fold"),
+    [(1, 2), (2, 4), (3, 6)],
+    ids=["C2", "C4", "C6"],
+)
+def test_itool_symmetrize_nfold_guideline_prefill(
+    qtbot, guideline_count, expected_fold
+) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["y", "x"],
+        coords={"y": np.arange(5, dtype=float), "x": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    plot_item = win.slicer_area.main_image
+    plot_item.set_guidelines(guideline_count)
+    plot_item._guidelines_items[-1].setPos((1.0, 3.0))
+
+    dialog = SymmetrizeNfoldDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog.fold_spin.value() == expected_fold
+    assert dialog.center_spins[0].value() == 1.0
+    assert dialog.center_spins[1].value() == 3.0
+
+    dialog.close()
     win.close()
 
 
