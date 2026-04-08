@@ -447,12 +447,13 @@ class AverageDialog(DataTransformDialog):
         super().accept()
 
     def make_code(self) -> str:
+        placeholder = self.slicer_area.watched_data_name or ""
         arg = (
             str(self._target_dims)
             if len(self._target_dims) > 1
             else f'"{self._target_dims[0]}"'
         )
-        return f".qsel.average({arg})"
+        return f"{placeholder}.qsel.average({arg})"
 
 
 class CoarsenDialog(DataTransformDialog):
@@ -933,7 +934,7 @@ class _BaseCropDialog(DataTransformDialog):
             if str(k).endswith("_idx"):
                 isel_kwargs[str(k).removesuffix("_idx")] = sel_kwargs.pop(k)
 
-        out: str = ""
+        out: str = self.slicer_area.watched_data_name or ""
         if sel_kwargs:
             out += f".sel({erlab.interactive.utils.format_kwargs(sel_kwargs)})"
         if isel_kwargs:
