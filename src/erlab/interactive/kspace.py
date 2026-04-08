@@ -1079,26 +1079,17 @@ class KspaceTool(KspaceToolGUI):
         self.preview_symmetry_group.setEnabled(available)
 
     def _symmetrized_preview(self, preview_data: xr.DataArray) -> xr.DataArray:
-        import xarray as xr
-
         preview_data = preview_data.transpose("ky", "kx")
-        fold = self.preview_symmetry_fold_spin.value()
-        rotated = [
-            erlab.analysis.transform.rotate(
-                preview_data,
-                360.0 * idx / fold,
-                axes=("ky", "kx"),
-                center={"ky": 0.0, "kx": 0.0},
-                reshape=False,
-                order=1,
-                mode="constant",
-                cval=np.nan,
-                prefilter=False,
-            )
-            for idx in range(fold)
-        ]
-        return xr.concat(rotated, dim="_preview_symmetry").mean(
-            "_preview_symmetry", skipna=True, keep_attrs=True
+        return erlab.analysis.transform.symmetrize_nfold(
+            preview_data,
+            self.preview_symmetry_fold_spin.value(),
+            axes=("ky", "kx"),
+            center={"ky": 0.0, "kx": 0.0},
+            reshape=False,
+            order=1,
+            mode="constant",
+            cval=np.nan,
+            prefilter=False,
         )
 
     def get_data(self) -> tuple[xr.DataArray, xr.DataArray]:

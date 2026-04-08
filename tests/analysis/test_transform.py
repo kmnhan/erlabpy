@@ -3,7 +3,7 @@ import pytest
 import xarray as xr
 import xarray.testing
 
-from erlab.analysis.transform import rotate, shift, symmetrize
+from erlab.analysis.transform import rotate, shift, symmetrize, symmetrize_nfold
 
 
 @pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
@@ -169,6 +169,219 @@ def test_shift_order1_optimized() -> None:
 
     expected = np.array([[np.nan, 1.0, 2.0], [np.nan, 4.0, 5.0]])
     np.testing.assert_allclose(shifted.values, expected, equal_nan=True)
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_symmetrize_nfold(use_dask) -> None:
+    coords = np.arange(-2.0, 3.0, dtype=float)
+    darr = xr.DataArray(
+        np.zeros((5, 5), dtype=int),
+        dims=("ky", "kx"),
+        coords={"ky": coords, "kx": coords},
+    )
+    darr.loc[{"ky": 0.0, "kx": 1.0}] = 1
+
+    if use_dask:
+        darr = darr.chunk()
+
+    expected = xr.DataArray(
+        np.zeros((5, 5), dtype=float),
+        dims=("ky", "kx"),
+        coords={"ky": coords, "kx": coords},
+    )
+    for ky, kx in ((0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)):
+        expected.loc[{"ky": ky, "kx": kx}] = 0.25
+
+    sym = symmetrize_nfold(
+        darr,
+        4,
+        axes=("ky", "kx"),
+        center={"ky": 0.0, "kx": 0.0},
+        reshape=False,
+        order=1,
+        mode="constant",
+        cval=np.nan,
+        prefilter=False,
+    )
+
+    assert np.issubdtype(sym.dtype, np.floating)
+    xr.testing.assert_allclose(sym, expected)
+
+
+def test_symmetrize_nfold_broadcasts_over_remaining_dims() -> None:
+    coords = np.arange(-2.0, 3.0, dtype=float)
+    darr = xr.DataArray(
+        np.zeros((2, 5, 5), dtype=float),
+        dims=("eV", "ky", "kx"),
+        coords={"eV": [-0.1, 0.0], "ky": coords, "kx": coords},
+    )
+    darr.loc[{"eV": -0.1, "ky": 0.0, "kx": 1.0}] = 1.0
+    darr.loc[{"eV": 0.0, "ky": 0.0, "kx": 2.0}] = 2.0
+
+    expected = xr.DataArray(
+        np.zeros((2, 5, 5), dtype=float),
+        dims=("eV", "ky", "kx"),
+        coords={"eV": [-0.1, 0.0], "ky": coords, "kx": coords},
+    )
+    for ky, kx in ((0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)):
+        expected.loc[{"eV": -0.1, "ky": ky, "kx": kx}] = 0.25
+    for ky, kx in ((0.0, 2.0), (2.0, 0.0), (0.0, -2.0), (-2.0, 0.0)):
+        expected.loc[{"eV": 0.0, "ky": ky, "kx": kx}] = 0.5
+
+    sym = symmetrize_nfold(
+        darr,
+        4,
+        axes=("ky", "kx"),
+        center={"ky": 0.0, "kx": 0.0},
+        reshape=False,
+        order=1,
+        mode="constant",
+        cval=np.nan,
+        prefilter=False,
+    )
+
+    xr.testing.assert_allclose(sym, expected)
+
+
+def test_symmetrize_nfold_prefilter_matches_rotate_default() -> None:
+    coords = np.arange(-4.0, 5.0, dtype=float)
+    darr = xr.DataArray(
+        np.zeros((9, 9), dtype=float),
+        dims=("y", "x"),
+        coords={"y": coords, "x": coords},
+    )
+    darr.loc[{"y": 0.0, "x": 1.0}] = 1.0
+
+    expected = xr.concat(
+        [
+            rotate(
+                darr,
+                90.0 * idx,
+                axes=("y", "x"),
+                center={"y": 0.0, "x": 0.0},
+                reshape=False,
+                order=3,
+                mode="constant",
+                cval=np.nan,
+            )
+            for idx in range(4)
+        ],
+        dim="_preview_symmetry",
+    ).mean("_preview_symmetry", skipna=True, keep_attrs=True)
+
+    sym = symmetrize_nfold(
+        darr,
+        4,
+        axes=("y", "x"),
+        center={"y": 0.0, "x": 0.0},
+        reshape=False,
+        order=3,
+        mode="constant",
+        cval=np.nan,
+    )
+
+    xr.testing.assert_allclose(sym, expected)
+    assert sym.sel(y=0.0, x=1.0).item() == pytest.approx(0.25)
+
+
+def test_symmetrize_nfold_invalid_fold() -> None:
+    darr = xr.DataArray(
+        np.zeros((5, 5), dtype=float),
+        dims=("y", "x"),
+        coords={"y": np.arange(-2.0, 3.0), "x": np.arange(-2.0, 3.0)},
+    )
+
+    with pytest.raises(ValueError, match="fold must be at least 2"):
+        symmetrize_nfold(darr, 1)
+
+
+def test_symmetrize_nfold_non_uniform() -> None:
+    darr = xr.DataArray(
+        np.zeros((4, 4), dtype=float),
+        dims=("y", "x"),
+        coords={"y": [0.0, 1.0, 3.0, 6.0], "x": [0.0, 1.0, 2.0, 3.0]},
+    )
+
+    with pytest.raises(
+        ValueError, match="all coordinates along axes must be evenly spaced"
+    ):
+        symmetrize_nfold(darr, 4)
+
+
+def test_symmetrize_nfold_invalid_center() -> None:
+    darr = xr.DataArray(
+        np.zeros((5, 5), dtype=float),
+        dims=("y", "x"),
+        coords={"y": np.arange(-2.0, 3.0), "x": np.arange(-2.0, 3.0)},
+    )
+
+    with pytest.raises(
+        ValueError, match="center must have keys matching the two rotation axes"
+    ):
+        symmetrize_nfold(darr, 4, center={"x": 0.0, "z": 0.0})
+
+
+def test_symmetrize_nfold_preserves_attrs_and_drops_rotated_axis_coords() -> None:
+    darr = xr.DataArray(
+        np.zeros((5, 5), dtype=float),
+        dims=("y", "x"),
+        coords={
+            "y": np.arange(5.0),
+            "x": np.arange(5.0),
+            "yy": ("y", np.arange(5.0)),
+            "label": "sample",
+        },
+        attrs={"test_attr": 1},
+    )
+    darr.loc[{"y": 2.0, "x": 3.0}] = 1.0
+
+    sym = symmetrize_nfold(darr, 4, center={"y": 2.0, "x": 2.0})
+
+    assert "yy" not in sym.coords
+    assert sym.coords["label"].item() == "sample"
+    assert sym.attrs == {"test_attr": 1}
+
+
+@pytest.mark.parametrize("use_dask", [False, True], ids=["no_dask", "dask"])
+def test_symmetrize_nfold_defaults_to_reshape(use_dask) -> None:
+    darr = xr.DataArray(
+        np.zeros((3, 5), dtype=float),
+        dims=("y", "x"),
+        coords={"y": np.arange(-1.0, 2.0), "x": np.arange(-2.0, 3.0)},
+    )
+    darr.loc[{"y": 0.0, "x": 2.0}] = 1.0
+
+    if use_dask:
+        darr = darr.chunk()
+
+    sym = symmetrize_nfold(
+        darr,
+        4,
+        axes=("y", "x"),
+        center={"y": 0.0, "x": 0.0},
+        order=1,
+        mode="constant",
+        cval=np.nan,
+        prefilter=False,
+    )
+
+    expected = xr.DataArray(
+        np.array(
+            [
+                [np.nan, 0.0, 0.5, 0.0, np.nan],
+                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.5, 0.0, 0.0, 0.0, 0.5],
+                [0.0, 0.0, 0.0, 0.0, 0.0],
+                [np.nan, 0.0, 0.5, 0.0, np.nan],
+            ],
+            dtype=float,
+        ),
+        dims=("y", "x"),
+        coords={"y": np.arange(-2.0, 3.0), "x": np.arange(-2.0, 3.0)},
+    )
+
+    assert sym.sizes["y"] > darr.sizes["y"]
+    xr.testing.assert_allclose(sym, expected)
 
 
 @pytest.mark.parametrize(
