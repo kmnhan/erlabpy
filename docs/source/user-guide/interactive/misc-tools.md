@@ -90,7 +90,10 @@ The second tab provides visualization options. You can overlay Brillouin zones a
 
 :::{note}
 
-The symmetrization is a visual aid that only affects the displayed image in `ktool`. {guilabel}`Open in ImageTool` and {guilabel}`Copy code` still use the unsymmetrized momentum-converted data.
+The symmetrization preview uses the same rotational averaging as
+{func}`erlab.analysis.transform.symmetrize_nfold`, but it only affects the displayed
+image in `ktool`. {guilabel}`Open in ImageTool` and {guilabel}`Copy code` still use
+the unsymmetrized momentum-converted data.
 
 :::
 
