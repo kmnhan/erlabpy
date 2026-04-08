@@ -560,7 +560,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "Average": {"triggered": self._average},
                     "Coarsen": {"triggered": self._coarsen},
                     "Thin": {"triggered": self._thin},
-                    "Symmetrize": {"triggered": self._symmetrize},
+                    "Symmetrize": {
+                        "actions": {
+                            "Mirror...": {"triggered": self._symmetrize},
+                            "Rotational...": {"triggered": self._symmetrize_nfold},
+                        }
+                    },
                     "Correct With Edge...": {"triggered": self._correct_with_edge},
                 },
             },
@@ -733,6 +738,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _symmetrize(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.SymmetrizeDialog)
+
+    @QtCore.Slot()
+    def _symmetrize_nfold(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.SymmetrizeNfoldDialog)
 
     @QtCore.Slot()
     def _correct_with_edge(self) -> None:
