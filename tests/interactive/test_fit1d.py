@@ -141,6 +141,51 @@ def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
     assert isinstance(win_restored._model, type(exp_decay_model))
 
 
+def test_fit1d_update_data_preserves_state_and_refit(
+    qtbot, exp_decay_model, monkeypatch
+):
+    data = _make_1d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    win.normalize_check.setChecked(True)
+    win.components_check.setChecked(True)
+    win.domain_min_spin.setValue(-0.5)
+    win.domain_max_spin.setValue(0.5)
+    win.timeout_spin.setValue(3.0)
+    win.nfev_spin.setValue(250)
+    win.refit_on_source_update_check.setChecked(False)
+    win._last_result_ds = xr.Dataset()
+
+    called: list[bool] = []
+    monkeypatch.setattr(win, "_run_fit", lambda: called.append(True) or True)
+
+    status = win.tool_status
+    new_data = xr.DataArray(
+        np.linspace(0.5, 1.5, data.size),
+        dims=data.dims,
+        coords=data.coords,
+        name=data.name,
+    )
+    win.update_data(new_data)
+
+    assert win.tool_status == status
+    xr.testing.assert_identical(win.tool_data, new_data)
+    assert win._fit_is_current is False
+    assert not called
+
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+    newer_data = new_data.copy(deep=True)
+    newer_data.data = np.asarray(newer_data.data) * 1.1
+    win.update_data(newer_data)
+
+    assert called == [True]
+
+
 def test_parameter_table_model_and_delegate(qtbot) -> None:
     params = lmfit.Parameters()
     params.add("amp", value=1.0, min=-1.0, max=2.0, vary=True)

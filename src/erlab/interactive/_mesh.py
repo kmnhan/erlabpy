@@ -403,6 +403,31 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             self.mesh_image.setDataArray(mesh.T, update_labels=False)
             self.corr_fft_image.setImage(log_magnitude_corr)
 
+    def update_data(self, new_data: xr.DataArray) -> None:
+        status = self.tool_status
+        if not all(dim in new_data.dims for dim in {"alpha", "eV"}):
+            raise ValueError("Input DataArray must have 'alpha' and 'eV' dimensions.")
+
+        self._data = new_data
+        self._corrected = None
+        self._mesh = None
+        self.__dict__.pop("_data_averaged", None)
+
+        max_alpha = self._data.alpha.size - 1
+        max_ev = self._data.eV.size - 1
+        for spin, maximum in (
+            (self.p0_spin0, max_alpha),
+            (self.p1_spin0, max_alpha),
+            (self.p0_spin1, max_ev),
+            (self.p1_spin1, max_ev),
+        ):
+            spin.setMaximum(maximum)
+
+        self.tool_status = status
+        self.set_data_beforecalc(initial=True)
+        self._update_target_pos()
+        self.sigInfoChanged.emit()
+
     @QtCore.Slot()
     def _corr_itool(self) -> None:
         if self._corrected is not None:  # pragma: no branch

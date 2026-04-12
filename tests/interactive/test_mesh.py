@@ -219,3 +219,35 @@ def test_meshtool_autofind_invalid_peaks_reraises_in_manager(
     assert win.p0_spin1.value() == 12
     assert win.p1_spin0.value() == 10
     assert win.p1_spin1.value() == 20
+
+
+def test_meshtool_update_data_preserves_state(qtbot, meshy_data) -> None:
+    win: MeshTool = meshtool(meshy_data, execute=False)
+    qtbot.addWidget(win)
+
+    win.order_spin.setValue(2)
+    win.n_pad_spin.setValue(1)
+    win.roi_hw_spin.setValue(6)
+    win.k_spin.setValue(0.2)
+    win.feather_spin.setValue(0.5)
+    win.undo_edge_correction_check.setChecked(True)
+    win.method_combo.setCurrentText("gaussian")
+    win.p0_spin0.setValue(12)
+    win.p0_spin1.setValue(18)
+    win.p1_spin0.setValue(20)
+    win.p1_spin1.setValue(10)
+
+    status = win.tool_status
+    new_data = meshy_data.copy(deep=True)
+    new_data.data = np.asarray(new_data.data) * 1.2
+    win.update()
+    assert win._corrected is not None
+    assert win._mesh is not None
+
+    win.update_data(new_data)
+
+    assert win.tool_status == status
+    xr.testing.assert_identical(win.tool_data, new_data)
+    assert win._corrected is None
+    assert win._mesh is None
+    assert win.main_image.data_array is not None

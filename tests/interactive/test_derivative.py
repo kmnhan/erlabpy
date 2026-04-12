@@ -49,6 +49,11 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
         win.curv_factor_spin.setValue(40)
 
     check_generated_code(win)
+    win.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        auto_update=True,
+        state="stale",
+    )
 
     # Test save & restore
     with tempfile.TemporaryDirectory() as tmp_dir_name:
@@ -61,4 +66,63 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
 
         assert win.tool_status == win_restored.tool_status
         assert str(win_restored.info_text) == str(win.info_text)
+        assert win_restored.source_spec == win.source_spec
+        assert win_restored.source_auto_update is True
+        assert win_restored.source_state == "stale"
         check_generated_code(win_restored)
+
+
+def test_dtool_update_data_preserves_state(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    new_data = xr.DataArray(
+        np.arange(25, 50).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.interp_group.setChecked(True)
+    win.nx_spin.setValue(7)
+    win.ny_spin.setValue(9)
+    win.smooth_group.setChecked(True)
+    win.smooth_combo.setCurrentIndex(1)
+    win.sx_spin.setValue(2)
+    win.sy_spin.setValue(3)
+    win.sn_spin.setValue(2)
+    win.tab_widget.setCurrentIndex(3)
+    win.curv_a0_spin.setValue(1.5)
+    win.curv_factor_spin.setValue(12.0)
+
+    status = win.tool_status
+    win.update_data(new_data)
+
+    assert win.tool_status == status
+    xr.testing.assert_identical(win.tool_data, new_data)
+    assert win.result.shape == win.processed_data.shape
+
+
+def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec(
+            "selection", operations=[{"op": "transpose"}]
+        ),
+        auto_update=True,
+    )
+
+    parent_data = xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)),
+        dims=("x", "y", "z"),
+        coords={"x": np.arange(5), "y": np.arange(5), "z": np.arange(5)},
+        name="data",
+    )
+    win.handle_parent_source_replaced(parent_data)
+
+    assert win.source_state == "unavailable"
+    xr.testing.assert_identical(win.tool_data, data)

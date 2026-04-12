@@ -730,6 +730,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         domain: tuple[float, float] | None = None
         normalize_mean: bool = False
         show_components: bool
+        refit_on_source_update: bool = False
         timeout: float
         max_nfev: int
         method: str
@@ -1189,10 +1190,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             ]
         )
         self.method_combo.setCurrentText("least_squares")
+        self.refit_on_source_update_check = QtWidgets.QCheckBox(
+            "Refit on source update"
+        )
+        self.refit_on_source_update_check.setToolTip(
+            "If checked, rerun the fit when this tool refreshes from ImageTool."
+        )
 
         fit_layout.addRow("Timeout", self.timeout_spin)
         fit_layout.addRow("Max nfev", self.nfev_spin)
         fit_layout.addRow("Method", self.method_combo)
+        fit_layout.addRow(self.refit_on_source_update_check)
         self._fit_tab_layout.addWidget(fit_group)
 
         self.fit_buttons = QtWidgets.QGridLayout()
@@ -1820,6 +1828,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             domain=self._fit_domain(),
             normalize_mean=self.normalize_check.isChecked(),
             show_components=self.components_check.isChecked(),
+            refit_on_source_update=self.refit_on_source_update_check.isChecked(),
             timeout=self.timeout_spin.value(),
             max_nfev=self.nfev_spin.value(),
             method=self.method_combo.currentText(),
@@ -1852,6 +1861,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.set_model(model, model_load_path=status.model_load_path)
 
             self.components_check.setChecked(status.show_components)
+            self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
             self.timeout_spin.setValue(status.timeout)
             self.nfev_spin.setValue(status.max_nfev)
             self.method_combo.setCurrentText(status.method)
@@ -3331,6 +3341,38 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_is_current = True
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
+
+    def update_data(self, new_data: xr.DataArray) -> None:
+        had_fit = self._last_result_ds is not None
+        status = self.tool_status
+        old_geom = self.saveGeometry()
+        self._cancel_fit(wait=True)
+
+        old_cw = self.centralWidget()
+        if old_cw is not None:
+            old_cw.setParent(None)
+            old_cw.deleteLater()
+
+        self._reset_fit_state(
+            new_data,
+            self._model,
+            self._params.copy(),
+            data_name=self._data_name,
+            model_name=self._model_name,
+        )
+        self._build_ui()
+        with self._history_suppressed():
+            self.tool_status = status
+        self._set_fit_stats(None)
+        self._update_fit_curve()
+        self._write_history = True
+        self._reset_history_stack()
+        self._mark_fit_stale()
+        self.restoreGeometry(old_geom)
+        self.sigInfoChanged.emit()
+
+        if had_fit and self.refit_on_source_update_check.isChecked():
+            self._run_fit()
 
     def _show_warning(self, title: str, text: str) -> None:
         QtWidgets.QMessageBox.warning(self, title, text)

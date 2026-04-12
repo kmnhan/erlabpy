@@ -1811,7 +1811,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 # If not yet created, add new tool
                 self._data_recv([darr], {})
                 continue
-            self.get_imagetool(idx).slicer_area.set_data(darr)
+            self.get_imagetool(idx).slicer_area.replace_source_data(darr)
         self._sigDataReplaced.emit()
 
     def _find_watched_idx(self, uid: str) -> int | None:
@@ -1854,7 +1854,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._data_recv([darr], {}, watched_var=(varname, uid))
         else:
             # Update data in the existing tool
-            self.get_imagetool(idx).slicer_area.set_data(darr)
+            self.get_imagetool(idx).slicer_area.replace_source_data(darr)
 
     @QtCore.Slot(str)
     def _data_unwatch(self, uid: str) -> None:

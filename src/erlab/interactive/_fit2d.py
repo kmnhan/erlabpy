@@ -592,22 +592,33 @@ class Fit2DTool(Fit1DTool):
         )
         state2d = status.state2d
         if state2d is not None:  # pragma: no branch
+            y_size = int(self._data_full.sizes[self._y_dim_name])
             self._data_name_full = state2d.data_name_full
-            self._params_from_coord_full = state2d.params_from_coord_full.copy()
-            self._params_full = [
+            restored_params_full = [
                 self._deserialize_params(params) for params in state2d.params_full
             ]
+            self._params_full = [None] * y_size
+            for i, params in enumerate(restored_params_full[:y_size]):
+                self._params_full[i] = params
+
+            self._params_from_coord_full = [{} for _ in range(y_size)]
+            for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):
+                self._params_from_coord_full[i] = mapping.copy()
+
             self.fill_mode_combo.setCurrentText(state2d.fill_mode.capitalize())
             self._apply_param_plot_overlay_states(state2d.param_plot_overlay_states)
             if state2d.y_limits is not None:  # pragma: no branch
+                max_idx = y_size - 1
+                y_min = min(max(state2d.y_limits[0], 0), max_idx)
+                y_max = min(max(state2d.y_limits[1], 0), max_idx)
                 with (
                     QtCore.QSignalBlocker(self.y_min_spin),
                     QtCore.QSignalBlocker(self.y_max_spin),
                 ):
-                    self.y_min_spin.setValue(state2d.y_limits[0])
-                    self.y_max_spin.setValue(state2d.y_limits[1])
+                    self.y_min_spin.setValue(min(y_min, y_max))
+                    self.y_max_spin.setValue(max(y_min, y_max))
                 self._y_minmax_changed()
-            self._current_idx = state2d.current_idx
+            self._current_idx = min(max(state2d.current_idx, 0), y_size - 1)
         self.y_index_spin.setValue(self._current_idx)
 
     @QtCore.Slot()
@@ -1358,6 +1369,44 @@ class Fit2DTool(Fit1DTool):
     def _mark_fit_fresh(self) -> None:
         super()._mark_fit_fresh()
         self._update_full_fit_saveable()
+
+    def update_data(self, new_data: xr.DataArray) -> None:
+        had_fit = self._last_result_ds is not None
+        status = self.tool_status
+        old_geom = self.saveGeometry()
+        self._cancel_fit(wait=True)
+
+        old_cw = self.centralWidget()
+        if old_cw is not None:
+            old_cw.setParent(None)
+            old_cw.deleteLater()
+
+        if new_data.ndim != 2:
+            raise ValueError("`data` must be a 2D DataArray")
+
+        self._init_full_data_state(new_data, data_name=self._data_name_full)
+        self._reset_fit_state(
+            self._data_full.isel({self._y_dim_name: self._current_idx}),
+            self._model,
+            self._params.copy(),
+            data_name=self._data_name,
+            model_name=self._model_name,
+        )
+        self._build_ui()
+        self.param_model.sigParamsChanged.connect(self._update_params_full)
+        with self._history_suppressed():
+            self.tool_status = status
+        self._refresh_main_image()
+        self._refresh_contents_from_index()
+        self._update_param_plot()
+        self._write_history = True
+        self._reset_history_stack()
+        self._mark_fit_stale()
+        self.restoreGeometry(old_geom)
+        self.sigInfoChanged.emit()
+
+        if had_fit and self.refit_on_source_update_check.isChecked():
+            self._run_fit()
 
     def _update_full_fit_saveable(self) -> None:
         can_save: bool = self._fit_is_current and not any(

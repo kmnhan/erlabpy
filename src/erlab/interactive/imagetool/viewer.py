@@ -479,6 +479,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     sigDataEdited()
         Signal to track when the data has been modified by user actions.
+    sigSourceDataReplaced()
+        Signal emitted when the underlying source data is replaced with a new
+        DataArray, such as file open, reload, or manager-driven replacement.
     sigPointValueChanged(value)
         Signal emitted when the point value at the current cursor has been computed.
         Only emitted for dask-backed data.
@@ -521,6 +524,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigWriteHistory = QtCore.Signal()  #: :meta private:
     sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
     sigDataEdited = QtCore.Signal()  #: :meta private:
+    sigSourceDataReplaced = QtCore.Signal(object)  #: :meta private:
     sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
 
     @property
@@ -1577,6 +1581,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         file_path: str | os.PathLike | None = None,
         load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
         auto_compute: bool = True,
+        *,
+        source_replaced: bool = False,
     ) -> None:
         """Set the data to be displayed.
 
@@ -1728,6 +1734,35 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.levels = cached_levels
 
         self.flush_history()
+        if source_replaced:
+            self.sigSourceDataReplaced.emit(self._data.copy(deep=False))
+
+    def replace_source_data(
+        self,
+        data: xr.DataArray | npt.NDArray,
+        rad2deg: bool | Iterable[str] = False,
+        file_path: str | os.PathLike | None = None,
+        load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
+        auto_compute: bool = True,
+        *,
+        emit_edited: bool = False,
+    ) -> None:
+        """Replace the underlying source data and notify bound child tools.
+
+        Parameters are the same as :meth:`set_data`, with the addition of
+        ``emit_edited`` to indicate that the replacement should also be treated as a
+        user edit for watcher propagation.
+        """
+        self.set_data(
+            data,
+            rad2deg=rad2deg,
+            file_path=file_path,
+            load_func=load_func,
+            auto_compute=auto_compute,
+            source_replaced=True,
+        )
+        if emit_edited:
+            self.sigDataEdited.emit()
 
     def _update_if_delayed(self) -> None:
         if self._update_delayed:
@@ -1786,7 +1821,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.reloadable:  # pragma: no branch
             try:
-                self.set_data(
+                self.replace_source_data(
                     self._fetch_for_reload(),
                     file_path=self._file_path,
                     load_func=self._load_func,
@@ -2348,6 +2383,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
                     manager.add_widget(widget)
                 return
 
+        if isinstance(widget, erlab.interactive.utils.ToolWindow):
+            widget.set_source_parent_fetcher(lambda: self._data.copy(deep=False))
+            self.sigSourceDataReplaced.connect(widget.handle_parent_source_replaced)
+
         uid: str = str(uuid.uuid4())
         with self._assoc_tools_lock:
             self._associated_tools[uid] = widget  # Store reference to prevent gc
@@ -2421,26 +2460,32 @@ class ImageSlicerArea(QtWidgets.QWidget):
             initial_normal_emission = None
             initial_delta = None
 
-        self.add_tool_window(
-            erlab.interactive.ktool(
-                self.data,
-                cmap=cmap,
-                gamma=gamma,
-                data_name=self.watched_data_name,
-                initial_normal_emission=initial_normal_emission,
-                initial_delta=initial_delta,
-                execute=False,
-            )
+        tool = erlab.interactive.ktool(
+            self.data,
+            cmap=cmap,
+            gamma=gamma,
+            data_name=self.watched_data_name,
+            initial_normal_emission=initial_normal_emission,
+            initial_delta=initial_delta,
+            execute=False,
         )
+        if isinstance(tool, erlab.interactive.utils.ToolWindow):
+            tool.set_source_binding(
+                erlab.interactive.utils.make_tool_source_spec("full_data")
+            )
+        self.add_tool_window(tool)
 
     @QtCore.Slot()
     def open_in_meshtool(self) -> None:
         """Open the interactive mesh removal tool."""
-        self.add_tool_window(
-            erlab.interactive.meshtool(
-                self.data, data_name=self.watched_data_name, execute=False
-            )
+        tool = erlab.interactive.meshtool(
+            self.data, data_name=self.watched_data_name, execute=False
         )
+        if isinstance(tool, erlab.interactive.utils.ToolWindow):
+            tool.set_source_binding(
+                erlab.interactive.utils.make_tool_source_spec("full_data")
+            )
+        self.add_tool_window(tool)
 
     def adjust_layout(
         self,

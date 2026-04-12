@@ -529,6 +529,10 @@ class KspaceTool(KspaceToolGUI):
             self.points_check.setChecked(status.points)
 
         # Restore circle ROIs
+        for roi in list(self._roi_list):
+            self.plotitems[1].removeItem(roi)
+            roi.deleteLater()
+        self._roi_list.clear()
         for x0, y0, radius in status.circle_rois:
             self._add_circle()
             self._roi_list[-1].set_position((x0, y0), radius)
@@ -795,6 +799,44 @@ class KspaceTool(KspaceToolGUI):
 
         if avec is not None:
             self.bz_group.setChecked(True)
+
+    def update_data(self, new_data: xr.DataArray) -> None:
+        status = self.tool_status
+        current_offset_keys = tuple(self.data.kspace._valid_offset_keys)
+        current_momentum_axes = tuple(self.data.kspace.momentum_axes)
+        current_configuration = int(self.data.kspace.configuration)
+        current_has_hv = self.data.kspace._has_hv
+
+        if tuple(new_data.kspace._valid_offset_keys) != current_offset_keys:
+            raise ValueError("Updated data has incompatible offset coordinates.")
+        if tuple(new_data.kspace.momentum_axes) != current_momentum_axes:
+            raise ValueError("Updated data has incompatible momentum axes.")
+        if int(new_data.kspace.configuration) != current_configuration:
+            raise ValueError("Updated data has incompatible analyzer configuration.")
+        if new_data.kspace._has_hv != current_has_hv:
+            raise ValueError("Updated data has incompatible photon-energy dimensions.")
+
+        self.data = new_data.copy(deep=True)
+        self._bz_cache_key = None
+        self._bz_cache_value = None
+        self.config_label.setText(
+            f"Configuration {int(self.data.kspace.configuration)} "
+            f"({self.data.kspace.configuration.name})"
+        )
+
+        if self.data.kspace._has_eV and self.data.eV.size > 1:
+            self.energy_group.setDisabled(False)
+            self._update_energy_controls()
+            self.width_spin.setRange(1, len(self.data.eV))
+        else:
+            if "eV" in self.data.coords and self.data["eV"].size == 1:
+                fixed_energy = float(self.data.eV)
+                self.center_spin.setRange(fixed_energy - 0.1, fixed_energy + 0.1)
+                self.center_spin.setValue(fixed_energy)
+            self.energy_group.setDisabled(True)
+
+        self.tool_status = status
+        self.sigInfoChanged.emit()
 
     def _binding_energy(self) -> npt.NDArray[np.floating]:
         if hasattr(self, "_offset_spins") and "wf" in self._offset_spins:

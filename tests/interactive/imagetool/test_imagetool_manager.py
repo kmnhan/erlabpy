@@ -572,6 +572,92 @@ def test_manager_replace(
         assert manager.get_imagetool(1).array_slicer.point_value(0) == 12.0
 
 
+def test_manager_childtool_source_updates(
+    qtbot,
+    accept_dialog,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        wrapper = manager._imagetool_wrappers[0]
+        uid, child = next(iter(wrapper._childtools.items()))
+        assert isinstance(child, DerivativeTool)
+        assert child.source_spec is not None
+
+        initial = test_data.transpose("eV", "alpha")
+        xr.testing.assert_identical(child.tool_data, initial)
+
+        replaced = test_data.copy(deep=True)
+        replaced.data = np.asarray(replaced.data) * 3
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            itool(replaced, manager=True, replace=0)
+
+        qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(child.tool_data, initial)
+
+        delegate = typing.cast(
+            "_ImageToolWrapperItemDelegate", manager.tree_view.itemDelegate()
+        )
+        model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+        manager.tree_view.expand(model._row_index(0))
+        index = model._row_index(uid)
+        manager.tree_view.scrollTo(index)
+        option = QtWidgets.QStyleOptionViewItem()
+        option.rect = manager.tree_view.visualRect(index)
+        option.font = manager.tree_view.font()
+        badge_rect, badge_text, _ = delegate._compute_child_status_info(option, child)
+        assert badge_rect is not None
+        assert badge_text == "Stale"
+        click_pos = badge_rect.center()
+        assert model._row_index(uid) == manager.tree_view.indexAt(click_pos)
+        global_click_pos = manager.tree_view.viewport().mapToGlobal(click_pos)
+
+        def _enable_auto_update(dialog: QtWidgets.QDialog) -> None:
+            dialog.auto_update_check.setChecked(True)  # type: ignore[attr-defined]
+
+        accept_dialog(
+            lambda: manager.tree_view.mouseReleaseEvent(
+                QtGui.QMouseEvent(
+                    QtCore.QEvent.Type.MouseButtonRelease,
+                    QtCore.QPointF(click_pos),
+                    QtCore.QPointF(global_click_pos),
+                    QtCore.Qt.MouseButton.LeftButton,
+                    QtCore.Qt.MouseButton.LeftButton,
+                    QtCore.Qt.KeyboardModifier.NoModifier,
+                )
+            ),
+            pre_call=_enable_auto_update,
+        )
+
+        assert child.source_state == "fresh"
+        assert child.source_auto_update is True
+        xr.testing.assert_identical(child.tool_data, replaced.transpose("eV", "alpha"))
+
+        replaced2 = replaced.copy(deep=True)
+        replaced2.data = np.asarray(replaced2.data) + 5
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            itool(replaced2, manager=True, replace=0)
+
+        qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
+        xr.testing.assert_identical(child.tool_data, replaced2.transpose("eV", "alpha"))
+
+
 def test_manager_reindex(
     qtbot,
     test_data,
@@ -1358,6 +1444,36 @@ def test_tool_namespace_get_data_item(
         xr.testing.assert_identical(
             namespace._get_data_item((slice(None), 0)), test_data[:, 0]
         )
+
+
+def test_tool_namespace_set_data_replaces_source(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        itool([test_data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+        updated = (test_data * 2).rename(test_data.name)
+
+        namespace.data = updated
+
+        xr.testing.assert_identical(parent_tool.slicer_area.data, updated)
+        qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
 
 
 def test_console_assignment_transformer_match_helpers() -> None:

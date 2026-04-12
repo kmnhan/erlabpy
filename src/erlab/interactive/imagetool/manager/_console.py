@@ -64,8 +64,7 @@ class ToolNamespace:
 
     @data.setter
     def data(self, value: xr.DataArray) -> None:
-        self.tool.slicer_area.set_data(value)
-        self.tool.slicer_area.sigDataEdited.emit()
+        self.tool.slicer_area.replace_source_data(value, emit_edited=True)
 
     def _get_data_item(self, key):
         """Return a subset of the tool data for rewritten console assignments."""

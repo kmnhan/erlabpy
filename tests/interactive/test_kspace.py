@@ -811,3 +811,34 @@ def test_get_bz_lines_uses_legacy_hv_path_for_scalar_other_axis(monkeypatch) -> 
     assert np.allclose(lines[0], expected_lines[0])
     assert np.allclose(vertices, expected_vertices)
     assert np.allclose(midpoints, expected_midpoints)
+
+
+def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.center_spin.setValue(float(data.eV.values[2]))
+    win.width_spin.setValue(3)
+    win.bounds_supergroup.setChecked(True)
+    win.resolution_supergroup.setChecked(True)
+    win.preview_symmetry_group.setChecked(True)
+    win.preview_symmetry_fold_spin.setValue(4)
+    win._offset_spins["delta"].setValue(5.0)
+    win._offset_spins["wf"].setValue(4.6)
+    if "beta" in win._offset_spins:
+        win._offset_spins["beta"].setValue(-1.5)
+    win.add_circle_btn.click()
+    win._roi_list[0].set_position((0.1, 0.2), 0.25)
+
+    status = win.tool_status
+    new_data = data.copy(deep=True)
+    new_data.data = np.asarray(new_data.data) * 1.1
+    win.update_data(new_data)
+
+    assert win.tool_status == status
+    xr.testing.assert_identical(win.tool_data, new_data)
+    assert win.images[0].data_array is not None
+    assert win.images[1].data_array is not None

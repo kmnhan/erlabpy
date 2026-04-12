@@ -1268,6 +1268,36 @@ def test_itool_load_compat(qtbot) -> None:
     win.close()
 
 
+def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
+    data = _TEST_DATA["2D"]
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    selection_spec = win.slicer_area.images[0].make_tool_source_spec(
+        transpose=True, squeeze=True
+    )
+    assert selection_spec["kind"] == "selection"
+    assert [op["op"] for op in selection_spec["operations"]] == [
+        "isel",
+        "sort_coord_order",
+        "transpose",
+        "squeeze",
+    ]
+
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
+        "full_data"
+    )
+    assert child.source_state == "fresh"
+
+    new_data = data.copy(deep=True)
+    new_data.data = np.asarray(new_data.data) * 2
+    win.slicer_area.set_data(new_data)
+    assert child.source_state == "fresh"
+
+
 def test_parse_input() -> None:
     data_1d = xr.DataArray(np.arange(5), dims=["x"])
     parsed = _parse_input(xr.Dataset({"data1d": data_1d, "data0d": 1}))
@@ -2399,6 +2429,31 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     )
 
     assert pyperclip.paste() == '.qsel.average("x")'
+    win.close()
+
+
+def test_itool_average_marks_child_tools_stale(qtbot, accept_dialog) -> None:
+    data = _TEST_DATA["2D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+    assert child.source_state == "fresh"
+
+    def _set_dialog_params(dialog: AverageDialog) -> None:
+        dialog.dim_checks["alpha"].setChecked(True)
+        dialog.new_window_check.setChecked(False)
+
+    with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
+        accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
+
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.qsel.average("alpha")
+    )
+    qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+
     win.close()
 
 

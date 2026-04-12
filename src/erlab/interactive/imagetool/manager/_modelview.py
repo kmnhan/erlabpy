@@ -75,6 +75,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
     watched_rect_hpad: int = 5
     watched_font_scale: float = 0.9
+    child_status_rect_hpad: int = 5
+    child_status_font_scale: float = 0.85
 
     def __init__(
         self, manager: ImageToolManager, parent: _ImageToolWrapperTreeView
@@ -407,6 +409,18 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         )
 
         selected: bool = QtWidgets.QStyle.StateFlag.State_Selected in option.state
+        child_tool: erlab.interactive.utils.ToolWindow | None = None
+        status_rect: QtCore.QRect | None = None
+        status_text: str | None = None
+        status_color: QtGui.QColor | None = None
+        try:
+            child_tool = self.manager.get_childtool(index.internalPointer())
+        except KeyError:
+            child_tool = None
+        else:
+            status_rect, status_text, status_color = self._compute_child_status_info(
+                option, child_tool
+            )
 
         if not is_editing:  # pragma: no branch
             role = (
@@ -420,7 +434,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             elided_text = QtGui.QFontMetrics(option.font).elidedText(
                 index.data(role=QtCore.Qt.ItemDataRole.DisplayRole),
                 view.textElideMode(),
-                option.rect.width(),
+                option.rect.width()
+                - (
+                    status_rect.width() + self.icon_right_pad
+                    if status_rect is not None
+                    else 0
+                ),
             )
             painter.drawText(
                 option.rect,
@@ -428,6 +447,29 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided_text,
             )
+            if status_rect and status_text and status_color:
+                _fill_rounded_rect(
+                    painter,
+                    status_rect,
+                    facecolor=option.palette.base(),
+                    edgecolor=status_color,
+                    linewidth=self.icon_border_width,
+                    radius=self.icon_corner_radius,
+                )
+                status_font = QtGui.QFont(option.font)
+                status_font.setPointSizeF(
+                    self._font_size * self.child_status_font_scale
+                )
+                painter.save()
+                painter.setFont(status_font)
+                painter.setPen(status_color)
+                painter.drawText(
+                    status_rect,
+                    QtCore.Qt.AlignmentFlag.AlignVCenter
+                    | QtCore.Qt.AlignmentFlag.AlignCenter,
+                    status_text,
+                )
+                painter.restore()
 
         # Show preview on hover
         if (
@@ -438,9 +480,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 or self._force_hover
             )
         ):
-            try:
-                child_tool = self.manager.get_childtool(index.internalPointer())
-            except KeyError:
+            if child_tool is None:
                 self.preview_popup.hide()
                 return
 
@@ -474,6 +514,32 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0)),
                 option,
             )
+
+    def _compute_child_status_info(
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        child_tool: erlab.interactive.utils.ToolWindow,
+    ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
+        match child_tool.source_state:
+            case "stale":
+                text = "Stale"
+                color = QtGui.QColor("#b26a00")
+            case "unavailable":
+                text = "Unavailable"
+                color = QtGui.QColor("#b24444")
+            case _:
+                return None, None, None
+
+        rect_size = self.icon_size + 2 * self.icon_inner_pad
+        rect_y = option.rect.center().y() - (rect_size // 2)
+        badge_font = QtGui.QFont(option.font)
+        badge_font.setPointSizeF(self._font_size * self.child_status_font_scale)
+        badge_width = (
+            QtGui.QFontMetrics(badge_font).boundingRect(text).width()
+            + self.child_status_rect_hpad * 2
+        )
+        rect_x = option.rect.right() - badge_width - self.icon_right_pad
+        return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
 
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
@@ -542,6 +608,26 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         watched_rect,
                     )
                     return True
+            elif isinstance(tool_wrapper, str):
+                try:
+                    child_tool = self.manager.get_childtool(tool_wrapper)
+                except KeyError:
+                    child_tool = None
+                if child_tool is not None:
+                    status_rect, _, _ = self._compute_child_status_info(
+                        option, child_tool
+                    )
+                    if status_rect and status_rect.contains(event.pos()):
+                        tooltip = (
+                            "Click to update this tool from the latest ImageTool data."
+                            if child_tool.source_state == "stale"
+                            else "Click to review why this tool cannot update from the "
+                            "current ImageTool data."
+                        )
+                        QtWidgets.QToolTip.showText(
+                            event.globalPos(), tooltip, view, status_rect
+                        )
+                        return True
 
         return super().helpEvent(event, view, option, index)
 
@@ -603,6 +689,8 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                         0,
                         self._row_index(tool_idx),
                     )
+            return QtCore.QModelIndex()
+        if index_or_uid not in self.manager._displayed_indices:
             return QtCore.QModelIndex()
         return self.index(self.manager._displayed_indices.index(index_or_uid), 0)
 
@@ -1168,7 +1256,8 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
 
     @QtCore.Slot()
     @QtCore.Slot(int)
-    def refresh(self, idx: int | None = None) -> None:
+    @QtCore.Slot(str)
+    def refresh(self, idx: int | str | None = None) -> None:
         """Trigger a refresh of the contents."""
         if idx is None:
             top = self._model.index(0, 0)
@@ -1176,10 +1265,32 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             if top.isValid() and bottom.isValid():  # pragma: no branch
                 self._model.dataChanged.emit(top, bottom)
         else:
-            if idx in self._model.manager._displayed_indices:
-                row_idx = self._model._row_index(idx)
-                if row_idx.isValid():  # pragma: no branch
-                    self._model.dataChanged.emit(row_idx, row_idx)
+            row_idx = self._model._row_index(idx)
+            if row_idx.isValid():  # pragma: no branch
+                self._model.dataChanged.emit(row_idx, row_idx)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        if event is not None and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            index = self.indexAt(event.pos())
+            if index.isValid() and isinstance(index.internalPointer(), str):
+                option = QtWidgets.QStyleOptionViewItem()
+                option.rect = self.visualRect(index)
+                option.font = self.font()
+                try:
+                    child_tool = self._model.manager.get_childtool(
+                        index.internalPointer()
+                    )
+                except KeyError:
+                    child_tool = None
+                if child_tool is not None:
+                    status_rect, _, _ = self._delegate._compute_child_status_info(
+                        option, child_tool
+                    )
+                    if status_rect and status_rect.contains(event.pos()):
+                        child_tool.show_source_update_dialog(parent=self._model.manager)
+                        event.accept()
+                        return
+        super().mouseReleaseEvent(event)
 
     def imagetool_added(self, index: int) -> None:
         """Update the list view when a new ImageTool is added to the manager.

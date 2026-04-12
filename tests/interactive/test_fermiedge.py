@@ -1,5 +1,6 @@
 import tempfile
 import time
+import typing
 
 import joblib
 import numpy as np
@@ -7,7 +8,7 @@ import pytest
 import scipy
 import xarray as xr
 import xarray_lmfit as xlm
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 from erlab.interactive.fermiedge import (
@@ -92,6 +93,49 @@ def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:
     assert y1 == pytest.approx(-0.5)
 
 
+def test_goldtool_update_data_invalidates_fit_and_can_refit(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win.params_edge.widgets["T (K)"].setValue(45.0)
+    degree_widget = typing.cast("QtWidgets.QSpinBox", win.params_poly.widgets["Degree"])
+    with QtCore.QSignalBlocker(win.params_poly):
+        degree_widget.setValue(3)
+    win.params_roi.modify_roi(x0=-8.0, x1=8.0, y0=-0.2, y1=0.1)
+    win.params_poly.setDisabled(False)
+    win.params_spl.setDisabled(False)
+    win.params_tab.setDisabled(False)
+    win.edge_center = gold.mean("eV")
+    win.edge_stderr = xr.ones_like(win.edge_center)
+    win.result = xr.Dataset()
+
+    called: list[bool] = []
+    monkeypatch.setattr(win, "perform_edge_fit", lambda: called.append(True))
+
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.05
+    win.update_data(new_gold)
+
+    assert win.params_edge.values["T (K)"] == pytest.approx(45.0)
+    assert win.params_poly.values["Degree"] == 3
+    assert win.result is None
+    assert win.params_tab.isEnabled() is False
+    assert not called
+
+    win.edge_center = new_gold.mean("eV")
+    win.edge_stderr = xr.ones_like(win.edge_center)
+    win.result = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+
+    newer_gold = new_gold.copy(deep=True)
+    newer_gold.data = np.asarray(newer_gold.data) * 1.02
+    win.update_data(newer_gold)
+
+    assert called == [True]
+
+
 def test_restool(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
@@ -173,6 +217,54 @@ def test_restool_timeout_cleans_up_worker(qtbot, monkeypatch) -> None:
     assert not win.live_check.isChecked()
     assert win._fit_thread is None
     assert win._result_ds is None
+
+
+def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win.x0_spin.setValue(-0.2)
+    win.x1_spin.setValue(0.2)
+    win.y0_spin.setValue(-10.0)
+    win.y1_spin.setValue(10.0)
+    win.live_check.setChecked(True)
+    win.temp_spin.setValue(90.0)
+    win.fix_temp_check.setChecked(False)
+    win.center_spin.setValue(-0.01)
+    win.fix_center_check.setChecked(True)
+    win.res_spin.setValue(0.015)
+    win.fix_res_check.setChecked(True)
+    win.slope_check.setChecked(False)
+    win.timeout_spin.setValue(2.5)
+    win.nfev_spin.setValue(250)
+    win.refit_on_source_update_check.setChecked(False)
+    win._result_ds = xr.Dataset()
+
+    called: list[bool] = []
+    monkeypatch.setattr(win, "do_fit", lambda: called.append(True))
+
+    status = win.tool_status
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.03
+    win.update_data(new_gold)
+
+    expected = status.model_copy(
+        update={"results": ("No fit results", "—", "—", "—", "—")}
+    )
+    assert win.tool_status == expected
+    assert win._result_ds is None
+    assert not called
+
+    win._result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+    newer_gold = new_gold.copy(deep=True)
+    newer_gold.data = np.asarray(newer_gold.data) * 1.01
+    win.update_data(newer_gold)
+
+    assert called == [True]
 
 
 def test_restool_fit_thread_loads_result_before_emit(monkeypatch) -> None:

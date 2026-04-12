@@ -1,5 +1,6 @@
 __all__ = ["goldtool", "restool"]
 
+import contextlib
 import importlib.resources
 import logging
 import os
@@ -363,6 +364,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         self.controls.addWidget(self.params_roi)
         self.controls.addWidget(self.params_edge)
+        self.refit_on_source_update_check = QtWidgets.QCheckBox(
+            "Refit on source update"
+        )
+        self.refit_on_source_update_check.setToolTip(
+            "If checked, rerun the edge fit when this tool refreshes from ImageTool."
+        )
+        self.controls.addWidget(self.refit_on_source_update_check)
 
         self.params_tab = QtWidgets.QTabWidget()
         self.params_tab.addTab(self.params_poly, "Polynomial")
@@ -441,6 +449,90 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
+
+    def _clear_edge_fit_results(self) -> None:
+        self.result = None
+        self._fit_task = None
+        self.progress.reset()
+        self.params_poly.setDisabled(True)
+        self.params_spl.setDisabled(True)
+        self.params_tab.setDisabled(True)
+        self.aw.axes[1].setVisible(False)
+        self.aw.hists[1].setVisible(False)
+        self.aw.axes[2].setVisible(False)
+        self.aw.hists[2].setVisible(False)
+        for scatter, errorbar, curve in zip(
+            self.scatterplots, self.errorbars, self.polycurves, strict=True
+        ):
+            scatter.setData(x=np.array([]), y=np.array([]))
+            errorbar.setData(
+                x=np.array([]), y=np.array([]), height=np.array([], dtype=float)
+            )
+            curve.setData(x=np.array([]), y=np.array([]))
+        with contextlib.suppress(AttributeError):
+            del self.edge_center
+        with contextlib.suppress(AttributeError):
+            del self.edge_stderr
+
+    def update_data(self, new_data: xr.DataArray) -> None:
+        had_fit = hasattr(self, "edge_center")
+        roi_limits = self.params_roi.roi_limits
+        tab_index = self.params_tab.currentIndex()
+        edge_values = dict(self.params_edge.values)
+        poly_values = dict(self.params_poly.values)
+        spline_values = dict(self.params_spl.values)
+        refit = self.refit_on_source_update_check.isChecked()
+
+        self._stop_server()
+
+        if new_data.ndim != 2 or "eV" not in new_data.dims:
+            raise ValueError("`data` must be a 2D DataArray with an `eV` dimension")
+        data = new_data if new_data.dims[0] == "eV" else new_data.copy().T
+
+        self._clear_edge_fit_results()
+        self.data = data
+        self._along_dim = str(self.data.dims[1])
+        self.aw.set_input(self.data)
+        self.aw.axes[0].autoRange()
+
+        roi_rect = self.aw.axes[0].getViewBox().itemBoundingRect(self.aw.images[0])
+        self.params_roi.roi.maxBounds = roi_rect
+        self.params_roi._x_decimals = erlab.utils.array.effective_decimals(
+            self.data[self._along_dim].values
+        )
+        self.params_roi._y_decimals = erlab.utils.array.effective_decimals(
+            self.data.eV.values
+        )
+        xm, ym, xM, yM = self.params_roi.max_bounds
+        for name in ("x0", "x1"):
+            spin = typing.cast(
+                "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+            )
+            spin.setRange(xm, xM)
+            spin.setDecimals(self.params_roi._x_decimals)
+        for name in ("y0", "y1"):
+            spin = typing.cast(
+                "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+            )
+            spin.setRange(ym, yM)
+            spin.setDecimals(self.params_roi._y_decimals)
+        self.params_roi.modify_roi(*roi_limits)
+        self.params_roi.update_pos()
+
+        with (
+            QtCore.QSignalBlocker(self.params_edge),
+            QtCore.QSignalBlocker(self.params_poly),
+            QtCore.QSignalBlocker(self.params_spl),
+            QtCore.QSignalBlocker(self.params_tab),
+        ):
+            self.params_edge.set_values(**edge_values)
+            self.params_poly.set_values(**poly_values)
+            self.params_spl.set_values(**spline_values)
+            self.params_tab.setCurrentIndex(tab_index)
+        self._toggle_fast()
+
+        if had_fit and refit:
+            self.perform_edge_fit()
 
     def _toggle_fast(self) -> None:
         self.params_edge.widgets["T (K)"].setDisabled(
@@ -790,6 +882,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         y0: float
         y1: float
         live_fit: bool
+        refit_on_source_update: bool
         temp: float
         fix_temp: bool
         center: float
@@ -857,6 +950,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             y0=self.y0_spin.value(),
             y1=self.y1_spin.value(),
             live_fit=self.live_check.isChecked(),
+            refit_on_source_update=self.refit_on_source_update_check.isChecked(),
             temp=self.temp_spin.value(),
             fix_temp=self.fix_temp_check.isChecked(),
             center=self.center_spin.value(),
@@ -887,6 +981,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.y0_spin.setValue(status.y0)
         self.y1_spin.setValue(status.y1)
         self.live_check.setChecked(status.live_fit)
+        self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
 
         self.temp_spin.setValue(status.temp)
         self.fix_temp_check.setChecked(status.fix_temp)
@@ -922,6 +1017,17 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             self,
         )
         self.setWindowTitle("")
+
+        self.refit_on_source_update_check = QtWidgets.QCheckBox(
+            "Refit on source update", self.groupBox_2
+        )
+        self.refit_on_source_update_check.setToolTip(
+            "If checked, rerun the resolution fit when this tool refreshes from "
+            "ImageTool."
+        )
+        typing.cast("QtWidgets.QGridLayout", self.groupBox_2.layout()).addWidget(
+            self.refit_on_source_update_check, 10, 0, 1, 4
+        )
 
         if data.dims.index("eV") != 1:
             data = data.T
@@ -1023,6 +1129,59 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._fit_signature_current: tuple[typing.Any, ...] | None = None
         self._fit_signature_displayed: tuple[typing.Any, ...] | None = None
 
+    def _configure_data(self, data: xr.DataArray) -> None:
+        if (data.ndim != 2) or ("eV" not in data.dims):
+            raise ValueError("Data must be 2D and have an 'eV' dimension.")
+        if data.dims.index("eV") != 1:
+            data = data.T
+
+        self.data = data
+        self.y_dim = str(data.dims[0])
+
+        x_coords = data["eV"].values
+        y_coords = data[self.y_dim].values
+
+        self._x_range = x_coords.min(), x_coords.max()
+        self._y_range = y_coords.min(), y_coords.max()
+
+        self._x_decimals = erlab.utils.array.effective_decimals(x_coords)
+        self._y_decimals = erlab.utils.array.effective_decimals(y_coords)
+
+        self.x0_spin.setRange(*self._x_range)
+        self.x1_spin.setRange(*self._x_range)
+        self.y0_spin.setRange(*self._y_range)
+        self.y1_spin.setRange(*self._y_range)
+        self.x0_spin.setDecimals(self._x_decimals)
+        self.x1_spin.setDecimals(self._x_decimals)
+        self.y0_spin.setDecimals(self._y_decimals)
+        self.y1_spin.setDecimals(self._y_decimals)
+        self.x0_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.x1_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.y0_spin.setSingleStep(10 ** -(self._y_decimals - 1))
+        self.y1_spin.setSingleStep(10 ** -(self._y_decimals - 1))
+
+        self.res_spin.setDecimals(self._x_decimals + 1)
+        self.res_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.center_spin.setRange(*self._x_range)
+        self.center_spin.setDecimals(self._x_decimals + 1)
+        self.center_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+
+        self.image.setDataArray(self.data, update_labels=True)
+        self.plot0.autoRange()
+        self.x_region.setBounds(self._x_range)
+        self.y_region.setBounds(self._y_range)
+
+    def _clear_fit_outputs(self) -> None:
+        self._result_ds = None
+        self._fit_signature_current = None
+        self._fit_signature_displayed = None
+        self.edc_fit.setData(x=[], y=[])
+        self.overview_label.setText("No fit results")
+        self.temp_val.setText("—")
+        self.center_val.setText("—")
+        self.res_val.setText("—")
+        self.redchi_val.setText("—")
+
     @property
     def _x_range_ui(self) -> tuple[float, float]:
         x0 = round(self.x0_spin.value(), self._x_decimals)
@@ -1078,6 +1237,20 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
                 event.ignore()
             return
         super().closeEvent(event)
+
+    def update_data(self, new_data: xr.DataArray) -> None:
+        had_fit = self._result_ds is not None
+        status = self.tool_status.model_copy(
+            update={"results": ("No fit results", "—", "—", "—", "—")}
+        )
+        self._cancel_fit(wait=True)
+        self._configure_data(new_data)
+        self._clear_fit_outputs()
+        self.tool_status = status
+        self.sigInfoChanged.emit()
+
+        if had_fit and self.refit_on_source_update_check.isChecked():
+            self.do_fit()
 
     def _update_edc(self) -> None:
         """Calculate averaged EDC and update the plot."""
