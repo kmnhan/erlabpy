@@ -2432,7 +2432,9 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     win.close()
 
 
-def test_itool_average_marks_child_tools_stale(qtbot, accept_dialog) -> None:
+def test_itool_average_marks_incompatible_child_tools_unavailable(
+    qtbot, accept_dialog
+) -> None:
     data = _TEST_DATA["2D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -2452,9 +2454,43 @@ def test_itool_average_marks_child_tools_stale(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None), data.qsel.average("alpha")
     )
-    qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+    qtbot.wait_until(lambda: child.source_state == "unavailable", timeout=5000)
 
     win.close()
+
+
+def test_itool_full_data_child_updates_follow_transposed_view(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy(deep=True)
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.transpose_main_image()
+    assert win.slicer_area.data.dims == ("eV", "alpha")
+
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+    xarray.testing.assert_identical(child.tool_data, win.slicer_area.data)
+
+    replaced = data.copy(deep=True)
+    replaced.data = np.asarray(replaced.data) * 2
+
+    with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
+        win.slicer_area.replace_source_data(replaced)
+
+    qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+    assert child._update_from_parent_source() is True
+    xarray.testing.assert_identical(child.tool_data, win.slicer_area.data)
+
+    child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+    replaced2 = replaced.copy(deep=True)
+    replaced2.data = np.asarray(replaced2.data) + 5
+
+    with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
+        win.slicer_area.replace_source_data(replaced2)
+
+    qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
+    xarray.testing.assert_identical(child.tool_data, win.slicer_area.data)
 
 
 def test_itool_coarsen(qtbot, accept_dialog) -> None:

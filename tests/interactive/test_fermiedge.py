@@ -243,8 +243,10 @@ def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -
     win.refit_on_source_update_check.setChecked(False)
     win._result_ds = xr.Dataset()
 
-    called: list[bool] = []
-    monkeypatch.setattr(win, "do_fit", lambda: called.append(True))
+    fit_inputs: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        win, "do_fit", lambda: fit_inputs.append(win.averaged_edc.copy(deep=True))
+    )
 
     status = win.tool_status
     new_gold = gold.copy(deep=True)
@@ -256,7 +258,11 @@ def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -
     )
     assert win.tool_status == expected
     assert win._result_ds is None
-    assert not called
+    xr.testing.assert_identical(
+        win.averaged_edc,
+        new_gold.sel({win.y_dim: slice(*win.y_range)}).mean(win.y_dim),
+    )
+    assert not fit_inputs
 
     win._result_ds = xr.Dataset()
     win.refit_on_source_update_check.setChecked(True)
@@ -264,7 +270,9 @@ def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -
     newer_gold.data = np.asarray(newer_gold.data) * 1.01
     win.update_data(newer_gold)
 
-    assert called == [True]
+    xr.testing.assert_identical(
+        fit_inputs[0], newer_gold.sel({win.y_dim: slice(*win.y_range)}).mean(win.y_dim)
+    )
 
 
 def test_restool_fit_thread_loads_result_before_emit(monkeypatch) -> None:

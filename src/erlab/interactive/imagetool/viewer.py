@@ -1025,6 +1025,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def data(self) -> xr.DataArray:
         return self.array_slicer._obj
 
+    def _tool_source_parent_data(self) -> xr.DataArray:
+        """Return the current slicer view used for source-bound child tools."""
+        return self.data.copy(deep=False)
+
     @staticmethod
     def _owned_values_copy(darr: xr.DataArray) -> typing.Any:
         """Return a writable owned copy of the underlying values buffer."""
@@ -1085,7 +1089,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
             if updated:
-                self.sigSourceDataReplaced.emit(self._data.copy(deep=False))
+                self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
 
     @property
@@ -1740,7 +1744,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self.flush_history()
         if source_replaced:
-            self.sigSourceDataReplaced.emit(self._data.copy(deep=False))
+            self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
 
     def replace_source_data(
         self,
@@ -2389,7 +2393,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 return
 
         if isinstance(widget, erlab.interactive.utils.ToolWindow):
-            widget.set_source_parent_fetcher(lambda: self._data.copy(deep=False))
+            widget.set_source_parent_fetcher(lambda: self._tool_source_parent_data())
             self.sigSourceDataReplaced.connect(widget.handle_parent_source_replaced)
 
         uid: str = str(uuid.uuid4())

@@ -1253,6 +1253,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._configure_data(new_data)
         self._clear_fit_outputs()
         self.tool_status = status
+        self._update_edc()
         self.sigInfoChanged.emit()
 
         if had_fit and self.refit_on_source_update_check.isChecked():

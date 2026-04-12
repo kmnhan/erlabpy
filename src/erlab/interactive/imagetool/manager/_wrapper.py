@@ -410,7 +410,7 @@ class _ImageToolWrapper(QtCore.QObject):
     @QtCore.Slot(object)
     def _handle_source_data_replaced(self, parent_data: object) -> None:
         if not isinstance(parent_data, xr.DataArray):
-            parent_data = self.slicer_area._data.copy(deep=False)
+            parent_data = self.slicer_area._tool_source_parent_data()
         for uid in list(self._childtool_indices):
             tool = self._childtools.get(uid)
             if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
@@ -427,7 +427,9 @@ class _ImageToolWrapper(QtCore.QObject):
         if not tool._tool_display_name:
             tool._tool_display_name = str(self.name)
 
-        tool.set_source_parent_fetcher(lambda: self.slicer_area._data.copy(deep=False))
+        tool.set_source_parent_fetcher(
+            lambda: self.slicer_area._tool_source_parent_data()
+        )
         tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(uid=u))
         tool.sigInfoChanged.connect(lambda u=uid: self.manager.tree_view.refresh(u))
         tool.destroyed.connect(lambda _=None, u=uid: self.manager._remove_childtool(u))

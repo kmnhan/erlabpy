@@ -658,6 +658,53 @@ def test_manager_childtool_source_updates(
         xr.testing.assert_identical(child.tool_data, replaced2.transpose("eV", "alpha"))
 
 
+def test_manager_full_data_childtool_updates_follow_transposed_view(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.transpose_main_image()
+        assert parent_tool.slicer_area.data.dims == ("eV", "alpha")
+
+        parent_tool.slicer_area.open_in_meshtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+        xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
+
+        replaced = test_data.copy(deep=True)
+        replaced.data = np.asarray(replaced.data) * 2
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            itool(replaced, manager=True, replace=0)
+
+        qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+        assert child._update_from_parent_source() is True
+        xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
+
+        child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+        replaced2 = replaced.copy(deep=True)
+        replaced2.data = np.asarray(replaced2.data) + 5
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            itool(replaced2, manager=True, replace=0)
+
+        qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
+        xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
+
+
 def test_manager_reindex(
     qtbot,
     test_data,
