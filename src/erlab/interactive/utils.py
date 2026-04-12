@@ -2726,7 +2726,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         if self._source_parent_fetcher is None:
             return False
         try:
-            resolved = self._resolve_source_data(self._source_parent_fetcher())
+            parent_data = self._source_parent_fetcher()
+        except Exception:
+            return False
+        try:
+            resolved = self._resolve_source_data(parent_data)
         except Exception:
             self._set_source_state("unavailable")
             return False

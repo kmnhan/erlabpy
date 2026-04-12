@@ -480,8 +480,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigDataEdited()
         Signal to track when the data has been modified by user actions.
     sigSourceDataReplaced()
-        Signal emitted when the underlying source data is replaced with a new
-        DataArray, such as file open, reload, or manager-driven replacement.
+        Signal emitted when the underlying source data is replaced or otherwise
+        changed at the source level, such as file open, reload, manager-driven
+        replacement, or in-place console edits.
     sigPointValueChanged(value)
         Signal emitted when the point value at the current cursor has been computed.
         Only emitted for dask-backed data.
@@ -1075,13 +1076,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if need_restore and not restored_obj:
             self._restore_obj_from_source(update=False)
 
+        updated = False
         try:
             self._data[key] = value
+            updated = True
         finally:
             self.array_slicer.clear_val_cache()
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
-            self.sigDataEdited.emit()
+            if updated:
+                self.sigSourceDataReplaced.emit(self._data.copy(deep=False))
+                self.sigDataEdited.emit()
 
     @property
     def undoable(self) -> bool:

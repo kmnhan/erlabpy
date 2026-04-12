@@ -1476,6 +1476,65 @@ def test_tool_namespace_set_data_replaces_source(
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
 
 
+def test_tool_namespace_set_data_item_marks_child_tools_stale(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        itool([test_data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+
+        namespace._set_data_item((0, 0), -5.0)
+
+        assert float(parent_tool.slicer_area._data.values[0, 0]) == -5.0
+        qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+
+
+def test_tool_namespace_set_data_item_failure_keeps_child_tools_fresh(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        itool([test_data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+
+        with pytest.raises(IndexError, match="too many indices"):
+            namespace._set_data_item((0, 0, 0), -5.0)
+
+        assert child.source_state == "fresh"
+        assert float(parent_tool.slicer_area._data.values[0, 0]) == 0.0
+
+
 def test_console_assignment_transformer_match_helpers() -> None:
     plain_name = typing.cast("ast.Expr", ast.parse("value").body[0]).value
     attr_without_subscript = typing.cast(

@@ -126,3 +126,64 @@ def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> N
 
     assert win.source_state == "unavailable"
     xr.testing.assert_identical(win.tool_data, data)
+
+
+def test_dtool_restored_source_binding_without_parent_stays_stale(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        auto_update=True,
+        state="stale",
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/tool_save.h5"
+        win.to_file(filename)
+
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, DerivativeTool)
+        assert win_restored.source_state == "stale"
+
+        assert win_restored._update_from_parent_source() is False
+        assert win_restored.source_state == "stale"
+
+
+def test_dtool_source_update_with_temporarily_missing_parent_stays_stale(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    updated = xr.DataArray(
+        np.arange(25, 50).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        auto_update=True,
+        state="stale",
+    )
+
+    available = False
+
+    def fetcher() -> xr.DataArray:
+        if not available:
+            raise LookupError("Parent tool is temporarily unavailable")
+        return updated
+
+    win.set_source_parent_fetcher(fetcher)
+
+    assert win._update_from_parent_source() is False
+    assert win.source_state == "stale"
+
+    available = True
+
+    assert win._update_from_parent_source() is True
+    assert win.source_state == "fresh"
+    xr.testing.assert_identical(win.tool_data, updated)
