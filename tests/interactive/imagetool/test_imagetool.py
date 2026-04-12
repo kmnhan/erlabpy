@@ -15,7 +15,7 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
@@ -1298,6 +1298,39 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     assert child.source_state == "fresh"
 
 
+def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+    monkeypatch.setattr(
+        type(image),
+        "_crop_indexers",
+        property(lambda self: {"alpha": slice(1, 4), "eV_idx": slice(0, 2)}),
+    )
+
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "queryKeyboardModifiers",
+        staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
+    )
+
+    spec = image.make_tool_source_spec()
+    sel_kwargs = erlab.interactive.utils._decode_tool_source_value(
+        next(op["kwargs"] for op in spec["operations"] if op["op"] == "sel")
+    )
+    isel_kwargs = erlab.interactive.utils._decode_tool_source_value(
+        [op["kwargs"] for op in spec["operations"] if op["op"] == "isel"][-1]
+    )
+
+    assert sel_kwargs == {"alpha": slice(1, 4)}
+    assert isel_kwargs == {"eV": slice(0, 2)}
+
+    win.close()
+
+
 def test_parse_input() -> None:
     data_1d = xr.DataArray(np.arange(5), dims=["x"])
     parsed = _parse_input(xr.Dataset({"data1d": data_1d, "data0d": 1}))
@@ -1801,6 +1834,23 @@ def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None
     win.close()
 
 
+def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = dtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(erlab.interactive, "ktool", lambda *args, **kwargs: child)
+
+    win.slicer_area.open_in_ktool()
+
+    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
+        "full_data"
+    )
+    assert child.source_state == "fresh"
+
+    win.close()
+
+
 def test_itool_open_in_ktool_uses_guideline_seed_on_alpha_beta_plane(
     qtbot, monkeypatch
 ) -> None:
@@ -1857,6 +1907,22 @@ def test_itool_open_in_ktool_ignores_non_alpha_beta_guidelines(
 
     assert captured["kwargs"]["initial_normal_emission"] == (4.0, 1.0)
     assert captured["kwargs"]["initial_delta"] is None
+
+    win.close()
+
+
+def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = dtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(erlab.interactive, "ftool", lambda *args, **kwargs: child)
+
+    image = win.slicer_area.images[0]
+    image.open_in_ftool()
+
+    assert child.source_spec == image.make_tool_source_spec(squeeze=True)
+    assert child.source_state == "fresh"
 
     win.close()
 

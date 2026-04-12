@@ -1,3 +1,4 @@
+import json
 import tempfile
 import time
 import typing
@@ -136,6 +137,19 @@ def test_goldtool_update_data_invalidates_fit_and_can_refit(
     assert called == [True]
 
 
+def test_goldtool_validate_update_data_transposes_and_rejects_invalid(
+    qtbot, gold
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    transposed = win.validate_update_data(gold.transpose(*reversed(gold.dims)))
+    assert transposed.dims[0] == "eV"
+
+    with pytest.raises(ValueError, match="2D DataArray with an `eV` dimension"):
+        win.validate_update_data(xr.DataArray(np.arange(5), dims=("alpha",)))
+
+
 def test_restool(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
@@ -166,7 +180,7 @@ def test_restool(qtbot) -> None:
         assert win.fit_params[k] == v
 
     def check_generated_code(w: ResolutionTool) -> None:
-        namespace = {"era": erlab.analysis, "gold": gold, "result": None}
+        namespace = {"era": erlab.analysis, "gold": gold, "data": gold, "result": None}
         code = "result = " + w.copy_code().replace("quick_resolution", "quick_fit")
         exec(code, {"__builtins__": {"slice": slice}}, namespace)  # noqa: S102
 
@@ -217,6 +231,32 @@ def test_restool_timeout_cleans_up_worker(qtbot, monkeypatch) -> None:
     assert not win.live_check.isChecked()
     assert win._fit_thread is None
     assert win._result_ds is None
+
+
+def test_restool_loads_legacy_saved_state_without_source_update_flag(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/tool_save.h5"
+        win.to_file(filename)
+
+        with xr.load_dataset(filename, engine="h5netcdf") as ds:
+            legacy_ds = ds.load()
+
+        legacy_state = json.loads(legacy_ds.attrs["tool_state"])
+        legacy_state.pop("refit_on_source_update", None)
+        legacy_ds.attrs["tool_state"] = json.dumps(legacy_state)
+        legacy_ds.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, ResolutionTool)
+        assert win_restored.tool_status.refit_on_source_update is False
+        assert win_restored.refit_on_source_update_check.isChecked() is False
 
 
 def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -> None:
@@ -273,6 +313,20 @@ def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -
     xr.testing.assert_identical(
         fit_inputs[0], newer_gold.sel({win.y_dim: slice(*win.y_range)}).mean(win.y_dim)
     )
+
+
+def test_restool_validate_update_data_transposes_and_rejects_invalid(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    transposed = win.validate_update_data(gold.transpose(*reversed(gold.dims)))
+    assert transposed.dims[-1] == "eV"
+
+    with pytest.raises(ValueError, match="2D and have an 'eV' dimension"):
+        win.validate_update_data(xr.DataArray(np.arange(5), dims=("alpha",)))
 
 
 def test_restool_fit_thread_loads_result_before_emit(monkeypatch) -> None:

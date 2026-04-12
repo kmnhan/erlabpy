@@ -575,6 +575,7 @@ def test_manager_replace(
 def test_manager_childtool_source_updates(
     qtbot,
     accept_dialog,
+    monkeypatch,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -623,6 +624,22 @@ def test_manager_childtool_source_updates(
         badge_rect, badge_text, _ = delegate._compute_child_status_info(option, child)
         assert badge_rect is not None
         assert badge_text == "Stale"
+        tooltip_text = None
+
+        def _show_tooltip(*args, **kwargs) -> None:
+            nonlocal tooltip_text
+            tooltip_text = args[1]
+
+        monkeypatch.setattr(QtWidgets.QToolTip, "showText", _show_tooltip)
+        help_event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip,
+            badge_rect.center(),
+            manager.tree_view.viewport().mapToGlobal(badge_rect.center()),
+        )
+        assert delegate.helpEvent(help_event, manager.tree_view, option, index)
+        assert (
+            tooltip_text == "Click to update this tool from the latest ImageTool data."
+        )
         click_pos = badge_rect.center()
         assert model._row_index(uid) == manager.tree_view.indexAt(click_pos)
         global_click_pos = manager.tree_view.viewport().mapToGlobal(click_pos)
@@ -705,6 +722,46 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
 
+def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        wrapper = manager._imagetool_wrappers[0]
+        _, child = next(iter(wrapper._childtools.items()))
+        updated = test_data.copy(deep=True)
+        updated.data = np.asarray(updated.data) * 7
+        handled: list[xr.DataArray] = []
+
+        monkeypatch.setattr(
+            wrapper.slicer_area, "_tool_source_parent_data", lambda: updated
+        )
+        monkeypatch.setattr(
+            child, "handle_parent_source_replaced", lambda data: handled.append(data)
+        )
+        wrapper._childtool_indices.append("missing")
+
+        wrapper._handle_source_data_replaced(object())
+
+        assert handled == [updated]
+
+
 def test_manager_reindex(
     qtbot,
     test_data,
@@ -753,6 +810,30 @@ def test_manager_server_show_remove(
         # Remove tool at index 0
         _remove_idx(0)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+
+def test_manager_data_watched_update_replaces_existing_tool_source_data(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_recv([test_data], {}, watched_var=("data", "kernel-0"))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = manager.get_imagetool(0)
+        updated = test_data.copy(deep=True)
+        updated.data = np.asarray(updated.data) * 11
+
+        with qtbot.wait_signal(tool.slicer_area.sigSourceDataReplaced):
+            manager._data_watched_update("data", "kernel-0", updated)
+
+        xr.testing.assert_identical(tool.slicer_area.data, updated)
 
 
 def test_manager_duplicate(

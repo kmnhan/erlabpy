@@ -306,6 +306,23 @@ def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     xr.testing.assert_identical(win.tool_data, data)
 
 
+def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    initial_receivers = win.receivers(win.sigFitFinished)
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+    win.update_data(updated)
+    assert win.receivers(win.sigFitFinished) == initial_receivers
+
+    win._do_transpose()
+    assert win.receivers(win.sigFitFinished) == initial_receivers
+
+
 def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

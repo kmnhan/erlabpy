@@ -1,8 +1,11 @@
 import tempfile
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import xarray as xr
+from pydantic import BaseModel
+from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool, dtool
@@ -218,3 +221,257 @@ def test_source_update_dialog_disables_auto_update_without_update_action(qtbot) 
 
     assert dialog.update_button.isEnabled() is False
     assert dialog.auto_update_check.isEnabled() is False
+
+
+def test_tool_source_spec_helpers_roundtrip_and_resolve_selection() -> None:
+    encoded = erlab.interactive.utils._encode_tool_source_value(
+        {
+            "outer": {
+                "sel": slice(0.5, 2.5),
+                "items": (slice(1, 4, 2), [np.int64(3)], {"beta": np.float64(1.5)}),
+            }
+        }
+    )
+
+    decoded = erlab.interactive.utils._decode_tool_source_value(encoded)
+    assert decoded == {
+        "outer": {
+            "sel": slice(0.5, 2.5),
+            "items": [slice(1, 4, 2), [3], {"beta": 1.5}],
+        }
+    }
+
+    parent = xr.DataArray(
+        np.arange(24).reshape((3, 4, 2)),
+        dims=("x", "y", "z"),
+        coords={"x": [0.0, 1.0, 2.0], "y": [10.0, 11.0, 12.0, 13.0], "z": [5.0, 6.0]},
+        name="data",
+    )
+
+    resolved_full = erlab.interactive.utils._resolve_tool_source_spec(
+        parent, erlab.interactive.utils.make_tool_source_spec("full_data")
+    )
+    xr.testing.assert_identical(resolved_full, parent)
+
+    resolved_qsel = erlab.interactive.utils._resolve_tool_source_spec(
+        parent,
+        erlab.interactive.utils.make_tool_source_spec(
+            "selection",
+            operations=[
+                {
+                    "op": "qsel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        {"x": 1.0, "x_width": 1.0}
+                    ),
+                }
+            ],
+        ),
+    )
+    xr.testing.assert_identical(resolved_qsel, parent.qsel(x=1.0, x_width=1.0))
+
+    resolved_selection = erlab.interactive.utils._resolve_tool_source_spec(
+        parent,
+        erlab.interactive.utils.make_tool_source_spec(
+            "selection",
+            operations=[
+                {
+                    "op": "isel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        {"x": slice(1, None), "z": 1}
+                    ),
+                },
+                {
+                    "op": "sel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        {"y": slice(11.0, 12.0)}
+                    ),
+                },
+                {"op": "sort_coord_order"},
+                {"op": "transpose", "dims": ["y", "x"]},
+            ],
+        ),
+    )
+    xr.testing.assert_identical(
+        resolved_selection,
+        parent.isel({"x": slice(1, None), "z": 1})
+        .sel({"y": slice(11.0, 12.0)})
+        .transpose("y", "x"),
+    )
+
+    resolved_squeezed = erlab.interactive.utils._resolve_tool_source_spec(
+        parent,
+        erlab.interactive.utils.make_tool_source_spec(
+            "selection",
+            operations=[
+                {
+                    "op": "isel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        {"z": 0}
+                    ),
+                },
+                {"op": "transpose"},
+                {"op": "squeeze"},
+            ],
+        ),
+    )
+    xr.testing.assert_identical(
+        resolved_squeezed, parent.isel({"z": 0}).transpose("y", "x").squeeze()
+    )
+
+    with pytest.raises(ValueError, match="Unsupported tool source kind"):
+        erlab.interactive.utils._resolve_tool_source_spec(parent, {"kind": "invalid"})
+
+    with pytest.raises(ValueError, match="Unsupported tool source operation"):
+        erlab.interactive.utils._resolve_tool_source_spec(
+            parent,
+            erlab.interactive.utils.make_tool_source_spec(
+                "selection", operations=[{"op": "invalid"}]
+            ),
+        )
+
+
+def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
+    class _DummyState(BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+            self._value = 0
+            self.fail_validate = False
+            self.fail_update = False
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState(value=self._value)
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            self._value = status.value
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+            if self.fail_validate:
+                raise ValueError("invalid update")
+            return super().validate_update_data(new_data)
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            if self.fail_update:
+                raise RuntimeError("update failed")
+            self._data = new_data
+
+    data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
+    updated = xr.DataArray(
+        np.arange(9, 18).reshape((3, 3)), dims=("x", "y"), name="data"
+    )
+    tool = _DummyTool(data)
+    qtbot.addWidget(tool)
+
+    original = QtWidgets.QLabel("original")
+    replacement = QtWidgets.QLabel("replacement")
+    tool.setCentralWidget(original)
+    assert tool.centralWidget() is original
+    tool.setCentralWidget(tool._tool_root_widget)
+    tool._tool_content_widget = None
+    assert tool.centralWidget() is tool._tool_root_widget
+    tool._tool_content_widget = original
+    tool.setCentralWidget(replacement)
+    tool.setCentralWidget(replacement)
+    assert tool.centralWidget() is replacement
+
+    spec = erlab.interactive.utils.make_tool_source_spec(
+        "selection",
+        operations=[
+            {
+                "op": "isel",
+                "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                    {"x": slice(0, 2)}
+                ),
+            }
+        ],
+    )
+    tool.set_source_binding(spec, auto_update=True, state="stale")
+    assert tool.has_source_binding is True
+    assert tool.source_status_text == "Source Update Available"
+    assert "Automatic updates are enabled." in tool._source_status_button.toolTip()
+    copied_spec = tool.source_spec
+    assert copied_spec is not None
+    copied_spec["kind"] = "changed"
+    assert tool.source_spec == spec
+
+    tool._set_source_state("unavailable")
+    assert tool.source_status_text == "Source Update Unavailable"
+    assert "can no longer update" in tool._source_status_button.toolTip()
+
+    tool.set_source_binding(None, auto_update=True, state="stale")
+    assert tool.source_spec is None
+    assert tool.has_source_binding is False
+    assert tool.source_status_text == ""
+    assert tool._source_status_bar.isHidden()
+
+    with pytest.raises(RuntimeError, match="not bound to an ImageTool source"):
+        tool._resolve_source_data(updated)
+
+    tool._set_source_state("fresh")
+    tool.handle_parent_source_replaced(updated)
+    assert tool.source_state == "fresh"
+
+    tool.set_source_binding({"kind": "selection", "operations": [{"op": "invalid"}]})
+    tool.set_source_parent_fetcher(lambda: updated)
+    assert tool._update_from_parent_source() is False
+    assert tool.source_state == "unavailable"
+
+    tool.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"), auto_update=True
+    )
+    tool.fail_validate = True
+    assert tool._update_from_parent_source() is False
+    assert tool.source_state == "unavailable"
+    tool.fail_validate = False
+
+    tool.fail_update = True
+    assert tool._update_from_parent_source() is False
+    assert tool.source_state == "unavailable"
+    tool.fail_update = False
+
+    assert tool._update_from_parent_source() is True
+    assert tool.source_state == "fresh"
+    xr.testing.assert_identical(tool.tool_data, updated)
+
+    tool.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"), auto_update=False
+    )
+    tool.handle_parent_source_replaced(updated * 2)
+    assert tool.source_state == "stale"
+
+    tool.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"), auto_update=True
+    )
+    tool.fail_validate = True
+    tool.handle_parent_source_replaced(updated)
+    assert tool.source_state == "unavailable"
+    tool.fail_validate = False
+
+    tool.fail_update = True
+    tool.handle_parent_source_replaced(updated)
+    assert tool.source_state == "unavailable"
+    tool.fail_update = False
+
+    bad_parent = SimpleNamespace(
+        kspace=SimpleNamespace(
+            _valid_offset_keys=(),
+            momentum_axes=(),
+            configuration=0,
+            _has_hv=False,
+        )
+    )
+    tool.set_source_binding({"kind": "selection", "operations": [{"op": "invalid"}]})
+    tool.handle_parent_source_replaced(bad_parent)
+    assert tool.source_state == "unavailable"

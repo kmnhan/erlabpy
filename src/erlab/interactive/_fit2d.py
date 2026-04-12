@@ -76,8 +76,6 @@ def _rebuild_ui(
                 # Rebuild UI and refresh views.
                 self._build_ui()
                 self.param_model.sigParamsChanged.connect(self._update_params_full)
-                self.sigFitFinished.connect(self._update_params_full)
-                self.sigFitFinished.connect(self._update_ds_full)
                 self._update_fit_curve()
                 self._write_history = True
                 self._write_state()
@@ -256,8 +254,6 @@ class Fit2DTool(Fit1DTool):
         )
 
         self.param_model.sigParamsChanged.connect(self._update_params_full)
-        self.sigFitFinished.connect(self._update_params_full)
-        self.sigFitFinished.connect(self._update_ds_full)
         self._refresh_contents_from_index()
         self._reset_history_stack()
 
@@ -285,6 +281,11 @@ class Fit2DTool(Fit1DTool):
 
     def _update_ds_full(self) -> None:
         self._result_ds_full[self._current_idx] = self._last_result_ds
+
+    def _ensure_fit_finished_connections(self) -> None:
+        super()._ensure_fit_finished_connections()
+        self._connect_fit_finished_once(self._update_params_full)
+        self._connect_fit_finished_once(self._update_ds_full)
 
     def _build_ui(self) -> None:
         super()._build_ui()

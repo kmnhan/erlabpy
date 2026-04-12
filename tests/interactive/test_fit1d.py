@@ -204,6 +204,20 @@ def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     xr.testing.assert_identical(win.tool_data, data)
 
 
+def test_fit1d_update_data_keeps_fit_finished_receivers_constant(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+
+    initial_receivers = win.receivers(win.sigFitFinished)
+
+    for scale in (1.1, 1.2, 1.3):
+        updated = data.copy(deep=True)
+        updated.data = np.asarray(data.data) * scale
+        win.update_data(updated)
+        assert win.receivers(win.sigFitFinished) == initial_receivers
+
+
 def test_parameter_table_model_and_delegate(qtbot) -> None:
     params = lmfit.Parameters()
     params.add("amp", value=1.0, min=-1.0, max=2.0, vary=True)

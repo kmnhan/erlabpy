@@ -866,6 +866,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         self._write_history = False
 
+    def _connect_fit_finished_once(self, slot: Callable[..., typing.Any]) -> None:
+        with contextlib.suppress(TypeError, RuntimeError):
+            self.sigFitFinished.disconnect(slot)
+        self.sigFitFinished.connect(slot)
+
+    def _ensure_fit_finished_connections(self) -> None:
+        self._connect_fit_finished_once(self._replace_last_state)
+
     def _build_ui(self) -> None:
         self.resize(987, 610)
 
@@ -1003,7 +1011,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.param_model.sigParamsChanged.connect(self._refresh_slider_from_model)
         self.param_model.sigParamsChanged.connect(self._mark_fit_stale)
         self.param_model.sigParamsChanged.connect(self._write_state)
-        self.sigFitFinished.connect(self._replace_last_state)
+        self._ensure_fit_finished_connections()
 
         self.param_view = QtWidgets.QTableView()
         self.param_view.setModel(self.param_model)

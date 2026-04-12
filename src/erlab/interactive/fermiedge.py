@@ -887,7 +887,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         y0: float
         y1: float
         live_fit: bool
-        refit_on_source_update: bool
+        refit_on_source_update: bool = False
         temp: float
         fix_temp: bool
         center: float

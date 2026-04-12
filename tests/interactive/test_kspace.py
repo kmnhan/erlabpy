@@ -842,3 +842,58 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
     xr.testing.assert_identical(win.tool_data, new_data)
     assert win.images[0].data_array is not None
     assert win.images[1].data_array is not None
+
+
+def test_ktool_update_data_with_single_energy_disables_energy_group(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    fixed_energy = float(data.eV.values[0])
+    assert win.energy_group.isEnabled() is False
+    assert win.center_spin.value() == pytest.approx(fixed_energy, abs=1e-3)
+    assert win.center_spin.minimum() == pytest.approx(fixed_energy - 0.1, abs=1e-3)
+    assert win.center_spin.maximum() == pytest.approx(fixed_energy + 0.1, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        (
+            "_valid_offset_keys",
+            ("delta",),
+            "incompatible offset coordinates",
+        ),
+        ("momentum_axes", ("kx",), "incompatible momentum axes"),
+        ("configuration", 999, "incompatible analyzer configuration"),
+        ("_has_hv", True, "incompatible photon-energy dimensions"),
+    ],
+)
+def test_ktool_validate_update_data_rejects_incompatible_metadata(
+    qtbot, anglemap, monkeypatch, field, value, match
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    fake_kspace = SimpleNamespace(
+        _valid_offset_keys=tuple(win.data.kspace._valid_offset_keys),
+        momentum_axes=tuple(win.data.kspace.momentum_axes),
+        configuration=int(win.data.kspace.configuration),
+        _has_hv=win.data.kspace._has_hv,
+    )
+    setattr(fake_kspace, field, value)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "parse_data",
+        lambda _: SimpleNamespace(kspace=fake_kspace),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        win.validate_update_data(object())
