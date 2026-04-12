@@ -436,9 +436,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
-        data = erlab.interactive.utils.parse_data(new_data)
-        if data.ndim != 2:
-            raise ValueError("Input DataArray must be 2D")
+        data = self.validate_update_data(new_data)
 
         self.data_has_nan = bool(data.isnull().any())
         if self.data_has_nan:
@@ -451,6 +449,12 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         self.__dict__.pop("processed_data", None)
         self.tool_status = status
         self.update_preprocess()
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if data.ndim != 2:
+            raise ValueError("Input DataArray must be 2D")
+        return data
 
     def copy_code(self) -> str:
         lines: list[str] = []

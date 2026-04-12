@@ -186,6 +186,24 @@ def test_fit1d_update_data_preserves_state_and_refit(
     assert called == [True]
 
 
+def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
+    data = _make_1d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    old_central = win.centralWidget()
+    bad_data = xr.DataArray(np.arange(6).reshape((2, 3)), dims=("y", "x"))
+
+    with pytest.raises(ValueError, match="1D DataArray"):
+        win.update_data(bad_data)
+
+    assert win.centralWidget() is old_central
+    assert old_central is not None
+    assert old_central.parent() is not None
+    xr.testing.assert_identical(win.tool_data, data)
+
+
 def test_parameter_table_model_and_delegate(qtbot) -> None:
     params = lmfit.Parameters()
     params.add("amp", value=1.0, min=-1.0, max=2.0, vary=True)

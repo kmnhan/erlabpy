@@ -128,6 +128,27 @@ def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> N
     xr.testing.assert_identical(win.tool_data, data)
 
 
+def test_dtool_full_data_source_update_marks_unavailable_for_incompatible_data(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        auto_update=False,
+    )
+
+    parent_data = xr.DataArray(np.arange(5), dims=("x",), name="data")
+    win.handle_parent_source_replaced(parent_data)
+
+    assert win.source_state == "unavailable"
+    xr.testing.assert_identical(win.tool_data, data)
+
+
 def test_dtool_restored_source_binding_without_parent_stays_stale(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
@@ -187,3 +208,13 @@ def test_dtool_source_update_with_temporarily_missing_parent_stays_stale(qtbot) 
     assert win._update_from_parent_source() is True
     assert win.source_state == "fresh"
     xr.testing.assert_identical(win.tool_data, updated)
+
+
+def test_source_update_dialog_disables_auto_update_without_update_action(qtbot) -> None:
+    dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
+        None, state="unavailable", auto_update=True
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.update_button.isEnabled() is False
+    assert dialog.auto_update_check.isEnabled() is False

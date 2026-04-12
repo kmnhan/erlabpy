@@ -288,6 +288,24 @@ def test_fit2d_update_data_resizes_slice_state_and_keeps_param_sync(
     assert win._params_full[win._current_idx]["n0"].value == pytest.approx(3.0)
 
 
+def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    old_central = win.centralWidget()
+    bad_data = _make_1d_data()
+
+    with pytest.raises(ValueError, match="2D DataArray"):
+        win.update_data(bad_data)
+
+    assert win.centralWidget() is old_central
+    assert old_central is not None
+    assert old_central.parent() is not None
+    xr.testing.assert_identical(win.tool_data, data)
+
+
 def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

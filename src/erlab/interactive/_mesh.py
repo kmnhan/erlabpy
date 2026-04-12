@@ -405,8 +405,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
-        if not all(dim in new_data.dims for dim in {"alpha", "eV"}):
-            raise ValueError("Input DataArray must have 'alpha' and 'eV' dimensions.")
+        new_data = self.validate_update_data(new_data)
 
         self._data = new_data
         self._corrected = None
@@ -427,6 +426,12 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         self.set_data_beforecalc(initial=True)
         self._update_target_pos()
         self.sigInfoChanged.emit()
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if not all(dim in data.dims for dim in {"alpha", "eV"}):
+            raise ValueError("Input DataArray must have 'alpha' and 'eV' dimensions.")
+        return data
 
     @QtCore.Slot()
     def _corr_itool(self) -> None:

@@ -1370,7 +1370,14 @@ class Fit2DTool(Fit1DTool):
         super()._mark_fit_fresh()
         self._update_full_fit_saveable()
 
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if data.ndim != 2:
+            raise ValueError("`data` must be a 2D DataArray")
+        return data
+
     def update_data(self, new_data: xr.DataArray) -> None:
+        new_data = self.validate_update_data(new_data)
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
@@ -1380,9 +1387,6 @@ class Fit2DTool(Fit1DTool):
         if old_cw is not None:
             old_cw.setParent(None)
             old_cw.deleteLater()
-
-        if new_data.ndim != 2:
-            raise ValueError("`data` must be a 2D DataArray")
 
         self._init_full_data_state(new_data, data_name=self._data_name_full)
         self._reset_fit_state(

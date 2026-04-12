@@ -802,19 +802,7 @@ class KspaceTool(KspaceToolGUI):
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
-        current_offset_keys = tuple(self.data.kspace._valid_offset_keys)
-        current_momentum_axes = tuple(self.data.kspace.momentum_axes)
-        current_configuration = int(self.data.kspace.configuration)
-        current_has_hv = self.data.kspace._has_hv
-
-        if tuple(new_data.kspace._valid_offset_keys) != current_offset_keys:
-            raise ValueError("Updated data has incompatible offset coordinates.")
-        if tuple(new_data.kspace.momentum_axes) != current_momentum_axes:
-            raise ValueError("Updated data has incompatible momentum axes.")
-        if int(new_data.kspace.configuration) != current_configuration:
-            raise ValueError("Updated data has incompatible analyzer configuration.")
-        if new_data.kspace._has_hv != current_has_hv:
-            raise ValueError("Updated data has incompatible photon-energy dimensions.")
+        new_data = self.validate_update_data(new_data)
 
         self.data = new_data.copy(deep=True)
         self._bz_cache_key = None
@@ -837,6 +825,23 @@ class KspaceTool(KspaceToolGUI):
 
         self.tool_status = status
         self.sigInfoChanged.emit()
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        current_offset_keys = tuple(self.data.kspace._valid_offset_keys)
+        current_momentum_axes = tuple(self.data.kspace.momentum_axes)
+        current_configuration = int(self.data.kspace.configuration)
+        current_has_hv = self.data.kspace._has_hv
+
+        if tuple(data.kspace._valid_offset_keys) != current_offset_keys:
+            raise ValueError("Updated data has incompatible offset coordinates.")
+        if tuple(data.kspace.momentum_axes) != current_momentum_axes:
+            raise ValueError("Updated data has incompatible momentum axes.")
+        if int(data.kspace.configuration) != current_configuration:
+            raise ValueError("Updated data has incompatible analyzer configuration.")
+        if data.kspace._has_hv != current_has_hv:
+            raise ValueError("Updated data has incompatible photon-energy dimensions.")
+        return data
 
     def _binding_energy(self) -> npt.NDArray[np.floating]:
         if hasattr(self, "_offset_spins") and "wf" in self._offset_spins:

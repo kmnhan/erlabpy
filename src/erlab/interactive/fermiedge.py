@@ -475,6 +475,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             del self.edge_stderr
 
     def update_data(self, new_data: xr.DataArray) -> None:
+        data = self.validate_update_data(new_data)
         had_fit = hasattr(self, "edge_center")
         roi_limits = self.params_roi.roi_limits
         tab_index = self.params_tab.currentIndex()
@@ -484,10 +485,6 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         refit = self.refit_on_source_update_check.isChecked()
 
         self._stop_server()
-
-        if new_data.ndim != 2 or "eV" not in new_data.dims:
-            raise ValueError("`data` must be a 2D DataArray with an `eV` dimension")
-        data = new_data if new_data.dims[0] == "eV" else new_data.copy().T
 
         self._clear_edge_fit_results()
         self.data = data
@@ -533,6 +530,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         if had_fit and refit:
             self.perform_edge_fit()
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if data.ndim != 2 or "eV" not in data.dims:
+            raise ValueError("`data` must be a 2D DataArray with an `eV` dimension")
+        if data.dims[0] != "eV":
+            data = data.copy().T
+        return data
 
     def _toggle_fast(self) -> None:
         self.params_edge.widgets["T (K)"].setDisabled(
@@ -1239,6 +1244,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         super().closeEvent(event)
 
     def update_data(self, new_data: xr.DataArray) -> None:
+        new_data = self.validate_update_data(new_data)
         had_fit = self._result_ds is not None
         status = self.tool_status.model_copy(
             update={"results": ("No fit results", "—", "—", "—", "—")}
@@ -1251,6 +1257,14 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
         if had_fit and self.refit_on_source_update_check.isChecked():
             self.do_fit()
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if (data.ndim != 2) or ("eV" not in data.dims):
+            raise ValueError("Data must be 2D and have an 'eV' dimension.")
+        if data.dims.index("eV") != 1:
+            data = data.T
+        return data
 
     def _update_edc(self) -> None:
         """Calculate averaged EDC and update the plot."""

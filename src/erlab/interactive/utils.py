@@ -784,6 +784,7 @@ class _ToolSourceUpdateDialog(QtWidgets.QDialog):
             ),
         )
         self.update_button.setEnabled(state == "stale")
+        self.auto_update_check.setEnabled(self.update_button.isEnabled())
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
         layout.addWidget(self.button_box)
@@ -2722,6 +2723,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             raise RuntimeError("Tool is not bound to an ImageTool source.")
         return _resolve_tool_source_spec(parent_data, self._source_spec)
 
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        return new_data
+
     def _update_from_parent_source(self) -> bool:
         if self._source_parent_fetcher is None:
             return False
@@ -2731,6 +2735,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return False
         try:
             resolved = self._resolve_source_data(parent_data)
+        except Exception:
+            self._set_source_state("unavailable")
+            return False
+
+        try:
+            resolved = self.validate_update_data(resolved)
         except Exception:
             self._set_source_state("unavailable")
             return False
@@ -2751,6 +2761,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return
         try:
             resolved = self._resolve_source_data(parent_data)
+        except Exception:
+            self._set_source_state("unavailable")
+            return
+
+        try:
+            resolved = self.validate_update_data(resolved)
         except Exception:
             self._set_source_state("unavailable")
             return

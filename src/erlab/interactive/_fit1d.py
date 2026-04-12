@@ -3342,7 +3342,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
 
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if data.ndim != 1:
+            raise ValueError("`data` must be a 1D DataArray")
+        return data
+
     def update_data(self, new_data: xr.DataArray) -> None:
+        new_data = self.validate_update_data(new_data)
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
