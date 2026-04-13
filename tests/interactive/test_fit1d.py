@@ -204,6 +204,33 @@ def test_fit1d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     xr.testing.assert_identical(win.tool_data, data)
 
 
+def test_fit1d_update_data_drops_missing_coord_backed_param_bindings(qtbot) -> None:
+    data = _make_1d_data().assign_coords(offset=1.25)
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    win.param_view.selectRow(0)
+    qtbot.waitUntil(lambda: win._current_row == 0)
+
+    param_name = win.param_model.param_name(0)
+    win._params_from_coord[param_name] = "offset"
+    win._params[param_name].value = float(data["offset"].values)
+    win._params[param_name].vary = False
+    win.param_model.set_params(win._params, win._params_from_coord)
+
+    value_index = win.param_model.index(0, 1)
+    assert not (win.param_model.flags(value_index) & QtCore.Qt.ItemFlag.ItemIsEditable)
+
+    new_data = data.drop_vars("offset")
+    win.update_data(new_data)
+
+    assert param_name not in win._params_from_coord
+    value_index = win.param_model.index(0, 1)
+    assert win.param_model.flags(value_index) & QtCore.Qt.ItemFlag.ItemIsEditable
+    assert win.param_mode_combo.currentText() == "Manual"
+
+
 def test_fit1d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
     data = _make_1d_data()
     win = erlab.interactive.ftool(data, execute=False)

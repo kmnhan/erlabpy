@@ -1878,12 +1878,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 self.normalize_check.setChecked(status.normalize_mean)
 
             self._slider_widths = dict(status.slider_widths)
-            self._params_from_coord = dict(status.params_from_coord)
 
             if status.params:
                 self._params = self._deserialize_params(status.params)
                 self._initial_params = self._params.copy()
-                self.param_model.set_params(self._params, self._params_from_coord)
+            self._params_from_coord = self._sanitize_params_from_coord(
+                status.params_from_coord
+            )
+            self.param_model.set_params(self._params, self._params_from_coord)
             self._refresh_slider_from_model()
             self._mark_fit_stale()
 
@@ -1895,6 +1897,19 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                     self.domain_min_spin.setValue(status.domain[0])
                     self.domain_max_spin.setValue(status.domain[1])
             self._domain_changed()
+
+    def _sanitize_params_from_coord(
+        self, params_from_coord: Mapping[str, str]
+    ) -> dict[str, str]:
+        """Drop coord-backed parameter bindings incompatible with current data."""
+        sanitized: dict[str, str] = {}
+        for param_name, coord_name in params_from_coord.items():
+            if param_name not in self._params or coord_name not in self._data.coords:
+                continue
+            if self._data.coords[coord_name].size != 1:
+                continue
+            sanitized[str(param_name)] = str(coord_name)
+        return sanitized
 
     def _schedule_table_width_init(self) -> None:
         if self._table_widths_initialized:

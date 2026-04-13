@@ -1247,6 +1247,29 @@ def test_image_slicer_area_history_and_manual_limits(qtbot):
     win.close()
 
 
+def test_itool_keeps_child_tool_registered_when_close_is_ignored(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = erlab.interactive.goldtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(child, "_stop_server", lambda: False)
+
+    win.slicer_area.add_tool_window(child)
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+
+    assert child.close() is False
+    assert len(win.slicer_area._associated_tools) == 1
+    assert next(iter(win.slicer_area._associated_tools.values())) is child
+    assert child.isVisible()
+
+    monkeypatch.setattr(child, "_stop_server", lambda: True)
+    assert child.close() is True
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 0, timeout=5000)
+    win.close()
+
+
 def test_itool_load_compat(qtbot) -> None:
     original = xr.DataArray(
         np.arange(25).reshape((5, 5)),

@@ -1528,7 +1528,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         with self._assoc_tools_lock:
             for tool in dict(self._associated_tools).values():
                 tool.close()
-                tool.deleteLater()
 
     @QtCore.Slot()
     @QtCore.Slot(tuple)
@@ -2403,11 +2402,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         old_close_event = widget.closeEvent
 
         def new_close_event(event: QtGui.QCloseEvent) -> None:
-            with self._assoc_tools_lock:
-                if uid in self._associated_tools:
-                    tool = self._associated_tools.pop(uid)
-                    tool.deleteLater()
             old_close_event(event)
+            if event.isAccepted():
+                with self._assoc_tools_lock:
+                    if uid in self._associated_tools:
+                        tool = self._associated_tools.pop(uid)
+                        tool.deleteLater()
 
         widget.closeEvent = new_close_event  # type: ignore[assignment]
         widget.show()
