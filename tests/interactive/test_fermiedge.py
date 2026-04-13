@@ -137,6 +137,103 @@ def test_goldtool_update_data_invalidates_fit_and_can_refit(
     assert called == [True]
 
 
+def test_goldtool_update_data_ignores_late_results_from_aborted_task(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _DummyTask:
+        def __init__(self) -> None:
+            self.aborted = False
+
+        def abort_fit(self) -> None:
+            self.aborted = True
+
+    stale_task = _DummyTask()
+    win._fit_task = stale_task
+
+    perform_called: list[bool] = []
+    monkeypatch.setattr(win, "perform_fit", lambda: perform_called.append(True))
+
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.01
+    win.update_data(new_gold)
+
+    assert stale_task.aborted is True
+    assert win._fit_task is None
+    assert not hasattr(win, "edge_center")
+    assert not perform_called
+
+    stale_center = gold.mean("eV")
+    stale_stderr = xr.ones_like(stale_center)
+    win.post_fit(stale_center, stale_stderr, task=stale_task)
+
+    assert not hasattr(win, "edge_center")
+    assert not perform_called
+
+
+def test_goldtool_update_data_defers_until_fit_worker_drains(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _DummyTask:
+        def __init__(self) -> None:
+            self.aborted = False
+
+        def abort_fit(self) -> None:
+            self.aborted = True
+
+    stale_task = _DummyTask()
+    win._fit_task = stale_task
+
+    active_counts = iter((1, 0))
+    monkeypatch.setattr(
+        win._threadpool,
+        "activeThreadCount",
+        lambda: next(active_counts, 0),
+    )
+
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.02
+    win.update_data(new_gold)
+
+    assert stale_task.aborted is True
+    assert win._pending_update_request is not None
+    xr.testing.assert_identical(win.data, gold)
+
+    win._pending_update_timer.stop()
+    win._flush_pending_update()
+
+    assert win._pending_update_request is None
+    xr.testing.assert_identical(win.data, new_gold)
+
+
+def test_goldtool_update_data_clamps_roi_to_non_empty_bounds(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    win.params_roi.modify_roi(x0=-12.0, x1=-8.0, y0=-0.45, y1=-0.3)
+    narrowed = gold.sel(alpha=slice(-2.5, 2.5), eV=slice(-0.1, 0.05))
+
+    win.update_data(narrowed)
+
+    x0, y0, x1, y1 = win.params_roi.roi_limits
+    xmin, ymin, xmax, ymax = win.params_roi.max_bounds
+    assert xmin <= x0 < x1 <= xmax
+    assert y0 < y1 <= ymax
+    assert y0 >= ymin - 1e-3
+
+    sel_x0, sel_y0, sel_x1, sel_y1 = win.roi_limits_ordered
+    selected = win.data.sel(
+        {win._along_dim: slice(sel_x0, sel_x1), "eV": slice(sel_y0, sel_y1)}
+    )
+    assert selected.sizes[win._along_dim] > 0
+    assert selected.sizes["eV"] > 0
+
+
 def test_goldtool_validate_update_data_transposes_and_rejects_invalid(
     qtbot, gold
 ) -> None:
