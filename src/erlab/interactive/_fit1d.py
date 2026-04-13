@@ -2577,22 +2577,27 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         if hasattr(thread, "setServiceLevel"):
             thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-        thread.finished.connect(self._finalize_fit_thread)
+        thread.finished.connect(lambda thread=thread: self._finalize_fit_thread(thread))
 
-        def _queue_success(result_ds: xr.Dataset) -> None:
-            self._queue_fit_action(lambda: on_success(result_ds))
+        def _queue_success(
+            result_ds: xr.Dataset, *, thread: _FitWorker = thread
+        ) -> None:
+            self._queue_fit_action(thread, lambda: on_success(result_ds))
 
-        def _queue_error(message: str) -> None:
+        def _queue_error(message: str, *, thread: _FitWorker = thread) -> None:
             self._queue_fit_action(
-                lambda: on_error(erlab.interactive.utils._format_traceback(message))
+                thread,
+                lambda: on_error(erlab.interactive.utils._format_traceback(message)),
             )
 
         thread.sigFinished.connect(_queue_success)
-        thread.sigTimedOut.connect(lambda: self._queue_fit_action(on_timeout))
+        thread.sigTimedOut.connect(
+            lambda thread=thread: self._queue_fit_action(thread, on_timeout)
+        )
         thread.sigErrored.connect(_queue_error)
         thread.sigCancelled.connect(
-            lambda: self._queue_fit_action(
-                self._fit_cancelled, allow_when_cancelled=True
+            lambda thread=thread: self._queue_fit_action(
+                thread, self._fit_cancelled, allow_when_cancelled=True
             )
         )
 
@@ -2602,10 +2607,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _queue_fit_action(
         self,
+        thread: _FitWorker,
         action: Callable[[], None],
         *,
         allow_when_cancelled: bool = False,
     ) -> None:
+        if self._fit_thread is not thread:
+            return
         if self._fit_cancel_requested and not allow_when_cancelled:
             return
         self._pending_fit_action = action
@@ -2613,8 +2621,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._pending_fit_action = None
             action()
 
-    def _finalize_fit_thread(self) -> None:
-        thread = self._fit_thread
+    def _finalize_fit_thread(self, thread: _FitWorker) -> None:
+        if self._fit_thread is not thread:
+            return
         action = self._pending_fit_action
         self._pending_fit_action = None
         self._fit_thread = None
@@ -2627,8 +2636,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_cancel_requested = False
         if action is not None:
             action()
-        if thread is not None:
-            thread.deleteLater()
+        thread.deleteLater()
 
     def _fit_cancelled(self) -> None:
         if self._fit_multi_total is not None:
@@ -3357,38 +3365,42 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             raise ValueError("`data` must be a 1D DataArray")
         return data
 
-    def update_data(self, new_data: xr.DataArray) -> None:
-        new_data = self.validate_update_data(new_data)
+    def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
+
+    def update_data(self, new_data: xr.DataArray) -> bool:
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
-        self._cancel_fit(wait=True, timeout_ms=None)
 
-        old_cw = self.centralWidget()
-        if old_cw is not None:
-            old_cw.setParent(None)
-            old_cw.deleteLater()
+        def _apply_update(validated: xr.DataArray) -> None:
+            old_cw = self.centralWidget()
+            if old_cw is not None:
+                old_cw.setParent(None)
+                old_cw.deleteLater()
 
-        self._reset_fit_state(
-            new_data,
-            self._model,
-            self._params.copy(),
-            data_name=self._data_name,
-            model_name=self._model_name,
-        )
-        self._build_ui()
-        with self._history_suppressed():
-            self.tool_status = status
-        self._set_fit_stats(None)
-        self._update_fit_curve()
-        self._write_history = True
-        self._reset_history_stack()
-        self._mark_fit_stale()
-        self.restoreGeometry(old_geom)
-        self.sigInfoChanged.emit()
+            self._reset_fit_state(
+                validated,
+                self._model,
+                self._params.copy(),
+                data_name=self._data_name,
+                model_name=self._model_name,
+            )
+            self._build_ui()
+            with self._history_suppressed():
+                self.tool_status = status
+            self._set_fit_stats(None)
+            self._update_fit_curve()
+            self._write_history = True
+            self._reset_history_stack()
+            self._mark_fit_stale()
+            self.restoreGeometry(old_geom)
+            self.sigInfoChanged.emit()
 
-        if had_fit and self.refit_on_source_update_check.isChecked():
-            self._run_fit()
+            if had_fit and self.refit_on_source_update_check.isChecked():
+                self._run_fit()
+
+        return self._perform_source_update(new_data, apply_update=_apply_update)
 
     def _show_warning(self, title: str, text: str) -> None:
         QtWidgets.QMessageBox.warning(self, title, text)
@@ -3411,15 +3423,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         super().closeEvent(event)
 
     def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
-        if self._fit_thread is not None:
-            self._fit_thread.cancel()
-            self._fit_thread.requestInterruption()
+        thread = self._fit_thread
+        if thread is not None:
+            thread.cancel()
+            thread.requestInterruption()
         self._fit_cancel_requested = True
         self.cancel_fit_button.setEnabled(False)
         self.cancel_fit_button.setText("Canceling...")
         self._pending_fit_action = None
-        if wait and self._fit_thread is not None:
-            if timeout_ms is None:
-                return self._fit_thread.wait()
-            return self._fit_thread.wait(timeout_ms)
+        if wait and thread is not None:
+            finished = thread.wait() if timeout_ms is None else thread.wait(timeout_ms)
+            if finished:
+                self._finalize_fit_thread(thread)
+            return finished
         return True

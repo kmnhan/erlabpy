@@ -20,6 +20,7 @@ import pathlib
 import re
 import sys
 import threading
+import time
 import traceback
 import types
 import typing
@@ -2460,6 +2461,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
+    For tools that support refreshing their data from an ImageTool source, subclasses
+    should also override the following hooks:
+
+    - `update_data` must apply replacement data to the existing window without
+      recreating it. Return `False` when the incoming data is recognized but cannot be
+      applied yet, so the tool remains marked as stale.
+
+    - `validate_update_data` can normalize or reject incoming source data before
+      `update_data` runs. Raise an exception to mark the source as unavailable.
+
+    - `_cancel_background_work` can stop worker threads or other asynchronous work
+      before `update_data` mutates the tool state. Override
+      `BACKGROUND_TASK_TIMEOUT_MS` as needed to change the default wait timeout.
+
     For full compatibility with the ImageTool manager, the following optional attributes
     or properties can also be set:
 
@@ -2479,6 +2494,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     """
 
     tool_name: str = "tool"
+    BACKGROUND_TASK_TIMEOUT_MS: typing.ClassVar[int] = 5000
     __tool_display_name: str = ""
 
     StateModel: type[M]
@@ -2534,11 +2550,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
 
     def centralWidget(self) -> QtWidgets.QWidget | None:
+        """Return the content widget shown below the source-status banner."""
         if self._tool_content_widget is not None:
             return self._tool_content_widget
         return QtWidgets.QMainWindow.centralWidget(self)
 
     def setCentralWidget(self, widget: QtWidgets.QWidget | None) -> None:
+        """Set the main content widget while preserving the source-status banner."""
         if widget is self._tool_root_widget:
             QtWidgets.QMainWindow.setCentralWidget(self, widget)
             return
@@ -2636,24 +2654,29 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     @property
     def source_spec(self) -> dict[str, typing.Any] | None:
+        """Return a detached copy of the current ImageTool source specification."""
         if self._source_spec is None:
             return None
         return json.loads(json.dumps(self._source_spec))
 
     @property
     def source_state(self) -> typing.Literal["fresh", "stale", "unavailable"]:
+        """Return whether the bound ImageTool source is fresh, stale, or unavailable."""
         return self._source_state
 
     @property
     def source_auto_update(self) -> bool:
+        """Return whether compatible source changes should be applied automatically."""
         return self._source_auto_update
 
     @property
     def has_source_binding(self) -> bool:
+        """Return `True` when this tool is bound to ImageTool source data."""
         return self._source_spec is not None
 
     @property
     def source_status_text(self) -> str:
+        """Return the status label shown for non-fresh source bindings."""
         if self._source_state == "stale":
             return "Source Update Available"
         if self._source_state == "unavailable":
@@ -2667,6 +2690,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         auto_update: bool = False,
         state: typing.Literal["fresh", "stale", "unavailable"] = "fresh",
     ) -> None:
+        """Bind this tool to an ImageTool source specification and status state."""
         self._source_spec = (
             json.loads(json.dumps(source_spec)) if source_spec is not None else None
         )
@@ -2676,9 +2700,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     def set_source_parent_fetcher(
         self, fetcher: Callable[[], xr.DataArray] | None
     ) -> None:
+        """Set the callback used to fetch the latest parent ImageTool data."""
         self._source_parent_fetcher = fetcher
 
     def _set_source_auto_update(self, value: bool) -> None:
+        """Update the auto-refresh flag and notify manager-facing UI state."""
         self._source_auto_update = bool(value)
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
@@ -2686,11 +2712,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     def _set_source_state(
         self, state: typing.Literal["fresh", "stale", "unavailable"]
     ) -> None:
+        """Update the source state, refresh the banner, and emit info changes."""
         self._source_state = state
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
 
     def _refresh_source_status_widget(self) -> None:
+        """Refresh the inline banner that reports source update availability."""
         if self._source_spec is None or self._source_state == "fresh":
             self._source_status_bar.hide()
             self._source_status_button.setToolTip("")
@@ -2725,14 +2753,73 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self._source_status_bar.show()
 
     def _resolve_source_data(self, parent_data: xr.DataArray) -> xr.DataArray:
+        """Resolve the current source specification against replacement parent data."""
         if self._source_spec is None:
             raise RuntimeError("Tool is not bound to an ImageTool source.")
         return _resolve_tool_source_spec(parent_data, self._source_spec)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        """Validate or normalize source data before `update_data` consumes it.
+
+        Subclasses can override this to enforce dimension, coordinate, or metadata
+        requirements for refreshed source data. Raise an exception to mark the source as
+        unavailable.
+        """
         return new_data
 
+    def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        """Stop any running background work before mutating the tool state.
+
+        Subclasses should override this when source updates must wait for worker
+        shutdown before tearing down widgets or replacing internal state.
+        """
+        return True
+
+    def _perform_source_update(
+        self,
+        new_data: xr.DataArray,
+        *,
+        apply_update: Callable[[xr.DataArray], None],
+        timeout_ms: int | None = None,
+    ) -> bool:
+        """Run a source update without tearing down the UI while workers are alive."""
+        validated = self.validate_update_data(new_data)
+        if timeout_ms is None:
+            timeout_ms = self.BACKGROUND_TASK_TIMEOUT_MS
+        if not self._cancel_background_work(timeout_ms=timeout_ms):
+            logger.warning(
+                "Timed out waiting for background work to stop while updating %s",
+                self.tool_name,
+            )
+            return False
+        apply_update(validated)
+        return True
+
+    @staticmethod
+    def _wait_for_threadpool(
+        threadpool: QtCore.QThreadPool,
+        *,
+        timeout_ms: int,
+        poll_interval_ms: int = 100,
+    ) -> bool:
+        """Wait for a QThreadPool to quiesce within a bounded timeout."""
+        if threadpool.activeThreadCount() == 0:
+            return True
+
+        if not hasattr(
+            threadpool, "waitForDone"
+        ):  # pragma: no cover - Qt 6.8+ has waitForDone
+            deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+            while threadpool.activeThreadCount() > 0:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                if remaining_ms <= 0:
+                    return False
+                QtCore.QThread.msleep(min(poll_interval_ms, remaining_ms))
+            return True
+        return bool(threadpool.waitForDone(timeout_ms))
+
     def _update_from_parent_source(self) -> bool:
+        """Fetch the latest parent data and apply it through `update_data`."""
         if self._source_parent_fetcher is None:
             return False
         try:
@@ -2766,6 +2853,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         return True
 
     def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> None:
+        """React to replacement of the parent ImageTool data source."""
         if self._source_spec is None:
             return
         try:
@@ -2800,6 +2888,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None
     ) -> int:
+        """Show the source update dialog and apply the user's selection."""
         if self._source_spec is None or self._source_state == "fresh":
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
@@ -2816,6 +2905,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         return result
 
     def update_data(self, new_data: xr.DataArray) -> bool | None:
+        """Apply refreshed source data to the existing tool window.
+
+        Subclasses must override this when they support ImageTool source updates. Return
+        `False` to leave the tool marked as stale when the new data is recognized but
+        cannot be applied immediately.
+        """
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement update_data() to support "
             "ImageTool source updates."

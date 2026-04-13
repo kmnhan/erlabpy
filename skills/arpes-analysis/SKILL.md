@@ -57,6 +57,8 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,
   `show_in_manager`, `load_in_manager`, or `workflow-bridge` for notebook and
   interactive-workflow questions.
+- Search `interactive-tool-authoring`, `ToolWindow`, `tool_status`, or
+  `update_data` for contributor questions about adding new interactive tools.
 - Search `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`,
   or `plot_bz` for plotting questions.
 

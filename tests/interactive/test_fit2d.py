@@ -349,6 +349,48 @@ def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     xr.testing.assert_identical(win.tool_data, data)
 
 
+def test_fit2d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _StuckThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def isRunning(self) -> bool:
+            return True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return False
+
+    stuck_thread = _StuckThread()
+    win._fit_thread = stuck_thread  # type: ignore[assignment]
+    old_central = win.centralWidget()
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+
+    assert win.update_data(updated) is False
+    assert stuck_thread.cancel_called
+    assert stuck_thread.interrupted
+    assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
+    assert win.centralWidget() is old_central
+    assert old_central is not None
+    assert old_central.parent() is not None
+    xr.testing.assert_identical(win.tool_data, data)
+
+
 def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
@@ -364,6 +406,59 @@ def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None
 
     win._do_transpose()
     assert win.receivers(win.sigFitFinished) == initial_receivers
+
+
+def test_fit2d_update_data_auto_refit_after_waiting_cancelled_thread(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _FinishedThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+            self.deleted = False
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return True
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    old_thread = _FinishedThread()
+    win._fit_thread = old_thread  # type: ignore[assignment]
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+
+    started: list[bool] = []
+
+    def _start_fit_worker(*args, **kwargs) -> bool:
+        started.append(True)
+        assert win._fit_thread is None
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+
+    assert win.update_data(updated) is True
+    assert started == [True]
+    assert old_thread.cancel_called
+    assert old_thread.interrupted
+    assert old_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
+    assert old_thread.deleted is True
 
 
 def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:

@@ -879,24 +879,25 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         erlab.interactive.utils.copy_to_clipboard(code_str)
         return code_str
 
-    def _stop_server(self) -> None:
+    def _stop_server(self) -> bool:
         """Stop the fitter thread properly."""
         self._pending_update_request = None
         self._pending_update_timer.stop()
         self._abort_fit_task()
-        if self._threadpool.activeThreadCount():
-            if hasattr(self._threadpool, "waitForDone"):  # Qt 6.8+
-                self._threadpool.waitForDone()
-            else:  # pragma: no cover
-                import contextlib
-
-                with contextlib.suppress(KeyboardInterrupt):
-                    while self._threadpool.activeThreadCount() > 0:
-                        QtCore.QThread.msleep(100)
+        return self._wait_for_threadpool(
+            self._threadpool,
+            timeout_ms=self.BACKGROUND_TASK_TIMEOUT_MS,
+        )
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Overridden close event to ensure proper cleanup."""
-        self._stop_server()
+        if not self._stop_server():
+            logger.warning(
+                "Gold fit worker did not stop within timeout; aborting window close"
+            )
+            if event is not None:
+                event.ignore()
+            return
         super().closeEvent(event)
 
 
@@ -1318,16 +1319,18 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         return self._fit_thread is not None
 
     def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
-        if self._fit_thread is not None:
-            self._fit_thread.cancel()
-            self._fit_thread.requestInterruption()
+        thread = self._fit_thread
+        if thread is not None:
+            thread.cancel()
+            thread.requestInterruption()
         self._fit_cancel_requested = True
         self._fit_queued = False
         self._pending_fit_action = None
-        if wait and self._fit_thread is not None:
-            if timeout_ms is None:
-                return self._fit_thread.wait()
-            return self._fit_thread.wait(timeout_ms)
+        if wait and thread is not None:
+            finished = thread.wait() if timeout_ms is None else thread.wait(timeout_ms)
+            if finished:
+                self._finalize_fit_thread(thread)
+            return finished
         return True
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
@@ -1341,21 +1344,26 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             return
         super().closeEvent(event)
 
-    def update_data(self, new_data: xr.DataArray) -> None:
-        new_data = self.validate_update_data(new_data)
+    def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
+
+    def update_data(self, new_data: xr.DataArray) -> bool:
         had_fit = self._result_ds is not None
         status = self.tool_status.model_copy(
             update={"results": ("No fit results", "—", "—", "—", "—")}
         )
-        self._cancel_fit(wait=True, timeout_ms=None)
-        self._configure_data(new_data)
-        self._clear_fit_outputs()
-        self.tool_status = status
-        self._update_edc()
-        self.sigInfoChanged.emit()
 
-        if had_fit and self.refit_on_source_update_check.isChecked():
-            self.do_fit()
+        def _apply_update(validated: xr.DataArray) -> None:
+            self._configure_data(validated)
+            self._clear_fit_outputs()
+            self.tool_status = status
+            self._update_edc()
+            self.sigInfoChanged.emit()
+
+            if had_fit and self.refit_on_source_update_check.isChecked():
+                self.do_fit()
+
+        return self._perform_source_update(new_data, apply_update=_apply_update)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -1448,10 +1456,13 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
     def _queue_fit_action(
         self,
+        thread: ResolutionFitThread,
         action: Callable[[], None],
         *,
         allow_when_cancelled: bool = False,
     ) -> None:
+        if self._fit_thread is not thread:
+            return
         if self._fit_cancel_requested and not allow_when_cancelled:
             return
         self._pending_fit_action = action
@@ -1459,8 +1470,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             self._pending_fit_action = None
             action()
 
-    def _finalize_fit_thread(self) -> None:
-        thread = self._fit_thread
+    def _finalize_fit_thread(self, thread: ResolutionFitThread) -> None:
+        if self._fit_thread is not thread:
+            return
         action = self._pending_fit_action
         self._pending_fit_action = None
         self._fit_thread = None
@@ -1471,8 +1483,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         if self._fit_queued and not was_cancelled:
             self._fit_queued = False
             self._start_fit_worker()
-        if thread is not None:
-            thread.deleteLater()
+        thread.deleteLater()
 
     def _start_fit_worker(self) -> bool:
         if self._fit_thread is not None:
@@ -1489,26 +1500,27 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         )
         if hasattr(thread, "setServiceLevel"):
             thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-        thread.finished.connect(self._finalize_fit_thread)
+        thread.finished.connect(lambda thread=thread: self._finalize_fit_thread(thread))
 
         thread.sigFinished.connect(
-            lambda result_ds, fit_time: self._queue_fit_action(
-                lambda: self._handle_fit_success(result_ds, fit_time, fit_signature)
+            lambda result_ds, fit_time, thread=thread: self._queue_fit_action(
+                thread,
+                lambda: self._handle_fit_success(result_ds, fit_time, fit_signature),
             )
         )
         thread.sigTimedOut.connect(
-            lambda elapsed: self._queue_fit_action(
-                lambda: self._handle_fit_timeout(elapsed, fit_signature)
+            lambda elapsed, thread=thread: self._queue_fit_action(
+                thread, lambda: self._handle_fit_timeout(elapsed, fit_signature)
             )
         )
         thread.sigErrored.connect(
-            lambda message: self._queue_fit_action(
-                lambda: self._handle_fit_error(message, fit_signature)
+            lambda message, thread=thread: self._queue_fit_action(
+                thread, lambda: self._handle_fit_error(message, fit_signature)
             )
         )
         thread.sigCancelled.connect(
-            lambda: self._queue_fit_action(
-                self._handle_fit_cancelled, allow_when_cancelled=True
+            lambda thread=thread: self._queue_fit_action(
+                thread, self._handle_fit_cancelled, allow_when_cancelled=True
             )
         )
 

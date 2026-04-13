@@ -1392,41 +1392,42 @@ class Fit2DTool(Fit1DTool):
             raise ValueError("`data` must be a 2D DataArray")
         return data
 
-    def update_data(self, new_data: xr.DataArray) -> None:
-        new_data = self.validate_update_data(new_data)
+    def update_data(self, new_data: xr.DataArray) -> bool:
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
-        self._cancel_fit(wait=True, timeout_ms=None)
 
-        old_cw = self.centralWidget()
-        if old_cw is not None:
-            old_cw.setParent(None)
-            old_cw.deleteLater()
+        def _apply_update(validated: xr.DataArray) -> None:
+            old_cw = self.centralWidget()
+            if old_cw is not None:
+                old_cw.setParent(None)
+                old_cw.deleteLater()
 
-        self._init_full_data_state(new_data, data_name=self._data_name_full)
-        self._reset_fit_state(
-            self._data_full.isel({self._y_dim_name: self._current_idx}),
-            self._model,
-            self._params.copy(),
-            data_name=self._data_name,
-            model_name=self._model_name,
-        )
-        self._build_ui()
-        self.param_model.sigParamsChanged.connect(self._update_params_full)
-        with self._history_suppressed():
-            self.tool_status = status
-        self._refresh_main_image()
-        self._refresh_contents_from_index()
-        self._update_param_plot()
-        self._write_history = True
-        self._reset_history_stack()
-        self._mark_fit_stale()
-        self.restoreGeometry(old_geom)
-        self.sigInfoChanged.emit()
+            self._init_full_data_state(validated, data_name=self._data_name_full)
+            self._reset_fit_state(
+                self._data_full.isel({self._y_dim_name: self._current_idx}),
+                self._model,
+                self._params.copy(),
+                data_name=self._data_name,
+                model_name=self._model_name,
+            )
+            self._build_ui()
+            self.param_model.sigParamsChanged.connect(self._update_params_full)
+            with self._history_suppressed():
+                self.tool_status = status
+            self._refresh_main_image()
+            self._refresh_contents_from_index()
+            self._update_param_plot()
+            self._write_history = True
+            self._reset_history_stack()
+            self._mark_fit_stale()
+            self.restoreGeometry(old_geom)
+            self.sigInfoChanged.emit()
 
-        if had_fit and self.refit_on_source_update_check.isChecked():
-            self._run_fit()
+            if had_fit and self.refit_on_source_update_check.isChecked():
+                self._run_fit()
+
+        return self._perform_source_update(new_data, apply_update=_apply_update)
 
     def _update_full_fit_saveable(self) -> None:
         can_save: bool = self._fit_is_current and not any(

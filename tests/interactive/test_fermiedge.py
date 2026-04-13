@@ -253,6 +253,24 @@ def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
     xr.testing.assert_identical(win.data, new_gold)
 
 
+def test_goldtool_close_event_ignored_if_threadpool_does_not_quiesce(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    monkeypatch.setattr(
+        type(win),
+        "_wait_for_threadpool",
+        staticmethod(lambda *args, **kwargs: False),
+    )
+
+    event = QtGui.QCloseEvent()
+    assert event.isAccepted()
+    win.closeEvent(event)
+    assert not event.isAccepted()
+
+
 def test_goldtool_update_data_clamps_roi_to_non_empty_bounds(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
@@ -452,6 +470,133 @@ def test_restool_update_data_invalidates_fit_and_can_refit(qtbot, monkeypatch) -
     xr.testing.assert_identical(
         fit_inputs[0], newer_gold.sel({win.y_dim: slice(*win.y_range)}).mean(win.y_dim)
     )
+
+
+def test_restool_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+    original = win.tool_data.copy(deep=True)
+
+    class _StuckThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def isRunning(self) -> bool:
+            return True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return False
+
+    stuck_thread = _StuckThread()
+    win._fit_thread = stuck_thread  # type: ignore[assignment]
+
+    updated = gold.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.01
+
+    assert win.update_data(updated) is False
+    assert stuck_thread.cancel_called
+    assert stuck_thread.interrupted
+    assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
+    xr.testing.assert_identical(win.tool_data, original)
+    win._fit_thread = None
+
+
+def test_restool_update_data_auto_refit_after_waiting_cancelled_thread(
+    qtbot, monkeypatch
+) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _FinishedThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+            self.deleted = False
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return True
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    old_thread = _FinishedThread()
+    win._fit_thread = old_thread  # type: ignore[assignment]
+    win._result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+
+    started: list[bool] = []
+
+    def _start_fit_worker() -> bool:
+        started.append(True)
+        assert win._fit_thread is None
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    updated = gold.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.01
+
+    assert win.update_data(updated) is True
+    assert started == [True]
+    assert old_thread.cancel_called
+    assert old_thread.interrupted
+    assert old_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
+    assert old_thread.deleted is True
+
+
+def test_restool_queue_fit_action_ignores_stale_thread(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _ThreadPlaceholder:
+        def cancel(self) -> None:
+            return
+
+        def requestInterruption(self) -> None:
+            return
+
+        def wait(self, timeout_ms: int) -> bool:
+            return True
+
+        def deleteLater(self) -> None:
+            return
+
+    stale_thread = _ThreadPlaceholder()
+    current_thread = _ThreadPlaceholder()
+    win._fit_thread = typing.cast("typing.Any", current_thread)
+
+    called: list[str] = []
+    win._queue_fit_action(
+        typing.cast("typing.Any", stale_thread), lambda: called.append("stale")
+    )
+    assert called == []
+    assert win._pending_fit_action is None
 
 
 def test_restool_validate_update_data_transposes_and_rejects_invalid(qtbot) -> None:
@@ -743,6 +888,7 @@ def test_restool_cancel_fit_waits_without_timeout(qtbot) -> None:
             self.cancel_called = False
             self.interrupted = False
             self.wait_args: tuple[object, ...] | None = None
+            self.deleted = False
 
         def cancel(self) -> None:
             self.cancel_called = True
@@ -757,6 +903,9 @@ def test_restool_cancel_fit_waits_without_timeout(qtbot) -> None:
             self.wait_args = args
             return True
 
+        def deleteLater(self) -> None:
+            self.deleted = True
+
     dummy_thread = _DummyThread()
     win._fit_thread = dummy_thread  # type: ignore[assignment]
 
@@ -764,6 +913,7 @@ def test_restool_cancel_fit_waits_without_timeout(qtbot) -> None:
     assert dummy_thread.cancel_called
     assert dummy_thread.interrupted
     assert dummy_thread.wait_args == ()
+    assert dummy_thread.deleted
 
 
 def test_restool_clear_fit_preview_keeps_line_when_live(qtbot) -> None:
@@ -853,6 +1003,9 @@ def test_restool_do_fit_queues_when_thread_object_exists(qtbot, monkeypatch) -> 
         def wait(self, timeout_ms: int) -> bool:
             return True
 
+        def deleteLater(self) -> None:
+            return
+
     called: list[bool] = []
 
     def _start_fit_worker() -> bool:
@@ -879,7 +1032,7 @@ def test_restool_queue_fit_action_drops_when_cancel_requested(qtbot) -> None:
     called = {"value": False}
     win._fit_cancel_requested = True
     win._pending_fit_action = None
-    win._queue_fit_action(lambda: called.__setitem__("value", True))
+    win._queue_fit_action(None, lambda: called.__setitem__("value", True))  # type: ignore[arg-type]
 
     assert not called["value"]
     assert win._pending_fit_action is None
@@ -896,7 +1049,7 @@ def test_restool_queue_fit_action_runs_immediately_when_no_thread(qtbot) -> None
     win._fit_cancel_requested = False
     win._fit_thread = None
     win._pending_fit_action = None
-    win._queue_fit_action(lambda: called.__setitem__("value", True))
+    win._queue_fit_action(None, lambda: called.__setitem__("value", True))  # type: ignore[arg-type]
 
     assert called["value"]
     assert win._pending_fit_action is None
@@ -918,6 +1071,9 @@ def test_restool_start_fit_worker_returns_false_when_thread_exists(qtbot) -> Non
 
         def wait(self, timeout_ms: int) -> bool:
             return True
+
+        def deleteLater(self) -> None:
+            return
 
     win._fit_thread = _ThreadPlaceholder()  # type: ignore[assignment]
     assert not win._start_fit_worker()
