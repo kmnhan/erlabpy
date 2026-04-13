@@ -1315,7 +1315,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         # just-starting thread.
         return self._fit_thread is not None
 
-    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int = 5000) -> bool:
+    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
         if self._fit_thread is not None:
             self._fit_thread.cancel()
             self._fit_thread.requestInterruption()
@@ -1323,6 +1323,8 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._fit_queued = False
         self._pending_fit_action = None
         if wait and self._fit_thread is not None:
+            if timeout_ms is None:
+                return self._fit_thread.wait()
             return self._fit_thread.wait(timeout_ms)
         return True
 
@@ -1343,7 +1345,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         status = self.tool_status.model_copy(
             update={"results": ("No fit results", "—", "—", "—", "—")}
         )
-        self._cancel_fit(wait=True)
+        self._cancel_fit(wait=True, timeout_ms=None)
         self._configure_data(new_data)
         self._clear_fit_outputs()
         self.tool_status = status

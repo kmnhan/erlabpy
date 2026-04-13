@@ -1382,7 +1382,7 @@ class Fit2DTool(Fit1DTool):
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
-        self._cancel_fit(wait=True)
+        self._cancel_fit(wait=True, timeout_ms=None)
 
         old_cw = self.centralWidget()
         if old_cw is not None:

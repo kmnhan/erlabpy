@@ -3361,7 +3361,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         had_fit = self._last_result_ds is not None
         status = self.tool_status
         old_geom = self.saveGeometry()
-        self._cancel_fit(wait=True)
+        self._cancel_fit(wait=True, timeout_ms=None)
 
         old_cw = self.centralWidget()
         if old_cw is not None:
@@ -3409,7 +3409,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return
         super().closeEvent(event)
 
-    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int = 5000) -> bool:
+    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
         if self._fit_thread is not None:
             self._fit_thread.cancel()
             self._fit_thread.requestInterruption()
@@ -3418,5 +3418,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.cancel_fit_button.setText("Canceling...")
         self._pending_fit_action = None
         if wait and self._fit_thread is not None:
+            if timeout_ms is None:
+                return self._fit_thread.wait()
             return self._fit_thread.wait(timeout_ms)
         return True

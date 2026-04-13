@@ -689,6 +689,41 @@ def test_restool_close_event_ignored_if_fit_thread_stuck(qtbot) -> None:
     assert stuck_thread.wait_timeout_ms == 5000
 
 
+def test_restool_cancel_fit_waits_without_timeout(qtbot) -> None:
+    gold = generate_gold_edge(
+        edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
+    )
+    win = restool(gold, execute=False)
+    qtbot.addWidget(win)
+
+    class _DummyThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_args: tuple[object, ...] | None = None
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def isRunning(self) -> bool:
+            return True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, *args) -> bool:
+            self.wait_args = args
+            return True
+
+    dummy_thread = _DummyThread()
+    win._fit_thread = dummy_thread  # type: ignore[assignment]
+
+    assert win._cancel_fit(wait=True, timeout_ms=None)
+    assert dummy_thread.cancel_called
+    assert dummy_thread.interrupted
+    assert dummy_thread.wait_args == ()
+
+
 def test_restool_clear_fit_preview_keeps_line_when_live(qtbot) -> None:
     gold = generate_gold_edge(
         edge_coeffs=(0.0, 0.0, 0.0), background_coeffs=(5.0, 0.0, -2e-3), seed=1
