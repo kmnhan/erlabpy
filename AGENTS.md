@@ -41,6 +41,7 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 
 ## Interactive Qt Notes
 
+- All Qt-facing runtime code and tests must behave the same under both PyQt6 and PySide6. Prefer `qtpy` APIs that are binding-neutral, avoid binding-specific signal/metaobject assumptions, and when lower-level Qt behavior is unavoidable, add a compatibility helper and validate the touched path under both bindings.
 - For tools launched from ImageTool, new actions that open/show data in ImageTool should be manager-aware (use manager flow when the parent tool is managed).
 - For new context-menu or file-dialog features, add tests for both accept and cancel dialog paths.
 - Prefer `accept_dialog` for real dialog interactions; use monkeypatch stubs to target hard-to-hit branches.

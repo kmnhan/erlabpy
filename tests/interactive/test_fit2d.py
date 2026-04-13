@@ -10,6 +10,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive._fit2d import Fit2DTool
+from tests._qt_helpers import signal_receiver_count
 
 
 def _make_1d_data() -> xr.DataArray:
@@ -397,15 +398,21 @@ def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    initial_receivers = win.receivers(win.sigFitFinished)
+    initial_receivers = signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
 
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
     win.update_data(updated)
-    assert win.receivers(win.sigFitFinished) == initial_receivers
+    assert (
+        signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
+        == initial_receivers
+    )
 
     win._do_transpose()
-    assert win.receivers(win.sigFitFinished) == initial_receivers
+    assert (
+        signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
+        == initial_receivers
+    )
 
 
 def test_fit2d_update_data_auto_refit_after_waiting_cancelled_thread(

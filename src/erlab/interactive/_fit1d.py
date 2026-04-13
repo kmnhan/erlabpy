@@ -771,6 +771,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         model_name: str | None = None,
     ) -> None:
         super().__init__()
+        self._fit_finished_connection_keys: set[tuple[object | None, object]] = set()
         self._reset_fit_state(
             data,
             model,
@@ -867,10 +868,18 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         self._write_history = False
 
+    def _fit_finished_connection_key(
+        self, slot: Callable[..., typing.Any]
+    ) -> tuple[object | None, object]:
+        return getattr(slot, "__self__", None), getattr(slot, "__func__", slot)
+
     def _connect_fit_finished_once(self, slot: Callable[..., typing.Any]) -> None:
-        with contextlib.suppress(TypeError, RuntimeError):
-            self.sigFitFinished.disconnect(slot)
+        key = self._fit_finished_connection_key(slot)
+        if key in self._fit_finished_connection_keys:
+            return
+
         self.sigFitFinished.connect(slot)
+        self._fit_finished_connection_keys.add(key)
 
     def _ensure_fit_finished_connections(self) -> None:
         self._connect_fit_finished_once(self._replace_last_state)

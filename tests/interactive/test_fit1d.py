@@ -11,6 +11,7 @@ from erlab.interactive._fit1d import (
     _ParameterEditDelegate,
     _ParameterTableModel,
 )
+from tests._qt_helpers import signal_receiver_count
 
 
 def _make_1d_data() -> xr.DataArray:
@@ -282,13 +283,16 @@ def test_fit1d_update_data_keeps_fit_finished_receivers_constant(qtbot) -> None:
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
 
-    initial_receivers = win.receivers(win.sigFitFinished)
+    initial_receivers = signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
 
     for scale in (1.1, 1.2, 1.3):
         updated = data.copy(deep=True)
         updated.data = np.asarray(data.data) * scale
         win.update_data(updated)
-        assert win.receivers(win.sigFitFinished) == initial_receivers
+        assert (
+            signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
+            == initial_receivers
+        )
 
 
 def test_fit1d_update_data_auto_refit_after_waiting_cancelled_thread(
