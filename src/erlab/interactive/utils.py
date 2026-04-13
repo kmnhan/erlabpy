@@ -703,7 +703,13 @@ def _resolve_tool_source_spec(
     if kind != "selection":
         raise ValueError(f"Unsupported tool source kind: {kind!r}")
 
-    data = parent_data.copy(deep=False)
+    # Source specs are recorded against ImageTool's public data model, which restores
+    # non-uniform dimensions from their internal ``*_idx`` representation. Rebuild that
+    # public view before replaying selection operations so recorded dimension names
+    # continue to resolve after source data refreshes.
+    data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        parent_data.copy(deep=False)
+    )
     for operation in spec.get("operations", []):
         op_name = operation.get("op", "")
         kwargs = _decode_tool_source_value(operation.get("kwargs", {}))
@@ -2746,12 +2752,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return False
 
         try:
-            self.update_data(resolved)
+            update_complete = self.update_data(resolved)
         except Exception:
             logger.exception(
                 "Failed to update %s from ImageTool source data", self.tool_name
             )
             self._set_source_state("unavailable")
+            return False
+        if update_complete is False:
+            self._set_source_state("stale")
             return False
         self._set_source_state("fresh")
         return True
@@ -2773,13 +2782,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
         if self._source_auto_update:
             try:
-                self.update_data(resolved)
+                update_complete = self.update_data(resolved)
             except Exception:
                 logger.exception(
                     "Failed to auto-update %s from ImageTool source data",
                     self.tool_name,
                 )
                 self._set_source_state("unavailable")
+                return
+            if update_complete is False:
+                self._set_source_state("stale")
                 return
             self._set_source_state("fresh")
         else:
@@ -2803,7 +2815,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 self._update_from_parent_source()
         return result
 
-    def update_data(self, new_data: xr.DataArray) -> None:
+    def update_data(self, new_data: xr.DataArray) -> bool | None:
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement update_data() to support "
             "ImageTool source updates."

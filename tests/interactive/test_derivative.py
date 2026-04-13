@@ -318,6 +318,45 @@ def test_tool_source_spec_helpers_roundtrip_and_resolve_selection() -> None:
         resolved_squeezed, parent.isel({"z": 0}).transpose("y", "x").squeeze()
     )
 
+    parent_nonuniform_public = xr.DataArray(
+        np.arange(24).reshape((4, 3, 2)),
+        dims=("alpha", "eV", "beta"),
+        coords={
+            "alpha": [0.0, 0.6, 1.7, 3.0],
+            "eV": [-0.2, 0.0, 0.2],
+            "beta": [1.0, 2.0],
+        },
+        name="data",
+    )
+    parent_nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(
+        parent_nonuniform_public
+    )
+    resolved_nonuniform = erlab.interactive.utils._resolve_tool_source_spec(
+        parent_nonuniform,
+        erlab.interactive.utils.make_tool_source_spec(
+            "selection",
+            operations=[
+                {
+                    "op": "qsel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        {"beta": 2.0}
+                    ),
+                },
+                {
+                    "op": "isel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        {"alpha": slice(1, 3)}
+                    ),
+                },
+                {"op": "sort_coord_order"},
+            ],
+        ),
+    )
+    xr.testing.assert_identical(
+        resolved_nonuniform,
+        parent_nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
+    )
+
     with pytest.raises(ValueError, match="Unsupported tool source kind"):
         erlab.interactive.utils._resolve_tool_source_spec(parent, {"kind": "invalid"})
 

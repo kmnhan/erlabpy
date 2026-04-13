@@ -589,15 +589,17 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             return
         self._pending_update_request = None
         self._apply_update_request(request)
+        self._set_source_state("fresh")
 
-    def update_data(self, new_data: xr.DataArray) -> None:
+    def update_data(self, new_data: xr.DataArray) -> bool:
         data = self.validate_update_data(new_data)
         self._pending_update_request = self._make_update_request(data)
         self._abort_fit_task()
         if self._threadpool.activeThreadCount():
             self._pending_update_timer.start(50)
-            return
+            return False
         self._flush_pending_update()
+        return True
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)

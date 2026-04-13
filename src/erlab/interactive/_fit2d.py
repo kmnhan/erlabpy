@@ -576,6 +576,11 @@ class Fit2DTool(Fit1DTool):
                 self._serialize_params(params) if params is not None else None
                 for params in self._params_full
             ],
+            initial_params_full=(
+                [self._serialize_params(params) for params in self._initial_params_full]
+                if self._initial_params_full is not None
+                else None
+            ),
             params_from_coord_full=self._params_from_coord_full.copy(),
             fill_mode=typing.cast(
                 'typing.Literal["previous", "extrapolate", "none"]',
@@ -601,6 +606,16 @@ class Fit2DTool(Fit1DTool):
             self._params_full = [None] * y_size
             for i, params in enumerate(restored_params_full[:y_size]):
                 self._params_full[i] = params
+
+            self._initial_params_full = None
+            if state2d.initial_params_full is not None:
+                self._initial_params_full = [
+                    self._initial_params.copy() for _ in range(y_size)
+                ]
+                for i, params in enumerate(state2d.initial_params_full[:y_size]):
+                    restored = self._deserialize_params(params)
+                    if restored is not None:
+                        self._initial_params_full[i] = restored
 
             self._params_from_coord_full = [{} for _ in range(y_size)]
             for i, mapping in enumerate(state2d.params_from_coord_full[:y_size]):

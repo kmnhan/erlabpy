@@ -211,6 +211,48 @@ def test_goldtool_update_data_defers_until_fit_worker_drains(
     xr.testing.assert_identical(win.data, new_gold)
 
 
+def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    win.set_source_binding(
+        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        auto_update=True,
+    )
+
+    class _DummyTask:
+        def __init__(self) -> None:
+            self.aborted = False
+
+        def abort_fit(self) -> None:
+            self.aborted = True
+
+    stale_task = _DummyTask()
+    win._fit_task = stale_task
+
+    active_counts = iter((1, 0))
+    monkeypatch.setattr(
+        win._threadpool,
+        "activeThreadCount",
+        lambda: next(active_counts, 0),
+    )
+
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.02
+    win.handle_parent_source_replaced(new_gold)
+
+    assert stale_task.aborted is True
+    assert win.source_state == "stale"
+    xr.testing.assert_identical(win.data, gold)
+
+    win._pending_update_timer.stop()
+    win._flush_pending_update()
+
+    assert win.source_state == "fresh"
+    xr.testing.assert_identical(win.data, new_gold)
+
+
 def test_goldtool_update_data_clamps_roi_to_non_empty_bounds(qtbot, gold) -> None:
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)

@@ -560,6 +560,7 @@ class _State2D(pydantic.BaseModel):
     current_idx: int
     data_name_full: str
     params_full: list[list[tuple[typing.Any, ...]] | None]
+    initial_params_full: list[list[tuple[typing.Any, ...]] | None] | None = None
     params_from_coord_full: list[dict[str, str]]
     fill_mode: typing.Literal["previous", "extrapolate", "none"]
     y_limits: tuple[int, int] | None = None

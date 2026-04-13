@@ -860,6 +860,39 @@ def test_ktool_update_data_with_single_energy_disables_energy_group(
     assert win.center_spin.maximum() == pytest.approx(fixed_energy + 0.1, abs=1e-3)
 
 
+def test_ktool_update_data_reconnects_energy_controls_after_single_energy(
+    qtbot, anglemap, monkeypatch
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
+        deep=True
+    )
+    updated = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    update_calls: list[None] = []
+    original_update = win.update
+
+    def _wrapped_update() -> None:
+        update_calls.append(None)
+        original_update()
+
+    monkeypatch.setattr(win, "update", _wrapped_update)
+
+    win.update_data(updated)
+    assert win.energy_group.isEnabled() is True
+
+    update_calls.clear()
+    win.center_spin.setValue(float(updated.eV.values[2]))
+    qtbot.wait_until(lambda: len(update_calls) > 0, timeout=5000)
+
+    update_calls.clear()
+    win.width_spin.setValue(3)
+    qtbot.wait_until(lambda: len(update_calls) > 0, timeout=5000)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [

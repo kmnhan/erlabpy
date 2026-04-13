@@ -288,6 +288,49 @@ def test_fit2d_update_data_resizes_slice_state_and_keeps_param_sync(
     assert win._params_full[win._current_idx]["n0"].value == pytest.approx(3.0)
 
 
+def test_fit2d_update_data_preserves_initial_params_full_for_reset_all(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    first_params = win._params.copy()
+    first_params["n0"].set(value=1.0)
+    second_params = win._params.copy()
+    second_params["n0"].set(value=2.0)
+    win._params_full = [first_params.copy(), second_params.copy(), None]
+    win._initial_params_full = [
+        first_params.copy(),
+        second_params.copy(),
+        win._params.copy(),
+    ]
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+    win.update_data(updated)
+
+    assert win._initial_params_full is not None
+    assert win._initial_params_full[0]["n0"].value == pytest.approx(1.0)
+    assert win._initial_params_full[1]["n0"].value == pytest.approx(2.0)
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    win._reset_params_all()
+
+    assert win._params_full[0] is not None
+    assert win._params_full[1] is not None
+    assert win._params_full[0]["n0"].value == pytest.approx(1.0)
+    assert win._params_full[1]["n0"].value == pytest.approx(2.0)
+
+
 def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

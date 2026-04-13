@@ -646,12 +646,12 @@ class KspaceTool(KspaceToolGUI):
             rateLimit=self._UPDATE_LIMIT_HZ,
             slot=self._flush_debounced_update,
         )
+        self._energy_controls_connected: bool = False
 
         if self.data.kspace._has_eV and self.data.eV.size > 1:
             self._update_energy_controls()
             self.width_spin.setRange(1, len(self.data.eV))
-            self.center_spin.valueChanged.connect(self.queue_update)
-            self.width_spin.valueChanged.connect(self.queue_update)
+            self._ensure_energy_control_connections()
         else:
             if "eV" in self.data.coords and self.data["eV"].size == 1:
                 fixed_energy = float(self.data.eV)
@@ -800,6 +800,13 @@ class KspaceTool(KspaceToolGUI):
         if avec is not None:
             self.bz_group.setChecked(True)
 
+    def _ensure_energy_control_connections(self) -> None:
+        if self._energy_controls_connected:
+            return
+        self.center_spin.valueChanged.connect(self.queue_update)
+        self.width_spin.valueChanged.connect(self.queue_update)
+        self._energy_controls_connected = True
+
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
         new_data = self.validate_update_data(new_data)
@@ -816,6 +823,7 @@ class KspaceTool(KspaceToolGUI):
             self.energy_group.setDisabled(False)
             self._update_energy_controls()
             self.width_spin.setRange(1, len(self.data.eV))
+            self._ensure_energy_control_connections()
         else:
             if "eV" in self.data.coords and self.data["eV"].size == 1:
                 fixed_energy = float(self.data.eV)
