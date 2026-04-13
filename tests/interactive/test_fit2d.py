@@ -10,6 +10,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 from erlab.interactive._fit2d import Fit2DTool
+from tests._qt_helpers import signal_receiver_count
 
 
 def _make_1d_data() -> xr.DataArray:
@@ -214,6 +215,257 @@ def test_fit2d_run_fit(qtbot, exp_decay_model, monkeypatch) -> None:
     code = win._copy_code_full()
     assert "modelfit" in code
     assert ".isel(" in code
+
+
+def test_fit2d_update_data_preserves_state_and_refit(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_index_spin.setValue(1)
+    index = win.param_model.index(0, 1)
+    assert win.param_model.setData(index, "2.0", QtCore.Qt.ItemDataRole.EditRole)
+    win.y_min_spin.setValue(1)
+    win.y_max_spin.setValue(2)
+    win.refit_on_source_update_check.setChecked(False)
+    win._last_result_ds = xr.Dataset()
+
+    called: list[bool] = []
+    monkeypatch.setattr(win, "_run_fit", lambda: called.append(True) or True)
+
+    status = win.tool_status
+    new_data = data.copy(deep=True)
+    new_data.data = np.asarray(new_data.data) * 1.1
+    win.update_data(new_data)
+
+    assert win.tool_status == status
+    xr.testing.assert_identical(win.tool_data, new_data)
+    assert win._fit_is_current is False
+    assert not called
+
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+    newer_data = new_data.copy(deep=True)
+    newer_data.data = np.asarray(newer_data.data) * 1.05
+    win.update_data(newer_data)
+
+    assert called == [True]
+
+
+def test_fit2d_update_data_resizes_slice_state_and_keeps_param_sync(
+    qtbot, exp_decay_model
+) -> None:
+    data = _make_2d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_index_spin.setValue(2)
+    win.y_min_spin.setValue(1)
+    win.y_max_spin.setValue(2)
+
+    new_data = data.isel(y=slice(0, 2)).copy(deep=True)
+    new_data.data = np.asarray(new_data.data) * 1.1
+    win.update_data(new_data)
+
+    assert win._current_idx == 1
+    assert len(win._params_full) == 2
+    assert len(win._params_from_coord_full) == 2
+    assert win.y_index_spin.maximum() == 1
+    xr.testing.assert_identical(win.tool_data, new_data)
+
+    index = win.param_model.index(0, 1)
+    assert win.param_model.setData(index, "3.0", QtCore.Qt.ItemDataRole.EditRole)
+    assert win._params_full[win._current_idx] is not None
+    assert win._params_full[win._current_idx]["n0"].value == pytest.approx(3.0)
+
+
+def test_fit2d_update_data_preserves_initial_params_full_for_reset_all(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    first_params = win._params.copy()
+    first_params["n0"].set(value=1.0)
+    second_params = win._params.copy()
+    second_params["n0"].set(value=2.0)
+    win._params_full = [first_params.copy(), second_params.copy(), None]
+    win._initial_params_full = [
+        first_params.copy(),
+        second_params.copy(),
+        win._params.copy(),
+    ]
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+    win.update_data(updated)
+
+    assert win._initial_params_full is not None
+    assert win._initial_params_full[0]["n0"].value == pytest.approx(1.0)
+    assert win._initial_params_full[1]["n0"].value == pytest.approx(2.0)
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "question",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    win._reset_params_all()
+
+    assert win._params_full[0] is not None
+    assert win._params_full[1] is not None
+    assert win._params_full[0]["n0"].value == pytest.approx(1.0)
+    assert win._params_full[1]["n0"].value == pytest.approx(2.0)
+
+
+def test_fit2d_update_data_invalid_input_keeps_existing_ui(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    old_central = win.centralWidget()
+    bad_data = _make_1d_data()
+
+    with pytest.raises(ValueError, match="2D DataArray"):
+        win.update_data(bad_data)
+
+    assert win.centralWidget() is old_central
+    assert old_central is not None
+    assert old_central.parent() is not None
+    xr.testing.assert_identical(win.tool_data, data)
+
+
+def test_fit2d_update_data_returns_false_if_fit_thread_stays_alive(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _StuckThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def isRunning(self) -> bool:
+            return True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return False
+
+    stuck_thread = _StuckThread()
+    win._fit_thread = stuck_thread  # type: ignore[assignment]
+    old_central = win.centralWidget()
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+
+    assert win.update_data(updated) is False
+    assert stuck_thread.cancel_called
+    assert stuck_thread.interrupted
+    assert stuck_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
+    assert win.centralWidget() is old_central
+    assert old_central is not None
+    assert old_central.parent() is not None
+    xr.testing.assert_identical(win.tool_data, data)
+
+
+def test_fit2d_rebuild_paths_keep_fit_finished_receivers_constant(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    initial_receivers = signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+    win.update_data(updated)
+    assert (
+        signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
+        == initial_receivers
+    )
+
+    win._do_transpose()
+    assert (
+        signal_receiver_count(win, win.sigFitFinished, "sigFitFinished")
+        == initial_receivers
+    )
+
+
+def test_fit2d_update_data_auto_refit_after_waiting_cancelled_thread(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    class _FinishedThread:
+        def __init__(self) -> None:
+            self.cancel_called = False
+            self.interrupted = False
+            self.wait_timeout_ms: int | None = None
+            self.deleted = False
+
+        def cancel(self) -> None:
+            self.cancel_called = True
+
+        def requestInterruption(self) -> None:
+            self.interrupted = True
+
+        def wait(self, timeout_ms: int) -> bool:
+            self.wait_timeout_ms = timeout_ms
+            return True
+
+        def deleteLater(self) -> None:
+            self.deleted = True
+
+    old_thread = _FinishedThread()
+    win._fit_thread = old_thread  # type: ignore[assignment]
+    win._last_result_ds = xr.Dataset()
+    win.refit_on_source_update_check.setChecked(True)
+
+    started: list[bool] = []
+
+    def _start_fit_worker(*args, **kwargs) -> bool:
+        started.append(True)
+        assert win._fit_thread is None
+        return True
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+
+    assert win.update_data(updated) is True
+    assert started == [True]
+    assert old_thread.cancel_called
+    assert old_thread.interrupted
+    assert old_thread.wait_timeout_ms == win.BACKGROUND_TASK_TIMEOUT_MS
+    assert old_thread.deleted is True
 
 
 def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:

@@ -9,11 +9,10 @@ Commonly used tools are available directly in the ``erlab.interactive`` namespac
 regular users should not need to import the submodules directly.
 
 Documentation of classes and functions in submodules mostly contain implementation
-details for advanced users who want to create new interactive tools. A user guide for
-creating new interactive tools will be available in the future. In the meantime, take a
-look at the source code of :mod:`erlab.interactive.utils` and
-:mod:`erlab.interactive.colors` which provide general utility functions for creating new
-interactive tools.
+details for advanced users who want to create new interactive tools. See
+:ref:`interactive-tool-authoring` for a contributor-oriented walkthrough, and use the
+source code of :mod:`erlab.interactive.utils` and :mod:`erlab.interactive.colors` as the
+main reference implementations.
 
 .. rubric:: Modules
 

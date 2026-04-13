@@ -114,6 +114,8 @@ The left pane lists every ImageTool window by index and optional name (`index: n
 Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over the list.
 :::
 
+Child analysis windows opened from an ImageTool appear as nested rows under their parent.
+
 The following lists common actions included in the {guilabel}`File`, {guilabel}`Edit`, and right-click context menus:
 
 - {guilabel}`Show` / {guilabel}`Hide` / {guilabel}`Remove` – Use the toolbar buttons or {kbd}`Return`, {kbd}`Ctrl+W`, and {kbd}`Del` to bring windows to the front, hide them, or remove them entirely. These controls live in {guilabel}`File`.
@@ -127,7 +129,9 @@ The following lists common actions included in the {guilabel}`File`, {guilabel}`
 - {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
 - {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. Handy when data is updated during acquisition.
 
-Icons next to each entry indicate special states: linked windows share a colored badge, chunked Dask arrays show the dask icon, and watched variables display their notebook name. Right-click to see all context-sensitive actions.
+Icons next to each entry indicate special states: linked windows share a colored badge, chunked Dask arrays show the dask icon, and watched variables display their notebook name.
+
+Child tools may also show {guilabel}`Stale` or {guilabel}`Unavailable` badges after the parent source data changes. Click those badges in the tree to open the same update dialog that appears inside the child tool itself, refresh from the latest compatible data, and optionally enable automatic updates for future replacements.
 
 (imagetool-manager-archive-workspace)=
 

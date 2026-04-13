@@ -15,7 +15,7 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
 from erlab.interactive.imagetool.controls import ItoolColormapControls
@@ -1247,6 +1247,29 @@ def test_image_slicer_area_history_and_manual_limits(qtbot):
     win.close()
 
 
+def test_itool_keeps_child_tool_registered_when_close_is_ignored(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = erlab.interactive.goldtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(child, "_stop_server", lambda: False)
+
+    win.slicer_area.add_tool_window(child)
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+
+    assert child.close() is False
+    assert len(win.slicer_area._associated_tools) == 1
+    assert next(iter(win.slicer_area._associated_tools.values())) is child
+    assert child.isVisible()
+
+    monkeypatch.setattr(child, "_stop_server", lambda: True)
+    assert child.close() is True
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 0, timeout=5000)
+    win.close()
+
+
 def test_itool_load_compat(qtbot) -> None:
     original = xr.DataArray(
         np.arange(25).reshape((5, 5)),
@@ -1264,6 +1287,69 @@ def test_itool_load_compat(qtbot) -> None:
     win.slicer_area.set_data(original.expand_dims(z=5, axis=-1))
 
     assert win.slicer_area.n_cursors == 3
+
+    win.close()
+
+
+def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
+    data = _TEST_DATA["2D"]
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    selection_spec = win.slicer_area.images[0].make_tool_source_spec(
+        transpose=True, squeeze=True
+    )
+    assert selection_spec["kind"] == "selection"
+    assert [op["op"] for op in selection_spec["operations"]] == [
+        "isel",
+        "sort_coord_order",
+        "transpose",
+        "squeeze",
+    ]
+
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
+        "full_data"
+    )
+    assert child.source_state == "fresh"
+
+    new_data = data.copy(deep=True)
+    new_data.data = np.asarray(new_data.data) * 2
+    win.slicer_area.set_data(new_data)
+    assert child.source_state == "fresh"
+
+
+def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+    monkeypatch.setattr(
+        type(image),
+        "_crop_indexers",
+        property(lambda self: {"alpha": slice(1, 4), "eV_idx": slice(0, 2)}),
+    )
+
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "queryKeyboardModifiers",
+        staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
+    )
+
+    spec = image.make_tool_source_spec()
+    sel_kwargs = erlab.interactive.utils._decode_tool_source_value(
+        next(op["kwargs"] for op in spec["operations"] if op["op"] == "sel")
+    )
+    isel_kwargs = erlab.interactive.utils._decode_tool_source_value(
+        [op["kwargs"] for op in spec["operations"] if op["op"] == "isel"][-1]
+    )
+
+    assert sel_kwargs == {"alpha": slice(1, 4)}
+    assert isel_kwargs == {"eV": slice(0, 2)}
 
     win.close()
 
@@ -1771,6 +1857,23 @@ def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None
     win.close()
 
 
+def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = dtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(erlab.interactive, "ktool", lambda *args, **kwargs: child)
+
+    win.slicer_area.open_in_ktool()
+
+    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
+        "full_data"
+    )
+    assert child.source_state == "fresh"
+
+    win.close()
+
+
 def test_itool_open_in_ktool_uses_guideline_seed_on_alpha_beta_plane(
     qtbot, monkeypatch
 ) -> None:
@@ -1827,6 +1930,22 @@ def test_itool_open_in_ktool_ignores_non_alpha_beta_guidelines(
 
     assert captured["kwargs"]["initial_normal_emission"] == (4.0, 1.0)
     assert captured["kwargs"]["initial_delta"] is None
+
+    win.close()
+
+
+def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = dtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(erlab.interactive, "ftool", lambda *args, **kwargs: child)
+
+    image = win.slicer_area.images[0]
+    image.open_in_ftool()
+
+    assert child.source_spec == image.make_tool_source_spec(squeeze=True)
+    assert child.source_state == "fresh"
 
     win.close()
 
@@ -2400,6 +2519,67 @@ def test_itool_average(qtbot, accept_dialog) -> None:
 
     assert pyperclip.paste() == '.qsel.average("x")'
     win.close()
+
+
+def test_itool_average_marks_incompatible_child_tools_unavailable(
+    qtbot, accept_dialog
+) -> None:
+    data = _TEST_DATA["2D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+    assert child.source_state == "fresh"
+
+    def _set_dialog_params(dialog: AverageDialog) -> None:
+        dialog.dim_checks["alpha"].setChecked(True)
+        dialog.new_window_check.setChecked(False)
+
+    with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
+        accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
+
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.qsel.average("alpha")
+    )
+    qtbot.wait_until(lambda: child.source_state == "unavailable", timeout=5000)
+
+    win.close()
+
+
+def test_itool_full_data_child_updates_follow_transposed_view(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy(deep=True)
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.transpose_main_image()
+    assert win.slicer_area.data.dims == ("eV", "alpha")
+
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+    xarray.testing.assert_identical(child.tool_data, win.slicer_area.data)
+
+    replaced = data.copy(deep=True)
+    replaced.data = np.asarray(replaced.data) * 2
+
+    with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
+        win.slicer_area.replace_source_data(replaced)
+
+    qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+    assert child._update_from_parent_source() is True
+    xarray.testing.assert_identical(child.tool_data, win.slicer_area.data)
+
+    child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+    replaced2 = replaced.copy(deep=True)
+    replaced2.data = np.asarray(replaced2.data) + 5
+
+    with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
+        win.slicer_area.replace_source_data(replaced2)
+
+    qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
+    xarray.testing.assert_identical(child.tool_data, win.slicer_area.data)
 
 
 def test_itool_coarsen(qtbot, accept_dialog) -> None:

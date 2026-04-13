@@ -1004,6 +1004,79 @@ class ItoolPlotItem(pg.PlotItem):
         sel_code: str = self.selection_code_for_cursor(self.slicer_area.current_cursor)
         return f"{data_name}{sel_code}"
 
+    def make_tool_source_spec(
+        self, *, transpose: bool = False, squeeze: bool = False
+    ) -> dict[str, typing.Any]:
+        cursor = self.slicer_area.current_cursor
+        alt_pressed: bool = (
+            QtCore.Qt.KeyboardModifier.AltModifier
+            in QtWidgets.QApplication.queryKeyboardModifiers()
+        )
+        selection_code = self.selection_code_for_cursor(cursor)
+        if selection_code.startswith(".qsel"):
+            operations: list[dict[str, typing.Any]] = [
+                {
+                    "op": "qsel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        self.array_slicer.qsel_args(cursor, self.display_axis)
+                    ),
+                }
+            ]
+        else:
+            operations = [
+                {
+                    "op": "isel",
+                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                        self.array_slicer.isel_args(
+                            cursor, self.display_axis, int_if_one=True
+                        )
+                    ),
+                }
+            ]
+
+        if alt_pressed:
+            crop_indexers = dict(self._crop_indexers)
+            isel_indexers: dict[str, slice] = {}
+            for key in list(crop_indexers.keys()):
+                key_str = str(key)
+                if key_str.endswith("_idx"):
+                    isel_indexers[key_str.removesuffix("_idx")] = crop_indexers.pop(key)
+
+            if crop_indexers:
+                operations.append(
+                    {
+                        "op": "sel",
+                        "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                            crop_indexers
+                        ),
+                    }
+                )
+            if isel_indexers:
+                operations.append(
+                    {
+                        "op": "isel",
+                        "kwargs": erlab.interactive.utils._encode_tool_source_value(
+                            isel_indexers
+                        ),
+                    }
+                )
+
+        operations.append({"op": "sort_coord_order"})
+        if transpose:
+            operations.append(
+                {
+                    "op": "transpose",
+                    "dims": erlab.interactive.utils._encode_tool_source_value(
+                        list(reversed(self.current_data.dims))
+                    ),
+                }
+            )
+        if squeeze:
+            operations.append({"op": "squeeze"})
+        return erlab.interactive.utils.make_tool_source_spec(
+            "selection", operations=operations
+        )
+
     @property
     def is_guidelines_visible(self) -> bool:
         return len(self._guidelines_items) != 0
@@ -1814,11 +1887,12 @@ class ItoolPlotItem(pg.PlotItem):
         if self.is_image:  # pragma: no branch
             data = self.current_data
             try:
-                self.slicer_area.add_tool_window(
-                    erlab.interactive.goldtool(
-                        data, data_name=self.get_selection_code(), execute=False
-                    )
+                tool = erlab.interactive.goldtool(
+                    data, data_name=self.get_selection_code(), execute=False
                 )
+                if isinstance(tool, erlab.interactive.utils.ToolWindow):
+                    tool.set_source_binding(self.make_tool_source_spec())
+                self.slicer_area.add_tool_window(tool)
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     None, "Error", "An error occurred while opening goldtool."
@@ -1839,28 +1913,32 @@ class ItoolPlotItem(pg.PlotItem):
             tool = erlab.interactive.restool(
                 data, data_name=self.get_selection_code(), execute=False
             )
+            if isinstance(tool, erlab.interactive.utils.ToolWindow):
+                tool.set_source_binding(self.make_tool_source_spec())
             self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
     def open_in_dtool(self) -> None:
         if self.is_image:  # pragma: no branch
-            self.slicer_area.add_tool_window(
-                erlab.interactive.dtool(
-                    self.current_data.T,
-                    data_name=self.get_selection_code(),
-                    execute=False,
-                )
-            )
-
-    @QtCore.Slot()
-    def open_in_ftool(self) -> None:
-        self.slicer_area.add_tool_window(
-            erlab.interactive.ftool(
-                self.current_data.squeeze(),
+            tool = erlab.interactive.dtool(
+                self.current_data.T,
                 data_name=self.get_selection_code(),
                 execute=False,
             )
+            if isinstance(tool, erlab.interactive.utils.ToolWindow):
+                tool.set_source_binding(self.make_tool_source_spec(transpose=True))
+            self.slicer_area.add_tool_window(tool)
+
+    @QtCore.Slot()
+    def open_in_ftool(self) -> None:
+        tool = erlab.interactive.ftool(
+            self.current_data.squeeze(),
+            data_name=self.get_selection_code(),
+            execute=False,
         )
+        if isinstance(tool, erlab.interactive.utils.ToolWindow):
+            tool.set_source_binding(self.make_tool_source_spec(squeeze=True))
+        self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
     def normalize_to_current_view(self) -> None:

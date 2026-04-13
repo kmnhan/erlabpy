@@ -434,6 +434,28 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             self.result = self.process_func(self.processed_data, **self.process_kwargs)
             self.sigInfoChanged.emit()
 
+    def update_data(self, new_data: xr.DataArray) -> None:
+        status = self.tool_status
+        data = self.validate_update_data(new_data)
+
+        self.data_has_nan = bool(data.isnull().any())
+        if self.data_has_nan:
+            data = data.fillna(0.0)
+
+        self.data = data
+        self._result = self.data.copy()
+        self.xdim = self.data.dims[1]
+        self.ydim = self.data.dims[0]
+        self.__dict__.pop("processed_data", None)
+        self.tool_status = status
+        self.update_preprocess()
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if data.ndim != 2:
+            raise ValueError("Input DataArray must be 2D")
+        return data
+
     def copy_code(self) -> str:
         lines: list[str] = []
 

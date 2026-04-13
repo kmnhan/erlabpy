@@ -170,6 +170,12 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
   On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`, {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
 
+  Helper tools opened from ImageTool keep track of the slice or selection that created
+  them. If the parent ImageTool is updated with compatible data, the child tool shows a
+  stale marker instead of silently keeping outdated input. Click the marker inside the
+  tool window to refresh it from the latest compatible data, or enable automatic updates
+  for future source replacements.
+
   :::{hint}
   Holding {kbd}`Alt` while opening the menu switches many actions to cropped mode, which crops the data to what is currently visible in the plot before performing the action. This is useful for conducting analysis on a specific region.
   :::

@@ -560,6 +560,7 @@ class _State2D(pydantic.BaseModel):
     current_idx: int
     data_name_full: str
     params_full: list[list[tuple[typing.Any, ...]] | None]
+    initial_params_full: list[list[tuple[typing.Any, ...]] | None] | None = None
     params_from_coord_full: list[dict[str, str]]
     fill_mode: typing.Literal["previous", "extrapolate", "none"]
     y_limits: tuple[int, int] | None = None
@@ -730,6 +731,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         domain: tuple[float, float] | None = None
         normalize_mean: bool = False
         show_components: bool
+        refit_on_source_update: bool = False
         timeout: float
         max_nfev: int
         method: str
@@ -769,6 +771,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         model_name: str | None = None,
     ) -> None:
         super().__init__()
+        self._fit_finished_connection_keys: set[tuple[object | None, object]] = set()
         self._reset_fit_state(
             data,
             model,
@@ -864,6 +867,22 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             maxlen=5000
         )
         self._write_history = False
+
+    def _fit_finished_connection_key(
+        self, slot: Callable[..., typing.Any]
+    ) -> tuple[object | None, object]:
+        return getattr(slot, "__self__", None), getattr(slot, "__func__", slot)
+
+    def _connect_fit_finished_once(self, slot: Callable[..., typing.Any]) -> None:
+        key = self._fit_finished_connection_key(slot)
+        if key in self._fit_finished_connection_keys:
+            return
+
+        self.sigFitFinished.connect(slot)
+        self._fit_finished_connection_keys.add(key)
+
+    def _ensure_fit_finished_connections(self) -> None:
+        self._connect_fit_finished_once(self._replace_last_state)
 
     def _build_ui(self) -> None:
         self.resize(987, 610)
@@ -1002,7 +1021,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.param_model.sigParamsChanged.connect(self._refresh_slider_from_model)
         self.param_model.sigParamsChanged.connect(self._mark_fit_stale)
         self.param_model.sigParamsChanged.connect(self._write_state)
-        self.sigFitFinished.connect(self._replace_last_state)
+        self._ensure_fit_finished_connections()
 
         self.param_view = QtWidgets.QTableView()
         self.param_view.setModel(self.param_model)
@@ -1189,10 +1208,17 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             ]
         )
         self.method_combo.setCurrentText("least_squares")
+        self.refit_on_source_update_check = QtWidgets.QCheckBox(
+            "Refit on source update"
+        )
+        self.refit_on_source_update_check.setToolTip(
+            "If checked, rerun the fit when this tool refreshes from ImageTool."
+        )
 
         fit_layout.addRow("Timeout", self.timeout_spin)
         fit_layout.addRow("Max nfev", self.nfev_spin)
         fit_layout.addRow("Method", self.method_combo)
+        fit_layout.addRow(self.refit_on_source_update_check)
         self._fit_tab_layout.addWidget(fit_group)
 
         self.fit_buttons = QtWidgets.QGridLayout()
@@ -1820,6 +1846,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             domain=self._fit_domain(),
             normalize_mean=self.normalize_check.isChecked(),
             show_components=self.components_check.isChecked(),
+            refit_on_source_update=self.refit_on_source_update_check.isChecked(),
             timeout=self.timeout_spin.value(),
             max_nfev=self.nfev_spin.value(),
             method=self.method_combo.currentText(),
@@ -1852,6 +1879,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.set_model(model, model_load_path=status.model_load_path)
 
             self.components_check.setChecked(status.show_components)
+            self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
             self.timeout_spin.setValue(status.timeout)
             self.nfev_spin.setValue(status.max_nfev)
             self.method_combo.setCurrentText(status.method)
@@ -1859,12 +1887,14 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 self.normalize_check.setChecked(status.normalize_mean)
 
             self._slider_widths = dict(status.slider_widths)
-            self._params_from_coord = dict(status.params_from_coord)
 
             if status.params:
                 self._params = self._deserialize_params(status.params)
                 self._initial_params = self._params.copy()
-                self.param_model.set_params(self._params, self._params_from_coord)
+            self._params_from_coord = self._sanitize_params_from_coord(
+                status.params_from_coord
+            )
+            self.param_model.set_params(self._params, self._params_from_coord)
             self._refresh_slider_from_model()
             self._mark_fit_stale()
 
@@ -1876,6 +1906,19 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                     self.domain_min_spin.setValue(status.domain[0])
                     self.domain_max_spin.setValue(status.domain[1])
             self._domain_changed()
+
+    def _sanitize_params_from_coord(
+        self, params_from_coord: Mapping[str, str]
+    ) -> dict[str, str]:
+        """Drop coord-backed parameter bindings incompatible with current data."""
+        sanitized: dict[str, str] = {}
+        for param_name, coord_name in params_from_coord.items():
+            if param_name not in self._params or coord_name not in self._data.coords:
+                continue
+            if self._data.coords[coord_name].size != 1:
+                continue
+            sanitized[str(param_name)] = str(coord_name)
+        return sanitized
 
     def _schedule_table_width_init(self) -> None:
         if self._table_widths_initialized:
@@ -2558,22 +2601,27 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         if hasattr(thread, "setServiceLevel"):
             thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-        thread.finished.connect(self._finalize_fit_thread)
+        thread.finished.connect(lambda thread=thread: self._finalize_fit_thread(thread))
 
-        def _queue_success(result_ds: xr.Dataset) -> None:
-            self._queue_fit_action(lambda: on_success(result_ds))
+        def _queue_success(
+            result_ds: xr.Dataset, *, thread: _FitWorker = thread
+        ) -> None:
+            self._queue_fit_action(thread, lambda: on_success(result_ds))
 
-        def _queue_error(message: str) -> None:
+        def _queue_error(message: str, *, thread: _FitWorker = thread) -> None:
             self._queue_fit_action(
-                lambda: on_error(erlab.interactive.utils._format_traceback(message))
+                thread,
+                lambda: on_error(erlab.interactive.utils._format_traceback(message)),
             )
 
         thread.sigFinished.connect(_queue_success)
-        thread.sigTimedOut.connect(lambda: self._queue_fit_action(on_timeout))
+        thread.sigTimedOut.connect(
+            lambda thread=thread: self._queue_fit_action(thread, on_timeout)
+        )
         thread.sigErrored.connect(_queue_error)
         thread.sigCancelled.connect(
-            lambda: self._queue_fit_action(
-                self._fit_cancelled, allow_when_cancelled=True
+            lambda thread=thread: self._queue_fit_action(
+                thread, self._fit_cancelled, allow_when_cancelled=True
             )
         )
 
@@ -2583,10 +2631,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
     def _queue_fit_action(
         self,
+        thread: _FitWorker,
         action: Callable[[], None],
         *,
         allow_when_cancelled: bool = False,
     ) -> None:
+        if self._fit_thread is not thread:
+            return
         if self._fit_cancel_requested and not allow_when_cancelled:
             return
         self._pending_fit_action = action
@@ -2594,8 +2645,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._pending_fit_action = None
             action()
 
-    def _finalize_fit_thread(self) -> None:
-        thread = self._fit_thread
+    def _finalize_fit_thread(self, thread: _FitWorker) -> None:
+        if self._fit_thread is not thread:
+            return
         action = self._pending_fit_action
         self._pending_fit_action = None
         self._fit_thread = None
@@ -2608,8 +2660,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_cancel_requested = False
         if action is not None:
             action()
-        if thread is not None:
-            thread.deleteLater()
+        thread.deleteLater()
 
     def _fit_cancelled(self) -> None:
         if self._fit_multi_total is not None:
@@ -3332,6 +3383,49 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
 
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if data.ndim != 1:
+            raise ValueError("`data` must be a 1D DataArray")
+        return data
+
+    def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
+
+    def update_data(self, new_data: xr.DataArray) -> bool:
+        had_fit = self._last_result_ds is not None
+        status = self.tool_status
+        old_geom = self.saveGeometry()
+
+        def _apply_update(validated: xr.DataArray) -> None:
+            old_cw = self.centralWidget()
+            if old_cw is not None:
+                old_cw.setParent(None)
+                old_cw.deleteLater()
+
+            self._reset_fit_state(
+                validated,
+                self._model,
+                self._params.copy(),
+                data_name=self._data_name,
+                model_name=self._model_name,
+            )
+            self._build_ui()
+            with self._history_suppressed():
+                self.tool_status = status
+            self._set_fit_stats(None)
+            self._update_fit_curve()
+            self._write_history = True
+            self._reset_history_stack()
+            self._mark_fit_stale()
+            self.restoreGeometry(old_geom)
+            self.sigInfoChanged.emit()
+
+            if had_fit and self.refit_on_source_update_check.isChecked():
+                self._run_fit()
+
+        return self._perform_source_update(new_data, apply_update=_apply_update)
+
     def _show_warning(self, title: str, text: str) -> None:
         QtWidgets.QMessageBox.warning(self, title, text)
 
@@ -3352,14 +3446,18 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             return
         super().closeEvent(event)
 
-    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int = 5000) -> bool:
-        if self._fit_thread is not None:
-            self._fit_thread.cancel()
-            self._fit_thread.requestInterruption()
+    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
+        thread = self._fit_thread
+        if thread is not None:
+            thread.cancel()
+            thread.requestInterruption()
         self._fit_cancel_requested = True
         self.cancel_fit_button.setEnabled(False)
         self.cancel_fit_button.setText("Canceling...")
         self._pending_fit_action = None
-        if wait and self._fit_thread is not None:
-            return self._fit_thread.wait(timeout_ms)
+        if wait and thread is not None:
+            finished = thread.wait() if timeout_ms is None else thread.wait(timeout_ms)
+            if finished:
+                self._finalize_fit_thread(thread)
+            return finished
         return True

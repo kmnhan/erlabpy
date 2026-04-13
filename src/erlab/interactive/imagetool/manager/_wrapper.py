@@ -11,6 +11,7 @@ import typing
 import uuid
 import weakref
 
+import xarray as xr
 from qtpy import QtCore, QtGui
 
 import erlab
@@ -177,6 +178,9 @@ class _ImageToolWrapper(QtCore.QObject):
             self._imagetool.slicer_area.sigDataEdited.disconnect(
                 self._trigger_watched_update
             )
+            self._imagetool.slicer_area.sigSourceDataReplaced.disconnect(
+                self._handle_source_data_replaced
+            )
             self._imagetool.destroyed.connect(self._destroyed_callback)
             self._imagetool.close()
 
@@ -185,6 +189,9 @@ class _ImageToolWrapper(QtCore.QObject):
             value.installEventFilter(self)
             value.sigTitleChanged.connect(self.update_title)
             value.slicer_area.sigDataEdited.connect(self._trigger_watched_update)
+            value.slicer_area.sigSourceDataReplaced.connect(
+                self._handle_source_data_replaced
+            )
             value.slicer_area._in_manager = True
 
         self._imagetool = value
@@ -400,6 +407,17 @@ class _ImageToolWrapper(QtCore.QObject):
         """Reload the data from the original source."""
         self.slicer_area.reload()
 
+    @QtCore.Slot(object)
+    def _handle_source_data_replaced(self, parent_data: object) -> None:
+        if not isinstance(parent_data, xr.DataArray):
+            parent_data = self.slicer_area._tool_source_parent_data()
+        for uid in list(self._childtool_indices):
+            tool = self._childtools.get(uid)
+            if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
+                continue
+            tool.handle_parent_source_replaced(parent_data)
+            self.manager.tree_view.refresh(uid)
+
     def _add_childtool(
         self, tool: erlab.interactive.utils.ToolWindow, *, show: bool = True
     ) -> str:
@@ -409,7 +427,11 @@ class _ImageToolWrapper(QtCore.QObject):
         if not tool._tool_display_name:
             tool._tool_display_name = str(self.name)
 
+        tool.set_source_parent_fetcher(
+            lambda: self.slicer_area._tool_source_parent_data()
+        )
         tool.sigInfoChanged.connect(lambda u=uid: self.manager._update_info(uid=u))
+        tool.sigInfoChanged.connect(lambda u=uid: self.manager.tree_view.refresh(u))
         tool.destroyed.connect(lambda _=None, u=uid: self.manager._remove_childtool(u))
 
         if show:
@@ -423,5 +445,6 @@ class _ImageToolWrapper(QtCore.QObject):
         if uid in self._childtools:
             tool = self._childtools.pop(uid)
             if erlab.interactive.utils.qt_is_valid(tool):
+                tool.set_source_parent_fetcher(None)
                 tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
                 tool.close()

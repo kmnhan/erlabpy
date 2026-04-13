@@ -1,5 +1,7 @@
 __all__ = ["goldtool", "restool"]
 
+import contextlib
+import dataclasses
 import importlib.resources
 import logging
 import os
@@ -134,6 +136,18 @@ class EdgeFitTask(QtCore.QRunnable):
             self.signals.sigFinished.emit(edge_center, edge_stderr)
         except Exception:  # pragma: no cover - defensive for worker thread
             self.signals.sigFailed.emit(traceback.format_exc())
+
+
+@dataclasses.dataclass(slots=True)
+class _GoldUpdateRequest:
+    data: xr.DataArray
+    had_fit: bool
+    roi_limits: tuple[float, float, float, float]
+    tab_index: int
+    edge_values: dict[str, typing.Any]
+    poly_values: dict[str, typing.Any]
+    spline_values: dict[str, typing.Any]
+    refit: bool
 
 
 class GoldTool(erlab.interactive.utils.AnalysisWindow):
@@ -363,6 +377,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         self.controls.addWidget(self.params_roi)
         self.controls.addWidget(self.params_edge)
+        self.refit_on_source_update_check = QtWidgets.QCheckBox(
+            "Refit on source update"
+        )
+        self.refit_on_source_update_check.setToolTip(
+            "If checked, rerun the edge fit when this tool refreshes from ImageTool."
+        )
+        self.controls.addWidget(self.refit_on_source_update_check)
 
         self.params_tab = QtWidgets.QTabWidget()
         self.params_tab.addTab(self.params_poly, "Polynomial")
@@ -424,6 +445,10 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._threadpool = QtCore.QThreadPool(self)
         self._fit_task: EdgeFitTask | None = None
         self.sigAbortFitting.connect(self._abort_fit_task)
+        self._pending_update_request: _GoldUpdateRequest | None = None
+        self._pending_update_timer = QtCore.QTimer(self)
+        self._pending_update_timer.setSingleShot(True)
+        self._pending_update_timer.timeout.connect(self._flush_pending_update)
 
         # Resize roi to data bounds
         eV_span = self.data.eV.values[-1] - self.data.eV.values[0]
@@ -442,6 +467,148 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
 
+    def _clear_edge_fit_results(self) -> None:
+        self.result = None
+        self._fit_task = None
+        self.progress.reset()
+        self.params_poly.setDisabled(True)
+        self.params_spl.setDisabled(True)
+        self.params_tab.setDisabled(True)
+        self.aw.axes[1].setVisible(False)
+        self.aw.hists[1].setVisible(False)
+        self.aw.axes[2].setVisible(False)
+        self.aw.hists[2].setVisible(False)
+        for scatter, errorbar, curve in zip(
+            self.scatterplots, self.errorbars, self.polycurves, strict=True
+        ):
+            scatter.setData(x=np.array([]), y=np.array([]))
+            errorbar.setData(
+                x=np.array([]), y=np.array([]), height=np.array([], dtype=float)
+            )
+            curve.setData(x=np.array([]), y=np.array([]))
+        with contextlib.suppress(AttributeError):
+            del self.edge_center
+        with contextlib.suppress(AttributeError):
+            del self.edge_stderr
+
+    @staticmethod
+    def _clamp_roi_interval(
+        start: float, stop: float, lower: float, upper: float
+    ) -> tuple[float, float]:
+        lower, upper = min(lower, upper), max(lower, upper)
+        available = upper - lower
+        lo, hi = min(start, stop), max(start, stop)
+        width = hi - lo
+
+        if available <= 0:
+            return lower, upper
+        if width <= 0 or width >= available:
+            return lower, upper
+
+        lo = min(max(lo, lower), upper - width)
+        return lo, lo + width
+
+    def _clamp_roi_limits_to_bounds(
+        self, roi_limits: tuple[float, float, float, float]
+    ) -> tuple[float, float, float, float]:
+        x0, x1 = self._clamp_roi_interval(
+            roi_limits[0], roi_limits[2], *self.params_roi.max_bounds[::2]
+        )
+        y0, y1 = self._clamp_roi_interval(
+            roi_limits[1], roi_limits[3], *self.params_roi.max_bounds[1::2]
+        )
+        return x0, y0, x1, y1
+
+    def _make_update_request(self, data: xr.DataArray) -> _GoldUpdateRequest:
+        return _GoldUpdateRequest(
+            data=data,
+            had_fit=hasattr(self, "edge_center"),
+            roi_limits=self.params_roi.roi_limits,
+            tab_index=self.params_tab.currentIndex(),
+            edge_values=dict(self.params_edge.values),
+            poly_values=dict(self.params_poly.values),
+            spline_values=dict(self.params_spl.values),
+            refit=self.refit_on_source_update_check.isChecked(),
+        )
+
+    def _apply_update_request(self, request: _GoldUpdateRequest) -> None:
+        self._clear_edge_fit_results()
+        self.data = request.data
+        self._along_dim = str(self.data.dims[1])
+        self.aw.set_input(self.data)
+        self.aw.axes[0].autoRange()
+
+        roi_rect = self.aw.axes[0].getViewBox().itemBoundingRect(self.aw.images[0])
+        self.params_roi.roi.maxBounds = roi_rect
+        self.params_roi._x_decimals = erlab.utils.array.effective_decimals(
+            self.data[self._along_dim].values
+        )
+        self.params_roi._y_decimals = erlab.utils.array.effective_decimals(
+            self.data.eV.values
+        )
+        xm, ym, xM, yM = self.params_roi.max_bounds
+        for name in ("x0", "x1"):
+            spin = typing.cast(
+                "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+            )
+            spin.setRange(xm, xM)
+            spin.setDecimals(self.params_roi._x_decimals)
+        for name in ("y0", "y1"):
+            spin = typing.cast(
+                "QtWidgets.QDoubleSpinBox", self.params_roi.widgets[name]
+            )
+            spin.setRange(ym, yM)
+            spin.setDecimals(self.params_roi._y_decimals)
+        self.params_roi.modify_roi(
+            *self._clamp_roi_limits_to_bounds(request.roi_limits)
+        )
+        self.params_roi.update_pos()
+
+        with (
+            QtCore.QSignalBlocker(self.params_edge),
+            QtCore.QSignalBlocker(self.params_poly),
+            QtCore.QSignalBlocker(self.params_spl),
+            QtCore.QSignalBlocker(self.params_tab),
+        ):
+            self.params_edge.set_values(**request.edge_values)
+            self.params_poly.set_values(**request.poly_values)
+            self.params_spl.set_values(**request.spline_values)
+            self.params_tab.setCurrentIndex(request.tab_index)
+        self._toggle_fast()
+
+        if request.had_fit and request.refit:
+            self.perform_edge_fit()
+
+    @QtCore.Slot()
+    def _flush_pending_update(self) -> None:
+        request = self._pending_update_request
+        if request is None:
+            return
+        if self._threadpool.activeThreadCount():
+            self._pending_update_timer.start(50)
+            return
+        self._pending_update_request = None
+        self._apply_update_request(request)
+        self._set_source_state("fresh")
+
+    def update_data(self, new_data: xr.DataArray) -> bool:
+        data = self.validate_update_data(new_data)
+        self._pending_update_request = self._make_update_request(data)
+        self._abort_fit_task()
+        if self._threadpool.activeThreadCount():
+            self._pending_update_timer.start(50)
+            return False
+        self._flush_pending_update()
+        return True
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if data.ndim != 2 or "eV" not in data.dims:
+            raise ValueError("`data` must be a 2D DataArray with an `eV` dimension")
+        if data.dims[0] != "eV":
+            data = data.copy().T
+        return data
+
     def _toggle_fast(self) -> None:
         self.params_edge.widgets["T (K)"].setDisabled(
             bool(self.params_edge.values["Fast"])
@@ -450,8 +617,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             bool(self.params_edge.values["Fast"])
         )
 
-    @QtCore.Slot(int)
-    def iterated(self, n: int) -> None:
+    def iterated(self, n: int, *, task: EdgeFitTask | None = None) -> None:
+        if task is not None and task is not self._fit_task:
+            return
         if n == 0:
             self.progress.setLabelText("")
         elif n == 2:
@@ -477,6 +645,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @QtCore.Slot()
     def perform_edge_fit(self) -> None:
+        if self._pending_update_request is not None:
+            return
         self.progress.setVisible(True)
         self.params_roi.draw_button.setChecked(False)
         x0, y0, x1, y1 = self.roi_limits_ordered
@@ -490,18 +660,33 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.progress.setMaximum(n_total)
         self._abort_fit_task()
         task = EdgeFitTask(self.data, self._along_dim, x0, y0, x1, y1, params)
-        task.signals.sigIterated.connect(self.iterated)
-        task.signals.sigFinished.connect(self.post_fit)
-        task.signals.sigFailed.connect(self._handle_fit_failed)
         self._fit_task = task
+        task.signals.sigIterated.connect(
+            lambda n, task=task: self.iterated(n, task=task)
+        )
+        task.signals.sigFinished.connect(
+            lambda edge_center, edge_stderr, task=task: self.post_fit(
+                edge_center, edge_stderr, task=task
+            )
+        )
+        task.signals.sigFailed.connect(
+            lambda message, task=task: self._handle_fit_failed(message, task=task)
+        )
         self._threadpool.start(task)
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
         self.sigAbortFitting.emit()
 
-    @QtCore.Slot(object, object)
-    def post_fit(self, edge_center: xr.DataArray, edge_stderr: xr.DataArray) -> None:
+    def post_fit(
+        self,
+        edge_center: xr.DataArray,
+        edge_stderr: xr.DataArray,
+        *,
+        task: EdgeFitTask | None = None,
+    ) -> None:
+        if task is not None and task is not self._fit_task:
+            return
         self.progress.reset()
         self.edge_center, self.edge_stderr = edge_center, edge_stderr
         self._fit_task = None
@@ -519,12 +704,18 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @QtCore.Slot()
     def _abort_fit_task(self) -> None:
-        if self._fit_task is None:
+        task = self._fit_task
+        if task is None:
             return
-        self._fit_task.abort_fit()
+        self._fit_task = None
+        task.abort_fit()
+        self.progress.reset()
 
-    @QtCore.Slot(str)
-    def _handle_fit_failed(self, message: str) -> None:
+    def _handle_fit_failed(
+        self, message: str, *, task: EdgeFitTask | None = None
+    ) -> None:
+        if task is not None and task is not self._fit_task:
+            return
         self.progress.reset()
         self._fit_task = None
         erlab.interactive.utils.MessageDialog.critical(
@@ -688,22 +879,25 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         erlab.interactive.utils.copy_to_clipboard(code_str)
         return code_str
 
-    def _stop_server(self) -> None:
+    def _stop_server(self) -> bool:
         """Stop the fitter thread properly."""
+        self._pending_update_request = None
+        self._pending_update_timer.stop()
         self._abort_fit_task()
-        if self._threadpool.activeThreadCount():
-            if hasattr(self._threadpool, "waitForDone"):  # Qt 6.8+
-                self._threadpool.waitForDone(5000)
-            else:  # pragma: no cover
-                import contextlib
-
-                with contextlib.suppress(KeyboardInterrupt):
-                    while self._threadpool.activeThreadCount() > 0:
-                        QtCore.QThread.msleep(100)
+        return self._wait_for_threadpool(
+            self._threadpool,
+            timeout_ms=self.BACKGROUND_TASK_TIMEOUT_MS,
+        )
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Overridden close event to ensure proper cleanup."""
-        self._stop_server()
+        if not self._stop_server():
+            logger.warning(
+                "Gold fit worker did not stop within timeout; aborting window close"
+            )
+            if event is not None:
+                event.ignore()
+            return
         super().closeEvent(event)
 
 
@@ -790,6 +984,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         y0: float
         y1: float
         live_fit: bool
+        refit_on_source_update: bool = False
         temp: float
         fix_temp: bool
         center: float
@@ -857,6 +1052,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             y0=self.y0_spin.value(),
             y1=self.y1_spin.value(),
             live_fit=self.live_check.isChecked(),
+            refit_on_source_update=self.refit_on_source_update_check.isChecked(),
             temp=self.temp_spin.value(),
             fix_temp=self.fix_temp_check.isChecked(),
             center=self.center_spin.value(),
@@ -887,6 +1083,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.y0_spin.setValue(status.y0)
         self.y1_spin.setValue(status.y1)
         self.live_check.setChecked(status.live_fit)
+        self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
 
         self.temp_spin.setValue(status.temp)
         self.fix_temp_check.setChecked(status.fix_temp)
@@ -922,6 +1119,17 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             self,
         )
         self.setWindowTitle("")
+
+        self.refit_on_source_update_check = QtWidgets.QCheckBox(
+            "Refit on source update", self.groupBox_2
+        )
+        self.refit_on_source_update_check.setToolTip(
+            "If checked, rerun the resolution fit when this tool refreshes from "
+            "ImageTool."
+        )
+        typing.cast("QtWidgets.QGridLayout", self.groupBox_2.layout()).addWidget(
+            self.refit_on_source_update_check, 10, 0, 1, 4
+        )
 
         if data.dims.index("eV") != 1:
             data = data.T
@@ -1023,6 +1231,59 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self._fit_signature_current: tuple[typing.Any, ...] | None = None
         self._fit_signature_displayed: tuple[typing.Any, ...] | None = None
 
+    def _configure_data(self, data: xr.DataArray) -> None:
+        if (data.ndim != 2) or ("eV" not in data.dims):
+            raise ValueError("Data must be 2D and have an 'eV' dimension.")
+        if data.dims.index("eV") != 1:
+            data = data.T
+
+        self.data = data
+        self.y_dim = str(data.dims[0])
+
+        x_coords = data["eV"].values
+        y_coords = data[self.y_dim].values
+
+        self._x_range = x_coords.min(), x_coords.max()
+        self._y_range = y_coords.min(), y_coords.max()
+
+        self._x_decimals = erlab.utils.array.effective_decimals(x_coords)
+        self._y_decimals = erlab.utils.array.effective_decimals(y_coords)
+
+        self.x0_spin.setRange(*self._x_range)
+        self.x1_spin.setRange(*self._x_range)
+        self.y0_spin.setRange(*self._y_range)
+        self.y1_spin.setRange(*self._y_range)
+        self.x0_spin.setDecimals(self._x_decimals)
+        self.x1_spin.setDecimals(self._x_decimals)
+        self.y0_spin.setDecimals(self._y_decimals)
+        self.y1_spin.setDecimals(self._y_decimals)
+        self.x0_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.x1_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.y0_spin.setSingleStep(10 ** -(self._y_decimals - 1))
+        self.y1_spin.setSingleStep(10 ** -(self._y_decimals - 1))
+
+        self.res_spin.setDecimals(self._x_decimals + 1)
+        self.res_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+        self.center_spin.setRange(*self._x_range)
+        self.center_spin.setDecimals(self._x_decimals + 1)
+        self.center_spin.setSingleStep(10 ** -(self._x_decimals - 1))
+
+        self.image.setDataArray(self.data, update_labels=True)
+        self.plot0.autoRange()
+        self.x_region.setBounds(self._x_range)
+        self.y_region.setBounds(self._y_range)
+
+    def _clear_fit_outputs(self) -> None:
+        self._result_ds = None
+        self._fit_signature_current = None
+        self._fit_signature_displayed = None
+        self.edc_fit.setData(x=[], y=[])
+        self.overview_label.setText("No fit results")
+        self.temp_val.setText("—")
+        self.center_val.setText("—")
+        self.res_val.setText("—")
+        self.redchi_val.setText("—")
+
     @property
     def _x_range_ui(self) -> tuple[float, float]:
         x0 = round(self.x0_spin.value(), self._x_decimals)
@@ -1057,15 +1318,19 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         # just-starting thread.
         return self._fit_thread is not None
 
-    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int = 5000) -> bool:
-        if self._fit_thread is not None:
-            self._fit_thread.cancel()
-            self._fit_thread.requestInterruption()
+    def _cancel_fit(self, *, wait: bool = False, timeout_ms: int | None = 5000) -> bool:
+        thread = self._fit_thread
+        if thread is not None:
+            thread.cancel()
+            thread.requestInterruption()
         self._fit_cancel_requested = True
         self._fit_queued = False
         self._pending_fit_action = None
-        if wait and self._fit_thread is not None:
-            return self._fit_thread.wait(timeout_ms)
+        if wait and thread is not None:
+            finished = thread.wait() if timeout_ms is None else thread.wait(timeout_ms)
+            if finished:
+                self._finalize_fit_thread(thread)
+            return finished
         return True
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
@@ -1078,6 +1343,35 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
                 event.ignore()
             return
         super().closeEvent(event)
+
+    def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        return self._cancel_fit(wait=True, timeout_ms=timeout_ms)
+
+    def update_data(self, new_data: xr.DataArray) -> bool:
+        had_fit = self._result_ds is not None
+        status = self.tool_status.model_copy(
+            update={"results": ("No fit results", "—", "—", "—", "—")}
+        )
+
+        def _apply_update(validated: xr.DataArray) -> None:
+            self._configure_data(validated)
+            self._clear_fit_outputs()
+            self.tool_status = status
+            self._update_edc()
+            self.sigInfoChanged.emit()
+
+            if had_fit and self.refit_on_source_update_check.isChecked():
+                self.do_fit()
+
+        return self._perform_source_update(new_data, apply_update=_apply_update)
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        data = erlab.interactive.utils.parse_data(new_data)
+        if (data.ndim != 2) or ("eV" not in data.dims):
+            raise ValueError("Data must be 2D and have an 'eV' dimension.")
+        if data.dims.index("eV") != 1:
+            data = data.T
+        return data
 
     def _update_edc(self) -> None:
         """Calculate averaged EDC and update the plot."""
@@ -1162,10 +1456,13 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
 
     def _queue_fit_action(
         self,
+        thread: ResolutionFitThread,
         action: Callable[[], None],
         *,
         allow_when_cancelled: bool = False,
     ) -> None:
+        if self._fit_thread is not thread:
+            return
         if self._fit_cancel_requested and not allow_when_cancelled:
             return
         self._pending_fit_action = action
@@ -1173,8 +1470,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             self._pending_fit_action = None
             action()
 
-    def _finalize_fit_thread(self) -> None:
-        thread = self._fit_thread
+    def _finalize_fit_thread(self, thread: ResolutionFitThread) -> None:
+        if self._fit_thread is not thread:
+            return
         action = self._pending_fit_action
         self._pending_fit_action = None
         self._fit_thread = None
@@ -1185,8 +1483,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         if self._fit_queued and not was_cancelled:
             self._fit_queued = False
             self._start_fit_worker()
-        if thread is not None:
-            thread.deleteLater()
+        thread.deleteLater()
 
     def _start_fit_worker(self) -> bool:
         if self._fit_thread is not None:
@@ -1203,26 +1500,27 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         )
         if hasattr(thread, "setServiceLevel"):
             thread.setServiceLevel(QtCore.QThread.QualityOfService.High)
-        thread.finished.connect(self._finalize_fit_thread)
+        thread.finished.connect(lambda thread=thread: self._finalize_fit_thread(thread))
 
         thread.sigFinished.connect(
-            lambda result_ds, fit_time: self._queue_fit_action(
-                lambda: self._handle_fit_success(result_ds, fit_time, fit_signature)
+            lambda result_ds, fit_time, thread=thread: self._queue_fit_action(
+                thread,
+                lambda: self._handle_fit_success(result_ds, fit_time, fit_signature),
             )
         )
         thread.sigTimedOut.connect(
-            lambda elapsed: self._queue_fit_action(
-                lambda: self._handle_fit_timeout(elapsed, fit_signature)
+            lambda elapsed, thread=thread: self._queue_fit_action(
+                thread, lambda: self._handle_fit_timeout(elapsed, fit_signature)
             )
         )
         thread.sigErrored.connect(
-            lambda message: self._queue_fit_action(
-                lambda: self._handle_fit_error(message, fit_signature)
+            lambda message, thread=thread: self._queue_fit_action(
+                thread, lambda: self._handle_fit_error(message, fit_signature)
             )
         )
         thread.sigCancelled.connect(
-            lambda: self._queue_fit_action(
-                self._handle_fit_cancelled, allow_when_cancelled=True
+            lambda thread=thread: self._queue_fit_action(
+                thread, self._handle_fit_cancelled, allow_when_cancelled=True
             )
         )
 

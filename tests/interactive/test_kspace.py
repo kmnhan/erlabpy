@@ -811,3 +811,122 @@ def test_get_bz_lines_uses_legacy_hv_path_for_scalar_other_axis(monkeypatch) -> 
     assert np.allclose(lines[0], expected_lines[0])
     assert np.allclose(vertices, expected_vertices)
     assert np.allclose(midpoints, expected_midpoints)
+
+
+def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.center_spin.setValue(float(data.eV.values[2]))
+    win.width_spin.setValue(3)
+    win.bounds_supergroup.setChecked(True)
+    win.resolution_supergroup.setChecked(True)
+    win.preview_symmetry_group.setChecked(True)
+    win.preview_symmetry_fold_spin.setValue(4)
+    win._offset_spins["delta"].setValue(5.0)
+    win._offset_spins["wf"].setValue(4.6)
+    if "beta" in win._offset_spins:
+        win._offset_spins["beta"].setValue(-1.5)
+    win.add_circle_btn.click()
+    win._roi_list[0].set_position((0.1, 0.2), 0.25)
+
+    status = win.tool_status
+    new_data = data.copy(deep=True)
+    new_data.data = np.asarray(new_data.data) * 1.1
+    win.update_data(new_data)
+
+    assert win.tool_status == status
+    xr.testing.assert_identical(win.tool_data, new_data)
+    assert win.images[0].data_array is not None
+    assert win.images[1].data_array is not None
+
+
+def test_ktool_update_data_with_single_energy_disables_energy_group(
+    qtbot, anglemap
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    fixed_energy = float(data.eV.values[0])
+    assert win.energy_group.isEnabled() is False
+    assert win.center_spin.value() == pytest.approx(fixed_energy, abs=1e-3)
+    assert win.center_spin.minimum() == pytest.approx(fixed_energy - 0.1, abs=1e-3)
+    assert win.center_spin.maximum() == pytest.approx(fixed_energy + 0.1, abs=1e-3)
+
+
+def test_ktool_update_data_reconnects_energy_controls_after_single_energy(
+    qtbot, anglemap, monkeypatch
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
+        deep=True
+    )
+    updated = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    update_calls: list[None] = []
+    original_update = win.update
+
+    def _wrapped_update() -> None:
+        update_calls.append(None)
+        original_update()
+
+    monkeypatch.setattr(win, "update", _wrapped_update)
+
+    win.update_data(updated)
+    assert win.energy_group.isEnabled() is True
+
+    update_calls.clear()
+    win.center_spin.setValue(float(updated.eV.values[2]))
+    qtbot.wait_until(lambda: len(update_calls) > 0, timeout=5000)
+
+    update_calls.clear()
+    win.width_spin.setValue(3)
+    qtbot.wait_until(lambda: len(update_calls) > 0, timeout=5000)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        (
+            "_valid_offset_keys",
+            ("delta",),
+            "incompatible offset coordinates",
+        ),
+        ("momentum_axes", ("kx",), "incompatible momentum axes"),
+        ("configuration", 999, "incompatible analyzer configuration"),
+        ("_has_hv", True, "incompatible photon-energy dimensions"),
+    ],
+)
+def test_ktool_validate_update_data_rejects_incompatible_metadata(
+    qtbot, anglemap, monkeypatch, field, value, match
+) -> None:
+    data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
+        deep=True
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    fake_kspace = SimpleNamespace(
+        _valid_offset_keys=tuple(win.data.kspace._valid_offset_keys),
+        momentum_axes=tuple(win.data.kspace.momentum_axes),
+        configuration=int(win.data.kspace.configuration),
+        _has_hv=win.data.kspace._has_hv,
+    )
+    setattr(fake_kspace, field, value)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "parse_data",
+        lambda _: SimpleNamespace(kspace=fake_kspace),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        win.validate_update_data(object())

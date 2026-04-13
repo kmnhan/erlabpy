@@ -410,8 +410,10 @@ class ImageTool(BaseImageTool):
 
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
-                    self.slicer_area.set_data(
-                        fn(fname, **kargs), file_path=fname, load_func=(fn, kargs, 0)
+                    self.slicer_area.replace_source_data(
+                        fn(fname, **kargs),
+                        file_path=fname,
+                        load_func=(fn, kargs, 0),
                     )
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(

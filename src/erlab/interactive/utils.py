@@ -12,12 +12,15 @@ import fnmatch
 import importlib
 import inspect
 import itertools
+import json
 import keyword
+import logging
 import os
 import pathlib
 import re
 import sys
 import threading
+import time
 import traceback
 import types
 import typing
@@ -81,6 +84,7 @@ __all__ = [
 ]
 
 _LOAD_UI_LOCK = threading.RLock()
+logger = logging.getLogger(__name__)
 
 
 def _qt_object_is_valid_fallback(arg__1: object) -> bool:
@@ -645,6 +649,152 @@ def copy_to_clipboard(content: str | list[str]) -> str:
         content = "\n".join(content)
     pyperclip.copy(str(content))
     return content
+
+
+_TOOL_SOURCE_SPEC_ATTR = "tool_source_spec"
+_TOOL_SOURCE_STATE_ATTR = "tool_source_state"
+_TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
+_TOOL_SOURCE_SLICE_MARKER = "__erlab_slice__"
+
+
+def _encode_tool_source_value(value: typing.Any) -> typing.Any:
+    if isinstance(value, slice):
+        return {
+            _TOOL_SOURCE_SLICE_MARKER: [
+                _encode_tool_source_value(value.start),
+                _encode_tool_source_value(value.stop),
+                _encode_tool_source_value(value.step),
+            ]
+        }
+    if isinstance(value, tuple):
+        return [_encode_tool_source_value(item) for item in value]
+    if isinstance(value, list):
+        return [_encode_tool_source_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _encode_tool_source_value(item) for key, item in value.items()
+        }
+    return erlab.utils.misc._convert_to_native(value)
+
+
+def _decode_tool_source_value(value: typing.Any) -> typing.Any:
+    if isinstance(value, dict):
+        if _TOOL_SOURCE_SLICE_MARKER in value:
+            start, stop, step = value[_TOOL_SOURCE_SLICE_MARKER]
+            return slice(
+                _decode_tool_source_value(start),
+                _decode_tool_source_value(stop),
+                _decode_tool_source_value(step),
+            )
+        return {
+            str(key): _decode_tool_source_value(item) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_decode_tool_source_value(item) for item in value]
+    return value
+
+
+def _resolve_tool_source_spec(
+    parent_data: xr.DataArray, spec: dict[str, typing.Any]
+) -> xr.DataArray:
+    kind = spec.get("kind", "")
+    if kind == "full_data":
+        return parent_data.copy(deep=False)
+
+    if kind != "selection":
+        raise ValueError(f"Unsupported tool source kind: {kind!r}")
+
+    # Source specs are recorded against ImageTool's public data model, which restores
+    # non-uniform dimensions from their internal ``*_idx`` representation. Rebuild that
+    # public view before replaying selection operations so recorded dimension names
+    # continue to resolve after source data refreshes.
+    data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        parent_data.copy(deep=False)
+    )
+    for operation in spec.get("operations", []):
+        op_name = operation.get("op", "")
+        kwargs = _decode_tool_source_value(operation.get("kwargs", {}))
+        if op_name == "qsel":
+            data = data.qsel(**kwargs)
+        elif op_name == "isel":
+            data = data.isel(kwargs)
+        elif op_name == "sel":
+            data = data.sel(kwargs)
+        elif op_name == "sort_coord_order":
+            data = erlab.utils.array.sort_coord_order(data, parent_data.coords.keys())
+        elif op_name == "transpose":
+            dims = typing.cast("list[typing.Any] | None", operation.get("dims"))
+            if dims:
+                data = data.transpose(*dims)
+            else:
+                data = data.transpose(*reversed(data.dims))
+        elif op_name == "squeeze":
+            data = data.squeeze()
+        else:
+            raise ValueError(f"Unsupported tool source operation: {op_name!r}")
+    return data
+
+
+def make_tool_source_spec(
+    kind: typing.Literal["full_data", "selection"],
+    *,
+    operations: list[dict[str, typing.Any]] | None = None,
+) -> dict[str, typing.Any]:
+    spec: dict[str, typing.Any] = {"kind": kind}
+    if operations:
+        spec["operations"] = operations
+    return spec
+
+
+class _ToolSourceUpdateDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None,
+        *,
+        state: typing.Literal["stale", "unavailable"],
+        auto_update: bool,
+    ) -> None:
+        super().__init__(parent)
+        self.setModal(True)
+        self.setWindowTitle("Update Tool Data")
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        label = QtWidgets.QLabel(self)
+        label.setWordWrap(True)
+        if state == "stale":
+            label.setText(
+                "This tool was created from ImageTool data that has since changed. "
+                "Update it to fetch the latest compatible selection."
+            )
+        else:
+            label.setText(
+                "This tool was created from a selection that is not available in the "
+                "current ImageTool data. Reopen the tool from ImageTool after the "
+                "selection becomes compatible again."
+            )
+        layout.addWidget(label)
+
+        self.auto_update_check = QtWidgets.QCheckBox(
+            "Update this tool automatically", self
+        )
+        self.auto_update_check.setChecked(auto_update)
+        layout.addWidget(self.auto_update_check)
+
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel, self
+        )
+        self.update_button = typing.cast(
+            "QtWidgets.QPushButton",
+            self.button_box.addButton(
+                "Update", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+            ),
+        )
+        self.update_button.setEnabled(state == "stale")
+        self.auto_update_check.setEnabled(self.update_button.isEnabled())
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
 
 
 def format_kwargs(d: dict[Hashable, typing.Any]) -> str:
@@ -2311,6 +2461,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
       :class:`xarray.DataArray` being analyzed, which will be passed to the constructor
       of the subclass when restoring from a file.
 
+    For tools that support refreshing their data from an ImageTool source, subclasses
+    should also override the following hooks:
+
+    - `update_data` must apply replacement data to the existing window without
+      recreating it. Return `False` when the incoming data is recognized but cannot be
+      applied yet, so the tool remains marked as stale.
+
+    - `validate_update_data` can normalize or reject incoming source data before
+      `update_data` runs. Raise an exception to mark the source as unavailable.
+
+    - `_cancel_background_work` can stop worker threads or other asynchronous work
+      before `update_data` mutates the tool state. Override
+      `BACKGROUND_TASK_TIMEOUT_MS` as needed to change the default wait timeout.
+
     For full compatibility with the ImageTool manager, the following optional attributes
     or properties can also be set:
 
@@ -2330,6 +2494,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     """
 
     tool_name: str = "tool"
+    BACKGROUND_TASK_TIMEOUT_MS: typing.ClassVar[int] = 5000
     __tool_display_name: str = ""
 
     StateModel: type[M]
@@ -2338,6 +2503,34 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+
+        self._tool_root_widget = QtWidgets.QWidget(self)
+        self._tool_root_layout = QtWidgets.QVBoxLayout(self._tool_root_widget)
+        self._tool_root_layout.setContentsMargins(0, 0, 0, 0)
+        self._tool_root_layout.setSpacing(0)
+        self._tool_content_widget: QtWidgets.QWidget | None = None
+
+        self._source_status_bar = QtWidgets.QFrame(self._tool_root_widget)
+        self._source_status_bar.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._source_status_bar.hide()
+        self._source_status_layout = QtWidgets.QHBoxLayout(self._source_status_bar)
+        self._source_status_layout.setContentsMargins(8, 6, 8, 0)
+        self._source_status_layout.setSpacing(0)
+        self._source_status_button = QtWidgets.QPushButton(self._source_status_bar)
+        self._source_status_button.setFlat(True)
+        self._source_status_button.setCursor(
+            QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        )
+        self._source_status_button.clicked.connect(self.show_source_update_dialog)
+        self._source_status_layout.addWidget(self._source_status_button, 0)
+        self._source_status_layout.addStretch(1)
+        self._tool_root_layout.addWidget(self._source_status_bar, 0)
+        QtWidgets.QMainWindow.setCentralWidget(self, self._tool_root_widget)
+
+        self._source_spec: dict[str, typing.Any] | None = None
+        self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
+        self._source_auto_update: bool = False
+        self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
 
         # Initialize a menu bar to correctly apply keyboard shortcuts on some platforms
         self.menuBar()
@@ -2355,6 +2548,29 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self.__remove_shortcut.setContext(
             QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
         )
+
+    def centralWidget(self) -> QtWidgets.QWidget | None:
+        """Return the content widget shown below the source-status banner."""
+        if self._tool_content_widget is not None:
+            return self._tool_content_widget
+        return QtWidgets.QMainWindow.centralWidget(self)
+
+    def setCentralWidget(self, widget: QtWidgets.QWidget | None) -> None:
+        """Set the main content widget while preserving the source-status banner."""
+        if widget is self._tool_root_widget:
+            QtWidgets.QMainWindow.setCentralWidget(self, widget)
+            return
+
+        current = self._tool_content_widget
+        if current is widget:
+            return
+        if current is not None:
+            self._tool_root_layout.removeWidget(current)
+            current.setParent(None)
+
+        self._tool_content_widget = widget
+        if widget is not None:
+            self._tool_root_layout.addWidget(widget, 1)
 
     def _is_in_manager(self) -> bool:
         """Check whether this tool window is currently owned by ImageTool manager."""
@@ -2437,6 +2653,270 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
 
     @property
+    def source_spec(self) -> dict[str, typing.Any] | None:
+        """Return a detached copy of the current ImageTool source specification."""
+        if self._source_spec is None:
+            return None
+        return json.loads(json.dumps(self._source_spec))
+
+    @property
+    def source_state(self) -> typing.Literal["fresh", "stale", "unavailable"]:
+        """Return whether the bound ImageTool source is fresh, stale, or unavailable."""
+        return self._source_state
+
+    @property
+    def source_auto_update(self) -> bool:
+        """Return whether compatible source changes should be applied automatically."""
+        return self._source_auto_update
+
+    @property
+    def has_source_binding(self) -> bool:
+        """Return `True` when this tool is bound to ImageTool source data."""
+        return self._source_spec is not None
+
+    @property
+    def source_status_text(self) -> str:
+        """Return the status label shown for non-fresh source bindings."""
+        if self._source_state == "stale":
+            return "Source Update Available"
+        if self._source_state == "unavailable":
+            return "Source Update Unavailable"
+        return ""
+
+    def set_source_binding(
+        self,
+        source_spec: dict[str, typing.Any] | None,
+        *,
+        auto_update: bool = False,
+        state: typing.Literal["fresh", "stale", "unavailable"] = "fresh",
+    ) -> None:
+        """Bind this tool to an ImageTool source specification and status state."""
+        self._source_spec = (
+            json.loads(json.dumps(source_spec)) if source_spec is not None else None
+        )
+        self._source_auto_update = bool(auto_update)
+        self._set_source_state(state if self._source_spec is not None else "fresh")
+
+    def set_source_parent_fetcher(
+        self, fetcher: Callable[[], xr.DataArray] | None
+    ) -> None:
+        """Set the callback used to fetch the latest parent ImageTool data."""
+        self._source_parent_fetcher = fetcher
+
+    def _set_source_auto_update(self, value: bool) -> None:
+        """Update the auto-refresh flag and notify manager-facing UI state."""
+        self._source_auto_update = bool(value)
+        self._refresh_source_status_widget()
+        self.sigInfoChanged.emit()
+
+    def _set_source_state(
+        self, state: typing.Literal["fresh", "stale", "unavailable"]
+    ) -> None:
+        """Update the source state, refresh the banner, and emit info changes."""
+        self._source_state = state
+        self._refresh_source_status_widget()
+        self.sigInfoChanged.emit()
+
+    def _refresh_source_status_widget(self) -> None:
+        """Refresh the inline banner that reports source update availability."""
+        if self._source_spec is None or self._source_state == "fresh":
+            self._source_status_bar.hide()
+            self._source_status_button.setToolTip("")
+            return
+
+        if self._source_state == "stale":
+            bgcolor = "#f4c26b"
+            fgcolor = "#2d2212"
+            tooltip = "Click to review or apply the latest source data."
+        else:
+            bgcolor = "#ef8a8a"
+            fgcolor = "#3b1111"
+            tooltip = (
+                "Click to review why this tool can no longer update from the "
+                "current ImageTool data."
+            )
+        if self._source_auto_update:
+            tooltip += " Automatic updates are enabled."
+        self._source_status_button.setText(self.source_status_text)
+        self._source_status_button.setToolTip(tooltip)
+        self._source_status_button.setStyleSheet(
+            "QPushButton {"
+            f"background-color: {bgcolor};"
+            f"color: {fgcolor};"
+            "border: 1px solid transparent;"
+            "border-radius: 4px;"
+            "padding: 4px 8px;"
+            "font-weight: 600;"
+            "text-align: left;"
+            "}"
+        )
+        self._source_status_bar.show()
+
+    def _resolve_source_data(self, parent_data: xr.DataArray) -> xr.DataArray:
+        """Resolve the current source specification against replacement parent data."""
+        if self._source_spec is None:
+            raise RuntimeError("Tool is not bound to an ImageTool source.")
+        return _resolve_tool_source_spec(parent_data, self._source_spec)
+
+    def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
+        """Validate or normalize source data before `update_data` consumes it.
+
+        Subclasses can override this to enforce dimension, coordinate, or metadata
+        requirements for refreshed source data. Raise an exception to mark the source as
+        unavailable.
+        """
+        return new_data
+
+    def _cancel_background_work(self, *, timeout_ms: int) -> bool:
+        """Stop any running background work before mutating the tool state.
+
+        Subclasses should override this when source updates must wait for worker
+        shutdown before tearing down widgets or replacing internal state.
+        """
+        return True
+
+    def _perform_source_update(
+        self,
+        new_data: xr.DataArray,
+        *,
+        apply_update: Callable[[xr.DataArray], None],
+        timeout_ms: int | None = None,
+    ) -> bool:
+        """Run a source update without tearing down the UI while workers are alive."""
+        validated = self.validate_update_data(new_data)
+        if timeout_ms is None:
+            timeout_ms = self.BACKGROUND_TASK_TIMEOUT_MS
+        if not self._cancel_background_work(timeout_ms=timeout_ms):
+            logger.warning(
+                "Timed out waiting for background work to stop while updating %s",
+                self.tool_name,
+            )
+            return False
+        apply_update(validated)
+        return True
+
+    @staticmethod
+    def _wait_for_threadpool(
+        threadpool: QtCore.QThreadPool,
+        *,
+        timeout_ms: int,
+        poll_interval_ms: int = 100,
+    ) -> bool:
+        """Wait for a QThreadPool to quiesce within a bounded timeout."""
+        if threadpool.activeThreadCount() == 0:
+            return True
+
+        if not hasattr(
+            threadpool, "waitForDone"
+        ):  # pragma: no cover - Qt 6.8+ has waitForDone
+            deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+            while threadpool.activeThreadCount() > 0:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                if remaining_ms <= 0:
+                    return False
+                QtCore.QThread.msleep(min(poll_interval_ms, remaining_ms))
+            return True
+        return bool(threadpool.waitForDone(timeout_ms))
+
+    def _update_from_parent_source(self) -> bool:
+        """Fetch the latest parent data and apply it through `update_data`."""
+        if self._source_parent_fetcher is None:
+            return False
+        try:
+            parent_data = self._source_parent_fetcher()
+        except Exception:
+            return False
+        try:
+            resolved = self._resolve_source_data(parent_data)
+        except Exception:
+            self._set_source_state("unavailable")
+            return False
+
+        try:
+            resolved = self.validate_update_data(resolved)
+        except Exception:
+            self._set_source_state("unavailable")
+            return False
+
+        try:
+            update_complete = self.update_data(resolved)
+        except Exception:
+            logger.exception(
+                "Failed to update %s from ImageTool source data", self.tool_name
+            )
+            self._set_source_state("unavailable")
+            return False
+        if update_complete is False:
+            self._set_source_state("stale")
+            return False
+        self._set_source_state("fresh")
+        return True
+
+    def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> None:
+        """React to replacement of the parent ImageTool data source."""
+        if self._source_spec is None:
+            return
+        try:
+            resolved = self._resolve_source_data(parent_data)
+        except Exception:
+            self._set_source_state("unavailable")
+            return
+
+        try:
+            resolved = self.validate_update_data(resolved)
+        except Exception:
+            self._set_source_state("unavailable")
+            return
+
+        if self._source_auto_update:
+            try:
+                update_complete = self.update_data(resolved)
+            except Exception:
+                logger.exception(
+                    "Failed to auto-update %s from ImageTool source data",
+                    self.tool_name,
+                )
+                self._set_source_state("unavailable")
+                return
+            if update_complete is False:
+                self._set_source_state("stale")
+                return
+            self._set_source_state("fresh")
+        else:
+            self._set_source_state("stale")
+
+    def show_source_update_dialog(
+        self, *, parent: QtWidgets.QWidget | None = None
+    ) -> int:
+        """Show the source update dialog and apply the user's selection."""
+        if self._source_spec is None or self._source_state == "fresh":
+            return int(QtWidgets.QDialog.DialogCode.Rejected)
+
+        dialog = _ToolSourceUpdateDialog(
+            parent if parent is not None else self,
+            state=self._source_state,
+            auto_update=self._source_auto_update,
+        )
+        result = dialog.exec()
+        if result == int(QtWidgets.QDialog.DialogCode.Accepted):
+            self._set_source_auto_update(dialog.auto_update_check.isChecked())
+            if self._source_state == "stale":
+                self._update_from_parent_source()
+        return result
+
+    def update_data(self, new_data: xr.DataArray) -> bool | None:
+        """Apply refreshed source data to the existing tool window.
+
+        Subclasses must override this when they support ImageTool source updates. Return
+        `False` to leave the tool marked as stale when the new data is recognized but
+        cannot be applied immediately.
+        """
+        raise NotImplementedError(
+            "Subclasses of ToolWindow must implement update_data() to support "
+            "ImageTool source updates."
+        )
+
+    @property
     def preview_imageitem(self) -> pg.ImageItem | None:
         """Get the ImageItem to be used for preview in the ImageTool manager."""
         return None
@@ -2456,7 +2936,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         data_name = self.tool_data.name
         if data_name is None:
             data_name = "<none-value>"
-        return {
+        attrs = {
             "tool_state": self.tool_status.model_dump_json(),
             "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
@@ -2466,6 +2946,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             "tool_visible": bool(self.isVisible()),
             "erlab_version": erlab.__version__,
         }
+        if self._source_spec is not None:
+            attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(self._source_spec)
+            attrs[_TOOL_SOURCE_STATE_ATTR] = self._source_state
+            attrs[_TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(self._source_auto_update)
+        return attrs
 
     @classmethod
     def can_save_and_load(cls) -> bool:
@@ -2528,6 +3013,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             ds.attrs["tool_state"]
         )
         tool._tool_display_name = ds.attrs.get("tool_display_name", "")
+        if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
+            tool.set_source_binding(
+                json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
+                auto_update=bool(ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)),
+                state=typing.cast(
+                    "typing.Literal['fresh', 'stale', 'unavailable']",
+                    ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
+                ),
+            )
         tool.setWindowTitle(ds.attrs["tool_title"])
         tool.setGeometry(*ds.attrs["tool_rect"])
         return tool
