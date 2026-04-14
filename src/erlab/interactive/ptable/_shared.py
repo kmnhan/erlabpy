@@ -244,7 +244,7 @@ def _boost_saturation(color: QtGui.QColor, amount: float) -> QtGui.QColor:
     amount = min(max(amount, 0.0), 1.0)
     hsv_color = QtGui.QColor(color).convertTo(QtGui.QColor.Spec.Hsv)
     hue, saturation, value, alpha = hsv_color.getHsv()
-    if hue is None or saturation is None or value is None or alpha is None or hue < 0:
+    if hue < 0:
         return QtGui.QColor(color)
     boosted_saturation = min(255, int(saturation + (255 - saturation) * amount))
     return QtGui.QColor.fromHsv(hue, boosted_saturation, value, alpha)

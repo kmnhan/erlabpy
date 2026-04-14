@@ -34,6 +34,7 @@ Use modern typing syntax as a default rule: use built-in generics (`list[str]`, 
 
 Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py` beside the code they cover. Loader plugins need regression data in `tests/io/plugins/test_<plugin>.py`; set `ERLAB_TEST_DATA_DIR` to a local clone of `erlabpy-data` so fixtures resolve. Coverage already skips legacy updater code, so aim for branch coverage elsewhere and parametrize datasets to catch multidimensional regressions.
 
+- If newly added or expanded tests fail after an initial implementation, re-examine the runtime code before assuming the tests are wrong. Do not modify tests only to make them pass unless you can clearly justify that the asserted behavior is incorrect; otherwise you may mask a real defect in the implementation.
 - The fast PR workflow runs one fully covered, sharded `3.13 + pyqt6` lane plus smaller compatibility smoke jobs. The weekly compatibility workflow keeps the full upgraded `3.11-3.14 x pyqt6/pyside6` matrix.
 - Test grouping is centralized in `scripts/_ci_test_groups.py`. When adding a new top-level test module under `tests/analysis/`, `tests/interactive/`, `tests/io/`, or `tests/`, update that file so the new test lands in exactly one coverage shard and, if appropriate, in the compatibility smoke set.
 - `tests/conftest.py` assigns the `compat`, `gui`, and `serial` markers during collection based on the centralized grouping rules. Keep those markers semantically meaningful; do not scatter ad hoc CI-only marker assignments across unrelated test files.

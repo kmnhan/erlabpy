@@ -407,7 +407,7 @@ def auto_correct_curvature(
     edge = darr_partial.diff("eV") > 0
 
     # Data right at this index is nonzero, one step lower is zero
-    correction_profile_idx = typing.cast("xr.DataArray", edge.argmax("eV"))
+    correction_profile_idx = edge.argmax("eV")
 
     # Fit polynomial to the profile
     step = float(np.abs(edge.eV[1] - edge.eV[0]))
