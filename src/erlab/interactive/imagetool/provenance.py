@@ -15,9 +15,11 @@ ImageTool window. A :class:`ToolProvenanceSpec` answers two questions:
 Adding a new provenance-carrying operation follows the same pattern every time:
 
 1. Define a new `_BaseOperation` subclass with a unique ``op`` discriminator literal.
-2. Choose serialized fields that are stable in JSON and validate them with Pydantic.
-3. If the operation needs non-JSON values such as slices, NumPy arrays, or xarray
-   objects, encode them in field validators with :func:`encode_provenance_value` and
+2. Prefer the annotated provenance field aliases defined in this module for hashable
+   dimension identifiers and dim-keyed mappings so runtime values stay decoded while
+   JSON dumps remain lossless.
+3. If the operation needs already-encoded payloads such as xarray objects or array-like
+   vertex data, validate them with :meth:`_BaseOperation._validate_encoded_field` and
    expose decoded convenience properties for runtime use.
 4. Implement :meth:`_BaseOperation.apply` so it transforms a derived array using the
    recorded parameters. ``parent_data`` is provided when the operation needs access to
@@ -228,8 +230,9 @@ _OPERATION_TYPES: dict[str, type[_BaseOperation]] = {}
 class _BaseOperation(pydantic.BaseModel):
     """Base class for immutable provenance operations.
 
-    New operations should keep persisted fields JSON-safe after validation, implement
-    :meth:`apply` to replay the transformation, and implement
+    New operations should keep runtime fields in their decoded Python form, prefer the
+    annotated provenance field aliases in this module for lossless JSON serialization,
+    implement :meth:`apply` to replay the transformation, and implement
     :meth:`derivation_entry` to describe the step in manager UI.
     """
 
