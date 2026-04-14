@@ -537,7 +537,9 @@ class RotationDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.rotate(**self._rotate_params)
+        return erlab.interactive.imagetool.provenance.RotateOperation(
+            **self._rotate_params
+        )
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -574,7 +576,9 @@ class AverageDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.average(*self._target_dims)
+        return erlab.interactive.imagetool.provenance.AverageOperation(
+            dims=self._target_dims
+        )
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -599,9 +603,9 @@ class AverageDialog(DataTransformDialog):
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or ""
         arg = (
-            str(self._target_dims)
-            if len(self._target_dims) > 1
-            else f'"{self._target_dims[0]}"'
+            erlab.interactive.utils._parse_single_arg(self._target_dims[0])
+            if len(self._target_dims) == 1 and isinstance(self._target_dims[0], str)
+            else erlab.interactive.utils._parse_single_arg(self._target_dims)
         )
         return f"{placeholder}.qsel.average({arg})"
 
@@ -719,7 +723,7 @@ class CoarsenDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.coarsen(
+        return erlab.interactive.imagetool.provenance.CoarsenOperation(
             dim=self._selected_windows,
             boundary=self.boundary_combo.currentText(),
             side=self.side_combo.currentText(),
@@ -777,7 +781,7 @@ class CoarsenDialog(DataTransformDialog):
 
         kwargs = self._coarsen_kwargs.copy()
         if all(
-            isinstance(k, str) for k in self._coarsen_kwargs["dim"]
+            isinstance(k, str) and k.isidentifier() for k in self._coarsen_kwargs["dim"]
         ):  # pragma: no branch
             window_kwargs = kwargs.pop("dim")
             kwargs = dict(**window_kwargs, **kwargs)
@@ -895,11 +899,11 @@ class ThinDialog(DataTransformDialog):
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
         if self._use_global_mode:
-            return erlab.interactive.imagetool.provenance.thin(
-                factor=self.global_spin.value()
+            return erlab.interactive.imagetool.provenance.ThinOperation(
+                mode="global", factor=self.global_spin.value()
             )
-        return erlab.interactive.imagetool.provenance.thin(
-            factors=self._effective_factors
+        return erlab.interactive.imagetool.provenance.ThinOperation(
+            mode="per_dim", factors=self._effective_factors
         )
 
     @QtCore.Slot()
@@ -931,7 +935,7 @@ class ThinDialog(DataTransformDialog):
 
         if not self._effective_factors:
             return ""
-        kwargs = erlab.interactive.utils.format_kwargs(self._effective_factors)
+        kwargs = erlab.interactive.utils.format_call_kwargs(self._effective_factors)
         return f"{placeholder}.thin({kwargs})"
 
 
@@ -1034,7 +1038,9 @@ class SymmetrizeDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.symmetrize(**self._params)
+        return erlab.interactive.imagetool.provenance.SymmetrizeOperation(
+            **self._params
+        )
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -1129,7 +1135,9 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.symmetrize_nfold(**self._params)
+        return erlab.interactive.imagetool.provenance.SymmetrizeNfoldOperation(
+            **self._params
+        )
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -1156,7 +1164,7 @@ class EdgeCorrectionDialog(DataTransformDialog):
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
         assert self._edge_fit is not None
-        return erlab.interactive.imagetool.provenance.correct_with_edge(
+        return erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation(
             edge_fit=self._edge_fit,
             shift_coords=self.shift_coord_check.isChecked(),
         )
@@ -1195,21 +1203,16 @@ class _BaseCropDialog(DataTransformDialog):
         ] = []
 
         for key in list(sel_kwargs.keys()):
-            key_str = str(key)
-            if key_str.endswith("_idx"):
-                isel_kwargs[key_str.removesuffix("_idx")] = sel_kwargs.pop(key)
+            if isinstance(key, str) and key.endswith("_idx"):
+                isel_kwargs[key.removesuffix("_idx")] = sel_kwargs.pop(key)
 
         if sel_kwargs:
             operations.append(
-                erlab.interactive.imagetool.provenance.sel(
-                    **{str(key): value for key, value in sel_kwargs.items()}
-                )
+                erlab.interactive.imagetool.provenance.SelOperation(kwargs=sel_kwargs)
             )
         if isel_kwargs:
             operations.append(
-                erlab.interactive.imagetool.provenance.isel(
-                    **{str(key): value for key, value in isel_kwargs.items()}
-                )
+                erlab.interactive.imagetool.provenance.IselOperation(kwargs=isel_kwargs)
             )
         return operations
 
@@ -1221,14 +1224,14 @@ class _BaseCropDialog(DataTransformDialog):
         isel_kwargs: dict[Hashable, slice] = {}
 
         for k in list(sel_kwargs.keys()):
-            if str(k).endswith("_idx"):
-                isel_kwargs[str(k).removesuffix("_idx")] = sel_kwargs.pop(k)
+            if isinstance(k, str) and k.endswith("_idx"):
+                isel_kwargs[k.removesuffix("_idx")] = sel_kwargs.pop(k)
 
         out: str = self.slicer_area.watched_data_name or ""
         if sel_kwargs:
-            out += f".sel({erlab.interactive.utils.format_kwargs(sel_kwargs)})"
+            out += f".sel({erlab.interactive.utils.format_call_kwargs(sel_kwargs)})"
         if isel_kwargs:
-            out += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
+            out += f".isel({erlab.interactive.utils.format_call_kwargs(isel_kwargs)})"
 
         return out
 
@@ -1723,14 +1726,16 @@ class SwapDimsDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.swap_dims(self._swap_mapping)
+        return erlab.interactive.imagetool.provenance.SwapDimsOperation(
+            mapping=self._swap_mapping
+        )
 
     def make_code(self) -> str:
         if not self._swap_mapping:
             return ""
 
         placeholder = self.slicer_area.watched_data_name or ""
-        kwargs = erlab.interactive.utils.format_kwargs(self._swap_mapping)
+        kwargs = erlab.interactive.utils.format_call_kwargs(self._swap_mapping)
         return f"{placeholder}.swap_dims({kwargs})"
 
 
@@ -1916,7 +1921,7 @@ class AssignCoordsDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.assign_coords(
+        return erlab.interactive.imagetool.provenance.AssignCoordsOperation(
             coord_name=self.current_coord_name,
             values=self.coord_widget.new_coord,
         )
@@ -1988,7 +1993,9 @@ class ROIPathDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.slice_along_path(**self._params)
+        return erlab.interactive.imagetool.provenance.SliceAlongPathOperation(
+            **self._params
+        )
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -2044,7 +2051,9 @@ class ROIMaskDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.mask_with_polygon(**self._params)
+        return erlab.interactive.imagetool.provenance.MaskWithPolygonOperation(
+            **self._params
+        )
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "

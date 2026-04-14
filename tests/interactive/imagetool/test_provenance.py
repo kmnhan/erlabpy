@@ -20,23 +20,54 @@ def _base_data() -> xr.DataArray:
     )
 
 
+def _hashable_data() -> xr.DataArray:
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)),
+        dims=(1, ("beta", 0)),
+        name="data",
+    )
+    return data.assign_coords(
+        {"coord_1": xr.DataArray([100.0, 101.0, 102.0], dims=[1])}
+    )
+
+
+def _string_key_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(12).reshape((3, 4)),
+        dims=("k-space", ("beta", 0)),
+        coords={"k-space": [0.0, 1.0, 2.0]},
+        name="data",
+    )
+
+
 def test_tool_provenance_codec_and_combinators() -> None:
+    prov = erlab.interactive.imagetool.provenance
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
-    encoded = erlab.interactive.imagetool.provenance.encode_provenance_value(
+    encoded = prov.encode_provenance_value(
         {"sel": slice(1.0, 2.0), "data": _base_data(), "edge_fit": edge_fit}
     )
-    decoded = erlab.interactive.imagetool.provenance.decode_provenance_value(encoded)
+    decoded = prov.decode_provenance_value(encoded)
 
     assert decoded["sel"] == slice(1.0, 2.0)
     xr.testing.assert_identical(decoded["data"], _base_data())
     xr.testing.assert_identical(decoded["edge_fit"], edge_fit)
 
-    spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.average("y")
-    ).append_final_rename("avg")
+    hashable_encoded = prov.encode_provenance_value(
+        {1: slice(0.0, 1.0), ("beta", 0): {"nested": [1, 2, 3]}}
+    )
+    assert prov._MAPPING_MARKER in hashable_encoded
+    mapping_entries = hashable_encoded[prov._MAPPING_MARKER]
+    assert mapping_entries[0][0] == 1
+    assert mapping_entries[1][0] == {prov._TUPLE_MARKER: ["beta", 0]}
+    assert prov.decode_provenance_value(hashable_encoded) == {
+        1: slice(0.0, 1.0),
+        ("beta", 0): {"nested": [1, 2, 3]},
+    }
+
+    spec = prov.full_data(prov.AverageOperation(dims=("y",))).append_final_rename("avg")
     trimmed = spec.drop_trailing_rename()
     replaced = spec.append_replacement_operations(
-        erlab.interactive.imagetool.provenance.thin(factor=2)
+        prov.ThinOperation(mode="global", factor=2)
     )
 
     assert [op.op for op in spec.operations] == ["average", "rename"]
@@ -56,22 +87,23 @@ def test_tool_provenance_codec_and_combinators() -> None:
 
 
 def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> None:
+    prov = erlab.interactive.imagetool.provenance
     payload = {
         "kind": "full_data",
         "operations": [
-            {"op": "average", "dims": ["x"]},
+            {"op": "average", "dims": {prov._TUPLE_MARKER: ["x"]}},
             {"op": "rename", "name": "avg"},
         ],
     }
 
-    spec = erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(payload)
+    spec = prov.parse_tool_provenance_spec(payload)
 
     assert spec is not None
     assert spec.schema_version == 1
     assert [op.op for op in spec.operations] == ["average", "rename"]
     assert [entry.label for entry in spec.derivation_entries()] == [
         "Start from current parent ImageTool data",
-        "Average(dims=('x',))",
+        'Average(dims=("x",))',
     ]
     assert (
         spec.derivation_code() == 'derived = data\nderived = derived.qsel.average("x")'
@@ -80,11 +112,10 @@ def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> N
     dumped = spec.model_dump(mode="json")
     assert dumped["schema_version"] == 1
     assert dumped["operations"][0]["op"] == "average"
+    assert dumped["operations"][0]["dims"] == {prov._TUPLE_MARKER: ["x"]}
 
-    with pytest.raises(
-        ValidationError, match="does not match any of the expected tags"
-    ):
-        erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+    with pytest.raises(ValidationError, match="Unknown provenance operation"):
+        prov.parse_tool_provenance_spec(
             {
                 "kind": "full_data",
                 "operations": [
@@ -113,9 +144,11 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
     nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(nonuniform_public)
     selection_spec = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.qsel(beta=2.0),
-        erlab.interactive.imagetool.provenance.isel(alpha=slice(1, 3)),
-        erlab.interactive.imagetool.provenance.sort_coord_order(),
+        erlab.interactive.imagetool.provenance.QSelOperation(kwargs={"beta": 2.0}),
+        erlab.interactive.imagetool.provenance.IselOperation(
+            kwargs={"alpha": slice(1, 3)}
+        ),
+        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
         selection_spec.apply(nonuniform),
@@ -123,11 +156,13 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
 
     transformed = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.isel(z=0),
-        erlab.interactive.imagetool.provenance.sel(y=slice(11.0, 12.0)),
-        erlab.interactive.imagetool.provenance.transpose("y", "x"),
-        erlab.interactive.imagetool.provenance.squeeze(),
-        erlab.interactive.imagetool.provenance.rename("done"),
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"z": 0}),
+        erlab.interactive.imagetool.provenance.SelOperation(
+            kwargs={"y": slice(11.0, 12.0)}
+        ),
+        erlab.interactive.imagetool.provenance.TransposeOperation(dims=("y", "x")),
+        erlab.interactive.imagetool.provenance.SqueezeOperation(),
+        erlab.interactive.imagetool.provenance.RenameOperation(name="done"),
     )
     xr.testing.assert_identical(
         transformed.apply(data),
@@ -140,13 +175,13 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
 
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.average("y")
+            erlab.interactive.imagetool.provenance.AverageOperation(dims=("y",))
         ).apply(data),
         data.qsel.average("y"),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.coarsen(
+            erlab.interactive.imagetool.provenance.CoarsenOperation(
                 dim={"y": 2},
                 boundary="trim",
                 side="left",
@@ -158,25 +193,31 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.thin(factor=2)
+            erlab.interactive.imagetool.provenance.ThinOperation(
+                mode="global", factor=2
+            )
         ).apply(data),
         data.thin(2),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.thin(factors={"x": 2})
+            erlab.interactive.imagetool.provenance.ThinOperation(
+                mode="per_dim", factors={"x": 2}
+            )
         ).apply(data),
         data.thin({"x": 2}),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.swap_dims({"x": "x_alt"})
+            erlab.interactive.imagetool.provenance.SwapDimsOperation(
+                mapping={"x": "x_alt"}
+            )
         ).apply(data),
         data.swap_dims({"x": "x_alt"}),
     )
 
     assigned = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.assign_coords(
+        erlab.interactive.imagetool.provenance.AssignCoordsOperation(
             coord_name="y", values=np.array([100.0, 101.0, 102.0, 103.0])
         )
     ).apply(data)
@@ -188,6 +229,106 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         dims_first=False,
     )
     xr.testing.assert_identical(assigned, expected_assigned)
+
+
+def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _hashable_data()
+    string_key_data = _string_key_data()
+
+    qsel_spec = prov.full_data(
+        prov.QSelOperation(kwargs={"k-space": 1.0, "k-space_width": 1.0})
+    )
+    assert qsel_spec.derivation_code() == (
+        "derived = data\n"
+        'derived = derived.qsel(**{"k-space": 1.0, "k-space_width": 1.0})'
+    )
+    xr.testing.assert_identical(
+        qsel_spec.apply(string_key_data),
+        string_key_data.qsel(**{"k-space": 1.0, "k-space_width": 1.0}),
+    )
+
+    isel_spec = prov.full_data(prov.IselOperation(kwargs={1: slice(1, 3)}))
+    assert (
+        isel_spec.derivation_code()
+        == "derived = data\nderived = derived.isel({1: slice(1, 3)})"
+    )
+    xr.testing.assert_identical(isel_spec.apply(data), data.isel({1: slice(1, 3)}))
+
+    transpose_spec = prov.full_data(prov.TransposeOperation(dims=(("beta", 0), 1)))
+    assert (
+        transpose_spec.derivation_code()
+        == 'derived = data\nderived = derived.transpose(*(("beta", 0), 1))'
+    )
+    xr.testing.assert_identical(
+        transpose_spec.apply(data), data.transpose(("beta", 0), 1)
+    )
+
+    average_spec = prov.full_data(prov.AverageOperation(dims=("k-space",)))
+    assert (
+        average_spec.derivation_code()
+        == 'derived = data\nderived = derived.qsel.average("k-space")'
+    )
+    xr.testing.assert_identical(
+        average_spec.apply(string_key_data), string_key_data.qsel.average("k-space")
+    )
+
+    tuple_average_spec = prov.full_data(prov.AverageOperation(dims=(("beta", 0),)))
+    assert (
+        tuple_average_spec.derivation_code()
+        == 'derived = data\nderived = derived.qsel.average((("beta", 0),))'
+    )
+
+    coarsen_spec = prov.full_data(
+        prov.CoarsenOperation(
+            dim={1: 2},
+            boundary="trim",
+            side="left",
+            coord_func="mean",
+            reducer="mean",
+        )
+    )
+    assert coarsen_spec.derivation_code() == (
+        'derived = data\nderived = derived.coarsen(dim={1: 2}, boundary="trim").mean()'
+    )
+    xr.testing.assert_identical(
+        coarsen_spec.apply(data),
+        data.coarsen(
+            dim={1: 2}, boundary="trim", side="left", coord_func="mean"
+        ).mean(),
+    )
+
+    thin_spec = prov.full_data(prov.ThinOperation(mode="per_dim", factors={1: 2}))
+    assert (
+        thin_spec.derivation_code() == "derived = data\nderived = derived.thin({1: 2})"
+    )
+    xr.testing.assert_identical(thin_spec.apply(data), data.thin({1: 2}))
+
+    swap_spec = prov.full_data(prov.SwapDimsOperation(mapping={1: "coord_1"}))
+    assert (
+        swap_spec.derivation_code()
+        == 'derived = data\nderived = derived.swap_dims({1: "coord_1"})'
+    )
+    xr.testing.assert_identical(swap_spec.apply(data), data.swap_dims({1: "coord_1"}))
+
+    dumped = tuple_average_spec.model_dump(mode="json")
+    assert dumped["operations"][0]["dims"] == {
+        prov._TUPLE_MARKER: [{prov._TUPLE_MARKER: ["beta", 0]}]
+    }
+
+    coarsen_dump = coarsen_spec.model_dump(mode="json")
+    assert coarsen_dump["operations"][0]["dim"] == {prov._MAPPING_MARKER: [[1, 2]]}
+
+
+def test_tool_provenance_rejects_unsupported_hashables() -> None:
+    class _UnsupportedHashable:
+        def __hash__(self) -> int:
+            return 0
+
+    with pytest.raises(TypeError, match="provenance hashable fields only support"):
+        erlab.interactive.imagetool.provenance.AverageOperation(
+            dims=(_UnsupportedHashable(),)
+        )
 
 
 def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
@@ -218,21 +359,21 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     )
 
     rotate_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.rotate(
+        erlab.interactive.imagetool.provenance.RotateOperation(
             angle=45.0, axes=("x", "y"), center=(0.5, 1.5), reshape=False, order=3
         )
     )
     assert rotate_spec.apply(data).attrs["last_op"] == "rotate"
 
     symmetrize_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.symmetrize(
+        erlab.interactive.imagetool.provenance.SymmetrizeOperation(
             dim="x", center=1.0, subtract=True, mode="valid", part="below"
         )
     )
     assert symmetrize_spec.apply(data).attrs["last_op"] == "symmetrize"
 
     symmetrize_nfold_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.symmetrize_nfold(
+        erlab.interactive.imagetool.provenance.SymmetrizeNfoldOperation(
             fold=4,
             axes=("x", "y"),
             center={"x": 1.0, "y": 11.0},
@@ -243,7 +384,7 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert symmetrize_nfold_spec.apply(data).attrs["last_op"] == "symmetrize_nfold"
 
     edge_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.correct_with_edge(
+        erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation(
             edge_fit=edge_fit, shift_coords=False
         )
     )
@@ -254,7 +395,7 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert edge_spec.derivation_code() is None
 
     path_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.slice_along_path(
+        erlab.interactive.imagetool.provenance.SliceAlongPathOperation(
             vertices={"x": [0.0, 1.0], "y": [10.0, 12.0]},
             step_size=0.5,
             dim_name="path",
@@ -263,7 +404,7 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert path_spec.apply(data).attrs["last_op"] == "slice_along_path"
 
     mask_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.mask_with_polygon(
+        erlab.interactive.imagetool.provenance.MaskWithPolygonOperation(
             vertices=np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]]),
             dims=("x", "y"),
             invert=True,

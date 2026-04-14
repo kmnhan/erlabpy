@@ -70,6 +70,7 @@ __all__ = [
     "ToolWindow",
     "copy_to_clipboard",
     "file_loaders",
+    "format_call_kwargs",
     "format_kwargs",
     "generate_code",
     "load_fit_ui",
@@ -707,7 +708,7 @@ class _ToolSourceUpdateDialog(QtWidgets.QDialog):
         layout.addWidget(self.button_box)
 
 
-def format_kwargs(d: dict[Hashable, typing.Any]) -> str:
+def format_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
     If the keys are valid Python identifiers, the output will be formatted as keyword
@@ -721,11 +722,29 @@ def format_kwargs(d: dict[Hashable, typing.Any]) -> str:
     """
     if all(isinstance(k, str) and k.isidentifier() for k in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
-    out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
+    out = ", ".join(
+        f"{_parse_single_arg(k)!s}: {_parse_single_arg(v)!s}" for k, v in d.items()
+    )
     return "{" + out + "}"
 
 
-def _parse_single_arg(arg):
+def format_call_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
+    """Format mapping arguments for a call site.
+
+    If all keys are identifier strings, emit plain keyword syntax. If all keys are
+    strings but at least one is not an identifier, emit ``**{...}`` so the generated
+    call still uses keyword expansion. Non-string keys fall back to a positional
+    mapping literal.
+    """
+    string_keys = [k for k in d if isinstance(k, str)]
+    if len(string_keys) == len(d):
+        if all(k.isidentifier() for k in string_keys):
+            return format_kwargs(d)
+        return f"**{format_kwargs(d)}"
+    return format_kwargs(d)
+
+
+def _parse_single_arg(arg: typing.Any) -> str:
     arg = erlab.utils.misc._convert_to_native(arg)
 
     if isinstance(arg, str):
@@ -737,12 +756,27 @@ def _parse_single_arg(arg):
             arg = f"'''{arg}'''" if "\n" in arg else f"'{arg}'"
         else:
             arg = f'"""{arg}"""' if "\n" in arg else f'"{arg}"'
+    elif isinstance(arg, tuple):
+        inner = ", ".join(_parse_single_arg(item) for item in arg)
+        if len(arg) == 1:
+            inner += ","
+        arg = f"({inner})"
+    elif isinstance(arg, list):
+        arg = "[" + ", ".join(_parse_single_arg(item) for item in arg) + "]"
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string
-        arg = {k: erlab.utils.misc._convert_to_native(v) for k, v in arg.items()}
+        arg = {
+            erlab.utils.misc._convert_to_native(k): erlab.utils.misc._convert_to_native(
+                v
+            )
+            for k, v in arg.items()
+        }
         arg = (
             "{"
-            + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])
+            + ", ".join(
+                f"{_parse_single_arg(k)}: {_parse_single_arg(v)}"
+                for k, v in arg.items()
+            )
             + "}"
         )
     elif isinstance(arg, slice):
@@ -753,7 +787,7 @@ def _parse_single_arg(arg):
             args = [stop]
         else:
             args = [start, stop]
-        return f"slice({', '.join(repr(_parse_single_arg(a)) for a in args)})"
+        return f"slice({', '.join(_parse_single_arg(a) for a in args)})"
     elif isinstance(arg, np.ndarray):
         arg = np.array2string(
             arg,
@@ -763,7 +797,7 @@ def _parse_single_arg(arg):
         ).replace("\n", "")
         arg = f"np.array({arg})"
 
-    return arg
+    return str(arg)
 
 
 # @functools.cache

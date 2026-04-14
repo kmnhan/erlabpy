@@ -114,7 +114,7 @@ def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> N
 
     win.set_source_binding(
         erlab.interactive.imagetool.provenance.selection(
-            erlab.interactive.imagetool.provenance.transpose()
+            erlab.interactive.imagetool.provenance.TransposeOperation()
         ),
         auto_update=True,
     )
@@ -223,7 +223,7 @@ def test_source_update_dialog_disables_auto_update_without_update_action(qtbot) 
     assert dialog.auto_update_check.isEnabled() is False
 
 
-def test_tool_provenance_helpers_roundtrip_and_resolve_selection() -> None:
+def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     encoded = erlab.interactive.imagetool.provenance.encode_provenance_value(
         {
             "outer": {
@@ -252,17 +252,23 @@ def test_tool_provenance_helpers_roundtrip_and_resolve_selection() -> None:
     xr.testing.assert_identical(resolved_full, parent)
 
     resolved_qsel = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.qsel(x=1.0, x_width=1.0)
+        erlab.interactive.imagetool.provenance.QSelOperation(
+            kwargs={"x": 1.0, "x_width": 1.0}
+        )
     )
     xr.testing.assert_identical(
         resolved_qsel.apply(parent), parent.qsel(x=1.0, x_width=1.0)
     )
 
     resolved_selection = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.isel(x=slice(1, None), z=1),
-        erlab.interactive.imagetool.provenance.sel(y=slice(11.0, 12.0)),
-        erlab.interactive.imagetool.provenance.sort_coord_order(),
-        erlab.interactive.imagetool.provenance.transpose("y", "x"),
+        erlab.interactive.imagetool.provenance.IselOperation(
+            kwargs={"x": slice(1, None), "z": 1}
+        ),
+        erlab.interactive.imagetool.provenance.SelOperation(
+            kwargs={"y": slice(11.0, 12.0)}
+        ),
+        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
+        erlab.interactive.imagetool.provenance.TransposeOperation(dims=("y", "x")),
     )
     xr.testing.assert_identical(
         resolved_selection.apply(parent),
@@ -272,9 +278,9 @@ def test_tool_provenance_helpers_roundtrip_and_resolve_selection() -> None:
     )
 
     resolved_squeezed = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.isel(z=0),
-        erlab.interactive.imagetool.provenance.transpose(),
-        erlab.interactive.imagetool.provenance.squeeze(),
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"z": 0}),
+        erlab.interactive.imagetool.provenance.TransposeOperation(),
+        erlab.interactive.imagetool.provenance.SqueezeOperation(),
     )
     xr.testing.assert_identical(
         resolved_squeezed.apply(parent),
@@ -295,9 +301,11 @@ def test_tool_provenance_helpers_roundtrip_and_resolve_selection() -> None:
         parent_nonuniform_public
     )
     resolved_nonuniform = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.qsel(beta=2.0),
-        erlab.interactive.imagetool.provenance.isel(alpha=slice(1, 3)),
-        erlab.interactive.imagetool.provenance.sort_coord_order(),
+        erlab.interactive.imagetool.provenance.QSelOperation(kwargs={"beta": 2.0}),
+        erlab.interactive.imagetool.provenance.IselOperation(
+            kwargs={"alpha": slice(1, 3)}
+        ),
+        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
         resolved_nonuniform.apply(parent_nonuniform),
@@ -309,9 +317,7 @@ def test_tool_provenance_helpers_roundtrip_and_resolve_selection() -> None:
             {"kind": "invalid"}
         )
 
-    with pytest.raises(
-        ValidationError, match="does not match any of the expected tags"
-    ):
+    with pytest.raises(ValidationError, match="Unknown provenance operation"):
         erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
             {"kind": "selection", "operations": [{"op": "invalid"}]}
         )
@@ -374,7 +380,7 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert tool.centralWidget() is replacement
 
     spec = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.isel(x=slice(0, 2))
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"x": slice(0, 2)})
     )
     tool.set_source_binding(spec, auto_update=True, state="stale")
     assert tool.has_source_binding is True

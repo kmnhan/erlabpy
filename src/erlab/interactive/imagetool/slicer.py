@@ -1006,13 +1006,13 @@ class ArraySlicer(QtCore.QObject):
             qsel_kw = self.qsel_args(cursor, disp)
         except ValueError:
             return self.isel_code(cursor, disp)
-        kwargs_str = erlab.interactive.utils.format_kwargs(qsel_kw)
+        kwargs_str = erlab.interactive.utils.format_call_kwargs(qsel_kw)
         if kwargs_str:
             return f".qsel({kwargs_str})"
         return ""
 
     def isel_code(self, cursor: int, disp: Sequence[int]) -> str:
-        kwargs_str = erlab.interactive.utils.format_kwargs(
+        kwargs_str = erlab.interactive.utils.format_call_kwargs(
             self.isel_args(cursor, disp, int_if_one=True)
         )
         if kwargs_str:

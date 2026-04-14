@@ -609,6 +609,25 @@ def test_selection_expr_for_cursor_uniform_axis_only(qtbot) -> None:
     win.close()
 
 
+def test_selection_expr_for_cursor_preserves_nonstring_qsel_dim(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(24).reshape((2, 3, 4)),
+        dims=["k-space", "y", "z"],
+        coords={
+            "k-space": np.arange(2, dtype=float),
+            "y": np.arange(3),
+            "z": np.arange(4),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    expr = win.slicer_area.main_image._selection_expr_for_cursor("data", 0, (0,))
+    assert expr == 'data.qsel(**{"k-space": 0.0})'
+
+    win.close()
+
+
 @pytest.mark.parametrize("bin_value", [1, 3])
 def test_plot_code_multicursor_line_supports_nonuniform_hidden_axis(
     qtbot, bin_value
@@ -652,7 +671,7 @@ def test_plot_code_multicursor_image_with_non_identifier_dim_name(qtbot) -> None
     main_image = win.slicer_area.images[0]
 
     code = main_image._plot_code_multicursor()
-    assert '**{"k-space": 2.0}' in code
+    assert 'selected = data.qsel(**{"k-space": 2.0})' in code
 
     win.close()
 
@@ -2537,6 +2556,25 @@ def test_itool_average_marks_incompatible_child_tools_unavailable(
     )
     qtbot.wait_until(lambda: child.source_state == "unavailable", timeout=5000)
 
+    win.close()
+
+
+def test_average_dialog_make_code_preserves_nonstring_dim(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["k-space", "y"],
+        coords={"k-space": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["k-space"].setChecked(True)
+
+    assert dialog.make_code() == '.qsel.average("k-space")'
+
+    dialog.close()
     win.close()
 
 
