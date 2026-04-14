@@ -189,55 +189,44 @@ class DataTransformDialog(_DataManipulationDialog):
     Set to `True` for transforms that can handle coordinates that are not evenly spaced.
     """
 
+    _LAUNCH_MODES: typing.ClassVar[tuple[tuple[str, str, str], ...]] = (
+        (
+            "replace",
+            "Replace Current",
+            "Replace the data in this ImageTool and keep working in the same window.",
+        ),
+        (
+            "detach",
+            "Open Top-Level Window",
+            "Create a separate top-level ImageTool that is detached from refresh "
+            "propagation.",
+        ),
+        (
+            "nest",
+            "Open Child Window",
+            "Create a child ImageTool under this node and keep its derivation for "
+            "later refreshes.",
+        ),
+    )
+
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__(slicer_area)
         self.launch_mode_combo = QtWidgets.QComboBox()
-        self._launch_modes: tuple[tuple[str, str, str], ...] = (
-            (
-                "replace",
-                "Replace Current",
-                "Replace the data in this ImageTool and keep working in the same "
-                "window.",
-            ),
-            (
-                "detach",
-                "Open Top-Level Window",
-                "Create a separate top-level ImageTool that is detached from "
-                "refresh propagation.",
-            ),
-            (
-                "nest",
-                "Open Child Window",
-                "Create a child ImageTool under this node and keep its derivation "
-                "for later refreshes.",
-            ),
-        )
-        for value, label, tooltip in self._launch_modes:
+        for value, label, tooltip in self._available_launch_modes():
             self.launch_mode_combo.addItem(label, userData=value)
             idx = self.launch_mode_combo.count() - 1
             self.launch_mode_combo.setItemData(
                 idx, tooltip, QtCore.Qt.ItemDataRole.ToolTipRole
             )
-        self.launch_mode_combo.setCurrentIndex(2)
+        self.launch_mode_combo.setCurrentIndex(
+            self.launch_mode_combo.findData(
+                self._default_launch_mode(), QtCore.Qt.ItemDataRole.UserRole
+            )
+        )
         self.launch_mode_combo.currentIndexChanged.connect(
-            lambda idx: self.launch_mode_combo.setToolTip(
-                str(
-                    self.launch_mode_combo.itemData(
-                        idx, QtCore.Qt.ItemDataRole.ToolTipRole
-                    )
-                    or ""
-                )
-            )
+            self._sync_launch_mode_tooltip
         )
-        self.launch_mode_combo.setToolTip(
-            str(
-                self.launch_mode_combo.itemData(
-                    self.launch_mode_combo.currentIndex(),
-                    QtCore.Qt.ItemDataRole.ToolTipRole,
-                )
-                or ""
-            )
-        )
+        self._sync_launch_mode_tooltip()
         self.layout_.insertRow(-1, "Result Placement", self.launch_mode_combo)
 
     @property
@@ -245,6 +234,30 @@ class DataTransformDialog(_DataManipulationDialog):
         return typing.cast(
             "typing.Literal['replace', 'detach', 'nest']",
             self.launch_mode_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    def _available_launch_modes(self) -> tuple[tuple[str, str, str], ...]:
+        if self._manager_target()[1] is not None:
+            return self._LAUNCH_MODES
+        return tuple(mode for mode in self._LAUNCH_MODES if mode[0] != "nest")
+
+    def _default_launch_mode(self) -> typing.Literal["replace", "detach", "nest"]:
+        if any(mode[0] == "nest" for mode in self._available_launch_modes()):
+            return "nest"
+        return "detach"
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _sync_launch_mode_tooltip(self, index: int | None = None) -> None:
+        if index is None:
+            index = self.launch_mode_combo.currentIndex()
+        self.launch_mode_combo.setToolTip(
+            str(
+                self.launch_mode_combo.itemData(
+                    index, QtCore.Qt.ItemDataRole.ToolTipRole
+                )
+                or ""
+            )
         )
 
     def source_operations(
@@ -273,6 +286,23 @@ class DataTransformDialog(_DataManipulationDialog):
         return existing_spec.append_replacement_operations(
             *self.source_operations()
         ).append_final_rename(new_name)
+
+    def _rewrite_target_provenance(self, target: int | str, new_name: str) -> None:
+        manager, _ = self._manager_target()
+        if manager is None:
+            return
+        node = manager._node_for_target(target)
+        if node.source_spec is not None:
+            node.set_source_binding(
+                self._compose_replace_source_spec(node.source_spec, new_name),
+                auto_update=node.source_auto_update,
+                state=node.source_state,
+            )
+            return
+        if node.provenance_spec is not None:
+            node.set_detached_provenance(
+                self._compose_replace_source_spec(node.provenance_spec, new_name)
+            )
 
     def _apply_source_transform(self, data: xr.DataArray) -> xr.DataArray:
         operation = self.source_transform_operation()
@@ -312,6 +342,16 @@ class DataTransformDialog(_DataManipulationDialog):
             return None, None
         return manager, manager.target_from_slicer_area(self.slicer_area)
 
+    def _manager_target_for_nest(
+        self,
+    ) -> tuple[erlab.interactive.imagetool.manager.ImageToolManager, int | str]:
+        manager, target = self._manager_target()
+        if manager is None or target is None:
+            raise RuntimeError(
+                "Open Child Window is only available for manager-backed ImageTools"
+            )
+        return manager, target
+
     @QtCore.Slot()
     def accept(self) -> None:
         if self.slicer_area.data.name is not None:
@@ -347,34 +387,22 @@ class DataTransformDialog(_DataManipulationDialog):
                     and target is not None
                     and manager._is_imagetool_target(target)
                 ):
-                    node = manager._node_for_target(target)
-                    if node.source_spec is not None:
-                        node.set_source_binding(
-                            self._compose_replace_source_spec(
-                                node.source_spec, new_name
-                            ),
-                            auto_update=node.source_auto_update,
-                            state=node.source_state,
-                        )
+                    self._rewrite_target_provenance(target, new_name)
                 self.slicer_area.replace_source_data(processed, emit_edited=True)
             else:
                 itool_kw = self._itool_kwargs(processed)
                 if self.launch_mode == "nest":
+                    manager, target = self._manager_target_for_nest()
                     tool = typing.cast(
                         "QtWidgets.QWidget | None",
                         erlab.interactive.itool(manager=False, **itool_kw),
                     )
                     if tool is not None:  # pragma: no branch
-                        if manager is not None and target is not None:
-                            manager.add_imagetool_child(
-                                typing.cast(
-                                    "erlab.interactive.imagetool.ImageTool", tool
-                                ),
-                                target,
-                                source_spec=source_spec,
-                            )
-                        else:
-                            self.slicer_area.add_tool_window(tool)
+                        manager.add_imagetool_child(
+                            typing.cast("erlab.interactive.imagetool.ImageTool", tool),
+                            target,
+                            source_spec=source_spec,
+                        )
                 else:
                     if manager is not None and self.slicer_area._in_manager:
                         tool = typing.cast(

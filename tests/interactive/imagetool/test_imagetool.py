@@ -2578,6 +2578,45 @@ def test_average_dialog_make_code_preserves_nonstring_dim(qtbot) -> None:
     win.close()
 
 
+def test_average_dialog_launch_modes_for_standalone(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    mode_labels = [
+        dialog.launch_mode_combo.itemText(i)
+        for i in range(dialog.launch_mode_combo.count())
+    ]
+    assert mode_labels == ["Replace Current", "Open Top-Level Window"]
+    assert dialog.launch_mode == "detach"
+    launched: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        erlab.interactive,
+        "itool",
+        lambda *args, **kwargs: launched.append(kwargs["data"]) or None,
+    )
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.accept()
+    xarray.testing.assert_identical(launched[0].rename(None), data.qsel.average("x"))
+
+    dialog_replace = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog_replace)
+    dialog_replace.dim_checks["y"].setChecked(True)
+    dialog_replace.launch_mode_combo.setCurrentText("Replace Current")
+    dialog_replace.accept()
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.qsel.average("y")
+    )
+
+    win.close()
+
+
 def test_itool_full_data_child_updates_follow_transposed_view(qtbot) -> None:
     data = _TEST_DATA["2D"].copy(deep=True)
     win = itool(data, execute=False)

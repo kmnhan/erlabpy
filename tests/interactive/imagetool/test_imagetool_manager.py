@@ -1660,7 +1660,51 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         detached = manager._imagetool_wrappers[1]
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
-        detached_before = detached.slicer_area._data.copy(deep=True)
+        detached_tool = manager.get_imagetool(1)
+        detached_derivation_before = detached.provenance_spec.derivation_code()
+
+        def _replace_detached_average(dialog) -> None:
+            dialog.dim_checks["y"].setChecked(True)
+            set_transform_launch_mode(dialog, "replace")
+
+        accept_dialog(detached_tool.mnb._average, pre_call=_replace_detached_average)
+        assert detached.source_spec is None
+        assert detached.provenance_spec is not None
+        detached_transforms = [
+            op for op in detached.provenance_spec.operations if op.op == "average"
+        ]
+        assert [op.op for op in detached_transforms] == ["average", "average"]
+        assert detached.provenance_spec.derivation_code() == (
+            "derived = data\n"
+            'derived = derived.qsel.average("x")\n'
+            'derived = derived.qsel.average("y")'
+        )
+        assert detached.provenance_spec.derivation_code() != detached_derivation_before
+        xr.testing.assert_identical(
+            detached_tool.slicer_area._data.rename(None),
+            updated.qsel.average("x").qsel.average("y").rename(None),
+        )
+        detached_before = detached_tool.slicer_area._data.copy(deep=True)
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [1])
+        manager._update_info()
+        detached_derivation = metadata_derivation_texts(manager)
+        assert detached_derivation[0] == "Start from current parent ImageTool data"
+        assert len(detached_derivation) == 3
+        assert "Average" in detached_derivation[1]
+        assert "Average" in detached_derivation[2]
+
+        duplicated_detached_index = typing.cast("int", manager.duplicate_imagetool(1))
+        duplicated_detached = manager._imagetool_wrappers[duplicated_detached_index]
+        assert duplicated_detached.source_spec is None
+        assert duplicated_detached.provenance_spec == detached.provenance_spec
+        xr.testing.assert_identical(
+            manager.get_imagetool(duplicated_detached_index).slicer_area._data.rename(
+                None
+            ),
+            detached_tool.slicer_area._data.rename(None),
+        )
 
         updated2 = data.copy(deep=True)
         updated2.data = np.asarray(updated2.data) * 3
@@ -1668,7 +1712,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             replace_data(0, updated2)
 
         qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
-        xr.testing.assert_identical(detached.slicer_area._data, detached_before)
+        xr.testing.assert_identical(detached_tool.slicer_area._data, detached_before)
 
         manager.tree_view.clearSelection()
         manager._update_info()

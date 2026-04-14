@@ -983,6 +983,8 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
     @pydantic.field_validator("edge_fit", mode="before")
     @classmethod
     def _validate_edge_fit(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, Mapping) and _DATASET_MARKER in value:
+            return value
         return cls._validate_encoded_field(
             value,
             error="correct_with_edge edge_fit must be an xarray.Dataset",

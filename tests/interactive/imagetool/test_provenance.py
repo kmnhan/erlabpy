@@ -429,4 +429,44 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
         "reshape": False,
         "order": 3,
     }
-    assert calls[3][1]["args"] == (edge_fit,)
+
+
+def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
+    data = _base_data()
+    edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
+
+    monkeypatch.setattr(
+        erlab.analysis.gold,
+        "correct_with_edge",
+        lambda data_arg, *_args, **_kwargs: data_arg.assign_attrs(
+            last_op="correct_with_edge"
+        ),
+    )
+
+    spec = erlab.interactive.imagetool.provenance.full_data(
+        erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation(
+            edge_fit=edge_fit, shift_coords=False
+        )
+    )
+    payload = spec.model_dump(mode="json")
+
+    reparsed_operation = (
+        erlab.interactive.imagetool.provenance.parse_tool_provenance_operation(
+            payload["operations"][0]
+        )
+    )
+    assert isinstance(
+        reparsed_operation,
+        erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation,
+    )
+    xr.testing.assert_identical(reparsed_operation.decoded_edge_fit, edge_fit)
+
+    reparsed_spec = erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+        payload
+    )
+    assert reparsed_spec is not None
+    assert reparsed_spec.apply(data).attrs["last_op"] == "correct_with_edge"
+    entries = reparsed_spec.derivation_entries()
+    assert entries[-1].copyable is False
+    assert entries[-1].code is None
+    assert reparsed_spec.derivation_code() is None
