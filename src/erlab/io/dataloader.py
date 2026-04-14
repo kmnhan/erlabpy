@@ -156,6 +156,21 @@ class _Loader(type):
 
         return new_class
 
+    def __instancecheck__(cls, instance: object) -> bool:
+        return super().__instancecheck__(instance) or cls.__subclasscheck__(
+            type(instance)
+        )
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        if super().__subclasscheck__(subclass):
+            return True
+
+        target = (cls.__module__, cls.__qualname__)
+        return any(
+            (base.__module__, base.__qualname__) == target
+            for base in getattr(subclass, "__mro__", ())
+        )
+
 
 def _combine_by_coords_general(
     data_objects: list[xr.DataArray] | list[xr.Dataset] | list[xr.DataTree], **kwargs
@@ -2088,34 +2103,28 @@ class LoaderBase(metaclass=_Loader):
         erlab.utils.misc.emit_user_level_warning(msg, ValidationWarning)
 
 
-class _RegistryBase:
-    """Base class for the loader registry.
+class _LoaderRegistryState:
+    """Shared loader registry state that survives module reloads."""
 
-    This class implements the singleton pattern, ensuring that only one instance of the
-    registry is created and used throughout the application.
-    """
-
-    _instances: typing.ClassVar[dict[type, _RegistryBase]] = {}
-    _instances_lock: typing.ClassVar[threading.Lock] = threading.Lock()
-
-    def __new__(cls):
-        inst = cls._instances.get(cls)
-        if inst is not None:
-            return inst
-        with cls._instances_lock:
-            inst = cls._instances.get(cls)
-            if inst is None:  # pragma: no branch
-                inst = super().__new__(cls)
-                cls._instances[cls] = inst
-        return inst
-
-    @classmethod
-    def instance(cls) -> typing.Self:
-        """Return the registry instance."""
-        return cls()
+    def __init__(self) -> None:
+        self.loaders: dict[str, LoaderBase | type[LoaderBase]] = {}
+        self.alias_mapping: dict[str, str] = {}
+        self.lock = threading.RLock()
+        self.current_loader_var: contextvars.ContextVar[LoaderBase | None] = (
+            contextvars.ContextVar("erlab_io_current_loader", default=None)
+        )
+        self.current_data_dir_var: contextvars.ContextVar[pathlib.Path | None] = (
+            contextvars.ContextVar("erlab_io_current_data_dir", default=None)
+        )
 
 
-class LoaderRegistry(_RegistryBase):
+_LOADER_REGISTRY_STATE = typing.cast(
+    "_LoaderRegistryState",
+    globals().get("_LOADER_REGISTRY_STATE", _LoaderRegistryState()),
+)
+
+
+class LoaderRegistry:
     """Registry of loader plugins.
 
     Stores and manages data loaders. The loaders can be accessed by name in a
@@ -2140,24 +2149,33 @@ class LoaderRegistry(_RegistryBase):
       that concurrent threads/tasks do not step on each other.
     """
 
-    _loaders: typing.ClassVar[dict[str, LoaderBase | type[LoaderBase]]] = {}
-    """Mapping of registered loaders."""
+    def __init__(self, state: _LoaderRegistryState | None = None) -> None:
+        self._state = _LOADER_REGISTRY_STATE if state is None else state
 
-    _alias_mapping: typing.ClassVar[dict[str, str]] = {}
-    """Mapping of aliases to loader names."""
+    @classmethod
+    def instance(cls) -> typing.Self:
+        """Return a registry wrapper bound to the shared loader state."""
+        return cls(_LOADER_REGISTRY_STATE)
 
-    _lock: typing.ClassVar[threading.RLock] = threading.RLock()
-    """Lock for thread-safe operations."""
+    @property
+    def _loaders(self) -> dict[str, LoaderBase | type[LoaderBase]]:
+        return self._state.loaders
 
-    _current_loader_var: typing.ClassVar[contextvars.ContextVar[LoaderBase | None]] = (
-        contextvars.ContextVar("erlab_io_current_loader", default=None)
-    )
-    """Context variable for the current loader."""
+    @property
+    def _alias_mapping(self) -> dict[str, str]:
+        return self._state.alias_mapping
 
-    _current_data_dir_var: typing.ClassVar[
-        contextvars.ContextVar[pathlib.Path | None]
-    ] = contextvars.ContextVar("erlab_io_current_data_dir", default=None)
-    """Context variable for the current data directory."""
+    @property
+    def _lock(self):
+        return self._state.lock
+
+    @property
+    def _current_loader_var(self) -> contextvars.ContextVar[LoaderBase | None]:
+        return self._state.current_loader_var
+
+    @property
+    def _current_data_dir_var(self) -> contextvars.ContextVar[pathlib.Path | None]:
+        return self._state.current_data_dir_var
 
     def keys(self) -> KeysView[str]:
         with self._lock:

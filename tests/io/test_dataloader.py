@@ -1,4 +1,5 @@
 import errno
+import importlib
 import os
 import pathlib
 import re
@@ -125,6 +126,30 @@ def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> 
 
     assert len(shown_data) == 1
     assert shown_data[0].name == "data_001_S001"
+
+
+def test_loader_registry_survives_dataloader_reload(
+    example_loader, example_data_dir: pathlib.Path
+) -> None:
+    cached_load = erlab.io.load
+    cached_set_loader = erlab.io.set_loader
+
+    cached_set_loader("example")
+    erlab.io.set_data_dir(example_data_dir)
+
+    importlib.reload(erlab.io.dataloader)
+
+    assert "example" in erlab.io.loaders
+    assert isinstance(erlab.io.loaders["example"], example_loader)
+    assert erlab.io.loaders.current_loader is not None
+    assert erlab.io.loaders.current_loader.name == "example"
+    assert erlab.io.loaders.current_data_dir == example_data_dir
+
+    cached_load(2)
+    erlab.io.load(2)
+
+    erlab.io.set_loader(None)
+    erlab.io.set_data_dir(None)
 
 
 def test_thread_safety():
