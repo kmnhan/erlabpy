@@ -908,15 +908,6 @@ class Fit2DTool(Fit1DTool):
             name=f"{param_name}_{kind}",
         )
 
-    def _is_in_manager(self) -> bool:
-        manager = erlab.interactive.imagetool.manager._manager_instance
-        if manager is None:
-            return False
-        return any(
-            self in wrapper._childtools.values()
-            for wrapper in manager._imagetool_wrappers.values()
-        )
-
     def _show_dataarray_in_itool(self, data: xr.DataArray) -> None:
         tool = erlab.interactive.itool(
             data, manager=self._is_in_manager(), execute=False

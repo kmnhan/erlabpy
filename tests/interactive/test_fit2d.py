@@ -1094,27 +1094,28 @@ def test_fit2d_is_in_manager_false_when_no_manager(qtbot, monkeypatch) -> None:
     assert win._is_in_manager() is False
 
 
-def test_fit2d_is_in_manager_wrapper_lookup(qtbot, monkeypatch) -> None:
+def test_fit2d_is_in_manager_node_lookup(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    class _Wrapper:
-        def __init__(self, childtools: dict[str, object]) -> None:
-            self._childtools = childtools
-
     class _Manager:
-        def __init__(self, wrappers: dict[int, _Wrapper]) -> None:
-            self._imagetool_wrappers = wrappers
+        def __init__(self, managed: object | None) -> None:
+            self._managed = managed
 
-    manager = _Manager({0: _Wrapper({"x": object()}), 1: _Wrapper({"y": win})})
+        def _node_uid_from_window(self, widget) -> str | None:
+            if widget is self._managed:
+                return "y"
+            return None
+
+    manager = _Manager(win)
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager, "_manager_instance", manager
     )
     assert win._is_in_manager() is True
 
-    manager = _Manager({0: _Wrapper({"x": object()})})
+    manager = _Manager(None)
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager, "_manager_instance", manager
     )

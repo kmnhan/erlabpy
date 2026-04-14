@@ -2487,12 +2487,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         manager = erlab.interactive.imagetool.manager._manager_instance
         if manager is None:
             return False
-        if hasattr(manager, "_node_uid_from_window"):
-            return manager._node_uid_from_window(self) is not None
-        return any(
-            self in wrapper._childtools.values()
-            for wrapper in manager._imagetool_wrappers.values()
-        )
+        return manager._node_uid_from_window(self) is not None
 
     def _show_warning_if_not_in_manager(self, title: str, text: str) -> bool:
         """Show a warning dialog unless managed by ImageTool manager.
@@ -2521,17 +2516,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         """Remove this tool from the ImageTool manager, if present."""
         manager = erlab.interactive.imagetool.manager._manager_instance
         if manager:  # pragma: no branch
-            uid: str | None = None
-            if hasattr(manager, "_node_uid_from_window"):
-                uid = manager._node_uid_from_window(self)
-            if uid is None:
-                for wrapper in manager._imagetool_wrappers.values():
-                    for k, v in wrapper._childtools.items():
-                        if v is self:
-                            uid = k
-                            break
-                    if uid is not None:
-                        break
+            uid = manager._node_uid_from_window(self)
             if uid is not None:  # pragma: no branch
                 msg_box = QtWidgets.QMessageBox(self)
                 msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
