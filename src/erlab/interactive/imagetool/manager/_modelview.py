@@ -16,7 +16,10 @@ import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
+from erlab.interactive.imagetool.manager._wrapper import (
+    _ImageToolWrapper,
+    _ManagedWindowNode,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable
@@ -24,6 +27,8 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager import ImageToolManager
 
 logger = logging.getLogger(__name__)
+
+_NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
 
 
 def _fill_rounded_rect(
@@ -77,6 +82,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     watched_font_scale: float = 0.9
     child_status_rect_hpad: int = 5
     child_status_font_scale: float = 0.85
+    uid_rect_hpad: int = 5
+    uid_font_scale: float = 0.82
 
     def __init__(
         self, manager: ImageToolManager, parent: _ImageToolWrapperTreeView
@@ -256,6 +263,60 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter,
         )
 
+    def _compute_uid_badge_rect(
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        uid: str,
+        *,
+        right_reserved: int = 0,
+    ) -> QtCore.QRect | None:
+        if uid == "":
+            return None
+
+        rect_size = self.icon_size + 2 * self.icon_inner_pad
+        rect_y = option.rect.center().y() - (rect_size // 2)
+        badge_font = QtGui.QFontDatabase.systemFont(
+            QtGui.QFontDatabase.SystemFont.FixedFont
+        )
+        badge_font.setPointSizeF(self._font_size * self.uid_font_scale)
+        badge_width = (
+            QtGui.QFontMetrics(badge_font).boundingRect(uid).width()
+            + self.uid_rect_hpad * 2
+        )
+        rect_x = (
+            option.rect.right() - right_reserved - badge_width - self.icon_right_pad
+        )
+        return QtCore.QRect(rect_x, rect_y, badge_width, rect_size)
+
+    def _paint_uid_badge(
+        self,
+        painter: QtGui.QPainter,
+        option: QtWidgets.QStyleOptionViewItem,
+        rect: QtCore.QRect,
+        uid: str,
+    ) -> None:
+        _fill_rounded_rect(
+            painter,
+            rect,
+            facecolor=option.palette.base(),
+            edgecolor=option.palette.mid(),
+            linewidth=self.icon_border_width,
+            radius=self.icon_corner_radius,
+        )
+        badge_font = QtGui.QFontDatabase.systemFont(
+            QtGui.QFontDatabase.SystemFont.FixedFont
+        )
+        badge_font.setPointSizeF(self._font_size * self.uid_font_scale)
+        painter.save()
+        painter.setFont(badge_font)
+        painter.setPen(option.palette.color(QtGui.QPalette.ColorRole.Mid))
+        painter.drawText(
+            rect,
+            QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignCenter,
+            uid,
+        )
+        painter.restore()
+
     @functools.cached_property
     def _dask_icon(self) -> QtGui.QIcon:
         return QtGui.QIcon(os.path.join(os.path.dirname(__file__), "dask.png"))
@@ -309,6 +370,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         icons_width, dask_rect, link_rect, watched_rect = self._compute_icons_info(
             option, tool_wrapper
         )
+        uid_rect = self._compute_uid_badge_rect(
+            option, str(index.data(_NODE_UID_ROLE)), right_reserved=icons_width
+        )
 
         # Draw label (skip while editing for inline editor)
         if not is_editing:  # pragma: no branch
@@ -333,7 +397,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             elided = fm.elidedText(
                 text,
                 view.textElideMode(),
-                option.rect.width() - self.icon_right_pad - icons_width,
+                option.rect.width()
+                - self.icon_right_pad
+                - icons_width
+                - (
+                    uid_rect.width() + self.icon_right_pad
+                    if uid_rect is not None
+                    else 0
+                ),
             )
             painter.setPen(palette.color(color_group, role))
             painter.drawText(
@@ -342,6 +413,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided,
             )
+            if uid_rect is not None:
+                self._paint_uid_badge(painter, option, uid_rect, tool_wrapper.uid)
 
         # Icons
         if dask_rect:
@@ -409,18 +482,31 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         )
 
         selected: bool = QtWidgets.QStyle.StateFlag.State_Selected in option.state
-        child_tool: erlab.interactive.utils.ToolWindow | None = None
+        child_node: _ManagedWindowNode | None = None
         status_rect: QtCore.QRect | None = None
         status_text: str | None = None
         status_color: QtGui.QColor | None = None
         try:
-            child_tool = self.manager.get_childtool(index.internalPointer())
+            child_node = self.manager._child_node(index.internalPointer())
         except KeyError:
-            child_tool = None
+            child_node = None
         else:
             status_rect, status_text, status_color = self._compute_child_status_info(
-                option, child_tool
+                option, child_node
             )
+        uid_rect = (
+            None
+            if child_node is None
+            else self._compute_uid_badge_rect(
+                option,
+                child_node.uid,
+                right_reserved=(
+                    status_rect.width() + self.icon_right_pad
+                    if status_rect is not None
+                    else 0
+                ),
+            )
+        )
 
         if not is_editing:  # pragma: no branch
             role = (
@@ -428,6 +514,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 if selected
                 else QtGui.QPalette.ColorRole.Text
             )
+            if child_node is not None and child_node.archived and not selected:
+                role = QtGui.QPalette.ColorRole.Mid
             painter.setPen(option.palette.color(role))
 
             # Elide text if necessary
@@ -439,6 +527,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     status_rect.width() + self.icon_right_pad
                     if status_rect is not None
                     else 0
+                )
+                - (
+                    uid_rect.width() + self.icon_right_pad
+                    if uid_rect is not None
+                    else 0
                 ),
             )
             painter.drawText(
@@ -447,6 +540,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided_text,
             )
+            if uid_rect is not None and child_node is not None:
+                self._paint_uid_badge(painter, option, uid_rect, child_node.uid)
             if status_rect and status_text and status_color:
                 _fill_rounded_rect(
                     painter,
@@ -480,11 +575,19 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 or self._force_hover
             )
         ):
-            if child_tool is None:
+            if child_node is None:
                 self.preview_popup.hide()
                 return
 
-            image_item = child_tool.preview_imageitem
+            if child_node.imagetool is not None:
+                self._show_popup(*child_node._preview_image, option)
+                return
+
+            image_item = (
+                child_node.tool_window.preview_imageitem
+                if child_node.tool_window is not None
+                else None
+            )
             if image_item is None or not erlab.interactive.utils.qt_is_valid(
                 image_item
             ):
@@ -518,9 +621,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     def _compute_child_status_info(
         self,
         option: QtWidgets.QStyleOptionViewItem,
-        child_tool: erlab.interactive.utils.ToolWindow,
+        child_node: _ManagedWindowNode,
     ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
-        match child_tool.source_state:
+        match child_node.source_state:
             case "stale":
                 text = "Stale"
                 color = QtGui.QColor("#b26a00")
@@ -577,8 +680,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         if isinstance(event, QtGui.QHelpEvent) and index.isValid():
             tool_wrapper = index.internalPointer()
             if isinstance(tool_wrapper, _ImageToolWrapper):  # pragma: no branch
-                _, dask_rect, link_rect, watched_rect = self._compute_icons_info(
-                    option, tool_wrapper
+                (
+                    icons_width,
+                    dask_rect,
+                    link_rect,
+                    watched_rect,
+                ) = self._compute_icons_info(option, tool_wrapper)
+                uid_rect = self._compute_uid_badge_rect(
+                    option, tool_wrapper.uid, right_reserved=icons_width
                 )
                 pos = event.pos()
                 if dask_rect and dask_rect.contains(pos):
@@ -608,24 +717,49 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         watched_rect,
                     )
                     return True
+                if uid_rect and uid_rect.contains(pos):
+                    QtWidgets.QToolTip.showText(
+                        event.globalPos(),
+                        f"Node ID: {tool_wrapper.uid}",
+                        view,
+                        uid_rect,
+                    )
+                    return True
             elif isinstance(tool_wrapper, str):
                 try:
-                    child_tool = self.manager.get_childtool(tool_wrapper)
+                    child_node = self.manager._child_node(tool_wrapper)
                 except KeyError:
-                    child_tool = None
-                if child_tool is not None:
+                    child_node = None
+                if child_node is not None:
                     status_rect, _, _ = self._compute_child_status_info(
-                        option, child_tool
+                        option, child_node
+                    )
+                    uid_rect = self._compute_uid_badge_rect(
+                        option,
+                        child_node.uid,
+                        right_reserved=(
+                            status_rect.width() + self.icon_right_pad
+                            if status_rect is not None
+                            else 0
+                        ),
                     )
                     if status_rect and status_rect.contains(event.pos()):
                         tooltip = (
                             "Click to update this tool from the latest ImageTool data."
-                            if child_tool.source_state == "stale"
+                            if child_node.source_state == "stale"
                             else "Click to review why this tool cannot update from the "
                             "current ImageTool data."
                         )
                         QtWidgets.QToolTip.showText(
                             event.globalPos(), tooltip, view, status_rect
+                        )
+                        return True
+                    if uid_rect and uid_rect.contains(event.pos()):
+                        QtWidgets.QToolTip.showText(
+                            event.globalPos(),
+                            f"Node ID: {child_node.uid}",
+                            view,
+                            uid_rect,
                         )
                         return True
 
@@ -662,34 +796,50 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return ptr
         return self.manager._imagetool_wrappers[self._imagetool_index(row_index)]
 
+    def _node_from_uid(self, uid: str) -> _ManagedWindowNode | None:
+        node = self.manager._all_nodes.get(uid)
+        if isinstance(node, _ManagedWindowNode):
+            return node
+        return None
+
     def _childtool_uid(
-        self, row_index: QtCore.QModelIndex | int, parent_wrapper: _ImageToolWrapper
+        self,
+        row_index: QtCore.QModelIndex | int,
+        parent_wrapper: _ImageToolWrapper | str,
     ) -> str:
         if isinstance(row_index, QtCore.QModelIndex):
             row_index = row_index.row()
+        if isinstance(parent_wrapper, str):
+            parent_node = self._node_from_uid(parent_wrapper)
+            if parent_node is None:
+                raise KeyError(parent_wrapper)
+            return parent_node._childtool_indices[row_index]
         return parent_wrapper._childtool_indices[row_index]
 
     def _childtool(
-        self, row_index: QtCore.QModelIndex, parent_wrapper: _ImageToolWrapper
-    ) -> erlab.interactive.utils.ToolWindow:
-        return parent_wrapper._childtools[
-            self._childtool_uid(row_index, parent_wrapper)
-        ]
+        self, row_index: QtCore.QModelIndex, parent_wrapper: _ImageToolWrapper | str
+    ) -> _ManagedWindowNode:
+        return self.manager._child_node(self._childtool_uid(row_index, parent_wrapper))
 
     def _row_index(self, index_or_uid: int | str) -> QtCore.QModelIndex:
         """Get the corresponding QModelIndex for a parent index or child UID."""
         if isinstance(index_or_uid, str):
-            for (
-                tool_idx,
-                wrapper,
-            ) in self.manager._imagetool_wrappers.items():  # pragma: no branch
-                if index_or_uid in wrapper._childtools:
-                    return self.index(
-                        wrapper._childtool_indices.index(index_or_uid),
-                        0,
-                        self._row_index(tool_idx),
-                    )
-            return QtCore.QModelIndex()
+            node = self.manager._all_nodes.get(index_or_uid)
+            if node is None:
+                return QtCore.QModelIndex()
+            if isinstance(node, _ImageToolWrapper):
+                return self._row_index(node.index)
+            parent_uid = node.parent_uid
+            if parent_uid is None:
+                return QtCore.QModelIndex()
+            parent_node = self.manager._all_nodes[parent_uid]
+            if isinstance(parent_node, _ImageToolWrapper):
+                parent_index = self._row_index(parent_node.index)
+                row = parent_node._childtool_indices.index(index_or_uid)
+            else:
+                parent_index = self._row_index(parent_uid)
+                row = parent_node._childtool_indices.index(index_or_uid)
+            return self.index(row, 0, parent_index)
         if index_or_uid not in self.manager._displayed_indices:
             return QtCore.QModelIndex()
         return self.index(self.manager._displayed_indices.index(index_or_uid), 0)
@@ -713,10 +863,16 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return self.createIndex(row, column, wrapper)
 
         ptr = parent.internalPointer()
-        if not isinstance(ptr, _ImageToolWrapper):
+        if not isinstance(ptr, (_ImageToolWrapper, str)):
             return QtCore.QModelIndex()
-
-        if row >= len(ptr._childtool_indices):
+        if isinstance(ptr, str):
+            parent_node = self._node_from_uid(ptr)
+            if parent_node is None:
+                return QtCore.QModelIndex()
+            child_list = parent_node._childtool_indices
+        else:
+            child_list = ptr._childtool_indices
+        if row >= len(child_list):
             return QtCore.QModelIndex()
 
         child = self._childtool_uid(row, ptr)
@@ -739,10 +895,15 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
         uid = child.internalPointer()
         if isinstance(uid, str):
-            # Child tool
-            for tool_idx, wrapper in self.manager._imagetool_wrappers.items():
-                if uid in wrapper._childtools:
-                    return self._row_index(tool_idx)
+            node = self._node_from_uid(uid)
+            if node is None:
+                return QtCore.QModelIndex()
+            if node.parent_uid is None:
+                return QtCore.QModelIndex()
+            parent = self.manager._all_nodes[node.parent_uid]
+            if isinstance(parent, _ImageToolWrapper):
+                return self._row_index(parent.index)
+            return self._row_index(parent.uid)
         return QtCore.QModelIndex()
 
     def hasChildren(self, parent: QtCore.QModelIndex | None = None) -> bool:
@@ -755,6 +916,9 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
             return len(ptr._childtool_indices) > 0
+        if isinstance(ptr, str):
+            node = self._node_from_uid(ptr)
+            return node is not None and len(node._childtool_indices) > 0
         return False  # Child tool has no children
 
     def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
@@ -769,6 +933,9 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if isinstance(ptr, _ImageToolWrapper):
             # Number of child tools
             return len(ptr._childtool_indices)
+        if isinstance(ptr, str):
+            node = self._node_from_uid(ptr)
+            return len(node._childtool_indices) if node is not None else 0
         return 0  # Child tool has no children
 
     def columnCount(self, parent: QtCore.QModelIndex | None = None) -> int:
@@ -783,37 +950,41 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         ptr = index.internalPointer()
         if isinstance(ptr, str):
             return self._data_childtool(index, role)
+        if not isinstance(ptr, _ImageToolWrapper):
+            return None
         return self._data_imagetool(index, role)
 
     def _data_imagetool(self, index: QtCore.QModelIndex, role: int) -> typing.Any:
         tool_idx: int = self._imagetool_index(index)
+        wrapper = self.manager._imagetool_wrappers[tool_idx]
 
-        match role:
-            case QtCore.Qt.ItemDataRole.DisplayRole:
-                return self.manager.label_of_imagetool(tool_idx)
-
-            case QtCore.Qt.ItemDataRole.EditRole:
-                return self.manager.name_of_imagetool(tool_idx)
-
-            case QtCore.Qt.ItemDataRole.SizeHintRole:
-                return QtCore.QSize(100, 25)
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
+            return self.manager.label_of_imagetool(tool_idx)
+        if role == QtCore.Qt.ItemDataRole.EditRole:
+            return self.manager.name_of_imagetool(tool_idx)
+        if role == _NODE_UID_ROLE:
+            return wrapper.uid
+        if role == QtCore.Qt.ItemDataRole.SizeHintRole:
+            return QtCore.QSize(100, 25)
 
         return None
 
     def _data_childtool(self, index: QtCore.QModelIndex, role: int) -> typing.Any:
-        # Child tool, get wrapper
-        parent_wrapper = typing.cast(
-            "_ImageToolWrapper", self.parent(index).internalPointer()
-        )
-        match role:
-            case QtCore.Qt.ItemDataRole.DisplayRole:
-                return self._childtool(index, parent_wrapper).windowTitle()
+        child_node = self._node_from_uid(index.internalPointer())
+        if child_node is None:
+            return None
+        if role == QtCore.Qt.ItemDataRole.DisplayRole:
+            return child_node.display_text
+        if role == QtCore.Qt.ItemDataRole.EditRole:
+            if child_node.tool_window is not None:
+                return child_node.tool_window._tool_display_name
+            return child_node.name
+        if role == _NODE_UID_ROLE:
+            return child_node.uid
+        if role == QtCore.Qt.ItemDataRole.SizeHintRole:
+            return QtCore.QSize(100, 25)
 
-            case QtCore.Qt.ItemDataRole.EditRole:
-                return self._childtool(index, parent_wrapper)._tool_display_name
-
-            case QtCore.Qt.ItemDataRole.SizeHintRole:
-                return QtCore.QSize(100, 25)
+        return None
 
     def flags(self, index: QtCore.QModelIndex) -> QtCore.Qt.ItemFlag:
         if not index.isValid():
@@ -837,8 +1008,13 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 flags |= QtCore.Qt.ItemFlag.ItemIsEditable
             return flags
 
-        # Child items are draggable, but not drop targets
-        return default_flags | QtCore.Qt.ItemFlag.ItemIsEditable
+        child_node = self._node_from_uid(typing.cast("str", node))
+        if child_node is None:
+            return QtCore.Qt.ItemFlag.NoItemFlags
+        flags = default_flags | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+        if not child_node.archived:
+            flags |= QtCore.Qt.ItemFlag.ItemIsEditable
+        return flags
 
     def supportedDragActions(self) -> QtCore.Qt.DropAction:
         return QtCore.Qt.DropAction.MoveAction
@@ -857,19 +1033,24 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         self.manager._displayed_indices.insert(n_rows, index)
         self.endInsertRows()
 
-    def _insert_childtool(self, uid: str, parent_idx: int) -> None:
+    def _insert_childtool(self, uid: str, parent_idx: int | str) -> None:
         """Append a new tool to the end of the model.
 
         This must be called after the ImageTool is added to the manager.
         """
-        n_rows = self.rowCount()
-
         parent = self._row_index(parent_idx)
-        self.beginInsertRows(parent, n_rows, n_rows)  # Insert at end
-
-        ptr = typing.cast("_ImageToolWrapper", parent.internalPointer())
-        ptr._childtool_indices.insert(n_rows, uid)
-
+        if not parent.isValid():
+            return
+        parent_ptr = parent.internalPointer()
+        if isinstance(parent_ptr, str):
+            parent_node = self._node_from_uid(parent_ptr)
+            if parent_node is None:
+                return
+            child_list = parent_node._childtool_indices
+        else:
+            child_list = parent_ptr._childtool_indices
+        row = max(len(child_list) - 1, 0)
+        self.beginInsertRows(parent, row, row)
         self.endInsertRows()
 
     def remove_rows(
@@ -900,6 +1081,14 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             del ptr._childtool_indices[row : row + count]
             self.endRemoveRows()
             return
+        if isinstance(ptr, str):
+            node = self._node_from_uid(ptr)
+            if node is None:
+                return
+            self.beginRemoveRows(parent, row, row + count - 1)
+            del node._childtool_indices[row : row + count]
+            self.endRemoveRows()
+            return
 
     def setData(
         self,
@@ -918,17 +1107,14 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 self.dataChanged.emit(index, index, [role])
                 return True
 
-        elif isinstance(ptr, str):
-            # Child tool, get wrapper
-            parent_wrapper = typing.cast(
-                "_ImageToolWrapper", self.parent(index).internalPointer()
-            )
-            if role == QtCore.Qt.ItemDataRole.EditRole:
-                child_tool = self._childtool(index, parent_wrapper)
-                child_tool._tool_display_name = value
+        elif isinstance(ptr, str) and role == QtCore.Qt.ItemDataRole.EditRole:
+            child_node = self._node_from_uid(ptr)
+            if child_node is None:
+                return False
+            child_node.name = value
 
-                self.dataChanged.emit(index, index, [role])
-                return True
+            self.dataChanged.emit(index, index, [role])
+            return True
 
         return False
 
@@ -936,36 +1122,33 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         return [_MIME]
 
     def mimeData(self, indexes: Iterable[QtCore.QModelIndex]) -> QtCore.QMimeData:
-        # Collect unique (row, parent_ptr, level) from column 0 only.
+        # Collect unique sibling rows from a single parent.
         rows: list[int] = []
-        parent_pointer = None
-        level: int = -1
+        parent_pointer: str | None = None
 
         for idx in indexes:
             if not idx.isValid() or idx.column() != 0:
                 continue
             node = idx.internalPointer()
             if isinstance(node, _ImageToolWrapper):
-                current_level = 0
-                current_parent_pointer = None  # root
+                current_parent_pointer = None
             else:
-                current_level = 1
-                current_parent: _ImageToolWrapper = typing.cast(
-                    "_ImageToolWrapper", self.parent(idx).internalPointer()
-                )
-                current_parent_pointer = id(current_parent)
+                current_parent = self.parent(idx).internalPointer()
+                if isinstance(current_parent, _ImageToolWrapper):
+                    current_parent_pointer = current_parent.uid
+                else:
+                    current_parent_pointer = typing.cast("str", current_parent)
 
-            if level == -1:
-                level = current_level
-                parent_pointer = current_parent_pointer
+            if parent_pointer is None and current_parent_pointer is None:
+                parent_pointer = None
+            elif rows and current_parent_pointer != parent_pointer:
+                return QtCore.QMimeData()
             else:
-                # Enforce single level and single parent per drag
-                if current_level != level or current_parent_pointer != parent_pointer:
-                    return QtCore.QMimeData()  # refuse mixed drags
+                parent_pointer = current_parent_pointer
 
             rows.append(idx.row())
 
-        if not rows or level == -1:
+        if not rows:
             return QtCore.QMimeData()
 
         mime_data = QtCore.QMimeData()
@@ -974,7 +1157,6 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             QtCore.QByteArray(
                 json.dumps(
                     {
-                        "level": level,
                         "parent_id": parent_pointer,
                         "rows": sorted(set(rows)),
                     }
@@ -988,7 +1170,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         raw: bytes = mime.data(_MIME).data()
         try:
             payload = json.loads(raw.decode("utf-8"))
-            if not {"level", "parent_id", "rows"} <= payload.keys():
+            if not {"parent_id", "rows"} <= payload.keys():
                 return None
         except Exception:
             return None
@@ -1036,47 +1218,46 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             logger.debug("canDropMimeData: cannot decode mime")
             return False
 
-        # Destination parent must match source constraints
-        if payload["level"] == 0:
-            # top-level → must drop at root
-            if isinstance(parent.internalPointer(), str):
-                logger.debug("canDropMimeData: level 0 but parent is child")
-                return False
-            return True
-
-        # children → must drop on their same TopItem parent
+        expected_parent_id = payload["parent_id"]
+        actual_parent_id: str | None
         if not parent.isValid():
-            logger.debug("canDropMimeData: level 1 but no parent")
-            return False
-
-        destination_node = parent.internalPointer()
-        if not isinstance(destination_node, _ImageToolWrapper):
-            logger.debug("canDropMimeData: level 1 but parent is not valid type")
-            return False
-        if id(destination_node) != payload["parent_id"]:
+            actual_parent_id = None
+        else:
+            parent_ptr = parent.internalPointer()
+            if expected_parent_id is None and isinstance(parent_ptr, _ImageToolWrapper):
+                actual_parent_id = None
+            else:
+                actual_parent_id = (
+                    parent_ptr.uid
+                    if isinstance(parent_ptr, _ImageToolWrapper)
+                    else parent_ptr
+                )
+        if actual_parent_id != expected_parent_id:
             logger.debug("canDropMimeData: parent mismatch")
             return False
         return True
 
     def _apply_moves(
         self,
-        level: typing.Literal[0, 1],
+        parent_id: str | None,
         moves: list[tuple[int, int]],
         source_parent: QtCore.QModelIndex,
         destination_parent: QtCore.QModelIndex,
     ) -> None:
-        if level == 0:
-            result = self.manager._displayed_indices.copy()
-        else:
-            result = destination_parent.internalPointer()._childtool_indices.copy()
+        if parent_id is None:
+            root_result = self.manager._displayed_indices.copy()
+            for src, dest in moves:
+                root_result.insert(dest, root_result.pop(src))
+                self.beginMoveRows(source_parent, src, src, destination_parent, dest)
+                self.manager._displayed_indices = root_result
+                self.endMoveRows()
+            return
 
+        child_result = self.manager._all_nodes[parent_id]._childtool_indices.copy()
         for src, dest in moves:
-            result.insert(dest, result.pop(src))
+            child_result.insert(dest, child_result.pop(src))
             self.beginMoveRows(source_parent, src, src, destination_parent, dest)
-            if level == 0:
-                self.manager._displayed_indices = result
-            else:
-                destination_parent.internalPointer()._childtool_indices = result
+            self.manager._all_nodes[parent_id]._childtool_indices = child_result
             self.endMoveRows()
 
     @staticmethod
@@ -1112,20 +1293,19 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         payload = self._decode_mime(data)
         if payload is None:
             return False
-        level = payload["level"]
         source_rows: list[int] = payload["rows"]
+        parent_id = typing.cast("str | None", payload["parent_id"])
 
         # Destination list and parent index
-        if level == 0:
+        if parent_id is None:
             parent_index = QtCore.QModelIndex()
             original: list[str] | list[int] = self.manager._displayed_indices.copy()
             if parent.isValid():
                 # Dropping on a parent, adjust row to be relative to that item
                 row = parent.row() + 1
         else:
-            destination_parent = parent.internalPointer()
             parent_index = parent
-            original = destination_parent._childtool_indices.copy()
+            original = self.manager._all_nodes[parent_id]._childtool_indices.copy()
 
         if not original or not source_rows:
             logger.debug("dropMimeData: empty target or source")
@@ -1133,7 +1313,9 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
         # Compute insertion position
         dest: int = len(original) if row < 0 or row > len(original) else row
-        logger.debug("dropMimeData: level=%s, rows=%s -> %s", level, source_rows, dest)
+        logger.debug(
+            "dropMimeData: parent_id=%s, rows=%s -> %s", parent_id, source_rows, dest
+        )
 
         # Create modified list by removing source rows and inserting them at dest
         dest_adjusted = dest - sum(1 for r in source_rows if r < dest)
@@ -1152,7 +1334,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             logger.debug("dropMimeData: invalid moves")
             return False
 
-        self._apply_moves(level, moves, parent_index, parent_index)
+        self._apply_moves(parent_id, moves, parent_index, parent_index)
         return True
 
 
@@ -1277,17 +1459,17 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                 option.rect = self.visualRect(index)
                 option.font = self.font()
                 try:
-                    child_tool = self._model.manager.get_childtool(
+                    child_node = self._model.manager._child_node(
                         index.internalPointer()
                     )
                 except KeyError:
-                    child_tool = None
-                if child_tool is not None:
+                    child_node = None
+                if child_node is not None:
                     status_rect, _, _ = self._delegate._compute_child_status_info(
-                        option, child_tool
+                        option, child_node
                     )
                     if status_rect and status_rect.contains(event.pos()):
-                        child_tool.show_source_update_dialog(parent=self._model.manager)
+                        child_node.show_source_update_dialog(parent=self._model.manager)
                         event.accept()
                         return
         super().mouseReleaseEvent(event)
@@ -1318,7 +1500,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._model.manager._displayed_indices.clear()
         self._model.endResetModel()
 
-    def childtool_added(self, uid: str, parent_idx: int) -> None:
+    def childtool_added(self, uid: str, parent_idx: int | str) -> None:
         """Update the list view when a new child tool is added to the manager.
 
         This must be called after the child tool is added to the manager.
@@ -1331,18 +1513,22 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
 
         This must be called before the child tool is removed from the manager.
         """
-        for (
-            tool_idx,
-            wrapper,
-        ) in self._model.manager._imagetool_wrappers.items():  # pragma: no branch
-            if uid in wrapper._childtool_indices:
-                if tool_idx not in self._model.manager._displayed_indices:
-                    # Parent was already removed from the model.
-                    return
-                parent_index = self._model._row_index(tool_idx)
-                for i, child_uid in enumerate(
-                    wrapper._childtool_indices
-                ):  # pragma: no branch
-                    if child_uid == uid:  # pragma: no branch
-                        self._model.remove_rows(i, 1, parent_index)
-                        return
+        node = self._model.manager._all_nodes.get(uid)
+        if node is None or isinstance(node, _ImageToolWrapper):
+            return
+        if node.parent_uid is None:
+            return
+        parent_node = self._model.manager._all_nodes.get(node.parent_uid)
+        if parent_node is None:
+            return
+        parent_index = (
+            self._model._row_index(parent_node.index)
+            if isinstance(parent_node, _ImageToolWrapper)
+            else self._model._row_index(parent_node.uid)
+        )
+        if not parent_index.isValid():
+            return
+        for i, child_uid in enumerate(parent_node._childtool_indices):
+            if child_uid == uid:
+                self._model.remove_rows(i, 1, parent_index)
+                return

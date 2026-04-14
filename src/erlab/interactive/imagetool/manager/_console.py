@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
 import ast
+import contextlib
 import importlib
 import typing
 import weakref
@@ -280,15 +281,45 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
         self.kernel_manager = qtconsole.inprocess.QtInProcessKernelManager()
         self._namespace = namespace
         self._kernel_banner_default: str = ""
+        self._kernel_initializing = False
+        self._erlab_loader_name: str | None = None
+        self._erlab_data_dir: str | None = None
+        self._erlab_io_hooks_registered = False
+
+    def _restore_erlab_io_state(self, *args, **kwargs) -> None:
+        erlab.io.set_loader(self._erlab_loader_name)
+        erlab.io.set_data_dir(self._erlab_data_dir)
+
+    def _persist_erlab_io_state(self, *args, **kwargs) -> None:
+        loader = erlab.io.loaders.current_loader
+        self._erlab_loader_name = None if loader is None else loader.name
+
+        data_dir = erlab.io.loaders.current_data_dir
+        self._erlab_data_dir = None if data_dir is None else str(data_dir)
+
+    def _register_erlab_io_hooks(self) -> None:
+        if self._erlab_io_hooks_registered or not self.kernel_manager.kernel:
+            return
+
+        shell = self.kernel_manager.kernel.shell
+        shell.events.register("pre_run_cell", self._restore_erlab_io_state)
+        shell.events.register("post_run_cell", self._persist_erlab_io_state)
+        self._erlab_io_hooks_registered = True
+        self._persist_erlab_io_state()
 
     def initialize_kernel(self) -> None:
-        if not self.kernel_manager.kernel:
+        if self.kernel_manager.kernel or self._kernel_initializing:
+            return
+        self._kernel_initializing = True
+        try:
             self.kernel_manager.start_kernel()
             self.kernel_client = self.kernel_manager.client()
             self.kernel_client.start_channels()
 
-            self.execute(r"%load_ext storemagic", hidden=True)
-            self.execute(r"%load_ext erlab.interactive", hidden=True)
+            super().execute(r"%load_ext storemagic", hidden=True, interactive=False)
+            super().execute(
+                r"%load_ext erlab.interactive", hidden=True, interactive=False
+            )
 
             if self._namespace is not None:
                 self.kernel_manager.kernel.shell.push(
@@ -299,11 +330,20 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
                         for name, module in self._namespace.items()
                     }
                 )
-                self.execute(r"xr.set_options(keep_attrs=True)", hidden=True)
+                super().execute(
+                    r"xr.set_options(keep_attrs=True)",
+                    hidden=True,
+                    interactive=False,
+                )
+            self._register_erlab_io_hooks()
+        finally:
+            self._kernel_initializing = False
 
     def execute(
         self, source: str | None = None, hidden: bool = False, interactive: bool = False
     ) -> None:
+        if not self.kernel_manager.kernel and not self._kernel_initializing:
+            self.initialize_kernel()
         if source is not None:
             source = _rewrite_console_source(source)
         super().execute(source, hidden=hidden, interactive=interactive)
@@ -321,6 +361,17 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     @QtCore.Slot()
     def shutdown_kernel(self) -> None:
         if self.kernel_manager.kernel:
+            if self._erlab_io_hooks_registered:
+                shell = self.kernel_manager.kernel.shell
+                with contextlib.suppress(KeyError, ValueError):
+                    shell.events.unregister(
+                        "pre_run_cell", self._restore_erlab_io_state
+                    )
+                with contextlib.suppress(KeyError, ValueError):
+                    shell.events.unregister(
+                        "post_run_cell", self._persist_erlab_io_state
+                    )
+                self._erlab_io_hooks_registered = False
             self.kernel_client.stop_channels()
             self.kernel_manager.shutdown_kernel()
 

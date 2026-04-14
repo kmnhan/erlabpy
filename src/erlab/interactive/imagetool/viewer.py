@@ -2385,7 +2385,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if transfer_to_manager and self._in_manager:
             manager = self._manager_instance
             if manager:  # pragma: no branch
-                if isinstance(widget, erlab.interactive.utils.ToolWindow):
+                if isinstance(
+                    widget,
+                    (
+                        erlab.interactive.utils.ToolWindow,
+                        erlab.interactive.imagetool.ImageTool,
+                    ),
+                ):
                     manager._add_childtool_from_slicerarea(widget, self)
                 else:
                     manager.add_widget(widget)
@@ -2479,9 +2485,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(
-                erlab.interactive.utils.make_tool_source_spec("full_data")
-            )
+            tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
         self.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -2491,9 +2495,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.data, data_name=self.watched_data_name, execute=False
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(
-                erlab.interactive.utils.make_tool_source_spec("full_data")
-            )
+            tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
         self.add_tool_window(tool)
 
     def adjust_layout(

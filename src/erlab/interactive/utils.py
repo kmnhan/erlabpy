@@ -654,96 +654,6 @@ def copy_to_clipboard(content: str | list[str]) -> str:
 _TOOL_SOURCE_SPEC_ATTR = "tool_source_spec"
 _TOOL_SOURCE_STATE_ATTR = "tool_source_state"
 _TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
-_TOOL_SOURCE_SLICE_MARKER = "__erlab_slice__"
-
-
-def _encode_tool_source_value(value: typing.Any) -> typing.Any:
-    if isinstance(value, slice):
-        return {
-            _TOOL_SOURCE_SLICE_MARKER: [
-                _encode_tool_source_value(value.start),
-                _encode_tool_source_value(value.stop),
-                _encode_tool_source_value(value.step),
-            ]
-        }
-    if isinstance(value, tuple):
-        return [_encode_tool_source_value(item) for item in value]
-    if isinstance(value, list):
-        return [_encode_tool_source_value(item) for item in value]
-    if isinstance(value, dict):
-        return {
-            str(key): _encode_tool_source_value(item) for key, item in value.items()
-        }
-    return erlab.utils.misc._convert_to_native(value)
-
-
-def _decode_tool_source_value(value: typing.Any) -> typing.Any:
-    if isinstance(value, dict):
-        if _TOOL_SOURCE_SLICE_MARKER in value:
-            start, stop, step = value[_TOOL_SOURCE_SLICE_MARKER]
-            return slice(
-                _decode_tool_source_value(start),
-                _decode_tool_source_value(stop),
-                _decode_tool_source_value(step),
-            )
-        return {
-            str(key): _decode_tool_source_value(item) for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_decode_tool_source_value(item) for item in value]
-    return value
-
-
-def _resolve_tool_source_spec(
-    parent_data: xr.DataArray, spec: dict[str, typing.Any]
-) -> xr.DataArray:
-    kind = spec.get("kind", "")
-    if kind == "full_data":
-        return parent_data.copy(deep=False)
-
-    if kind != "selection":
-        raise ValueError(f"Unsupported tool source kind: {kind!r}")
-
-    # Source specs are recorded against ImageTool's public data model, which restores
-    # non-uniform dimensions from their internal ``*_idx`` representation. Rebuild that
-    # public view before replaying selection operations so recorded dimension names
-    # continue to resolve after source data refreshes.
-    data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-        parent_data.copy(deep=False)
-    )
-    for operation in spec.get("operations", []):
-        op_name = operation.get("op", "")
-        kwargs = _decode_tool_source_value(operation.get("kwargs", {}))
-        if op_name == "qsel":
-            data = data.qsel(**kwargs)
-        elif op_name == "isel":
-            data = data.isel(kwargs)
-        elif op_name == "sel":
-            data = data.sel(kwargs)
-        elif op_name == "sort_coord_order":
-            data = erlab.utils.array.sort_coord_order(data, parent_data.coords.keys())
-        elif op_name == "transpose":
-            dims = typing.cast("list[typing.Any] | None", operation.get("dims"))
-            if dims:
-                data = data.transpose(*dims)
-            else:
-                data = data.transpose(*reversed(data.dims))
-        elif op_name == "squeeze":
-            data = data.squeeze()
-        else:
-            raise ValueError(f"Unsupported tool source operation: {op_name!r}")
-    return data
-
-
-def make_tool_source_spec(
-    kind: typing.Literal["full_data", "selection"],
-    *,
-    operations: list[dict[str, typing.Any]] | None = None,
-) -> dict[str, typing.Any]:
-    spec: dict[str, typing.Any] = {"kind": kind}
-    if operations:
-        spec["operations"] = operations
-    return spec
 
 
 class _ToolSourceUpdateDialog(QtWidgets.QDialog):
@@ -2331,9 +2241,7 @@ class ROIControls(ParameterGroup):
         if bounds is None:
             coords = (-np.inf, -np.inf, np.inf, np.inf)
         else:
-            coords = typing.cast(
-                "tuple[float, float, float, float]", bounds.getCoords()
-            )
+            coords = bounds.getCoords()
         return coords
 
     @typing.no_type_check
@@ -2527,7 +2435,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self._tool_root_layout.addWidget(self._source_status_bar, 0)
         QtWidgets.QMainWindow.setCentralWidget(self, self._tool_root_widget)
 
-        self._source_spec: dict[str, typing.Any] | None = None
+        self._source_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ) = None
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
@@ -2577,6 +2487,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         manager = erlab.interactive.imagetool.manager._manager_instance
         if manager is None:
             return False
+        if hasattr(manager, "_node_uid_from_window"):
+            return manager._node_uid_from_window(self) is not None
         return any(
             self in wrapper._childtools.values()
             for wrapper in manager._imagetool_wrappers.values()
@@ -2610,13 +2522,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         manager = erlab.interactive.imagetool.manager._manager_instance
         if manager:  # pragma: no branch
             uid: str | None = None
-            for wrapper in manager._imagetool_wrappers.values():
-                for k, v in wrapper._childtools.items():
-                    if v is self:
-                        uid = k
+            if hasattr(manager, "_node_uid_from_window"):
+                uid = manager._node_uid_from_window(self)
+            if uid is None:
+                for wrapper in manager._imagetool_wrappers.values():
+                    for k, v in wrapper._childtools.items():
+                        if v is self:
+                            uid = k
+                            break
+                    if uid is not None:
                         break
-                if uid is not None:
-                    break
             if uid is not None:  # pragma: no branch
                 msg_box = QtWidgets.QMessageBox(self)
                 msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -2653,11 +2568,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
 
     @property
-    def source_spec(self) -> dict[str, typing.Any] | None:
-        """Return a detached copy of the current ImageTool source specification."""
-        if self._source_spec is None:
-            return None
-        return json.loads(json.dumps(self._source_spec))
+    def source_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return the current ImageTool source specification."""
+        return self._source_spec
 
     @property
     def source_state(self) -> typing.Literal["fresh", "stale", "unavailable"]:
@@ -2685,15 +2600,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     def set_source_binding(
         self,
-        source_spec: dict[str, typing.Any] | None,
+        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
         *,
         auto_update: bool = False,
         state: typing.Literal["fresh", "stale", "unavailable"] = "fresh",
     ) -> None:
         """Bind this tool to an ImageTool source specification and status state."""
-        self._source_spec = (
-            json.loads(json.dumps(source_spec)) if source_spec is not None else None
-        )
+        if source_spec is not None and not isinstance(
+            source_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        ):
+            raise TypeError(
+                "source_spec must be a ToolProvenanceSpec or None. Use "
+                "parse_tool_provenance_spec() when deserializing saved payloads."
+            )
+        self._source_spec = source_spec
         self._source_auto_update = bool(auto_update)
         self._set_source_state(state if self._source_spec is not None else "fresh")
 
@@ -2756,7 +2676,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         """Resolve the current source specification against replacement parent data."""
         if self._source_spec is None:
             raise RuntimeError("Tool is not bound to an ImageTool source.")
-        return _resolve_tool_source_spec(parent_data, self._source_spec)
+        return self._source_spec.apply(parent_data)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         """Validate or normalize source data before `update_data` consumes it.
@@ -2947,7 +2867,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             "erlab_version": erlab.__version__,
         }
         if self._source_spec is not None:
-            attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(self._source_spec)
+            attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(
+                self._source_spec.model_dump(mode="json")
+            )
             attrs[_TOOL_SOURCE_STATE_ATTR] = self._source_state
             attrs[_TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(self._source_auto_update)
         return attrs
@@ -3014,14 +2936,32 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
         tool._tool_display_name = ds.attrs.get("tool_display_name", "")
         if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
-            tool.set_source_binding(
-                json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
-                auto_update=bool(ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)),
-                state=typing.cast(
-                    "typing.Literal['fresh', 'stale', 'unavailable']",
-                    ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
-                ),
-            )
+            try:
+                source_spec = (
+                    erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+                        typing.cast(
+                            "Mapping[str, typing.Any]",
+                            json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
+                        )
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved tool source provenance for %s",
+                    cls_obj.__qualname__,
+                    exc_info=True,
+                )
+            else:
+                tool.set_source_binding(
+                    source_spec,
+                    auto_update=bool(
+                        ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)
+                    ),
+                    state=typing.cast(
+                        "typing.Literal['fresh', 'stale', 'unavailable']",
+                        ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
+                    ),
+                )
         tool.setWindowTitle(ds.attrs["tool_title"])
         tool.setGeometry(*ds.attrs["tool_rect"])
         return tool

@@ -191,9 +191,126 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__(slicer_area)
-        self.new_window_check = QtWidgets.QCheckBox("Open in New Window")
-        self.new_window_check.setChecked(True)
-        self.layout_.insertRow(-1, self.new_window_check)
+        self.launch_mode_combo = QtWidgets.QComboBox()
+        self._launch_modes: tuple[tuple[str, str, str], ...] = (
+            (
+                "replace",
+                "Replace Current",
+                "Replace the data in this ImageTool and keep working in the same "
+                "window.",
+            ),
+            (
+                "detach",
+                "Open Top-Level Window",
+                "Create a separate top-level ImageTool that is detached from "
+                "refresh propagation.",
+            ),
+            (
+                "nest",
+                "Open Child Window",
+                "Create a child ImageTool under this node and keep its derivation "
+                "for later refreshes.",
+            ),
+        )
+        for value, label, tooltip in self._launch_modes:
+            self.launch_mode_combo.addItem(label, userData=value)
+            idx = self.launch_mode_combo.count() - 1
+            self.launch_mode_combo.setItemData(
+                idx, tooltip, QtCore.Qt.ItemDataRole.ToolTipRole
+            )
+        self.launch_mode_combo.setCurrentIndex(2)
+        self.launch_mode_combo.currentIndexChanged.connect(
+            lambda idx: self.launch_mode_combo.setToolTip(
+                str(
+                    self.launch_mode_combo.itemData(
+                        idx, QtCore.Qt.ItemDataRole.ToolTipRole
+                    )
+                    or ""
+                )
+            )
+        )
+        self.launch_mode_combo.setToolTip(
+            str(
+                self.launch_mode_combo.itemData(
+                    self.launch_mode_combo.currentIndex(),
+                    QtCore.Qt.ItemDataRole.ToolTipRole,
+                )
+                or ""
+            )
+        )
+        self.layout_.insertRow(-1, "Result Placement", self.launch_mode_combo)
+
+    @property
+    def launch_mode(self) -> typing.Literal["replace", "detach", "nest"]:
+        return typing.cast(
+            "typing.Literal['replace', 'detach', 'nest']",
+            self.launch_mode_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    def source_operations(
+        self,
+    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+        operation = self.source_transform_operation()
+        return [] if operation is None else [operation]
+
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+        return None
+
+    def source_spec(
+        self, new_name: str
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        return erlab.interactive.imagetool.provenance.full_data(
+            *self.source_operations()
+        ).append_final_rename(new_name)
+
+    def _compose_replace_source_spec(
+        self,
+        existing_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        new_name: str,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        return existing_spec.append_replacement_operations(
+            *self.source_operations()
+        ).append_final_rename(new_name)
+
+    def _apply_source_transform(self, data: xr.DataArray) -> xr.DataArray:
+        operation = self.source_transform_operation()
+        if operation is None:
+            return data
+        return operation.apply(data, parent_data=data)
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        return self._apply_source_transform(data)
+
+    def _itool_kwargs(self, processed) -> dict[str, typing.Any]:
+        itool_kw: dict[str, typing.Any] = {
+            "data": processed,
+            "execute": False,
+        }
+
+        if self.keep_colors:
+            color_props: ColorMapState = self.slicer_area.colormap_properties
+
+            itool_kw["cmap"] = color_props["cmap"]
+            itool_kw["gamma"] = color_props["gamma"]
+            itool_kw["high_contrast"] = color_props["high_contrast"]
+            itool_kw["zero_centered"] = color_props["zero_centered"]
+
+            if color_props["levels_locked"] and self.keep_color_limits:
+                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+        return itool_kw
+
+    def _manager_target(
+        self,
+    ) -> tuple[
+        erlab.interactive.imagetool.manager.ImageToolManager | None,
+        int | str | None,
+    ]:
+        manager = self.slicer_area._manager_instance
+        if manager is None:
+            return None, None
+        return manager, manager.target_from_slicer_area(self.slicer_area)
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -221,27 +338,57 @@ class DataTransformDialog(_DataManipulationDialog):
                 )
 
             processed = processed.rename(new_name)
+            manager, target = self._manager_target()
+            source_spec = self.source_spec(new_name)
 
-            if self.new_window_check.isChecked():
-                itool_kw: dict[str, typing.Any] = {
-                    "data": processed,
-                    "execute": False,
-                }
-
-                if self.keep_colors:
-                    color_props: ColorMapState = self.slicer_area.colormap_properties
-
-                    itool_kw["cmap"] = color_props["cmap"]
-                    itool_kw["gamma"] = color_props["gamma"]
-                    itool_kw["high_contrast"] = color_props["high_contrast"]
-                    itool_kw["zero_centered"] = color_props["zero_centered"]
-
-                    if color_props["levels_locked"] and self.keep_color_limits:
-                        itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
-
-                erlab.interactive.itool(**itool_kw)
-            else:
+            if self.launch_mode == "replace":
+                if (
+                    manager is not None
+                    and target is not None
+                    and manager._is_imagetool_target(target)
+                ):
+                    node = manager._node_for_target(target)
+                    if node.source_spec is not None:
+                        node.set_source_binding(
+                            self._compose_replace_source_spec(
+                                node.source_spec, new_name
+                            ),
+                            auto_update=node.source_auto_update,
+                            state=node.source_state,
+                        )
                 self.slicer_area.replace_source_data(processed, emit_edited=True)
+            else:
+                itool_kw = self._itool_kwargs(processed)
+                if self.launch_mode == "nest":
+                    tool = typing.cast(
+                        "QtWidgets.QWidget | None",
+                        erlab.interactive.itool(manager=False, **itool_kw),
+                    )
+                    if tool is not None:  # pragma: no branch
+                        if manager is not None and target is not None:
+                            manager.add_imagetool_child(
+                                typing.cast(
+                                    "erlab.interactive.imagetool.ImageTool", tool
+                                ),
+                                target,
+                                source_spec=source_spec,
+                            )
+                        else:
+                            self.slicer_area.add_tool_window(tool)
+                else:
+                    if manager is not None and self.slicer_area._in_manager:
+                        tool = typing.cast(
+                            "erlab.interactive.imagetool.ImageTool | None",
+                            erlab.interactive.itool(manager=False, **itool_kw),
+                        )
+                        if tool is not None:  # pragma: no branch
+                            manager.add_imagetool(
+                                tool,
+                                activate=True,
+                                provenance_spec=source_spec,
+                            )
+                    else:
+                        erlab.interactive.itool(**itool_kw)
 
             del processed
 
@@ -387,8 +534,10 @@ class RotationDialog(DataTransformDialog):
             ):
                 spin.setValue(val)
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.analysis.transform.rotate(data, **self._rotate_params)
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.rotate(**self._rotate_params)
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -422,8 +571,10 @@ class AverageDialog(DataTransformDialog):
     def _target_dims(self) -> tuple[Hashable, ...]:
         return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return data.qsel.average(self._target_dims)
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.average(*self._target_dims)
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -565,9 +716,16 @@ class CoarsenDialog(DataTransformDialog):
         kwargs["coord_func"] = self._coord_func
         return kwargs
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        coarsened = data.coarsen(**self._coarsen_kwargs)
-        return typing.cast("xr.DataArray", getattr(coarsened, self._reducer)())
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.coarsen(
+            dim=self._selected_windows,
+            boundary=self.boundary_combo.currentText(),
+            side=self.side_combo.currentText(),
+            coord_func=self._coord_func,
+            reducer=self._reducer,
+        )
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -733,10 +891,16 @@ class ThinDialog(DataTransformDialog):
         self.dim_group.setEnabled(not self._use_global_mode)
         self.global_group.setEnabled(self._use_global_mode)
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
         if self._use_global_mode:
-            return data.thin(self.global_spin.value())
-        return data.thin(self._effective_factors)
+            return erlab.interactive.imagetool.provenance.thin(
+                factor=self.global_spin.value()
+            )
+        return erlab.interactive.imagetool.provenance.thin(
+            factors=self._effective_factors
+        )
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -867,8 +1031,10 @@ class SymmetrizeDialog(DataTransformDialog):
             ],
         }
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.analysis.transform.symmetrize(data, **self._params)
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.symmetrize(**self._params)
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -960,8 +1126,10 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
                 spin.setValue(val)
             self.fold_spin.setValue(2 * (len(main_image._guidelines_items) - 1))
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.analysis.transform.symmetrize_nfold(data, **self._params)
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.symmetrize_nfold(**self._params)
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -984,10 +1152,12 @@ class EdgeCorrectionDialog(DataTransformDialog):
 
         self.layout_.addRow(self.shift_coord_check)
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.analysis.gold.correct_with_edge(
-            data,
-            self._edge_fit,
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        assert self._edge_fit is not None
+        return erlab.interactive.imagetool.provenance.correct_with_edge(
+            edge_fit=self._edge_fit,
             shift_coords=self.shift_coord_check.isChecked(),
         )
 
@@ -1014,6 +1184,34 @@ class _BaseCropDialog(DataTransformDialog):
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
         raise NotImplementedError
+
+    def source_operations(
+        self,
+    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+        sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
+        isel_kwargs: dict[Hashable, slice] = {}
+        operations: list[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        ] = []
+
+        for key in list(sel_kwargs.keys()):
+            key_str = str(key)
+            if key_str.endswith("_idx"):
+                isel_kwargs[key_str.removesuffix("_idx")] = sel_kwargs.pop(key)
+
+        if sel_kwargs:
+            operations.append(
+                erlab.interactive.imagetool.provenance.sel(
+                    **{str(key): value for key, value in sel_kwargs.items()}
+                )
+            )
+        if isel_kwargs:
+            operations.append(
+                erlab.interactive.imagetool.provenance.isel(
+                    **{str(key): value for key, value in isel_kwargs.items()}
+                )
+            )
+        return operations
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return data.sel(self._slice_kwargs)
@@ -1522,8 +1720,10 @@ class SwapDimsDialog(DataTransformDialog):
             return
         super().accept()
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return data.swap_dims(self._swap_mapping)
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.swap_dims(self._swap_mapping)
 
     def make_code(self) -> str:
         if not self._swap_mapping:
@@ -1713,17 +1913,12 @@ class AssignCoordsDialog(DataTransformDialog):
             self.slicer_area.data[self.current_coord_name].values
         )
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.utils.array.sort_coord_order(
-            data.assign_coords(
-                {
-                    self.current_coord_name: data[self.current_coord_name].copy(
-                        data=self.coord_widget.new_coord
-                    )
-                }
-            ),
-            keys=data.coords.keys(),
-            dims_first=False,
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.assign_coords(
+            coord_name=self.current_coord_name,
+            values=self.coord_widget.new_coord,
         )
 
 
@@ -1790,8 +1985,10 @@ class ROIPathDialog(DataTransformDialog):
             "dim_name": self._dim_name_line.text().strip(),
         }
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.analysis.interpolate.slice_along_path(data, **self._params)
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.slice_along_path(**self._params)
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "
@@ -1844,8 +2041,10 @@ class ROIMaskDialog(DataTransformDialog):
             "drop": self._drop_check.isChecked(),
         }
 
-    def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        return erlab.analysis.mask.mask_with_polygon(data, **self._params)
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.mask_with_polygon(**self._params)
 
     def make_code(self) -> str:
         placeholder = self.slicer_area.watched_data_name or " "

@@ -33,6 +33,7 @@ if typing.TYPE_CHECKING:
     import matplotlib.colors
     import qtawesome
 
+    from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 else:
     import lazy_loader as _lazy
@@ -1006,7 +1007,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
-    ) -> dict[str, typing.Any]:
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
         cursor = self.slicer_area.current_cursor
         alt_pressed: bool = (
             QtCore.Qt.KeyboardModifier.AltModifier
@@ -1014,24 +1015,23 @@ class ItoolPlotItem(pg.PlotItem):
         )
         selection_code = self.selection_code_for_cursor(cursor)
         if selection_code.startswith(".qsel"):
-            operations: list[dict[str, typing.Any]] = [
-                {
-                    "op": "qsel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        self.array_slicer.qsel_args(cursor, self.display_axis)
-                    ),
-                }
+            operations: list[
+                erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+            ] = [
+                erlab.interactive.imagetool.provenance.qsel(
+                    **self.array_slicer.qsel_args(cursor, self.display_axis)
+                )
             ]
         else:
             operations = [
-                {
-                    "op": "isel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        self.array_slicer.isel_args(
+                erlab.interactive.imagetool.provenance.isel(
+                    **{
+                        str(key): value
+                        for key, value in self.array_slicer.isel_args(
                             cursor, self.display_axis, int_if_one=True
-                        )
-                    ),
-                }
+                        ).items()
+                    }
+                )
             ]
 
         if alt_pressed:
@@ -1044,38 +1044,27 @@ class ItoolPlotItem(pg.PlotItem):
 
             if crop_indexers:
                 operations.append(
-                    {
-                        "op": "sel",
-                        "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                            crop_indexers
-                        ),
-                    }
+                    erlab.interactive.imagetool.provenance.sel(
+                        **{str(key): value for key, value in crop_indexers.items()}
+                    )
                 )
             if isel_indexers:
                 operations.append(
-                    {
-                        "op": "isel",
-                        "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                            isel_indexers
-                        ),
-                    }
+                    erlab.interactive.imagetool.provenance.isel(
+                        **{str(key): value for key, value in isel_indexers.items()}
+                    )
                 )
 
-        operations.append({"op": "sort_coord_order"})
+        operations.append(erlab.interactive.imagetool.provenance.sort_coord_order())
         if transpose:
             operations.append(
-                {
-                    "op": "transpose",
-                    "dims": erlab.interactive.utils._encode_tool_source_value(
-                        list(reversed(self.current_data.dims))
-                    ),
-                }
+                erlab.interactive.imagetool.provenance.transpose(
+                    *reversed(self.current_data.dims)
+                )
             )
         if squeeze:
-            operations.append({"op": "squeeze"})
-        return erlab.interactive.utils.make_tool_source_spec(
-            "selection", operations=operations
-        )
+            operations.append(erlab.interactive.imagetool.provenance.squeeze())
+        return erlab.interactive.imagetool.provenance.selection(*operations)
 
     @property
     def is_guidelines_visible(self) -> bool:
@@ -1876,11 +1865,29 @@ class ItoolPlotItem(pg.PlotItem):
         if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
             itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
 
-        tool = typing.cast(
-            "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
-        )
-        if tool is not None:  # pragma: no branch
-            self.slicer_area.add_tool_window(tool)
+        if self.slicer_area._in_manager:
+            manager = self.slicer_area._manager_instance
+            target = (
+                None
+                if manager is None
+                else manager.target_from_slicer_area(self.slicer_area)
+            )
+            if manager is not None and target is not None:
+                tool = typing.cast(
+                    "ImageTool | None",
+                    erlab.interactive.itool(manager=False, **itool_kw),
+                )
+                if tool is not None:  # pragma: no branch
+                    manager.add_imagetool_child(
+                        tool,
+                        target,
+                        source_spec=self.make_tool_source_spec(),
+                    )
+                return
+
+        tool_window = erlab.interactive.itool(**itool_kw)
+        if isinstance(tool_window, QtWidgets.QWidget):  # pragma: no branch
+            self.slicer_area.add_tool_window(tool_window)
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:

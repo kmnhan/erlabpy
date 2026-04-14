@@ -28,7 +28,12 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool.manager import ImageToolManager, fetch, load_in_manager
+from erlab.interactive.imagetool.manager import (
+    ImageToolManager,
+    fetch,
+    load_in_manager,
+    replace_data,
+)
 from erlab.interactive.imagetool.manager._console import (
     ToolNamespace,
     _ConsoleDataAssignmentTransformer,
@@ -41,6 +46,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
 )
 from erlab.interactive.imagetool.manager._modelview import (
     _MIME,
+    _NODE_UID_ROLE,
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
 )
@@ -93,6 +99,45 @@ def select_child_tool(
         if deselect
         else QtCore.QItemSelectionModel.SelectionFlag.Select,
     )
+
+
+def metadata_derivation_texts(manager: ImageToolManager) -> list[str]:
+    return [
+        manager.metadata_derivation_list.item(row).text()
+        for row in range(manager.metadata_derivation_list.count())
+    ]
+
+
+def metadata_detail_map(manager: ImageToolManager) -> dict[str, str]:
+    details: dict[str, str] = {}
+    for key, label in manager._metadata_detail_labels.items():
+        details[key] = getattr(label, "full_text", label.text())
+    return details
+
+
+def select_metadata_rows(
+    manager: ImageToolManager, rows: list[int], clear: bool = True
+) -> None:
+    if clear:
+        manager.metadata_derivation_list.clearSelection()
+    for row in rows:
+        item = manager.metadata_derivation_list.item(row)
+        if item is None:
+            continue
+        item.setSelected(True)
+        manager.metadata_derivation_list.setCurrentItem(item)
+
+
+def set_transform_launch_mode(
+    dialog: QtWidgets.QDialog, mode: typing.Literal["replace", "detach", "nest"]
+) -> None:
+    labels = {
+        "replace": "Replace Current",
+        "detach": "Open Top-Level Window",
+        "nest": "Open Child Window",
+    }
+    dialog.launch_mode_combo.setCurrentText(labels[mode])  # type: ignore[attr-defined]
+    assert dialog.launch_mode == mode  # type: ignore[attr-defined]
 
 
 def make_drop_event(filename: str) -> QtGui.QDropEvent:
@@ -722,6 +767,314 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
 
+def test_manager_open_in_new_window_nests_imagetool_children(
+    qtbot,
+    monkeypatch,
+    accept_dialog,
+    tmp_path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        file_dir = tmp_path / ("very_long_directory_name_" * 4)
+        file_dir.mkdir(parents=True)
+        file_path = file_dir / "scan_with_a_long_name.h5"
+        test_data.to_netcdf(file_path, engine="h5netcdf")
+
+        itool(
+            test_data,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent = manager._imagetool_wrappers[0]
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info()
+        root_index = manager.tree_view._model._row_index(0)
+        assert root_index.data(_NODE_UID_ROLE) == parent.uid
+        right_splitter = typing.cast(
+            "QtWidgets.QSplitter", manager.text_box.parentWidget()
+        )
+        assert right_splitter.indexOf(manager.preview_widget) < right_splitter.indexOf(
+            manager.metadata_group
+        )
+        details = metadata_detail_map(manager)
+        assert details["Kind"] == "ImageTool"
+        assert details["File"] == str(file_path)
+        assert "Chunks" not in details
+        assert "Added" in details
+        assert metadata_derivation_texts(manager) == []
+        assert manager._build_metadata_derivation_menu() is None
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        file_label = manager._metadata_detail_labels["File"]
+        assert file_label.toolTip() == str(file_path)
+        file_label.setFixedWidth(84)
+        qtbot.waitUntil(
+            lambda: (
+                getattr(file_label, "full_text", file_label.text()) != file_label.text()
+            ),
+            timeout=2000,
+        )
+
+        def _inspect_source_dialog(dialog: QtWidgets.QDialog) -> None:
+            assert dialog.path_edit.text() == str(file_path)  # type: ignore[attr-defined]
+            assert (
+                dialog.loader_edit.text().endswith("xarray.load_dataarray")  # type: ignore[attr-defined]
+            )
+            assert (
+                dialog.kwargs_edit.toPlainText() == 'engine="h5netcdf"'  # type: ignore[attr-defined]
+            )
+            dialog.copy_code_button.click()  # type: ignore[attr-defined]
+
+        accept_dialog(
+            lambda: qtbot.mouseClick(file_label, QtCore.Qt.MouseButton.LeftButton),
+            pre_call=_inspect_source_dialog,
+        )
+        assert copied
+        assert "load_dataarray(" in copied[-1]
+        assert str(file_path) in copied[-1]
+        assert "_parse_input" not in copied[-1]
+        assert "data = " in copied[-1]
+
+        manager.get_imagetool(0).slicer_area.images[0].open_in_new_window()
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_tool = manager.get_imagetool(child_uid)
+
+        assert child_node.is_imagetool
+        assert child_node.parent_uid == parent.uid
+        assert child_node.source_spec is not None
+        xr.testing.assert_identical(fetch(child_uid), child_tool.slicer_area._data)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        child_index = manager.tree_view._model._row_index(child_uid)
+        assert child_index.data(_NODE_UID_ROLE) == child_uid
+        child_details = metadata_detail_map(manager)
+        assert child_details["Kind"] == "ImageTool"
+        assert "Added" in child_details
+        assert child_details["File"] == str(file_path)
+        assert "Chunks" not in child_details
+        assert metadata_derivation_texts(manager)
+
+        child_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+
+        nested_uid = child_node._childtool_indices[0]
+        nested_tool = manager.get_childtool(nested_uid)
+        assert isinstance(nested_tool, DerivativeTool)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, nested_uid)
+        manager._update_info(uid=nested_uid)
+        nested_details = metadata_detail_map(manager)
+        assert nested_details["Kind"] == nested_tool.tool_name
+        assert "Added" in nested_details
+        assert metadata_derivation_texts(manager)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Full Code"].trigger()
+        assert copied
+        assert copied[-1].startswith("derived = data")
+
+
+def test_manager_transform_launch_modes_refresh_nested_and_detached(
+    qtbot,
+    monkeypatch,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+
+        def _nest_average(dialog) -> None:
+            assert dialog.launch_mode == "nest"
+            assert dialog.launch_mode_combo.toolTip()
+            dialog.dim_checks["x"].setChecked(True)
+
+        accept_dialog(parent_tool.mnb._average, pre_call=_nest_average)
+
+        parent = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_tool = manager.get_imagetool(child_uid)
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            data.qsel.average("x").rename(None),
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        details = metadata_detail_map(manager)
+        assert details["Kind"] == "ImageTool"
+        assert "Added" in details
+        derivation = metadata_derivation_texts(manager)
+        assert any("Average" in line for line in derivation)
+        assert all("rename(" not in line for line in derivation)
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+
+        def _replace_average(dialog) -> None:
+            dialog.dim_checks["y"].setChecked(True)
+            set_transform_launch_mode(dialog, "replace")
+
+        accept_dialog(child_tool.mnb._average, pre_call=_replace_average)
+
+        transforms = [
+            op
+            for op in typing.cast(
+                "erlab.interactive.imagetool.provenance.ToolProvenanceSpec",
+                child_node.source_spec,
+            ).operations
+            if op.op == "average"
+        ]
+        assert [op.op for op in transforms] == ["average", "average"]
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            data.qsel.average("x").qsel.average("y").rename(None),
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        derivation = metadata_derivation_texts(manager)
+        assert derivation[0] == "Start from current parent ImageTool data"
+        assert len(derivation) == 3
+        assert "Average" in derivation[1]
+        assert "dims=" in derivation[1]
+        assert "Average" in derivation[2]
+        assert "dims=" in derivation[2]
+        manager.metadata_derivation_list.setFocus()
+        select_metadata_rows(manager, [0])
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        assert copied == []
+
+        select_metadata_rows(manager, [1, 2])
+        qtbot.keyClick(
+            manager.metadata_derivation_list,
+            QtCore.Qt.Key.Key_C,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        assert copied[-1] == (
+            'derived = derived.qsel.average("x")\nderived = derived.qsel.average("y")'
+        )
+
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Selected Code"].trigger()
+        assert copied[-1] == (
+            'derived = derived.qsel.average("x")\nderived = derived.qsel.average("y")'
+        )
+
+        action_map(menu)["Copy Full Code"].trigger()
+        assert copied[-1] == (
+            "derived = data\n"
+            'derived = derived.qsel.average("x")\n'
+            'derived = derived.qsel.average("y")'
+        )
+        assert ".rename(" not in copied[-1]
+
+        manual = xr.DataArray(
+            np.arange(5, dtype=float) + 100.0,
+            dims=["z"],
+            coords={"z": data["z"].values},
+            name=child_tool.slicer_area._data.name,
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(child_uid, manual)
+        xr.testing.assert_identical(fetch(child_uid), manual)
+
+        updated = data.copy(deep=True)
+        updated.data = np.asarray(updated.data) * 2
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node._update_from_parent_source() is True
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            updated.qsel.average("x").qsel.average("y").rename(None),
+        )
+
+        def _detach_average(dialog) -> None:
+            dialog.dim_checks["x"].setChecked(True)
+            set_transform_launch_mode(dialog, "detach")
+
+        accept_dialog(parent_tool.mnb._average, pre_call=_detach_average)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        detached = manager._imagetool_wrappers[1]
+        assert detached.source_spec is None
+        assert detached.provenance_spec is not None
+        detached_before = detached.slicer_area._data.copy(deep=True)
+
+        updated2 = data.copy(deep=True)
+        updated2.data = np.asarray(updated2.data) * 3
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated2)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(detached.slicer_area._data, detached_before)
+
+        manager.tree_view.clearSelection()
+        manager._update_info()
+        assert metadata_detail_map(manager) == {}
+        assert metadata_derivation_texts(manager) == []
+        assert manager._build_metadata_derivation_menu() is None
+
+        select_tools(manager, [0])
+        select_child_tool(manager, child_uid)
+        manager._update_info()
+        assert metadata_detail_map(manager) == {}
+        assert metadata_derivation_texts(manager) == []
+        assert manager._build_metadata_derivation_menu() is None
+
+
 def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(
     qtbot,
     monkeypatch,
@@ -974,6 +1327,99 @@ def test_manager_workspace_io(
             select_tools(manager, list(manager._imagetool_wrappers.keys()))
             accept_dialog(manager.remove_action.trigger)
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+
+def test_manager_workspace_roundtrip_recursive_nested_imagetools(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+
+        itool(data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        def _nest_average(dialog) -> None:
+            dialog.dim_checks["x"].setChecked(True)
+            set_transform_launch_mode(dialog, "nest")
+
+        accept_dialog(manager.get_imagetool(0).mnb._average, pre_call=_nest_average)
+
+        root_wrapper = manager._imagetool_wrappers[0]
+        qtbot.wait_until(
+            lambda: len(root_wrapper._childtool_indices) == 1, timeout=5000
+        )
+        child_uid = root_wrapper._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_spec = child_node.source_spec
+
+        child_tool = manager.get_imagetool(child_uid)
+        child_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+        tool_uid = child_node._childtool_indices[0]
+
+        tree = manager._to_datatree()
+        assert tree.attrs["imagetool_workspace_schema_version"] == 3
+        assert (
+            tree[f"0/childtools/{child_uid}/imagetool"].attrs["manager_node_uid"]
+            == child_uid
+        )
+        assert (
+            tree[f"0/childtools/{child_uid}/childtools/{tool_uid}/tool"].attrs[
+                "manager_node_uid"
+            ]
+            == tool_uid
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir_name:
+            filename = pathlib.Path(tmp_dir_name) / "workspace.itws"
+            tree.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+            loaded = xr.open_datatree(
+                filename, engine="h5netcdf", chunks="auto", phony_dims="sort"
+            )
+            try:
+                assert manager._is_datatree_workspace(loaded)
+                assert loaded.attrs["imagetool_workspace_schema_version"] == 3
+                for node in loaded.values():
+                    manager._load_workspace_node(typing.cast("xr.DataTree", node))
+            finally:
+                loaded.close()
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        loaded_root = manager._imagetool_wrappers[0]
+        assert loaded_root._childtool_indices == [child_uid]
+
+        loaded_child = manager._child_node(child_uid)
+        assert loaded_child.source_spec == child_spec
+        assert loaded_child._childtool_indices == [tool_uid]
+
+        updated = data.copy(deep=True)
+        updated.data = np.asarray(updated.data) * 4
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: loaded_child.source_state == "stale", timeout=5000)
+        assert loaded_child._update_from_parent_source() is True
+        xr.testing.assert_identical(
+            manager.get_imagetool(child_uid).slicer_area._data.rename(None),
+            updated.qsel.average("x").rename(None),
+        )
 
 
 def test_manager_workspace_load_legacy(
@@ -1487,6 +1933,11 @@ def test_manager_console(
         manager.console._console_widget.execute("era")
         assert _get_last_output_contents() == erlab.analysis
 
+        # Loader state should persist across console cells.
+        manager.console._console_widget.execute("erlab.io.set_loader('merlin')")
+        manager.console._console_widget.execute("erlab.io.loaders.current_loader.name")
+        assert _get_last_output_contents() == "merlin"
+
         # Test repr
         manager.console._console_widget.execute("tools")
         assert str(_get_last_output_contents()) == "0: \n1: "
@@ -1710,6 +2161,9 @@ def test_manager_hover_tooltip(
 
         manager.get_imagetool(0).slicer_area._auto_chunk()
         manager.get_imagetool(1).slicer_area._auto_chunk()
+        select_tools(manager, [0])
+        manager._update_info()
+        assert "Chunks" in metadata_detail_map(manager)
 
         view = manager.tree_view
 
@@ -1719,9 +2173,15 @@ def test_manager_hover_tooltip(
         index = model.index(0, 0)  # first tool
         option = QtWidgets.QStyleOptionViewItem()
         delegate.initStyleOption(option, index)
-        _, dask_rect, link_rect, _ = delegate._compute_icons_info(
+        icons_width, dask_rect, link_rect, _ = delegate._compute_icons_info(
             option, index.internalPointer()
         )
+        uid_rect = delegate._compute_uid_badge_rect(
+            option,
+            index.data(_NODE_UID_ROLE),
+            right_reserved=icons_width,
+        )
+        assert uid_rect is not None
 
         text = None
 
@@ -1761,6 +2221,16 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
         assert not handled
         assert text is None
+
+        # Hover over node id badge
+        text = None
+        pos = uid_rect.center()
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+        assert handled
+        assert text == f"Node ID: {index.data(_NODE_UID_ROLE)}"
 
 
 def test_warning_alert(

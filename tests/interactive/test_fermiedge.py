@@ -217,7 +217,7 @@ def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
     win: GoldTool = goldtool(gold, execute=False)
     qtbot.addWidget(win)
     win.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        erlab.interactive.imagetool.provenance.full_data(),
         auto_update=True,
     )
 

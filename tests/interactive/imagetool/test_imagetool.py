@@ -1299,8 +1299,8 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     selection_spec = win.slicer_area.images[0].make_tool_source_spec(
         transpose=True, squeeze=True
     )
-    assert selection_spec["kind"] == "selection"
-    assert [op["op"] for op in selection_spec["operations"]] == [
+    assert selection_spec.kind == "selection"
+    assert [op.op for op in selection_spec.operations] == [
         "isel",
         "sort_coord_order",
         "transpose",
@@ -1310,9 +1310,7 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     win.slicer_area.open_in_meshtool()
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
     child = next(iter(win.slicer_area._associated_tools.values()))
-    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
-        "full_data"
-    )
+    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
     assert child.source_state == "fresh"
 
     new_data = data.copy(deep=True)
@@ -1341,12 +1339,8 @@ def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
     )
 
     spec = image.make_tool_source_spec()
-    sel_kwargs = erlab.interactive.utils._decode_tool_source_value(
-        next(op["kwargs"] for op in spec["operations"] if op["op"] == "sel")
-    )
-    isel_kwargs = erlab.interactive.utils._decode_tool_source_value(
-        [op["kwargs"] for op in spec["operations"] if op["op"] == "isel"][-1]
-    )
+    sel_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
+    isel_kwargs = [op.decoded_kwargs for op in spec.operations if op.op == "isel"][-1]
 
     assert sel_kwargs == {"alpha": slice(1, 4)}
     assert isel_kwargs == {"eV": slice(0, 2)}
@@ -1657,7 +1651,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: RotationDialog) -> None:
         dialog.angle_spin.setValue(60.0)
         dialog.reshape_check.setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
@@ -1682,7 +1676,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
         dialog.reshape_check.setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
@@ -1866,9 +1860,7 @@ def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -
 
     win.slicer_area.open_in_ktool()
 
-    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
-        "full_data"
-    )
+    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
     assert child.source_state == "fresh"
 
     win.close()
@@ -2070,7 +2062,7 @@ def test_itool_rotate_center_accepts_out_of_bounds_values(qtbot, accept_dialog) 
         assert dialog.center_spins[0].value() == center[0]
         assert dialog.center_spins[1].value() == center[1]
         dialog.reshape_check.setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
@@ -2147,7 +2139,7 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
         dialog.dim_checks["y"].setChecked(True)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
@@ -2201,7 +2193,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["y"].setChecked(True)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
@@ -2222,7 +2214,7 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["y"].setChecked(False)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
@@ -2510,7 +2502,7 @@ def test_itool_average(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2535,7 +2527,7 @@ def test_itool_average_marks_incompatible_child_tools_unavailable(
 
     def _set_dialog_params(dialog: AverageDialog) -> None:
         dialog.dim_checks["alpha"].setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
         accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
@@ -2602,7 +2594,7 @@ def test_itool_coarsen(qtbot, accept_dialog) -> None:
         dialog.reducer_combo.setCurrentText("sum")
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._coarsen, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2635,7 +2627,7 @@ def test_itool_coarsen_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         dialog.window_spins["x"].setValue(2)
         assert dialog.boundary_combo.currentText() == "trim"
         assert dialog.coord_func_combo.currentText() == "mean"
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._coarsen, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2684,7 +2676,7 @@ def test_itool_thin(qtbot, accept_dialog) -> None:
         dialog.factor_spins["y"].setValue(3)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2710,7 +2702,7 @@ def test_itool_thin_global_factor(qtbot, accept_dialog) -> None:
         dialog.global_spin.setValue(2)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2738,7 +2730,7 @@ def test_itool_thin_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         assert "x_idx" not in dialog.dim_checks
         dialog.dim_checks["x"].setChecked(True)
         dialog.factor_spins["x"].setValue(2)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2769,7 +2761,7 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
         dialog._center_spin.setValue(2.0)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2805,7 +2797,7 @@ def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
         dialog.order_spin.setValue(3)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._symmetrize_nfold, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
@@ -2933,7 +2925,7 @@ def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) 
         # Test dialog
         def _set_dialog_params(dialog: EdgeCorrectionDialog) -> None:
             dialog.shift_coord_check.setChecked(shift_coords)
-            dialog.new_window_check.setChecked(False)
+            dialog.launch_mode_combo.setCurrentText("Replace Current")
 
         def _go_to_file(dialog: QtWidgets.QFileDialog):
             dialog.setDirectory(tmp_dir_name)
@@ -2997,7 +2989,7 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
         dialog._coord_combo.setCurrentText("t")
         dialog.coord_widget.mode_combo.setCurrentIndex(1)  # Set to 'Delta'
         dialog.coord_widget.spin0.setValue(1)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
@@ -3021,7 +3013,7 @@ def test_itool_swap_dims(qtbot, accept_dialog) -> None:
 
     def _set_dialog_params(dialog: SwapDimsDialog) -> None:
         dialog.target_combos["x"].setCurrentText("u")
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -3052,7 +3044,7 @@ def test_itool_swap_dims_multiple_and_code(qtbot, accept_dialog) -> None:
         dialog.target_combos["y"].setCurrentText("v")
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -3086,7 +3078,7 @@ def test_itool_swap_dims_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         assert "x" in dialog.target_combos
         assert "x_idx" not in dialog.target_combos
         dialog.target_combos["x"].setCurrentText("temperature")
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
