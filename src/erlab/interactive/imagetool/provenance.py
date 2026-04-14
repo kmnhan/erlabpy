@@ -4,40 +4,53 @@ The provenance model stores how a tool's data should be reconstructed from a par
 ImageTool window. A :class:`ToolProvenanceSpec` answers two questions:
 
 1. What should be used as the starting point?
-   Use :func:`full_data` when the derived tool should begin from the parent's current
-   array exactly as shown to the caller.
-   Use :func:`selection` when the derived tool should begin from the public ImageTool
-   selection model, including restoration of non-uniform dimensions.
+
+   - Use :func:`full_data` when the derived tool should begin from the parent's current
+     array exactly as shown to the caller.
+
+   - Use :func:`selection` when the derived tool should begin from the public ImageTool
+     selection model, including restoration of non-uniform dimensions.
+
 2. Which operations should be replayed on that starting point?
-   Each operation is represented by an immutable :class:`_BaseOperation` subclass whose
-   serialized fields are safe to persist in JSON.
+
+   - Each operation is represented by an immutable :class:`ToolProvenanceOperation`
+     subclass whose serialized fields are safe to persist in JSON.
 
 Adding a new provenance-carrying operation follows the same pattern every time:
 
-1. Define a new `_BaseOperation` subclass with a unique ``op`` discriminator literal.
+1. Define a new :class:`ToolProvenanceOperation` subclass with a unique ``op``
+   discriminator literal.
+
 2. Prefer the annotated provenance field aliases defined in this module for hashable
    dimension identifiers and dim-keyed mappings so runtime values stay decoded while
    JSON dumps remain lossless.
+
 3. If the operation needs already-encoded payloads such as xarray objects or array-like
-   vertex data, validate them with :meth:`_BaseOperation._validate_encoded_field` and
-   expose decoded convenience properties for runtime use.
-4. Implement :meth:`_BaseOperation.apply` so it transforms a derived array using the
-   recorded parameters. ``parent_data`` is provided when the operation needs access to
-   parent coordinates or ordering.
-5. Implement :meth:`_BaseOperation.derivation_entry` so the manager can display a
-   user-facing summary and optional copyable code. Return ``None`` when the operation
+   vertex data, validate them with
+   :meth:`ToolProvenanceOperation._validate_encoded_field` and expose decoded
+   convenience properties for runtime use.
+
+4. Implement :meth:`ToolProvenanceOperation.apply` so it transforms a derived array
+   using the recorded parameters. ``parent_data`` is provided when the operation needs
+   access to parent coordinates or ordering.
+
+5. Implement :meth:`ToolProvenanceOperation.derivation_entry` so the manager can display
+   a user-facing summary and optional copyable code. Return ``None`` when the operation
    should be omitted from the derivation list.
-6. Give the class a unique ``op`` discriminator literal. Subclasses register
-   themselves automatically so serialized payloads can dispatch to the right model.
+
+6. Give the class a unique ``op`` discriminator literal. Subclasses register themselves
+   automatically so serialized payloads can dispatch to the right model.
+
 7. Export the concrete operation class from this module so runtime call sites can
    instantiate it directly.
+
 8. Add tests that cover round-trip validation, :meth:`apply`, and derivation text/code,
    plus any save/load path that persists the new operation.
 
 Parsing of serialized payloads happens only through :func:`parse_tool_provenance_spec`
 and :func:`parse_tool_provenance_operation`. Runtime authoring code should create specs
-with :func:`full_data` and :func:`selection`, then instantiate concrete operation
-models from this module directly.
+with :func:`full_data` and :func:`selection`, then instantiate concrete operation models
+from this module directly.
 """
 
 from __future__ import annotations
@@ -224,10 +237,10 @@ def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -
     return f"derived = derived.{method}({args})"
 
 
-_OPERATION_TYPES: dict[str, type[_BaseOperation]] = {}
+_OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 
-class _BaseOperation(pydantic.BaseModel):
+class ToolProvenanceOperation(pydantic.BaseModel):
     """Base class for immutable provenance operations.
 
     New operations should keep runtime fields in their decoded Python form, prefer the
@@ -326,34 +339,36 @@ def _coerce_nullable_hashable_tuple_field(
 ) -> tuple[Hashable, ...] | None:
     if value is None:
         return None
-    return _BaseOperation._coerce_hashable_tuple_field(value)
+    return ToolProvenanceOperation._coerce_hashable_tuple_field(value)
 
 
 def _coerce_hashable_pair_field(value: typing.Any) -> tuple[Hashable, Hashable]:
     return typing.cast(
         "tuple[Hashable, Hashable]",
-        _BaseOperation._coerce_hashable_tuple_field(value, expected_len=2),
+        ToolProvenanceOperation._coerce_hashable_tuple_field(value, expected_len=2),
     )
 
 
 def _coerce_int_mapping_field(value: typing.Any) -> dict[Hashable, int]:
     return typing.cast(
         "dict[Hashable, int]",
-        _BaseOperation._coerce_hashable_mapping_field(value, value_coerce=int),
+        ToolProvenanceOperation._coerce_hashable_mapping_field(value, value_coerce=int),
     )
 
 
 def _coerce_float_mapping_field(value: typing.Any) -> dict[Hashable, float]:
     return typing.cast(
         "dict[Hashable, float]",
-        _BaseOperation._coerce_hashable_mapping_field(value, value_coerce=float),
+        ToolProvenanceOperation._coerce_hashable_mapping_field(
+            value, value_coerce=float
+        ),
     )
 
 
 def _coerce_hashable_mapping_field(value: typing.Any) -> dict[Hashable, Hashable]:
     return typing.cast(
         "dict[Hashable, Hashable]",
-        _BaseOperation._coerce_hashable_mapping_field(
+        ToolProvenanceOperation._coerce_hashable_mapping_field(
             value, value_coerce=_normalize_provenance_hashable
         ),
     )
@@ -364,7 +379,7 @@ def _coerce_float_sequence_mapping_field(
 ) -> dict[Hashable, list[float]]:
     return typing.cast(
         "dict[Hashable, list[float]]",
-        _BaseOperation._coerce_hashable_mapping_field(
+        ToolProvenanceOperation._coerce_hashable_mapping_field(
             value, value_coerce=_coerce_float_sequence
         ),
     )
@@ -372,67 +387,82 @@ def _coerce_float_sequence_mapping_field(
 
 ProvenanceHashable: typing.TypeAlias = typing.Annotated[
     Hashable,
-    pydantic.BeforeValidator(_BaseOperation._coerce_hashable_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_field),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 NullableProvenanceHashableTuple: typing.TypeAlias = typing.Annotated[
     tuple[Hashable, ...] | None,
     pydantic.BeforeValidator(_coerce_nullable_hashable_tuple_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 ProvenanceHashableTuple: typing.TypeAlias = typing.Annotated[
     tuple[Hashable, ...],
-    pydantic.BeforeValidator(_BaseOperation._coerce_hashable_tuple_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_tuple_field),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 ProvenanceHashablePair: typing.TypeAlias = typing.Annotated[
     tuple[Hashable, Hashable],
     pydantic.BeforeValidator(_coerce_hashable_pair_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 ProvenanceMapping: typing.TypeAlias = typing.Annotated[
     dict[Hashable, typing.Any],
-    pydantic.BeforeValidator(_BaseOperation._coerce_hashable_mapping_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.BeforeValidator(ToolProvenanceOperation._coerce_hashable_mapping_field),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 ProvenanceIntMapping: typing.TypeAlias = typing.Annotated[
     dict[Hashable, int],
     pydantic.BeforeValidator(_coerce_int_mapping_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 ProvenanceFloatMapping: typing.TypeAlias = typing.Annotated[
     dict[Hashable, float],
     pydantic.BeforeValidator(_coerce_float_mapping_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 ProvenanceHashableMapping: typing.TypeAlias = typing.Annotated[
     dict[Hashable, Hashable],
     pydantic.BeforeValidator(_coerce_hashable_mapping_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
 
 ProvenanceFloatSequenceMapping: typing.TypeAlias = typing.Annotated[
     dict[Hashable, list[float]],
     pydantic.BeforeValidator(_coerce_float_sequence_mapping_field),
-    pydantic.PlainSerializer(_BaseOperation._json_encode_field, when_used="json"),
+    pydantic.PlainSerializer(
+        ToolProvenanceOperation._json_encode_field, when_used="json"
+    ),
 ]
-
-
-ToolProvenanceOperation = _BaseOperation
 
 
 def _require_operation_instance(
     operation: ToolProvenanceOperation,
 ) -> ToolProvenanceOperation:
     """Require a fully constructed operation instance for runtime use."""
-    if not isinstance(operation, _BaseOperation):
+    if not isinstance(operation, ToolProvenanceOperation):
         raise TypeError(
             "Runtime provenance APIs accept ToolProvenanceOperation instances "
             "only. Use parse_tool_provenance_operation() when deserializing mappings."
@@ -448,7 +478,7 @@ def parse_tool_provenance_operation(
     This is the deserialize boundary for saved JSON. Runtime call sites should build
     concrete operation instances directly instead of passing raw mappings around.
     """
-    if isinstance(value, _BaseOperation):
+    if isinstance(value, ToolProvenanceOperation):
         return value
     if not isinstance(value, Mapping):
         raise TypeError("Serialized provenance operations must be mappings")
@@ -601,7 +631,7 @@ def selection(
     return ToolProvenanceSpec(kind="selection").append_operations(*operations)
 
 
-class QSelOperation(_BaseOperation):
+class QSelOperation(ToolProvenanceOperation):
     op: typing.Literal["qsel"] = "qsel"
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
@@ -621,7 +651,7 @@ class QSelOperation(_BaseOperation):
         )
 
 
-class IselOperation(_BaseOperation):
+class IselOperation(ToolProvenanceOperation):
     op: typing.Literal["isel"] = "isel"
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
@@ -641,7 +671,7 @@ class IselOperation(_BaseOperation):
         )
 
 
-class SelOperation(_BaseOperation):
+class SelOperation(ToolProvenanceOperation):
     op: typing.Literal["sel"] = "sel"
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
@@ -661,7 +691,7 @@ class SelOperation(_BaseOperation):
         )
 
 
-class SortCoordOrderOperation(_BaseOperation):
+class SortCoordOrderOperation(ToolProvenanceOperation):
     op: typing.Literal["sort_coord_order"] = "sort_coord_order"
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
@@ -675,7 +705,7 @@ class SortCoordOrderOperation(_BaseOperation):
         )
 
 
-class TransposeOperation(_BaseOperation):
+class TransposeOperation(ToolProvenanceOperation):
     op: typing.Literal["transpose"] = "transpose"
     dims: NullableProvenanceHashableTuple = None
 
@@ -700,7 +730,7 @@ class TransposeOperation(_BaseOperation):
         )
 
 
-class SqueezeOperation(_BaseOperation):
+class SqueezeOperation(ToolProvenanceOperation):
     op: typing.Literal["squeeze"] = "squeeze"
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
@@ -710,7 +740,7 @@ class SqueezeOperation(_BaseOperation):
         return DerivationEntry("squeeze()", "derived = derived.squeeze()", True)
 
 
-class RenameOperation(_BaseOperation):
+class RenameOperation(ToolProvenanceOperation):
     op: typing.Literal["rename"] = "rename"
     name: str
 
@@ -721,7 +751,7 @@ class RenameOperation(_BaseOperation):
         return None
 
 
-class RotateOperation(_BaseOperation):
+class RotateOperation(ToolProvenanceOperation):
     op: typing.Literal["rotate"] = "rotate"
     angle: float
     axes: ProvenanceHashablePair
@@ -767,7 +797,7 @@ class RotateOperation(_BaseOperation):
         )
 
 
-class AverageOperation(_BaseOperation):
+class AverageOperation(ToolProvenanceOperation):
     op: typing.Literal["average"] = "average"
     dims: ProvenanceHashableTuple
 
@@ -788,7 +818,7 @@ class AverageOperation(_BaseOperation):
         )
 
 
-class CoarsenOperation(_BaseOperation):
+class CoarsenOperation(ToolProvenanceOperation):
     op: typing.Literal["coarsen"] = "coarsen"
     dim: ProvenanceIntMapping = pydantic.Field(default_factory=dict)
     boundary: str
@@ -833,7 +863,7 @@ class CoarsenOperation(_BaseOperation):
         )
 
 
-class ThinOperation(_BaseOperation):
+class ThinOperation(ToolProvenanceOperation):
     op: typing.Literal["thin"] = "thin"
     mode: typing.Literal["global", "per_dim"]
     factor: int | None = None
@@ -873,7 +903,7 @@ class ThinOperation(_BaseOperation):
         )
 
 
-class SymmetrizeOperation(_BaseOperation):
+class SymmetrizeOperation(ToolProvenanceOperation):
     op: typing.Literal["symmetrize"] = "symmetrize"
     dim: ProvenanceHashable
     center: float
@@ -909,7 +939,7 @@ class SymmetrizeOperation(_BaseOperation):
         )
 
 
-class SymmetrizeNfoldOperation(_BaseOperation):
+class SymmetrizeNfoldOperation(ToolProvenanceOperation):
     op: typing.Literal["symmetrize_nfold"] = "symmetrize_nfold"
     fold: int
     axes: ProvenanceHashablePair
@@ -945,7 +975,7 @@ class SymmetrizeNfoldOperation(_BaseOperation):
         )
 
 
-class CorrectWithEdgeOperation(_BaseOperation):
+class CorrectWithEdgeOperation(ToolProvenanceOperation):
     op: typing.Literal["correct_with_edge"] = "correct_with_edge"
     edge_fit: typing.Any
     shift_coords: bool = True
@@ -984,7 +1014,7 @@ class CorrectWithEdgeOperation(_BaseOperation):
         )
 
 
-class SwapDimsOperation(_BaseOperation):
+class SwapDimsOperation(ToolProvenanceOperation):
     op: typing.Literal["swap_dims"] = "swap_dims"
     mapping: ProvenanceHashableMapping = pydantic.Field(default_factory=dict)
 
@@ -1000,7 +1030,7 @@ class SwapDimsOperation(_BaseOperation):
         )
 
 
-class AssignCoordsOperation(_BaseOperation):
+class AssignCoordsOperation(ToolProvenanceOperation):
     op: typing.Literal["assign_coords"] = "assign_coords"
     coord_name: str
     values: typing.Any
@@ -1050,7 +1080,7 @@ class AssignCoordsOperation(_BaseOperation):
         )
 
 
-class SliceAlongPathOperation(_BaseOperation):
+class SliceAlongPathOperation(ToolProvenanceOperation):
     op: typing.Literal["slice_along_path"] = "slice_along_path"
     vertices: ProvenanceFloatSequenceMapping = pydantic.Field(default_factory=dict)
     step_size: float
@@ -1082,7 +1112,7 @@ class SliceAlongPathOperation(_BaseOperation):
         )
 
 
-class MaskWithPolygonOperation(_BaseOperation):
+class MaskWithPolygonOperation(ToolProvenanceOperation):
     op: typing.Literal["mask_with_polygon"] = "mask_with_polygon"
     vertices: typing.Any
     dims: ProvenanceHashableTuple
