@@ -533,6 +533,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.duplicate_action.triggered.connect(self.duplicate_selected)
         self.duplicate_action.setToolTip("Duplicate selected windows")
 
+        self.promote_action = QtWidgets.QAction("Promote Window", self)
+        self.promote_action.triggered.connect(self.promote_selected)
+        self.promote_action.setToolTip(
+            "Promote the selected nested ImageTool to a top-level window"
+        )
+
         self.reindex_action = QtWidgets.QAction("Reset Index", self)
         self.reindex_action.triggered.connect(self.reindex)
         self.reindex_action.setToolTip("Reset indices of all windows")
@@ -635,6 +641,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu.addSeparator()
         edit_menu.addAction(self.concat_action)
         edit_menu.addAction(self.duplicate_action)
+        edit_menu.addAction(self.promote_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.rename_action)
         edit_menu.addAction(self.link_action)
@@ -933,6 +940,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
             for uid in self.tree_view.selected_childtool_uids
             if not self._is_imagetool_target(uid)
         ]
+
+    def _selected_promotable_child_imagetool_uid(self) -> str | None:
+        child_imagetool_uids = [
+            uid
+            for uid in self.tree_view.selected_childtool_uids
+            if self._is_imagetool_target(uid)
+        ]
+        if len(child_imagetool_uids) != 1:
+            return None
+        if self.tree_view.selected_imagetool_indices or self._selected_tool_uids():
+            return None
+        uid = child_imagetool_uids[0]
+        if self._target_is_archived(uid):
+            return None
+        return uid
 
     def _child_targets_of(self, target: int | str) -> list[str]:
         return list(self._node_for_target(target)._childtool_indices)
@@ -1570,6 +1592,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Update the state of the actions based on the current selection."""
         selection_children = self._selected_tool_uids()
         imagetool_targets = self._selected_imagetool_targets()
+        promotable_child_uid = self._selected_promotable_child_imagetool_uid()
 
         selection_archived: list[int | str] = []
         selection_unarchived: list[int | str] = []
@@ -1596,6 +1619,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             something_selected and only_unarchived and len(selection_children) == 0
         )
         self.duplicate_action.setEnabled(something_selected)
+        self.promote_action.setEnabled(promotable_child_uid is not None)
         self.archive_action.setEnabled(
             bool(imagetool_targets) and only_unarchived and len(selection_children) == 0
         )
@@ -1947,25 +1971,114 @@ class ImageToolManager(QtWidgets.QMainWindow):
         selection_model = typing.cast(
             "QtCore.QItemSelectionModel", self.tree_view.selectionModel()
         )
-        for index in indices:
-            new_index = self.duplicate_imagetool(index)
+        try:
+            for index in indices:
+                new_index = self.duplicate_imagetool(index)
 
-            qmodelindex = self.tree_view._model._row_index(new_index)
+                qmodelindex = self.tree_view._model._row_index(new_index)
 
-            selection_model.select(
-                QtCore.QItemSelection(qmodelindex, qmodelindex),
-                QtCore.QItemSelectionModel.SelectionFlag.Select,
+                selection_model.select(
+                    QtCore.QItemSelection(qmodelindex, qmodelindex),
+                    QtCore.QItemSelectionModel.SelectionFlag.Select,
+                )
+
+            for uid in child_uids:
+                new_uid = self.duplicate_childtool(uid)
+
+                qmodelindex = self.tree_view._model._row_index(new_uid)
+
+                selection_model.select(
+                    QtCore.QItemSelection(qmodelindex, qmodelindex),
+                    QtCore.QItemSelectionModel.SelectionFlag.Select,
+                )
+        except Exception:
+            self._show_operation_error(
+                "Error while duplicating selected windows",
+                "An error occurred while duplicating the selected window.",
             )
 
-        for uid in child_uids:
-            new_uid = self.duplicate_childtool(uid)
+    @QtCore.Slot()
+    def promote_selected(self) -> None:
+        """Promote the selected nested ImageTool to a top-level window."""
+        uid = self._selected_promotable_child_imagetool_uid()
+        if uid is None:
+            return
 
-            qmodelindex = self.tree_view._model._row_index(new_uid)
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setText("Promote selected ImageTool to a top-level window?")
+        msg_box.setInformativeText(
+            "This will detach the ImageTool from its parent. Live source linkage and "
+            "automatic source updates from the parent will be removed, but existing "
+            "provenance and derivation metadata will be retained as detached history."
+        )
+        msg_box.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.Cancel
+        )
+        msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
 
-            selection_model.select(
-                QtCore.QItemSelection(qmodelindex, qmodelindex),
-                QtCore.QItemSelectionModel.SelectionFlag.Select,
-            )
+        if msg_box.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        self.promote_child_imagetool(uid)
+
+    @QtCore.Slot(str)
+    def promote_child_imagetool(self, uid: str) -> int:
+        """Promote the nested ImageTool identified by ``uid`` to a top-level row."""
+        node = self._child_node(uid)
+        if not node.is_imagetool:
+            raise KeyError(f"Target {uid!r} is not an ImageTool")
+        if node.archived:
+            raise KeyError(f"Target {uid!r} is archived")
+
+        row_index = self.tree_view._model._row_index(uid)
+        was_expanded = row_index.isValid() and self.tree_view.isExpanded(row_index)
+
+        promoted_window = node.take_window()
+        if not isinstance(promoted_window, ImageTool):
+            raise TypeError(f"Unable to detach ImageTool window for {uid!r}")
+
+        childtool_indices = list(node._childtool_indices)
+        childtools = dict(node._childtools)
+        created_time = node._created_time
+        recent_geometry = node._recent_geometry
+        provenance_spec = node.provenance_spec
+
+        self.tree_view.childtool_removed(uid)
+        self._unregister_node(uid)
+
+        new_index = self.add_imagetool(
+            promoted_window,
+            show=False,
+            uid=uid,
+            provenance_spec=provenance_spec,
+        )
+        wrapper = self._imagetool_wrappers[new_index]
+        wrapper._created_time = created_time
+        wrapper._recent_geometry = recent_geometry
+        wrapper._childtool_indices = childtool_indices
+        wrapper._childtools = childtools
+        if wrapper.imagetool is not None:
+            wrapper.imagetool.setWindowTitle(wrapper.label_text)
+        node.deleteLater()
+
+        promoted_index = self.tree_view._model._row_index(new_index)
+        if was_expanded:
+            self.tree_view.expand(promoted_index)
+        self.tree_view.deselect_all()
+        selection_model = typing.cast(
+            "QtCore.QItemSelectionModel", self.tree_view.selectionModel()
+        )
+        selection_model.select(
+            QtCore.QItemSelection(promoted_index, promoted_index),
+            QtCore.QItemSelectionModel.SelectionFlag.Select,
+        )
+        self.tree_view.setCurrentIndex(promoted_index)
+        self.tree_view.scrollTo(promoted_index)
+        self.tree_view.refresh(new_index)
+        self._update_actions()
+        return new_index
 
     @QtCore.Slot()
     @QtCore.Slot(bool)
@@ -2389,8 +2502,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if dialog.exec():
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
-            with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
-                self._save_to_file(fname)
+            try:
+                with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
+                    self._save_to_file(fname)
+            except Exception:
+                self._show_operation_error(
+                    "Error while saving workspace",
+                    "An error occurred while saving the workspace file.",
+                )
 
     def _save_to_file(self, fname: str):
         tree: xr.DataTree = self._to_datatree()
@@ -2951,6 +3070,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "Error",
             "An error occurred while creating the ImageTool window.",
             "The data may be incompatible with ImageTool.",
+        )
+
+    def _show_operation_error(self, log_message: str, text: str) -> None:
+        logger.exception(log_message, extra={"suppress_ui_alert": True})
+        erlab.interactive.utils.MessageDialog.critical(
+            self,
+            "Error",
+            text,
+            detailed_text=erlab.interactive.utils._format_traceback(
+                traceback.format_exc()
+            ),
         )
 
     def _add_from_multiple_files(

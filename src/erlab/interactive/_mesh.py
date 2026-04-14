@@ -436,24 +436,20 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
     @QtCore.Slot()
     def _corr_itool(self) -> None:
         if self._corrected is not None:  # pragma: no branch
-            tool = erlab.interactive.itool(self._corrected, execute=False)
-            if isinstance(tool, QtWidgets.QWidget):
-                if self._itool_corr is not None:
-                    self._itool_corr.close()
-                    self._itool_corr.deleteLater()
+            tool = self._launch_output_imagetool(
+                self._corrected, slot_key="meshtool.corrected_output"
+            )
+            if tool is not None:
                 self._itool_corr = tool
-                self._itool_corr.show()
 
     @QtCore.Slot()
     def _mesh_itool(self) -> None:
         if self._mesh is not None:  # pragma: no branch
-            tool = erlab.interactive.itool(self._mesh, execute=False)
-            if isinstance(tool, QtWidgets.QWidget):
-                if self._itool_mesh is not None:
-                    self._itool_mesh.close()
-                    self._itool_mesh.deleteLater()
+            tool = self._launch_output_imagetool(
+                self._mesh, slot_key="meshtool.mesh_output"
+            )
+            if tool is not None:
                 self._itool_mesh = tool
-                self._itool_mesh.show()
 
     @QtCore.Slot()
     def save_mesh(self) -> None:

@@ -217,11 +217,6 @@ def update_data(self, new_data: xr.DataArray) -> bool:
 If the tool is launched from an ImageTool selection, the launch site should also bind
 the tool back to its source data:
 
-.. versionchanged:: 3.21.0
-
-   Source-binding specs are now authored through
-   ``erlab.interactive.imagetool.provenance``.
-
 - Use `ItoolPlotItem.make_tool_source_spec(...)` when the tool is created from the
   active cursor or cropped selection.
 - Use ``erlab.interactive.imagetool.provenance.full_data()`` when the whole current

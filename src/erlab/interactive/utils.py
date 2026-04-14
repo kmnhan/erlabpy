@@ -27,7 +27,7 @@ import typing
 import warnings
 import weakref
 import webbrowser
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Hashable, Iterable
 
 import numpy as np
 import numpy.typing as npt
@@ -1869,6 +1869,16 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
             if isinstance(p, pg.PlotItem):
                 return p
 
+    def _owner_tool_window(self) -> ToolWindow | None:
+        scene = self.scene()
+        if scene is None:
+            return None
+        for view in scene.views():
+            owner_window = view.window()
+            if isinstance(owner_window, ToolWindow):
+                return owner_window
+        return None
+
     @QtCore.Slot()
     def open_itool(self) -> None:
         if self.data_array is None:
@@ -1877,6 +1887,19 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
             da = xr.DataArray(np.asarray(self.image)).T
         else:
             da = self.data_array.T
+
+        owner_tool = self._owner_tool_window()
+        if owner_tool is not None:
+            tool: (
+                erlab.interactive.imagetool.ImageTool
+                | list[erlab.interactive.imagetool.ImageTool]
+                | None
+            ) = owner_tool._launch_output_imagetool(
+                da, slot_key=("ximageitem", id(self))
+            )
+            if tool is not None:
+                self._itool = tool
+            return
 
         tool = erlab.interactive.itool(da, execute=False)
         if isinstance(tool, QtWidgets.QWidget):
@@ -2475,6 +2498,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
+        self._output_imagetool_targets: dict[Hashable, str | QtWidgets.QWidget] = {}
 
         # Initialize a menu bar to correctly apply keyboard shortcuts on some platforms
         self.menuBar()
@@ -2567,6 +2591,145 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
                 if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
                     single_shot(manager, 0, lambda: manager._remove_childtool(uid))
+
+    def _managed_output_imagetool_parent(
+        self,
+    ) -> tuple[erlab.interactive.imagetool.manager.ImageToolManager | None, str | None]:
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager is None:
+            return None, None
+        return manager, manager._node_uid_from_window(self)
+
+    def _clear_output_imagetool_slot(self, slot_key: Hashable) -> None:
+        self._output_imagetool_targets.pop(slot_key, None)
+
+    def _clear_output_imagetool_slot_if_matches(
+        self, slot_key: Hashable, expected: str | QtWidgets.QWidget
+    ) -> None:
+        current = self._output_imagetool_targets.get(slot_key)
+        if isinstance(expected, str):
+            if current == expected:
+                self._clear_output_imagetool_slot(slot_key)
+            return
+        if current is expected:
+            self._clear_output_imagetool_slot(slot_key)
+
+    def _register_output_imagetool_target(
+        self, slot_key: Hashable, target: str | QtWidgets.QWidget
+    ) -> None:
+        self._output_imagetool_targets[slot_key] = target
+        if isinstance(target, QtWidgets.QWidget):
+            target.destroyed.connect(
+                lambda _=None, key=slot_key, widget=target: (
+                    self._clear_output_imagetool_slot_if_matches(key, widget)
+                )
+            )
+
+    def _output_imagetool_target(
+        self, slot_key: Hashable
+    ) -> str | QtWidgets.QWidget | None:
+        target = self._output_imagetool_targets.get(slot_key)
+        if target is None:
+            return None
+
+        manager, parent_uid = self._managed_output_imagetool_parent()
+        if manager is None or parent_uid is None:
+            if isinstance(target, str):
+                self._clear_output_imagetool_slot(slot_key)
+                return None
+            if not qt_is_valid(target):
+                self._clear_output_imagetool_slot(slot_key)
+                return None
+            return target
+
+        if not isinstance(target, str):
+            if qt_is_valid(target):
+                target.close()
+                target.deleteLater()
+            self._clear_output_imagetool_slot(slot_key)
+            return None
+
+        node = manager._all_nodes.get(target)
+        if node is None or not node.is_imagetool or node.parent_uid != parent_uid:
+            self._clear_output_imagetool_slot(slot_key)
+            return None
+        return target
+
+    def _prompt_existing_output_imagetool(
+        self,
+    ) -> typing.Literal["update", "new", "cancel"]:
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        msg_box.setWindowTitle("ImageTool output already open")
+        msg_box.setText("An ImageTool opened from this action is already available.")
+        msg_box.setInformativeText(
+            "Update the existing child ImageTool, open a new child ImageTool, "
+            "or cancel."
+        )
+        update_button = msg_box.addButton(
+            "Update Existing", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        new_button = msg_box.addButton(
+            "Open New", QtWidgets.QMessageBox.ButtonRole.ActionRole
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", update_button))
+        msg_box.setEscapeButton(cancel_button)
+        msg_box.exec()
+
+        clicked = msg_box.clickedButton()
+        if clicked is update_button:
+            return "update"
+        if clicked is new_button:
+            return "new"
+        return "cancel"
+
+    def _launch_output_imagetool(
+        self,
+        data: xr.DataArray,
+        *,
+        slot_key: Hashable,
+    ) -> erlab.interactive.imagetool.ImageTool | None:
+        existing_target = self._output_imagetool_target(slot_key)
+        manager, parent_uid = self._managed_output_imagetool_parent()
+
+        if manager is None or parent_uid is None:
+            if isinstance(existing_target, QtWidgets.QWidget):
+                existing_target.close()
+                existing_target.deleteLater()
+            tool = erlab.interactive.itool(data, manager=False, execute=False)
+            if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+                return None
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            self._register_output_imagetool_target(slot_key, tool)
+            tool.show()
+            tool.raise_()
+            tool.activateWindow()
+            return tool
+
+        if isinstance(existing_target, str):
+            action = self._prompt_existing_output_imagetool()
+            if action == "cancel":
+                return None
+            if action == "update":
+                manager._data_replace([data], [existing_target])
+                manager.show_childtool(existing_target)
+                return manager.get_imagetool(existing_target)
+
+        tool = erlab.interactive.itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            return None
+
+        child_uid = manager.add_imagetool_child(
+            tool, parent_uid, show=True, activate=True
+        )
+        self._register_output_imagetool_target(slot_key, child_uid)
+        tool.destroyed.connect(
+            lambda _=None, key=slot_key, uid=child_uid: (
+                self._clear_output_imagetool_slot_if_matches(key, uid)
+            )
+        )
+        return tool
 
     @property
     def tool_status(self) -> M:

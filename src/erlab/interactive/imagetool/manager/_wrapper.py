@@ -268,20 +268,10 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @window.setter
     def window(self, value: QtWidgets.QWidget | None) -> None:
-        old = self.window
-        if isinstance(old, ImageTool):
-            old.slicer_area.unlink()
-            old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            old.removeEventFilter(self)
-            with contextlib.suppress(TypeError, RuntimeError):
-                old.sigTitleChanged.disconnect(self.update_title)
-            with contextlib.suppress(TypeError, RuntimeError):
-                old.slicer_area.sigSourceDataReplaced.disconnect(
-                    self._handle_source_data_replaced
-                )
-            old.close()
-            self._imagetool = None
-        elif isinstance(old, erlab.interactive.utils.ToolWindow):
+        if self.imagetool is not None:
+            self._detach_imagetool()
+        elif self.tool_window is not None:
+            old = self.tool_window
             with contextlib.suppress(TypeError, RuntimeError):
                 old.sigInfoChanged.disconnect(self._refresh_node_info)
             old.set_source_parent_fetcher(None)
@@ -312,6 +302,34 @@ class _ManagedWindowNode(QtCore.QObject):
         tool.destroyed.connect(
             lambda _=None, uid=self.uid: self.manager._remove_childtool(uid)
         )
+
+    def _detach_imagetool(
+        self, *, close: bool = True, unlink: bool = True
+    ) -> ImageTool | None:
+        old = self.imagetool
+        if old is None:
+            return None
+        if unlink:
+            old.slicer_area.unlink()
+        if close:
+            old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+        old.removeEventFilter(self)
+        with contextlib.suppress(TypeError, RuntimeError):
+            old.sigTitleChanged.disconnect(self.update_title)
+        with contextlib.suppress(TypeError, RuntimeError):
+            old.slicer_area.sigSourceDataReplaced.disconnect(
+                self._handle_source_data_replaced
+            )
+        if close:
+            old.close()
+        self._imagetool = None
+        return old
+
+    def take_window(self) -> QtWidgets.QWidget | None:
+        """Detach the current ImageTool window without closing it."""
+        if self.tool_window is not None:
+            raise TypeError("Window transfer is only supported for ImageTool nodes")
+        return self._detach_imagetool(close=False, unlink=False)
 
     @property
     def imagetool(self) -> ImageTool | None:
@@ -884,3 +902,13 @@ class _ImageToolWrapper(_ManagedWindowNode):
                 )
         if isinstance(value, ImageTool):
             value.slicer_area.sigDataEdited.connect(self._trigger_watched_update)
+
+    def take_window(self) -> QtWidgets.QWidget | None:
+        old_imagetool = self.imagetool
+        window = super().take_window()
+        if old_imagetool is not None:
+            with contextlib.suppress(TypeError, RuntimeError):
+                old_imagetool.slicer_area.sigDataEdited.disconnect(
+                    self._trigger_watched_update
+                )
+        return window

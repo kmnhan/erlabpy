@@ -179,7 +179,7 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
     def _show_parameter_values(self) -> None:
         da = self._current_param_dataarray(stderr=False)
         if da is not None:
-            self._tool._show_dataarray_in_itool(da)
+            self._tool._show_dataarray_in_itool(da, slot_key="fit2d.param_plot.values")
 
     @QtCore.Slot()
     def _save_parameter_stderr(self) -> None:
@@ -191,7 +191,7 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
     def _show_parameter_stderr(self) -> None:
         da = self._current_param_dataarray(stderr=True)
         if da is not None:
-            self._tool._show_dataarray_in_itool(da)
+            self._tool._show_dataarray_in_itool(da, slot_key="fit2d.param_plot.stderr")
 
 
 class Fit2DTool(Fit1DTool):
@@ -908,14 +908,12 @@ class Fit2DTool(Fit1DTool):
             name=f"{param_name}_{kind}",
         )
 
-    def _show_dataarray_in_itool(self, data: xr.DataArray) -> None:
-        tool = erlab.interactive.itool(
-            data, manager=self._is_in_manager(), execute=False
-        )
-        if isinstance(tool, QtWidgets.QWidget):
-            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    def _show_dataarray_in_itool(
+        self, data: xr.DataArray, *, slot_key: Hashable = "fit2d.output"
+    ) -> None:
+        tool = self._launch_output_imagetool(data, slot_key=slot_key)
+        if tool is not None:
             self._itool = tool
-            self._itool.show()
 
     def _update_param_plot_overlays(self) -> None:
         """Update overlay items and legend for active parameters."""

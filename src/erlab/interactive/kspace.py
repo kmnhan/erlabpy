@@ -947,13 +947,11 @@ class KspaceTool(KspaceToolGUI):
                 bounds=self.bounds, resolution=self.resolution
             )
 
-        tool = erlab.interactive.itool(data_kconv, execute=False)
-        if isinstance(tool, QtWidgets.QWidget):
-            if self._itool is not None:
-                self._itool.close()
-                self._itool.deleteLater()
+        tool = self._launch_output_imagetool(
+            data_kconv, slot_key="ktool.converted_output"
+        )
+        if tool is not None:
             self._itool = tool
-            self._itool.show()
 
     @QtCore.Slot()
     def copy_code(self) -> str:

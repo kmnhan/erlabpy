@@ -22,6 +22,67 @@ from erlab.interactive.fermiedge import (
 from erlab.io.exampledata import generate_gold_edge
 
 
+def _configure_goldtool_state(
+    win: GoldTool, *, fitted: bool = False, spline: bool = False
+) -> None:
+    with (
+        QtCore.QSignalBlocker(win.params_edge),
+        QtCore.QSignalBlocker(win.params_poly),
+        QtCore.QSignalBlocker(win.params_spl),
+        QtCore.QSignalBlocker(win.params_tab),
+    ):
+        win._restore_parameter_group_values(
+            win.params_edge,
+            {
+                "T (K)": 45.0,
+                "Fix T": False,
+                "Bin x": 2,
+                "Bin y": 3,
+                "Resolution": 0.015,
+                "Fast": False,
+                "Linear": False,
+                "Method": "cg",
+                "Scale cov": False,
+                "# CPU": 1,
+            },
+        )
+        win._restore_parameter_group_values(
+            win.params_poly,
+            {
+                "Degree": 3,
+                "Scale cov": False,
+                "Residuals": True,
+                "Corrected": not spline,
+                "Shift coords": False,
+            },
+        )
+        win._restore_parameter_group_values(
+            win.params_spl,
+            {
+                "Auto": False,
+                "lambda": 2.5,
+                "Residuals": True,
+                "Corrected": spline,
+                "Shift coords": False,
+            },
+        )
+        win.params_tab.setCurrentIndex(1 if spline else 0)
+
+    win.params_roi.modify_roi(x0=-8.0, x1=8.0, y0=-0.2, y1=0.1)
+    win.refit_on_source_update_check.setChecked(True)
+    win._toggle_fast()
+    win._sync_spline_lambda_enabled()
+
+    if fitted:
+        edge_center = win.data.mean("eV")
+        edge_stderr = xr.ones_like(edge_center)
+        win.post_fit(edge_center, edge_stderr)
+
+
+def test_goldtool_can_save_and_load() -> None:
+    assert GoldTool.can_save_and_load() is True
+
+
 @pytest.mark.parametrize("fast", [True, False], ids=["StepB", "FD"])
 def test_goldtool(
     qtbot, gold, fast, gold_fit_res, gold_fit_res_fd, accept_dialog, monkeypatch
@@ -79,6 +140,83 @@ def test_goldtool(
     assert isinstance(win.result, scipy.interpolate.BSpline)
 
     tmp_dir.cleanup()
+
+
+def test_goldtool_roundtrip_unfitted(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=False, spline=True)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/goldtool_unfitted.h5"
+        win.to_file(filename)
+
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, GoldTool)
+
+        assert win.tool_status == win_restored.tool_status
+        assert win_restored.result is None
+        assert not hasattr(win_restored, "edge_center")
+        assert not hasattr(win_restored, "edge_stderr")
+
+
+def test_goldtool_roundtrip_fitted(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/goldtool_fitted.h5"
+        win.to_file(filename)
+
+        win_restored = erlab.interactive.utils.ToolWindow.from_file(filename)
+        qtbot.addWidget(win_restored)
+        assert isinstance(win_restored, GoldTool)
+
+        assert win.tool_status == win_restored.tool_status
+        assert win_restored.params_tab.currentIndex() == 1
+        assert isinstance(win_restored.result, scipy.interpolate.BSpline)
+        xr.testing.assert_identical(win.corrected, win_restored.corrected)
+        assert str(win_restored.info_text) == str(win.info_text)
+
+
+def test_goldtool_duplicate_roundtrip(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False, data_name="gold_input")
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True, spline=True)
+
+    duplicated = win.duplicate()
+    qtbot.addWidget(duplicated)
+
+    assert isinstance(duplicated, GoldTool)
+    assert duplicated.tool_status == win.tool_status
+    assert isinstance(duplicated.result, scipy.interpolate.BSpline)
+    xr.testing.assert_identical(win.corrected, duplicated.corrected)
+
+
+@pytest.mark.parametrize("operation", ["to_file", "duplicate"])
+def test_goldtool_rejects_serialization_with_separate_data_corr(
+    qtbot, gold, operation, tmp_path
+) -> None:
+    corrected = gold.copy(deep=True)
+    corrected.data = np.asarray(corrected.data) * 1.02
+
+    win: GoldTool = goldtool(gold, data_corr=corrected, execute=False)
+    qtbot.addWidget(win)
+
+    if operation == "to_file":
+        with pytest.raises(
+            ValueError,
+            match="unsupported when `data_corr` is provided separately",
+        ):
+            win.to_file(tmp_path / "goldtool.h5")
+    else:
+        with pytest.raises(
+            ValueError,
+            match="unsupported when `data_corr` is provided separately",
+        ):
+            win.duplicate()
 
 
 def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:

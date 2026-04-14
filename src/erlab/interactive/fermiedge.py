@@ -150,6 +150,12 @@ class _GoldUpdateRequest:
     refit: bool
 
 
+class _GoldFitSnapshot(pydantic.BaseModel):
+    along_coords: list[float]
+    edge_center: list[float]
+    edge_stderr: list[float]
+
+
 class GoldTool(erlab.interactive.utils.AnalysisWindow):
     """Interactive gold edge fitting.
 
@@ -178,6 +184,16 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     """
 
     tool_name = "goldtool"
+
+    class StateModel(pydantic.BaseModel):
+        data_name: str
+        roi_limits: tuple[float, float, float, float]
+        edge_values: dict[str, typing.Any]
+        poly_values: dict[str, typing.Any]
+        spline_values: dict[str, typing.Any]
+        tab_index: typing.Literal[0, 1]
+        refit_on_source_update: bool = False
+        fit_snapshot: _GoldFitSnapshot | None = None
 
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
@@ -366,14 +382,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             }
         )
         auto_check = typing.cast("QtWidgets.QCheckBox", self.params_spl.widgets["Auto"])
-        self.params_spl.widgets["lambda"].setDisabled(
-            auto_check.checkState() == QtCore.Qt.CheckState.Checked
-        )
-        auto_check.toggled.connect(
-            lambda _: self.params_spl.widgets["lambda"].setDisabled(
-                auto_check.checkState() == QtCore.Qt.CheckState.Checked
-            )
-        )
+        self._sync_spline_lambda_enabled()
+        auto_check.toggled.connect(lambda _: self._sync_spline_lambda_enabled())
 
         self.controls.addWidget(self.params_roi)
         self.controls.addWidget(self.params_edge)
@@ -467,6 +477,68 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
 
+    @property
+    def data_name(self) -> str:
+        return typing.cast("str", self._argnames["data"])
+
+    @data_name.setter
+    def data_name(self, value: str) -> None:
+        self._argnames["data"] = value
+
+    @property
+    def tool_status(self) -> StateModel:
+        fit_snapshot: _GoldFitSnapshot | None = None
+        if hasattr(self, "edge_center") and hasattr(self, "edge_stderr"):
+            fit_snapshot = _GoldFitSnapshot(
+                along_coords=np.asarray(
+                    self.edge_center[self._along_dim].values, dtype=float
+                ).tolist(),
+                edge_center=np.asarray(self.edge_center.values, dtype=float).tolist(),
+                edge_stderr=np.asarray(self.edge_stderr.values, dtype=float).tolist(),
+            )
+        return self.StateModel(
+            data_name=self.data_name,
+            roi_limits=self.params_roi.roi_limits,
+            edge_values=dict(self.params_edge.values),
+            poly_values=dict(self.params_poly.values),
+            spline_values=dict(self.params_spl.values),
+            tab_index=typing.cast(
+                "typing.Literal[0, 1]", self.params_tab.currentIndex()
+            ),
+            refit_on_source_update=self.refit_on_source_update_check.isChecked(),
+            fit_snapshot=fit_snapshot,
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: StateModel) -> None:
+        self.data_name = status.data_name
+        self._clear_edge_fit_results()
+
+        with (
+            QtCore.QSignalBlocker(self.params_edge),
+            QtCore.QSignalBlocker(self.params_poly),
+            QtCore.QSignalBlocker(self.params_spl),
+            QtCore.QSignalBlocker(self.params_tab),
+            QtCore.QSignalBlocker(self.refit_on_source_update_check),
+        ):
+            self._restore_parameter_group_values(self.params_edge, status.edge_values)
+            self._restore_parameter_group_values(self.params_poly, status.poly_values)
+            self._restore_parameter_group_values(self.params_spl, status.spline_values)
+            self.params_tab.setCurrentIndex(status.tab_index)
+            self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
+
+        self.params_roi.modify_roi(*self._clamp_roi_limits_to_bounds(status.roi_limits))
+        self.params_roi.update_pos()
+        self._toggle_fast()
+        self._sync_spline_lambda_enabled()
+
+        if status.fit_snapshot is not None:
+            self._restore_fit_snapshot(status.fit_snapshot)
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self.data
+
     def _clear_edge_fit_results(self) -> None:
         self.result = None
         self._fit_task = None
@@ -490,6 +562,65 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             del self.edge_center
         with contextlib.suppress(AttributeError):
             del self.edge_stderr
+
+    def _sync_spline_lambda_enabled(self) -> None:
+        auto_check = typing.cast("QtWidgets.QCheckBox", self.params_spl.widgets["Auto"])
+        self.params_spl.widgets["lambda"].setDisabled(
+            auto_check.checkState() == QtCore.Qt.CheckState.Checked
+        )
+
+    @staticmethod
+    def _restore_parameter_group_values(
+        group: erlab.interactive.utils.ParameterGroup,
+        values: dict[str, typing.Any],
+    ) -> None:
+        for name, value in values.items():
+            widget = group.widgets[name]
+            widget.blockSignals(True)
+            try:
+                if hasattr(widget, "setValue"):
+                    widget.setValue(value)
+                elif isinstance(widget, QtWidgets.QAbstractButton):
+                    if widget.isCheckable():
+                        widget.setChecked(bool(value))
+                elif isinstance(widget, QtWidgets.QComboBox):
+                    index = widget.findText(str(value))
+                    if index < 0:
+                        raise ValueError(
+                            f"Unknown saved value {value!r} for {name!r} in goldtool"
+                        )
+                    widget.setCurrentIndex(index)
+            finally:
+                widget.blockSignals(False)
+
+    def _restore_fit_snapshot(self, snapshot: _GoldFitSnapshot) -> None:
+        if not (
+            len(snapshot.along_coords)
+            == len(snapshot.edge_center)
+            == len(snapshot.edge_stderr)
+        ):
+            raise ValueError("Saved goldtool fit snapshot has mismatched array lengths")
+
+        coords = {self._along_dim: np.asarray(snapshot.along_coords, dtype=float)}
+        self.post_fit(
+            xr.DataArray(
+                np.asarray(snapshot.edge_center, dtype=float),
+                coords=coords,
+                dims=(self._along_dim,),
+            ),
+            xr.DataArray(
+                np.asarray(snapshot.edge_stderr, dtype=float),
+                coords=coords,
+                dims=(self._along_dim,),
+            ),
+        )
+
+    def _ensure_serializable_state(self) -> None:
+        if self.data_corr is not None:
+            raise ValueError(
+                "goldtool save/load/duplication is unsupported when `data_corr` "
+                "is provided separately"
+            )
 
     @staticmethod
     def _clamp_roi_interval(
@@ -570,11 +701,12 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             QtCore.QSignalBlocker(self.params_spl),
             QtCore.QSignalBlocker(self.params_tab),
         ):
-            self.params_edge.set_values(**request.edge_values)
-            self.params_poly.set_values(**request.poly_values)
-            self.params_spl.set_values(**request.spline_values)
+            self._restore_parameter_group_values(self.params_edge, request.edge_values)
+            self._restore_parameter_group_values(self.params_poly, request.poly_values)
+            self._restore_parameter_group_values(self.params_spl, request.spline_values)
             self.params_tab.setCurrentIndex(request.tab_index)
         self._toggle_fast()
+        self._sync_spline_lambda_enabled()
 
         if request.had_fit and request.refit:
             self.perform_edge_fit()
@@ -813,13 +945,11 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @QtCore.Slot()
     def open_itool(self) -> None:
-        tool = erlab.interactive.itool(self.corrected, execute=False)
-        if isinstance(tool, QtWidgets.QWidget):
-            if self._itool is not None:
-                self._itool.close()
-                self._itool.deleteLater()
+        tool = self._launch_output_imagetool(
+            self.corrected, slot_key="goldtool.corrected"
+        )
+        if tool is not None:
             self._itool = tool
-            self._itool.show()
 
     def gen_code(self, mode: str) -> str:
         p0 = self.params_edge.values
@@ -878,6 +1008,14 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             )
         erlab.interactive.utils.copy_to_clipboard(code_str)
         return code_str
+
+    def to_dataset(self) -> xr.Dataset:
+        self._ensure_serializable_state()
+        return super().to_dataset()
+
+    def duplicate(self, **kwargs) -> typing.Self:
+        self._ensure_serializable_state()
+        return super().duplicate(**kwargs)
 
     def _stop_server(self) -> bool:
         """Stop the fitter thread properly."""
@@ -1737,6 +1875,7 @@ def goldtool(
         Overrides automatic detection.
     **kwargs
         Arguments passed onto `erlab.interactive.utils.AnalysisWindow`.
+
     """
     if data_name is None:
         try:
