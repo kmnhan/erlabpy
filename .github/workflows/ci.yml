@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload coverage shard artifacts
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ matrix.group }}
           path: ${{ runner.temp }}/artifacts/${{ matrix.group }}/
@@ -191,7 +191,7 @@ jobs:
 
       - name: Upload smoke JUnit artifact
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}
           path: junit-smoke-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
@@ -272,7 +272,7 @@ jobs:
         run: uv run mypy --install-types --non-interactive --html-report mypy-report .
 
       - name: Upload mypy results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mypy-report

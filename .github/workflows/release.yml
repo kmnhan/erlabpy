@@ -57,7 +57,7 @@ jobs:
       - name: Publish package distributions to GitHub Releases
         id: github-release
         if: env.REVISION != env.PREVIOUS_REVISION
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: "body.md"
           tag_name: v${{ steps.cz.outputs.version }}
