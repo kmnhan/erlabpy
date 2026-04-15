@@ -1,3 +1,5 @@
+import typing
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -320,6 +322,69 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     assert coarsen_dump["operations"][0]["dim"] == {prov._MAPPING_MARKER: [[1, 2]]}
 
 
+def test_tool_provenance_display_entries_streamline_live_source() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+
+    hidden_spec = prov.full_data(
+        prov.IselOperation(kwargs={}),
+        prov.SortCoordOrderOperation(),
+        prov.TransposeOperation(dims=data.dims),
+        prov.SqueezeOperation(),
+    )
+    assert [entry.label for entry in hidden_spec.display_entries(parent_data=data)] == [
+        "Start from current parent ImageTool data"
+    ]
+    assert hidden_spec.display_code(parent_data=data) is None
+
+    squeezed_spec = prov.full_data(
+        prov.IselOperation(kwargs={"z": slice(0, 1)}),
+        prov.SqueezeOperation(),
+    )
+    squeezed_entries = squeezed_spec.display_entries(parent_data=data)
+    assert squeezed_entries[0].label == "Start from current parent ImageTool data"
+    assert squeezed_entries[-1].label == "squeeze()"
+    squeezed_code = typing.cast("str", squeezed_spec.display_code(parent_data=data))
+    assert "derived = derived.isel(z=slice(0, 1" in squeezed_code
+    assert squeezed_code.endswith("derived = derived.squeeze()")
+
+
+def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    spec = prov.script(
+        prov.ScriptCodeOperation(label="isel()", code="derived = derived.isel()"),
+        prov.ScriptCodeOperation(
+            label="Sort coordinates to parent order",
+            code=(
+                "derived = erlab.utils.array.sort_coord_order("
+                "derived, data.coords.keys())"
+            ),
+        ),
+        prov.ScriptCodeOperation(
+            label="transpose(('x', 'y', 'z'))",
+            code="derived = derived.transpose(*('x', 'y', 'z'))",
+        ),
+        prov.ScriptCodeOperation(
+            label="squeeze()",
+            code="derived = derived.squeeze()",
+        ),
+        start_label="Start from current analysis-tool input data",
+        seed_code="derived = data",
+    )
+
+    assert [entry.label for entry in spec.display_entries()] == [
+        "Start from current analysis-tool input data",
+        "transpose(('x', 'y', 'z'))",
+        "squeeze()",
+    ]
+    assert spec.display_code() == (
+        "derived = data\n"
+        "derived = derived.transpose(*('x', 'y', 'z'))\n"
+        "derived = derived.squeeze()"
+    )
+
+
 def test_tool_provenance_rejects_unsupported_hashables() -> None:
     class _UnsupportedHashable:
         def __hash__(self) -> int:
@@ -470,3 +535,157 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
     assert entries[-1].copyable is False
     assert entries[-1].code is None
     assert reparsed_spec.derivation_code() is None
+
+
+def test_tool_provenance_script_specs_reject_live_source() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    script_spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Fit current tool data",
+            code="result = data.mean()",
+        ),
+        start_label="Start from current analysis-tool input data",
+        seed_code="prepared = data.copy()",
+    )
+    reparsed_script = prov.parse_tool_provenance_spec(
+        script_spec.model_dump(mode="json")
+    )
+
+    assert reparsed_script is not None
+    assert reparsed_script.derivation_entries()[0].label == (
+        "Start from current analysis-tool input data"
+    )
+    assert reparsed_script.derivation_code() == (
+        "prepared = data.copy()\nresult = data.mean()"
+    )
+    with pytest.raises(
+        TypeError, match="source_spec must be a live ToolProvenanceSpec"
+    ):
+        prov.require_live_source_spec(reparsed_script)
+
+
+def test_tool_replay_provenance_helpers_compose_parent_lineage() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    parent = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
+    local = prov.script(
+        prov.ScriptCodeOperation(
+            label="Compute tool output",
+            code="result = derived.mean()",
+        ),
+        start_label="Start from current tool input data",
+    )
+
+    composed = prov.compose_full_provenance(parent, local)
+
+    assert composed is not None
+    assert composed.derivation_entries()[0].label == (
+        "Start from selected parent ImageTool data"
+    )
+    assert composed.derivation_entries()[-1].label == "Compute tool output"
+    assert composed.derivation_code() == (
+        "derived = data\nderived = derived.isel(x=slice(0, 2))\nresult = derived.mean()"
+    )
+
+    assert prov.compose_display_provenance(parent, prov.full_data()) == (
+        prov.to_replay_provenance_spec(parent)
+    )
+
+
+def test_tool_provenance_compose_display_provenance_streamlines_live_source() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    parent = prov.script(
+        start_label="Start from watched variable 'my_data_name'",
+        seed_code="derived = my_data_name",
+    )
+    source = prov.selection(
+        prov.IselOperation(kwargs={"z": 0}),
+        prov.SortCoordOrderOperation(),
+        prov.SqueezeOperation(),
+    )
+
+    composed = prov.compose_display_provenance(
+        parent,
+        source,
+        parent_data=_base_data(),
+    )
+
+    assert composed is not None
+    assert composed.display_code() == (
+        "derived = my_data_name\nderived = derived.isel(z=0)"
+    )
+
+
+def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = prov.selection(
+        prov.IselOperation(kwargs={"z": 0}),
+        prov.SortCoordOrderOperation(),
+        prov.SqueezeOperation(),
+    )
+
+    composed = prov.compose_display_provenance(
+        None,
+        source,
+        parent_data=_base_data(),
+    )
+
+    assert composed is not None
+    assert composed.display_code() == "derived = data\nderived = derived.isel(z=0)"
+
+
+def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    watched = prov.script(
+        start_label="Start from watched variable 'my_data'",
+        seed_code="derived = my_data",
+    )
+    assert prov.direct_replay_input_name(watched) == "my_data"
+
+    assert (
+        prov.direct_replay_input_name(
+            prov.script(
+                start_label="Start from current parent ImageTool data",
+                seed_code="derived = data",
+            )
+        )
+        is None
+    )
+    assert (
+        prov.direct_replay_input_name(
+            prov.script(
+                start_label="Start from watched variable 'my_data'",
+                seed_code="derived = data.sel(x=0)",
+            )
+        )
+        is None
+    )
+
+
+def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    parent = prov.script(
+        start_label="Start from watched variable 'my_1d'",
+        seed_code="derived = my_1d",
+    )
+    source = prov.selection(
+        prov.SortCoordOrderOperation(),
+        prov.SqueezeOperation(),
+    )
+    parent_data = xr.DataArray(
+        np.arange(5).reshape((5, 1)),
+        dims=("x", "stack_dim"),
+        coords={"x": np.arange(5), "stack_dim": [0]},
+    )
+    parent_data = prov.mark_promoted_1d_source(parent_data)
+
+    composed = prov.compose_display_provenance(
+        parent,
+        source,
+        parent_data=parent_data,
+    )
+
+    assert composed is not None
+    assert composed.display_code() == "derived = my_1d"

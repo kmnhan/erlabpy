@@ -7,6 +7,7 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 import contextlib
 import datetime
 import importlib
+import keyword
 import os
 import sys
 import typing
@@ -20,6 +21,7 @@ import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Hashable
     from pathlib import Path
 
     from erlab.interactive.imagetool.manager import ImageToolManager
@@ -203,6 +205,7 @@ class _ManagedWindowNode(QtCore.QObject):
         | None = None,
         source_auto_update: bool = False,
         source_state: _source_state_type = "fresh",
+        output_slot_key: Hashable | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
@@ -234,6 +237,8 @@ class _ManagedWindowNode(QtCore.QObject):
         ) = None
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
+        self._output_slot_key: Hashable | None = None
+        self._suspend_descendant_signal_propagation: bool = False
 
         self.touch_timer = QtCore.QTimer(self)
         self.touch_timer.setInterval(12 * 60 * 60 * 1000)
@@ -243,11 +248,21 @@ class _ManagedWindowNode(QtCore.QObject):
         if source_spec is not None:
             self.set_source_binding(
                 source_spec,
+                provenance_spec=provenance_spec,
+                auto_update=source_auto_update,
+                state=source_state,
+            )
+        elif output_slot_key is not None:
+            self.set_output_binding(
+                output_slot_key,
+                provenance_spec=provenance_spec,
                 auto_update=source_auto_update,
                 state=source_state,
             )
         elif provenance_spec is not None:
             self.set_detached_provenance(provenance_spec)
+        elif isinstance(window, ImageTool) and window.provenance_spec is not None:
+            self.set_detached_provenance(window.provenance_spec)
 
     @property
     def manager(self) -> ImageToolManager:
@@ -274,7 +289,10 @@ class _ManagedWindowNode(QtCore.QObject):
             old = self.tool_window
             with contextlib.suppress(TypeError, RuntimeError):
                 old.sigInfoChanged.disconnect(self._refresh_node_info)
+            with contextlib.suppress(TypeError, RuntimeError):
+                old.sigDataChanged.disconnect(self._handle_tool_data_changed)
             old.set_source_parent_fetcher(None)
+            old.set_input_provenance_parent_fetcher(None)
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             old.close()
             self._tool_window = None
@@ -286,6 +304,8 @@ class _ManagedWindowNode(QtCore.QObject):
             self._window_kind = "imagetool"
             self._imagetool = value
             self._tool_window = None
+            if self._provenance_spec is not None or self._source_spec is not None:
+                value.set_provenance_spec(self._provenance_spec or self._source_spec)
             value.installEventFilter(self)
             value.sigTitleChanged.connect(self.update_title)
             value.slicer_area.sigSourceDataReplaced.connect(
@@ -299,6 +319,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._tool_window = tool
         self._imagetool = None
         tool.sigInfoChanged.connect(self._refresh_node_info)
+        tool.sigDataChanged.connect(self._handle_tool_data_changed)
         tool.destroyed.connect(
             lambda _=None, uid=self.uid: self.manager._remove_childtool(uid)
         )
@@ -505,7 +526,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
         if self.tool_window is not None:
-            return self.tool_window.source_spec
+            return self.tool_window.current_provenance_spec()
         if self._provenance_spec is not None:
             return self._provenance_spec
         return self._source_spec
@@ -526,7 +547,24 @@ class _ManagedWindowNode(QtCore.QObject):
     def has_source_binding(self) -> bool:
         if self.tool_window is not None:
             return self.tool_window.has_source_binding
-        return self._source_spec is not None
+        return self._source_spec is not None or self._output_slot_key is not None
+
+    @property
+    def output_slot_key(self) -> Hashable | None:
+        return self._output_slot_key
+
+    def set_displayed_provenance(
+        self,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None,
+    ) -> None:
+        self._provenance_spec = (
+            erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+                provenance_spec
+            )
+        )
+        if self.imagetool is not None:
+            self.imagetool.set_provenance_spec(self.provenance_spec)
 
     @property
     def derivation_entries(
@@ -534,7 +572,7 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> list[erlab.interactive.imagetool.provenance.DerivationEntry]:
         if self.provenance_spec is None:
             return []
-        return self.provenance_spec.derivation_entries()
+        return self.provenance_spec.display_entries()
 
     @property
     def derivation_lines(self) -> list[str]:
@@ -544,7 +582,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def derivation_code(self) -> str | None:
         if self.provenance_spec is None:
             return None
-        return self.provenance_spec.derivation_code()
+        return self.provenance_spec.display_code()
 
     def add_child_reference(self, uid: str, window: QtWidgets.QWidget) -> None:
         if uid not in self._childtool_indices:
@@ -566,6 +604,8 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
         source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
         *,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None = None,
         auto_update: bool = False,
         state: _source_state_type = "fresh",
     ) -> None:
@@ -576,10 +616,56 @@ class _ManagedWindowNode(QtCore.QObject):
                 "source_spec must be a ToolProvenanceSpec or None. Use "
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
-        self._source_spec = source_spec
-        self._provenance_spec = source_spec
+        self._source_spec = (
+            erlab.interactive.imagetool.provenance.require_live_source_spec(source_spec)
+        )
+        if provenance_spec is not None and not isinstance(
+            provenance_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        ):
+            raise TypeError(
+                "provenance_spec must be a ToolProvenanceSpec or None. Use "
+                "parse_tool_provenance_spec() when deserializing saved payloads."
+            )
         self._source_auto_update = bool(auto_update)
+        self._output_slot_key = None
+        if provenance_spec is not None:
+            self.set_displayed_provenance(provenance_spec)
+        elif self._source_spec is not None and state == "fresh" and self.parent_uid:
+            parent = self.manager._parent_node(self)
+            self.set_displayed_provenance(
+                erlab.interactive.imagetool.provenance.compose_display_provenance(
+                    parent.provenance_spec,
+                    self._source_spec,
+                    parent_data=parent.current_source_data(),
+                )
+            )
         self._set_source_state(state if self._source_spec is not None else "fresh")
+
+    def set_output_binding(
+        self,
+        output_slot_key: Hashable,
+        *,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None = None,
+        auto_update: bool = False,
+        state: _source_state_type = "fresh",
+    ) -> None:
+        if output_slot_key is None:
+            raise ValueError("output_slot_key must not be None")
+        hash(output_slot_key)
+        if provenance_spec is not None and not isinstance(
+            provenance_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        ):
+            raise TypeError(
+                "provenance_spec must be a ToolProvenanceSpec or None. Use "
+                "parse_tool_provenance_spec() when deserializing saved payloads."
+            )
+        self._source_spec = None
+        self._source_auto_update = bool(auto_update)
+        self._output_slot_key = output_slot_key
+        if provenance_spec is not None:
+            self.set_displayed_provenance(provenance_spec)
+        self._set_source_state(state)
 
     def set_detached_provenance(
         self,
@@ -594,9 +680,70 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_spec = None
-        self._provenance_spec = provenance_spec
         self._source_auto_update = False
+        self._output_slot_key = None
+        self.set_displayed_provenance(provenance_spec)
         self._set_source_state("fresh")
+
+    def _resolved_output_payload(
+        self,
+    ) -> (
+        tuple[
+            xr.DataArray,
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+        ]
+        | None
+    ):
+        if self._output_slot_key is None:
+            return None
+        parent = self.manager._parent_node(self)
+        tool_window = parent.tool_window
+        if tool_window is None:
+            return None
+        data = tool_window.output_imagetool_data(self._output_slot_key)
+        if data is None:
+            return None
+        return data, tool_window.output_imagetool_provenance(
+            self._output_slot_key, data
+        )
+
+    @contextlib.contextmanager
+    def _suspend_descendant_propagation(self) -> typing.Iterator[None]:
+        previous = self._suspend_descendant_signal_propagation
+        self._suspend_descendant_signal_propagation = True
+        try:
+            yield
+        finally:
+            self._suspend_descendant_signal_propagation = previous
+
+    def _replace_imagetool_data(
+        self,
+        data: xr.DataArray,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None,
+        *,
+        propagate_descendants: bool,
+    ) -> None:
+        with self._suspend_descendant_propagation():
+            self.slicer_area.replace_source_data(data)
+        self.set_displayed_provenance(provenance_spec)
+        self._set_source_state("fresh")
+        if propagate_descendants:
+            self.manager._propagate_source_change_from_uid(self.uid)
+
+    def _handle_tool_data_changed(self) -> None:
+        if self._suspend_descendant_signal_propagation:
+            return
+        tool_window = self.tool_window
+        if tool_window is None:
+            return
+        if tool_window.source_state == "fresh":
+            self.manager._propagate_source_change_from_uid(self.uid)
+        else:
+            self.manager._mark_descendants_source_state(
+                self.uid, tool_window.source_state
+            )
+        self.manager.tree_view.refresh(self.uid)
 
     def _set_source_auto_update(self, value: bool) -> None:
         self._source_auto_update = bool(value)
@@ -730,50 +877,98 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _update_from_parent_source(self) -> bool:
         if self.tool_window is not None:
-            updated = self.tool_window._update_from_parent_source()
+            with self._suspend_descendant_propagation():
+                updated = self.tool_window._update_from_parent_source()
             if updated and self.tool_window.source_state == "fresh":
                 self.manager._propagate_source_change_from_uid(self.uid)
+            elif self.tool_window.source_state != "fresh":
+                self.manager._mark_descendants_source_state(
+                    self.uid, self.tool_window.source_state
+                )
             self.manager.tree_view.refresh(self.uid)
             return updated
 
-        if self._source_spec is None:
-            return False
         try:
-            parent_data = self.parent_source_data()
-            resolved = self._source_spec.apply(parent_data)
-            self.slicer_area.replace_source_data(resolved)
+            if self._output_slot_key is not None:
+                payload = self._resolved_output_payload()
+                if payload is None:
+                    self._set_source_state("unavailable")
+                    return False
+                resolved, provenance_spec = payload
+            else:
+                if self._source_spec is None:
+                    return False
+                parent_data = self.parent_source_data()
+                resolved = self._source_spec.apply(parent_data)
+                provenance_spec = (
+                    erlab.interactive.imagetool.provenance.compose_display_provenance(
+                        self.manager._parent_node(self).provenance_spec,
+                        self._source_spec,
+                        parent_data=parent_data,
+                    )
+                )
+            self._replace_imagetool_data(
+                resolved,
+                provenance_spec,
+                propagate_descendants=True,
+            )
         except Exception:
             self._set_source_state("unavailable")
+            self.manager._mark_descendants_source_unavailable(self.uid)
             return False
 
-        self._set_source_state("fresh")
         return True
 
-    def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> None:
+    def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> bool:
         if self.tool_window is not None:
-            self.tool_window.handle_parent_source_replaced(parent_data)
-            if self.tool_window.source_state == "fresh":
-                self.manager._propagate_source_change_from_uid(self.uid)
-            self.manager.tree_view.refresh(self.uid)
-            return
+            if not self.tool_window.has_source_binding:
+                return False
+            with self._suspend_descendant_propagation():
+                self.tool_window.handle_parent_source_replaced(parent_data)
+            return self.tool_window.source_state == "fresh"
 
-        if self._source_spec is None:
-            return
+        if self._output_slot_key is not None and not self._source_auto_update:
+            # Output-bound child ImageTools may be expensive to regenerate. When live
+            # updates are disabled, defer the recomputation until the user explicitly
+            # refreshes instead of resolving the payload just to mark the child stale.
+            self._set_source_state("stale")
+            return False
+
         try:
-            resolved = self._source_spec.apply(parent_data)
+            if self._output_slot_key is not None:
+                payload = self._resolved_output_payload()
+                if payload is None:
+                    self._set_source_state("unavailable")
+                    return False
+                resolved, provenance_spec = payload
+            else:
+                if self._source_spec is None:
+                    return False
+                resolved = self._source_spec.apply(parent_data)
+                provenance_spec = (
+                    erlab.interactive.imagetool.provenance.compose_display_provenance(
+                        self.manager._parent_node(self).provenance_spec,
+                        self._source_spec,
+                        parent_data=parent_data,
+                    )
+                )
         except Exception:
             self._set_source_state("unavailable")
-            return
+            return False
 
         if self._source_auto_update:
             try:
-                self.slicer_area.replace_source_data(resolved)
+                self._replace_imagetool_data(
+                    resolved,
+                    provenance_spec,
+                    propagate_descendants=False,
+                )
             except Exception:
                 self._set_source_state("unavailable")
-                return
-            self._set_source_state("fresh")
-        else:
-            self._set_source_state("stale")
+                return False
+            return True
+        self._set_source_state("stale")
+        return False
 
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None
@@ -781,7 +976,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.tool_window is not None:
             return self.tool_window.show_source_update_dialog(parent=parent)
 
-        if self._source_spec is None or self._source_state == "fresh":
+        if not self.has_source_binding or self._source_state == "fresh":
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
         dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
@@ -798,6 +993,8 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot(object)
     def _handle_source_data_replaced(self, parent_data: object) -> None:
+        if self._suspend_descendant_signal_propagation:
+            return
         if not isinstance(parent_data, xr.DataArray):
             try:
                 parent_data = self.current_source_data()
@@ -817,6 +1014,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         uid: str,
         tool: ImageTool,
         watched_var: tuple[str, str] | None = None,
+        source_input_ndim: int | None = None,
         *,
         provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None = None,
@@ -828,6 +1026,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         self._index = index
         self._watched_varname: str | None = None
         self._watched_uid: str | None = None
+        self._source_input_ndim = source_input_ndim
         if watched_var is not None:
             self._watched_varname, self._watched_uid = watched_var
 
@@ -850,12 +1049,49 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def watched(self) -> bool:
         return self._watched_varname is not None and self._watched_uid is not None
 
+    def set_source_input_ndim(self, ndim: int | None) -> None:
+        """Track the latest dimensionality of the root source before UI promotion."""
+        self._source_input_ndim = ndim
+
+    def _watched_root_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        varname = self._watched_varname
+        if (
+            not self.watched
+            or self._provenance_spec is not None
+            or self._source_spec is not None
+            or varname is None
+            or not varname.isidentifier()
+            or keyword.iskeyword(varname)
+        ):
+            return None
+        return erlab.interactive.imagetool.provenance.script(
+            start_label=f"Start from watched variable {varname!r}",
+            seed_code=f"derived = {varname}",
+        )
+
+    @property
+    def provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        base_provenance = super().provenance_spec
+        if base_provenance is not None:
+            return base_provenance
+        return self._watched_root_provenance_spec()
+
     @property
     def label_text(self) -> str:
         title = f"{self.index}"
         if self._name:
             title += f": {self._name}"
         return title
+
+    def current_source_data(self) -> xr.DataArray:
+        data = super().current_source_data()
+        if self._source_input_ndim == 1:
+            return erlab.interactive.imagetool.provenance.mark_promoted_1d_source(data)
+        return data
 
     @QtCore.Slot()
     def unwatch(self) -> None:

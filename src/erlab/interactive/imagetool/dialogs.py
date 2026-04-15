@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import typing
 import weakref
@@ -278,6 +279,34 @@ class DataTransformDialog(_DataManipulationDialog):
             *self.source_operations()
         ).append_final_rename(new_name)
 
+    def _detached_provenance_spec(
+        self,
+        parent_provenance: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None,
+        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        new_name: str,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        if parent_provenance is None:
+            return source_spec
+
+        with contextlib.suppress(TypeError):
+            live_parent = (
+                erlab.interactive.imagetool.provenance.require_live_source_spec(
+                    parent_provenance
+                )
+            )
+            if live_parent is not None:
+                operations = source_spec.drop_trailing_rename().operations
+                return live_parent.append_replacement_operations(
+                    *operations
+                ).append_final_rename(new_name)
+        composed = erlab.interactive.imagetool.provenance.compose_full_provenance(
+            parent_provenance,
+            source_spec,
+        )
+        assert composed is not None
+        return composed
+
     def _compose_replace_source_spec(
         self,
         existing_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
@@ -380,6 +409,21 @@ class DataTransformDialog(_DataManipulationDialog):
             processed = processed.rename(new_name)
             manager, target = self._manager_target()
             source_spec = self.source_spec(new_name)
+            parent_provenance = self.slicer_area.provenance_spec
+            if manager is not None and target is not None:
+                with contextlib.suppress(Exception):
+                    parent_provenance = manager._node_for_target(target).provenance_spec
+            nested_provenance_spec = (
+                erlab.interactive.imagetool.provenance.compose_full_provenance(
+                    parent_provenance,
+                    source_spec,
+                )
+            )
+            detached_provenance_spec = self._detached_provenance_spec(
+                parent_provenance,
+                source_spec,
+                new_name,
+            )
 
             if self.launch_mode == "replace":
                 if (
@@ -398,6 +442,9 @@ class DataTransformDialog(_DataManipulationDialog):
                         erlab.interactive.itool(manager=False, **itool_kw),
                     )
                     if tool is not None:  # pragma: no branch
+                        typing.cast(
+                            "erlab.interactive.imagetool.ImageTool", tool
+                        ).set_provenance_spec(nested_provenance_spec)
                         manager.add_imagetool_child(
                             typing.cast("erlab.interactive.imagetool.ImageTool", tool),
                             target,
@@ -410,13 +457,19 @@ class DataTransformDialog(_DataManipulationDialog):
                             erlab.interactive.itool(manager=False, **itool_kw),
                         )
                         if tool is not None:  # pragma: no branch
+                            tool.set_provenance_spec(detached_provenance_spec)
                             manager.add_imagetool(
                                 tool,
                                 activate=True,
-                                provenance_spec=source_spec,
+                                provenance_spec=detached_provenance_spec,
                             )
                     else:
-                        erlab.interactive.itool(**itool_kw)
+                        tool = typing.cast(
+                            "erlab.interactive.imagetool.ImageTool | None",
+                            erlab.interactive.itool(**itool_kw),
+                        )
+                        if tool is not None:
+                            tool.set_provenance_spec(detached_provenance_spec)
 
             del processed
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import typing
@@ -550,9 +551,12 @@ class Fit2DTool(Fit1DTool):
 
         self.copy_button.setText("Copy 1D code")
         self.save_button.setText("Save 1D fit")
+        with contextlib.suppress(TypeError):
+            self.copy_button.clicked.disconnect(self.copy_code)
+        self.copy_button.clicked.connect(self.copy_code_1d)
 
         self.copy_full_button = QtWidgets.QPushButton("Copy code")
-        self.copy_full_button.clicked.connect(self._copy_code_full)
+        self.copy_full_button.clicked.connect(self.copy_code)
         self.save_full_button = QtWidgets.QPushButton("Save fit")
         self.save_full_button.clicked.connect(self._save_fit_full)
 
@@ -821,6 +825,7 @@ class Fit2DTool(Fit1DTool):
         self.param_plot_scatter.setData(x=param_values, y=plot_y)
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
+        self._notify_data_changed()
 
     def _on_image_legend_sample_clicked(self, sample, event=None) -> None:
         """Mirror legend-driven visibility changes to error bars and state."""
@@ -1411,7 +1416,7 @@ class Fit2DTool(Fit1DTool):
             self._reset_history_stack()
             self._mark_fit_stale()
             self.restoreGeometry(old_geom)
-            self.sigInfoChanged.emit()
+            self._notify_data_changed()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
                 self._run_fit()
@@ -1450,9 +1455,16 @@ class Fit2DTool(Fit1DTool):
             )
         erlab.interactive.utils.save_fit_ui(full_ds, parent=self)
 
-    @QtCore.Slot()
-    def _copy_code_full(self) -> str:
-        data_name, model_name, lines = self._make_model_code(self._data_name_full)
+    def _build_full_copy_code(
+        self, *, warn: bool = True, input_name: str | None = None
+    ) -> str:
+        data_name, model_name, lines = self._make_model_code(
+            input_name or self._data_name_full
+        )
+
+        def _warn_user(title: str, text: str) -> None:
+            if warn:
+                self._show_warning(title, text)
 
         isel_kw = erlab.interactive.utils.format_kwargs(
             {self._y_dim_name: self._y_range_slice()}
@@ -1507,7 +1519,7 @@ class Fit2DTool(Fit1DTool):
         ):
             if ds is None or params is None:
                 real_index = i + self.y_min_spin.value()
-                self._show_warning(
+                _warn_user(
                     "Missing Fit",
                     f"No fit result for index {real_index}. Please fit all indices "
                     "in the range before saving the full fit.",
@@ -1517,14 +1529,14 @@ class Fit2DTool(Fit1DTool):
                 if expr_param in params:
                     this_expr = params[expr_param].expr
                     if this_expr != params_expr[expr_param]:
-                        self._show_warning(
+                        _warn_user(
                             "Inconsistent Parameters",
                             f"Parameter {expr_param!r} has differing expressions "
                             "between fits. Cannot generate combined fit code.",
                         )
                         return ""
                     continue
-                self._show_warning(
+                _warn_user(
                     "Inconsistent Parameters",
                     f"Parameter {expr_param!r} not found in fit at index "
                     f"{real_index}. Cannot generate combined fit code.",
@@ -1533,7 +1545,7 @@ class Fit2DTool(Fit1DTool):
 
             valid_params = [k for k in params if params[k].expr is None]
             if valid_params != param_names:
-                self._show_warning(
+                _warn_user(
                     "Inconsistent Parameters",
                     "Parameter names or counts differ between fits. "
                     "Cannot generate combined fit code.",
@@ -1548,7 +1560,7 @@ class Fit2DTool(Fit1DTool):
                     params_vary[name] = param.vary
                 else:
                     if params_vary[name] != param.vary:
-                        self._show_warning(
+                        _warn_user(
                             "Inconsistent Parameters",
                             "Parameter vary flags differ between fits. "
                             "Cannot generate combined fit code.",
@@ -1635,7 +1647,100 @@ class Fit2DTool(Fit1DTool):
                 assign="result",
             )
         )
-        return erlab.interactive.utils.copy_to_clipboard(lines)
+        return "\n".join(lines)
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Fit current 2D data with the current model",
+                    code=self._build_full_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current ftool input data",
+            )
+        )
+
+    @QtCore.Slot()
+    def _copy_code_full(self) -> str:
+        return self.copy_code()
+
+    @QtCore.Slot()
+    def copy_code_1d(self) -> str:
+        return self._copy_provenance_code(Fit1DTool.current_provenance_spec(self))
+
+    def _current_param_output(self, *, stderr: bool) -> tuple[str, xr.DataArray] | None:
+        param_name = self.param_plot_combo.currentText().strip()
+        if not param_name:
+            return None
+        return param_name, self._param_plot_dataarray(param_name, stderr=stderr)
+
+    def _build_param_output_code(
+        self,
+        data: xr.DataArray,
+        *,
+        stderr: bool,
+        input_name: str | None = None,
+    ) -> str:
+        current = self._current_param_output(stderr=stderr)
+        if current is None:
+            return ""
+        param_name, _ = current
+        code = self._build_full_copy_code(warn=False, input_name=input_name)
+        if not code:
+            return ""
+        data_var = "modelfit_stderr" if stderr else "modelfit_coefficients"
+        output_name = "parameter_stderr" if stderr else "parameter_values"
+        rename_code = ""
+        if data.name is not None:
+            rename_code = f".rename({data.name!r})"
+        return "\n".join(
+            (
+                code,
+                f"{output_name} = "
+                f'result.{data_var}.sel(param={param_name!r}).drop_vars("param")'
+                f"{rename_code}",
+            )
+        )
+
+    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
+        if slot_key == "fit2d.param_plot.values":
+            current = self._current_param_output(stderr=False)
+        elif slot_key == "fit2d.param_plot.stderr":
+            current = self._current_param_output(stderr=True)
+        else:
+            return None
+        if current is None:
+            return None
+        return current[1]
+
+    def output_imagetool_provenance(
+        self, slot_key: Hashable, data: xr.DataArray
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if slot_key == "fit2d.param_plot.values":
+            stderr = False
+        elif slot_key == "fit2d.param_plot.stderr":
+            stderr = True
+        else:
+            return None
+
+        label = (
+            "Extract current parameter standard errors"
+            if stderr
+            else "Extract current parameter values"
+        )
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label=label,
+                    code=self._build_param_output_code(
+                        data, stderr=stderr, input_name=input_name
+                    ),
+                ),
+                start_label="Start from current fit-tool input data",
+            )
+        )
 
 
 def ftool(

@@ -35,8 +35,9 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    access to parent coordinates or ordering.
 
 5. Implement :meth:`ToolProvenanceOperation.derivation_entry` so the manager can display
-   a user-facing summary and optional copyable code. Return ``None`` when the operation
-   should be omitted from the derivation list.
+   a user-facing summary and optional copyable code. Return ``None`` only when the
+   operation should be omitted from the derivation list and copied provenance code while
+   still being replayed at runtime.
 
 6. Give the class a unique ``op`` discriminator literal. Subclasses register themselves
    automatically so serialized payloads can dispatch to the right model.
@@ -66,6 +67,7 @@ __all__ = [
     "QSelOperation",
     "RenameOperation",
     "RotateOperation",
+    "ScriptCodeOperation",
     "SelOperation",
     "SliceAlongPathOperation",
     "SortCoordOrderOperation",
@@ -77,14 +79,21 @@ __all__ = [
     "ToolProvenanceOperation",
     "ToolProvenanceSpec",
     "TransposeOperation",
-    "append_operations",
+    "compose_display_provenance",
+    "compose_full_provenance",
     "decode_provenance_value",
+    "direct_replay_input_name",
     "encode_provenance_value",
     "full_data",
+    "mark_promoted_1d_source",
     "parse_tool_provenance_spec",
+    "require_live_source_spec",
+    "script",
     "selection",
+    "to_replay_provenance_spec",
 ]
 
+import keyword
 import typing
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
@@ -100,6 +109,8 @@ _DATASET_MARKER = "__erlab_xarray_dataset__"
 _DATAARRAY_MARKER = "__erlab_xarray_dataarray__"
 _TUPLE_MARKER = "__erlab_tuple__"
 _MAPPING_MARKER = "__erlab_mapping__"
+_DEFAULT_REPLAY_SEED_CODE = "derived = data"
+_PROMOTED_1D_SOURCE_ATTR = "_erlab_promoted_from_1d_source"
 
 
 @dataclass(frozen=True)
@@ -249,6 +260,8 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     :meth:`derivation_entry` to describe the step in manager UI.
     """
 
+    live_applicable: typing.ClassVar[bool] = True
+
     model_config = pydantic.ConfigDict(
         frozen=True,
         arbitrary_types_allowed=True,
@@ -328,9 +341,36 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         }
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        """Apply this operation to the current derived array.
+
+        ``data`` is the array produced by the preceding replay step. ``parent_data`` is
+        the original parent source array for the enclosing provenance spec and is
+        available for operations that need parent coordinates, ordering, or other
+        contextual metadata while replaying.
+
+        This method is used only for live-source provenance paths. Operations that are
+        intended purely for generated replay code should raise an error here and set
+        ``live_applicable = False``.
+        """
         raise NotImplementedError
 
     def derivation_entry(self) -> DerivationEntry | None:
+        """Return the user-visible derivation entry for this operation.
+
+        Return a :class:`DerivationEntry` when the operation should appear in derivation
+        listings and contribute code to :meth:`ToolProvenanceSpec.derivation_code` or
+        :meth:`ToolProvenanceSpec.display_code`.
+
+        Return ``None`` only for replayed operations that should stay hidden from the
+        derivation UI and copied provenance code. Hidden operations are still kept in
+        the spec and still run through :meth:`apply`; they are simply omitted from the
+        rendered derivation list. In the current implementation this is used for
+        internal bookkeeping steps such as a final rename.
+
+        Use ``DerivationEntry(..., code=None)`` instead when the step should remain
+        visible in the derivation list but code generation should stop and return
+        ``None``.
+        """
         raise NotImplementedError
 
 
@@ -496,24 +536,18 @@ def parse_tool_provenance_operation(
     return operation_type.model_validate(value)
 
 
-def append_operations(
-    spec: ToolProvenanceSpec,
-    *operations: ToolProvenanceOperation,
-) -> ToolProvenanceSpec:
-    """Return ``spec`` with additional operation instances appended."""
-    return spec.append_operations(*operations)
-
-
 class ToolProvenanceSpec(pydantic.BaseModel):
     """Immutable provenance recipe for rebuilding tool data from a parent ImageTool.
 
-    Author new specs with :func:`full_data` or :func:`selection` plus concrete
-    operation instances from this module. Deserialize saved payloads with
+    Author new specs with :func:`full_data` or :func:`selection` plus concrete operation
+    instances from this module. Deserialize saved payloads with
     :func:`parse_tool_provenance_spec`.
     """
 
     schema_version: typing.Literal[1] = 1
-    kind: typing.Literal["full_data", "selection"]
+    kind: typing.Literal["full_data", "selection", "script"]
+    start_label: str | None = None
+    seed_code: str | None = None
     operations: tuple[pydantic.SerializeAsAny[ToolProvenanceOperation], ...] = ()
 
     model_config = pydantic.ConfigDict(
@@ -534,6 +568,24 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 typing.cast("ToolProvenanceOperation | Mapping[str, typing.Any]", item)
             )
             for item in typing.cast("Sequence[typing.Any]", value)
+        )
+
+    @pydantic.model_validator(mode="after")
+    def _validate_kind_fields(self) -> typing.Self:
+        if self.kind == "script":
+            if self.start_label is None:
+                raise ValueError("script provenance specs must define `start_label`")
+            return self
+        if self.start_label is not None or self.seed_code is not None:
+            raise ValueError(
+                "Only script provenance specs may define `start_label` or `seed_code`"
+            )
+        return self
+
+    @property
+    def is_live_source(self) -> bool:
+        return self.kind in {"full_data", "selection"} and all(
+            operation.live_applicable for operation in self.operations
         )
 
     def append_operations(
@@ -563,7 +615,109 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     def append_final_rename(self, name: str) -> ToolProvenanceSpec:
         return self.drop_trailing_rename().append_operations(RenameOperation(name=name))
 
+    def _start_entry(self) -> DerivationEntry:
+        if self.kind == "full_data":
+            return DerivationEntry(
+                "Start from current parent ImageTool data",
+                None,
+                False,
+            )
+        if self.kind == "selection":
+            return DerivationEntry(
+                "Start from selected parent ImageTool data",
+                None,
+                False,
+            )
+        return DerivationEntry(
+            typing.cast("str", self.start_label),
+            None,
+            False,
+        )
+
+    def _display_operations(
+        self, *, parent_data: xr.DataArray | None = None
+    ) -> tuple[ToolProvenanceOperation, ...]:
+        if self.kind == "script":
+            raise TypeError("Script provenance uses display-entry filtering only")
+
+        current_data: xr.DataArray | None = None
+        if parent_data is not None:
+            if self.kind == "full_data":
+                current_data = parent_data.copy(deep=False)
+            else:
+                current_data = (
+                    erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                        parent_data.copy(deep=False)
+                    )
+                )
+
+        streamlined: list[ToolProvenanceOperation] = []
+        for operation in self.operations:
+            hide_operation = False
+
+            # Rule 1: drop empty selection operations.
+            if isinstance(operation, (QSelOperation, IselOperation, SelOperation)):
+                hide_operation = not operation.decoded_kwargs
+            # Rule 2: hide internal coordinate-order normalization.
+            elif isinstance(operation, SortCoordOrderOperation):
+                hide_operation = True
+            # Rule 3: drop transpose calls that do not change dimension order.
+            elif isinstance(operation, TransposeOperation) and current_data is not None:
+                target_dims = (
+                    tuple(operation.dims)
+                    if operation.dims is not None
+                    else tuple(reversed(current_data.dims))
+                )
+                hide_operation = target_dims == tuple(current_data.dims)
+            # Rule 4: drop squeeze calls that would not remove singleton dimensions.
+            elif isinstance(operation, SqueezeOperation) and current_data is not None:
+                hide_operation = not any(size == 1 for size in current_data.shape)
+
+            if not hide_operation:
+                streamlined.append(operation)
+
+            # Rule 5: keep anything ambiguous. If replaying an operation fails while
+            # building the heuristic context, stop making data-dependent decisions for
+            # later steps and preserve them verbatim.
+            if current_data is None or parent_data is None:
+                current_data = None
+            else:
+                try:
+                    current_data = operation.apply(
+                        current_data, parent_data=parent_data
+                    )
+                except Exception:
+                    current_data = None
+
+        return tuple(streamlined)
+
+    def to_replay_spec(self) -> ToolProvenanceSpec:
+        """Normalize the spec into a replay-only script form.
+
+        Replay specs are the canonical, composable form used for derivation metadata,
+        copy-code, save/load, and manager lineage. Live source updates continue to use
+        the original non-script spec via :func:`require_live_source_spec`.
+        """
+        if self.kind == "script":
+            return self
+
+        entries = self.derivation_entries()
+        return ToolProvenanceSpec(
+            kind="script",
+            start_label=entries[0].label,
+            seed_code=_DEFAULT_REPLAY_SEED_CODE,
+            operations=tuple(
+                ScriptCodeOperation(
+                    label=entry.label,
+                    code=entry.code,
+                    copyable=entry.copyable,
+                )
+                for entry in entries[1:]
+            ),
+        )
+
     def apply(self, parent_data: xr.DataArray) -> xr.DataArray:
+        require_live_source_spec(self)
         if self.kind == "full_data":
             data = parent_data.copy(deep=False)
         else:
@@ -575,16 +729,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return data
 
     def derivation_entries(self) -> list[DerivationEntry]:
-        if self.kind == "full_data":
-            entries: list[DerivationEntry] = [
-                DerivationEntry("Start from current parent ImageTool data", None, False)
-            ]
-        else:
-            entries = [
-                DerivationEntry(
-                    "Start from selected parent ImageTool data", None, False
-                )
-            ]
+        entries: list[DerivationEntry] = [self._start_entry()]
         for operation in self.operations:
             entry = operation.derivation_entry()
             if entry is not None:
@@ -592,14 +737,78 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return entries
 
     def derivation_code(self) -> str | None:
+        prefix: str | None = None
+        if self.kind == "script":
+            prefix = self.seed_code
         step_codes: list[str] = []
         for entry in self.derivation_entries()[1:]:
             if entry.code is None:
                 return None
             step_codes.append(entry.code)
-        if not step_codes:
+        if prefix is None and self.kind != "script":
+            if not step_codes:
+                return None
+            prefix = _DEFAULT_REPLAY_SEED_CODE
+        if prefix is None and not step_codes:
             return None
-        return "\n".join(["derived = data", *step_codes])
+        return "\n".join(part for part in (prefix, *step_codes) if part)
+
+    def display_entries(
+        self, *, parent_data: xr.DataArray | None = None
+    ) -> list[DerivationEntry]:
+        """Return streamlined derivation entries for UI and copy-code output.
+
+        The display path hides internal ImageTool normalization steps while keeping the
+        raw replay lineage available through :meth:`derivation_entries`.
+        """
+        entries = [self._start_entry()]
+
+        if self.kind == "script":
+            for entry in self.derivation_entries()[1:]:
+                # Rule 1: drop empty selection operations.
+                if entry.code in {
+                    "derived = derived.isel()",
+                    "derived = derived.qsel()",
+                    "derived = derived.sel()",
+                }:
+                    continue
+                # Rule 2: hide internal coordinate-order normalization.
+                if entry.code is not None and "sort_coord_order(" in entry.code:
+                    continue
+                entries.append(entry)
+            return entries
+
+        for operation in self._display_operations(parent_data=parent_data):
+            e = operation.derivation_entry()
+            if e is not None:
+                entries.append(e)
+        return entries
+
+    def display_code(self, *, parent_data: xr.DataArray | None = None) -> str | None:
+        """Return streamlined replay code for UI and clipboard actions.
+
+        The display path preserves exact live-source behavior while omitting user-facing
+        no-op and normalization steps from copied provenance code.
+        """
+        prefix: str | None = None
+        if self.kind == "script":
+            prefix = self.seed_code
+
+        step_codes: list[str] = []
+        for entry in self.display_entries(parent_data=parent_data)[1:]:
+            if entry.code is None:
+                return None
+            step_codes.append(entry.code)
+
+        if prefix is None and self.kind != "script":
+            if not step_codes:
+                return None
+            prefix = _DEFAULT_REPLAY_SEED_CODE
+        if prefix is None and not step_codes:
+            return None
+        if not step_codes and prefix == _DEFAULT_REPLAY_SEED_CODE:
+            return None
+        return "\n".join(part for part in (prefix, *step_codes) if part)
 
 
 def parse_tool_provenance_spec(
@@ -617,6 +826,158 @@ def parse_tool_provenance_spec(
     return ToolProvenanceSpec.model_validate(value)
 
 
+def to_replay_provenance_spec(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+) -> ToolProvenanceSpec | None:
+    """Parse ``value`` and normalize it into a replay-only script spec."""
+    spec = parse_tool_provenance_spec(value)
+    if spec is None:
+        return None
+    return spec.to_replay_spec()
+
+
+def mark_promoted_1d_source(data: xr.DataArray) -> xr.DataArray:
+    """Return ``data`` tagged as originating from a promoted 1D source."""
+    data.attrs = dict(data.attrs)
+    data.attrs[_PROMOTED_1D_SOURCE_ATTR] = True
+    return data
+
+
+def compose_display_provenance(
+    parent: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    source_spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    *,
+    parent_data: xr.DataArray | None = None,
+) -> ToolProvenanceSpec | None:
+    """Compose streamlined display provenance from a live source spec."""
+    parent_spec = to_replay_provenance_spec(parent)
+    source = require_live_source_spec(source_spec)
+    if source is None:
+        return parent_spec
+    if parent_spec is not None and source.kind == "full_data" and not source.operations:
+        return parent_spec
+    if (
+        direct_replay_input_name(parent_spec) is not None
+        and parent_data is not None
+        and parent_data.attrs.get(_PROMOTED_1D_SOURCE_ATTR, False)
+        and source.kind == "selection"
+    ):
+        saw_squeeze = False
+        for operation in source.operations:
+            if isinstance(operation, (QSelOperation, IselOperation, SelOperation)):
+                if operation.decoded_kwargs:
+                    break
+                continue
+            if isinstance(operation, SortCoordOrderOperation):
+                continue
+            if isinstance(operation, SqueezeOperation):
+                saw_squeeze = True
+                continue
+            break
+        else:
+            if saw_squeeze:
+                return parent_spec
+
+    entries = source.display_entries(parent_data=parent_data)
+    local_spec = ToolProvenanceSpec(
+        kind="script",
+        start_label=entries[0].label,
+        seed_code=_DEFAULT_REPLAY_SEED_CODE,
+        operations=tuple(
+            ScriptCodeOperation(
+                label=entry.label,
+                code=entry.code,
+                copyable=entry.copyable,
+            )
+            for entry in entries[1:]
+        ),
+    )
+    if parent_spec is None:
+        return local_spec
+    return compose_full_provenance(
+        parent_spec,
+        local_spec.model_copy(update={"seed_code": None}),
+    )
+
+
+def direct_replay_input_name(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+) -> str | None:
+    """Return a direct input variable name for simple replay seeds.
+
+    This only applies to non-default single-line seeds such as watched variables.
+    Generic replay aliases like ``derived = data`` continue to use ``derived`` so
+    existing non-watched code generation remains stable.
+    """
+    spec = to_replay_provenance_spec(value)
+    if (
+        spec is None
+        or spec.operations
+        or spec.seed_code is None
+        or spec.seed_code == _DEFAULT_REPLAY_SEED_CODE
+    ):
+        return None
+
+    prefix = "derived = "
+    if not spec.seed_code.startswith(prefix):
+        return None
+
+    name = spec.seed_code.removeprefix(prefix).strip()
+    if not name.isidentifier() or keyword.iskeyword(name):
+        return None
+    return name
+
+
+def compose_full_provenance(
+    parent: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+    local: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+) -> ToolProvenanceSpec | None:
+    """Compose canonical full provenance from parent and local lineage.
+
+    ``parent`` represents the replay lineage for the current input data. ``local``
+    represents the additional steps performed by the current node. The resulting spec is
+    always a replay-only script spec.
+    """
+    parent_spec = to_replay_provenance_spec(parent)
+    local_spec = to_replay_provenance_spec(local)
+
+    if parent_spec is None:
+        return local_spec
+    if local_spec is None:
+        return parent_spec
+
+    local_operations = list(local_spec.operations)
+    if local_spec.seed_code:
+        local_operations.insert(
+            0,
+            ScriptCodeOperation(
+                label=typing.cast("str", local_spec.start_label),
+                code=local_spec.seed_code,
+            ),
+        )
+
+    return ToolProvenanceSpec(
+        kind="script",
+        start_label=typing.cast("str", parent_spec.start_label),
+        seed_code=parent_spec.seed_code,
+        operations=(*parent_spec.operations, *local_operations),
+    )
+
+
+def require_live_source_spec(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+) -> ToolProvenanceSpec | None:
+    spec = parse_tool_provenance_spec(value)
+    if spec is None:
+        return None
+    if not spec.is_live_source:
+        raise TypeError(
+            "source_spec must be a live ToolProvenanceSpec. Use a non-script spec "
+            "whose operations support `apply()`."
+        )
+    return spec
+
+
 def full_data(
     *operations: ToolProvenanceOperation,
 ) -> ToolProvenanceSpec:
@@ -629,6 +990,34 @@ def selection(
 ) -> ToolProvenanceSpec:
     """Build a spec that starts from the parent's public selection model."""
     return ToolProvenanceSpec(kind="selection").append_operations(*operations)
+
+
+def script(
+    *operations: ToolProvenanceOperation,
+    start_label: str,
+    seed_code: str | None = None,
+) -> ToolProvenanceSpec:
+    """Build a replay-only provenance spec for generated code."""
+    return ToolProvenanceSpec(
+        kind="script",
+        start_label=start_label,
+        seed_code=seed_code,
+    ).append_operations(*operations)
+
+
+class ScriptCodeOperation(ToolProvenanceOperation):
+    op: typing.Literal["script_code"] = "script_code"
+    label: str
+    code: str | None
+    copyable: bool = True
+
+    live_applicable: typing.ClassVar[bool] = False
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        raise TypeError("script_code operations do not support live source updates")
+
+    def derivation_entry(self) -> DerivationEntry:
+        return DerivationEntry(self.label, self.code, self.copyable)
 
 
 class QSelOperation(ToolProvenanceOperation):

@@ -500,6 +500,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
     """
 
     @property
+    def provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Canonical replay provenance for the current ImageTool data."""
+        return typing.cast(
+            "erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None",
+            getattr(self.parent(), "provenance_spec", None),
+        )
+
+    @property
     def COLORS(self) -> tuple[QtGui.QColor, ...]:
         r""":class:`PySide6.QtGui.QColor`\ s for multiple cursors."""
         return tuple(
@@ -2400,6 +2410,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if isinstance(widget, erlab.interactive.utils.ToolWindow):
             widget.set_source_parent_fetcher(lambda: self._tool_source_parent_data())
             self.sigSourceDataReplaced.connect(widget.handle_parent_source_replaced)
+            widget.set_input_provenance_parent_fetcher(lambda: self.provenance_spec)
 
         uid: str = str(uuid.uuid4())
         with self._assoc_tools_lock:

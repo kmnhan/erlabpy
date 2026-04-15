@@ -237,7 +237,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     assert decoded == {
         "outer": {
             "sel": slice(0.5, 2.5),
-            "items": [slice(1, 4, 2), [3], {"beta": 1.5}],
+            "items": (slice(1, 4, 2), [3], {"beta": 1.5}),
         }
     }
 
@@ -312,7 +312,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         parent_nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
-    with pytest.raises(ValidationError, match="full_data' or 'selection"):
+    with pytest.raises(ValidationError, match="full_data', 'selection' or 'script"):
         erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
             {"kind": "invalid"}
         )
@@ -466,3 +466,198 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     )
     tool.handle_parent_source_replaced(bad_parent)
     assert tool.source_state == "unavailable"
+
+
+def test_tool_copy_code_includes_parent_lineage_for_standalone_imagetool(qtbot) -> None:
+    class _DummyState(BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def current_provenance_spec(
+            self,
+        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+            return self._compose_with_input_provenance(
+                lambda input_name: erlab.interactive.imagetool.provenance.script(
+                    erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                        label="Compute dummy output",
+                        code=f"result = {(input_name or 'data')}.mean()",
+                    ),
+                    start_label="Start from current dummy-tool input data",
+                )
+            )
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+    data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
+    parent = erlab.interactive.itool(data, execute=False, manager=False)
+    assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(parent)
+    parent.set_provenance_spec(
+        erlab.interactive.imagetool.provenance.selection(
+            erlab.interactive.imagetool.provenance.IselOperation(
+                kwargs={"x": slice(0, 2)}
+            )
+        )
+    )
+
+    tool = _DummyTool(data.isel(x=slice(0, 2)))
+    qtbot.addWidget(tool)
+    tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+    parent.slicer_area.add_tool_window(tool, transfer_to_manager=False)
+
+    code = tool.copy_code()
+
+    assert "derived = data" in code
+    assert "derived = derived.isel(x=slice(0, 2))" in code
+    assert "result = derived.mean()" in code
+
+
+def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
+    class _DummyState(BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def current_provenance_spec(
+            self,
+        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+            return self._compose_with_input_provenance(
+                lambda input_name: erlab.interactive.imagetool.provenance.script(
+                    erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                        label="Compute dummy output",
+                        code=f"result = {(input_name or 'data')}.mean()",
+                    ),
+                    start_label="Start from current dummy-tool input data",
+                )
+            )
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+    data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
+    parent_provenance = {
+        "spec": erlab.interactive.imagetool.provenance.selection(
+            erlab.interactive.imagetool.provenance.IselOperation(
+                kwargs={"x": slice(0, 2)}
+            )
+        )
+    }
+
+    tool = _DummyTool(data.isel(x=slice(0, 2)))
+    qtbot.addWidget(tool)
+    tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+    tool.set_input_provenance_parent_fetcher(lambda: parent_provenance["spec"])
+
+    initial_code = tool.copy_code()
+    assert "derived = derived.isel(x=slice(0, 2))" in initial_code
+    assert "derived = derived.isel(y=slice(0, 2))" not in initial_code
+
+    parent_provenance["spec"] = erlab.interactive.imagetool.provenance.selection(
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"y": slice(0, 2)})
+    )
+    stale_code = tool.copy_code()
+    assert "derived = derived.isel(x=slice(0, 2))" in stale_code
+    assert "derived = derived.isel(y=slice(0, 2))" not in stale_code
+
+    tool._data = data.isel(y=slice(0, 2))
+    tool.finalize_source_refresh()
+
+    refreshed_code = tool.copy_code()
+    assert "derived = derived.isel(x=slice(0, 2))" not in refreshed_code
+    assert "derived = derived.isel(y=slice(0, 2))" in refreshed_code
+
+
+def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -> None:
+    class _DummyState(BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def current_provenance_spec(
+            self,
+        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+            return self._compose_with_input_provenance(
+                lambda input_name: erlab.interactive.imagetool.provenance.script(
+                    erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                        label="Compute dummy output",
+                        code=f"result = {(input_name or 'data')}.mean()",
+                    ),
+                    start_label="Start from current dummy-tool input data",
+                )
+            )
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
+
+    tool = _DummyTool(data)
+    qtbot.addWidget(tool)
+    tool.set_source_binding(prov.selection(prov.SqueezeOperation()))
+    tool.set_input_provenance_parent_fetcher(lambda: None)
+
+    early_code = tool.copy_code()
+    assert "derived = derived.squeeze()" in early_code
+
+    tool.set_source_parent_fetcher(lambda: data)
+
+    refreshed_code = tool.copy_code()
+    assert "derived = derived.squeeze()" not in refreshed_code
+    assert refreshed_code == "derived = data\nresult = derived.mean()"

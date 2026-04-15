@@ -432,7 +432,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     def update_result(self) -> None:
         if not self._pause_update:
             self.result = self.process_func(self.processed_data, **self.process_kwargs)
-            self.sigInfoChanged.emit()
+            self._notify_data_changed()
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
@@ -456,12 +456,10 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             raise ValueError("Input DataArray must be 2D")
         return data
 
-    def copy_code(self) -> str:
+    def _build_copy_code(self, *, input_name: str | None = None) -> str:
         lines: list[str] = []
 
-        data_name = (
-            self.data_name
-        )  # "".join([s.strip() for s in self.data_name.split("\n")])
+        data_name = input_name or self.data_name
 
         if self.data_has_nan:
             data_name = f"{data_name}.fillna(0)"
@@ -530,7 +528,20 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             )
         )
 
-        return erlab.interactive.utils.copy_to_clipboard(lines)
+        return "\n".join(lines)
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Compute derivative output",
+                    code=self._build_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current dtool input data",
+            )
+        )
 
 
 def dtool(

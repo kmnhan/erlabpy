@@ -9,7 +9,7 @@ import threading
 import time
 import traceback
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 
 import numpy as np
 import pydantic
@@ -340,7 +340,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "notrack": True,
                     "showlabel": False,
                     "text": "Copy code to clipboard",
-                    "clicked": lambda: self.gen_code("poly"),
+                    "clicked": self.copy_code,
                 },
                 "save": {
                     "qwtype": "pushbtn",
@@ -377,7 +377,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "notrack": True,
                     "showlabel": False,
                     "text": "Copy code to clipboard",
-                    "clicked": lambda: self.gen_code("spl"),
+                    "clicked": self.copy_code,
                 },
             }
         )
@@ -721,7 +721,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             return
         self._pending_update_request = None
         self._apply_update_request(request)
-        self._set_source_state("fresh")
+        self.finalize_source_refresh()
 
     def update_data(self, new_data: xr.DataArray) -> bool:
         data = self.validate_update_data(new_data)
@@ -898,6 +898,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.aw.axes[2].setVisible(params["Corrected"])
         self.aw.hists[2].setVisible(params["Corrected"])
         self.sigUpdated.emit()
+        self._notify_data_changed()
 
     def _perform_poly_fit(self):
         params = self.params_poly.values
@@ -951,7 +952,18 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if tool is not None:
             self._itool = tool
 
-    def gen_code(self, mode: str) -> str:
+    def _current_fit_mode(self) -> typing.Literal["poly", "spl"]:
+        return "poly" if self.params_tab.currentIndex() == 0 else "spl"
+
+    def _build_copy_code(
+        self,
+        mode: typing.Literal["poly", "spl"] | None = None,
+        *,
+        include_corrected: bool | None = None,
+        input_name: str | None = None,
+    ) -> str:
+        if mode is None:
+            mode = self._current_fit_mode()
         p0 = self.params_edge.values
         match mode:
             case "poly":
@@ -991,23 +1003,97 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if mode == "poly" and not p1["Scale cov"]:
             arg_dict["scale_covar"] = False
 
+        source_name = input_name or str(self._argnames["data"])
         code_str = erlab.interactive.utils.generate_code(
             func,
-            [f"|{self._argnames['data']}|"],
+            [f"|{source_name}|"],
             arg_dict,
             module="era.gold",
             assign="modelresult",
         )
-        if self.data_corr is not None:
+        if include_corrected is None:
+            include_corrected = self.data_corr is not None
+        if include_corrected:
+            corrected_target = input_name or self._argnames.get(
+                "data_corr", self._argnames["data"]
+            )
             code_str += "\n" + erlab.interactive.utils.generate_code(
                 erlab.analysis.gold.correct_with_edge,
-                args=[f"|{self._argnames['data_corr']}|", "|modelresult|"],
+                args=[f"|{corrected_target}|", "|modelresult|"],
                 kwargs={"along": self._along_dim, "shift_coords": p1["Shift coords"]},
                 module="era.gold",
                 assign="corrected",
             )
-        erlab.interactive.utils.copy_to_clipboard(code_str)
         return code_str
+
+    def _provenance_spec_for_mode(
+        self,
+        mode: typing.Literal["poly", "spl"],
+        *,
+        include_corrected: bool | None = None,
+        input_name: str | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        code = self._build_copy_code(
+            mode,
+            include_corrected=include_corrected,
+            input_name=input_name,
+        )
+        if not code:
+            return None
+        label = (
+            "Fit and correct current data with the polynomial edge model"
+            if mode == "poly" and include_corrected
+            else "Fit current data with the polynomial edge model"
+            if mode == "poly"
+            else "Fit and correct current data with the spline edge model"
+            if include_corrected
+            else "Fit current data with the spline edge model"
+        )
+        return erlab.interactive.imagetool.provenance.script(
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label=label,
+                code=code,
+            ),
+            start_label="Start from current goldtool input data",
+        )
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._compose_with_input_provenance(
+            lambda input_name: self._provenance_spec_for_mode(
+                self._current_fit_mode(),
+                input_name=input_name,
+            )
+        )
+
+    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
+        if slot_key != "goldtool.corrected":
+            return None
+        return self.corrected
+
+    def output_imagetool_provenance(
+        self, slot_key: Hashable, data: xr.DataArray
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if slot_key != "goldtool.corrected":
+            return None
+        return self._compose_with_input_provenance(
+            lambda input_name: self._provenance_spec_for_mode(
+                self._current_fit_mode(),
+                include_corrected=True,
+                input_name=input_name,
+            )
+        )
+
+    def gen_code(self, mode: str) -> str:
+        return self._copy_provenance_code(
+            self._compose_with_input_provenance(
+                lambda input_name: self._provenance_spec_for_mode(
+                    typing.cast("typing.Literal['poly', 'spl']", mode),
+                    input_name=input_name,
+                )
+            )
+        )
 
     def to_dataset(self) -> xr.Dataset:
         self._ensure_serializable_state()
@@ -1496,7 +1582,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             self._clear_fit_outputs()
             self.tool_status = status
             self._update_edc()
-            self.sigInfoChanged.emit()
+            self._notify_data_changed()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
                 self.do_fit()
@@ -1767,14 +1853,12 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.guess_center_btn.clicked.connect(self._guess_center)
         self.copy_btn.clicked.connect(self.copy_code)
 
-    @QtCore.Slot()
-    def copy_code(self) -> str:
-        """Copy the code for the current fit to the clipboard."""
+    def _build_copy_code(self, *, input_name: str | None = None) -> str:
         data_name = erlab.interactive.utils.generate_code(
             xr.DataArray.sel,
             args=[],
             kwargs={self.y_dim: slice(*self.y_range)},
-            module=self.data_name,
+            module=input_name or self.data_name,
         )
 
         # Check if any parameters are the same as the automatically guessed ones
@@ -1791,7 +1875,20 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             args=[f"|{data_name}|"],
             kwargs=params,
             module="era.gold",
-            copy=True,
+            copy=False,
+        )
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Fit the current averaged edge distribution",
+                    code=self._build_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current restool input data",
+            )
         )
 
     @QtCore.Slot()

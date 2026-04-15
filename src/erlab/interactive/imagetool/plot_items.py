@@ -1016,22 +1016,27 @@ class ItoolPlotItem(pg.PlotItem):
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         selection_code = self.selection_code_for_cursor(cursor)
+        operations: list[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        ] = []
         if selection_code.startswith(".qsel"):
-            operations: list[
-                erlab.interactive.imagetool.provenance.ToolProvenanceOperation
-            ] = [
-                erlab.interactive.imagetool.provenance.QSelOperation(
-                    kwargs=self.array_slicer.qsel_args(cursor, self.display_axis)
-                )
-            ]
-        else:
-            operations = [
-                erlab.interactive.imagetool.provenance.IselOperation(
-                    kwargs=self.array_slicer.isel_args(
-                        cursor, self.display_axis, int_if_one=True
+            qsel_kwargs = self.array_slicer.qsel_args(cursor, self.display_axis)
+            if qsel_kwargs:
+                operations.append(
+                    erlab.interactive.imagetool.provenance.QSelOperation(
+                        kwargs=qsel_kwargs
                     )
                 )
-            ]
+        else:
+            isel_kwargs = self.array_slicer.isel_args(
+                cursor, self.display_axis, int_if_one=True
+            )
+            if isel_kwargs:
+                operations.append(
+                    erlab.interactive.imagetool.provenance.IselOperation(
+                        kwargs=isel_kwargs
+                    )
+                )
 
         if alt_pressed:
             crop_indexers = dict(self._crop_indexers)
@@ -1062,7 +1067,7 @@ class ItoolPlotItem(pg.PlotItem):
                     dims=tuple(reversed(self.current_data.dims))
                 )
             )
-        if squeeze:
+        if squeeze and any(size == 1 for size in self.current_data.shape):
             operations.append(erlab.interactive.imagetool.provenance.SqueezeOperation())
         return erlab.interactive.imagetool.provenance.selection(*operations)
 
@@ -1908,6 +1913,14 @@ class ItoolPlotItem(pg.PlotItem):
                 return
 
         tool_window = erlab.interactive.itool(**itool_kw)
+        if isinstance(tool_window, erlab.interactive.imagetool.ImageTool):
+            tool_window.set_provenance_spec(
+                erlab.interactive.imagetool.provenance.compose_display_provenance(
+                    self.slicer_area.provenance_spec,
+                    self.make_tool_source_spec(),
+                    parent_data=self.slicer_area._tool_source_parent_data(),
+                )
+            )
         if isinstance(tool_window, QtWidgets.QWidget):  # pragma: no branch
             self.slicer_area.add_tool_window(tool_window)
 

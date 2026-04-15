@@ -655,6 +655,7 @@ def copy_to_clipboard(content: str | list[str]) -> str:
 _TOOL_SOURCE_SPEC_ATTR = "tool_source_spec"
 _TOOL_SOURCE_STATE_ATTR = "tool_source_state"
 _TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
+_TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
 
 
 class _ToolSourceUpdateDialog(QtWidgets.QDialog):
@@ -1890,12 +1891,19 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
 
         owner_tool = self._owner_tool_window()
         if owner_tool is not None:
+            tracking_key = ("ximageitem", id(self))
             tool: (
                 erlab.interactive.imagetool.ImageTool
                 | list[erlab.interactive.imagetool.ImageTool]
                 | None
-            ) = owner_tool._launch_output_imagetool(
-                da, slot_key=("ximageitem", id(self))
+            ) = owner_tool._launch_detached_output_imagetool(
+                da,
+                tracking_key=tracking_key,
+                provenance_spec=owner_tool.detached_output_imagetool_provenance(
+                    da,
+                    source=self,
+                    tracking_key=tracking_key,
+                ),
             )
             if tool is not None:
                 self._itool = tool
@@ -2456,6 +2464,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     - If you implement `preview_imageitem` or `info_text`, you should emit the signal
       ``sigInfoChanged`` without any arguments whenever the content of these properties
       changes. This will ensure that the ImageTool manager updates its display.
+
+    - Emit ``sigDataChanged`` whenever the displayed tool data or any manager-visible
+      ImageTool outputs have changed. Managed descendants use this to become stale or
+      auto-refresh from the current tool state.
     """
 
     tool_name: str = "tool"
@@ -2465,6 +2477,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     StateModel: type[M]
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
+    sigDataChanged = QtCore.Signal()  #: :meta private:
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -2495,6 +2508,17 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self._source_spec: (
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
         ) = None
+        self._input_provenance_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ) = None
+        self._input_provenance_parent_fetcher: (
+            Callable[
+                [],
+                erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+            ]
+            | None
+        ) = None
+        self._source_refresh_in_progress: bool = False
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
@@ -2655,6 +2679,158 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return None
         return target
 
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return the replay provenance for the tool's copy-code action."""
+        return None
+
+    @property
+    def input_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return the replay provenance snapshot for the displayed tool input data."""
+        return self._input_provenance_spec
+
+    def set_input_provenance_spec(
+        self,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | typing.Mapping[str, typing.Any]
+        | None,
+    ) -> None:
+        """Set the replay provenance snapshot for the displayed tool input data."""
+        self._input_provenance_spec = (
+            erlab.interactive.imagetool.provenance.to_replay_provenance_spec(
+                provenance_spec
+            )
+        )
+
+    def set_input_provenance_parent_fetcher(
+        self,
+        fetcher: Callable[
+            [], erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ]
+        | None,
+    ) -> None:
+        """Set the callback used to resolve lineage for future source refreshes."""
+        self._input_provenance_parent_fetcher = fetcher
+        if fetcher is not None and self._source_state == "fresh":
+            self._sync_input_provenance_snapshot()
+
+    def _parent_input_provenance(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if self._input_provenance_parent_fetcher is None:
+            return None
+        return erlab.interactive.imagetool.provenance.to_replay_provenance_spec(
+            self._input_provenance_parent_fetcher()
+        )
+
+    def _snapshot_input_provenance(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        parent_data: xr.DataArray | None = None
+        if self._source_parent_fetcher is not None:
+            try:
+                parent_data = self._source_parent_fetcher()
+            except Exception:
+                parent_data = None
+
+        parent_provenance = None
+        if self._input_provenance_parent_fetcher is not None:
+            parent_provenance = self._parent_input_provenance()
+        return erlab.interactive.imagetool.provenance.compose_display_provenance(
+            parent_provenance,
+            self._source_spec,
+            parent_data=parent_data,
+        )
+
+    def _sync_input_provenance_snapshot(self) -> None:
+        """Refresh the stored input-lineage snapshot for the displayed tool data."""
+        self._input_provenance_spec = self._snapshot_input_provenance()
+
+    def _effective_input_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if self._input_provenance_spec is not None:
+            return self._input_provenance_spec
+        return self._snapshot_input_provenance()
+
+    def _compose_with_input_provenance(
+        self,
+        builder: Callable[
+            [str | None],
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+        ],
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        input_provenance = self._effective_input_provenance_spec()
+        direct_input_name = (
+            erlab.interactive.imagetool.provenance.direct_replay_input_name(
+                input_provenance
+            )
+            if input_provenance is not None
+            else None
+        )
+        local_spec = builder(
+            direct_input_name or ("derived" if input_provenance is not None else None)
+        )
+        if direct_input_name is not None:
+            assert input_provenance is not None
+            if local_spec is None:
+                return input_provenance
+            replay_spec = (
+                erlab.interactive.imagetool.provenance.to_replay_provenance_spec(
+                    local_spec
+                )
+            )
+            assert replay_spec is not None
+            return replay_spec.model_copy(
+                update={"start_label": typing.cast("str", input_provenance.start_label)}
+            )
+        return erlab.interactive.imagetool.provenance.compose_full_provenance(
+            input_provenance, local_spec
+        )
+
+    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
+        """Return the current DataArray for the named ImageTool output slot."""
+        return None
+
+    def output_imagetool_provenance(
+        self, slot_key: Hashable, data: xr.DataArray
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return replay provenance for a named ImageTool output."""
+        return None
+
+    def detached_output_imagetool_provenance(
+        self,
+        data: xr.DataArray,
+        *,
+        source: QtCore.QObject | None = None,
+        tracking_key: Hashable | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return replay provenance for a detached, non-live ImageTool output."""
+        return self.current_provenance_spec()
+
+    def _copy_provenance_code(
+        self,
+        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+    ) -> str:
+        code = None if spec is None else spec.display_code()
+        if not code:
+            return ""
+        return copy_to_clipboard(code)
+
+    @QtCore.Slot()
+    def copy_code(self) -> str:
+        """Copy the current tool provenance code to the clipboard."""
+        return self._copy_provenance_code(self.current_provenance_spec())
+
+    def _notify_data_changed(self) -> None:
+        """Notify manager-facing listeners that displayed tool data has changed."""
+        self.sigInfoChanged.emit()
+        if not self._source_refresh_in_progress:
+            self.sigDataChanged.emit()
+
     def _prompt_existing_output_imagetool(
         self,
     ) -> typing.Literal["update", "new", "cancel"]:
@@ -2690,42 +2866,122 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         *,
         slot_key: Hashable,
     ) -> erlab.interactive.imagetool.ImageTool | None:
-        existing_target = self._output_imagetool_target(slot_key)
+        return self._open_output_imagetool(
+            data,
+            tracking_key=slot_key,
+            output_slot_key=slot_key,
+            provenance_spec=self.output_imagetool_provenance(slot_key, data),
+            prompt_on_reuse=True,
+        )
+
+    def _launch_detached_output_imagetool(
+        self,
+        data: xr.DataArray,
+        *,
+        tracking_key: Hashable,
+        provenance_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ) = None,
+    ) -> erlab.interactive.imagetool.ImageTool | None:
+        return self._open_output_imagetool(
+            data,
+            tracking_key=tracking_key,
+            output_slot_key=None,
+            provenance_spec=provenance_spec,
+            prompt_on_reuse=False,
+        )
+
+    def _open_output_imagetool(
+        self,
+        data: xr.DataArray,
+        *,
+        tracking_key: Hashable,
+        output_slot_key: Hashable | None,
+        provenance_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ),
+        prompt_on_reuse: bool,
+    ) -> erlab.interactive.imagetool.ImageTool | None:
+        existing_target = self._output_imagetool_target(tracking_key)
         manager, parent_uid = self._managed_output_imagetool_parent()
 
         if manager is None or parent_uid is None:
+            if isinstance(
+                existing_target, erlab.interactive.imagetool.ImageTool
+            ) and qt_is_valid(existing_target):
+                existing_target.set_provenance_spec(provenance_spec)
+                existing_target.slicer_area.replace_source_data(data)
+                existing_target.show()
+                existing_target.raise_()
+                existing_target.activateWindow()
+                return existing_target
             if isinstance(existing_target, QtWidgets.QWidget):
                 existing_target.close()
                 existing_target.deleteLater()
             tool = erlab.interactive.itool(data, manager=False, execute=False)
             if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
                 return None
+            tool.set_provenance_spec(provenance_spec)
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            self._register_output_imagetool_target(slot_key, tool)
+            self._register_output_imagetool_target(tracking_key, tool)
             tool.show()
             tool.raise_()
             tool.activateWindow()
             return tool
 
         if isinstance(existing_target, str):
-            action = self._prompt_existing_output_imagetool()
-            if action == "cancel":
-                return None
-            if action == "update":
-                manager._data_replace([data], [existing_target])
+            node = manager._child_node(existing_target)
+            if output_slot_key is not None:
+                action = (
+                    self._prompt_existing_output_imagetool()
+                    if prompt_on_reuse
+                    else "update"
+                )
+                if action == "cancel":
+                    return None
+                if action == "update":
+                    if node.archived:
+                        node.unarchive()
+                    node.set_output_binding(
+                        output_slot_key,
+                        auto_update=node.source_auto_update,
+                        state="fresh",
+                    )
+                    node._replace_imagetool_data(
+                        data,
+                        provenance_spec,
+                        propagate_descendants=True,
+                    )
+                    manager.show_childtool(existing_target)
+                    return manager.get_imagetool(existing_target)
+            else:
+                if node.archived:
+                    node.unarchive()
+                node._replace_imagetool_data(
+                    data,
+                    provenance_spec,
+                    propagate_descendants=True,
+                )
                 manager.show_childtool(existing_target)
                 return manager.get_imagetool(existing_target)
 
         tool = erlab.interactive.itool(data, manager=False, execute=False)
         if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
             return None
+        tool.set_provenance_spec(provenance_spec)
 
         child_uid = manager.add_imagetool_child(
-            tool, parent_uid, show=True, activate=True
+            tool,
+            parent_uid,
+            show=True,
+            activate=True,
+            provenance_spec=provenance_spec,
+            source_spec=None,
+            output_slot_key=output_slot_key,
         )
-        self._register_output_imagetool_target(slot_key, child_uid)
+        self._register_output_imagetool_target(tracking_key, child_uid)
         tool.destroyed.connect(
-            lambda _=None, key=slot_key, uid=child_uid: (
+            lambda _=None, key=tracking_key, uid=child_uid: (
                 self._clear_output_imagetool_slot_if_matches(key, uid)
             )
         )
@@ -2795,8 +3051,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 "source_spec must be a ToolProvenanceSpec or None. Use "
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
-        self._source_spec = source_spec
+        self._source_spec = (
+            erlab.interactive.imagetool.provenance.require_live_source_spec(source_spec)
+        )
         self._source_auto_update = bool(auto_update)
+        if self._source_spec is not None and state == "fresh":
+            self._sync_input_provenance_snapshot()
         self._set_source_state(state if self._source_spec is not None else "fresh")
 
     def set_source_parent_fetcher(
@@ -2804,6 +3064,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     ) -> None:
         """Set the callback used to fetch the latest parent ImageTool data."""
         self._source_parent_fetcher = fetcher
+        if fetcher is not None and self._source_state == "fresh":
+            self._sync_input_provenance_snapshot()
+
+    def finalize_source_refresh(self) -> None:
+        """Record that the current source refresh has been applied to the tool."""
+        self._sync_input_provenance_snapshot()
+        self._set_source_state("fresh")
+        self.sigDataChanged.emit()
 
     def _set_source_auto_update(self, value: bool) -> None:
         """Update the auto-refresh flag and notify manager-facing UI state."""
@@ -2941,6 +3209,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return False
 
         try:
+            self._source_refresh_in_progress = True
             update_complete = self.update_data(resolved)
         except Exception:
             logger.exception(
@@ -2948,10 +3217,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             )
             self._set_source_state("unavailable")
             return False
+        finally:
+            self._source_refresh_in_progress = False
         if update_complete is False:
             self._set_source_state("stale")
             return False
-        self._set_source_state("fresh")
+        self.finalize_source_refresh()
         return True
 
     def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> None:
@@ -2972,6 +3243,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
         if self._source_auto_update:
             try:
+                self._source_refresh_in_progress = True
                 update_complete = self.update_data(resolved)
             except Exception:
                 logger.exception(
@@ -2980,10 +3252,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 )
                 self._set_source_state("unavailable")
                 return
+            finally:
+                self._source_refresh_in_progress = False
             if update_complete is False:
                 self._set_source_state("stale")
                 return
-            self._set_source_state("fresh")
+            self.finalize_source_refresh()
         else:
             self._set_source_state("stale")
 
@@ -3054,6 +3328,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             )
             attrs[_TOOL_SOURCE_STATE_ATTR] = self._source_state
             attrs[_TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(self._source_auto_update)
+        input_provenance = self._effective_input_provenance_spec()
+        if input_provenance is not None:
+            attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR] = json.dumps(
+                input_provenance.model_dump(mode="json")
+            )
         return attrs
 
     @classmethod
@@ -3127,6 +3406,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                         )
                     )
                 )
+                source_spec = (
+                    erlab.interactive.imagetool.provenance.require_live_source_spec(
+                        source_spec
+                    )
+                )
             except Exception:
                 logger.warning(
                     "Ignoring invalid saved tool source provenance for %s",
@@ -3143,6 +3427,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                         "typing.Literal['fresh', 'stale', 'unavailable']",
                         ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
                     ),
+                )
+        if _TOOL_INPUT_PROVENANCE_SPEC_ATTR in ds.attrs:
+            try:
+                tool.set_input_provenance_spec(
+                    typing.cast(
+                        "typing.Mapping[str, typing.Any]",
+                        json.loads(ds.attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR]),
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved tool input provenance for %s",
+                    cls_obj.__qualname__,
+                    exc_info=True,
                 )
         tool.setWindowTitle(ds.attrs["tool_title"])
         tool.setGeometry(*ds.attrs["tool_rect"])

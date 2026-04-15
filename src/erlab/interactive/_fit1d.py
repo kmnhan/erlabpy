@@ -2822,9 +2822,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         return data_name, model_name, lines
 
-    @QtCore.Slot()
-    def copy_code(self) -> str:
-        data_name, model_name, lines = self._make_model_code(self._data_name)
+    def _build_copy_code(self, *, input_name: str | None = None) -> str:
+        data_name, model_name, lines = self._make_model_code(
+            input_name or self._data_name
+        )
 
         fit_domain = self._fit_domain()
         if fit_domain is not None:
@@ -2893,7 +2894,20 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 assign="result",
             )
         )
-        return erlab.interactive.utils.copy_to_clipboard(lines)
+        return "\n".join(lines)
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Fit current data with the current model",
+                    code=self._build_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current ftool input data",
+            )
+        )
 
     @QtCore.Slot()
     def _save_fit(self) -> None:
@@ -3419,7 +3433,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self._reset_history_stack()
             self._mark_fit_stale()
             self.restoreGeometry(old_geom)
-            self.sigInfoChanged.emit()
+            self._notify_data_changed()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
                 self._run_fit()

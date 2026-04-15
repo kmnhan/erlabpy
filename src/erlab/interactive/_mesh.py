@@ -3,6 +3,7 @@ __all__ = ["meshtool"]
 import importlib.resources
 import os
 import typing
+from collections.abc import Hashable
 
 import numpy as np
 import numpy.typing as npt
@@ -402,6 +403,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             self.corr_image.setDataArray(corrected.T, update_labels=False)
             self.mesh_image.setDataArray(mesh.T, update_labels=False)
             self.corr_fft_image.setImage(log_magnitude_corr)
+        self._notify_data_changed()
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
@@ -425,7 +427,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         self.tool_status = status
         self.set_data_beforecalc(initial=True)
         self._update_target_pos()
-        self.sigInfoChanged.emit()
+        self._notify_data_changed()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -450,6 +452,52 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             )
             if tool is not None:
                 self._itool_mesh = tool
+
+    def _build_copy_code(self, *, input_name: str | None = None) -> str:
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.mesh.remove_mesh,
+            args=[f"|{input_name or self.data_name}|"],
+            kwargs=self.get_params_dict(),
+            module="era.mesh",
+            assign=("corrected", "mesh"),
+            remove_defaults=False,
+            copy=False,
+        )
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Remove mesh from current data",
+                    code=self._build_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current meshtool input data",
+            )
+        )
+
+    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
+        if slot_key == "meshtool.corrected_output":
+            return self._corrected
+        if slot_key == "meshtool.mesh_output":
+            return self._mesh
+        return None
+
+    def output_imagetool_provenance(
+        self, slot_key: Hashable, data: xr.DataArray
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if slot_key not in {"meshtool.corrected_output", "meshtool.mesh_output"}:
+            return None
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Compute mesh-tool outputs",
+                    code=self._build_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current meshtool input data",
+            )
+        )
 
     @QtCore.Slot()
     def save_mesh(self) -> None:
@@ -478,18 +526,6 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             filename = dialog.selectedFiles()[0]
             self._mesh.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
             pg.PlotItem.lastFileDir = os.path.dirname(filename)
-
-    @QtCore.Slot()
-    def copy_code(self) -> str:
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.mesh.remove_mesh,
-            args=[f"|{self.data_name}|"],
-            kwargs=self.get_params_dict(),
-            module="era.mesh",
-            assign=("corrected", "mesh"),
-            remove_defaults=False,
-            copy=True,
-        )
 
 
 def meshtool(

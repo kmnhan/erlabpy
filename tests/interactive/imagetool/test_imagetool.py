@@ -1320,7 +1320,6 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     )
     assert selection_spec.kind == "selection"
     assert [op.op for op in selection_spec.operations] == [
-        "isel",
         "sort_coord_order",
         "transpose",
         "squeeze",
@@ -1336,6 +1335,70 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     new_data.data = np.asarray(new_data.data) * 2
     win.slicer_area.set_data(new_data)
     assert child.source_state == "fresh"
+
+
+def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+
+    derivative = dtool(
+        image.current_data.T,
+        data_name=image.get_selection_code(),
+        execute=False,
+    )
+    qtbot.addWidget(derivative)
+    derivative.set_source_binding(image.make_tool_source_spec(transpose=True))
+
+    derivative_code = derivative.copy_code()
+    assert ".isel()" not in derivative_code
+    assert "sort_coord_order" not in derivative_code
+    assert "derived = derived.transpose(" in derivative_code
+
+    squeezed_child = dtool(
+        _TEST_DATA["2D"].copy(),
+        data_name="data",
+        execute=False,
+    )
+    qtbot.addWidget(squeezed_child)
+    squeezed_child.set_source_parent_fetcher(lambda: _TEST_DATA["2D"].copy())
+    squeezed_child.set_source_binding(prov.selection(prov.SqueezeOperation()))
+
+    squeezed_code = squeezed_child.copy_code()
+    assert ".isel()" not in squeezed_code
+    assert "sort_coord_order" not in squeezed_code
+    assert ".squeeze()" not in squeezed_code
+
+    squeezed_child.close()
+    derivative.close()
+    win.close()
+
+
+def test_child_tool_copy_code_keeps_meaningful_parent_selection(qtbot) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.set_value(1, 3.0)
+    image = win.slicer_area.images[0]
+
+    child = dtool(
+        image.current_data.T,
+        data_name=image.get_selection_code(),
+        execute=False,
+    )
+    qtbot.addWidget(child)
+    child.set_source_binding(image.make_tool_source_spec(transpose=True))
+
+    code = child.copy_code()
+    assert "sort_coord_order" not in code
+    assert ".isel()" not in code
+    assert ".qsel(" in code
+    assert "derived = derived.transpose(" in code
+
+    child.close()
+    win.close()
 
 
 def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
@@ -1958,6 +2021,29 @@ def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) ->
     assert child.source_spec == image.make_tool_source_spec(squeeze=True)
     assert child.source_state == "fresh"
 
+    win.close()
+
+
+def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
+    qtbot, monkeypatch
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = dtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(erlab.interactive, "ftool", lambda *args, **kwargs: child)
+
+    profile = win.slicer_area.profiles[0]
+    profile.open_in_ftool()
+
+    assert child.source_spec is not None
+    assert not any(
+        isinstance(operation, prov.SqueezeOperation)
+        for operation in child.source_spec.operations
+    )
+
+    child.close()
     win.close()
 
 

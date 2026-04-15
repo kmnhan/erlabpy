@@ -160,6 +160,11 @@ Whenever the preview or info text changes, emit `sigInfoChanged`. This is what c
 the manager to refresh its side panel and thumbnails. `KspaceToolGUI` and
 `DerivativeTool` are good references for this pattern.
 
+If the tool can change its displayed data or any manager-visible ImageTool outputs
+without going through the built-in source-refresh flow, emit `sigDataChanged` too. This
+is what lets managed descendants become stale or auto-refresh from the current tool
+state.
+
 ## Support source updates from ImageTool
 
 If a tool can be launched from ImageTool or tracked by the manager, it should usually be
@@ -221,11 +226,35 @@ the tool back to its source data:
   active cursor or cropped selection.
 - Use ``erlab.interactive.imagetool.provenance.full_data()`` when the whole current
   array is the logical source.
-- Use the operation builders in ``erlab.interactive.imagetool.provenance`` such as
-  ``selection(...)``, ``isel(...)``, ``sel(...)``, and ``average(...)`` when a tool
-  needs to author or modify provenance explicitly.
+- Use the operation models in ``erlab.interactive.imagetool.provenance`` such as
+  ``QSelOperation(...)``, ``IselOperation(...)``, ``SelOperation(...)``,
+  ``AverageOperation(...)``, and ``TransposeOperation(...)`` when a tool needs to
+  author or modify provenance explicitly. Pass those operation instances to
+  ``selection(...)`` or ``full_data(...)``.
+- When implementing a custom ``ToolProvenanceOperation.derivation_entry()``, return a
+  ``DerivationEntry`` for steps that should appear in the manager derivation list or
+  copied provenance code. Return ``None`` only for operations that must still replay at
+  runtime but should stay hidden from the derivation UI and generated code, such as an
+  internal bookkeeping rename. If the step should remain visible but code generation
+  should stop, return ``DerivationEntry(..., code=None)`` instead.
 - Ensure the caller sets `set_source_binding(...)`; the manager wrapper will provide
-  `set_source_parent_fetcher(...)` when the tool is attached to a managed ImageTool.
+  `set_source_parent_fetcher(...)` and `set_input_provenance_parent_fetcher(...)` when
+  the tool is attached to a managed ImageTool.
+
+If the tool offers "Copy Code" or otherwise generates replayable code from its current
+input, also implement provenance for that code path:
+
+- Override `current_provenance_spec()` to describe the current copy-code action.
+- Prefer `self._compose_with_input_provenance(...)` when the generated code should keep
+  the parent ImageTool lineage or watched-variable seed intact.
+- Override `output_imagetool_data()` and `output_imagetool_provenance()` when the tool
+  exposes manager-visible ImageTool outputs whose replay code differs from the main
+  tool action.
+- Override `detached_output_imagetool_provenance()` only when detached outputs should
+  use different replay lineage from `current_provenance_spec()`.
+
+`DerivativeTool`, `KspaceToolGUI`, `MeshTool`, `Fit1DTool`, and `Fit2DTool` are useful
+references for provenance-aware copy-code implementations.
 
 The relevant examples live in `erlab.interactive.imagetool.plot_items.ItoolPlotItem` and
 `erlab.interactive.imagetool.viewer.ImageSlicerArea` as methods named

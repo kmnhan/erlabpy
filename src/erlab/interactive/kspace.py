@@ -33,6 +33,8 @@ from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Hashable
+
     import matplotlib
     import varname
     import xarray as xr
@@ -832,7 +834,7 @@ class KspaceTool(KspaceToolGUI):
             self.energy_group.setDisabled(True)
 
         self.tool_status = status
-        self.sigInfoChanged.emit()
+        self._notify_data_changed()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -938,14 +940,15 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-    @QtCore.Slot()
-    def show_converted(self) -> None:
+    def _converted_output(self) -> xr.DataArray:
         data = self._assign_params(self.data.copy(deep=False))
         self._validate_kinetic_energy(data, context="opening converted data from ktool")
+        return data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
+
+    @QtCore.Slot()
+    def show_converted(self) -> None:
         with erlab.interactive.utils.wait_dialog(self, "Converting..."):
-            data_kconv = data.kspace.convert(
-                bounds=self.bounds, resolution=self.resolution
-            )
+            data_kconv = self._converted_output()
 
         tool = self._launch_output_imagetool(
             data_kconv, slot_key="ktool.converted_output"
@@ -953,19 +956,19 @@ class KspaceTool(KspaceToolGUI):
         if tool is not None:
             self._itool = tool
 
-    @QtCore.Slot()
-    def copy_code(self) -> str:
+    def _build_copy_code(self, *, input_name: str | None = None) -> str:
         arg_dict: dict[str, typing.Any] = {}
         if self.bounds is not None:
             arg_dict["bounds"] = self.bounds
         if self.resolution is not None:
             arg_dict["resolution"] = self.resolution
 
-        # Detected input name must be single identifier.
-        # Otherwise the generated code will not apply offsets correctly.
-        input_name: str = str(self._argnames["data"])
-        if not input_name.isidentifier():
-            input_name = "data"
+        if input_name is None:
+            # Detected input name must be single identifier.
+            # Otherwise the generated code will not apply offsets correctly.
+            input_name = str(self._argnames["data"])
+            if not input_name.isidentifier():
+                input_name = "data"
 
         out_lines: list[str] = []
 
@@ -998,7 +1001,40 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-        return erlab.interactive.utils.copy_to_clipboard(out_lines)
+        return "\n".join(out_lines)
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Convert to momentum space",
+                    code=self._build_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current ktool input data",
+            )
+        )
+
+    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
+        if slot_key != "ktool.converted_output":
+            return None
+        return self._converted_output()
+
+    def output_imagetool_provenance(
+        self, slot_key: Hashable, data: xr.DataArray
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if slot_key != "ktool.converted_output":
+            return None
+        return self._compose_with_input_provenance(
+            lambda input_name: erlab.interactive.imagetool.provenance.script(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Convert current data to momentum space",
+                    code=self._build_copy_code(input_name=input_name),
+                ),
+                start_label="Start from current ktool input data",
+            )
+        )
 
     @property
     def bounds(self) -> dict[str, tuple[float, float]] | None:
@@ -1170,7 +1206,7 @@ class KspaceTool(KspaceToolGUI):
             k_preview = self._symmetrized_preview(k_preview)
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k_preview)
-        self.sigInfoChanged.emit()
+        self._notify_data_changed()
         if self.bz_group.isChecked():
             self.update_bz()
 
