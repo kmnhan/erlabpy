@@ -105,6 +105,49 @@ def test_dtool_update_data_preserves_state(qtbot) -> None:
     assert win.result.shape == win.processed_data.shape
 
 
+def test_dtool_open_itool_uses_output_launcher(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    calls: list[tuple[xr.DataArray, str]] = []
+    return_widget = QtWidgets.QWidget()
+    qtbot.addWidget(return_widget)
+
+    def _launch_stub(data: xr.DataArray, *, slot_key: str) -> QtWidgets.QWidget:
+        calls.append((data.copy(deep=True), slot_key))
+        return return_widget
+
+    monkeypatch.setattr(win, "_launch_output_imagetool", _launch_stub)
+
+    win.open_itool()
+
+    assert calls
+    assert calls[0][1] == "dtool.result"
+    xr.testing.assert_identical(calls[0][0], win.result.T)
+    assert win._itool is return_widget
+
+
+def test_dtool_output_imagetool_provenance_transposes_result(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    xr.testing.assert_identical(win.output_imagetool_data("dtool.result"), win.result.T)
+
+    spec = win.output_imagetool_provenance("dtool.result", win.result.T)
+
+    assert spec is not None
+    code = spec.display_code()
+    assert code is not None
+    assert "era.image.diffn(" in code
+    assert "result = result.transpose()" in code
+
+
 def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
