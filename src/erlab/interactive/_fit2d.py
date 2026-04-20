@@ -1659,6 +1659,7 @@ class Fit2DTool(Fit1DTool):
                     code=self._build_full_copy_code(input_name=input_name),
                 ),
                 start_label="Start from current ftool input data",
+                active_name="result",
             )
         )
 
@@ -1739,6 +1740,7 @@ class Fit2DTool(Fit1DTool):
                     ),
                 ),
                 start_label="Start from current fit-tool input data",
+                active_name="parameter_stderr" if stderr else "parameter_values",
             )
         )
 

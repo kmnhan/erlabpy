@@ -2906,6 +2906,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                     code=self._build_copy_code(input_name=input_name),
                 ),
                 start_label="Start from current ftool input data",
+                active_name="result",
             )
         )
 

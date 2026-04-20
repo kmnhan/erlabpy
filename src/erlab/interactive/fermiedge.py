@@ -1055,6 +1055,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 code=code,
             ),
             start_label="Start from current goldtool input data",
+            active_name="corrected" if include_corrected else "modelresult",
         )
 
     def current_provenance_spec(
@@ -1888,6 +1889,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
                     code=self._build_copy_code(input_name=input_name),
                 ),
                 start_label="Start from current restool input data",
+                active_name="result",
             )
         )
 

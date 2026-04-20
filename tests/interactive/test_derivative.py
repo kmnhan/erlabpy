@@ -145,7 +145,7 @@ def test_dtool_output_imagetool_provenance_transposes_result(qtbot) -> None:
     code = spec.display_code()
     assert code is not None
     assert "era.image.diffn(" in code
-    assert "result = result.transpose()" in code
+    assert code.endswith(".transpose()")
 
 
 def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> None:
@@ -570,9 +570,7 @@ def test_tool_copy_code_includes_parent_lineage_for_standalone_imagetool(qtbot) 
 
     code = tool.copy_code()
 
-    assert "derived = data" in code
-    assert "derived = derived.isel(x=slice(0, 2))" in code
-    assert "result = derived.mean()" in code
+    assert code == "result = data.isel(x=slice(0, 2)).mean()"
 
 
 def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
@@ -630,22 +628,19 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
     tool.set_input_provenance_parent_fetcher(lambda: parent_provenance["spec"])
 
     initial_code = tool.copy_code()
-    assert "derived = derived.isel(x=slice(0, 2))" in initial_code
-    assert "derived = derived.isel(y=slice(0, 2))" not in initial_code
+    assert initial_code == "result = data.isel(x=slice(0, 2)).mean()"
 
     parent_provenance["spec"] = erlab.interactive.imagetool.provenance.selection(
         erlab.interactive.imagetool.provenance.IselOperation(kwargs={"y": slice(0, 2)})
     )
     stale_code = tool.copy_code()
-    assert "derived = derived.isel(x=slice(0, 2))" in stale_code
-    assert "derived = derived.isel(y=slice(0, 2))" not in stale_code
+    assert stale_code == "result = data.isel(x=slice(0, 2)).mean()"
 
     tool._data = data.isel(y=slice(0, 2))
     tool.finalize_source_refresh()
 
     refreshed_code = tool.copy_code()
-    assert "derived = derived.isel(x=slice(0, 2))" not in refreshed_code
-    assert "derived = derived.isel(y=slice(0, 2))" in refreshed_code
+    assert refreshed_code == "result = data.isel(y=slice(0, 2)).mean()"
 
 
 def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -> None:
@@ -697,10 +692,9 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
     tool.set_input_provenance_parent_fetcher(lambda: None)
 
     early_code = tool.copy_code()
-    assert "derived = derived.squeeze()" in early_code
+    assert early_code == "result = data.squeeze().mean()"
 
     tool.set_source_parent_fetcher(lambda: data)
 
     refreshed_code = tool.copy_code()
-    assert "derived = derived.squeeze()" not in refreshed_code
-    assert refreshed_code == "derived = data\nresult = derived.mean()"
+    assert refreshed_code == "result = data.mean()"

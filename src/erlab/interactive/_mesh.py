@@ -464,6 +464,18 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             copy=False,
         )
 
+    def _build_output_copy_code(
+        self, slot_key: Hashable, *, input_name: str | None = None
+    ) -> str:
+        index = {
+            "meshtool.corrected_output": 0,
+            "meshtool.mesh_output": 1,
+        }.get(slot_key)
+        if index is None:
+            return ""
+        output_expr = self._build_copy_code(input_name=input_name).split(" = ", 1)[1]
+        return f"derived = {output_expr}[{index}]"
+
     def current_provenance_spec(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
@@ -492,10 +504,15 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         return self._compose_with_input_provenance(
             lambda input_name: erlab.interactive.imagetool.provenance.script(
                 erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                    label="Compute mesh-tool outputs",
-                    code=self._build_copy_code(input_name=input_name),
+                    label=(
+                        "Compute mesh-corrected output"
+                        if slot_key == "meshtool.corrected_output"
+                        else "Compute extracted mesh output"
+                    ),
+                    code=self._build_output_copy_code(slot_key, input_name=input_name),
                 ),
                 start_label="Start from current meshtool input data",
+                active_name="derived",
             )
         )
 

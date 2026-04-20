@@ -1069,6 +1069,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         return erlab.interactive.imagetool.provenance.script(
             start_label=f"Start from watched variable {varname!r}",
             seed_code=f"derived = {varname}",
+            active_name="derived",
         )
 
     @property

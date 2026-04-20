@@ -113,8 +113,11 @@ def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> N
 
     dumped = spec.model_dump(mode="json")
     assert dumped["schema_version"] == 1
+    assert "active_name" in dumped
+    assert dumped["active_name"] is None
     assert dumped["operations"][0]["op"] == "average"
     assert dumped["operations"][0]["dims"] == {prov._TUPLE_MARKER: ["x"]}
+    assert spec.to_replay_spec().active_name == "derived"
 
     with pytest.raises(ValidationError, match="Unknown provenance operation"):
         prov.parse_tool_provenance_spec(
@@ -127,6 +130,18 @@ def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> N
                         "kwargs": {"dims": ["x"]},
                     }
                 ],
+            }
+        )
+
+    with pytest.raises(
+        ValidationError, match="script provenance specs must define `active_name`"
+    ):
+        prov.parse_tool_provenance_spec(
+            {
+                "kind": "script",
+                "start_label": "Start from current parent ImageTool data",
+                "seed_code": "derived = data",
+                "operations": [],
             }
         )
 
@@ -345,8 +360,7 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
     assert squeezed_entries[0].label == "Start from current parent ImageTool data"
     assert squeezed_entries[-1].label == "squeeze()"
     squeezed_code = typing.cast("str", squeezed_spec.display_code(parent_data=data))
-    assert "derived = derived.isel(z=slice(0, 1" in squeezed_code
-    assert squeezed_code.endswith("derived = derived.squeeze()")
+    assert squeezed_code == "derived = data.isel(z=slice(0, 1)).squeeze()"
 
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
@@ -378,11 +392,7 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
         "transpose(('x', 'y', 'z'))",
         "squeeze()",
     ]
-    assert spec.display_code() == (
-        "derived = data\n"
-        "derived = derived.transpose(*('x', 'y', 'z'))\n"
-        "derived = derived.squeeze()"
-    )
+    assert spec.display_code() == "derived = data.transpose(*('x', 'y', 'z')).squeeze()"
 
 
 def test_tool_provenance_rejects_unsupported_hashables() -> None:
@@ -612,9 +622,7 @@ def test_tool_provenance_compose_display_provenance_streamlines_live_source() ->
     )
 
     assert composed is not None
-    assert composed.display_code() == (
-        "derived = my_data_name\nderived = derived.isel(z=0)"
-    )
+    assert composed.display_code() == "derived = my_data_name.isel(z=0)"
 
 
 def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> None:
@@ -632,7 +640,7 @@ def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> 
     )
 
     assert composed is not None
-    assert composed.display_code() == "derived = data\nderived = derived.isel(z=0)"
+    assert composed.display_code() == "derived = data.isel(z=0)"
 
 
 def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None:

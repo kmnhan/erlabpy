@@ -1322,7 +1322,6 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     assert [op.op for op in selection_spec.operations] == [
         "sort_coord_order",
         "transpose",
-        "squeeze",
     ]
 
     win.slicer_area.open_in_meshtool()
@@ -1355,7 +1354,7 @@ def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
     derivative_code = derivative.copy_code()
     assert ".isel()" not in derivative_code
     assert "sort_coord_order" not in derivative_code
-    assert "derived = derived.transpose(" in derivative_code
+    assert ".transpose(" in derivative_code
 
     squeezed_child = dtool(
         _TEST_DATA["2D"].copy(),
@@ -1395,7 +1394,7 @@ def test_child_tool_copy_code_keeps_meaningful_parent_selection(qtbot) -> None:
     assert "sort_coord_order" not in code
     assert ".isel()" not in code
     assert ".qsel(" in code
-    assert "derived = derived.transpose(" in code
+    assert ".transpose(" in code
 
     child.close()
     win.close()
@@ -2978,7 +2977,7 @@ def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
     copied = pyperclip.paste()
     assert copied.startswith("era.transform.symmetrize_nfold(")
     assert "fold=6" in copied
-    assert "axes=('y', 'x')" in copied
+    assert 'axes=("y", "x")' in copied
     assert 'center={"y": 1.0, "x": -1.0}' in copied
     assert "reshape=False" in copied
     assert "order=3" in copied

@@ -972,18 +972,20 @@ class ItoolPlotItem(pg.PlotItem):
 
                 return sel_code
 
+            isel_kw: dict[Hashable, slice | int] = {}
             if sel_code.startswith(".isel"):
                 isel_kw = self.array_slicer.isel_args(
                     cursor, self.display_axis, int_if_one=True
                 )
-                isel_kw = isel_kw | isel_indexers
 
+            if isel_kw or isel_indexers:
+                isel_kw = isel_kw | isel_indexers
                 sel_code = erlab.interactive.utils.format_call_kwargs(isel_kw)
                 sel_code = f".isel({sel_code})"
 
-                if sel_indexers:
-                    crop_code = erlab.interactive.utils.format_call_kwargs(sel_indexers)
-                    sel_code = sel_code + f".sel({crop_code})"
+            if sel_indexers:
+                crop_code = erlab.interactive.utils.format_call_kwargs(sel_indexers)
+                sel_code = sel_code + f".sel({crop_code})"
 
         return sel_code
 

@@ -558,6 +558,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         return erlab.interactive.imagetool.provenance.script(
             *operations,
             start_label="Start from current dtool input data",
+            active_name="result",
         )
 
     def current_provenance_spec(

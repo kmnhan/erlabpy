@@ -93,6 +93,7 @@ __all__ = [
     "to_replay_provenance_spec",
 ]
 
+import ast
 import keyword
 import typing
 from collections.abc import Callable, Hashable, Mapping, Sequence
@@ -246,6 +247,92 @@ def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -
         return f"derived = derived.{method}()"
     args = erlab.interactive.utils.format_call_kwargs(dict(kwargs))
     return f"derived = derived.{method}({args})"
+
+
+def _validate_active_name(value: typing.Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("active_name must be a string or None")
+    if not value.isidentifier() or keyword.iskeyword(value):
+        raise ValueError("active_name must be a valid Python identifier")
+    return value
+
+
+def _statement_load_count(stmt: ast.stmt, target: str) -> int:
+    count = 0
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            count += node.id == target
+    return count
+
+
+class _NameReplacer(ast.NodeTransformer):
+    def __init__(self, target: str, replacement: ast.expr) -> None:
+        self._target = target
+        self._replacement = replacement
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if isinstance(node.ctx, ast.Load) and node.id == self._target:
+            return _clone_expr(self._replacement)
+        return node
+
+
+def _clone_expr(node: ast.expr) -> ast.expr:
+    return typing.cast("ast.expr", ast.parse(ast.unparse(node), mode="eval").body)
+
+
+def _clone_stmt(node: ast.stmt) -> ast.stmt:
+    return typing.cast("ast.stmt", ast.parse(ast.unparse(node), mode="exec").body[0])
+
+
+def _simplify_display_code(code: str) -> str:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+
+    body = module.body
+    if not body:
+        return code
+
+    for stmt in body:
+        if not isinstance(stmt, (ast.Assign, ast.Expr)):
+            return code
+        if isinstance(stmt, ast.Assign) and (
+            len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name)
+        ):
+            return code
+
+    changed = False
+    while True:
+        for idx, stmt in enumerate(body[:-1]):
+            if not isinstance(stmt, ast.Assign):
+                continue
+
+            target = stmt.targets[0].id
+            next_stmt = body[idx + 1]
+            if _statement_load_count(next_stmt, target) != 1:
+                continue
+            if any(_statement_load_count(later, target) for later in body[idx + 2 :]):
+                continue
+
+            new_stmt = typing.cast(
+                "ast.stmt",
+                _NameReplacer(target, _clone_expr(stmt.value)).visit(
+                    _clone_stmt(next_stmt)
+                ),
+            )
+            body[idx + 1] = ast.fix_missing_locations(new_stmt)
+            del body[idx]
+            changed = True
+            break
+        else:
+            break
+
+    if not changed:
+        return code
+    return ast.unparse(ast.fix_missing_locations(module))
 
 
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
@@ -548,6 +635,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     kind: typing.Literal["full_data", "selection", "script"]
     start_label: str | None = None
     seed_code: str | None = None
+    active_name: str | None = None
     operations: tuple[pydantic.SerializeAsAny[ToolProvenanceOperation], ...] = ()
 
     model_config = pydantic.ConfigDict(
@@ -555,6 +643,22 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         arbitrary_types_allowed=True,
         extra="forbid",
     )
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _validate_serialized_shape(cls, value: typing.Any) -> typing.Any:
+        if (
+            isinstance(value, Mapping)
+            and value.get("kind") == "script"
+            and "active_name" not in value
+        ):
+            raise ValueError("script provenance specs must define `active_name`")
+        return value
+
+    @pydantic.field_validator("active_name", mode="before")
+    @classmethod
+    def _validate_active_name_field(cls, value: typing.Any) -> str | None:
+        return _validate_active_name(value)
 
     @pydantic.field_validator("operations", mode="before")
     @classmethod
@@ -576,9 +680,14 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             if self.start_label is None:
                 raise ValueError("script provenance specs must define `start_label`")
             return self
-        if self.start_label is not None or self.seed_code is not None:
+        if (
+            self.start_label is not None
+            or self.seed_code is not None
+            or self.active_name is not None
+        ):
             raise ValueError(
-                "Only script provenance specs may define `start_label` or `seed_code`"
+                "Only script provenance specs may define `start_label`, `seed_code`, "
+                "or `active_name`"
             )
         return self
 
@@ -706,6 +815,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             kind="script",
             start_label=entries[0].label,
             seed_code=_DEFAULT_REPLAY_SEED_CODE,
+            active_name="derived",
             operations=tuple(
                 ScriptCodeOperation(
                     label=entry.label,
@@ -808,7 +918,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return None
         if not step_codes and prefix == _DEFAULT_REPLAY_SEED_CODE:
             return None
-        return "\n".join(part for part in (prefix, *step_codes) if part)
+        return _simplify_display_code(
+            "\n".join(part for part in (prefix, *step_codes) if part)
+        )
 
 
 def parse_tool_provenance_spec(
@@ -883,6 +995,7 @@ def compose_display_provenance(
         kind="script",
         start_label=entries[0].label,
         seed_code=_DEFAULT_REPLAY_SEED_CODE,
+        active_name="derived",
         operations=tuple(
             ScriptCodeOperation(
                 label=entry.label,
@@ -928,6 +1041,18 @@ def direct_replay_input_name(
     return name
 
 
+def replay_input_name(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+) -> str | None:
+    spec = to_replay_provenance_spec(value)
+    if spec is None:
+        return None
+    direct_name = direct_replay_input_name(spec)
+    if direct_name is not None:
+        return direct_name
+    return spec.active_name or "derived"
+
+
 def compose_full_provenance(
     parent: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
     local: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
@@ -960,6 +1085,7 @@ def compose_full_provenance(
         kind="script",
         start_label=typing.cast("str", parent_spec.start_label),
         seed_code=parent_spec.seed_code,
+        active_name=local_spec.active_name or parent_spec.active_name,
         operations=(*parent_spec.operations, *local_operations),
     )
 
@@ -996,12 +1122,14 @@ def script(
     *operations: ToolProvenanceOperation,
     start_label: str,
     seed_code: str | None = None,
+    active_name: str | None = None,
 ) -> ToolProvenanceSpec:
     """Build a replay-only provenance spec for generated code."""
     return ToolProvenanceSpec(
         kind="script",
         start_label=start_label,
         seed_code=seed_code,
+        active_name=active_name,
     ).append_operations(*operations)
 
 

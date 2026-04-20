@@ -912,7 +912,7 @@ def test_manager_goldtool_output_itool_nests_under_tool(
             "Fit and correct current data with the polynomial edge model",
         ]
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
-        assert "modelresult = era.gold.poly(" in copied
+        assert "era.gold.poly(" in copied
         assert "corrected = era.gold.correct_with_edge(" in copied
 
 
@@ -966,7 +966,7 @@ def test_manager_dtool_output_itool_nests_under_tool(
         ]
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
         assert "era.image.diffn(" in copied
-        assert "result = result.transpose()" in copied
+        assert copied.endswith(".transpose()")
 
 
 def test_manager_ktool_output_itool_nests_under_tool(
@@ -1281,10 +1281,10 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         assert any(line.startswith("transpose(") for line in derivation)
 
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
-        assert copied.startswith("derived = data\n")
+        assert copied.startswith("result = era.image.diffn(")
         assert ".isel()" not in copied
         assert "sort_coord_order" not in copied
-        assert "derived = derived.transpose(" in copied
+        assert ".transpose(" in copied
 
 
 def test_manager_archived_output_child_reopens_existing_slot(
@@ -1516,6 +1516,73 @@ def test_manager_meshtool_output_itools_use_distinct_slots(
         xr.testing.assert_identical(fetch(mesh_uid), child._mesh)
 
 
+@pytest.mark.parametrize(
+    ("slot_key", "expected_index"),
+    [
+        ("meshtool.corrected_output", ")[0]"),
+        ("meshtool.mesh_output", ")[1]"),
+    ],
+)
+def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_slot(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    slot_key: str,
+    expected_index: str,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.open_in_meshtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = typing.cast("typing.Any", manager.get_childtool(child_uid))
+        child._corrected = child.tool_data.copy(deep=True) + 1
+        child._mesh = child.tool_data.copy(deep=True) - 1
+
+        if slot_key == "meshtool.corrected_output":
+            child._corr_itool()
+        else:
+            child._mesh_itool()
+
+        child_node = manager._child_node(child_uid)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+
+        output_uid = child_node._childtool_indices[0]
+        output_data = fetch(output_uid)
+        nested_tool = itool(
+            output_data.qsel(alpha=1, alpha_width=1), manager=False, execute=False
+        )
+        nested_uid = manager.add_imagetool_child(
+            nested_tool,
+            output_uid,
+            show=False,
+            source_spec=prov.selection(
+                prov.QSelOperation(kwargs={"alpha": 1, "alpha_width": 1})
+            ),
+            source_auto_update=True,
+        )
+
+        copied = copy_full_code_for_uid(monkeypatch, manager, nested_uid)
+        assert "corrected, mesh =" not in copied
+        assert "era.mesh.remove_mesh(" in copied
+        assert expected_index in copied
+        assert ".qsel(alpha=1, alpha_width=1)" in copied
+
+
 def test_manager_fit2d_output_itools_use_distinct_slots(
     qtbot,
     monkeypatch,
@@ -1578,8 +1645,8 @@ def test_manager_fit2d_output_itools_use_distinct_slots(
         )
         values_code = copy_full_code_for_uid(monkeypatch, manager, values_uid)
         stderr_code = copy_full_code_for_uid(monkeypatch, manager, stderr_uid)
-        assert "result.modelfit_coefficients.sel(param=" in values_code
-        assert "result.modelfit_stderr.sel(param=" in stderr_code
+        assert ".modelfit_coefficients.sel(param=" in values_code
+        assert ".modelfit_stderr.sel(param=" in stderr_code
 
 
 def test_manager_same_slot_output_itool_update_existing(
@@ -1839,7 +1906,7 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         assert menu is not None
         action_map(menu)["Copy Full Code"].trigger()
         assert copied
-        assert copied[-1].startswith("derived = data")
+        assert copied[-1].startswith("result = era.image.diffn(")
 
 
 def test_manager_promote_action_enablement_and_menus(
@@ -2160,11 +2227,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         )
 
         action_map(menu)["Copy Full Code"].trigger()
-        assert copied[-1] == (
-            "derived = data\n"
-            'derived = derived.qsel.average("x")\n'
-            'derived = derived.qsel.average("y")'
-        )
+        assert copied[-1] == "derived = data.qsel.average('x').qsel.average('y')"
         assert ".rename(" not in copied[-1]
 
         manual = xr.DataArray(
@@ -2444,7 +2507,7 @@ def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
 
         child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
-        assert copied.startswith("derived = my_data\n")
+        assert "my_data" in copied
         assert "derived = data" not in copied
 
 
@@ -2858,6 +2921,7 @@ def test_manager_workspace_roundtrip_goldtool_child(
         assert loaded_output_node.output_slot_key == "goldtool.corrected"
         assert loaded_output_node.source_spec is None
         assert loaded_output_node.provenance_spec is not None
+        assert loaded_output_node.provenance_spec.active_name == "corrected"
         xr.testing.assert_identical(fetch(output_uid), expected_corrected)
 
         monkeypatch.setattr(
@@ -2927,6 +2991,7 @@ def test_manager_workspace_roundtrip_dtool_child(
         assert loaded_output_node.output_slot_key == "dtool.result"
         assert loaded_output_node.source_spec is None
         assert loaded_output_node.provenance_spec is not None
+        assert loaded_output_node.provenance_spec.active_name == "result"
         xr.testing.assert_identical(fetch(output_uid), expected_result)
 
         monkeypatch.setattr(

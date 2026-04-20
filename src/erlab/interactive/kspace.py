@@ -1003,6 +1003,13 @@ class KspaceTool(KspaceToolGUI):
 
         return "\n".join(out_lines)
 
+    def _copy_output_name(self, input_name: str | None) -> str:
+        if input_name is None:
+            input_name = str(self._argnames["data"])
+            if not input_name.isidentifier():
+                input_name = "data"
+        return f"{input_name}_kconv"
+
     def current_provenance_spec(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
@@ -1013,6 +1020,7 @@ class KspaceTool(KspaceToolGUI):
                     code=self._build_copy_code(input_name=input_name),
                 ),
                 start_label="Start from current ktool input data",
+                active_name=self._copy_output_name(input_name),
             )
         )
 
@@ -1033,6 +1041,7 @@ class KspaceTool(KspaceToolGUI):
                     code=self._build_copy_code(input_name=input_name),
                 ),
                 start_label="Start from current ktool input data",
+                active_name=self._copy_output_name(input_name),
             )
         )
 

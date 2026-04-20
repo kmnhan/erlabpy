@@ -2771,9 +2771,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             if input_provenance is not None
             else None
         )
-        local_spec = builder(
-            direct_input_name or ("derived" if input_provenance is not None else None)
+        input_name = erlab.interactive.imagetool.provenance.replay_input_name(
+            input_provenance
         )
+        local_spec = builder(input_name if input_provenance is not None else None)
         if direct_input_name is not None:
             assert input_provenance is not None
             if local_spec is None:
