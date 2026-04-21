@@ -2113,6 +2113,133 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         xr.testing.assert_identical(fetch(child_uid), child_before)
 
 
+def test_manager_replace_current_sets_provenance_on_provenance_free_root(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        root = manager._imagetool_wrappers[0]
+        root_tool = manager.get_imagetool(0)
+        assert root.provenance_spec is None
+
+        def _replace_average(dialog) -> None:
+            dialog.dim_checks["x"].setChecked(True)
+            set_transform_launch_mode(dialog, "replace")
+
+        accept_dialog(root_tool.mnb._average, pre_call=_replace_average)
+
+        assert root.source_spec is None
+        assert root.provenance_spec is not None
+        assert root.provenance_spec.derivation_code() == (
+            'derived = data\nderived = derived.qsel.average("x")'
+        )
+        xr.testing.assert_identical(
+            root_tool.slicer_area._data.rename(None),
+            data.qsel.average("x").rename(None),
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info()
+        derivation = metadata_derivation_texts(manager)
+        assert derivation == [
+            "Start from current parent ImageTool data",
+            'Average(dims=("x",))',
+        ]
+
+
+def test_manager_nonuniform_transform_children_refresh_from_public_data(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(20).reshape((5, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        assert parent_tool.slicer_area.data.dims == ("x_idx", "y")
+
+        def _nest_coarsen(dialog) -> None:
+            assert "x_idx" not in dialog.dim_checks
+            dialog.dim_checks["x"].setChecked(True)
+            dialog.window_spins["x"].setValue(2)
+            dialog.boundary_combo.setCurrentText("trim")
+            dialog.side_combo.setCurrentText("left")
+            dialog.coord_func_combo.setCurrentText("mean")
+            dialog.reducer_combo.setCurrentText("mean")
+            set_transform_launch_mode(dialog, "nest")
+
+        accept_dialog(parent_tool.mnb._coarsen, pre_call=_nest_coarsen)
+
+        parent = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_tool = manager.get_imagetool(child_uid)
+
+        assert child_node.source_spec is not None
+        assert child_node.source_spec.kind == "public_data"
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            data.coarsen(x=2, boundary="trim", side="left", coord_func="mean")
+            .mean()
+            .rename(None),
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        derivation = metadata_derivation_texts(manager)
+        assert derivation[0] == "Start from current parent ImageTool data"
+        assert len(derivation) == 2
+        assert "Coarsen" in derivation[1]
+
+        updated = data.copy(deep=True)
+        updated.data = np.asarray(updated.data) * 2
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node._update_from_parent_source() is True
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            updated.coarsen(x=2, boundary="trim", side="left", coord_func="mean")
+            .mean()
+            .rename(None),
+        )
+
+
 def test_manager_transform_launch_modes_refresh_nested_and_detached(
     qtbot,
     monkeypatch,

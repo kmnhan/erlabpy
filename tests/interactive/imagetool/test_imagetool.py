@@ -2614,6 +2614,8 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     )
 
     assert pyperclip.paste() == '.qsel.average("x")'
+    assert win.provenance_spec is not None
+    assert win.provenance_spec.display_code() == "derived = data.qsel.average('x')"
     win.close()
 
 
@@ -2796,6 +2798,11 @@ def test_itool_coarsen_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         win.slicer_area._data.rename(None),
         data.coarsen(x=2, boundary="trim", side="left", coord_func="mean").mean(),
     )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert "coarsen(x=2" in display_code
+    assert "x_idx" not in display_code
 
     win.close()
 
@@ -2899,6 +2906,11 @@ def test_itool_thin_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         win.slicer_area._data.rename(None),
         data.thin(x=2),
     )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert "thin(x=2)" in display_code
+    assert "x_idx" not in display_code
 
     win.close()
 
@@ -3246,6 +3258,11 @@ def test_itool_swap_dims_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None), data.swap_dims({"x": "temperature"})
     )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert "swap_dims(x='temperature')" in display_code
+    assert "x_idx" not in display_code
 
     win.close()
 

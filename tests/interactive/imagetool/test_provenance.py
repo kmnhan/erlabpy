@@ -248,6 +248,40 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     xr.testing.assert_identical(assigned, expected_assigned)
 
 
+def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    public = xr.DataArray(
+        np.arange(20).reshape((5, 4)),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
+        name="data",
+    )
+    uniform = erlab.interactive.imagetool.slicer.make_dims_uniform(public)
+
+    spec = prov.public_data(
+        prov.CoarsenOperation(
+            dim={"x": 2},
+            boundary="trim",
+            side="left",
+            coord_func="mean",
+            reducer="mean",
+        )
+    )
+    reparsed = prov.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+
+    assert reparsed is not None
+    assert reparsed.kind == "public_data"
+    xr.testing.assert_identical(
+        reparsed.apply(uniform),
+        public.coarsen(x=2, boundary="trim", side="left", coord_func="mean").mean(),
+    )
+
+    display_code = reparsed.display_code(parent_data=uniform)
+    assert display_code is not None
+    assert "coarsen(x=2" in display_code
+    assert "x_idx" not in display_code
+
+
 def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     prov = erlab.interactive.imagetool.provenance
     data = _hashable_data()

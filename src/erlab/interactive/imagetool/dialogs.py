@@ -275,9 +275,12 @@ class DataTransformDialog(_DataManipulationDialog):
     def source_spec(
         self, new_name: str
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
-        return erlab.interactive.imagetool.provenance.full_data(
-            *self.source_operations()
-        ).append_final_rename(new_name)
+        builder = (
+            erlab.interactive.imagetool.provenance.public_data
+            if self.apply_on_nonuniform_data
+            else erlab.interactive.imagetool.provenance.full_data
+        )
+        return builder(*self.source_operations()).append_final_rename(new_name)
 
     def _detached_provenance_spec(
         self,
@@ -316,10 +319,15 @@ class DataTransformDialog(_DataManipulationDialog):
             *self.source_operations()
         ).append_final_rename(new_name)
 
-    def _rewrite_target_provenance(self, target: int | str, new_name: str) -> None:
+    def _rewrite_target_provenance(
+        self,
+        target: int | str,
+        new_name: str,
+        fallback_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+    ) -> bool:
         manager, _ = self._manager_target()
         if manager is None:
-            return
+            return False
         node = manager._node_for_target(target)
         if node.source_spec is not None:
             node.set_source_binding(
@@ -327,11 +335,25 @@ class DataTransformDialog(_DataManipulationDialog):
                 auto_update=node.source_auto_update,
                 state=node.source_state,
             )
-            return
+            return True
         if node.provenance_spec is not None:
             node.set_detached_provenance(
                 self._compose_replace_source_spec(node.provenance_spec, new_name)
             )
+            return True
+        if fallback_spec is not None:
+            node.set_detached_provenance(fallback_spec)
+            return True
+        return False
+
+    def _set_current_tool_provenance(
+        self,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None,
+    ) -> None:
+        parent = self.slicer_area.parent()
+        if parent is not None and hasattr(parent, "set_provenance_spec"):
+            typing.cast("typing.Any", parent).set_provenance_spec(provenance_spec)
 
     def _apply_source_transform(self, data: xr.DataArray) -> xr.DataArray:
         operation = self.source_transform_operation()
@@ -431,7 +453,11 @@ class DataTransformDialog(_DataManipulationDialog):
                     and target is not None
                     and manager._is_imagetool_target(target)
                 ):
-                    self._rewrite_target_provenance(target, new_name)
+                    self._rewrite_target_provenance(
+                        target, new_name, detached_provenance_spec
+                    )
+                else:
+                    self._set_current_tool_provenance(detached_provenance_spec)
                 self.slicer_area.replace_source_data(processed, emit_edited=True)
             else:
                 itool_kw = self._itool_kwargs(processed)

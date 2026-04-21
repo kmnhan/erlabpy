@@ -8,6 +8,9 @@ ImageTool window. A :class:`ToolProvenanceSpec` answers two questions:
    - Use :func:`full_data` when the derived tool should begin from the parent's current
      array exactly as shown to the caller.
 
+   - Use :func:`public_data` when the derived tool should begin from the parent's
+     public data model, including restoration of non-uniform dimensions.
+
    - Use :func:`selection` when the derived tool should begin from the public ImageTool
      selection model, including restoration of non-uniform dimensions.
 
@@ -50,8 +53,8 @@ Adding a new provenance-carrying operation follows the same pattern every time:
 
 Parsing of serialized payloads happens only through :func:`parse_tool_provenance_spec`
 and :func:`parse_tool_provenance_operation`. Runtime authoring code should create specs
-with :func:`full_data` and :func:`selection`, then instantiate concrete operation models
-from this module directly.
+with :func:`full_data`, :func:`public_data`, or :func:`selection`, then instantiate
+concrete operation models from this module directly.
 """
 
 from __future__ import annotations
@@ -87,6 +90,7 @@ __all__ = [
     "full_data",
     "mark_promoted_1d_source",
     "parse_tool_provenance_spec",
+    "public_data",
     "require_live_source_spec",
     "script",
     "selection",
@@ -629,13 +633,13 @@ def parse_tool_provenance_operation(
 class ToolProvenanceSpec(pydantic.BaseModel):
     """Immutable provenance recipe for rebuilding tool data from a parent ImageTool.
 
-    Author new specs with :func:`full_data` or :func:`selection` plus concrete operation
-    instances from this module. Deserialize saved payloads with
-    :func:`parse_tool_provenance_spec`.
+    Author new specs with :func:`full_data`, :func:`public_data`, or
+    :func:`selection` plus concrete operation instances from this module. Deserialize
+    saved payloads with :func:`parse_tool_provenance_spec`.
     """
 
     schema_version: typing.Literal[1] = 1
-    kind: typing.Literal["full_data", "selection", "script"]
+    kind: typing.Literal["full_data", "public_data", "selection", "script"]
     start_label: str | None = None
     seed_code: str | None = None
     active_name: str | None = None
@@ -696,7 +700,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     @property
     def is_live_source(self) -> bool:
-        return self.kind in {"full_data", "selection"} and all(
+        return self.kind in {"full_data", "public_data", "selection"} and all(
             operation.live_applicable for operation in self.operations
         )
 
@@ -728,7 +732,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         return self.drop_trailing_rename().append_operations(RenameOperation(name=name))
 
     def _start_entry(self) -> DerivationEntry:
-        if self.kind == "full_data":
+        if self.kind in {"full_data", "public_data"}:
             return DerivationEntry(
                 "Start from current parent ImageTool data",
                 None,
@@ -969,7 +973,11 @@ def compose_display_provenance(
     source = require_live_source_spec(source_spec)
     if source is None:
         return parent_spec
-    if parent_spec is not None and source.kind == "full_data" and not source.operations:
+    if (
+        parent_spec is not None
+        and source.kind in {"full_data", "public_data"}
+        and not source.operations
+    ):
         return parent_spec
     if (
         direct_replay_input_name(parent_spec) is not None
@@ -1122,6 +1130,13 @@ def full_data(
 ) -> ToolProvenanceSpec:
     """Build a spec that starts from the parent's full current data."""
     return ToolProvenanceSpec(kind="full_data").append_operations(*operations)
+
+
+def public_data(
+    *operations: ToolProvenanceOperation,
+) -> ToolProvenanceSpec:
+    """Build a spec that starts from the parent's restored public data."""
+    return ToolProvenanceSpec(kind="public_data").append_operations(*operations)
 
 
 def selection(
