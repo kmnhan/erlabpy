@@ -24,6 +24,7 @@ from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
@@ -2557,6 +2558,47 @@ def test_manager_watched_root_ftool_copy_code_1d_omits_duplicate_seed_and_noop_s
         assert "result = my_data.xlm.modelfit(" in copied[-1]
 
 
+def test_manager_selecting_unfit_ftool_child_does_not_warn(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_recv([test_data], {}, watched_var=("my_data", "kernel-0"))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_ftool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            timeout=5000,
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_tool = manager.get_childtool(child_uid)
+        assert isinstance(child_tool, Fit2DTool)
+
+        warnings: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            child_tool,
+            "_show_warning",
+            lambda title, text: warnings.append((title, text)),
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        assert "modelfit" not in (manager._metadata_full_code or "")
+        assert not warnings
+
+
 def test_manager_watched_1d_root_ftool_copy_code_omits_synthetic_squeeze(
     qtbot,
     monkeypatch,
@@ -2976,6 +3018,120 @@ def test_manager_workspace_roundtrip_dtool_child(
         )
         loaded_child.open_itool()
         assert loaded_child_node._childtool_indices == [output_uid]
+
+
+def test_manager_workspace_roundtrip_fit1d_child(
+    qtbot,
+    monkeypatch,
+    exp_decay_model,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        t = np.linspace(0.0, 4.0, 25)
+        data = xr.DataArray(
+            3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+        )
+        params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+        child = erlab.interactive.ftool(
+            data, model=exp_decay_model, params=params, execute=False
+        )
+        assert isinstance(child, Fit1DTool)
+        child_uid = manager.add_childtool(child, 0, show=False)
+
+        assert child._run_fit()
+        qtbot.wait_until(lambda: child._last_result_ds is not None, timeout=10000)
+
+        tree = manager._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        loaded_child = manager.get_childtool(child_uid)
+        assert isinstance(loaded_child, Fit1DTool)
+        assert loaded_child._last_result_ds is not None
+        assert loaded_child._fit_is_current
+        assert loaded_child.save_button.isEnabled()
+        assert loaded_child.copy_button.isEnabled()
+
+        warnings: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            loaded_child,
+            "_show_warning",
+            lambda title, text: warnings.append((title, text)),
+        )
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
+        assert "modelfit" in copied
+        assert not warnings
+
+
+def test_manager_workspace_roundtrip_fit2d_child(
+    qtbot,
+    monkeypatch,
+    exp_decay_model,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
+        child.timeout_spin.setValue(30.0)
+        child.nfev_spin.setValue(0)
+        child.y_index_spin.setValue(child.y_min_spin.value())
+        child._run_fit_2d("up")
+        qtbot.wait_until(
+            lambda: all(ds is not None for ds in child._result_ds_full),
+            timeout=10000,
+        )
+
+        tree = manager._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        loaded_child = manager.get_childtool(child_uid)
+        assert isinstance(loaded_child, Fit2DTool)
+        assert all(ds is not None for ds in loaded_child._result_ds_full)
+        assert loaded_child._fit_is_current
+        assert loaded_child.copy_full_button.isEnabled()
+        assert loaded_child.save_full_button.isEnabled()
+
+        warnings: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            loaded_child,
+            "_show_warning",
+            lambda title, text: warnings.append((title, text)),
+        )
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
+        assert "modelfit" in copied
+        assert not warnings
 
 
 def test_manager_workspace_roundtrip_recursive_nested_imagetools(

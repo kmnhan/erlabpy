@@ -16,6 +16,7 @@ import typing
 import numpy as np
 import pydantic
 import pyqtgraph as pg
+import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive.utils
@@ -25,7 +26,6 @@ if typing.TYPE_CHECKING:
 
     import lmfit
     import varname
-    import xarray as xr
 else:
     import lazy_loader as _lazy
 
@@ -731,6 +731,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             assign="result",
         )
     )
+    _PERSISTED_FIT_RESULT_VAR: typing.ClassVar[str] = "__ftool_fit_result__"
+    _PERSISTED_FIT_RESULT_DIM: typing.ClassVar[str] = "__ftool_fit_result_bytes__"
+    _PERSISTED_FIT_CURRENT_ATTR: typing.ClassVar[str] = "__ftool_fit_is_current__"
 
     class StateModel(pydantic.BaseModel):
         data_name: str
@@ -2556,6 +2559,31 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         )
         self._last_result_ds = fit_ds.copy()
         self._set_fit_stats(restore.result)
+
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        if self._last_result_ds is None:
+            return ds
+        ds = ds.copy()
+        ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
+            erlab.interactive.utils._serialize_fit_dataset_blob(self._last_result_ds),
+            dims=(self._PERSISTED_FIT_RESULT_DIM,),
+        )
+        ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(self._fit_is_current)
+        return ds
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        if self._PERSISTED_FIT_RESULT_VAR not in ds:
+            return
+        self._last_result_ds = erlab.interactive.utils._deserialize_fit_dataset_blob(
+            ds[self._PERSISTED_FIT_RESULT_VAR].values
+        )
+        result = self._last_result_ds.modelfit_results.compute().item()
+        self._set_fit_stats(result)
+        self._update_fit_curve()
+        if bool(ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)):
+            self._mark_fit_fresh()
+        else:
+            self._mark_fit_stale()
 
     def _fit_running(self) -> bool:
         # Consider any live thread object as running to avoid startup/teardown races.

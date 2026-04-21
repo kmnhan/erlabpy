@@ -142,6 +142,66 @@ def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
     assert isinstance(win_restored._model, type(exp_decay_model))
 
 
+def test_fit1d_persistence_roundtrip_preserves_fit_result(
+    qtbot, exp_decay_model
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    assert win._run_fit()
+    qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit1DTool)
+
+    assert win_restored._last_result_ds is not None
+    assert win_restored._fit_is_current
+    assert win_restored.save_button.isEnabled()
+    assert win_restored.copy_button.isEnabled()
+
+
+def test_fit1d_persistence_roundtrip_preserves_stale_fit(
+    qtbot, exp_decay_model
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    assert win._run_fit()
+    qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
+
+    index = win.param_model.index(0, 1)
+    current_value = float(win.param_model.data(index, QtCore.Qt.ItemDataRole.EditRole))
+    assert win.param_model.setData(
+        index, f"{current_value + 0.5}", QtCore.Qt.ItemDataRole.EditRole
+    )
+    assert win._last_result_ds is not None
+    assert win._fit_is_current is False
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit1DTool)
+
+    assert win_restored._last_result_ds is not None
+    assert win_restored._fit_is_current is False
+    assert not win_restored.save_button.isEnabled()
+    assert not win_restored.copy_button.isEnabled()
+
+
 def test_fit1d_update_data_preserves_state_and_refit(
     qtbot, exp_decay_model, monkeypatch
 ):

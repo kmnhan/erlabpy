@@ -1195,6 +1195,41 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
     return None
 
 
+def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
+    from xarray_lmfit._io import _dumps_result, _patch_encode4js
+
+    serialized = ds.copy()
+    with _patch_encode4js():
+        for var in serialized.data_vars:
+            if str(var).endswith("modelfit_results"):
+                serialized[var] = xr.apply_ufunc(
+                    _dumps_result,
+                    serialized[var],
+                    vectorize=True,
+                    output_dtypes=[str],
+                )
+    blob = serialized.to_netcdf(path=None, engine="h5netcdf", invalid_netcdf=True)
+    return np.frombuffer(blob, dtype=np.uint8).copy()
+
+
+def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
+    from xarray_lmfit._io import _loads_result
+
+    restored = xr.load_dataset(
+        memoryview(np.asarray(blob, dtype=np.uint8).tobytes()),
+        engine="h5netcdf",
+    )
+    for var in restored.data_vars:
+        if str(var).endswith("modelfit_results"):
+            restored[var] = xr.apply_ufunc(
+                lambda s: _loads_result(s, None),
+                restored[var],
+                vectorize=True,
+                output_dtypes=[object],
+            )
+    return restored
+
+
 def make_help_actions(parent: QtCore.QObject) -> tuple[QtGui.QAction, ...]:
     """Create shared help actions for ImageTool and ImageTool Manager."""
     release_notes_action = QtWidgets.QAction("Release Notes", parent)
@@ -3786,6 +3821,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
         return has_data and has_status
 
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        """Append optional save-only payload that should not participate in history."""
+        return ds
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        """Restore optional payload saved by `_append_persistence_payload()`."""
+        return
+
     def to_dataset(self) -> xr.Dataset:
         """Get the :class:`xarray.Dataset` representation of the tool window.
 
@@ -3795,9 +3838,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             A dataset containing the data and attributes needed to restore the tool.
 
         """
-        return self.tool_data.to_dataset(
+        ds = self.tool_data.to_dataset(
             name="<saved-tool-data>", promote_attrs=False
         ).assign_attrs(self._saved_tool_attrs)
+        return self._append_persistence_payload(ds)
 
     @classmethod
     def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
@@ -3882,6 +3926,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                     cls_obj.__qualname__,
                     exc_info=True,
                 )
+        tool._restore_persistence_payload(ds)
         tool.setWindowTitle(ds.attrs["tool_title"])
         tool.setGeometry(*ds.attrs["tool_rect"])
         return tool

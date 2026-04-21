@@ -20,7 +20,8 @@ Most user-facing ERLabPy GUIs should inherit from
 In practice, `ToolWindow` enables several things:
 
 - save/restore support through `to_dataset()`, `from_dataset()`, `to_file()`, and
-  `from_file()`, using `tool_data`, `StateModel`, and `tool_status`;
+  `from_file()`, using `tool_data`, `StateModel`, `tool_status`, and optional
+  save-only payload hooks for persisted data that should stay out of undo/redo history;
 - integration with the ImageTool manager, including tool naming, preview images, rich
   info text, and manager refresh notifications through `sigInfoChanged`;
 - binding to ImageTool source data, including persisted source metadata, stale or
@@ -42,9 +43,12 @@ Use `ToolWindow` when your tool should do any of the following:
 
 - The constructor accepts `data` as its single positional input. Additional options can
   be keyword arguments.
-- The nested `StateModel` contains everything needed to restore the UI state.
+- The nested `StateModel` contains the lightweight UI state that participates in
+  undo/redo history.
 - `tool_data` returns the main `DataArray`.
 - `tool_status` serializes and reapplies the live widget state.
+- If the tool needs extra persisted state that should not participate in history,
+  override `_append_persistence_payload()` and `_restore_persistence_payload()`.
 
 As a practical authoring checklist:
 
@@ -55,6 +59,8 @@ As a practical authoring checklist:
   the examples below implement it even in the minimal case.
 - Optional, but strongly recommended for user-facing tools:
   `tool_name` (the base class default is just `"tool"`).
+- Optional for tools with expensive or bulky save-only state:
+  `_append_persistence_payload()` and `_restore_persistence_payload()`.
 - Optional manager / provenance integration:
   `validate_update_data()`, `_cancel_background_work()`, `preview_imageitem`,
   `info_text`, `COPY_PROVENANCE`, `IMAGE_TOOL_OUTPUTS`, and
@@ -70,7 +76,9 @@ When you add a new tool, think in terms of user-visible capabilities first and t
 up the corresponding `ToolWindow` surface:
 
 - Save and restore the tool window:
-  required; implement `StateModel`, `tool_status`, and `tool_data`.
+  required; implement `StateModel`, `tool_status`, and `tool_data`. If save/load also
+  needs expensive derived results, keep them out of `tool_status` and use
+  `_append_persistence_payload()` / `_restore_persistence_payload()` instead.
 - Show rich metadata in the ImageTool manager:
   optional; implement `info_text`, `preview_imageitem`, and emit `sigInfoChanged` when
   either changes.
@@ -435,7 +443,9 @@ Some implementation details matter:
   `ToolWindow` wraps the actual content widget so it can show source-update status above
   it.
 - Keep `StateModel` focused on UI state. The main data already comes from `tool_data`
-  and is stored separately when the tool is archived.
+  and is stored separately when the tool is archived. If you need to persist expensive
+  derived results, use the explicit persistence hooks instead of `tool_status` so
+  ordinary history snapshots stay cheap.
 - Make the `tool_status` getter and setter fully describe and restore the current UI
   state. A restored tool should look the same as one configured interactively.
 - Keep provenance and output declarations declarative. Prefer method names in
@@ -668,7 +678,9 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
 
 - construction and basic interaction;
 - `tool_status` serialization and restoration;
-- `to_dataset()` / `from_dataset()` if the tool is savable;
+- `to_dataset()` / `from_dataset()` if the tool is savable, including any
+  `_append_persistence_payload()` / `_restore_persistence_payload()` roundtrip when the
+  tool uses them;
 - `validate_update_data()` and `update_data()` branches, including stale or unavailable
   source cases when relevant;
 - dialog accept and cancel paths for any new dialogs; and

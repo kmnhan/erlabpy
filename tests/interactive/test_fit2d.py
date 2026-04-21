@@ -628,6 +628,102 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> No
     assert win_restored.save_full_button.isEnabled()
 
 
+def test_fit2d_persistence_roundtrip_preserves_fit_results(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
+    data = xr.DataArray(data, dims=("y", "t"), coords={"y": y, "t": t}, name="decay2d")
+
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win.nfev_spin.setValue(0)
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
+    )
+    assert not warnings
+    assert not errors
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit2DTool)
+
+    restored_warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win_restored,
+        "_show_warning",
+        lambda title, text: restored_warnings.append((title, text)),
+    )
+
+    assert win_restored._fit_is_current
+    assert all(ds is not None for ds in win_restored._result_ds_full)
+    assert win_restored.copy_full_button.isEnabled()
+    assert win_restored.save_full_button.isEnabled()
+    assert win_restored.current_provenance_spec() is not None
+    assert not restored_warnings
+
+
+def test_fit2d_persistence_roundtrip_preserves_sparse_results(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
+    data = xr.DataArray(data, dims=("y", "t"), coords={"y": y, "t": t}, name="decay2d")
+
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win.nfev_spin.setValue(0)
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
+    )
+    assert not warnings
+    assert not errors
+
+    win._result_ds_full[1] = None
+    win.y_index_spin.setValue(0)
+    win._mark_fit_stale()
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit2DTool)
+
+    restored_warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win_restored,
+        "_show_warning",
+        lambda title, text: restored_warnings.append((title, text)),
+    )
+
+    assert [ds is not None for ds in win_restored._result_ds_full] == [
+        True,
+        False,
+        True,
+    ]
+    assert win_restored._fit_is_current is False
+    assert not win_restored.copy_full_button.isEnabled()
+    assert not win_restored.save_full_button.isEnabled()
+    assert win_restored.current_provenance_spec() is None
+    assert not restored_warnings
+
+
 def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)

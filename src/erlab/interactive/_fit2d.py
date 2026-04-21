@@ -224,6 +224,10 @@ class Fit2DTool(Fit1DTool):
             assign="result",
         )
     )
+    _PERSISTED_FIT_RESULT_VAR: typing.ClassVar[str] = "__ftool_fit_results__"
+    _PERSISTED_FIT_RESULT_DIM: typing.ClassVar[str] = "__ftool_fit_results_bytes__"
+    _PERSISTED_FIT_INDEX_DIM: typing.ClassVar[str] = "__ftool_fit_result_index__"
+    _PERSISTED_FIT_CURRENT_ATTR: typing.ClassVar[str] = "__ftool_fit_is_current__"
 
     class Output(enum.StrEnum):
         PARAMETER_VALUES = "fit2d.param_plot.values"
@@ -1162,6 +1166,51 @@ class Fit2DTool(Fit1DTool):
         self._result_ds_full = [slice_ds for _, slice_ds in slice_states]
         self._fit_is_current = True
 
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        saved_results = [
+            result_ds.expand_dims({self._PERSISTED_FIT_INDEX_DIM: [idx]})
+            for idx, result_ds in enumerate(self._result_ds_full)
+            if result_ds is not None
+        ]
+        if not saved_results:
+            return ds
+        sparse = xr.concat(
+            saved_results,
+            dim=self._PERSISTED_FIT_INDEX_DIM,
+            data_vars="all",
+            coords="all",
+            compat="override",
+            join="override",
+            combine_attrs="override",
+        )
+        ds = ds.copy()
+        ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
+            erlab.interactive.utils._serialize_fit_dataset_blob(sparse),
+            dims=(self._PERSISTED_FIT_RESULT_DIM,),
+        )
+        ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(self._fit_is_current)
+        return ds
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        if self._PERSISTED_FIT_RESULT_VAR not in ds:
+            return
+        sparse = erlab.interactive.utils._deserialize_fit_dataset_blob(
+            ds[self._PERSISTED_FIT_RESULT_VAR].values
+        )
+        y_size = int(self._data_full.sizes[self._y_dim_name])
+        self._result_ds_full = [None] * y_size
+        for i, index in enumerate(sparse[self._PERSISTED_FIT_INDEX_DIM].values):
+            idx = int(index)
+            if 0 <= idx < y_size:
+                self._result_ds_full[idx] = sparse.isel(
+                    {self._PERSISTED_FIT_INDEX_DIM: i}, drop=True
+                ).copy()
+        self._refresh_contents_from_index(
+            mark_fit_stale=not bool(
+                ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)
+            )
+        )
+
     @QtCore.Slot()
     def _y_minmax_changed(self) -> None:
         y_vals = self._y_values()
@@ -1733,6 +1782,19 @@ class Fit2DTool(Fit1DTool):
     ) -> str | None:
         prelude = self._build_full_copy_prelude(input_name=input_name, warn=False)
         return prelude or None
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        # Manager metadata and other passive provenance consumers should not trigger
+        # interactive warnings for incomplete fit ranges.
+        return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
+
+    @QtCore.Slot()
+    def copy_code(self) -> str:
+        return self._copy_provenance_code(
+            self._resolve_script_provenance(self.COPY_PROVENANCE)
+        )
 
     @QtCore.Slot()
     def _copy_code_full(self) -> str:
