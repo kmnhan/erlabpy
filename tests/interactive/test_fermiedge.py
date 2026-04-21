@@ -101,7 +101,10 @@ def test_goldtool(
 
     def check_generated_code(w: GoldTool) -> None:
         namespace = {"era": erlab.analysis, "gold": gold}
-        exec(w.gen_code("poly"), {"__builtins__": {}}, namespace)  # noqa: S102
+
+        exec(  # noqa: S102
+            w.current_provenance_spec().display_code(), {"__builtins__": {}}, namespace
+        )
 
         xr.testing.assert_identical(
             w.result.drop_vars("modelfit_results"),
@@ -476,7 +479,7 @@ def test_restool(qtbot) -> None:
 
     def check_generated_code(w: ResolutionTool) -> None:
         namespace = {"era": erlab.analysis, "gold": gold, "data": gold, "result": None}
-        code = "result = " + w.copy_code().replace("quick_resolution", "quick_fit")
+        code = w.copy_code().replace("quick_resolution", "quick_fit")
         exec(code, {"__builtins__": {"slice": slice}}, namespace)  # noqa: S102
 
         xr.testing.assert_identical(

@@ -1,4 +1,5 @@
 import tempfile
+import typing
 from types import SimpleNamespace
 
 import numpy as np
@@ -116,8 +117,8 @@ def test_dtool_open_itool_uses_output_launcher(qtbot, monkeypatch) -> None:
     return_widget = QtWidgets.QWidget()
     qtbot.addWidget(return_widget)
 
-    def _launch_stub(data: xr.DataArray, *, slot_key: str) -> QtWidgets.QWidget:
-        calls.append((data.copy(deep=True), slot_key))
+    def _launch_stub(data: xr.DataArray, *, output_id: str) -> QtWidgets.QWidget:
+        calls.append((data.copy(deep=True), output_id))
         return return_widget
 
     monkeypatch.setattr(win, "_launch_output_imagetool", _launch_stub)
@@ -125,7 +126,7 @@ def test_dtool_open_itool_uses_output_launcher(qtbot, monkeypatch) -> None:
     win.open_itool()
 
     assert calls
-    assert calls[0][1] == "dtool.result"
+    assert calls[0][1] == DerivativeTool.Output.RESULT.value
     xr.testing.assert_identical(calls[0][0], win.result.T)
     assert win._itool is return_widget
 
@@ -137,9 +138,12 @@ def test_dtool_output_imagetool_provenance_transposes_result(qtbot) -> None:
     win: DerivativeTool = dtool(data, execute=False)
     qtbot.addWidget(win)
 
-    xr.testing.assert_identical(win.output_imagetool_data("dtool.result"), win.result.T)
+    xr.testing.assert_identical(
+        win.output_imagetool_data(DerivativeTool.Output.RESULT),
+        win.result.T,
+    )
 
-    spec = win.output_imagetool_provenance("dtool.result", win.result.T)
+    spec = win.output_imagetool_provenance(DerivativeTool.Output.RESULT, win.result.T)
 
     assert spec is not None
     code = spec.display_code()
@@ -373,6 +377,14 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
         StateModel = _DummyState
         tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
 
         def __init__(self, data: xr.DataArray) -> None:
             super().__init__()
@@ -402,6 +414,15 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
             if self.fail_update:
                 raise RuntimeError("update failed")
             self._data = new_data
+
+        def _dummy_expression(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
 
     data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
     updated = xr.DataArray(
@@ -518,6 +539,14 @@ def test_tool_copy_code_includes_parent_lineage_for_standalone_imagetool(qtbot) 
     class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
         StateModel = _DummyState
         tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
 
         def __init__(self, data: xr.DataArray) -> None:
             super().__init__()
@@ -535,18 +564,14 @@ def test_tool_copy_code_includes_parent_lineage_for_standalone_imagetool(qtbot) 
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def current_provenance_spec(
+        def _dummy_expression(
             self,
-        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-            return self._compose_with_input_provenance(
-                lambda input_name: erlab.interactive.imagetool.provenance.script(
-                    erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                        label="Compute dummy output",
-                        code=f"result = {(input_name or 'data')}.mean()",
-                    ),
-                    start_label="Start from current dummy-tool input data",
-                )
-            )
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
 
         def update_data(self, new_data: xr.DataArray) -> None:
             self._data = new_data
@@ -580,6 +605,14 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
     class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
         StateModel = _DummyState
         tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
 
         def __init__(self, data: xr.DataArray) -> None:
             super().__init__()
@@ -597,18 +630,14 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def current_provenance_spec(
+        def _dummy_expression(
             self,
-        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-            return self._compose_with_input_provenance(
-                lambda input_name: erlab.interactive.imagetool.provenance.script(
-                    erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                        label="Compute dummy output",
-                        code=f"result = {(input_name or 'data')}.mean()",
-                    ),
-                    start_label="Start from current dummy-tool input data",
-                )
-            )
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
 
         def update_data(self, new_data: xr.DataArray) -> None:
             self._data = new_data
@@ -650,6 +679,14 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
     class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
         StateModel = _DummyState
         tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
 
         def __init__(self, data: xr.DataArray) -> None:
             super().__init__()
@@ -667,18 +704,14 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
         def tool_data(self) -> xr.DataArray:
             return self._data
 
-        def current_provenance_spec(
+        def _dummy_expression(
             self,
-        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-            return self._compose_with_input_provenance(
-                lambda input_name: erlab.interactive.imagetool.provenance.script(
-                    erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                        label="Compute dummy output",
-                        code=f"result = {(input_name or 'data')}.mean()",
-                    ),
-                    start_label="Start from current dummy-tool input data",
-                )
-            )
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
 
         def update_data(self, new_data: xr.DataArray) -> None:
             self._data = new_data

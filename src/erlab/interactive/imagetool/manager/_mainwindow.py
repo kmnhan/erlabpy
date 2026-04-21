@@ -13,7 +13,6 @@ import threading
 import traceback
 import typing
 import uuid
-from collections.abc import Hashable
 from dataclasses import dataclass
 
 import numpy as np
@@ -57,29 +56,6 @@ _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
 
 class _WarningEmitter(QtCore.QObject):
     warning_received = QtCore.Signal(str, int, str, str)
-
-
-def _serialize_output_slot_key(slot_key: Hashable | None) -> str | None:
-    if slot_key is None:
-        return None
-    if isinstance(slot_key, str):
-        return slot_key
-    encoded = erlab.interactive.imagetool.provenance.encode_provenance_value(slot_key)
-    return json.dumps(encoded)
-
-
-def _parse_output_slot_key(value: object) -> Hashable | None:
-    if value is None or not isinstance(value, str):
-        return None
-    try:
-        decoded = erlab.interactive.imagetool.provenance.decode_provenance_value(
-            json.loads(value)
-        )
-    except Exception:
-        decoded = value
-    if not isinstance(decoded, Hashable):
-        return None
-    return decoded
 
 
 class _MetadataDerivationListWidget(QtWidgets.QListWidget):
@@ -2223,7 +2199,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     source_spec=node.source_spec,
                     source_auto_update=node.source_auto_update,
                     source_state=node.source_state,
-                    output_slot_key=node.output_slot_key,
+                    output_id=node.output_id,
                 )
         else:
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
@@ -2306,15 +2282,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
                 node.provenance_spec.model_dump(mode="json")
             )
-        output_slot_key = _serialize_output_slot_key(node.output_slot_key)
-        if kind == "imagetool" and output_slot_key is not None:
-            ds.attrs["manager_node_output_slot_key"] = output_slot_key
+        output_id = node.output_id
+        if kind == "imagetool" and output_id is not None:
+            ds.attrs["manager_node_output_id"] = output_id
         if kind == "imagetool" and node.source_spec is not None:
             ds.attrs["manager_node_live_source_spec"] = json.dumps(
                 node.source_spec.model_dump(mode="json")
             )
         if kind == "imagetool" and (
-            node.source_spec is not None or output_slot_key is not None
+            node.source_spec is not None or output_id is not None
         ):
             ds.attrs["manager_node_source_state"] = node.source_state
             ds.attrs["manager_node_source_auto_update"] = bool(node.source_auto_update)
@@ -2431,9 +2407,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 "uid": uid,
                 "provenance_spec": parsed_provenance_spec,
                 "source_spec": parsed_source_spec,
-                "output_slot_key": _parse_output_slot_key(
-                    ds.attrs.get("manager_node_output_slot_key")
-                ),
+                "output_id": ds.attrs.get("manager_node_output_id"),
                 "source_auto_update": bool(
                     ds.attrs.get("manager_node_source_auto_update", False)
                 ),
@@ -2445,7 +2419,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool = ImageTool.from_dataset(ds, _in_manager=True)
             target: int | str
             if parent_target is None:
-                kwargs.pop("output_slot_key", None)
+                kwargs.pop("output_id", None)
                 target = self.add_imagetool(
                     tool, show=ds.attrs.get("itool_visible", True), **kwargs
                 )
@@ -3251,7 +3225,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
-        output_slot_key: Hashable | None = None,
+        output_id: str | None = None,
     ) -> str:
         parent_node = self._node_for_target(parent)
         if provenance_spec is None and source_spec is not None:
@@ -3273,12 +3247,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_spec=source_spec,
             source_auto_update=source_auto_update,
             source_state=source_state,
-            output_slot_key=output_slot_key,
+            output_id=output_id,
         )
         self._register_child_node(node)
-        if output_slot_key is not None and parent_node.tool_window is not None:
+        if output_id is not None and parent_node.tool_window is not None:
             parent_node.tool_window._register_output_imagetool_target(
-                output_slot_key, node.uid
+                output_id, node.uid
             )
         self.tree_view.childtool_added(node.uid, parent)
         if show:

@@ -21,7 +21,6 @@ import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable
     from pathlib import Path
 
     from erlab.interactive.imagetool.manager import ImageToolManager
@@ -205,7 +204,7 @@ class _ManagedWindowNode(QtCore.QObject):
         | None = None,
         source_auto_update: bool = False,
         source_state: _source_state_type = "fresh",
-        output_slot_key: Hashable | None = None,
+        output_id: str | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
@@ -237,7 +236,7 @@ class _ManagedWindowNode(QtCore.QObject):
         ) = None
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
-        self._output_slot_key: Hashable | None = None
+        self._output_id: str | None = None
         self._suspend_descendant_signal_propagation: bool = False
 
         self.touch_timer = QtCore.QTimer(self)
@@ -252,9 +251,9 @@ class _ManagedWindowNode(QtCore.QObject):
                 auto_update=source_auto_update,
                 state=source_state,
             )
-        elif output_slot_key is not None:
+        elif output_id is not None:
             self.set_output_binding(
-                output_slot_key,
+                output_id,
                 provenance_spec=provenance_spec,
                 auto_update=source_auto_update,
                 state=source_state,
@@ -547,11 +546,11 @@ class _ManagedWindowNode(QtCore.QObject):
     def has_source_binding(self) -> bool:
         if self.tool_window is not None:
             return self.tool_window.has_source_binding
-        return self._source_spec is not None or self._output_slot_key is not None
+        return self._source_spec is not None or self._output_id is not None
 
     @property
-    def output_slot_key(self) -> Hashable | None:
-        return self._output_slot_key
+    def output_id(self) -> str | None:
+        return self._output_id
 
     def set_displayed_provenance(
         self,
@@ -627,7 +626,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 "parse_tool_provenance_spec() when deserializing saved payloads."
             )
         self._source_auto_update = bool(auto_update)
-        self._output_slot_key = None
+        self._output_id = None
         if provenance_spec is not None:
             self.set_displayed_provenance(provenance_spec)
         elif self._source_spec is not None and state == "fresh" and self.parent_uid:
@@ -643,16 +642,19 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def set_output_binding(
         self,
-        output_slot_key: Hashable,
+        output_id: str,
         *,
         provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None = None,
         auto_update: bool = False,
         state: _source_state_type = "fresh",
     ) -> None:
-        if output_slot_key is None:
-            raise ValueError("output_slot_key must not be None")
-        hash(output_slot_key)
+        if output_id is None:
+            raise ValueError("output_id must not be None")
+        if not isinstance(output_id, str):
+            raise TypeError("output_id must be a string")
+        if not output_id:
+            raise ValueError("output_id must not be empty")
         if provenance_spec is not None and not isinstance(
             provenance_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         ):
@@ -662,7 +664,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._source_spec = None
         self._source_auto_update = bool(auto_update)
-        self._output_slot_key = output_slot_key
+        self._output_id = output_id
         if provenance_spec is not None:
             self.set_displayed_provenance(provenance_spec)
         self._set_source_state(state)
@@ -681,7 +683,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         self._source_spec = None
         self._source_auto_update = False
-        self._output_slot_key = None
+        self._output_id = None
         self.set_displayed_provenance(provenance_spec)
         self._set_source_state("fresh")
 
@@ -694,18 +696,16 @@ class _ManagedWindowNode(QtCore.QObject):
         ]
         | None
     ):
-        if self._output_slot_key is None:
+        if self._output_id is None:
             return None
         parent = self.manager._parent_node(self)
         tool_window = parent.tool_window
         if tool_window is None:
             return None
-        data = tool_window.output_imagetool_data(self._output_slot_key)
+        data = tool_window.output_imagetool_data(self._output_id)
         if data is None:
             return None
-        return data, tool_window.output_imagetool_provenance(
-            self._output_slot_key, data
-        )
+        return data, tool_window.output_imagetool_provenance(self._output_id, data)
 
     @contextlib.contextmanager
     def _suspend_descendant_propagation(self) -> typing.Iterator[None]:
@@ -889,7 +889,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return updated
 
         try:
-            if self._output_slot_key is not None:
+            if self._output_id is not None:
                 payload = self._resolved_output_payload()
                 if payload is None:
                     self._set_source_state("unavailable")
@@ -927,7 +927,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.tool_window.handle_parent_source_replaced(parent_data)
             return self.tool_window.source_state == "fresh"
 
-        if self._output_slot_key is not None and not self._source_auto_update:
+        if self._output_id is not None and not self._source_auto_update:
             # Output-bound child ImageTools may be expensive to regenerate. When live
             # updates are disabled, defer the recomputation until the user explicitly
             # refreshes instead of resolving the payload just to mark the child stale.
@@ -935,7 +935,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return False
 
         try:
-            if self._output_slot_key is not None:
+            if self._output_id is not None:
                 payload = self._resolved_output_payload()
                 if payload is None:
                     self._set_source_state("unavailable")

@@ -58,8 +58,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `show_in_manager`, `load_in_manager`, or `workflow-bridge` for notebook and
   interactive-workflow questions.
 - Search `interactive-tool-authoring`, `ToolWindow`, `tool_status`,
-  `current_provenance_spec`, `output_imagetool_provenance`, `set_source_binding`,
-  or `update_data` for contributor questions about adding new interactive tools.
+  `COPY_PROVENANCE`, `ToolScriptProvenanceDefinition`, `expression_method`,
+  `assign`, `IMAGE_TOOL_OUTPUTS`, `set_source_binding`, or
+  `update_data` for contributor questions about adding new interactive tools.
 - Search `plot_array`, `plot_slices`, `qplot`, `fermiline`, `nice_colorbar`,
   or `plot_bz` for plotting questions.
 

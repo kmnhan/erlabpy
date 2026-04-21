@@ -877,6 +877,7 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
     params_1[center_name].stderr = 0.02
     params_2[center_name].stderr = None
     win._params_full = [params_0, params_1, params_2]
+    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
     win.param_plot_combo.setCurrentText(center_name)
 
     values = win._param_plot_dataarray(center_name)
@@ -896,9 +897,7 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         win,
         "_show_dataarray_in_itool",
-        lambda da, *, slot_key="fit2d.output": shown.append(
-            (da.copy(deep=True), slot_key)
-        ),
+        lambda da, *, output_id=None: shown.append((da.copy(deep=True), output_id)),
     )
 
     win.param_plot._save_parameter_values()
@@ -914,32 +913,85 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
         f"{center_name}_values",
         f"{center_name}_stderr",
     ]
-    assert [slot_key for _, slot_key in shown] == [
-        "fit2d.param_plot.values",
-        "fit2d.param_plot.stderr",
+    assert [output_id for _, output_id in shown] == [
+        Fit2DTool.Output.PARAMETER_VALUES,
+        Fit2DTool.Output.PARAMETER_STDERR,
     ]
 
 
-def test_fit2d_show_dataarray_in_itool_uses_output_launcher(qtbot, monkeypatch) -> None:
+def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    calls: list[tuple[xr.DataArray, str]] = []
+    center_name = "p0_center"
+    params_0 = win._params.copy()
+    params_1 = win._params.copy()
+    params_2 = win._params.copy()
+    params_0[center_name].set(value=0.1)
+    params_1[center_name].set(value=0.2)
+    params_2[center_name].set(value=0.3)
+    params_0[center_name].stderr = 0.01
+    params_1[center_name].stderr = 0.02
+    params_2[center_name].stderr = None
+    win._params_full = [params_0, params_1, params_2]
+    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    win.param_plot_combo.setCurrentText(center_name)
+
+    values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
+    stderr = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_STDERR)
+    assert values is not None
+    assert stderr is not None
+
+    values_spec = win.output_imagetool_provenance(
+        Fit2DTool.Output.PARAMETER_VALUES, values
+    )
+    stderr_spec = win.output_imagetool_provenance(
+        Fit2DTool.Output.PARAMETER_STDERR, stderr
+    )
+
+    assert values_spec is not None
+    assert stderr_spec is not None
+    assert values_spec.active_name == "parameter_values"
+    assert stderr_spec.active_name == "parameter_stderr"
+
+    values_code = values_spec.display_code()
+    stderr_code = stderr_spec.display_code()
+    assert values_code is not None
+    assert stderr_code is not None
+    assert ".modelfit_coefficients.sel(param='p0_center')" in values_code
+    assert ".modelfit_stderr.sel(param='p0_center')" in stderr_code
+    assert ".rename(" not in values_code
+    assert ".rename(" not in stderr_code
+
+
+def test_fit2d_show_dataarray_in_itool_uses_detached_launcher(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    calls: list[tuple[xr.DataArray, object]] = []
     return_widget = QtWidgets.QWidget()
     qtbot.addWidget(return_widget)
 
-    def _launch_stub(data: xr.DataArray, *, slot_key: str) -> QtWidgets.QWidget:
-        calls.append((data, slot_key))
+    def _launch_stub(
+        data: xr.DataArray,
+        *,
+        provenance_spec: object,
+    ) -> QtWidgets.QWidget:
+        calls.append((data, provenance_spec))
         return return_widget
 
-    monkeypatch.setattr(win, "_launch_output_imagetool", _launch_stub)
+    monkeypatch.setattr(win, "_launch_detached_output_imagetool", _launch_stub)
 
     da = xr.DataArray(np.arange(3.0), dims=("y",), coords={"y": np.arange(3)})
     win._show_dataarray_in_itool(da)
     assert calls
-    assert calls[0][1] == "fit2d.output"
+    assert calls[0][1] is None
     assert win._itool is return_widget
 
 
@@ -1129,7 +1181,9 @@ def test_fit2d_show_dataarray_in_itool_non_widget_return(qtbot, monkeypatch) -> 
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    monkeypatch.setattr(win, "_launch_output_imagetool", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        win, "_launch_detached_output_imagetool", lambda *args, **kwargs: None
+    )
     da = xr.DataArray(np.arange(3.0), dims=("y",), coords={"y": np.arange(3)})
     win._show_dataarray_in_itool(da)
     assert not hasattr(win, "_itool")

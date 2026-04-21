@@ -6,8 +6,10 @@ of pyqtgraph and Qt.
 
 from __future__ import annotations
 
+import ast
 import bisect
 import contextlib
+import enum
 import fnmatch
 import importlib
 import inspect
@@ -27,7 +29,8 @@ import typing
 import warnings
 import weakref
 import webbrowser
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
@@ -67,6 +70,8 @@ __all__ = [
     "ResizingLineEdit",
     "RotatableLine",
     "SingleLinePlainTextEdit",
+    "ToolImageOutputDefinition",
+    "ToolScriptProvenanceDefinition",
     "ToolWindow",
     "copy_to_clipboard",
     "file_loaders",
@@ -101,6 +106,15 @@ def _make_qt_object_is_valid_from_sip(
     return _qt_object_is_valid
 
 
+def _make_qt_object_is_valid_from_shiboken(
+    is_valid: Callable[[object], bool],
+) -> Callable[[object], bool]:
+    def _qt_object_is_valid(arg__1: object) -> bool:
+        return arg__1 is not None and is_valid(arg__1)
+
+    return _qt_object_is_valid
+
+
 _qt_object_is_valid: Callable[[object], bool] = _qt_object_is_valid_fallback
 
 
@@ -110,9 +124,7 @@ if PYSIDE6:
     except Exception:  # pragma: no cover - varies by Qt binding
         _qt_object_is_valid = _qt_object_is_valid_fallback
     else:
-
-        def _qt_object_is_valid(arg__1: object) -> bool:
-            return arg__1 is not None and _shiboken_is_valid(arg__1)
+        _qt_object_is_valid = _make_qt_object_is_valid_from_shiboken(_shiboken_is_valid)
 
 elif PYQT6:
     try:
@@ -1891,19 +1903,20 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
 
         owner_tool = self._owner_tool_window()
         if owner_tool is not None:
-            tracking_key = ("ximageitem", id(self))
+            manager, parent_uid = owner_tool._managed_output_imagetool_parent()
+            provenance_spec = None
+            if manager is None or parent_uid is None:
+                provenance_spec = owner_tool.detached_output_imagetool_provenance(
+                    da,
+                    source=self,
+                )
             tool: (
                 erlab.interactive.imagetool.ImageTool
                 | list[erlab.interactive.imagetool.ImageTool]
                 | None
             ) = owner_tool._launch_detached_output_imagetool(
                 da,
-                tracking_key=tracking_key,
-                provenance_spec=owner_tool.detached_output_imagetool_provenance(
-                    da,
-                    source=self,
-                    tracking_key=tracking_key,
-                ),
+                provenance_spec=provenance_spec,
             )
             if tool is not None:
                 self._itool = tool
@@ -2411,6 +2424,173 @@ class ROIControls(ParameterGroup):
 M = typing.TypeVar("M", bound="pydantic.BaseModel")
 
 
+def _validate_script_identifier(value: typing.Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    if not value.isidentifier() or keyword.iskeyword(value):
+        raise ValueError(f"{field_name} must be a valid Python identifier")
+    return value
+
+
+def _normalize_script_assign(
+    value: typing.Any, *, field_name: str
+) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return (_validate_script_identifier(value, field_name=field_name),)
+    if not isinstance(value, Sequence):
+        raise TypeError(f"{field_name} must be a string, a tuple of strings, or None")
+    assign = tuple(
+        _validate_script_identifier(item, field_name=field_name) for item in value
+    )
+    if not assign:
+        raise ValueError(f"{field_name} must not be empty")
+    return assign
+
+
+def _validate_script_expression(value: str, *, field_name: str) -> str:
+    expression = value.strip()
+    if not expression:
+        return ""
+    try:
+        ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"{field_name} must return a valid Python expression") from exc
+    return expression
+
+
+def _validate_script_prelude(value: str, *, field_name: str) -> str:
+    prelude = value.strip()
+    if not prelude:
+        return ""
+    try:
+        ast.parse(prelude, mode="exec")
+    except SyntaxError as exc:
+        raise ValueError(f"{field_name} must return valid Python statements") from exc
+    return prelude
+
+
+def _script_assignment_code(assign: tuple[str, ...], expression: str) -> str:
+    lhs = assign[0] if len(assign) == 1 else ", ".join(assign)
+    return f"{lhs} = {expression}"
+
+
+@dataclass(frozen=True)
+class ToolScriptProvenanceDefinition:
+    """Declarative script-style provenance for a ToolWindow action or output."""
+
+    start_label: str
+    label: str | None = None
+    label_method: str | None = None
+    expression_method: str | None = None
+    operations_method: str | None = None
+    assign: str | tuple[str, ...] | None = None
+    assign_method: str | None = None
+    prelude: str | None = None
+    prelude_method: str | None = None
+    active_name: str | None = None
+    active_name_method: str | None = None
+    seed_code: str | None = None
+    seed_code_method: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.expression_method is None) == (self.operations_method is None):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition must define exactly one of "
+                "`expression_method` or `operations_method`"
+            )
+        if (
+            self.expression_method is not None
+            and self.label is None
+            and self.label_method is None
+        ):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition with `expression_method` must define "
+                "`label` or `label_method`"
+            )
+        if (
+            self.expression_method is not None
+            and self.assign is None
+            and self.assign_method is None
+        ):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition with `expression_method` must define "
+                "`assign` or `assign_method`"
+            )
+        if self.operations_method is not None:
+            for field_name in (
+                "label",
+                "label_method",
+                "assign",
+                "assign_method",
+                "prelude",
+                "prelude_method",
+            ):
+                if getattr(self, field_name) is not None:
+                    raise ValueError(
+                        "ToolScriptProvenanceDefinition with `operations_method` "
+                        f"must not define `{field_name}`"
+                    )
+        for field_name, method_name in (
+            ("label", "label_method"),
+            ("assign", "assign_method"),
+            ("prelude", "prelude_method"),
+            ("active_name", "active_name_method"),
+            ("seed_code", "seed_code_method"),
+        ):
+            if (
+                getattr(self, field_name) is not None
+                and getattr(self, method_name) is not None
+            ):
+                raise ValueError(
+                    f"ToolScriptProvenanceDefinition must not define both "
+                    f"`{field_name}` and `{method_name}`"
+                )
+        assign = _normalize_script_assign(self.assign, field_name="assign")
+        if self.active_name is not None:
+            _validate_script_identifier(self.active_name, field_name="active_name")
+        if assign is not None and self.active_name is not None:
+            if len(assign) == 1 and self.active_name != assign[0]:
+                raise ValueError(
+                    "ToolScriptProvenanceDefinition single-target `assign` must "
+                    "match `active_name` when both are defined"
+                )
+            if len(assign) > 1 and self.active_name not in assign:
+                raise ValueError(
+                    "ToolScriptProvenanceDefinition tuple `assign` must include "
+                    "`active_name`"
+                )
+        if (
+            assign is not None
+            and len(assign) > 1
+            and self.active_name is None
+            and self.active_name_method is None
+        ):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition tuple `assign` must define "
+                "`active_name` or `active_name_method`"
+            )
+
+
+@dataclass(frozen=True)
+class ToolImageOutputDefinition:
+    """Definition for a manager-tracked ImageTool output exposed by a ToolWindow."""
+
+    data_method: str
+    provenance: ToolScriptProvenanceDefinition | None = None
+
+
+def _normalize_tool_output_id(output_id: str | enum.Enum) -> str:
+    if isinstance(output_id, enum.Enum):
+        output_id = output_id.value
+    if not isinstance(output_id, str):
+        raise TypeError("output_id must be a string or a str-valued enum member")
+    if not output_id:
+        raise ValueError("output_id must not be empty")
+    return output_id
+
+
 class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     """A window that can be saved and restored from a netcdf file.
 
@@ -2448,11 +2628,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
       before `update_data` mutates the tool state. Override
       `BACKGROUND_TASK_TIMEOUT_MS` as needed to change the default wait timeout.
 
-    For full compatibility with the ImageTool manager, the following optional attributes
-    or properties can also be set:
+    For full compatibility with the ImageTool manager, the following optional
+    attributes, properties, or hooks can also be set:
 
     - The class attribute `tool_name` should be set to a short string identifying the
       tool. For example, `"dtool"`, `"ktool"`, etc.
+
+    - The class attribute `IMAGE_TOOL_OUTPUTS` can be populated with named
+      manager-tracked outputs that should open as refreshable child ImageTools. Each
+      output id maps to a `ToolImageOutputDefinition`.
 
     - The property `preview_imageitem` can be implemented to return a
       :class:`pyqtgraph.ImageItem` which will be used to generate a preview image in the
@@ -2472,6 +2656,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     tool_name: str = "tool"
     BACKGROUND_TASK_TIMEOUT_MS: typing.ClassVar[int] = 5000
+    COPY_PROVENANCE: typing.ClassVar[ToolScriptProvenanceDefinition | None] = None
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar[
+        Mapping[str | enum.Enum, ToolImageOutputDefinition]
+    ] = {}
     __tool_display_name: str = ""
 
     StateModel: type[M]
@@ -2522,7 +2710,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
-        self._output_imagetool_targets: dict[Hashable, str | QtWidgets.QWidget] = {}
+        self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
 
         # Initialize a menu bar to correctly apply keyboard shortcuts on some platforms
         self.menuBar()
@@ -2624,45 +2812,68 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return None, None
         return manager, manager._node_uid_from_window(self)
 
-    def _clear_output_imagetool_slot(self, slot_key: Hashable) -> None:
-        self._output_imagetool_targets.pop(slot_key, None)
+    @classmethod
+    def _image_output_definitions(cls) -> dict[str, ToolImageOutputDefinition]:
+        definitions: dict[str, ToolImageOutputDefinition] = {}
+        for output_id, definition in cls.IMAGE_TOOL_OUTPUTS.items():
+            normalized_id = _normalize_tool_output_id(output_id)
+            if normalized_id in definitions:
+                raise ValueError(
+                    f"{cls.__name__} defines duplicate ImageTool output "
+                    f"{normalized_id!r}"
+                )
+            definitions[normalized_id] = definition
+        return definitions
 
-    def _clear_output_imagetool_slot_if_matches(
-        self, slot_key: Hashable, expected: str | QtWidgets.QWidget
+    def _image_output_definition(
+        self, output_id: str | enum.Enum
+    ) -> tuple[str, ToolImageOutputDefinition]:
+        normalized_id = _normalize_tool_output_id(output_id)
+        definition = self._image_output_definitions().get(normalized_id)
+        if definition is None:
+            raise ValueError(
+                f"{type(self).__name__} does not define ImageTool output "
+                f"{normalized_id!r}"
+            )
+        return normalized_id, definition
+
+    def _clear_output_imagetool_target(self, key: str) -> None:
+        self._output_imagetool_targets.pop(key, None)
+
+    def _clear_output_imagetool_target_if_matches(
+        self, key: str, expected: str | QtWidgets.QWidget
     ) -> None:
-        current = self._output_imagetool_targets.get(slot_key)
+        current = self._output_imagetool_targets.get(key)
         if isinstance(expected, str):
             if current == expected:
-                self._clear_output_imagetool_slot(slot_key)
+                self._clear_output_imagetool_target(key)
             return
         if current is expected:
-            self._clear_output_imagetool_slot(slot_key)
+            self._clear_output_imagetool_target(key)
 
     def _register_output_imagetool_target(
-        self, slot_key: Hashable, target: str | QtWidgets.QWidget
+        self, key: str, target: str | QtWidgets.QWidget
     ) -> None:
-        self._output_imagetool_targets[slot_key] = target
+        self._output_imagetool_targets[key] = target
         if isinstance(target, QtWidgets.QWidget):
             target.destroyed.connect(
-                lambda _=None, key=slot_key, widget=target: (
-                    self._clear_output_imagetool_slot_if_matches(key, widget)
+                lambda _=None, target_key=key, widget=target: (
+                    self._clear_output_imagetool_target_if_matches(target_key, widget)
                 )
             )
 
-    def _output_imagetool_target(
-        self, slot_key: Hashable
-    ) -> str | QtWidgets.QWidget | None:
-        target = self._output_imagetool_targets.get(slot_key)
+    def _output_imagetool_target(self, key: str) -> str | QtWidgets.QWidget | None:
+        target = self._output_imagetool_targets.get(key)
         if target is None:
             return None
 
         manager, parent_uid = self._managed_output_imagetool_parent()
         if manager is None or parent_uid is None:
             if isinstance(target, str):
-                self._clear_output_imagetool_slot(slot_key)
+                self._clear_output_imagetool_target(key)
                 return None
             if not qt_is_valid(target):
-                self._clear_output_imagetool_slot(slot_key)
+                self._clear_output_imagetool_target(key)
                 return None
             return target
 
@@ -2670,20 +2881,26 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             if qt_is_valid(target):
                 target.close()
                 target.deleteLater()
-            self._clear_output_imagetool_slot(slot_key)
+            self._clear_output_imagetool_target(key)
             return None
 
         node = manager._all_nodes.get(target)
         if node is None or not node.is_imagetool or node.parent_uid != parent_uid:
-            self._clear_output_imagetool_slot(slot_key)
+            self._clear_output_imagetool_target(key)
             return None
         return target
 
     def current_provenance_spec(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        """Return the replay provenance for the tool's copy-code action."""
-        return None
+        """Return replay provenance for the main copy-code action.
+
+        Set ``COPY_PROVENANCE`` for the common declarative script-based case. Override
+        this method only when the tool needs custom behavior beyond
+        ``ToolScriptProvenanceDefinition``. This describes the main tool action, not
+        any manager-tracked child ImageTool outputs declared in ``IMAGE_TOOL_OUTPUTS``.
+        """
+        return self._resolve_script_provenance(self.COPY_PROVENANCE)
 
     @property
     def input_provenance_spec(
@@ -2756,13 +2973,190 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return self._input_provenance_spec
         return self._snapshot_input_provenance()
 
-    def _compose_with_input_provenance(
+    def _call_script_provenance_method(
         self,
-        builder: Callable[
-            [str | None],
-            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
-        ],
+        method_name: str,
+        *,
+        input_name: str | None,
+        data: xr.DataArray | None,
+    ) -> typing.Any:
+        return getattr(self, method_name)(input_name=input_name, data=data)
+
+    def _normalize_script_provenance_operations(
+        self,
+        operations: erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        | Sequence[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]
+        | None,
+    ) -> tuple[erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...]:
+        if operations is None:
+            return ()
+        if isinstance(
+            operations,
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        ):
+            return (operations,)
+        return tuple(operations)
+
+    def _build_script_provenance(
+        self,
+        definition: ToolScriptProvenanceDefinition,
+        *,
+        input_name: str | None,
+        data: xr.DataArray | None,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        operations: tuple[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...
+        ]
+        if definition.operations_method is None:
+            label = definition.label
+            if definition.label_method is not None:
+                label = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.label_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+            expression = typing.cast(
+                "str | None",
+                self._call_script_provenance_method(
+                    typing.cast("str", definition.expression_method),
+                    input_name=input_name,
+                    data=data,
+                ),
+            )
+            raw_assign: typing.Any = definition.assign
+            if definition.assign_method is not None:
+                raw_assign = self._call_script_provenance_method(
+                    definition.assign_method,
+                    input_name=input_name,
+                    data=data,
+                )
+            if not label or not expression or raw_assign is None:
+                return None
+            expression = _validate_script_expression(
+                expression,
+                field_name=typing.cast("str", definition.expression_method),
+            )
+            if not expression:
+                return None
+            assign = _normalize_script_assign(raw_assign, field_name="assign")
+            if assign is None:
+                return None
+            prelude = definition.prelude
+            if definition.prelude_method is not None:
+                prelude = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.prelude_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+                if prelude is None:
+                    return None
+            if prelude is not None:
+                prelude = _validate_script_prelude(
+                    prelude,
+                    field_name=(
+                        definition.prelude_method
+                        if definition.prelude_method is not None
+                        else "prelude"
+                    ),
+                )
+            active_name = definition.active_name
+            if definition.active_name_method is not None:
+                active_name = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.active_name_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+            if active_name is None and len(assign) == 1:
+                active_name = assign[0]
+            elif active_name is not None:
+                active_name = _validate_script_identifier(
+                    active_name,
+                    field_name="active_name",
+                )
+                if len(assign) == 1 and active_name != assign[0]:
+                    raise ValueError(
+                        "single-target `assign` must match `active_name` when both "
+                        "are defined"
+                    )
+                if len(assign) > 1 and active_name not in assign:
+                    raise ValueError(
+                        "tuple `assign` must include `active_name` when both are "
+                        "defined"
+                    )
+            if active_name is None and len(assign) > 1:
+                raise ValueError("tuple `assign` must define `active_name`")
+            code = _script_assignment_code(assign, expression)
+            if prelude:
+                code = f"{prelude}\n{code}"
+            operations = (
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label=label,
+                    code=code,
+                ),
+            )
+        else:
+            operations = self._normalize_script_provenance_operations(
+                typing.cast(
+                    (
+                        "erlab.interactive.imagetool.provenance."
+                        "ToolProvenanceOperation | Sequence[erlab.interactive."
+                        "imagetool.provenance.ToolProvenanceOperation] | None"
+                    ),
+                    self._call_script_provenance_method(
+                        definition.operations_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+            )
+            if not operations:
+                return None
+            active_name = definition.active_name
+            if definition.active_name_method is not None:
+                active_name = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.active_name_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+
+        seed_code = definition.seed_code
+        if definition.seed_code_method is not None:
+            seed_code = typing.cast(
+                "str | None",
+                self._call_script_provenance_method(
+                    definition.seed_code_method,
+                    input_name=input_name,
+                    data=data,
+                ),
+            )
+
+        return erlab.interactive.imagetool.provenance.script(
+            *operations,
+            start_label=definition.start_label,
+            seed_code=seed_code,
+            active_name=active_name,
+        )
+
+    def _resolve_script_provenance(
+        self,
+        definition: ToolScriptProvenanceDefinition | None,
+        *,
+        data: xr.DataArray | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if definition is None:
+            return None
         input_provenance = self._effective_input_provenance_spec()
         direct_input_name = (
             erlab.interactive.imagetool.provenance.direct_replay_input_name(
@@ -2774,7 +3168,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         input_name = erlab.interactive.imagetool.provenance.replay_input_name(
             input_provenance
         )
-        local_spec = builder(input_name if input_provenance is not None else None)
+        local_spec = self._build_script_provenance(
+            definition,
+            input_name=input_name if input_provenance is not None else None,
+            data=data,
+        )
         if direct_input_name is not None:
             assert input_provenance is not None
             if local_spec is None:
@@ -2792,24 +3190,46 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             input_provenance, local_spec
         )
 
-    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
-        """Return the current DataArray for the named ImageTool output slot."""
-        return None
+    def output_imagetool_data(self, output_id: str | enum.Enum) -> xr.DataArray | None:
+        """Return the current data for a manager-tracked output declared in the class.
+
+        Subclasses should declare outputs in ``IMAGE_TOOL_OUTPUTS`` instead of
+        overriding this method directly. The base implementation resolves
+        ``output_id`` against that mapping and calls the declared data method.
+        """
+        _, definition = self._image_output_definition(output_id)
+        return typing.cast(
+            "Callable[[], xr.DataArray | None]",
+            getattr(self, definition.data_method),
+        )()
 
     def output_imagetool_provenance(
-        self, slot_key: Hashable, data: xr.DataArray
+        self, output_id: str | enum.Enum, data: xr.DataArray
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        """Return replay provenance for a named ImageTool output."""
-        return None
+        """Return replay provenance for a manager-tracked output declared in the class.
+
+        Subclasses should declare outputs in ``IMAGE_TOOL_OUTPUTS`` instead of
+        overriding this method directly. The base implementation resolves
+        ``output_id`` against that mapping and resolves the declared provenance
+        definition.
+        """
+        _, definition = self._image_output_definition(output_id)
+        return self._resolve_script_provenance(definition.provenance, data=data)
 
     def detached_output_imagetool_provenance(
         self,
         data: xr.DataArray,
         *,
         source: QtCore.QObject | None = None,
-        tracking_key: Hashable | None = None,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        """Return replay provenance for a detached, non-live ImageTool output."""
+        """Return replay provenance for an unbound ImageTool opened from this tool.
+
+        Override this only when an unbound ImageTool should display different replay
+        lineage from `current_provenance_spec()`. Managed launches discard this
+        lineage because they become independent top-level manager windows, so this
+        hook must stay free of blocking side effects such as warning dialogs.
+        """
+        del data, source
         return self.current_provenance_spec()
 
     def _copy_provenance_code(
@@ -2865,13 +3285,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self,
         data: xr.DataArray,
         *,
-        slot_key: Hashable,
+        output_id: str | enum.Enum,
     ) -> erlab.interactive.imagetool.ImageTool | None:
+        """Open or refresh a manager-tracked child ImageTool for a declared output."""
+        normalized_output_id, _ = self._image_output_definition(output_id)
         return self._open_output_imagetool(
             data,
-            tracking_key=slot_key,
-            output_slot_key=slot_key,
-            provenance_spec=self.output_imagetool_provenance(slot_key, data),
+            output_id=normalized_output_id,
+            provenance_spec=self.output_imagetool_provenance(
+                normalized_output_id, data
+            ),
             prompt_on_reuse=True,
         )
 
@@ -2879,15 +3302,18 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self,
         data: xr.DataArray,
         *,
-        tracking_key: Hashable,
         provenance_spec: (
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
         ) = None,
     ) -> erlab.interactive.imagetool.ImageTool | None:
+        """Open a new unbound ImageTool from this tool.
+
+        Managed tools create a fresh independent top-level manager window.
+        Standalone tools create a fresh standalone ImageTool window.
+        """
         return self._open_output_imagetool(
             data,
-            tracking_key=tracking_key,
-            output_slot_key=None,
+            output_id=None,
             provenance_spec=provenance_spec,
             prompt_on_reuse=False,
         )
@@ -2896,15 +3322,39 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self,
         data: xr.DataArray,
         *,
-        tracking_key: Hashable,
-        output_slot_key: Hashable | None,
+        output_id: str | None,
         provenance_spec: (
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
         ),
         prompt_on_reuse: bool,
     ) -> erlab.interactive.imagetool.ImageTool | None:
-        existing_target = self._output_imagetool_target(tracking_key)
         manager, parent_uid = self._managed_output_imagetool_parent()
+
+        if output_id is None:
+            tool = erlab.interactive.itool(data, manager=False, execute=False)
+            if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+                return None
+
+            if manager is None or parent_uid is None:
+                tool.set_provenance_spec(provenance_spec)
+                tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+                tool.show()
+                tool.raise_()
+                tool.activateWindow()
+                return tool
+
+            manager.add_imagetool(
+                tool,
+                show=True,
+                activate=True,
+                provenance_spec=None,
+                source_spec=None,
+                source_auto_update=False,
+                source_state="fresh",
+            )
+            return tool
+
+        existing_target = self._output_imagetool_target(output_id)
 
         if manager is None or parent_uid is None:
             if isinstance(
@@ -2924,7 +3374,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 return None
             tool.set_provenance_spec(provenance_spec)
             tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
-            self._register_output_imagetool_target(tracking_key, tool)
+            self._register_output_imagetool_target(output_id, tool)
             tool.show()
             tool.raise_()
             tool.activateWindow()
@@ -2932,32 +3382,21 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
         if isinstance(existing_target, str):
             node = manager._child_node(existing_target)
-            if output_slot_key is not None:
-                action = (
-                    self._prompt_existing_output_imagetool()
-                    if prompt_on_reuse
-                    else "update"
-                )
-                if action == "cancel":
-                    return None
-                if action == "update":
-                    if node.archived:
-                        node.unarchive()
-                    node.set_output_binding(
-                        output_slot_key,
-                        auto_update=node.source_auto_update,
-                        state="fresh",
-                    )
-                    node._replace_imagetool_data(
-                        data,
-                        provenance_spec,
-                        propagate_descendants=True,
-                    )
-                    manager.show_childtool(existing_target)
-                    return manager.get_imagetool(existing_target)
-            else:
+            action = (
+                self._prompt_existing_output_imagetool()
+                if prompt_on_reuse
+                else "update"
+            )
+            if action == "cancel":
+                return None
+            if action == "update":
                 if node.archived:
                     node.unarchive()
+                node.set_output_binding(
+                    output_id,
+                    auto_update=node.source_auto_update,
+                    state="fresh",
+                )
                 node._replace_imagetool_data(
                     data,
                     provenance_spec,
@@ -2978,12 +3417,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             activate=True,
             provenance_spec=provenance_spec,
             source_spec=None,
-            output_slot_key=output_slot_key,
+            output_id=output_id,
         )
-        self._register_output_imagetool_target(tracking_key, child_uid)
+        self._register_output_imagetool_target(output_id, child_uid)
         tool.destroyed.connect(
-            lambda _=None, key=tracking_key, uid=child_uid: (
-                self._clear_output_imagetool_slot_if_matches(key, uid)
+            lambda _=None, target_output_id=output_id, uid=child_uid: (
+                self._clear_output_imagetool_target_if_matches(target_output_id, uid)
             )
         )
         return tool

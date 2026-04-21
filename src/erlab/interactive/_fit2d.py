@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import enum
 import functools
 import os
 import typing
@@ -180,7 +181,10 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
     def _show_parameter_values(self) -> None:
         da = self._current_param_dataarray(stderr=False)
         if da is not None:
-            self._tool._show_dataarray_in_itool(da, slot_key="fit2d.param_plot.values")
+            self._tool._show_dataarray_in_itool(
+                da,
+                output_id=Fit2DTool.Output.PARAMETER_VALUES,
+            )
 
     @QtCore.Slot()
     def _save_parameter_stderr(self) -> None:
@@ -192,13 +196,61 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
     def _show_parameter_stderr(self) -> None:
         da = self._current_param_dataarray(stderr=True)
         if da is not None:
-            self._tool._show_dataarray_in_itool(da, slot_key="fit2d.param_plot.stderr")
+            self._tool._show_dataarray_in_itool(
+                da,
+                output_id=Fit2DTool.Output.PARAMETER_STDERR,
+            )
 
 
 class Fit2DTool(Fit1DTool):
     """Interactive tool for fitting 1D curves to images."""
 
     tool_name = "ftool_2d"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current ftool input data",
+            label="Fit current 2D data with the current model",
+            prelude_method="_checked_full_copy_prelude",
+            expression_method="_full_fit_expression",
+            assign="result",
+        )
+    )
+    _DETACHED_COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current ftool input data",
+            label="Fit current 2D data with the current model",
+            prelude_method="_detached_full_copy_prelude",
+            expression_method="_full_fit_expression",
+            assign="result",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        PARAMETER_VALUES = "fit2d.param_plot.values"
+        PARAMETER_STDERR = "fit2d.param_plot.stderr"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.PARAMETER_VALUES: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_parameter_values_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current fit-tool input data",
+                label="Extract current parameter values",
+                prelude_method="_parameter_output_prelude",
+                expression_method="_parameter_values_output_expression",
+                assign="parameter_values",
+            ),
+        ),
+        Output.PARAMETER_STDERR: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_parameter_stderr_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current fit-tool input data",
+                label="Extract current parameter standard errors",
+                prelude_method="_parameter_output_prelude",
+                expression_method="_parameter_stderr_output_expression",
+                assign="parameter_stderr",
+            ),
+        ),
+    }
 
     @property
     def tool_data(self) -> xr.DataArray:
@@ -914,9 +966,18 @@ class Fit2DTool(Fit1DTool):
         )
 
     def _show_dataarray_in_itool(
-        self, data: xr.DataArray, *, slot_key: Hashable = "fit2d.output"
+        self,
+        data: xr.DataArray,
+        *,
+        output_id: str | enum.Enum | None = None,
     ) -> None:
-        tool = self._launch_output_imagetool(data, slot_key=slot_key)
+        if output_id is None:
+            tool = self._launch_detached_output_imagetool(
+                data,
+                provenance_spec=None,
+            )
+        else:
+            tool = self._launch_output_imagetool(data, output_id=output_id)
         if tool is not None:
             self._itool = tool
 
@@ -1455,10 +1516,10 @@ class Fit2DTool(Fit1DTool):
             )
         erlab.interactive.utils.save_fit_ui(full_ds, parent=self)
 
-    def _build_full_copy_code(
+    def _build_full_copy_prelude(
         self, *, warn: bool = True, input_name: str | None = None
     ) -> str:
-        data_name, model_name, lines = self._make_model_code(
+        data_name, _model_name, lines = self._make_model_code(
             input_name or self._data_name_full
         )
 
@@ -1488,6 +1549,8 @@ class Fit2DTool(Fit1DTool):
                 f'{data_name} / {data_name}.mean("{self._coord_name}")'
             )
             data_name = f"{data_name}_norm"
+
+        lines.append(f"_fit_data = {data_name}")
 
         param_names: list[str] = []
         param_names_all: list[str] = []
@@ -1632,36 +1695,44 @@ class Fit2DTool(Fit1DTool):
             param_entries.append(f'"{name}": dict({", ".join(entry_kwargs_lines)}),')
 
         lines.extend(["params = {", "\n    ".join(param_entries), "}\n"])
-
-        lines.append(
-            erlab.interactive.utils.generate_code(
-                self._data_full.xlm.modelfit,
-                args=[self._coord_name],
-                kwargs={
-                    "model": f"|{model_name}|",
-                    "params": "|params|",
-                    "method": self.method_combo.currentText(),
-                },
-                name="modelfit",
-                module=f"{data_name}.xlm",
-                assign="result",
-            )
-        )
         return "\n".join(lines)
 
-    def current_provenance_spec(
+    def _full_fit_expression(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        return self._compose_with_input_provenance(
-            lambda input_name: erlab.interactive.imagetool.provenance.script(
-                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                    label="Fit current 2D data with the current model",
-                    code=self._build_full_copy_code(input_name=input_name),
-                ),
-                start_label="Start from current ftool input data",
-                active_name="result",
-            )
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        _, model_name, _ = self._make_model_code(input_name or self._data_name_full)
+        return erlab.interactive.utils.generate_code(
+            self._data_full.xlm.modelfit,
+            args=[self._coord_name],
+            kwargs={
+                "model": f"|{model_name}|",
+                "params": "|params|",
+                "method": self.method_combo.currentText(),
+            },
+            name="modelfit",
+            module="_fit_data.xlm",
         )
+
+    def _checked_full_copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str | None:
+        prelude = self._build_full_copy_prelude(input_name=input_name, warn=True)
+        return prelude or None
+
+    def _detached_full_copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str | None:
+        prelude = self._build_full_copy_prelude(input_name=input_name, warn=False)
+        return prelude or None
 
     @QtCore.Slot()
     def _copy_code_full(self) -> str:
@@ -1669,7 +1740,22 @@ class Fit2DTool(Fit1DTool):
 
     @QtCore.Slot()
     def copy_code_1d(self) -> str:
-        return self._copy_provenance_code(Fit1DTool.current_provenance_spec(self))
+        return self._copy_provenance_code(
+            self._resolve_script_provenance(Fit1DTool.COPY_PROVENANCE)
+        )
+
+    def detached_output_imagetool_provenance(
+        self,
+        data: xr.DataArray,
+        *,
+        source: QtCore.QObject | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if source is None:
+            return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
+        return super().detached_output_imagetool_provenance(
+            data,
+            source=source,
+        )
 
     def _current_param_output(self, *, stderr: bool) -> tuple[str, xr.DataArray] | None:
         param_name = self.param_plot_combo.currentText().strip()
@@ -1677,72 +1763,55 @@ class Fit2DTool(Fit1DTool):
             return None
         return param_name, self._param_plot_dataarray(param_name, stderr=stderr)
 
-    def _build_param_output_code(
+    def _parameter_output_prelude(
         self,
-        data: xr.DataArray,
         *,
-        stderr: bool,
         input_name: str | None = None,
-    ) -> str:
-        current = self._current_param_output(stderr=stderr)
-        if current is None:
-            return ""
-        param_name, _ = current
-        code = self._build_full_copy_code(warn=False, input_name=input_name)
-        if not code:
-            return ""
-        data_var = "modelfit_stderr" if stderr else "modelfit_coefficients"
-        output_name = "parameter_stderr" if stderr else "parameter_values"
-        rename_code = ""
-        if data.name is not None:
-            rename_code = f".rename({data.name!r})"
-        return "\n".join(
-            (
-                code,
-                f"{output_name} = "
-                f'result.{data_var}.sel(param={param_name!r}).drop_vars("param")'
-                f"{rename_code}",
-            )
-        )
-
-    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
-        if slot_key == "fit2d.param_plot.values":
-            current = self._current_param_output(stderr=False)
-        elif slot_key == "fit2d.param_plot.stderr":
-            current = self._current_param_output(stderr=True)
-        else:
+        data: xr.DataArray | None = None,
+    ) -> str | None:
+        prelude = self._build_full_copy_prelude(warn=False, input_name=input_name)
+        expression = self._full_fit_expression(input_name=input_name)
+        if not prelude or not expression:
             return None
+        return "\n".join((prelude, f"result = {expression}"))
+
+    def _parameter_values_output_data(self) -> xr.DataArray | None:
+        current = self._current_param_output(stderr=False)
         if current is None:
             return None
         return current[1]
 
-    def output_imagetool_provenance(
-        self, slot_key: Hashable, data: xr.DataArray
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        if slot_key == "fit2d.param_plot.values":
-            stderr = False
-        elif slot_key == "fit2d.param_plot.stderr":
-            stderr = True
-        else:
+    def _parameter_stderr_output_data(self) -> xr.DataArray | None:
+        current = self._current_param_output(stderr=True)
+        if current is None:
             return None
+        return current[1]
 
-        label = (
-            "Extract current parameter standard errors"
-            if stderr
-            else "Extract current parameter values"
+    def _parameter_values_output_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        current = self._current_param_output(stderr=False)
+        if current is None:
+            return ""
+        param_name, _ = current
+        return (
+            f'result.modelfit_coefficients.sel(param={param_name!r}).drop_vars("param")'
         )
-        return self._compose_with_input_provenance(
-            lambda input_name: erlab.interactive.imagetool.provenance.script(
-                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                    label=label,
-                    code=self._build_param_output_code(
-                        data, stderr=stderr, input_name=input_name
-                    ),
-                ),
-                start_label="Start from current fit-tool input data",
-                active_name="parameter_stderr" if stderr else "parameter_values",
-            )
-        )
+
+    def _parameter_stderr_output_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        current = self._current_param_output(stderr=True)
+        if current is None:
+            return ""
+        param_name, _ = current
+        return f'result.modelfit_stderr.sel(param={param_name!r}).drop_vars("param")'
 
 
 def ftool(

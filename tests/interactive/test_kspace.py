@@ -418,6 +418,28 @@ def test_ktool_copy_code_uses_set_normal(
     xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
 
 
+def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    converted = win.output_imagetool_data(KspaceTool.Output.CONVERTED)
+    assert converted is not None
+
+    spec = win.output_imagetool_provenance(KspaceTool.Output.CONVERTED, converted)
+    assert spec is not None
+
+    input_name = str(win._argnames["data"])
+    if not input_name.isidentifier():
+        input_name = "data"
+
+    assert spec.active_name == f"{input_name}_kconv"
+    code = spec.display_code()
+    assert code is not None
+    assert f"{input_name}_kconv" in code
+    assert ".kspace.set_normal(" in code
+
+
 def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
     win = ktool(anglemap, execute=False)
     qtbot.addWidget(win)

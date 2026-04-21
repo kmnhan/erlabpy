@@ -722,6 +722,15 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     """
 
     tool_name = "ftool_1d"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current ftool input data",
+            label="Fit current data with the current model",
+            prelude_method="_copy_prelude",
+            expression_method="_fit_expression",
+            assign="result",
+        )
+    )
 
     class StateModel(pydantic.BaseModel):
         data_name: str
@@ -2822,7 +2831,12 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         return data_name, model_name, lines
 
-    def _build_copy_code(self, *, input_name: str | None = None) -> str:
+    def _copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
         data_name, model_name, lines = self._make_model_code(
             input_name or self._data_name
         )
@@ -2838,6 +2852,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         if self.normalize_check.isChecked():
             lines.append(f"{data_name}_norm = {data_name} / {data_name}.mean()")
             data_name = f"{data_name}_norm"
+
+        lines.append(f"_fit_data = {data_name}")
 
         param_entries: list[str] = []
         param_kwargs: dict[str, typing.Any] = {}
@@ -2880,34 +2896,25 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             else:
                 lines.append(f"params = {model_name}.make_params()")
 
-        lines.append(
-            erlab.interactive.utils.generate_code(
-                self._data.xlm.modelfit,
-                args=[self._coord_name],
-                kwargs={
-                    "model": f"|{model_name}|",
-                    "params": "|params|",
-                    "method": self.method_combo.currentText(),
-                },
-                name="modelfit",
-                module=f"{data_name}.xlm",
-                assign="result",
-            )
-        )
         return "\n".join(lines)
 
-    def current_provenance_spec(
+    def _fit_expression(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        return self._compose_with_input_provenance(
-            lambda input_name: erlab.interactive.imagetool.provenance.script(
-                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                    label="Fit current data with the current model",
-                    code=self._build_copy_code(input_name=input_name),
-                ),
-                start_label="Start from current ftool input data",
-                active_name="result",
-            )
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        _, model_name, _ = self._make_model_code(input_name or self._data_name)
+        return erlab.interactive.utils.generate_code(
+            self._data.xlm.modelfit,
+            args=[self._coord_name],
+            kwargs={
+                "model": f"|{model_name}|",
+                "params": "|params|",
+                "method": self.method_combo.currentText(),
+            },
+            name="modelfit",
+            module="_fit_data.xlm",
         )
 
     @QtCore.Slot()

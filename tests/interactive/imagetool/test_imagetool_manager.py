@@ -900,7 +900,7 @@ def test_manager_goldtool_output_itool_nests_under_tool(
         assert manager.ntools == 1
         assert output_node.is_imagetool
         assert output_node.parent_uid == child_uid
-        assert output_node.output_slot_key == "goldtool.corrected"
+        assert output_node.output_id == "goldtool.corrected"
         assert output_node.source_spec is None
         assert output_node.provenance_spec is not None
         xr.testing.assert_identical(fetch(output_uid), child.corrected)
@@ -951,7 +951,7 @@ def test_manager_dtool_output_itool_nests_under_tool(
         assert manager.ntools == 1
         assert output_node.is_imagetool
         assert output_node.parent_uid == child_uid
-        assert output_node.output_slot_key == "dtool.result"
+        assert output_node.output_id == "dtool.result"
         assert output_node.source_spec is None
         assert output_node.provenance_spec is not None
         xr.testing.assert_identical(fetch(output_uid), child.result.T)
@@ -1001,7 +1001,7 @@ def test_manager_ktool_output_itool_nests_under_tool(
         output_node = manager._child_node(output_uid)
         assert manager.ntools == 1
         assert output_node.parent_uid == child_uid
-        assert output_node.output_slot_key == "ktool.converted_output"
+        assert output_node.output_id == "ktool.converted_output"
         assert output_node.source_spec is None
         assert output_node.provenance_spec is not None
         xr.testing.assert_identical(fetch(output_uid), child._itool.slicer_area.data)
@@ -1019,7 +1019,7 @@ def test_manager_ktool_output_itool_nests_under_tool(
 
         child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
         output_node.set_output_binding(
-            typing.cast("str", output_node.output_slot_key),
+            typing.cast("str", output_node.output_id),
             provenance_spec=output_node.provenance_spec,
             auto_update=True,
             state="fresh",
@@ -1133,7 +1133,7 @@ def test_manager_dtool_output_itool_refreshes_with_parent_updates(
 
         child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
         output_node.set_output_binding(
-            typing.cast("str", output_node.output_slot_key),
+            typing.cast("str", output_node.output_id),
             provenance_spec=output_node.provenance_spec,
             auto_update=True,
             state="fresh",
@@ -1186,7 +1186,7 @@ def test_manager_goldtool_output_itool_stales_when_fit_results_change(
         xr.testing.assert_identical(fetch(output_uid), before)
 
 
-def test_manager_ximageitem_open_itool_reuses_detached_child_under_tool(
+def test_manager_ximageitem_open_itool_creates_independent_top_level_window(
     qtbot,
     monkeypatch,
     test_data,
@@ -1213,25 +1213,21 @@ def test_manager_ximageitem_open_itool_reuses_detached_child_under_tool(
 
         child.main_image.open_itool()
 
-        child_node = manager._child_node(child_uid)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        output_uid = child_node._childtool_indices[0]
-        output_node = manager._child_node(output_uid)
-        assert manager.ntools == 1
-        assert output_node.parent_uid == child_uid
-        assert output_node.output_slot_key is None
+        child_node = manager._child_node(child_uid)
+        assert child_node._childtool_indices == []
+        output_node = manager._imagetool_wrappers[1]
+        assert output_node.parent_uid is None
+        assert output_node.output_id is None
         assert output_node.source_spec is None
-        expected_provenance = child.current_provenance_spec()
-        assert expected_provenance is not None
-        assert output_node.provenance_spec == expected_provenance
-        assert output_node.derivation_code == expected_provenance.display_code()
-        xr.testing.assert_identical(fetch(output_uid), child.main_image.data_array.T)
+        assert output_node.provenance_spec is None
+        xr.testing.assert_identical(fetch(1), child.main_image.data_array.T)
 
         monkeypatch.setattr(
             child,
             "_prompt_existing_output_imagetool",
-            lambda: pytest.fail("detached xImageItem outputs should reuse silently"),
+            lambda: pytest.fail("unbound xImageItem opens should not prompt"),
         )
         updated = (child.main_image.data_array * 2).rename(
             child.main_image.data_array.name
@@ -1239,8 +1235,64 @@ def test_manager_ximageitem_open_itool_reuses_detached_child_under_tool(
         child.main_image.setDataArray(updated)
         child.main_image.open_itool()
 
-        assert child_node._childtool_indices == [output_uid]
-        xr.testing.assert_identical(fetch(output_uid), updated.T)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        assert child_node._childtool_indices == []
+        second_output_node = manager._imagetool_wrappers[2]
+        assert second_output_node.parent_uid is None
+        assert second_output_node.output_id is None
+        assert second_output_node.source_spec is None
+        assert second_output_node.provenance_spec is None
+        xr.testing.assert_identical(fetch(2), updated.T)
+
+
+def test_manager_workspace_roundtrip_independent_unbound_imagetool(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.open_in_meshtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = typing.cast("typing.Any", manager.get_childtool(child_uid))
+        expected = child.main_image.data_array.T.copy(deep=True)
+
+        child.main_image.open_itool()
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        tree = manager._to_datatree()
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        matching_roots = [
+            wrapper
+            for index, wrapper in manager._imagetool_wrappers.items()
+            if wrapper.parent_uid is None
+            and wrapper.source_spec is None
+            and wrapper.provenance_spec is None
+            and wrapper.output_id is None
+            and wrapper._childtool_indices == []
+            and fetch(index).identical(expected)
+        ]
+        assert len(matching_roots) == 1
 
 
 def test_manager_metadata_uses_streamlined_child_derivation(
@@ -1461,7 +1513,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         qtbot.wait_until(lambda: grandchild_node.source_state == "stale", timeout=5000)
 
 
-def test_manager_meshtool_output_itools_use_distinct_slots(
+def test_manager_meshtool_output_itools_use_distinct_output_ids(
     qtbot,
     monkeypatch,
     test_data,
@@ -1506,8 +1558,8 @@ def test_manager_meshtool_output_itools_use_distinct_slots(
         assert manager.ntools == 1
         assert corr_node.parent_uid == child_uid
         assert mesh_node.parent_uid == child_uid
-        assert corr_node.output_slot_key == "meshtool.corrected_output"
-        assert mesh_node.output_slot_key == "meshtool.mesh_output"
+        assert corr_node.output_id == "meshtool.corrected_output"
+        assert mesh_node.output_id == "meshtool.mesh_output"
         assert corr_node.source_spec is None
         assert corr_node.provenance_spec is not None
         assert mesh_node.source_spec is None
@@ -1517,21 +1569,21 @@ def test_manager_meshtool_output_itools_use_distinct_slots(
 
 
 @pytest.mark.parametrize(
-    ("slot_key", "expected_index"),
+    ("output_id", "expected_name"),
     [
-        ("meshtool.corrected_output", ")[0]"),
-        ("meshtool.mesh_output", ")[1]"),
+        ("meshtool.corrected_output", "corrected"),
+        ("meshtool.mesh_output", "mesh"),
     ],
 )
-def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_slot(
+def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
     qtbot,
     monkeypatch,
     test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
-    slot_key: str,
-    expected_index: str,
+    output_id: str,
+    expected_name: str,
 ) -> None:
     prov = erlab.interactive.imagetool.provenance
 
@@ -1553,7 +1605,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_slot(
         child._corrected = child.tool_data.copy(deep=True) + 1
         child._mesh = child.tool_data.copy(deep=True) - 1
 
-        if slot_key == "meshtool.corrected_output":
+        if output_id == "meshtool.corrected_output":
             child._corr_itool()
         else:
             child._mesh_itool()
@@ -1577,13 +1629,15 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_slot(
         )
 
         copied = copy_full_code_for_uid(monkeypatch, manager, nested_uid)
-        assert "corrected, mesh =" not in copied
+        assert "corrected, mesh =" in copied
         assert "era.mesh.remove_mesh(" in copied
-        assert expected_index in copied
-        assert ".qsel(alpha=1, alpha_width=1)" in copied
+        assert f"derived = {expected_name}" in copied
+        assert ")[0]" not in copied
+        assert ")[1]" not in copied
+        assert "derived = derived.qsel(alpha=1, alpha_width=1)" in copied
 
 
-def test_manager_fit2d_output_itools_use_distinct_slots(
+def test_manager_fit2d_output_itools_use_distinct_output_ids(
     qtbot,
     monkeypatch,
     exp_decay_model,
@@ -1631,8 +1685,8 @@ def test_manager_fit2d_output_itools_use_distinct_slots(
         assert manager.ntools == 1
         assert values_node.parent_uid == child_uid
         assert stderr_node.parent_uid == child_uid
-        assert values_node.output_slot_key == "fit2d.param_plot.values"
-        assert stderr_node.output_slot_key == "fit2d.param_plot.stderr"
+        assert values_node.output_id == "fit2d.param_plot.values"
+        assert stderr_node.output_id == "fit2d.param_plot.stderr"
         assert values_node.source_spec is None
         assert values_node.provenance_spec is not None
         assert stderr_node.source_spec is None
@@ -1649,7 +1703,7 @@ def test_manager_fit2d_output_itools_use_distinct_slots(
         assert ".modelfit_stderr.sel(param=" in stderr_code
 
 
-def test_manager_same_slot_output_itool_update_existing(
+def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_windows(
     qtbot,
     monkeypatch,
     exp_decay_model,
@@ -1678,107 +1732,30 @@ def test_manager_same_slot_output_itool_update_existing(
 
         child._show_dataarray_in_itool(initial)
         child_node = manager._child_node(child_uid)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
-
-        output_uid = child_node._childtool_indices[0]
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert child_node._childtool_indices == []
+        first_output_node = manager._imagetool_wrappers[1]
+        assert first_output_node.parent_uid is None
+        assert first_output_node.output_id is None
+        assert first_output_node.source_spec is None
+        assert first_output_node.provenance_spec is None
+        xr.testing.assert_identical(fetch(1), initial)
         monkeypatch.setattr(
-            child, "_prompt_existing_output_imagetool", lambda: "update"
+            child,
+            "_prompt_existing_output_imagetool",
+            lambda: pytest.fail("unbound fit2d opens should not prompt"),
         )
 
         child._show_dataarray_in_itool(updated)
 
-        assert manager.ntools == 1
-        assert child_node._childtool_indices == [output_uid]
-        xr.testing.assert_identical(fetch(output_uid), updated)
-
-
-def test_manager_same_slot_output_itool_open_new(
-    qtbot,
-    monkeypatch,
-    exp_decay_model,
-    test_data,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    with manager_context() as manager:
-        manager.show()
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-
-        itool(test_data, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
-        initial = xr.DataArray(
-            np.arange(3.0), dims=("x",), coords={"x": np.arange(3)}, name="initial"
-        )
-        newer = xr.DataArray(
-            np.arange(3.0) + 20,
-            dims=("x",),
-            coords={"x": np.arange(3)},
-            name="newer",
-        )
-
-        child._show_dataarray_in_itool(initial)
-        child_node = manager._child_node(child_uid)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
-
-        first_uid = child_node._childtool_indices[0]
-        monkeypatch.setattr(child, "_prompt_existing_output_imagetool", lambda: "new")
-
-        child._show_dataarray_in_itool(newer)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 2, timeout=5000)
-
-        second_uid = next(
-            uid for uid in child_node._childtool_indices if uid != first_uid
-        )
-        assert manager.ntools == 1
-        xr.testing.assert_identical(fetch(first_uid), initial)
-        xr.testing.assert_identical(fetch(second_uid), newer)
-        assert child._output_imagetool_targets["fit2d.output"] == second_uid
-
-
-def test_manager_same_slot_output_itool_cancel(
-    qtbot,
-    monkeypatch,
-    exp_decay_model,
-    test_data,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    with manager_context() as manager:
-        manager.show()
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-
-        itool(test_data, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
-        initial = xr.DataArray(
-            np.arange(5.0), dims=("x",), coords={"x": np.arange(5)}, name="initial"
-        )
-        ignored = xr.DataArray(
-            np.arange(5.0) + 30,
-            dims=("x",),
-            coords={"x": np.arange(5)},
-            name="ignored",
-        )
-
-        child._show_dataarray_in_itool(initial)
-        child_node = manager._child_node(child_uid)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
-
-        output_uid = child_node._childtool_indices[0]
-        monkeypatch.setattr(
-            child, "_prompt_existing_output_imagetool", lambda: "cancel"
-        )
-
-        child._show_dataarray_in_itool(ignored)
-
-        assert manager.ntools == 1
-        assert child_node._childtool_indices == [output_uid]
-        xr.testing.assert_identical(fetch(output_uid), initial)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        assert child_node._childtool_indices == []
+        second_output_node = manager._imagetool_wrappers[2]
+        assert second_output_node.parent_uid is None
+        assert second_output_node.output_id is None
+        assert second_output_node.source_spec is None
+        assert second_output_node.provenance_spec is None
+        xr.testing.assert_identical(fetch(2), updated)
 
 
 def test_manager_open_in_new_window_nests_imagetool_children(
@@ -2746,7 +2723,7 @@ def test_manager_duplicate_goldtool_child(
         )
         duplicate_output_uid = duplicate_node._childtool_indices[0]
         duplicate_output_node = manager._child_node(duplicate_output_uid)
-        assert duplicate_output_node.output_slot_key == "goldtool.corrected"
+        assert duplicate_output_node.output_id == "goldtool.corrected"
         assert duplicate_output_node.source_spec is None
         assert duplicate_output_node.provenance_spec is not None
         xr.testing.assert_identical(fetch(duplicate_output_uid), duplicated.corrected)
@@ -2918,7 +2895,7 @@ def test_manager_workspace_roundtrip_goldtool_child(
         loaded_child_node = manager._child_node(child_uid)
         assert loaded_child_node._childtool_indices == [output_uid]
         loaded_output_node = manager._child_node(output_uid)
-        assert loaded_output_node.output_slot_key == "goldtool.corrected"
+        assert loaded_output_node.output_id == "goldtool.corrected"
         assert loaded_output_node.source_spec is None
         assert loaded_output_node.provenance_spec is not None
         assert loaded_output_node.provenance_spec.active_name == "corrected"
@@ -2988,7 +2965,7 @@ def test_manager_workspace_roundtrip_dtool_child(
         loaded_child_node = manager._child_node(child_uid)
         assert loaded_child_node._childtool_indices == [output_uid]
         loaded_output_node = manager._child_node(output_uid)
-        assert loaded_output_node.output_slot_key == "dtool.result"
+        assert loaded_output_node.output_id == "dtool.result"
         assert loaded_output_node.source_spec is None
         assert loaded_output_node.provenance_spec is not None
         assert loaded_output_node.provenance_spec.active_name == "result"

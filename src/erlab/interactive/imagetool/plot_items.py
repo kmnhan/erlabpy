@@ -979,7 +979,7 @@ class ItoolPlotItem(pg.PlotItem):
                 )
 
             if isel_kw or isel_indexers:
-                isel_kw = isel_kw | isel_indexers
+                isel_kw.update(isel_indexers)
                 sel_code = erlab.interactive.utils.format_call_kwargs(isel_kw)
                 sel_code = f".isel({sel_code})"
 

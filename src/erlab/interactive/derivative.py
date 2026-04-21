@@ -15,6 +15,7 @@
 
 __all__ = ["dtool"]
 
+import enum
 import functools
 import importlib.resources
 import typing
@@ -38,6 +39,27 @@ else:
 
 class DerivativeTool(erlab.interactive.utils.ToolWindow):
     tool_name = "dtool"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current dtool input data",
+            operations_method="_copy_provenance_operations",
+            active_name="result",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        RESULT = "dtool.result"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.RESULT: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_result_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dtool input data",
+                operations_method="_output_provenance_operations",
+                active_name="result",
+            ),
+        )
+    }
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -439,7 +461,10 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
     @QtCore.Slot()
     def open_itool(self) -> None:
-        tool = self._launch_output_imagetool(self.result.T, slot_key="dtool.result")
+        tool = self._launch_output_imagetool(
+            self.result.T,
+            output_id=self.Output.RESULT,
+        )
         if tool is not None:
             self._itool = tool
 
@@ -539,9 +564,9 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
         return "\n".join(lines)
 
-    def _result_provenance_spec(
+    def _result_provenance_operations(
         self, *, input_name: str | None = None, transpose_output: bool = False
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptCodeOperation, ...]:
         operations = [
             erlab.interactive.imagetool.provenance.ScriptCodeOperation(
                 label="Compute derivative output",
@@ -555,34 +580,29 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
                     code="result = result.transpose()",
                 )
             )
-        return erlab.interactive.imagetool.provenance.script(
-            *operations,
-            start_label="Start from current dtool input data",
-            active_name="result",
-        )
+        return tuple(operations)
 
-    def current_provenance_spec(
+    def _copy_provenance_operations(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        return self._compose_with_input_provenance(
-            lambda input_name: self._result_provenance_spec(input_name=input_name)
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptCodeOperation, ...]:
+        return self._result_provenance_operations(input_name=input_name)
+
+    def _output_provenance_operations(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptCodeOperation, ...]:
+        return self._result_provenance_operations(
+            input_name=input_name,
+            transpose_output=True,
         )
 
-    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
-        if slot_key != "dtool.result":
-            return None
+    def _result_output_data(self) -> xr.DataArray:
         return self.result.T
-
-    def output_imagetool_provenance(
-        self, slot_key: Hashable, data: xr.DataArray
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        if slot_key != "dtool.result":
-            return None
-        return self._compose_with_input_provenance(
-            lambda input_name: self._result_provenance_spec(
-                input_name=input_name, transpose_output=True
-            )
-        )
 
 
 def dtool(
@@ -592,10 +612,6 @@ def dtool(
 
     This tool can also be accessed from the right-click context menu of an image plot in
     an ImageTool window.
-
-    .. versionchanged:: 3.21.0
-        Added an ``Open in ImageTool`` action that opens the current derivative result
-        as a provenance-tracked ImageTool output.
 
     Parameters
     ----------

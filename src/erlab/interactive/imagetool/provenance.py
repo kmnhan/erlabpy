@@ -279,11 +279,11 @@ class _NameReplacer(ast.NodeTransformer):
 
 
 def _clone_expr(node: ast.expr) -> ast.expr:
-    return typing.cast("ast.expr", ast.parse(ast.unparse(node), mode="eval").body)
+    return ast.parse(ast.unparse(node), mode="eval").body
 
 
 def _clone_stmt(node: ast.stmt) -> ast.stmt:
-    return typing.cast("ast.stmt", ast.parse(ast.unparse(node), mode="exec").body[0])
+    return ast.parse(ast.unparse(node), mode="exec").body[0]
 
 
 def _simplify_display_code(code: str) -> str:
@@ -310,7 +310,10 @@ def _simplify_display_code(code: str) -> str:
             if not isinstance(stmt, ast.Assign):
                 continue
 
-            target = stmt.targets[0].id
+            target_expr = stmt.targets[0]
+            if not isinstance(target_expr, ast.Name):
+                return code
+            target = target_expr.id
             next_stmt = body[idx + 1]
             if _statement_load_count(next_stmt, target) != 1:
                 continue
@@ -1080,6 +1083,16 @@ def compose_full_provenance(
                 code=local_spec.seed_code,
             ),
         )
+    elif local_spec.active_name == "derived":
+        parent_input = replay_input_name(parent_spec)
+        if parent_input is not None and parent_input != "derived" and local_operations:
+            local_operations.insert(
+                0,
+                ScriptCodeOperation(
+                    label="Use current parent output as the active data",
+                    code=f"derived = {parent_input}",
+                ),
+            )
 
     return ToolProvenanceSpec(
         kind="script",

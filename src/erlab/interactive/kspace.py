@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
+import enum
 import hashlib
 import importlib.resources
 import typing
@@ -33,8 +34,6 @@ from erlab.accessors.kspace import IncompleteDataError, MomentumAccessor
 from erlab.constants import AxesConfiguration
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable
-
     import matplotlib
     import varname
     import xarray as xr
@@ -357,6 +356,31 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
 
 class KspaceTool(KspaceToolGUI):
     tool_name = "ktool"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current ktool input data",
+            label="Convert to momentum space",
+            prelude_method="_copy_prelude",
+            expression_method="_copy_expression",
+            assign_method="_copy_assign_target",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        CONVERTED = "ktool.converted_output"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.CONVERTED: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_converted_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current ktool input data",
+                label="Convert current data to momentum space",
+                prelude_method="_copy_prelude",
+                expression_method="_copy_expression",
+                assign_method="_copy_assign_target",
+            ),
+        )
+    }
     _sigTriggerUpdate = QtCore.Signal()
     _UPDATE_LIMIT_HZ = 10.0
 
@@ -951,25 +975,28 @@ class KspaceTool(KspaceToolGUI):
             data_kconv = self._converted_output()
 
         tool = self._launch_output_imagetool(
-            data_kconv, slot_key="ktool.converted_output"
+            data_kconv,
+            output_id=self.Output.CONVERTED,
         )
         if tool is not None:
             self._itool = tool
 
-    def _build_copy_code(self, *, input_name: str | None = None) -> str:
-        arg_dict: dict[str, typing.Any] = {}
-        if self.bounds is not None:
-            arg_dict["bounds"] = self.bounds
-        if self.resolution is not None:
-            arg_dict["resolution"] = self.resolution
-
+    def _copy_input_name(self, input_name: str | None = None) -> str:
         if input_name is None:
             # Detected input name must be single identifier.
             # Otherwise the generated code will not apply offsets correctly.
             input_name = str(self._argnames["data"])
             if not input_name.isidentifier():
                 input_name = "data"
+        return input_name
 
+    def _copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        input_name = self._copy_input_name(input_name)
         out_lines: list[str] = []
 
         if self.data.kspace._has_hv:
@@ -985,65 +1012,41 @@ class KspaceTool(KspaceToolGUI):
 
         alpha_normal, beta_normal = self._current_normal_emission_angles()
         delta_offset = self.offset_dict["delta"]
-
-        out_lines.extend(
-            (
-                f"{input_name}.kspace.set_normal("
-                f"alpha={alpha_normal!r}, beta={beta_normal!r}, delta={delta_offset!r}"
-                f")",
-                erlab.interactive.utils.generate_code(
-                    MomentumAccessor.convert,
-                    [],
-                    arg_dict,
-                    module=f"{input_name}.kspace",
-                    assign=f"{input_name}_kconv",
-                ),
-            )
+        out_lines.append(
+            f"{input_name}.kspace.set_normal("
+            f"alpha={alpha_normal!r}, beta={beta_normal!r}, delta={delta_offset!r})"
         )
-
         return "\n".join(out_lines)
 
-    def _copy_output_name(self, input_name: str | None) -> str:
-        if input_name is None:
-            input_name = str(self._argnames["data"])
-            if not input_name.isidentifier():
-                input_name = "data"
-        return f"{input_name}_kconv"
-
-    def current_provenance_spec(
+    def _copy_expression(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        return self._compose_with_input_provenance(
-            lambda input_name: erlab.interactive.imagetool.provenance.script(
-                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                    label="Convert to momentum space",
-                    code=self._build_copy_code(input_name=input_name),
-                ),
-                start_label="Start from current ktool input data",
-                active_name=self._copy_output_name(input_name),
-            )
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        arg_dict: dict[str, typing.Any] = {}
+        if self.bounds is not None:
+            arg_dict["bounds"] = self.bounds
+        if self.resolution is not None:
+            arg_dict["resolution"] = self.resolution
+
+        return erlab.interactive.utils.generate_code(
+            MomentumAccessor.convert,
+            [],
+            arg_dict,
+            module=f"{self._copy_input_name(input_name)}.kspace",
         )
 
-    def output_imagetool_data(self, slot_key: Hashable) -> xr.DataArray | None:
-        if slot_key != "ktool.converted_output":
-            return None
+    def _copy_assign_target(
+        self,
+        input_name: str | None = None,
+        *,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return f"{self._copy_input_name(input_name)}_kconv"
+
+    def _converted_output_data(self) -> xr.DataArray:
         return self._converted_output()
-
-    def output_imagetool_provenance(
-        self, slot_key: Hashable, data: xr.DataArray
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        if slot_key != "ktool.converted_output":
-            return None
-        return self._compose_with_input_provenance(
-            lambda input_name: erlab.interactive.imagetool.provenance.script(
-                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                    label="Convert current data to momentum space",
-                    code=self._build_copy_code(input_name=input_name),
-                ),
-                start_label="Start from current ktool input data",
-                active_name=self._copy_output_name(input_name),
-            )
-        )
 
     @property
     def bounds(self) -> dict[str, tuple[float, float]] | None:
