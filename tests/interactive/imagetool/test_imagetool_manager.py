@@ -26,9 +26,10 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive._mesh import MeshTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-from erlab.interactive.fermiedge import GoldTool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
@@ -178,6 +179,29 @@ def make_fit2d_child(
     assert isinstance(tool, Fit2DTool)
     child_uid = manager.add_childtool(tool, parent, show=False)
     return child_uid, tool
+
+
+def make_fit1d_child(
+    manager: ImageToolManager, parent: int | str, exp_decay_model
+) -> tuple[str, Fit1DTool]:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0),
+        dims=("t",),
+        coords={"t": t},
+        name="decay",
+    )
+    params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+    tool = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    assert isinstance(tool, Fit1DTool)
+    child_uid = manager.add_childtool(tool, parent, show=False)
+    return child_uid, tool
+
+
+def manager_preview_pixmap(manager: ImageToolManager) -> QtGui.QPixmap:
+    return manager.preview_widget._pixmapitem.pixmap()
 
 
 def metadata_derivation_texts(manager: ImageToolManager) -> list[str]:
@@ -2595,8 +2619,284 @@ def test_manager_selecting_unfit_ftool_child_does_not_warn(
         select_child_tool(manager, child_uid)
         manager._update_info(uid=child_uid)
 
+        qtbot.wait_until(
+            lambda: "ftool_2d" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        assert "ftool_2d" in manager.text_box.toPlainText().lower()
+        assert manager.preview_widget.isVisible()
+        assert not manager_preview_pixmap(manager).isNull()
+        assert metadata_detail_map(manager)["Kind"] == "ftool_2d"
         assert "modelfit" not in (manager._metadata_full_code or "")
         assert not warnings
+
+
+def test_manager_fit1d_child_side_panel(
+    qtbot,
+    exp_decay_model,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid, _ = make_fit1d_child(manager, 0, exp_decay_model)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "ftool_1d" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        assert "ftool_1d" in manager.text_box.toPlainText().lower()
+        assert "not fit yet" in manager.text_box.toPlainText().lower()
+        assert not manager.preview_widget.isVisible()
+        assert metadata_detail_map(manager)["Kind"] == "ftool_1d"
+
+
+def test_manager_fit2d_child_side_panel_live_refresh(
+    qtbot,
+    exp_decay_model,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "ftool_2d" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        old_html = manager.text_box.toHtml()
+        new_index = (
+            child.y_min_spin.value()
+            if child._current_idx != child.y_min_spin.value()
+            else child.y_max_spin.value()
+        )
+        child.y_index_spin.setValue(new_index)
+
+        qtbot.wait_until(lambda: manager.text_box.toHtml() != old_html, timeout=5000)
+        assert f"index {new_index}" in manager.text_box.toPlainText().lower()
+
+
+def test_manager_goldtool_child_side_panel(
+    qtbot,
+    gold,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(gold, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child = GoldTool(gold.copy(deep=True), data_name="gold_input")
+        child_uid = manager.add_childtool(child, 0, show=False)
+        configure_goldtool_child(child, fitted=True, spline=True)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "goldtool" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        assert "goldtool" in manager.text_box.toPlainText().lower()
+        assert manager.preview_widget.isVisible()
+        assert not manager_preview_pixmap(manager).isNull()
+        assert metadata_detail_map(manager)["Kind"] == "goldtool"
+
+
+def test_manager_goldtool_child_side_panel_live_refresh(
+    qtbot,
+    gold,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(gold, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child = GoldTool(gold.copy(deep=True), data_name="gold_input")
+        child_uid = manager.add_childtool(child, 0, show=False)
+        configure_goldtool_child(child, fitted=True, spline=False)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "goldtool" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        old_html = manager.text_box.toHtml()
+        child.params_tab.setCurrentIndex(1)
+
+        qtbot.wait_until(lambda: manager.text_box.toHtml() != old_html, timeout=5000)
+        assert "spline" in manager.text_box.toPlainText().lower()
+
+
+def test_manager_restool_child_side_panel(
+    qtbot,
+    gold,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(gold, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid = manager.add_childtool(
+            ResolutionTool(gold.copy(deep=True), data_name="gold_input"),
+            0,
+            show=False,
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "restool" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        assert "restool" in manager.text_box.toPlainText().lower()
+        assert manager.preview_widget.isVisible()
+        assert not manager_preview_pixmap(manager).isNull()
+        assert metadata_detail_map(manager)["Kind"] == "restool"
+
+
+def test_manager_restool_child_side_panel_live_refresh(
+    qtbot,
+    gold,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(gold, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid = manager.add_childtool(
+            ResolutionTool(gold.copy(deep=True), data_name="gold_input"),
+            0,
+            show=False,
+        )
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, ResolutionTool)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "restool" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        old_html = manager.text_box.toHtml()
+        step = max(child.x0_spin.singleStep(), 10**-child._x_decimals)
+        new_value = min(child.x0_spin.value() + step, child.x1_spin.value())
+        if new_value == child.x0_spin.value():
+            new_value = max(child._x_range[0], child.x0_spin.value() - step)
+        child.x0_spin.setValue(new_value)
+
+        qtbot.wait_until(lambda: manager.text_box.toHtml() != old_html, timeout=5000)
+
+
+def test_manager_meshtool_child_side_panel(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid = manager.add_childtool(
+            MeshTool(test_data.copy(deep=True), data_name="mesh_input"),
+            0,
+            show=False,
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "meshtool" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        assert "meshtool" in manager.text_box.toPlainText().lower()
+        assert manager.preview_widget.isVisible()
+        assert not manager_preview_pixmap(manager).isNull()
+        assert metadata_detail_map(manager)["Kind"] == "meshtool"
+
+
+def test_manager_meshtool_child_side_panel_live_refresh(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid = manager.add_childtool(
+            MeshTool(test_data.copy(deep=True), data_name="mesh_input"),
+            0,
+            show=False,
+        )
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, MeshTool)
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+
+        qtbot.wait_until(
+            lambda: "meshtool" in manager.text_box.toHtml().lower(), timeout=5000
+        )
+        old_html = manager.text_box.toHtml()
+        child.order_spin.setValue(child.order_spin.value() + 1)
+
+        qtbot.wait_until(lambda: manager.text_box.toHtml() != old_html, timeout=5000)
 
 
 def test_manager_watched_1d_root_ftool_copy_code_omits_synthetic_squeeze(

@@ -811,6 +811,98 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._write_history: bool = True
         self._write_state()
 
+    def _emit_info_changed(self, *_args: typing.Any) -> None:
+        self.sigInfoChanged.emit()
+
+    @staticmethod
+    def _bool_text(value: bool) -> str:
+        return "On" if value else "Off"
+
+    def _fit_status_text(self) -> str:
+        if self._fit_running():
+            return "Fit running"
+        if self._last_result_ds is None:
+            return "Not fit yet"
+        if self._fit_is_current:
+            return "Fit current"
+        return "Fit stale"
+
+    def _fit_stats_rows(self) -> list[tuple[str, str]]:
+        if all(
+            label.text() == "—"
+            for label in (
+                self.elapsed_value,
+                self.nfev_out_value,
+                self.redchi_value,
+                self.rsq_value,
+                self.aic_value,
+                self.bic_value,
+            )
+        ):
+            return []
+        return [
+            ("Elapsed", self.elapsed_value.text()),
+            ("nfev", self.nfev_out_value.text()),
+            ("redchi", self.redchi_value.text()),
+            ("R²", self.rsq_value.text()),
+            ("AIC", self.aic_value.text()),
+            ("BIC", self.bic_value.text()),
+        ]
+
+    def _summary_setup_rows(self) -> list[tuple[str, str]]:
+        model_cls = self._model.__class__
+        domain = self._fit_domain()
+        return [
+            ("Model name", self._model_name),
+            ("Model class", f"{model_cls.__module__}.{model_cls.__qualname__}"),
+            (
+                "X range",
+                "Full domain" if domain is None else f"{domain[0]} to {domain[1]}",
+            ),
+            ("Normalize by mean", self._bool_text(self.normalize_check.isChecked())),
+            ("Plot components", self._bool_text(self.components_check.isChecked())),
+        ]
+
+    def _summary_fit_rows(self) -> list[tuple[str, str]]:
+        return [
+            ("Status", self._fit_status_text()),
+            ("Method", self.method_combo.currentText()),
+            ("Timeout", f"{self.timeout_spin.value():.2f} s"),
+            (
+                "Max nfev",
+                "Unlimited"
+                if self.nfev_spin.value() == 0
+                else str(self.nfev_spin.value()),
+            ),
+            (
+                "Refit on source update",
+                self._bool_text(self.refit_on_source_update_check.isChecked()),
+            ),
+        ]
+
+    @staticmethod
+    def _summary_section(
+        title: str, rows: collections.abc.Iterable[tuple[str, str]]
+    ) -> str:
+        from erlab.utils.formatting import format_html_accent, format_html_table
+
+        normalized_rows = list(rows)
+        if not normalized_rows:
+            return ""
+        return f"<br><b>{title}</b>" + format_html_table(
+            [[format_html_accent(key), value] for key, value in normalized_rows]
+        )
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import format_darr_shape_html
+
+        info = f"<b>{self.tool_name}</b>" + format_darr_shape_html(self.tool_data)
+        info += self._summary_section("Setup", self._summary_setup_rows())
+        info += self._summary_section("Fit", self._summary_fit_rows())
+        info += self._summary_section("Fit Stats", self._fit_stats_rows())
+        return info
+
     def _reset_fit_state(
         self,
         data: xr.DataArray,
@@ -1018,6 +1110,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.components_check = QtWidgets.QCheckBox("Plot components")
         self.components_check.setChecked(False)
         self.components_check.toggled.connect(self._update_fit_curve)
+        self.components_check.toggled.connect(self._emit_info_changed)
         components_controls.addWidget(self.components_check)
         components_controls.addStretch(1)
         table_panel_layout.addLayout(components_controls)
@@ -1128,6 +1221,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.domain_max_spin.setValue(x_max)
         self.domain_min_spin.valueChanged.connect(self._domain_changed)
         self.domain_max_spin.valueChanged.connect(self._domain_changed)
+        self.domain_min_spin.valueChanged.connect(self._emit_info_changed)
+        self.domain_max_spin.valueChanged.connect(self._emit_info_changed)
         domain_layout.addWidget(self.domain_minmax_label)
         domain_layout.addStretch(1)
         domain_layout.addWidget(self.domain_min_spin)
@@ -1140,6 +1235,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             "Normalize the data by its mean value before fitting."
         )
         self.normalize_check.toggled.connect(self._mark_fit_stale)
+        self.normalize_check.toggled.connect(self._emit_info_changed)
         self.normalize_check.toggled.connect(self._write_state)
         self.normalize_check.toggled.connect(self._populate_data_curve)
         self.normalize_check.toggled.connect(self._reset_slider_widths)
@@ -1226,6 +1322,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.refit_on_source_update_check.setToolTip(
             "If checked, rerun the fit when this tool refreshes from ImageTool."
         )
+        self.refit_on_source_update_check.toggled.connect(self._emit_info_changed)
+        self.timeout_spin.valueChanged.connect(self._emit_info_changed)
+        self.nfev_spin.valueChanged.connect(self._emit_info_changed)
+        self.method_combo.currentTextChanged.connect(self._emit_info_changed)
 
         fit_layout.addRow("Timeout", self.timeout_spin)
         fit_layout.addRow("Max nfev", self.nfev_spin)
@@ -2815,6 +2915,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.fit_multi_button.setText("Fit ×20")
             self.cancel_fit_button.setEnabled(False)
             self.cancel_fit_button.setText("Cancel")
+        self._emit_info_changed()
 
     def _make_model_code(self, data_name: str) -> tuple[str, str, list[str]]:
         lines: list[str] = []
@@ -3380,6 +3481,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             self.rsq_value.setText("—")
             self.aic_value.setText("—")
             self.bic_value.setText("—")
+            self._emit_info_changed()
             return
         if elapsed is None:
             elapsed = float("nan")
@@ -3402,6 +3504,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self.rsq_value.setText(f"{r_squared:.4g}")
         self.aic_value.setText(f"{result.aic:.4g}")
         self.bic_value.setText(f"{result.bic:.4g}")
+        self._emit_info_changed()
 
     def _set_elapsed_status(self, elapsed: float | None, timed_out: bool) -> None:
         if elapsed is None or not np.isfinite(elapsed):
@@ -3427,11 +3530,13 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._fit_is_current = False
         self.save_button.setEnabled(False)
         self.copy_button.setEnabled(False)
+        self._emit_info_changed()
 
     def _mark_fit_fresh(self) -> None:
         self._fit_is_current = True
         self.save_button.setEnabled(True)
         self.copy_button.setEnabled(True)
+        self._emit_info_changed()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)

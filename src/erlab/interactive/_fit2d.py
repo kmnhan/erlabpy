@@ -260,6 +260,10 @@ class Fit2DTool(Fit1DTool):
     def tool_data(self) -> xr.DataArray:
         return self._data_full
 
+    @property
+    def preview_imageitem(self) -> pg.ImageItem:
+        return self.image
+
     def __init__(
         self,
         data: xr.DataArray,
@@ -313,6 +317,38 @@ class Fit2DTool(Fit1DTool):
         self.param_model.sigParamsChanged.connect(self._update_params_full)
         self._refresh_contents_from_index()
         self._reset_history_stack()
+
+    def _summary_2d_rows(self) -> list[tuple[str, str]]:
+        y_values = self._y_values()
+        min_idx = self.y_min_spin.value()
+        max_idx = self.y_max_spin.value()
+        total_slices = max_idx - min_idx + 1
+        fitted_slices = sum(
+            ds is not None for ds in self._result_ds_full[self._y_range_slice()]
+        )
+        param_name = self.param_plot_combo.currentText().strip()
+
+        return [
+            (
+                "Current slice",
+                f"Index {self._current_idx} at {y_values[self._current_idx]}",
+            ),
+            ("Fit range", f"Indices {min_idx} to {max_idx}"),
+            ("Y range", f"{y_values[min_idx]} to {y_values[max_idx]}"),
+            ("Coverage", f"{fitted_slices} / {total_slices} slices fit"),
+            ("Parameter plot", param_name or "None"),
+        ]
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import format_darr_shape_html
+
+        info = f"<b>{self.tool_name}</b>" + format_darr_shape_html(self.tool_data)
+        info += self._summary_section("Setup", self._summary_setup_rows())
+        info += self._summary_section("2D Context", self._summary_2d_rows())
+        info += self._summary_section("Current Slice Fit", self._summary_fit_rows())
+        info += self._summary_section("Current Slice Stats", self._fit_stats_rows())
+        return info
 
     def _init_full_data_state(self, data: xr.DataArray, *, data_name: str) -> None:
         self._data_full: xr.DataArray = data
@@ -396,6 +432,7 @@ class Fit2DTool(Fit1DTool):
         param_plot_controls.addWidget(QtWidgets.QLabel("Parameter"))
         self.param_plot_combo = QtWidgets.QComboBox()
         self.param_plot_combo.currentIndexChanged.connect(self._update_param_plot)
+        self.param_plot_combo.currentTextChanged.connect(self._emit_info_changed)
         param_plot_controls.addWidget(self.param_plot_combo)
 
         self.param_plot_widget = pg.GraphicsLayoutWidget()
@@ -1101,6 +1138,7 @@ class Fit2DTool(Fit1DTool):
         else:
             self._set_fit_stats(None)
             self._mark_fit_stale()
+        self._emit_info_changed()
 
     @_rebuild_ui(mark_fresh=True)
     def _restore_from_fit_dataset(
@@ -1230,6 +1268,7 @@ class Fit2DTool(Fit1DTool):
         self._update_full_fit_saveable()
         self._update_param_plot()
         self._write_state()
+        self._emit_info_changed()
 
     def _y_range_slice(self) -> slice:
         return slice(self.y_min_spin.value(), self.y_max_spin.value() + 1)
