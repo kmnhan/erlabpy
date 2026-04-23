@@ -282,6 +282,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @window.setter
     def window(self, value: QtWidgets.QWidget | None) -> None:
+        had_archive_file = (
+            self.is_imagetool
+            and self._imagetool is None
+            and self._archived_fname is not None
+        )
         if self.imagetool is not None:
             self._detach_imagetool()
         elif self.tool_window is not None:
@@ -295,6 +300,9 @@ class _ManagedWindowNode(QtCore.QObject):
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             old.close()
             self._tool_window = None
+
+        if had_archive_file:
+            self._discard_archived_file()
 
         if value is None:
             return
@@ -592,6 +600,14 @@ class _ManagedWindowNode(QtCore.QObject):
         self._childtools.pop(uid, None)
         with contextlib.suppress(ValueError):
             self._childtool_indices.remove(uid)
+
+    def _discard_archived_file(self) -> None:
+        if self._archived_fname is None:
+            return
+        self.touch_timer.stop()
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(self._archived_fname)
+        self._archived_fname = None
 
     @QtCore.Slot()
     def touch_archive(self) -> None:

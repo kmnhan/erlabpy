@@ -631,6 +631,42 @@ def test_manager(
         accept_dialog(manager.about)
 
 
+def test_manager_archived_cache_cleanup(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        wrapper = manager._imagetool_wrappers[0]
+
+        wrapper.archive()
+        qtbot.wait_until(lambda: wrapper.archived, timeout=5000)
+        archived_path = pathlib.Path(typing.cast("str", wrapper._archived_fname))
+        assert archived_path.exists()
+
+        wrapper.unarchive()
+        qtbot.wait_until(lambda: not wrapper.archived, timeout=5000)
+        assert wrapper._archived_fname is None
+        assert not archived_path.exists()
+
+        wrapper.archive()
+        qtbot.wait_until(lambda: wrapper.archived, timeout=5000)
+        archived_path = pathlib.Path(typing.cast("str", wrapper._archived_fname))
+        assert archived_path.exists()
+
+        manager.remove_imagetool(0)
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        assert not archived_path.exists()
+
+
 def test_remove_from_window_shortcut(
     qtbot,
     accept_dialog,
