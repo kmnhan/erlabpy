@@ -1093,7 +1093,12 @@ def compose_full_provenance(
         )
     elif local_spec.active_name == "derived":
         parent_input = replay_input_name(parent_spec)
-        if parent_input is not None and parent_input != "derived" and local_operations:
+        if (
+            parent_input is not None
+            and parent_input != "derived"
+            and parent_spec.active_name not in {None, "derived"}
+            and local_operations
+        ):
             local_operations.insert(
                 0,
                 ScriptCodeOperation(

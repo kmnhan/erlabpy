@@ -359,7 +359,10 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         parent_nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
-    with pytest.raises(ValidationError, match="full_data', 'selection' or 'script"):
+    with pytest.raises(
+        ValidationError,
+        match="full_data', 'public_data', 'selection' or 'script",
+    ):
         erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
             {"kind": "invalid"}
         )
