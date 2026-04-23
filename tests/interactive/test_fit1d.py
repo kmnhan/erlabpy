@@ -400,7 +400,7 @@ def test_fit1d_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
 
-    assert win.update_data(updated) is True
+    assert win.update_data(updated) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted

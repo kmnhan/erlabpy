@@ -810,7 +810,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             refit=self.refit_on_source_update_check.isChecked(),
         )
 
-    def _apply_update_request(self, request: _GoldUpdateRequest) -> None:
+    def _apply_update_request(self, request: _GoldUpdateRequest) -> bool:
         self._clear_edge_fit_results()
         self.data = request.data
         self._along_dim = str(self.data.dims[1])
@@ -857,7 +857,10 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._sync_spline_lambda_enabled()
 
         if request.had_fit and request.refit:
+            self._source_refresh_deferred = self.has_source_binding
             self.perform_edge_fit()
+            return False
+        return True
 
     @QtCore.Slot()
     def _flush_pending_update(self) -> None:
@@ -868,18 +871,23 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self._pending_update_timer.start(50)
             return
         self._pending_update_request = None
-        self._apply_update_request(request)
-        self.finalize_source_refresh()
+        if self._apply_update_request(request):
+            self.finalize_source_refresh()
 
     def update_data(self, new_data: xr.DataArray) -> bool:
+        self._source_refresh_deferred = False
         data = self.validate_update_data(new_data)
-        self._pending_update_request = self._make_update_request(data)
+        request = self._make_update_request(data)
+        self._pending_update_request = request
         self._abort_fit_task()
         if self._threadpool.activeThreadCount():
             self._pending_update_timer.start(50)
             return False
-        self._flush_pending_update()
-        return True
+        self._pending_update_request = None
+        update_complete = self._apply_update_request(request)
+        if update_complete:
+            self.finalize_source_refresh()
+        return update_complete
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -1049,7 +1057,10 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.aw.axes[2].setVisible(params["Corrected"])
         self.aw.hists[2].setVisible(params["Corrected"])
         self.sigUpdated.emit()
-        self._notify_data_changed()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
+        else:
+            self._notify_data_changed()
 
     def _perform_poly_fit(self):
         params = self.params_poly.values
@@ -1751,7 +1762,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             update={"results": ("No fit results", "—", "—", "—", "—")}
         )
 
-        def _apply_update(validated: xr.DataArray) -> None:
+        def _apply_update(validated: xr.DataArray) -> bool:
             self._configure_data(validated)
             self._clear_fit_outputs()
             self.tool_status = status
@@ -1759,7 +1770,10 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             self._notify_data_changed()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
+                self._source_refresh_deferred = self.has_source_binding
                 self.do_fit()
+                return False
+            return True
 
         return self._perform_source_update(new_data, apply_update=_apply_update)
 
@@ -2004,6 +2018,8 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         redchi: float | None = modelresult.redchi
         self.redchi_val.setText(f"{redchi:.4f}" if redchi is not None else "—")
         self._emit_info_changed()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     @QtCore.Slot()
     def do_fit(self) -> None:

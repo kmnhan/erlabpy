@@ -1540,7 +1540,7 @@ class Fit2DTool(Fit1DTool):
         status = self.tool_status
         old_geom = self.saveGeometry()
 
-        def _apply_update(validated: xr.DataArray) -> None:
+        def _apply_update(validated: xr.DataArray) -> bool:
             old_cw = self.centralWidget()
             if old_cw is not None:
                 old_cw.setParent(None)
@@ -1568,7 +1568,10 @@ class Fit2DTool(Fit1DTool):
             self._notify_data_changed()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
+                self._source_refresh_deferred = self.has_source_binding
                 self._run_fit()
+                return False
+            return True
 
         return self._perform_source_update(new_data, apply_update=_apply_update)
 

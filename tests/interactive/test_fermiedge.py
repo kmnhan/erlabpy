@@ -394,6 +394,35 @@ def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
     xr.testing.assert_identical(win.data, new_gold)
 
 
+def test_goldtool_auto_source_update_with_refit_stays_stale_until_fit_finishes(
+    qtbot, gold, monkeypatch
+) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    _configure_goldtool_state(win, fitted=True)
+    win.set_source_binding(
+        erlab.interactive.imagetool.provenance.full_data(),
+        auto_update=True,
+    )
+
+    fit_started: list[bool] = []
+    monkeypatch.setattr(win, "perform_edge_fit", lambda: fit_started.append(True))
+
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.02
+    win.handle_parent_source_replaced(new_gold)
+
+    assert fit_started == [True]
+    assert win.source_state == "stale"
+    assert win.result is None
+
+    edge_center = win.data.mean("eV")
+    edge_stderr = xr.ones_like(edge_center)
+    win.post_fit(edge_center, edge_stderr)
+
+    assert win.source_state == "fresh"
+
+
 def test_goldtool_close_event_ignored_if_threadpool_does_not_quiesce(
     qtbot, gold, monkeypatch
 ) -> None:
@@ -700,7 +729,7 @@ def test_restool_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = gold.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.01
 
-    assert win.update_data(updated) is True
+    assert win.update_data(updated) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted

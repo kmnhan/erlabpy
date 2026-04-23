@@ -906,6 +906,13 @@ class _ManagedWindowNode(QtCore.QObject):
 
         try:
             if self._output_id is not None:
+                parent_tool = self.manager._parent_node(self).tool_window
+                if parent_tool is not None and parent_tool.source_state != "fresh":
+                    self._set_source_state(parent_tool.source_state)
+                    self.manager._mark_descendants_source_state(
+                        self.uid, parent_tool.source_state
+                    )
+                    return False
                 payload = self._resolved_output_payload()
                 if payload is None:
                     self._set_source_state("unavailable")

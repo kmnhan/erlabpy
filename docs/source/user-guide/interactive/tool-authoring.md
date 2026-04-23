@@ -56,7 +56,8 @@ As a practical authoring checklist:
   constructor with `data`, `StateModel`, `tool_data`, and `tool_status`.
 - Required if the tool can be refreshed from an ImageTool source:
   `update_data()`. In practice, this is the normal baseline for repository tools, so
-  the examples below implement it even in the minimal case.
+  the examples below implement it even in the minimal case. Return `False` when the
+  new source data is accepted but the tool cannot publish a fresh result yet.
 - Optional, but strongly recommended for user-facing tools:
   `tool_name` (the base class default is just `"tool"`).
 - Optional for tools with expensive or bulky save-only state:
@@ -212,10 +213,11 @@ class MinimalScaleTool(erlab.interactive.utils.ToolWindow):
         self.scale_spin.setValue(status.scale)
         self._refresh()
 
-    def update_data(self, new_data: xr.DataArray) -> None:
+    def update_data(self, new_data: xr.DataArray) -> bool:
         # This is the minimal refresh path: replace the data and repaint.
         self._data = self._coerce_data(new_data)
         self._refresh()
+        return True
 
     def _display_data(self) -> xr.DataArray:
         return (self.tool_data * float(self.scale_spin.value())).rename(self._data_name)
@@ -376,12 +378,13 @@ class MyTool(erlab.interactive.utils.ToolWindow):
             raise ValueError("`data` must be 2D")
         return data
 
-    def update_data(self, new_data: xr.DataArray) -> None:
+    def update_data(self, new_data: xr.DataArray) -> bool:
         # Preserve the existing UI state while swapping in replacement data.
         status = self.tool_status
         self._data = self.validate_update_data(new_data)
         self.tool_status = status
         self._notify_data_changed()
+        return True
 
     def _filter_window(self) -> int:
         return max(1, int(round(self.sigma_spin.value())))
@@ -514,6 +517,8 @@ able to react when the parent data changes.
 - `validate_update_data(new_data)`: normalize or reject replacement data before it
   reaches the live UI.
 - `update_data(new_data)`: apply the new data without creating a brand-new window.
+  Return `False` when the input was accepted but the tool must stay stale until a
+  deferred recomputation or result publication finishes.
 - `_cancel_background_work(timeout_ms=...)`: stop worker threads or queued tasks before
   mutating the UI, if your tool fits in the background.
 
@@ -531,11 +536,15 @@ There are three common update strategies in the current codebase:
    `self._perform_source_update(...)` so validation and background-task cancellation
    stay in one place.
 
-3. Deferred updates for tools that cannot apply the data immediately.
+3. Deferred updates for tools that accept the new input before they can publish a fresh
+   result.
 
-   `ResolutionTool.update_data()` queues the request, aborts any in-flight fit, and
-   returns `False` while work is still draining. Returning `False` keeps the tool marked
-   as stale until the update actually completes.
+   `GoldTool.update_data()` returns `False` while a queued source update or refit is
+   still pending, and `Fit1DTool`, `Fit2DTool`, and `ResolutionTool` return `False`
+   when they have accepted new source data but must finish an asynchronous refit before
+   their current outputs are fresh again. Returning `False` keeps the tool marked as
+   stale until that follow-up work finishes and the tool calls
+   `finalize_source_refresh()`.
 
 When your tool has worker threads, a typical pattern is:
 
@@ -548,15 +557,21 @@ def update_data(self, new_data: xr.DataArray) -> bool:
     status = self.tool_status
     old_geom = self.saveGeometry()
 
-    def _apply_update(validated: xr.DataArray) -> None:
+    def _apply_update(validated: xr.DataArray) -> bool:
         self._data = validated
         self._rebuild_ui()
         self.tool_status = status
         self.restoreGeometry(old_geom)
         self._notify_data_changed()
+        return True
 
     return self._perform_source_update(new_data, apply_update=_apply_update)
 ```
+
+If `_apply_update(...)` starts asynchronous follow-up work such as a refit, return
+`False` instead and call `finalize_source_refresh()` only after the new result has been
+published. This is what prevents manager-tracked descendants from refreshing against
+stale derived outputs.
 
 If the tool is launched from an ImageTool selection, the launch site should also bind
 the tool back to its source data:

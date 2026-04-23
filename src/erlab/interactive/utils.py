@@ -2741,7 +2741,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             ]
             | None
         ) = None
-        self._source_refresh_in_progress: bool = False
+        self._source_refreshing: bool = False
+        self._source_refresh_deferred: bool = False
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
@@ -3284,7 +3285,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     def _notify_data_changed(self) -> None:
         """Notify manager-facing listeners that displayed tool data has changed."""
         self.sigInfoChanged.emit()
-        if not self._source_refresh_in_progress:
+        if not self._source_refreshing:
             self.sigDataChanged.emit()
 
     def _prompt_existing_output_imagetool(
@@ -3364,6 +3365,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         prompt_on_reuse: bool,
     ) -> erlab.interactive.imagetool.ImageTool | None:
         manager, parent_uid = self._managed_output_imagetool_parent()
+        output_source_state: typing.Literal["fresh", "stale", "unavailable"] = (
+            self.source_state if self.has_source_binding else "fresh"
+        )
 
         if output_id is None:
             tool = erlab.interactive.itool(data, manager=False, execute=False)
@@ -3430,7 +3434,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 node.set_output_binding(
                     output_id,
                     auto_update=node.source_auto_update,
-                    state="fresh",
+                    state=output_source_state,
                 )
                 node._replace_imagetool_data(
                     data,
@@ -3452,6 +3456,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             activate=True,
             provenance_spec=provenance_spec,
             source_spec=None,
+            source_state=output_source_state,
             output_id=output_id,
         )
         self._register_output_imagetool_target(output_id, child_uid)
@@ -3544,6 +3549,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     def finalize_source_refresh(self) -> None:
         """Record that the current source refresh has been applied to the tool."""
+        self._source_refresh_deferred = False
         self._sync_input_provenance_snapshot()
         self._set_source_state("fresh")
         self.sigDataChanged.emit()
@@ -3558,6 +3564,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self, state: typing.Literal["fresh", "stale", "unavailable"]
     ) -> None:
         """Update the source state, refresh the banner, and emit info changes."""
+        if state != "stale":
+            self._source_refresh_deferred = False
         self._source_state = state
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
@@ -3624,10 +3632,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self,
         new_data: xr.DataArray,
         *,
-        apply_update: Callable[[xr.DataArray], None],
+        apply_update: Callable[[xr.DataArray], bool | None],
         timeout_ms: int | None = None,
     ) -> bool:
         """Run a source update without tearing down the UI while workers are alive."""
+        self._source_refresh_deferred = False
         validated = self.validate_update_data(new_data)
         if timeout_ms is None:
             timeout_ms = self.BACKGROUND_TASK_TIMEOUT_MS
@@ -3637,8 +3646,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 self.tool_name,
             )
             return False
-        apply_update(validated)
-        return True
+        return apply_update(validated) is not False
 
     @staticmethod
     def _wait_for_threadpool(
@@ -3684,7 +3692,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return False
 
         try:
-            self._source_refresh_in_progress = True
+            self._source_refresh_deferred = False
+            self._source_refreshing = True
             update_complete = self.update_data(resolved)
         except Exception:
             logger.exception(
@@ -3693,7 +3702,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             self._set_source_state("unavailable")
             return False
         finally:
-            self._source_refresh_in_progress = False
+            self._source_refreshing = False
         if update_complete is False:
             self._set_source_state("stale")
             return False
@@ -3716,9 +3725,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             self._set_source_state("unavailable")
             return
 
+        self._source_refresh_deferred = False
         if self._source_auto_update:
             try:
-                self._source_refresh_in_progress = True
+                self._source_refreshing = True
                 update_complete = self.update_data(resolved)
             except Exception:
                 logger.exception(
@@ -3728,7 +3738,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 self._set_source_state("unavailable")
                 return
             finally:
-                self._source_refresh_in_progress = False
+                self._source_refreshing = False
             if update_complete is False:
                 self._set_source_state("stale")
                 return
@@ -3760,7 +3770,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
         Subclasses must override this when they support ImageTool source updates. Return
         `False` to leave the tool marked as stale when the new data is recognized but
-        cannot be applied immediately.
+        cannot be published as a fresh result immediately.
         """
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement update_data() to support "

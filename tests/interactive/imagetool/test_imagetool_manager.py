@@ -1766,6 +1766,48 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         assert ".modelfit_stderr.sel(param=" in stderr_code
 
 
+def test_manager_fit2d_output_refresh_requires_fresh_parent_source(
+    qtbot,
+    exp_decay_model,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
+        child.timeout_spin.setValue(30.0)
+        child.nfev_spin.setValue(0)
+        child.y_index_spin.setValue(child.y_min_spin.value())
+        child._run_fit_2d("up")
+        qtbot.wait_until(
+            lambda: all(ds is not None for ds in child._result_ds_full),
+            timeout=10000,
+        )
+
+        child.param_plot_combo.setCurrentIndex(0)
+        child.param_plot._show_parameter_values()
+        child_node = manager._child_node(child_uid)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+
+        values_uid = child_node._childtool_indices[0]
+        values_node = manager._child_node(values_uid)
+        before = fetch(values_uid).copy(deep=True)
+
+        child._set_source_state("stale")
+        values_node._set_source_state("stale")
+
+        assert values_node._update_from_parent_source() is False
+        assert values_node.source_state == "stale"
+        xr.testing.assert_identical(fetch(values_uid), before)
+
+
 def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_windows(
     qtbot,
     monkeypatch,
