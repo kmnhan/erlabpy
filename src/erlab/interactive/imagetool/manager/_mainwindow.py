@@ -1627,6 +1627,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 selection_watched.append(node.index)
 
         something_selected = bool(imagetool_targets or selection_children)
+        root_imagetool_count = len(self.tree_view.selected_imagetool_indices)
+        total_selected = len(imagetool_targets) + len(selection_children)
+        single_selected = total_selected == 1
+        multiple_root_imagetools_selected = (
+            root_imagetool_count > 1 and root_imagetool_count == total_selected
+        )
         multiple_selected = len(imagetool_targets) > 1
         only_unarchived = len(selection_archived) == 0
         only_archived = len(selection_unarchived) == 0 and len(imagetool_targets) > 0
@@ -1635,7 +1641,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.hide_action.setEnabled(something_selected)
         self.remove_action.setEnabled(something_selected)
         self.rename_action.setEnabled(
-            something_selected and only_unarchived and len(selection_children) == 0
+            only_unarchived and (single_selected or multiple_root_imagetools_selected)
         )
         self.duplicate_action.setEnabled(something_selected)
         self.promote_action.setEnabled(promotable_child_uid is not None)
@@ -1971,10 +1977,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.tree_view.edit(self.tree_view._model._row_index(target))
             return
 
+        if selected_tools or any(
+            not isinstance(target, int) for target in selected_images
+        ):
+            return
+
         dlg = self._rename_dialog
-        root_selected = [
-            target for target in selected_images if isinstance(target, int)
-        ]
+        root_selected = typing.cast("list[int]", selected_images)
         dlg.set_names(
             root_selected, [self._imagetool_wrappers[i].name for i in root_selected]
         )

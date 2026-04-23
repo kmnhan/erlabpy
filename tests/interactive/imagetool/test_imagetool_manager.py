@@ -476,7 +476,9 @@ def test_manager(
         bring_manager_to_top(qtbot, manager)
         select_child_tool(manager, goldtool_uid)
 
-        manager.tree_view.edit(manager.tree_view._model._row_index(goldtool_uid))
+        manager._update_actions()
+        assert manager.rename_action.isEnabled()
+        manager.rename_action.trigger()
         qtbot.wait_until(
             lambda: (
                 manager.tree_view.state()
@@ -2014,6 +2016,75 @@ def test_manager_promote_action_enablement_and_menus(
         manager._child_node(child_uid).archive()
         manager._update_actions()
         assert not manager.promote_action.isEnabled()
+
+
+def test_manager_rename_action_enablement_for_child_selection(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent = manager._imagetool_wrappers[0]
+        manager.get_imagetool(0).slicer_area.images[0].open_in_new_window()
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+
+        child_uid = parent._childtool_indices[0]
+        child_tool = manager.get_imagetool(child_uid)
+        child_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._child_node(child_uid)._childtool_indices) == 1,
+            timeout=5000,
+        )
+        nested_uid = manager._child_node(child_uid)._childtool_indices[0]
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.rename_action.isEnabled()
+
+        select_tools(manager, [0])
+        manager._update_actions()
+        assert not manager.rename_action.isEnabled()
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, nested_uid)
+        manager._update_actions()
+        assert manager.rename_action.isEnabled()
+
+        manager.rename_action.trigger()
+        qtbot.wait_until(
+            lambda: (
+                manager.tree_view.state()
+                == QtWidgets.QAbstractItemView.State.EditingState
+            ),
+            timeout=5000,
+        )
+        delegate = manager.tree_view.itemDelegate()
+        assert isinstance(delegate, _ImageToolWrapperItemDelegate)
+        assert isinstance(delegate._current_editor, QtWidgets.QLineEdit)
+        delegate._current_editor.setText("renamed_child_tool")
+        qtbot.keyClick(delegate._current_editor, QtCore.Qt.Key.Key_Return)
+        qtbot.wait_until(
+            lambda: (
+                manager.get_childtool(nested_uid)._tool_display_name
+                == "renamed_child_tool"
+            ),
+            timeout=5000,
+        )
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        select_child_tool(manager, nested_uid)
+        manager._update_actions()
+        assert not manager.rename_action.isEnabled()
 
 
 def test_manager_promote_selected_cancel_keeps_nested_imagetool(
