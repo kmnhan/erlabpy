@@ -1020,6 +1020,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 continue
             updated = child.handle_parent_source_replaced(parent_data)
             self.tree_view.refresh(child_uid)
+            if child.archived:
+                continue
             if updated:
                 self._propagate_source_change_from_uid(child_uid)
             elif child.source_state != "fresh":
@@ -2189,6 +2191,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 new_target: int | str = self.add_imagetool(
                     duplicated_window,
                     activate=True,
+                    source_input_ndim=node.source_input_ndim,
                     provenance_spec=node.provenance_spec,
                     source_spec=node.source_spec,
                     source_auto_update=node.source_auto_update,
@@ -2291,6 +2294,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
                 node.provenance_spec.model_dump(mode="json")
             )
+        if isinstance(node, _ImageToolWrapper) and node.source_input_ndim is not None:
+            ds.attrs["manager_node_source_input_ndim"] = int(node.source_input_ndim)
         output_id = node.output_id
         if kind == "imagetool" and output_id is not None:
             ds.attrs["manager_node_output_id"] = output_id
@@ -2429,6 +2434,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             target: int | str
             if parent_target is None:
                 kwargs.pop("output_id", None)
+                kwargs["source_input_ndim"] = typing.cast(
+                    "int | None",
+                    ds.attrs.get("manager_node_source_input_ndim"),
+                )
                 target = self.add_imagetool(
                     tool, show=ds.attrs.get("itool_visible", True), **kwargs
                 )

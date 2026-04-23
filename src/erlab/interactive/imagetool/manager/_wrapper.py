@@ -879,6 +879,12 @@ class _ManagedWindowNode(QtCore.QObject):
         self._box_ratio_archived = float("NaN")
         self._pixmap_archived = QtGui.QPixmap()
         self.manager._sigReloadLinkers.emit()
+        if self.has_source_binding and self.source_state != "fresh":
+            if self.source_auto_update:
+                self._update_from_parent_source()
+            else:
+                self.manager._mark_descendants_source_state(self.uid, self.source_state)
+            return
         self.manager._propagate_source_change_from_uid(self.uid)
 
     @QtCore.Slot()
@@ -949,6 +955,13 @@ class _ManagedWindowNode(QtCore.QObject):
             with self._suspend_descendant_propagation():
                 self.tool_window.handle_parent_source_replaced(parent_data)
             return self.tool_window.source_state == "fresh"
+
+        if self.archived and self.has_source_binding:
+            # Archived ImageTools cannot apply live updates because their window is not
+            # available. Defer the refresh until unarchive instead of treating the node
+            # as unavailable.
+            self._set_source_state("stale")
+            return False
 
         if self._output_id is not None and not self._source_auto_update:
             # Output-bound child ImageTools may be expensive to regenerate. When live
@@ -1075,6 +1088,10 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def set_source_input_ndim(self, ndim: int | None) -> None:
         """Track the latest dimensionality of the root source before UI promotion."""
         self._source_input_ndim = ndim
+
+    @property
+    def source_input_ndim(self) -> int | None:
+        return self._source_input_ndim
 
     def _watched_root_provenance_spec(
         self,

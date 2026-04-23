@@ -1440,6 +1440,64 @@ def test_manager_archived_output_child_reopens_existing_slot(
         xr.testing.assert_identical(fetch(output_uid), child.corrected)
 
 
+def test_manager_archived_auto_updating_child_refreshes_on_unarchive(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    base = xr.DataArray(
+        np.arange(16, dtype=float).reshape((4, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(4), "y": np.arange(4)},
+        name="scan",
+    )
+    updated = base.isel(x=slice(1, 3))
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(base.isel(x=slice(0, 2)), manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            root_tool,
+            show=False,
+            provenance_spec=prov.selection(
+                prov.IselOperation(kwargs={"x": slice(0, 2)})
+            ),
+        )
+
+        child_tool = itool(base.isel(x=slice(0, 2)), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+
+        child_node = manager._child_node(child_uid)
+        child_node.archive()
+        assert child_node.archived
+
+        manager._imagetool_wrappers[0].set_detached_provenance(
+            prov.selection(prov.IselOperation(kwargs={"x": slice(1, 3)}))
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node.archived
+
+        child_node.unarchive()
+        qtbot.wait_until(lambda: not child_node.archived, timeout=5000)
+        qtbot.wait_until(lambda: child_node.source_state == "fresh", timeout=5000)
+        xr.testing.assert_identical(fetch(child_uid), updated)
+
+
 def test_manager_nested_imagetool_refresh_updates_descendant_lineage(
     qtbot,
     manager_context: Callable[
@@ -1574,6 +1632,88 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
 
         qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
         qtbot.wait_until(lambda: grandchild_node.source_state == "stale", timeout=5000)
+
+
+def test_manager_archived_nested_imagetool_refreshes_descendants_on_unarchive(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    base = xr.DataArray(
+        np.arange(16, dtype=float).reshape((4, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(4), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_data = base.isel(x=slice(0, 2))
+        updated_root = base.isel(x=slice(1, 3))
+
+        root_tool = itool(root_data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            root_tool,
+            show=False,
+            provenance_spec=prov.selection(
+                prov.IselOperation(kwargs={"x": slice(0, 2)})
+            ),
+        )
+
+        child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+
+        grandchild_tool = itool(
+            root_data.isel(y=slice(0, 2)), manager=False, execute=False
+        )
+        assert isinstance(grandchild_tool, erlab.interactive.imagetool.ImageTool)
+        grandchild_uid = manager.add_imagetool_child(
+            grandchild_tool,
+            child_uid,
+            show=False,
+            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_auto_update=True,
+        )
+
+        child_node = manager._child_node(child_uid)
+        grandchild_node = manager._child_node(grandchild_uid)
+
+        child_node.archive()
+        assert child_node.archived
+        qtbot.wait_until(
+            lambda: grandchild_node.source_state == "unavailable", timeout=5000
+        )
+
+        manager._imagetool_wrappers[0].set_detached_provenance(
+            prov.selection(prov.IselOperation(kwargs={"x": slice(1, 3)}))
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_root)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert grandchild_node.source_state == "unavailable"
+
+        child_node.unarchive()
+        qtbot.wait_until(lambda: not child_node.archived, timeout=5000)
+        qtbot.wait_until(lambda: child_node.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: grandchild_node.source_state == "fresh", timeout=5000)
+
+        xr.testing.assert_identical(fetch(child_uid), updated_root)
+        xr.testing.assert_identical(
+            fetch(grandchild_uid), updated_root.isel(y=slice(0, 2))
+        )
 
 
 def test_manager_meshtool_output_itools_use_distinct_output_ids(
@@ -3259,6 +3399,104 @@ def test_manager_watched_update_to_1d_refreshes_copy_code_cleanup(
         assert "derived = data" not in copied[-1]
         assert ".squeeze()" not in copied[-1]
         assert "result = my_data.xlm.modelfit(" in copied[-1]
+
+
+def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(5), dims=("x",), coords={"x": np.arange(5)})
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_recv([data], {}, watched_var=("my_1d", "kernel-0"))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        duplicated = manager.duplicate_imagetool(0)
+        assert isinstance(duplicated, int)
+
+        parent_tool = manager.get_imagetool(duplicated)
+        parent_tool.slicer_area.images[0].open_in_ftool()
+        qtbot.wait_until(
+            lambda: (
+                len(manager._imagetool_wrappers[duplicated]._childtool_indices) == 1
+            ),
+            timeout=5000,
+        )
+
+        child_uid = manager._imagetool_wrappers[duplicated]._childtool_indices[0]
+        child_tool = manager.get_childtool(child_uid)
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        child_tool.copy_code()
+
+        assert copied
+        assert "derived = my_1d" not in copied[-1]
+        assert "derived = data" not in copied[-1]
+        assert ".squeeze()" not in copied[-1]
+        assert "result = my_1d.xlm.modelfit(" in copied[-1]
+
+
+def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(5), dims=("x",), coords={"x": np.arange(5)})
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_recv([data], {}, watched_var=("my_1d", "kernel-0"))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tree = manager._to_datatree()
+        assert tree["0/imagetool"].attrs["manager_node_source_input_ndim"] == 1
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_ftool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            timeout=5000,
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_tool = manager.get_childtool(child_uid)
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        child_tool.copy_code()
+
+        assert copied
+        assert "derived = my_1d" not in copied[-1]
+        assert "derived = data" not in copied[-1]
+        assert ".squeeze()" not in copied[-1]
+        assert "result = my_1d.xlm.modelfit(" in copied[-1]
 
 
 def test_manager_duplicate(
