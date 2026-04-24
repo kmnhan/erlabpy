@@ -435,6 +435,12 @@ class _ManagedWindowNode(QtCore.QObject):
         return self.label_text if self.is_imagetool else self.name
 
     @property
+    def type_badge_text(self) -> str | None:
+        if self.tool_window is not None:
+            return self.tool_window.tool_name
+        return None
+
+    @property
     def info_text(self) -> str:
         if self.tool_window is not None:
             return erlab.interactive.utils._apply_qt_accent_color(

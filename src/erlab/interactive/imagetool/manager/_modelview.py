@@ -29,6 +29,7 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
+_TOOL_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 129
 
 
 def _fill_rounded_rect(
@@ -80,6 +81,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
     watched_rect_hpad: int = 5
     watched_font_scale: float = 0.9
+    tool_type_rect_gap: int = 5
+    tool_type_rect_hpad: int = 5
+    tool_type_font_scale: float = 0.85
     child_status_rect_hpad: int = 5
     child_status_font_scale: float = 0.85
 
@@ -136,7 +140,23 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         index: QtCore.QModelIndex,
     ) -> None:
         if editor is not None:  # pragma: no branch
+            option.font.setPointSize(self._font_size)
             rect = QtCore.QRectF(option.rect)
+            ptr = index.internalPointer()
+            if isinstance(ptr, str):
+                try:
+                    child_node = self.manager._child_node(ptr)
+                except KeyError:
+                    child_node = None
+                if child_node is not None:
+                    type_rect, _, _ = self._compute_tool_type_info(option, child_node)
+                    if type_rect is not None:
+                        rect.setLeft(type_rect.right() + self.tool_type_rect_gap + 1)
+                    status_rect, _, _ = self._compute_child_status_info(
+                        option, child_node
+                    )
+                    if status_rect is not None:
+                        rect.setRight(status_rect.left() - self.icon_right_pad)
             rect.setTop(rect.center().y() - editor.sizeHint().height() / 2)
             editor.setGeometry(rect.toRect())
 
@@ -415,6 +435,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         selected: bool = QtWidgets.QStyle.StateFlag.State_Selected in option.state
         child_node: _ManagedWindowNode | None = None
+        type_rect: QtCore.QRect | None = None
+        type_text: str | None = None
+        type_color: QtGui.QColor | None = None
         status_rect: QtCore.QRect | None = None
         status_text: str | None = None
         status_color: QtGui.QColor | None = None
@@ -423,9 +446,34 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         except KeyError:
             child_node = None
         else:
+            type_rect, type_text, type_color = self._compute_tool_type_info(
+                option, child_node
+            )
             status_rect, status_text, status_color = self._compute_child_status_info(
                 option, child_node
             )
+
+        if type_rect and type_text and type_color:
+            _fill_rounded_rect(
+                painter,
+                type_rect,
+                facecolor=option.palette.base(),
+                edgecolor=type_color,
+                linewidth=self.icon_border_width,
+                radius=self.icon_corner_radius,
+            )
+            type_font = QtGui.QFont(option.font)
+            type_font.setPointSizeF(self._font_size * self.tool_type_font_scale)
+            painter.save()
+            painter.setFont(type_font)
+            painter.setPen(type_color)
+            painter.drawText(
+                type_rect,
+                QtCore.Qt.AlignmentFlag.AlignVCenter
+                | QtCore.Qt.AlignmentFlag.AlignCenter,
+                type_text,
+            )
+            painter.restore()
 
         if not is_editing:  # pragma: no branch
             role = (
@@ -437,19 +485,20 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 role = QtGui.QPalette.ColorRole.Mid
             painter.setPen(option.palette.color(role))
 
+            text_rect = QtCore.QRect(option.rect)
+            if type_rect is not None:
+                text_rect.setLeft(type_rect.right() + self.tool_type_rect_gap + 1)
+            if status_rect is not None:
+                text_rect.setRight(status_rect.left() - self.icon_right_pad)
+
             # Elide text if necessary
             elided_text = QtGui.QFontMetrics(option.font).elidedText(
                 index.data(role=QtCore.Qt.ItemDataRole.DisplayRole),
                 view.textElideMode(),
-                option.rect.width()
-                - (
-                    status_rect.width() + self.icon_right_pad
-                    if status_rect is not None
-                    else 0
-                ),
+                max(text_rect.width(), 0),
             )
             painter.drawText(
-                option.rect,
+                text_rect,
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided_text,
@@ -529,6 +578,26 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0)),
                 option,
             )
+
+    def _compute_tool_type_info(
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        node: _ManagedWindowNode,
+    ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
+        text = node.type_badge_text
+        if not text or node.display_text == text:
+            return None, None, None
+
+        rect_size = self.icon_size + 2 * self.icon_inner_pad
+        rect_y = option.rect.center().y() - (rect_size // 2)
+        badge_font = QtGui.QFont(option.font)
+        badge_font.setPointSizeF(self._font_size * self.tool_type_font_scale)
+        badge_width = (
+            QtGui.QFontMetrics(badge_font).boundingRect(text).width()
+            + self.tool_type_rect_hpad * 2
+        )
+        rect = QtCore.QRect(option.rect.left(), rect_y, badge_width, rect_size)
+        return rect, text, option.palette.color(QtGui.QPalette.ColorRole.Mid)
 
     def _compute_child_status_info(
         self,
@@ -632,6 +701,17 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 except KeyError:
                     child_node = None
                 if child_node is not None:
+                    type_rect, type_text, _ = self._compute_tool_type_info(
+                        option, child_node
+                    )
+                    if type_rect and type_text and type_rect.contains(event.pos()):
+                        QtWidgets.QToolTip.showText(
+                            event.globalPos(),
+                            f"Tool type: {type_text}",
+                            view,
+                            type_rect,
+                        )
+                        return True
                     status_rect, _, _ = self._compute_child_status_info(
                         option, child_node
                     )
@@ -846,6 +926,8 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return self.manager.label_of_imagetool(tool_idx)
         if role == QtCore.Qt.ItemDataRole.EditRole:
             return self.manager.name_of_imagetool(tool_idx)
+        if role == _TOOL_TYPE_ROLE:
+            return None
         if role == _NODE_UID_ROLE:
             return wrapper.uid
         if role == QtCore.Qt.ItemDataRole.SizeHintRole:
@@ -863,6 +945,8 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             if child_node.tool_window is not None:
                 return child_node.tool_window._tool_display_name
             return child_node.name
+        if role == _TOOL_TYPE_ROLE:
+            return child_node.type_badge_text
         if role == _NODE_UID_ROLE:
             return child_node.uid
         if role == QtCore.Qt.ItemDataRole.SizeHintRole:

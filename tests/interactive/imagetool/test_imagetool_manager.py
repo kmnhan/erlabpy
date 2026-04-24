@@ -50,6 +50,7 @@ from erlab.interactive.imagetool.manager._dialogs import (
 from erlab.interactive.imagetool.manager._modelview import (
     _MIME,
     _NODE_UID_ROLE,
+    _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
 )
@@ -779,6 +780,105 @@ def test_remove_childtool_delete_shortcut(
 
         accept_dialog(lambda: qtbot.keyClick(child, QtCore.Qt.Key.Key_Delete))
         qtbot.wait_until(lambda: uid not in wrapper._childtools, timeout=5000)
+
+
+def test_manager_childtool_type_badge_only_for_tool_windows(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        named_data = test_data.rename("source")
+        itool(named_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+        delegate = typing.cast(
+            "_ImageToolWrapperItemDelegate", manager.tree_view.itemDelegate()
+        )
+        parent = manager._imagetool_wrappers[0]
+        parent_tool = manager.get_imagetool(0)
+        root_index = model._row_index(0)
+        assert root_index.data(_TOOL_TYPE_ROLE) is None
+
+        parent_tool.slicer_area.images[0].open_in_new_window()
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+        image_uid = parent._childtool_indices[0]
+        image_node = manager._child_node(image_uid)
+        image_index = model._row_index(image_uid)
+        assert image_node.is_imagetool
+        assert image_index.data(_TOOL_TYPE_ROLE) is None
+
+        option = QtWidgets.QStyleOptionViewItem()
+        option.rect = QtCore.QRect(0, 0, 360, 25)
+        option.font = manager.tree_view.font()
+        option.palette = manager.tree_view.palette()
+        assert delegate._compute_tool_type_info(option, image_node) == (
+            None,
+            None,
+            None,
+        )
+
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 2, timeout=5000)
+        tool_uid = next(uid for uid in parent._childtool_indices if uid != image_uid)
+        tool_node = manager._child_node(tool_uid)
+        tool = manager.get_childtool(tool_uid)
+        tool_index = model._row_index(tool_uid)
+        assert isinstance(tool, DerivativeTool)
+        assert tool_index.data(_TOOL_TYPE_ROLE) == tool.tool_name
+        assert tool_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == (
+            tool._tool_display_name
+        )
+        assert tool_index.data(QtCore.Qt.ItemDataRole.EditRole) == (
+            tool._tool_display_name
+        )
+
+        type_rect, type_text, _ = delegate._compute_tool_type_info(option, tool_node)
+        assert type_rect is not None
+        assert type_text == tool.tool_name
+
+        tooltip_text = None
+
+        def _show_tooltip(*args, **kwargs) -> None:
+            nonlocal tooltip_text
+            tooltip_text = args[1]
+
+        monkeypatch.setattr(QtWidgets.QToolTip, "showText", _show_tooltip)
+        help_event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip,
+            type_rect.center(),
+            manager.tree_view.viewport().mapToGlobal(type_rect.center()),
+        )
+        assert delegate.helpEvent(help_event, manager.tree_view, option, tool_index)
+        assert tooltip_text == f"Tool type: {tool.tool_name}"
+
+        editor = QtWidgets.QLineEdit(manager.tree_view.viewport())
+        delegate.updateEditorGeometry(editor, option, tool_index)
+        assert editor.geometry().left() > type_rect.right()
+        editor.deleteLater()
+
+        pixmap = QtGui.QPixmap(option.rect.size())
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        delegate.paint(painter, option, tool_index)
+        painter.end()
+
+        assert model.setData(
+            tool_index,
+            "renamed_dtool",
+            QtCore.Qt.ItemDataRole.EditRole,
+        )
+        assert tool._tool_display_name == "renamed_dtool"
+        assert tool_index.data(_TOOL_TYPE_ROLE) == tool.tool_name
+        assert tool_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "renamed_dtool"
+        assert tool_index.data(QtCore.Qt.ItemDataRole.EditRole) == "renamed_dtool"
 
 
 def test_manager_multi_data_not_shown(
