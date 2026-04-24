@@ -5039,15 +5039,9 @@ def test_manager_hover_tooltip(
         index = model.index(0, 0)  # first tool
         option = QtWidgets.QStyleOptionViewItem()
         delegate.initStyleOption(option, index)
-        icons_width, dask_rect, link_rect, _ = delegate._compute_icons_info(
+        _, dask_rect, link_rect, _ = delegate._compute_icons_info(
             option, index.internalPointer()
         )
-        uid_rect = delegate._compute_uid_badge_rect(
-            option,
-            index.data(_NODE_UID_ROLE),
-            right_reserved=icons_width,
-        )
-        assert uid_rect is not None
 
         text = None
 
@@ -5087,16 +5081,6 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
         assert not handled
         assert text is None
-
-        # Hover over node id badge
-        text = None
-        pos = uid_rect.center()
-        event = QtGui.QHelpEvent(
-            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
-        )
-        handled = delegate.helpEvent(event, view, option, index)
-        assert handled
-        assert text == f"Node ID: {index.data(_NODE_UID_ROLE)}"
 
 
 def test_warning_alert(

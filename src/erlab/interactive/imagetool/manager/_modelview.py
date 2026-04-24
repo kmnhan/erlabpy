@@ -82,8 +82,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     watched_font_scale: float = 0.9
     child_status_rect_hpad: int = 5
     child_status_font_scale: float = 0.85
-    uid_rect_hpad: int = 5
-    uid_font_scale: float = 0.82
 
     def __init__(
         self, manager: ImageToolManager, parent: _ImageToolWrapperTreeView
@@ -263,60 +261,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter,
         )
 
-    def _compute_uid_badge_rect(
-        self,
-        option: QtWidgets.QStyleOptionViewItem,
-        uid: str,
-        *,
-        right_reserved: int = 0,
-    ) -> QtCore.QRect | None:
-        if uid == "":
-            return None
-
-        rect_size = self.icon_size + 2 * self.icon_inner_pad
-        rect_y = option.rect.center().y() - (rect_size // 2)
-        badge_font = QtGui.QFontDatabase.systemFont(
-            QtGui.QFontDatabase.SystemFont.FixedFont
-        )
-        badge_font.setPointSizeF(self._font_size * self.uid_font_scale)
-        badge_width = (
-            QtGui.QFontMetrics(badge_font).boundingRect(uid).width()
-            + self.uid_rect_hpad * 2
-        )
-        rect_x = (
-            option.rect.right() - right_reserved - badge_width - self.icon_right_pad
-        )
-        return QtCore.QRect(rect_x, rect_y, badge_width, rect_size)
-
-    def _paint_uid_badge(
-        self,
-        painter: QtGui.QPainter,
-        option: QtWidgets.QStyleOptionViewItem,
-        rect: QtCore.QRect,
-        uid: str,
-    ) -> None:
-        _fill_rounded_rect(
-            painter,
-            rect,
-            facecolor=option.palette.base(),
-            edgecolor=option.palette.mid(),
-            linewidth=self.icon_border_width,
-            radius=self.icon_corner_radius,
-        )
-        badge_font = QtGui.QFontDatabase.systemFont(
-            QtGui.QFontDatabase.SystemFont.FixedFont
-        )
-        badge_font.setPointSizeF(self._font_size * self.uid_font_scale)
-        painter.save()
-        painter.setFont(badge_font)
-        painter.setPen(option.palette.color(QtGui.QPalette.ColorRole.Mid))
-        painter.drawText(
-            rect,
-            QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignCenter,
-            uid,
-        )
-        painter.restore()
-
     @functools.cached_property
     def _dask_icon(self) -> QtGui.QIcon:
         return QtGui.QIcon(os.path.join(os.path.dirname(__file__), "dask.png"))
@@ -370,9 +314,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         icons_width, dask_rect, link_rect, watched_rect = self._compute_icons_info(
             option, tool_wrapper
         )
-        uid_rect = self._compute_uid_badge_rect(
-            option, str(index.data(_NODE_UID_ROLE)), right_reserved=icons_width
-        )
 
         # Draw label (skip while editing for inline editor)
         if not is_editing:  # pragma: no branch
@@ -397,14 +338,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             elided = fm.elidedText(
                 text,
                 view.textElideMode(),
-                option.rect.width()
-                - self.icon_right_pad
-                - icons_width
-                - (
-                    uid_rect.width() + self.icon_right_pad
-                    if uid_rect is not None
-                    else 0
-                ),
+                option.rect.width() - self.icon_right_pad - icons_width,
             )
             painter.setPen(palette.color(color_group, role))
             painter.drawText(
@@ -413,8 +347,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided,
             )
-            if uid_rect is not None:
-                self._paint_uid_badge(painter, option, uid_rect, tool_wrapper.uid)
 
         # Icons
         if dask_rect:
@@ -494,19 +426,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             status_rect, status_text, status_color = self._compute_child_status_info(
                 option, child_node
             )
-        uid_rect = (
-            None
-            if child_node is None
-            else self._compute_uid_badge_rect(
-                option,
-                child_node.uid,
-                right_reserved=(
-                    status_rect.width() + self.icon_right_pad
-                    if status_rect is not None
-                    else 0
-                ),
-            )
-        )
 
         if not is_editing:  # pragma: no branch
             role = (
@@ -527,11 +446,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     status_rect.width() + self.icon_right_pad
                     if status_rect is not None
                     else 0
-                )
-                - (
-                    uid_rect.width() + self.icon_right_pad
-                    if uid_rect is not None
-                    else 0
                 ),
             )
             painter.drawText(
@@ -540,8 +454,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided_text,
             )
-            if uid_rect is not None and child_node is not None:
-                self._paint_uid_badge(painter, option, uid_rect, child_node.uid)
             if status_rect and status_text and status_color:
                 _fill_rounded_rect(
                     painter,
@@ -681,14 +593,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             tool_wrapper = index.internalPointer()
             if isinstance(tool_wrapper, _ImageToolWrapper):  # pragma: no branch
                 (
-                    icons_width,
+                    _,
                     dask_rect,
                     link_rect,
                     watched_rect,
                 ) = self._compute_icons_info(option, tool_wrapper)
-                uid_rect = self._compute_uid_badge_rect(
-                    option, tool_wrapper.uid, right_reserved=icons_width
-                )
                 pos = event.pos()
                 if dask_rect and dask_rect.contains(pos):
                     QtWidgets.QToolTip.showText(
@@ -717,14 +626,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         watched_rect,
                     )
                     return True
-                if uid_rect and uid_rect.contains(pos):
-                    QtWidgets.QToolTip.showText(
-                        event.globalPos(),
-                        f"Node ID: {tool_wrapper.uid}",
-                        view,
-                        uid_rect,
-                    )
-                    return True
             elif isinstance(tool_wrapper, str):
                 try:
                     child_node = self.manager._child_node(tool_wrapper)
@@ -733,15 +634,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 if child_node is not None:
                     status_rect, _, _ = self._compute_child_status_info(
                         option, child_node
-                    )
-                    uid_rect = self._compute_uid_badge_rect(
-                        option,
-                        child_node.uid,
-                        right_reserved=(
-                            status_rect.width() + self.icon_right_pad
-                            if status_rect is not None
-                            else 0
-                        ),
                     )
                     if status_rect and status_rect.contains(event.pos()):
                         tooltip = (
@@ -752,14 +644,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         )
                         QtWidgets.QToolTip.showText(
                             event.globalPos(), tooltip, view, status_rect
-                        )
-                        return True
-                    if uid_rect and uid_rect.contains(event.pos()):
-                        QtWidgets.QToolTip.showText(
-                            event.globalPos(),
-                            f"Node ID: {child_node.uid}",
-                            view,
-                            uid_rect,
                         )
                         return True
 
