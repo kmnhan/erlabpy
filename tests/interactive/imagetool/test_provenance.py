@@ -509,6 +509,169 @@ def test_tool_provenance_rejects_unsupported_hashables() -> None:
         )
 
 
+def test_tool_provenance_validation_helpers_and_error_branches() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    base_operation = prov.ToolProvenanceOperation()
+
+    assert prov._format_derivation_value([1, 2]) == "(1, 2)"
+    assert prov._format_selection_step("isel", {}) == "derived = derived.isel()"
+    assert prov._simplify_display_code("if") == "if"
+    assert prov._simplify_display_code("") == ""
+    assert (
+        prov._simplify_display_code("for item in []:\n    pass")
+        == "for item in []:\n    pass"
+    )
+    assert prov._simplify_display_code("derived = data\nresult = derived + 1") == (
+        "result = data + 1"
+    )
+
+    with pytest.raises(ValueError, match="Expected 2 items"):
+        prov._ensure_float_tuple([1.0], expected_len=2)
+    with pytest.raises(TypeError, match="expected an array-like sequence"):
+        prov._coerce_float_sequence("not-a-sequence")
+    with pytest.raises(TypeError, match="active_name must be a string"):
+        prov._validate_active_name(1)
+    with pytest.raises(ValueError, match="active_name must be a valid"):
+        prov._validate_active_name("for")
+    with pytest.raises(TypeError, match="expected a sequence"):
+        prov.ToolProvenanceOperation._coerce_hashable_tuple_field("x")
+    with pytest.raises(ValueError, match="Expected 2 items"):
+        prov.ToolProvenanceOperation._coerce_hashable_tuple_field([1], expected_len=2)
+    assert prov.ToolProvenanceOperation._coerce_hashable_mapping_field(None) == {}
+    with pytest.raises(TypeError, match="expected a mapping"):
+        prov.ToolProvenanceOperation._coerce_hashable_mapping_field([("x", 1)])
+    with pytest.raises(NotImplementedError):
+        base_operation.apply(_base_data(), parent_data=_base_data())
+    with pytest.raises(NotImplementedError):
+        base_operation.derivation_entry()
+    with pytest.raises(TypeError, match="must be mappings"):
+        prov.parse_tool_provenance_operation(1)
+    with pytest.raises(TypeError, match="must include a string `op`"):
+        prov.parse_tool_provenance_operation({"op": 1})
+    with pytest.raises(TypeError, match="array-like"):
+        prov.AssignCoordsOperation(coord_name="x", values=object())
+    with pytest.raises(TypeError, match=r"xarray\.Dataset"):
+        prov.CorrectWithEdgeOperation(edge_fit=object())
+
+    assert prov.ToolProvenanceSpec(kind="full_data", operations=None).operations == ()
+    with pytest.raises(ValidationError, match="must define `start_label`"):
+        prov.ToolProvenanceSpec(kind="script", active_name="derived")
+    with pytest.raises(ValidationError, match="Only script provenance specs"):
+        prov.ToolProvenanceSpec(kind="full_data", start_label="bad")
+    with pytest.raises(TypeError, match="Script provenance uses"):
+        prov.script(start_label="Start", active_name="derived")._display_operations()
+
+
+def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+
+    xr.testing.assert_identical(
+        prov.full_data(prov.TransposeOperation()).apply(data),
+        data.transpose(*reversed(data.dims)),
+    )
+    assert prov.TransposeOperation().derivation_entry().code == (
+        "derived = derived.transpose(*reversed(derived.dims))"
+    )
+    assert prov.SortCoordOrderOperation().derivation_entry().copyable is True
+    assert (
+        prov.SelOperation(kwargs={"x": 1.0}).derivation_entry().label.startswith("sel(")
+    )
+    assert prov.full_data().derivation_code() is None
+    assert (
+        prov.script(start_label="Start", active_name="derived").display_code() is None
+    )
+    assert (
+        prov.full_data(
+            prov.CorrectWithEdgeOperation(edge_fit=xr.Dataset(), shift_coords=True)
+        ).display_code()
+        is None
+    )
+
+    with pytest.raises(TypeError, match="script_code operations"):
+        prov.ScriptCodeOperation(label="Step", code="derived = data").apply(
+            data, parent_data=data
+        )
+    with pytest.raises(ValidationError, match="thin global mode requires factor"):
+        prov.ThinOperation(mode="global")
+    with pytest.raises(ValidationError, match="thin per_dim mode requires factors"):
+        prov.ThinOperation(mode="per_dim")
+    assert prov.ThinOperation(mode="global", factor=2).derivation_entry().code == (
+        "derived = derived.thin(2)"
+    )
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "generate_code",
+        lambda *_args, assign=None, **_kwargs: f"{assign} = generated()",
+    )
+    assert (
+        prov.RotateOperation(angle=45.0, axes=("x", "y"), center=(0.0, 0.0))
+        .derivation_entry()
+        .code
+        == "derived = generated()"
+    )
+    assert (
+        prov.SymmetrizeOperation(dim="x", center=0.0).derivation_entry().code
+        == "derived = generated()"
+    )
+    assert (
+        prov.SymmetrizeNfoldOperation(fold=4, axes=("x", "y")).derivation_entry().code
+        == "derived = generated()"
+    )
+
+    assign_entry = prov.AssignCoordsOperation(
+        coord_name="x", values=np.array([2.0, 1.0, 0.0])
+    ).derivation_entry()
+    assert assign_entry.copyable is True
+    assert "assign_coords" in typing.cast("str", assign_entry.code)
+
+    ambiguous = prov.full_data(
+        prov.SelOperation(kwargs={"missing": 0}),
+        prov.SqueezeOperation(),
+    )
+    assert [entry.label for entry in ambiguous.display_entries(parent_data=data)] == [
+        "Start from current parent ImageTool data",
+        "sel(missing=0)",
+        "squeeze()",
+    ]
+
+    parent = prov.script(
+        start_label="Start from watched variable 'my_1d'",
+        seed_code="derived = my_1d",
+    )
+    promoted = prov.mark_promoted_1d_source(data.copy(deep=False))
+    assert (
+        prov.compose_display_provenance(
+            parent,
+            prov.selection(prov.IselOperation(kwargs={"x": 0})),
+            parent_data=promoted,
+        )
+        is not parent
+    )
+    assert (
+        prov.compose_display_provenance(
+            parent,
+            prov.selection(prov.AverageOperation(dims=("x",))),
+            parent_data=promoted,
+        )
+        is not parent
+    )
+    assert (
+        prov.direct_replay_input_name(
+            prov.script(start_label="Start", seed_code="prepared = data")
+        )
+        is None
+    )
+    assert (
+        prov.direct_replay_input_name(
+            prov.script(start_label="Start", seed_code="derived = for")
+        )
+        is None
+    )
+    assert prov.compose_full_provenance(parent, None) == parent
+
+
 def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     data = _base_data()
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})

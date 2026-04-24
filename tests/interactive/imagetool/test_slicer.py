@@ -392,3 +392,16 @@ def test_qsel_args_falls_back_to_dims_index_lookup(qtbot) -> None:
     slicer._dim_indices = {}
 
     assert slicer.qsel_args(0, (0, 1)) == {"z": 2.0}
+
+
+def test_isel_code_uses_call_kwargs_formatting(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((4, 5, 6), dtype=np.float32),
+        dims=("x", "y", "z"),
+        coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(6)},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [1, 2, 3], update=False)
+
+    assert slicer.isel_code(0, (0, 1)) == ".isel(z=3)"

@@ -158,6 +158,20 @@ def test_loader_registry_survives_dataloader_reload(
     erlab.io.set_data_dir(None)
 
 
+def test_lazy_namespace_exports_shared_loader_registry() -> None:
+    import erlab.io._namespace as namespace
+
+    assert isinstance(namespace.loaders, erlab.io.dataloader.LoaderRegistry)
+    assert namespace.loaders._state is erlab.io.dataloader.loaders._state
+    assert namespace.load.__self__ is namespace.loaders
+    assert namespace.loader_context.__self__ is namespace.loaders
+    assert namespace.set_data_dir.__self__ is namespace.loaders
+    assert namespace.set_loader.__self__ is namespace.loaders
+    assert namespace.extend_loader.__self__ is namespace.loaders
+    assert namespace.summarize.__self__ is namespace.loaders
+    assert namespace.loaders._lock is namespace.loaders._state.lock
+
+
 def test_thread_safety():
     potential_loaders = list(erlab.io.loaders.keys())
 

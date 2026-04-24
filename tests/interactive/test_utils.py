@@ -39,6 +39,35 @@ def _exec_generated_code(
     return locals_ns
 
 
+class _PersistentToolState(pydantic.BaseModel):
+    value: int = 0
+
+
+class _PersistentTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
+    StateModel = _PersistentToolState
+    tool_name = "persistent-dummy"
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__()
+        self._data = data
+        self._status = _PersistentToolState()
+
+    @property
+    def tool_status(self) -> _PersistentToolState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _PersistentToolState) -> None:
+        self._status = status
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    def update_data(self, new_data: xr.DataArray) -> None:
+        self._data = new_data
+
+
 @pytest.fixture
 def action():
     action = QtGui.QAction("Test Action")
@@ -200,6 +229,17 @@ def test_qt_is_valid_ignores_none() -> None:
 def test_qt_object_is_valid_fallback() -> None:
     assert erlab.interactive.utils._qt_object_is_valid_fallback(object())
     assert not erlab.interactive.utils._qt_object_is_valid_fallback(None)
+
+
+def test_qt_object_is_valid_shiboken_helper_ignores_none() -> None:
+    sentinel = object()
+    checker = erlab.interactive.utils._make_qt_object_is_valid_from_shiboken(
+        lambda obj: obj is sentinel
+    )
+
+    assert checker(sentinel)
+    assert not checker(object())
+    assert not checker(None)
 
 
 def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
@@ -754,6 +794,79 @@ def test_tool_script_provenance_definition_validates_assignments() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {
+                "label": "Compute dummy output",
+                "expression_method": "_result_output_expression",
+                "operations_method": "_result_output_operations",
+                "assign": "result",
+            },
+            "must define exactly one",
+        ),
+        (
+            {
+                "expression_method": "_result_output_expression",
+                "assign": "result",
+            },
+            "`label` or `label_method`",
+        ),
+        (
+            {
+                "label": "Compute dummy output",
+                "expression_method": "_result_output_expression",
+            },
+            "`assign` or `assign_method`",
+        ),
+        (
+            {
+                "operations_method": "_result_output_operations",
+                "label": "Compute dummy output",
+            },
+            "must not define `label`",
+        ),
+        (
+            {
+                "label": "Compute dummy output",
+                "label_method": "_result_output_label",
+                "expression_method": "_result_output_expression",
+                "assign": "result",
+            },
+            "both `label` and `label_method`",
+        ),
+        (
+            {
+                "label": "Compute dummy output",
+                "expression_method": "_result_output_expression",
+                "assign": "result",
+                "active_name": "other",
+            },
+            "single-target `assign`",
+        ),
+        (
+            {
+                "label": "Compute dummy output",
+                "expression_method": "_result_output_expression",
+                "assign": ("result", "other"),
+                "active_name": "missing",
+            },
+            "tuple `assign` must include",
+        ),
+    ],
+)
+def test_tool_script_provenance_definition_rejects_invalid_configurations(
+    kwargs: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current dummy input data",
+            **kwargs,
+        )
+
+
 def test_tool_script_provenance_rejects_invalid_expression(qtbot) -> None:
     class _DummyState(pydantic.BaseModel):
         value: int = 0
@@ -803,6 +916,266 @@ def test_tool_script_provenance_rejects_invalid_expression(qtbot) -> None:
 
     with pytest.raises(ValueError, match="must return a valid Python expression"):
         tool.current_provenance_spec()
+
+
+def test_tool_window_dynamic_expression_provenance_uses_input_lineage(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class _DynamicTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
+        StateModel = _PersistentToolState
+        tool_name = "dynamic-dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from dynamic input",
+                label_method="_dynamic_label",
+                expression_method="_dynamic_expression",
+                assign_method="_dynamic_assign",
+                prelude_method="_dynamic_prelude",
+                active_name_method="_dynamic_active_name",
+                seed_code_method="_dynamic_seed_code",
+            )
+        )
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _PersistentToolState:
+            return _PersistentToolState()
+
+        @tool_status.setter
+        def tool_status(self, status: _PersistentToolState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+        def _dynamic_label(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            assert input_name == "watched"
+            return "Build dynamic outputs"
+
+        def _dynamic_expression(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            assert input_name == "watched"
+            return "(watched * scale, watched + 1)"
+
+        def _dynamic_assign(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> tuple[str, str]:
+            del input_name, data
+            return ("left", "right")
+
+        def _dynamic_prelude(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del input_name, data
+            return "scale = 2"
+
+        def _dynamic_active_name(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del input_name, data
+            return "right"
+
+        def _dynamic_seed_code(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del input_name, data
+            return "derived = watched"
+
+    tool = _DynamicTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
+    qtbot.addWidget(tool)
+    tool.set_input_provenance_spec(
+        prov.script(
+            start_label="Start from watched data",
+            seed_code="derived = watched",
+            active_name="derived",
+        )
+    )
+
+    spec = tool.current_provenance_spec()
+
+    assert spec is not None
+    assert spec.start_label == "Start from watched data"
+    assert spec.active_name == "right"
+    code = spec.display_code()
+    assert code is not None
+    assert "derived = watched" in code
+    assert "scale = 2" in code
+    assert "left, right = (watched * scale, watched + 1)" in code
+
+
+def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class _OperationsTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
+        StateModel = _PersistentToolState
+        tool_name = "operations-dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from operations input",
+                operations_method="_dynamic_operations",
+                active_name_method="_dynamic_active_name",
+                seed_code_method="_dynamic_seed_code",
+            )
+        )
+
+        def __init__(
+            self,
+            data: xr.DataArray,
+            operations: object,
+        ) -> None:
+            super().__init__()
+            self._data = data
+            self._operations = operations
+
+        @property
+        def tool_status(self) -> _PersistentToolState:
+            return _PersistentToolState()
+
+        @tool_status.setter
+        def tool_status(self, status: _PersistentToolState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+        def _dynamic_operations(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> object:
+            del input_name, data
+            return self._operations
+
+        def _dynamic_active_name(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del input_name, data
+            return "derived"
+
+        def _dynamic_seed_code(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del input_name, data
+            return "derived = data"
+
+    operation = prov.ScriptCodeOperation(
+        label="Scale values",
+        code="derived = data * 2",
+    )
+    tool = _OperationsTool(
+        xr.DataArray(np.arange(4.0), dims=("x",), name="data"),
+        operation,
+    )
+    qtbot.addWidget(tool)
+
+    single_spec = tool.current_provenance_spec()
+    assert single_spec is not None
+    assert single_spec.operations == (operation,)
+
+    tool._operations = [operation]
+    sequence_spec = tool.current_provenance_spec()
+    assert sequence_spec is not None
+    assert sequence_spec.operations == (operation,)
+    assert sequence_spec.seed_code == "derived = data"
+
+    tool._operations = None
+    assert tool.current_provenance_spec() is None
+
+
+def test_tool_window_copy_provenance_code_handles_empty_specs(
+    qtbot,
+    monkeypatch,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    copied: list[str] = []
+    tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
+    qtbot.addWidget(tool)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda content: copied.append(content) or content,
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(label="Compute output", code="result = data + 1"),
+        start_label="Start from current data",
+        active_name="result",
+    )
+
+    assert tool._copy_provenance_code(None) == ""
+    assert copied == []
+
+    expected_code = spec.display_code()
+    assert expected_code is not None
+    assert tool._copy_provenance_code(spec) == expected_code
+    assert copied == [expected_code]
+
+
+def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+
+    source_spec = prov.full_data(prov.IselOperation(kwargs={"x": slice(0, 2)}))
+    input_spec = prov.script(
+        prov.ScriptCodeOperation(label="Use watched data", code="derived = watched"),
+        start_label="Start from watched data",
+        seed_code="derived = watched",
+        active_name="derived",
+    )
+    tool.set_source_binding(source_spec, auto_update=True, state="stale")
+    tool.set_input_provenance_spec(input_spec)
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _PersistentTool)
+    assert restored.source_spec == source_spec
+    assert restored.source_auto_update is True
+    assert restored.source_state == "stale"
+    assert restored.input_provenance_spec == input_spec.to_replay_spec()
 
 
 def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_separate(
