@@ -4028,6 +4028,61 @@ def test_manager_workspace_save_selection_cancel_does_not_write(
             assert len(closed_trees) == 1
 
 
+def test_manager_workspace_load_selection_skips_unchecked_children(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _SelectedChooseDialog(
+        erlab.interactive.imagetool.manager._mainwindow._ChooseFromDataTreeDialog
+    ):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            root_item = self._tree_widget.topLevelItem(0)
+            assert root_item is not None
+            unchecked_child = root_item.child(1)
+            assert unchecked_child is not None
+            unchecked_child.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._mainwindow,
+        "_ChooseFromDataTreeDialog",
+        _SelectedChooseDialog,
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_uids: list[str] = []
+        for offset in (1.0, 2.0):
+            child_tool = itool(data + offset, manager=False, execute=False)
+            assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+            child_uids.append(manager.add_imagetool_child(child_tool, 0, show=False))
+
+        tree = manager._to_datatree()
+        try:
+            manager.remove_all_tools()
+            qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+            manager._from_datatree(tree)
+        finally:
+            tree.close()
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager._imagetool_wrappers[0]._childtool_indices == [child_uids[0]]
+        assert child_uids[1] not in manager._all_nodes
+
+
 def test_manager_workspace_roundtrip_goldtool_child(
     qtbot,
     monkeypatch,

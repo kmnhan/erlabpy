@@ -1,3 +1,4 @@
+import json
 import typing
 
 import numpy as np
@@ -647,6 +648,37 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
     assert entries[-1].copyable is False
     assert entries[-1].code is None
     assert reparsed_spec.derivation_code() is None
+
+
+def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
+    gold, gold_fit_res
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    spec = prov.full_data(
+        prov.CorrectWithEdgeOperation(edge_fit=gold_fit_res, shift_coords=False)
+    )
+
+    payload = spec.model_dump(mode="json")
+    json.dumps(payload)
+
+    reparsed_operation = prov.parse_tool_provenance_operation(payload["operations"][0])
+    assert isinstance(reparsed_operation, prov.CorrectWithEdgeOperation)
+    decoded = reparsed_operation.decoded_edge_fit
+    xr.testing.assert_identical(
+        decoded.drop_vars("modelfit_results"),
+        gold_fit_res.drop_vars("modelfit_results"),
+    )
+    assert (
+        decoded.modelfit_results.item().success
+        == gold_fit_res.modelfit_results.item().success
+    )
+
+    reparsed_spec = prov.parse_tool_provenance_spec(payload)
+    assert reparsed_spec is not None
+    xr.testing.assert_allclose(
+        reparsed_spec.apply(gold),
+        erlab.analysis.gold.correct_with_edge(gold, gold_fit_res, shift_coords=False),
+    )
 
 
 def test_tool_provenance_script_specs_reject_live_source() -> None:

@@ -190,7 +190,8 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             start_label="Start from current goldtool input data",
             label_method="_current_mode_copy_label",
             expression_method="_current_mode_copy_expression",
-            assign="modelresult",
+            assign_method="_current_mode_copy_assign",
+            prelude_method="_current_mode_copy_prelude",
         )
     )
 
@@ -1183,8 +1184,10 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                 p1 = self.params_poly.values
             case "spl":
                 p1 = self.params_spl.values
-        corrected_target = input_name or self._argnames.get(
-            "data_corr", self._argnames["data"]
+        corrected_target = (
+            self._argnames["data_corr"]
+            if self.data_corr is not None
+            else input_name or self._argnames["data"]
         )
         return erlab.interactive.utils.generate_code(
             erlab.analysis.gold.correct_with_edge,
@@ -1215,7 +1218,17 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        return self._copy_label(self._current_fit_mode())
+        return self._copy_label(
+            self._current_fit_mode(), include_corrected=self.data_corr is not None
+        )
+
+    def _current_mode_copy_assign(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return "corrected" if self.data_corr is not None else "modelresult"
 
     def _current_mode_corrected_label(
         self,
@@ -1231,7 +1244,25 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
+        if self.data_corr is not None:
+            return self._corrected_expression(
+                self._current_fit_mode(),
+                input_name=input_name,
+            )
         return self._fit_expression(
+            self._current_fit_mode(),
+            input_name=input_name,
+        )
+
+    def _current_mode_copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        if self.data_corr is None:
+            return ""
+        return "modelresult = " + self._fit_expression(
             self._current_fit_mode(),
             input_name=input_name,
         )

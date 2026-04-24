@@ -99,6 +99,7 @@ __all__ = [
 ]
 
 import ast
+import base64
 import keyword
 import typing
 from collections.abc import Callable, Hashable, Mapping, Sequence
@@ -112,6 +113,7 @@ import erlab
 
 _SLICE_MARKER = "__erlab_slice__"
 _DATASET_MARKER = "__erlab_xarray_dataset__"
+_FIT_DATASET_MARKER = "__erlab_xarray_lmfit_dataset__"
 _DATAARRAY_MARKER = "__erlab_xarray_dataarray__"
 _TUPLE_MARKER = "__erlab_tuple__"
 _MAPPING_MARKER = "__erlab_mapping__"
@@ -128,9 +130,26 @@ class DerivationEntry:
     copyable: bool = False
 
 
+def _encode_fit_dataset(value: xr.Dataset) -> str:
+    return base64.b64encode(
+        erlab.interactive.utils._serialize_fit_dataset_blob(value).tobytes()
+    ).decode("ascii")
+
+
+def _decode_fit_dataset(value: typing.Any) -> xr.Dataset:
+    payload = (
+        np.frombuffer(base64.b64decode(value.encode("ascii")), dtype=np.uint8)
+        if isinstance(value, str)
+        else value
+    )
+    return erlab.interactive.utils._deserialize_fit_dataset_blob(payload)
+
+
 def encode_provenance_value(value: typing.Any) -> typing.Any:
     """Encode non-JSON provenance values into a JSON-safe representation."""
     if isinstance(value, xr.Dataset):
+        if any(str(var).endswith("modelfit_results") for var in value.data_vars):
+            return {_FIT_DATASET_MARKER: _encode_fit_dataset(value)}
         return {_DATASET_MARKER: value.to_dict(data="list")}
     if isinstance(value, xr.DataArray):
         return {_DATAARRAY_MARKER: value.to_dict(data="list")}
@@ -162,6 +181,8 @@ def encode_provenance_value(value: typing.Any) -> typing.Any:
 def decode_provenance_value(value: typing.Any) -> typing.Any:
     """Decode values produced by :func:`encode_provenance_value`."""
     if isinstance(value, Mapping):
+        if _FIT_DATASET_MARKER in value:
+            return _decode_fit_dataset(value[_FIT_DATASET_MARKER])
         if _DATASET_MARKER in value:
             return xr.Dataset.from_dict(
                 typing.cast("dict[str, typing.Any]", value[_DATASET_MARKER])
@@ -1593,13 +1614,16 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
     @pydantic.field_validator("edge_fit", mode="before")
     @classmethod
     def _validate_edge_fit(cls, value: typing.Any) -> typing.Any:
-        if isinstance(value, Mapping) and _DATASET_MARKER in value:
+        if isinstance(value, Mapping) and (
+            _DATASET_MARKER in value or _FIT_DATASET_MARKER in value
+        ):
             return value
         return cls._validate_encoded_field(
             value,
             error="correct_with_edge edge_fit must be an xarray.Dataset",
             predicate=lambda encoded: (
-                isinstance(encoded, Mapping) and _DATASET_MARKER in encoded
+                isinstance(encoded, Mapping)
+                and (_DATASET_MARKER in encoded or _FIT_DATASET_MARKER in encoded)
             ),
         )
 

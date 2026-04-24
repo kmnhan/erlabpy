@@ -2370,6 +2370,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node_tree: xr.DataTree,
         *,
         parent_target: int | str | None = None,
+        selection_item: QtWidgets.QTreeWidgetItem | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
             ds = typing.cast("xr.DataTree", node_tree["imagetool"]).to_dataset(
@@ -2456,11 +2457,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
             raise ValueError("Workspace node has no supported window payload")
 
         if "childtools" in node_tree:
-            for child_node in typing.cast(
-                "xr.DataTree", node_tree["childtools"]
-            ).values():
+            for i, child_node in enumerate(
+                typing.cast("xr.DataTree", node_tree["childtools"]).values()
+            ):
+                child_item = (
+                    selection_item.child(i) if selection_item is not None else None
+                )
+                if (
+                    child_item is not None
+                    and child_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
+                ):
+                    continue
                 self._load_workspace_node(
-                    typing.cast("xr.DataTree", child_node), parent_target=target
+                    typing.cast("xr.DataTree", child_node),
+                    parent_target=target,
+                    selection_item=child_item,
                 )
         return target
 
@@ -2489,8 +2500,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
                 with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
                     for i, node in enumerate(tree.values()):
+                        item = dialog._tree_widget.topLevelItem(i)
                         if dialog.imagetool_selected(i):  # pragma: no branch
-                            self._load_workspace_node(typing.cast("xr.DataTree", node))
+                            self._load_workspace_node(
+                                typing.cast("xr.DataTree", node),
+                                selection_item=item,
+                            )
         finally:
             tree.close()
             if tree is not opened_tree:

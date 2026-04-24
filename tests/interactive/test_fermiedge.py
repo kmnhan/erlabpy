@@ -222,6 +222,22 @@ def test_goldtool_rejects_serialization_with_separate_data_corr(
             win.duplicate()
 
 
+def test_goldtool_copy_code_includes_separate_data_corr(qtbot, gold) -> None:
+    corrected = gold.copy(deep=True)
+    corrected.data = np.asarray(corrected.data) * 1.02
+
+    win: GoldTool = goldtool(gold, data_corr=corrected, execute=False)
+    qtbot.addWidget(win)
+    win._argnames["data"] = "gold_data"
+    win._argnames["data_corr"] = "corr_data"
+
+    code = win.current_provenance_spec().display_code()
+    assert code is not None
+    assert code.startswith(
+        "corrected = era.gold.correct_with_edge(corr_data, era.gold.poly(gold_data, "
+    )
+
+
 def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:
     gold_desc = gold.isel(alpha=slice(None, None, -1), eV=slice(None, None, -1))
     win: GoldTool = goldtool(gold_desc, execute=False)
