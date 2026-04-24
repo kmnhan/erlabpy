@@ -737,6 +737,11 @@ def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None
         seed_code="derived = my_data",
     )
     assert prov.direct_replay_input_name(watched) == "my_data"
+    watched_cast = prov.script(
+        start_label="Start from watched variable 'my_data'",
+        seed_code="derived = my_data.astype(np.float64)",
+    )
+    assert prov.direct_replay_input_name(watched_cast) == ("my_data.astype(np.float64)")
 
     assert (
         prov.direct_replay_input_name(

@@ -3044,7 +3044,7 @@ def test_manager_watched_root_provenance_uses_variable_name(
         namespace = _exec_generated_code(code, {"my_data": test_data.copy(deep=True)})
         derived = namespace["derived"]
         assert isinstance(derived, xr.DataArray)
-        xr.testing.assert_identical(derived, test_data)
+        xr.testing.assert_identical(derived, manager.get_imagetool(0).slicer_area.data)
         assert provenance.display_entries()[0].label == (
             "Start from watched variable 'my_data'"
         )
@@ -3067,7 +3067,7 @@ def test_manager_watched_root_provenance_uses_variable_name(
         )
         derived = namespace["derived"]
         assert isinstance(derived, xr.DataArray)
-        xr.testing.assert_identical(derived, test_data)
+        xr.testing.assert_identical(derived, manager.get_imagetool(0).slicer_area.data)
 
 
 def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
@@ -3096,7 +3096,7 @@ def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
         namespace = _exec_generated_code(
             copied,
-            {"my_data": parent_tool.slicer_area.data.copy(deep=True)},
+            {"my_data": test_data.copy(deep=True)},
         )
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
@@ -3176,7 +3176,8 @@ def test_manager_watched_root_ftool_copy_code_1d_omits_duplicate_seed_and_noop_s
         assert "derived = my_data" not in copied[-1]
         assert "derived = data" not in copied[-1]
         assert "derived = derived.squeeze()" not in copied[-1]
-        assert "result = my_data.xlm.modelfit(" in copied[-1]
+        assert "target = my_data.astype(np.float64)" in copied[-1]
+        assert "result = target.xlm.modelfit(" in copied[-1]
 
 
 def test_manager_selecting_unfit_ftool_child_does_not_warn(
@@ -3534,7 +3535,8 @@ def test_manager_watched_1d_root_ftool_copy_code_omits_synthetic_squeeze(
         assert "derived = my_1d" not in copied[-1]
         assert "derived = data" not in copied[-1]
         assert ".squeeze()" not in copied[-1]
-        assert "result = my_1d.xlm.modelfit(" in copied[-1]
+        assert "target = my_1d.astype(np.float64)" in copied[-1]
+        assert "result = target.xlm.modelfit(" in copied[-1]
 
 
 def test_manager_watched_update_to_1d_refreshes_copy_code_cleanup(
@@ -3579,7 +3581,8 @@ def test_manager_watched_update_to_1d_refreshes_copy_code_cleanup(
         assert "derived = my_data" not in copied[-1]
         assert "derived = data" not in copied[-1]
         assert ".squeeze()" not in copied[-1]
-        assert "result = my_data.xlm.modelfit(" in copied[-1]
+        assert "target = my_data.astype(np.float64)" in copied[-1]
+        assert "result = target.xlm.modelfit(" in copied[-1]
 
 
 def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
@@ -3625,7 +3628,8 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
         assert "derived = my_1d" not in copied[-1]
         assert "derived = data" not in copied[-1]
         assert ".squeeze()" not in copied[-1]
-        assert "result = my_1d.xlm.modelfit(" in copied[-1]
+        assert "target = my_1d.astype(np.float64)" in copied[-1]
+        assert "result = target.xlm.modelfit(" in copied[-1]
 
 
 def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup(
@@ -3677,7 +3681,8 @@ def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup
         assert "derived = my_1d" not in copied[-1]
         assert "derived = data" not in copied[-1]
         assert ".squeeze()" not in copied[-1]
-        assert "result = my_1d.xlm.modelfit(" in copied[-1]
+        assert "target = my_1d.astype(np.float64)" in copied[-1]
+        assert "result = target.xlm.modelfit(" in copied[-1]
 
 
 def test_manager_duplicate(

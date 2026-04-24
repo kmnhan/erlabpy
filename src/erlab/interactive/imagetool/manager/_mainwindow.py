@@ -1323,6 +1323,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         activate: bool = False,
         watched_var: tuple[str, str] | None = None,
         source_input_ndim: int | None = None,
+        source_input_dtype: np.dtype[typing.Any] | str | None = None,
         uid: str | None = None,
         provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None = None,
@@ -1363,6 +1364,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool,
             watched_var=watched_var,
             source_input_ndim=source_input_ndim,
+            source_input_dtype=source_input_dtype,
             provenance_spec=provenance_spec,
             source_spec=source_spec,
             source_auto_update=source_auto_update,
@@ -2748,6 +2750,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         activate=show,
                         watched_var=watched_var,
                         source_input_ndim=d.ndim,
+                        source_input_dtype=d.dtype,
                     )
                 )
                 if watched_var is not None:
@@ -2854,6 +2857,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         else:
             # Update data in the existing tool
             self._imagetool_wrappers[idx].set_source_input_ndim(darr.ndim)
+            self._imagetool_wrappers[idx].set_source_input_dtype(darr.dtype)
             self.get_imagetool(idx).slicer_area.replace_source_data(darr)
 
     @QtCore.Slot(str)

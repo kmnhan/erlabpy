@@ -1027,7 +1027,7 @@ def compose_display_provenance(
 def direct_replay_input_name(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
 ) -> str | None:
-    """Return a direct input variable name for simple replay seeds.
+    """Return a direct input expression for simple replay seeds.
 
     This only applies to non-default single-line seeds such as watched variables.
     Generic replay aliases like ``derived = data`` continue to use ``derived`` so
@@ -1048,7 +1048,27 @@ def direct_replay_input_name(
 
     name = spec.seed_code.removeprefix(prefix).strip()
     if not name.isidentifier() or keyword.iskeyword(name):
-        return None
+        try:
+            parsed = ast.parse(name, mode="eval")
+        except SyntaxError:
+            return None
+        match parsed.body:
+            case ast.Call(
+                func=ast.Attribute(
+                    value=ast.Name(id=base_name),
+                    attr="astype",
+                ),
+                args=[
+                    ast.Attribute(
+                        value=ast.Name(id="np"),
+                        attr="float64",
+                    )
+                ],
+                keywords=[],
+            ) if base_name.isidentifier() and not keyword.iskeyword(base_name):
+                return name
+            case _:
+                return None
     return name
 
 

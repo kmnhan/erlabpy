@@ -14,6 +14,7 @@ import typing
 import weakref
 from dataclasses import dataclass
 
+import numpy as np
 import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -1076,6 +1077,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         tool: ImageTool,
         watched_var: tuple[str, str] | None = None,
         source_input_ndim: int | None = None,
+        source_input_dtype: np.dtype[typing.Any] | str | None = None,
         *,
         provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None = None,
@@ -1088,6 +1090,9 @@ class _ImageToolWrapper(_ManagedWindowNode):
         self._watched_varname: str | None = None
         self._watched_uid: str | None = None
         self._source_input_ndim = source_input_ndim
+        self._source_input_dtype: np.dtype[typing.Any] | None = (
+            np.dtype(source_input_dtype) if source_input_dtype is not None else None
+        )
         if watched_var is not None:
             self._watched_varname, self._watched_uid = watched_var
 
@@ -1114,6 +1119,10 @@ class _ImageToolWrapper(_ManagedWindowNode):
         """Track the latest dimensionality of the root source before UI promotion."""
         self._source_input_ndim = ndim
 
+    def set_source_input_dtype(self, dtype: np.dtype[typing.Any] | str | None) -> None:
+        """Track the latest dtype of the root source before UI promotion."""
+        self._source_input_dtype = np.dtype(dtype) if dtype is not None else None
+
     @property
     def source_input_ndim(self) -> int | None:
         return self._source_input_ndim
@@ -1131,9 +1140,16 @@ class _ImageToolWrapper(_ManagedWindowNode):
             or keyword.iskeyword(varname)
         ):
             return None
+        seed_source = varname
+        if self._source_input_dtype not in (
+            None,
+            np.dtype(np.float32),
+            np.dtype(np.float64),
+        ):
+            seed_source = f"{seed_source}.astype(np.float64)"
         return erlab.interactive.imagetool.provenance.script(
             start_label=f"Start from watched variable {varname!r}",
-            seed_code=f"derived = {varname}",
+            seed_code=f"derived = {seed_source}",
             active_name="derived",
         )
 
