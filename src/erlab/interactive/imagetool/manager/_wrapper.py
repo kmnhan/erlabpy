@@ -114,20 +114,36 @@ def _load_code_from_file_details(
         return None
 
     imports: list[str] = []
+    setup_lines: list[str] = []
     loader = load_func[0]
+    loader_name = None
     if isinstance(loader, str):
+        loader_name = loader
+    else:
+        func_instance = getattr(loader, "__self__", None)
+        if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+            loader_name = func_instance.name
+
+    if loader_name is not None:
         imports.append("import erlab")
-        loader_expr = f"erlab.io.loaders[{loader!r}].load"
+        setup_lines.append(f"erlab.io.set_loader({loader_name!r})")
+        loader_expr = "erlab.io.load"
     else:
         callable_loader_expr = _loader_callable_text(loader)
         if callable_loader_expr is None:
             return None
         loader_expr = callable_loader_expr
-        imports.insert(0, f"import {loader_expr.rpartition('.')[0]}")
+        loader_module = getattr(loader, "__module__", None)
+        if isinstance(loader_module, str) and callable_loader_expr.startswith(
+            f"{loader_module}."
+        ):
+            imports.insert(0, f"import {loader_module}")
+        else:
+            imports.insert(0, f"import {callable_loader_expr.split('.', 1)[0]}")
 
     kwargs = load_func[1]
     kwargs_str = (
-        erlab.interactive.utils.format_kwargs(
+        erlab.interactive.utils.format_call_kwargs(
             typing.cast("dict[typing.Hashable, typing.Any]", kwargs)
         )
         if kwargs
@@ -141,6 +157,7 @@ def _load_code_from_file_details(
         [
             *imports,
             "",
+            *setup_lines,
             f"data = {loader_expr}({', '.join(call_args)})",
         ]
     )
@@ -738,14 +755,18 @@ class _ManagedWindowNode(QtCore.QObject):
         provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None,
         *,
+        state: _source_state_type = "fresh",
         propagate_descendants: bool,
     ) -> None:
         with self._suspend_descendant_propagation():
             self.slicer_area.replace_source_data(data)
         self.set_displayed_provenance(provenance_spec)
-        self._set_source_state("fresh")
+        self._set_source_state(state)
         if propagate_descendants:
-            self.manager._propagate_source_change_from_uid(self.uid)
+            if state == "fresh":
+                self.manager._propagate_source_change_from_uid(self.uid)
+            else:
+                self.manager._mark_descendants_source_state(self.uid, state)
 
     def _handle_tool_data_changed(self) -> None:
         if self._suspend_descendant_signal_propagation:

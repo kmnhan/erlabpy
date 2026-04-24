@@ -3439,6 +3439,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 node._replace_imagetool_data(
                     data,
                     provenance_spec,
+                    state=output_source_state,
                     propagate_descendants=True,
                 )
                 manager.show_childtool(existing_target)

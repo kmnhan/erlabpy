@@ -61,6 +61,7 @@ from erlab.interactive.imagetool.manager._server import (
     _show_idx,
     _WatcherServer,
 )
+from erlab.interactive.imagetool.manager._wrapper import _load_code_from_file_details
 from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
@@ -1154,6 +1155,54 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
         xr.testing.assert_identical(fetch(output_uid), before)
 
 
+def test_manager_reused_output_child_keeps_stale_state(
+    qtbot,
+    monkeypatch,
+    anglemap,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(anglemap, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.open_in_ktool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = typing.cast("typing.Any", manager.get_childtool(child_uid))
+        child.show_converted()
+
+        child_node = manager._child_node(child_uid)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+
+        output_uid = child_node._childtool_indices[0]
+        output_node = manager._child_node(output_uid)
+
+        child.set_source_binding(child.source_spec, auto_update=False, state="stale")
+        output_node.set_output_binding(
+            typing.cast("str", output_node.output_id),
+            provenance_spec=output_node.provenance_spec,
+            auto_update=False,
+            state="stale",
+        )
+
+        monkeypatch.setattr(
+            child, "_prompt_existing_output_imagetool", lambda: "update"
+        )
+        child.show_converted()
+
+        qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(fetch(output_uid), child._converted_output())
+
+
 def test_manager_dtool_output_itool_refreshes_with_parent_updates(
     qtbot,
     test_data,
@@ -1210,6 +1259,24 @@ def test_manager_dtool_output_itool_refreshes_with_parent_updates(
         qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
         qtbot.wait_until(lambda: output_node.source_state == "fresh", timeout=5000)
         xr.testing.assert_identical(fetch(output_uid), child.result.T)
+
+
+def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
+    tmp_path: pathlib.Path,
+) -> None:
+    file_path = tmp_path / "example.pxt"
+    code = _load_code_from_file_details(
+        file_path,
+        ("merlin", {"bad-key": 1, "single": True}, 0),
+    )
+
+    expected = (
+        "import erlab\n\n"
+        "erlab.io.set_loader('merlin')\n"
+        f"data = erlab.io.load({str(file_path)!r}, "
+        '**{"bad-key": 1, "single": True})'
+    )
+    assert code == expected
 
 
 def test_manager_goldtool_output_itool_stales_when_fit_results_change(
