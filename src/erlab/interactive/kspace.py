@@ -986,13 +986,13 @@ class KspaceTool(KspaceToolGUI):
             # Detected input name must be single identifier.
             # Otherwise the generated code will not apply offsets correctly.
             input_name = str(self._argnames["data"])
-            if not erlab.interactive.utils._is_valid_keyword_argument_name(input_name):
+            if not erlab.interactive.utils._is_kwarg_name(input_name):
                 input_name = "data"
         return input_name
 
     def _copy_data_name(self, input_name: str | None = None) -> str:
         input_ref = self._copy_input_reference(input_name)
-        if erlab.interactive.utils._is_valid_keyword_argument_name(input_ref):
+        if erlab.interactive.utils._is_kwarg_name(input_ref):
             return input_ref
         return "target"
 

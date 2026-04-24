@@ -910,7 +910,7 @@ class CoarsenDialog(DataTransformDialog):
 
         kwargs = self._coarsen_kwargs.copy()
         if all(
-            erlab.interactive.utils._is_valid_keyword_argument_name(k)
+            erlab.interactive.utils._is_kwarg_name(k)
             for k in self._coarsen_kwargs["dim"]
         ):  # pragma: no branch
             window_kwargs = kwargs.pop("dim")

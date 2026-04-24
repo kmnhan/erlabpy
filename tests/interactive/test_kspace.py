@@ -401,7 +401,7 @@ def test_ktool_copy_code_uses_set_normal(
     assert ".kspace.offsets =" not in code
 
     input_name = str(win._argnames["data"])
-    if not erlab.interactive.utils._is_valid_keyword_argument_name(input_name):
+    if not erlab.interactive.utils._is_kwarg_name(input_name):
         input_name = "data"
 
     namespace = {input_name: data.copy(deep=True)}
@@ -430,7 +430,7 @@ def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
     assert spec is not None
 
     input_name = str(win._argnames["data"])
-    if not erlab.interactive.utils._is_valid_keyword_argument_name(input_name):
+    if not erlab.interactive.utils._is_kwarg_name(input_name):
         input_name = "data"
 
     assert spec.active_name == f"{input_name}_kconv"

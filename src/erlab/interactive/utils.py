@@ -740,7 +740,7 @@ class _ToolSourceUpdateDialog(QtWidgets.QDialog):
         layout.addWidget(self.button_box)
 
 
-def _is_valid_keyword_argument_name(value: typing.Any) -> bool:
+def _is_kwarg_name(value: typing.Any) -> bool:
     return (
         isinstance(value, str) and value.isidentifier() and not keyword.iskeyword(value)
     )
@@ -758,7 +758,7 @@ def format_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
         Dictionary of keyword arguments.
 
     """
-    if all(_is_valid_keyword_argument_name(k) for k in d):
+    if all(_is_kwarg_name(k) for k in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
     out = ", ".join(
         f"{_parse_single_arg(k)!s}: {_parse_single_arg(v)!s}" for k, v in d.items()
@@ -776,7 +776,7 @@ def format_call_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
     """
     string_keys = [k for k in d if isinstance(k, str)]
     if len(string_keys) == len(d):
-        if all(_is_valid_keyword_argument_name(k) for k in string_keys):
+        if all(_is_kwarg_name(k) for k in string_keys):
             return format_kwargs(d)
         return f"**{format_kwargs(d)}"
     return format_kwargs(d)
@@ -1005,7 +1005,7 @@ def _handle_xarray_dict_or_kwargs(
     dictionary contains at least one key that contains spaces, a conversion of kwargs to
     the first positional argument is attempted.
     """
-    if len(args) != 0 or all(_is_valid_keyword_argument_name(k) for k in kwargs):
+    if len(args) != 0 or all(_is_kwarg_name(k) for k in kwargs):
         return args, kwargs
 
     params = inspect.signature(func).parameters
@@ -1117,7 +1117,7 @@ def _gen_single_function_code(
 
     invalid_kwargs: dict[str, typing.Any] = {}
     for k, v in kwargs.items():
-        if _is_valid_keyword_argument_name(k):
+        if _is_kwarg_name(k):
             code += f"{TAB}{k}={_parse_single_arg(v)},\n"
         else:
             invalid_kwargs[k] = v

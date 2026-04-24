@@ -1751,8 +1751,7 @@ class ItoolPlotItem(pg.PlotItem):
             "dict[Hashable, float | list[float]]", qsel_kwargs
         )
         if not all(
-            erlab.interactive.utils._is_valid_keyword_argument_name(k)
-            for k in qsel_kwargs_nonnull
+            erlab.interactive.utils._is_kwarg_name(k) for k in qsel_kwargs_nonnull
         ):
             if variable_dim is None:
                 selected_maps = [
@@ -1778,10 +1777,7 @@ class ItoolPlotItem(pg.PlotItem):
             )
 
         plot_args: list[typing.Any] = [f"|[{data_name}]|"]
-        if all(
-            erlab.interactive.utils._is_valid_keyword_argument_name(k)
-            for k in qsel_kwargs_nonnull
-        ):
+        if all(erlab.interactive.utils._is_kwarg_name(k) for k in qsel_kwargs_nonnull):
             plot_kwargs.update({str(k): v for k, v in qsel_kwargs_nonnull.items()})
 
         return erlab.interactive.utils.generate_code(
