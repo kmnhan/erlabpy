@@ -275,12 +275,21 @@ class DataTransformDialog(_DataManipulationDialog):
     def source_spec(
         self, new_name: str
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        operations = self.source_operations()
         builder = (
             erlab.interactive.imagetool.provenance.public_data
             if self.apply_on_nonuniform_data
             else erlab.interactive.imagetool.provenance.full_data
         )
-        return builder(*self.source_operations()).append_final_rename(new_name)
+        if not self.apply_on_nonuniform_data and any(
+            str(dim).endswith("_idx")
+            and str(dim).removesuffix("_idx") in self.slicer_area.data.coords
+            for dim in self.slicer_area.data.dims
+        ):
+            operations.append(
+                erlab.interactive.imagetool.provenance.RestoreNonuniformDimsOperation()
+            )
+        return builder(*operations).append_final_rename(new_name)
 
     def _detached_provenance_spec(
         self,

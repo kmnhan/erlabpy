@@ -299,6 +299,23 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
     assert "coarsen(x=2" in display_code
     assert "x_idx" not in display_code
 
+    restored_spec = prov.full_data(
+        prov.AverageOperation(dims=("y",)),
+        prov.RestoreNonuniformDimsOperation(),
+    )
+    reparsed_restored = prov.parse_tool_provenance_spec(
+        restored_spec.model_dump(mode="json")
+    )
+
+    assert reparsed_restored is not None
+    xr.testing.assert_identical(
+        reparsed_restored.apply(uniform),
+        public.qsel.average("y"),
+    )
+    restored_code = reparsed_restored.display_code(parent_data=uniform)
+    assert restored_code is not None
+    assert "restore_nonuniform_dims" in restored_code
+
 
 def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     prov = erlab.interactive.imagetool.provenance

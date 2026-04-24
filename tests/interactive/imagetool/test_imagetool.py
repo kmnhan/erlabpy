@@ -2677,6 +2677,51 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(20).reshape((5, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+    dialog = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["y"].setChecked(True)
+
+    spec = dialog.source_spec("scan_avg")
+    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        dialog.process_data(win.slicer_area.data)
+    ).rename("scan_avg")
+    refreshed = spec.apply(win.slicer_area.data)
+
+    assert spec.kind == "full_data"
+    assert [op.op for op in spec.operations] == [
+        "average",
+        "restore_nonuniform_dims",
+        "rename",
+    ]
+    assert refreshed.dims == ("x",)
+    xarray.testing.assert_identical(refreshed, expected)
+
+    display_code = spec.display_code(parent_data=win.slicer_area.data)
+    assert display_code is not None
+    assert "restore_nonuniform_dims" in display_code
+    display_namespace = _exec_generated_code(
+        display_code,
+        {"data": win.slicer_area.data.copy(deep=True)},
+    )
+    derived = display_namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
+
+    dialog.close()
+    win.close()
+
+
 def test_itool_average_marks_incompatible_child_tools_unavailable(
     qtbot, accept_dialog
 ) -> None:

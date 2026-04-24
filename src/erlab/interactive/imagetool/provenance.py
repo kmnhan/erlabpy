@@ -69,6 +69,7 @@ __all__ = [
     "MaskWithPolygonOperation",
     "QSelOperation",
     "RenameOperation",
+    "RestoreNonuniformDimsOperation",
     "RotateOperation",
     "ScriptCodeOperation",
     "SelOperation",
@@ -788,11 +789,22 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             # Rule 4: drop squeeze calls that would not remove singleton dimensions.
             elif isinstance(operation, SqueezeOperation) and current_data is not None:
                 hide_operation = not any(size == 1 for size in current_data.shape)
+            # Rule 5: drop nonuniform restoration when it would not change dimensions.
+            elif (
+                isinstance(operation, RestoreNonuniformDimsOperation)
+                and current_data is not None
+            ):
+                hide_operation = (
+                    erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                        current_data
+                    ).dims
+                    == current_data.dims
+                )
 
             if not hide_operation:
                 streamlined.append(operation)
 
-            # Rule 5: keep anything ambiguous. If replaying an operation fails while
+            # Rule 6: keep anything ambiguous. If replaying an operation fails while
             # building the heuristic context, stop making data-dependent decisions for
             # later steps and preserve them verbatim.
             if current_data is None or parent_data is None:
@@ -1319,6 +1331,21 @@ class RenameOperation(ToolProvenanceOperation):
 
     def derivation_entry(self) -> None:
         return None
+
+
+class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
+    op: typing.Literal["restore_nonuniform_dims"] = "restore_nonuniform_dims"
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
+
+    def derivation_entry(self) -> DerivationEntry:
+        return DerivationEntry(
+            "Restore nonuniform dimensions",
+            "derived = erlab.interactive.imagetool.slicer."
+            "restore_nonuniform_dims(derived)",
+            True,
+        )
 
 
 class RotateOperation(ToolProvenanceOperation):
