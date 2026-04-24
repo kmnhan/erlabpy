@@ -98,6 +98,30 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
         check_generated_code(win_restored)
 
 
+def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+    win.smooth_group.setChecked(True)
+
+    code = win.copy_code()
+    assert "\t" not in code
+    assert "era.image.gaussian_filter(data" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert isinstance(namespace["result"], xr.DataArray)
+    xr.testing.assert_identical(win.result, namespace["result"])
+
+    win.sn_spin.setValue(2)
+    code = win.copy_code()
+    assert "\t" not in code
+    assert "for _ in range(2):\n    _processed = era.image.gaussian_filter(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert isinstance(namespace["result"], xr.DataArray)
+    xr.testing.assert_identical(win.result, namespace["result"])
+
+
 def test_dtool_update_data_preserves_state(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"

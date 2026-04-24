@@ -18,6 +18,7 @@ __all__ = ["dtool"]
 import enum
 import functools
 import importlib.resources
+import textwrap
 import typing
 from collections.abc import Callable, Hashable
 
@@ -530,26 +531,31 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
             n_repeat = self.sn_spin.value()
 
-            if n_repeat > 1:
-                lines.append(f"_processed = {data_name}.copy()")
-                data_name = "_processed"
-
-            smooth_func_code: str = erlab.interactive.utils.generate_code(
-                smooth_func,
-                [f"|{data_name}|"],
-                smooth_kwargs,
-                module="era.image",
-                assign=data_name if (n_repeat > 1) else None,
-            )
             if n_repeat == 1:
-                data_name = smooth_func_code.replace(" = ", "=")
+                smooth_func_code = erlab.interactive.utils.generate_code(
+                    smooth_func,
+                    [f"|{data_name}|"],
+                    smooth_kwargs,
+                    module="era.image",
+                    assign="_processed",
+                )
+                lines.append(smooth_func_code)
             else:
+                lines.append(f"_processed = {data_name}.copy()")
+                smooth_func_code = erlab.interactive.utils.generate_code(
+                    smooth_func,
+                    ["|_processed|"],
+                    smooth_kwargs,
+                    module="era.image",
+                    assign="_processed",
+                )
                 lines.extend(
                     (
                         f"for _ in range({self.sn_spin.value()}):",
-                        f"\t{smooth_func_code}",
+                        textwrap.indent(smooth_func_code, "    "),
                     )
                 )
+            data_name = "_processed"
 
         lines.append(
             erlab.interactive.utils.generate_code(

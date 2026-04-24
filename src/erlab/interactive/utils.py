@@ -1011,8 +1011,12 @@ def _handle_xarray_dict_or_kwargs(
     params = inspect.signature(func).parameters
 
     param_order = list(params.keys())
+    if not param_order:
+        return args, kwargs
     if param_order[0] == "self":
         param_order = param_order[1:]
+    if not param_order:
+        return args, kwargs
 
     # Name of first positional argument
     arg_name = param_order[0]

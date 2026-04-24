@@ -275,6 +275,16 @@ def test_generate_code_expands_python_keyword_argument_names() -> None:
     compile(code, "<generated>", "eval")
 
 
+def test_generate_code_handles_invalid_kwargs_for_empty_signature() -> None:
+    def _dummy():
+        return None
+
+    code = generate_code(_dummy, args=(), kwargs={"bad key": 1})
+
+    assert code == '_dummy(**{"bad key": 1})'
+    compile(code, "<generated>", "eval")
+
+
 @pytest.mark.parametrize(
     ("input_str", "expected_state"),
     [
