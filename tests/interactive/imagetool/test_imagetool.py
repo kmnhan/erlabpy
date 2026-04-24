@@ -2771,6 +2771,117 @@ def test_average_dialog_make_code_preserves_nonstring_dim(qtbot) -> None:
     win.close()
 
 
+def test_average_dialog_rejects_empty_dimension_selection(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda _parent, title, text: warnings.append((title, text)),
+    )
+
+    dialog = AverageDialog(win.slicer_area)
+    dialog.accept()
+
+    assert warnings == [
+        ("No Dimensions Selected", "You need to select at least one dimension.")
+    ]
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+    xarray.testing.assert_identical(win.slicer_area._data, data)
+
+    dialog.close()
+    win.close()
+
+
+def test_transform_dialog_restores_filter_after_processing_error(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _filter(darr: xr.DataArray) -> xr.DataArray:
+        return darr + 1
+
+    win.slicer_area.apply_func(_filter)
+
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, title, text, **_kwargs: errors.append((title, text)),
+    )
+
+    dialog = AverageDialog(win.slicer_area)
+    dialog.dim_checks["x"].setChecked(True)
+    monkeypatch.setattr(
+        dialog,
+        "process_data",
+        lambda _data: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    dialog.accept()
+
+    assert errors == [("Error", "An error occurred while processing data.")]
+    assert win.slicer_area._applied_func is _filter
+
+    dialog.close()
+    win.close()
+
+
+def test_transform_replace_composes_after_script_active_name(qtbot) -> None:
+    source = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        name="source",
+    )
+    displayed = (source + 1).rename("result")
+    win = itool(displayed, execute=False)
+    qtbot.addWidget(win)
+
+    win.set_provenance_spec(
+        erlab.interactive.imagetool.provenance.script(
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label="Compute intermediate result",
+                code="result = data + 1",
+            ),
+            start_label="Start from current tool input data",
+            active_name="result",
+        )
+    )
+
+    dialog = AverageDialog(win.slicer_area)
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
+    dialog.accept()
+
+    assert win.provenance_spec is not None
+    code = win.provenance_spec.derivation_code()
+    assert code == (
+        'result = data + 1\nderived = result\nderived = derived.qsel.average("x")'
+    )
+    namespace = _exec_generated_code(code, {"data": source.copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(
+        derived.rename(None), displayed.qsel.average("x").rename(None)
+    )
+
+    dialog.close()
+    win.close()
+
+
 def test_average_dialog_launch_modes_for_standalone(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(60).reshape((3, 4, 5)).astype(float),

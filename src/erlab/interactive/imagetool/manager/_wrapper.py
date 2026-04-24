@@ -862,7 +862,6 @@ class _ManagedWindowNode(QtCore.QObject):
             )
 
         window.show()
-        window.show()
         window.activateWindow()
         window.raise_()
 

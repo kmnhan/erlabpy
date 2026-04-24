@@ -220,7 +220,10 @@ def _encode_provenance_hashable(value: typing.Any) -> typing.Any:
 
 
 def _is_identifier_string_mapping(value: Mapping[typing.Any, typing.Any]) -> bool:
-    return all(isinstance(key, str) and key.isidentifier() for key in value)
+    return all(
+        isinstance(key, str) and key.isidentifier() and not keyword.iskeyword(key)
+        for key in value
+    )
 
 
 def _format_derivation_value(value: typing.Any) -> str:
@@ -675,11 +678,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     ) -> tuple[ToolProvenanceOperation, ...]:
         if value is None:
             return ()
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise TypeError("Serialized provenance operations must be a sequence")
         return tuple(
             parse_tool_provenance_operation(
                 typing.cast("ToolProvenanceOperation | Mapping[str, typing.Any]", item)
             )
-            for item in typing.cast("Sequence[typing.Any]", value)
+            for item in value
         )
 
     @pydantic.model_validator(mode="after")
@@ -1116,13 +1121,21 @@ def compose_full_provenance(
 
     local_operations = list(local_spec.operations)
     if local_spec.seed_code:
-        local_operations.insert(
-            0,
-            ScriptCodeOperation(
-                label=typing.cast("str", local_spec.start_label),
-                code=local_spec.seed_code,
-            ),
-        )
+        seed_code: str | None = local_spec.seed_code
+        if seed_code == _DEFAULT_REPLAY_SEED_CODE:
+            parent_input = replay_input_name(parent_spec)
+            if parent_input == "derived":
+                seed_code = None
+            elif parent_input is not None:
+                seed_code = f"derived = {parent_input}"
+        if seed_code is not None:
+            local_operations.insert(
+                0,
+                ScriptCodeOperation(
+                    label=typing.cast("str", local_spec.start_label),
+                    code=seed_code,
+                ),
+            )
     elif local_spec.active_name == "derived":
         parent_input = replay_input_name(parent_spec)
         if (

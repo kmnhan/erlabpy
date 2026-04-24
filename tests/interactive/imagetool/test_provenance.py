@@ -163,6 +163,18 @@ def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> N
             }
         )
 
+    with pytest.raises(
+        TypeError, match="Serialized provenance operations must be a sequence"
+    ):
+        prov.parse_tool_provenance_spec({"kind": "full_data", "operations": 1})
+
+    with pytest.raises(
+        TypeError, match="Serialized provenance operations must be a sequence"
+    ):
+        prov.parse_tool_provenance_spec(
+            {"kind": "full_data", "operations": {"op": "average", "dims": ["x"]}}
+        )
+
 
 def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     data = _base_data()
@@ -691,6 +703,32 @@ def test_tool_replay_provenance_helpers_compose_parent_lineage() -> None:
     assert prov.compose_display_provenance(parent, prov.full_data()) == (
         prov.to_replay_provenance_spec(parent)
     )
+
+
+def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+    parent = prov.script(
+        prov.ScriptCodeOperation(
+            label="Compute intermediate result",
+            code="result = data + 1",
+        ),
+        start_label="Start from current tool input data",
+        active_name="result",
+    )
+    local = prov.full_data(prov.AverageOperation(dims=("x",)))
+
+    composed = prov.compose_full_provenance(parent, local)
+
+    assert composed is not None
+    code = composed.derivation_code()
+    assert code == (
+        'result = data + 1\nderived = result\nderived = derived.qsel.average("x")'
+    )
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xr.testing.assert_identical(derived, (data + 1).qsel.average("x"))
 
 
 def test_tool_provenance_compose_display_provenance_streamlines_live_source() -> None:

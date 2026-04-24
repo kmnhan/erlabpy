@@ -884,10 +884,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self._pending_update_timer.start(50)
             return False
         self._pending_update_request = None
-        update_complete = self._apply_update_request(request)
-        if update_complete:
-            self.finalize_source_refresh()
-        return update_complete
+        return self._apply_update_request(request)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)

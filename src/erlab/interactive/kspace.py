@@ -981,14 +981,20 @@ class KspaceTool(KspaceToolGUI):
         if tool is not None:
             self._itool = tool
 
-    def _copy_input_name(self, input_name: str | None = None) -> str:
+    def _copy_input_reference(self, input_name: str | None = None) -> str:
         if input_name is None:
             # Detected input name must be single identifier.
             # Otherwise the generated code will not apply offsets correctly.
             input_name = str(self._argnames["data"])
-            if not input_name.isidentifier():
+            if not erlab.interactive.utils._is_valid_keyword_argument_name(input_name):
                 input_name = "data"
         return input_name
+
+    def _copy_data_name(self, input_name: str | None = None) -> str:
+        input_ref = self._copy_input_reference(input_name)
+        if erlab.interactive.utils._is_valid_keyword_argument_name(input_ref):
+            return input_ref
+        return "target"
 
     def _copy_prelude(
         self,
@@ -996,8 +1002,11 @@ class KspaceTool(KspaceToolGUI):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        input_name = self._copy_input_name(input_name)
+        input_ref = self._copy_input_reference(input_name)
+        input_name = self._copy_data_name(input_name)
         out_lines: list[str] = []
+        if input_ref != input_name:
+            out_lines.append(f"{input_name} = {input_ref}")
 
         if self.data.kspace._has_hv:
             v0: float = self._inner_potential
@@ -1034,7 +1043,7 @@ class KspaceTool(KspaceToolGUI):
             MomentumAccessor.convert,
             [],
             arg_dict,
-            module=f"{self._copy_input_name(input_name)}.kspace",
+            module=f"{self._copy_data_name(input_name)}.kspace",
         )
 
     def _copy_assign_target(
@@ -1043,7 +1052,7 @@ class KspaceTool(KspaceToolGUI):
         *,
         data: xr.DataArray | None = None,
     ) -> str:
-        return f"{self._copy_input_name(input_name)}_kconv"
+        return f"{self._copy_data_name(input_name)}_kconv"
 
     def _converted_output_data(self) -> xr.DataArray:
         return self._converted_output()

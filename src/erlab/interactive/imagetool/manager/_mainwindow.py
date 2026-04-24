@@ -1712,16 +1712,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.tree_view.imagetool_removed(index)
 
         for uid in list(descendant_uids):
-            if hasattr(self, "_remove_uid_target"):
-                self._remove_uid_target(uid)
-            else:
-                self._remove_childtool(uid)
+            self._remove_uid_target(uid)
 
         self._imagetool_wrappers.pop(index)
-        if hasattr(self, "_all_nodes"):
-            wrapper_uid = getattr(wrapper, "uid", None)
-            if isinstance(wrapper_uid, str):
-                self._all_nodes.pop(wrapper_uid, None)
+        self._all_nodes.pop(wrapper.uid, None)
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -2472,7 +2466,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _from_datatree(self, tree: xr.DataTree) -> None:
         """Restore the state of the manager from a DataTree object."""
-        with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
+        opened_tree = tree
+        try:
             if not self._is_datatree_workspace(tree):
                 raise ValueError("Not a valid workspace file")
 
@@ -2492,10 +2487,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
             dialog = _ChooseFromDataTreeDialog(self, tree, mode="load")
             if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-                for i, node in enumerate(tree.values()):
-                    if dialog.imagetool_selected(i):  # pragma: no branch
-                        self._load_workspace_node(typing.cast("xr.DataTree", node))
+                with erlab.interactive.utils.wait_dialog(self, "Loading workspace..."):
+                    for i, node in enumerate(tree.values()):
+                        if dialog.imagetool_selected(i):  # pragma: no branch
+                            self._load_workspace_node(typing.cast("xr.DataTree", node))
+        finally:
             tree.close()
+            if tree is not opened_tree:
+                opened_tree.close()
 
     def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
         """Restore the state of the manager from a DataTree object.
@@ -2555,8 +2554,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             fname = dialog.selectedFiles()[0]
             self._recent_directory = os.path.dirname(fname)
             try:
-                with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
-                    self._save_to_file(fname)
+                self._save_to_file(fname)
             except Exception:
                 self._show_operation_error(
                     "Error while saving workspace",
@@ -2565,8 +2563,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _save_to_file(self, fname: str):
         tree: xr.DataTree = self._to_datatree()
-        dialog = _ChooseFromDataTreeDialog(self, tree, mode="save")
-        if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:  # pragma: no branch
+        try:
+            dialog = _ChooseFromDataTreeDialog(self, tree, mode="save")
+            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                return
 
             def _prune(node: xr.DataTree, item: QtWidgets.QTreeWidgetItem) -> None:
                 if "childtools" not in node:
@@ -2594,7 +2594,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     del tree[key]
                     continue
                 _prune(typing.cast("xr.DataTree", tree[key]), item)
-        tree.to_netcdf(fname, engine="h5netcdf", invalid_netcdf=True)
+            with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
+                tree.to_netcdf(fname, engine="h5netcdf", invalid_netcdf=True)
+        finally:
+            tree.close()
 
     @QtCore.Slot()
     def load(self, *, native: bool = True) -> None:
@@ -3360,7 +3363,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._remove_childtool(uid)
             raise KeyError(f"No child tool with UID {uid} found")
         return tool, self._root_wrapper_for_uid(uid).index
-        raise KeyError(f"No child tool with UID {uid} found")
 
     def get_childtool(self, uid: str) -> erlab.interactive.utils.ToolWindow:
         """Get the child tool window corresponding to the given UID.

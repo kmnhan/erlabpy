@@ -670,6 +670,25 @@ _TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
 _TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
 
 
+class _ToolWindowMeta(type(QtWidgets.QMainWindow)):  # type: ignore[misc]
+    """Keep ToolWindow subclass checks stable across module reloads."""
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        return super().__instancecheck__(instance) or cls.__subclasscheck__(
+            type(instance)
+        )
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        if super().__subclasscheck__(subclass):
+            return True
+
+        target = (cls.__module__, cls.__qualname__)
+        return any(
+            (base.__module__, base.__qualname__) == target
+            for base in getattr(subclass, "__mro__", ())
+        )
+
+
 class _ToolSourceUpdateDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -721,6 +740,12 @@ class _ToolSourceUpdateDialog(QtWidgets.QDialog):
         layout.addWidget(self.button_box)
 
 
+def _is_valid_keyword_argument_name(value: typing.Any) -> bool:
+    return (
+        isinstance(value, str) and value.isidentifier() and not keyword.iskeyword(value)
+    )
+
+
 def format_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
@@ -733,7 +758,7 @@ def format_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
         Dictionary of keyword arguments.
 
     """
-    if all(isinstance(k, str) and k.isidentifier() for k in d):
+    if all(_is_valid_keyword_argument_name(k) for k in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
     out = ", ".join(
         f"{_parse_single_arg(k)!s}: {_parse_single_arg(v)!s}" for k, v in d.items()
@@ -751,7 +776,7 @@ def format_call_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
     """
     string_keys = [k for k in d if isinstance(k, str)]
     if len(string_keys) == len(d):
-        if all(k.isidentifier() for k in string_keys):
+        if all(_is_valid_keyword_argument_name(k) for k in string_keys):
             return format_kwargs(d)
         return f"**{format_kwargs(d)}"
     return format_kwargs(d)
@@ -980,7 +1005,7 @@ def _handle_xarray_dict_or_kwargs(
     dictionary contains at least one key that contains spaces, a conversion of kwargs to
     the first positional argument is attempted.
     """
-    if len(args) != 0 or all(k.isidentifier() for k in kwargs):
+    if len(args) != 0 or all(_is_valid_keyword_argument_name(k) for k in kwargs):
         return args, kwargs
 
     params = inspect.signature(func).parameters
@@ -1090,9 +1115,15 @@ def _gen_single_function_code(
         # Add positional argument to code string
         code += f"{TAB}{_parse_single_arg(v)},\n"
 
+    invalid_kwargs: dict[str, typing.Any] = {}
     for k, v in kwargs.items():
-        # Add keyword argument to code string
-        code += f"{TAB}{k}={_parse_single_arg(v)},\n"
+        if _is_valid_keyword_argument_name(k):
+            code += f"{TAB}{k}={_parse_single_arg(v)},\n"
+        else:
+            invalid_kwargs[k] = v
+
+    if invalid_kwargs:
+        code += f"{TAB}**{_parse_single_arg(invalid_kwargs)},\n"
 
     # Add closing parenthesis
     code += ")"
@@ -2626,7 +2657,7 @@ def _normalize_tool_output_id(output_id: str | enum.Enum) -> str:
     return output_id
 
 
-class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
+class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindowMeta):
     """A window that can be saved and restored from a netcdf file.
 
     Mainly for interactive tools used in the ImageTool manager.

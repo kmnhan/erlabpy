@@ -91,7 +91,26 @@ class UnsupportedFileError(Exception):
         )
 
 
-class _Loader(type):
+class _ReloadStableMeta(type):
+    """Keep selected public class checks stable across module reloads."""
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        return super().__instancecheck__(instance) or cls.__subclasscheck__(
+            type(instance)
+        )
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        if super().__subclasscheck__(subclass):
+            return True
+
+        target = (cls.__module__, cls.__qualname__)
+        return any(
+            (base.__module__, base.__qualname__) == target
+            for base in getattr(subclass, "__mro__", ())
+        )
+
+
+class _Loader(_ReloadStableMeta):
     """Metaclass for data loaders.
 
     This metaclass wraps the `identify` and `load_single` method to display informative
@@ -155,21 +174,6 @@ class _Loader(type):
             new_class._original_load_single = original_load_single
 
         return new_class
-
-    def __instancecheck__(cls, instance: object) -> bool:
-        return super().__instancecheck__(instance) or cls.__subclasscheck__(
-            type(instance)
-        )
-
-    def __subclasscheck__(cls, subclass: type) -> bool:
-        if super().__subclasscheck__(subclass):
-            return True
-
-        target = (cls.__module__, cls.__qualname__)
-        return any(
-            (base.__module__, base.__qualname__) == target
-            for base in getattr(subclass, "__mro__", ())
-        )
 
 
 def _combine_by_coords_general(
@@ -2124,7 +2128,7 @@ _LOADER_REGISTRY_STATE = typing.cast(
 )
 
 
-class LoaderRegistry:
+class LoaderRegistry(metaclass=_ReloadStableMeta):
     """Registry of loader plugins.
 
     Stores and manages data loaders. The loaders can be accessed by name in a

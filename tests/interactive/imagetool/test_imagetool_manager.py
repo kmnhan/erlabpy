@@ -3885,6 +3885,49 @@ def test_manager_workspace_io(
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
 
+def test_manager_workspace_save_selection_cancel_does_not_write(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _RejectedChooseDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            return QtWidgets.QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._mainwindow,
+        "_ChooseFromDataTreeDialog",
+        _RejectedChooseDialog,
+    )
+    closed_trees: list[xr.DataTree] = []
+    original_close = xr.DataTree.close
+
+    def _close_spy(tree: xr.DataTree) -> None:
+        closed_trees.append(tree)
+        original_close(tree)
+
+    monkeypatch.setattr(xr.DataTree, "close", _close_spy)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+        itool(data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        with tempfile.TemporaryDirectory() as tmp_dir_name:
+            filename = pathlib.Path(tmp_dir_name) / "workspace.itws"
+            manager._save_to_file(str(filename))
+
+            assert not filename.exists()
+            assert len(closed_trees) == 1
+
+
 def test_manager_workspace_roundtrip_goldtool_child(
     qtbot,
     monkeypatch,
@@ -4542,6 +4585,7 @@ def test_remove_imagetool_removes_childtools() -> None:
 
     class _DummyWrapper:
         def __init__(self):
+            self.uid = "root-uid-0"
             self._childtool_indices = [uid]
             self.archived = True
             self.disposed = False
@@ -4556,7 +4600,8 @@ def test_remove_imagetool_removes_childtools() -> None:
     wrapper = _DummyWrapper()
     manager = types.SimpleNamespace(
         _imagetool_wrappers={0: wrapper},
-        _remove_childtool=lambda child_uid: removed_uids.append(child_uid),
+        _all_nodes={wrapper.uid: wrapper},
+        _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
         ),
@@ -4568,6 +4613,7 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert wrapper.disposed
     assert wrapper.deleted
     assert manager._imagetool_wrappers == {}
+    assert manager._all_nodes == {}
 
 
 def test_remove_imagetools_deduplicates_explicit_child_uids() -> None:

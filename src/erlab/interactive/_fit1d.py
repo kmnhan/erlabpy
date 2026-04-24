@@ -2923,11 +2923,11 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         lines: list[str] = []
 
         data_name = str(data_name)
-        if not data_name.isidentifier():
+        if not erlab.interactive.utils._is_valid_keyword_argument_name(data_name):
             lines.append(f"target = {data_name}")
             data_name = "target"
         model_name = str(self._model_name)
-        if not model_name.isidentifier():
+        if not erlab.interactive.utils._is_valid_keyword_argument_name(model_name):
             model_name = "model"
 
         model_choice = self._infer_model_choice(self._model)
@@ -3013,7 +3013,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 param.value if can_be_float else entry_kwargs
             )
             param_kwargs[name] = entry_value
-            if not name.isidentifier() or needs_dict:
+            if (
+                not erlab.interactive.utils._is_valid_keyword_argument_name(name)
+                or needs_dict
+            ):
                 needs_dict = True
                 continue
             param_entries.append(f"{name}={entry_value!r}")

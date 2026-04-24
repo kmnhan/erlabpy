@@ -298,13 +298,24 @@ class DataTransformDialog(_DataManipulationDialog):
         source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
         new_name: str,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
-        if parent_provenance is None:
-            return source_spec
+        return self._compose_transform_provenance(
+            parent_provenance,
+            source_spec,
+            new_name,
+        )
 
+    @staticmethod
+    def _compose_transform_provenance(
+        base_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        new_name: str,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        if base_spec is None:
+            return source_spec
         with contextlib.suppress(TypeError):
             live_parent = (
                 erlab.interactive.imagetool.provenance.require_live_source_spec(
-                    parent_provenance
+                    base_spec
                 )
             )
             if live_parent is not None:
@@ -312,9 +323,10 @@ class DataTransformDialog(_DataManipulationDialog):
                 return live_parent.append_replacement_operations(
                     *operations
                 ).append_final_rename(new_name)
+        local_spec = source_spec.to_replay_spec().model_copy(update={"seed_code": None})
         composed = erlab.interactive.imagetool.provenance.compose_full_provenance(
-            parent_provenance,
-            source_spec,
+            base_spec,
+            local_spec,
         )
         assert composed is not None
         return composed
@@ -324,9 +336,11 @@ class DataTransformDialog(_DataManipulationDialog):
         existing_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
         new_name: str,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
-        return existing_spec.append_replacement_operations(
-            *self.source_operations()
-        ).append_final_rename(new_name)
+        return self._compose_transform_provenance(
+            existing_spec,
+            self.source_spec(new_name),
+            new_name,
+        )
 
     def _rewrite_target_provenance(
         self,
@@ -419,11 +433,10 @@ class DataTransformDialog(_DataManipulationDialog):
         else:
             new_name = self.suffix.lstrip("_")
 
+        applied_func = self.slicer_area._applied_func
         try:
-            applied_func = None
-            if self.slicer_area._applied_func is not None:
+            if applied_func is not None:
                 # Transform must be done on unfiltered data
-                applied_func = self.slicer_area._applied_func
                 self.slicer_area.apply_func(None)
 
             if self.apply_on_nonuniform_data:
@@ -508,14 +521,14 @@ class DataTransformDialog(_DataManipulationDialog):
 
             del processed
 
-            if applied_func is not None:
-                self.slicer_area.apply_func(applied_func)
-
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while processing data."
             )
             return
+        finally:
+            if applied_func is not None:
+                self.slicer_area.apply_func(applied_func)
 
         super().accept()
 
@@ -698,7 +711,7 @@ class AverageDialog(DataTransformDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
-        if self._target_dims == {}:
+        if not self._target_dims:
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Dimensions Selected",
@@ -897,7 +910,8 @@ class CoarsenDialog(DataTransformDialog):
 
         kwargs = self._coarsen_kwargs.copy()
         if all(
-            isinstance(k, str) and k.isidentifier() for k in self._coarsen_kwargs["dim"]
+            erlab.interactive.utils._is_valid_keyword_argument_name(k)
+            for k in self._coarsen_kwargs["dim"]
         ):  # pragma: no branch
             window_kwargs = kwargs.pop("dim")
             kwargs = dict(**window_kwargs, **kwargs)

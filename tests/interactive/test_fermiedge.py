@@ -394,6 +394,26 @@ def test_goldtool_auto_source_update_stays_stale_until_deferred_refresh_applies(
     xr.testing.assert_identical(win.data, new_gold)
 
 
+def test_goldtool_auto_source_update_emits_one_data_change(qtbot, gold) -> None:
+    win: GoldTool = goldtool(gold, execute=False)
+    qtbot.addWidget(win)
+    win.set_source_binding(
+        erlab.interactive.imagetool.provenance.full_data(),
+        auto_update=True,
+    )
+
+    emissions: list[bool] = []
+    win.sigDataChanged.connect(lambda: emissions.append(True))
+
+    new_gold = gold.copy(deep=True)
+    new_gold.data = np.asarray(new_gold.data) * 1.02
+    win.handle_parent_source_replaced(new_gold)
+
+    assert win.source_state == "fresh"
+    assert emissions == [True]
+    xr.testing.assert_identical(win.data, new_gold)
+
+
 def test_goldtool_auto_source_update_with_refit_stays_stale_until_fit_finishes(
     qtbot, gold, monkeypatch
 ) -> None:

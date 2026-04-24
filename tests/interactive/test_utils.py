@@ -244,6 +244,37 @@ def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
         importlib.reload(erlab.interactive.utils)
 
 
+def test_toolwindow_subclass_checks_survive_utils_reload(qtbot) -> None:
+    class _ReloadedBaseTool(erlab.interactive.utils.ToolWindow):
+        pass
+
+    try:
+        reloaded = importlib.reload(erlab.interactive.utils)
+
+        tool = _ReloadedBaseTool()
+        qtbot.addWidget(tool)
+
+        assert issubclass(_ReloadedBaseTool, reloaded.ToolWindow)
+        assert isinstance(tool, reloaded.ToolWindow)
+    finally:
+        importlib.reload(erlab.interactive.utils)
+
+
+def test_format_kwargs_treats_python_keywords_as_mapping_keys() -> None:
+    assert erlab.interactive.utils.format_kwargs({"for": 1}) == '{"for": 1}'
+    assert erlab.interactive.utils.format_call_kwargs({"for": 1}) == '**{"for": 1}'
+
+
+def test_generate_code_expands_python_keyword_argument_names() -> None:
+    def _dummy(**kwargs):
+        return kwargs
+
+    code = generate_code(_dummy, args=(), kwargs={"for": 1, "value": 2})
+
+    assert code == '_dummy(value=2, **{"for": 1})'
+    compile(code, "<generated>", "eval")
+
+
 @pytest.mark.parametrize(
     ("input_str", "expected_state"),
     [

@@ -218,13 +218,17 @@ class _StoreDialog(QtWidgets.QDialog):
             data = manager.get_imagetool(tool_idx).slicer_area._data
             wrapper = manager._imagetool_wrappers[tool_idx]
             default_name = data.name
-            if not (isinstance(default_name, str) and default_name.isidentifier()):
-                if wrapper.name.isidentifier():
+            if not erlab.interactive.utils._is_valid_keyword_argument_name(
+                default_name
+            ):
+                if erlab.interactive.utils._is_valid_keyword_argument_name(
+                    wrapper.name
+                ):
                     default_name = wrapper.name
                 else:
                     default_name = f"data_{tool_idx}"
 
-            line_new = QtWidgets.QLineEdit(default_name)
+            line_new = QtWidgets.QLineEdit(str(default_name))
             line_new.setPlaceholderText("Enter variable name")
             line_new.setValidator(erlab.interactive.utils.IdentifierValidator())
             self._layout.addRow(wrapper.label_text, line_new)

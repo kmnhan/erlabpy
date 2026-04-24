@@ -131,6 +131,7 @@ def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> 
 def test_loader_registry_survives_dataloader_reload(
     example_loader, example_data_dir: pathlib.Path
 ) -> None:
+    cached_loaders = erlab.io.loaders
     cached_load = erlab.io.load
     cached_set_loader = erlab.io.set_loader
 
@@ -141,9 +142,14 @@ def test_loader_registry_survives_dataloader_reload(
 
     assert "example" in erlab.io.loaders
     assert isinstance(erlab.io.loaders["example"], example_loader)
+    assert isinstance(cached_loaders, erlab.io.dataloader.LoaderRegistry)
+    assert "example" in cached_loaders
+    assert cached_loaders["example"] is erlab.io.loaders["example"]
     assert erlab.io.loaders.current_loader is not None
     assert erlab.io.loaders.current_loader.name == "example"
+    assert cached_loaders.current_loader is erlab.io.loaders.current_loader
     assert erlab.io.loaders.current_data_dir == example_data_dir
+    assert cached_loaders.current_data_dir == example_data_dir
 
     cached_load(2)
     erlab.io.load(2)
