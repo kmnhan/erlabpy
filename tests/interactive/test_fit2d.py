@@ -27,6 +27,40 @@ def _make_2d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("y", "x"), coords={"y": y, "x": x}, name="map")
 
 
+def _assert_fit_result_dataset_equivalent(
+    actual: xr.Dataset, expected: xr.Dataset
+) -> None:
+    xr.testing.assert_identical(
+        actual.drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
+    )
+    actual_result = actual.modelfit_results.compute().item()
+    expected_result = expected.modelfit_results.compute().item()
+    assert type(actual_result.model) is type(expected_result.model)
+    assert list(actual_result.params.keys()) == list(expected_result.params.keys())
+    for name, expected_param in expected_result.params.items():
+        actual_param = actual_result.params[name]
+        assert actual_param.value == pytest.approx(expected_param.value)
+        if expected_param.stderr is None:
+            assert actual_param.stderr is None
+        else:
+            assert actual_param.stderr == pytest.approx(expected_param.stderr)
+        assert actual_param.expr == expected_param.expr
+        assert actual_param.vary == expected_param.vary
+
+
+def _assert_fit_result_list_equivalent(
+    actual: list[xr.Dataset | None], expected: list[xr.Dataset | None]
+) -> None:
+    assert len(actual) == len(expected)
+    for actual_ds, expected_ds in zip(actual, expected, strict=True):
+        if expected_ds is None:
+            assert actual_ds is None
+            continue
+        assert actual_ds is not None
+        _assert_fit_result_dataset_equivalent(actual_ds, expected_ds)
+
+
 def _configure_fit2d_for_tests(
     win: Fit2DTool, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str, str | None]]]:
@@ -652,6 +686,10 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
     )
     assert not warnings
     assert not errors
+    expected_results = [
+        None if ds is None else ds.copy(deep=True) for ds in win._result_ds_full
+    ]
+    expected_status = win.tool_status.model_dump()
 
     win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
     qtbot.addWidget(win_restored)
@@ -666,6 +704,8 @@ def test_fit2d_persistence_roundtrip_preserves_fit_results(
 
     assert win_restored._fit_is_current
     assert all(ds is not None for ds in win_restored._result_ds_full)
+    _assert_fit_result_list_equivalent(win_restored._result_ds_full, expected_results)
+    assert win_restored.tool_status.model_dump() == expected_status
     assert win_restored.copy_full_button.isEnabled()
     assert win_restored.save_full_button.isEnabled()
     assert win_restored.current_provenance_spec() is not None
@@ -700,6 +740,10 @@ def test_fit2d_persistence_roundtrip_preserves_sparse_results(
     win._result_ds_full[1] = None
     win.y_index_spin.setValue(0)
     win._mark_fit_stale()
+    expected_results = [
+        None if ds is None else ds.copy(deep=True) for ds in win._result_ds_full
+    ]
+    expected_status = win.tool_status.model_dump()
 
     win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
     qtbot.addWidget(win_restored)
@@ -717,6 +761,8 @@ def test_fit2d_persistence_roundtrip_preserves_sparse_results(
         False,
         True,
     ]
+    _assert_fit_result_list_equivalent(win_restored._result_ds_full, expected_results)
+    assert win_restored.tool_status.model_dump() == expected_status
     assert win_restored._fit_is_current is False
     assert not win_restored.copy_full_button.isEnabled()
     assert not win_restored.save_full_button.isEnabled()
@@ -859,7 +905,7 @@ def test_fit2d_copy_code_full_inconsistent_expr_warning(qtbot, monkeypatch) -> N
 
     monkeypatch.setattr(win, "_show_warning", _warn)
     code = win._copy_code_full()
-    assert code == ""
+    assert not code
     assert warnings
 
 
@@ -881,7 +927,7 @@ def test_fit2d_copy_code_full_missing_fit_warning(qtbot, monkeypatch) -> None:
 
     monkeypatch.setattr(win, "_show_warning", _warn)
     code = win._copy_code_full()
-    assert code == ""
+    assert not code
     assert warnings
 
 
@@ -907,7 +953,7 @@ def test_fit2d_copy_code_full_inconsistent_params_warning(qtbot, monkeypatch) ->
 
     monkeypatch.setattr(win, "_show_warning", _warn)
     code = win._copy_code_full()
-    assert code == ""
+    assert not code
     assert warnings
 
 

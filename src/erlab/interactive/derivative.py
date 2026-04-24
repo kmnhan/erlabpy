@@ -497,6 +497,8 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
         if self.data_has_nan:
             data_name = f"{data_name}.fillna(0)"
+        if self.tool_data.dtype not in (np.float32, np.float64):
+            data_name = f"{data_name}.astype(np.float64)"
         if self.interp_group.isChecked():
             arg_dict: dict[str, typing.Any] = {
                 str(dim): f"|np.linspace(*{data_name}['{dim}'].values[[0, -1]], {n})|"

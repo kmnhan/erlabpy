@@ -12,6 +12,24 @@ import erlab
 from erlab.interactive.derivative import DerivativeTool, dtool
 
 
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    locals_ns = dict(namespace)
+    exec(  # noqa: S102
+        code,
+        {
+            "__builtins__": {"range": range, "slice": slice},
+            "np": np,
+            "xr": xr,
+            "erlab": erlab,
+            "era": erlab.analysis,
+        },
+        locals_ns,
+    )
+    return locals_ns
+
+
 @pytest.mark.parametrize("method_idx", [0, 1, 2, 3, 4])
 @pytest.mark.parametrize("interpmode", ["interp", "nointerp"])
 @pytest.mark.parametrize(
@@ -32,9 +50,13 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     qtbot.addWidget(win)
 
     def check_generated_code(w: DerivativeTool) -> None:
-        namespace = {"era": erlab.analysis, "data": data, "np": np, "result": None}
-        exec(w.copy_code(), {"__builtins__": {"range": range}}, namespace)  # noqa: S102
-        xr.testing.assert_identical(w.result, namespace["result"])
+        namespace = _exec_generated_code(
+            w.copy_code(),
+            {"data": data.copy(deep=True), "result": None},
+        )
+        result = namespace["result"]
+        assert isinstance(result, xr.DataArray)
+        xr.testing.assert_identical(w.result, result)
 
     win.interp_group.setChecked(interpmode == "interp")
     win.smooth_group.setChecked(smoothmode != "none")
@@ -148,8 +170,10 @@ def test_dtool_output_imagetool_provenance_transposes_result(qtbot) -> None:
     assert spec is not None
     code = spec.display_code()
     assert code is not None
-    assert "era.image.diffn(" in code
-    assert code.endswith(".transpose()")
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xr.testing.assert_identical(result, win.result.T)
 
 
 def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> None:
@@ -597,8 +621,10 @@ def test_tool_copy_code_includes_parent_lineage_for_standalone_imagetool(qtbot) 
     parent.slicer_area.add_tool_window(tool, transfer_to_manager=False)
 
     code = tool.copy_code()
-
-    assert code == "result = data.isel(x=slice(0, 2)).mean()"
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xr.testing.assert_identical(result, data.isel(x=slice(0, 2)).mean())
 
 
 def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
@@ -660,19 +686,37 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
     tool.set_input_provenance_parent_fetcher(lambda: parent_provenance["spec"])
 
     initial_code = tool.copy_code()
-    assert initial_code == "result = data.isel(x=slice(0, 2)).mean()"
+    initial_namespace = _exec_generated_code(
+        initial_code,
+        {"data": data.copy(deep=True)},
+    )
+    initial_result = initial_namespace["result"]
+    assert isinstance(initial_result, xr.DataArray)
+    xr.testing.assert_identical(initial_result, data.isel(x=slice(0, 2)).mean())
 
     parent_provenance["spec"] = erlab.interactive.imagetool.provenance.selection(
         erlab.interactive.imagetool.provenance.IselOperation(kwargs={"y": slice(0, 2)})
     )
     stale_code = tool.copy_code()
-    assert stale_code == "result = data.isel(x=slice(0, 2)).mean()"
+    stale_namespace = _exec_generated_code(
+        stale_code,
+        {"data": data.copy(deep=True)},
+    )
+    stale_result = stale_namespace["result"]
+    assert isinstance(stale_result, xr.DataArray)
+    xr.testing.assert_identical(stale_result, data.isel(x=slice(0, 2)).mean())
 
     tool._data = data.isel(y=slice(0, 2))
     tool.finalize_source_refresh()
 
     refreshed_code = tool.copy_code()
-    assert refreshed_code == "result = data.isel(y=slice(0, 2)).mean()"
+    refreshed_namespace = _exec_generated_code(
+        refreshed_code,
+        {"data": data.copy(deep=True)},
+    )
+    refreshed_result = refreshed_namespace["result"]
+    assert isinstance(refreshed_result, xr.DataArray)
+    xr.testing.assert_identical(refreshed_result, data.isel(y=slice(0, 2)).mean())
 
 
 def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -> None:
@@ -728,9 +772,20 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
     tool.set_input_provenance_parent_fetcher(lambda: None)
 
     early_code = tool.copy_code()
-    assert early_code == "result = data.squeeze().mean()"
+    early_namespace = _exec_generated_code(early_code, {"data": data.copy(deep=True)})
+    early_result = early_namespace["result"]
+    assert isinstance(early_result, xr.DataArray)
+    xr.testing.assert_identical(early_result, data.mean())
+    assert ".squeeze()" in early_code
 
     tool.set_source_parent_fetcher(lambda: data)
 
     refreshed_code = tool.copy_code()
-    assert refreshed_code == "result = data.mean()"
+    refreshed_namespace = _exec_generated_code(
+        refreshed_code,
+        {"data": data.copy(deep=True)},
+    )
+    refreshed_result = refreshed_namespace["result"]
+    assert isinstance(refreshed_result, xr.DataArray)
+    xr.testing.assert_identical(refreshed_result, data.mean())
+    assert ".squeeze()" not in refreshed_code

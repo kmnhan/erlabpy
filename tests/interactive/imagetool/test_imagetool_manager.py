@@ -271,6 +271,58 @@ def action_map(menu: QtWidgets.QMenu) -> dict[str, QtWidgets.QAction]:
     }
 
 
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    locals_ns = dict(namespace)
+    exec(  # noqa: S102
+        code,
+        {
+            "__builtins__": {"slice": slice, "__import__": __import__},
+            "np": np,
+            "xr": xr,
+            "erlab": erlab,
+            "era": erlab.analysis,
+        },
+        locals_ns,
+    )
+    return locals_ns
+
+
+def assert_fit_result_dataset_equivalent(
+    actual: xr.Dataset, expected: xr.Dataset
+) -> None:
+    xr.testing.assert_identical(
+        actual.drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
+    )
+    actual_result = actual.modelfit_results.compute().item()
+    expected_result = expected.modelfit_results.compute().item()
+    assert type(actual_result.model) is type(expected_result.model)
+    assert list(actual_result.params.keys()) == list(expected_result.params.keys())
+    for name, expected_param in expected_result.params.items():
+        actual_param = actual_result.params[name]
+        assert actual_param.value == pytest.approx(expected_param.value)
+        if expected_param.stderr is None:
+            assert actual_param.stderr is None
+        else:
+            assert actual_param.stderr == pytest.approx(expected_param.stderr)
+        assert actual_param.expr == expected_param.expr
+        assert actual_param.vary == expected_param.vary
+
+
+def assert_fit_result_list_equivalent(
+    actual: list[xr.Dataset | None], expected: list[xr.Dataset | None]
+) -> None:
+    assert len(actual) == len(expected)
+    for actual_ds, expected_ds in zip(actual, expected, strict=True):
+        if expected_ds is None:
+            assert actual_ds is None
+            continue
+        assert actual_ds is not None
+        assert_fit_result_dataset_equivalent(actual_ds, expected_ds)
+
+
 def copy_full_code_for_uid(
     monkeypatch,
     manager: ImageToolManager,
@@ -1029,8 +1081,13 @@ def test_manager_dtool_output_itool_nests_under_tool(
             "Transpose derivative output for ImageTool display",
         ]
         copied = copy_full_code_for_uid(monkeypatch, manager, output_uid)
-        assert "era.image.diffn(" in copied
-        assert copied.endswith(".transpose()")
+        namespace = _exec_generated_code(
+            copied,
+            {"data": parent_tool.slicer_area.data.copy(deep=True)},
+        )
+        result = namespace["result"]
+        assert isinstance(result, xr.DataArray)
+        xr.testing.assert_identical(result, child.result.T)
 
 
 def test_manager_ktool_output_itool_nests_under_tool(
@@ -1463,7 +1520,13 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         assert any(line.startswith("transpose(") for line in derivation)
 
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
-        assert copied.startswith("result = era.image.diffn(")
+        namespace = _exec_generated_code(
+            copied,
+            {"data": parent_tool.slicer_area.data.copy(deep=True)},
+        )
+        result = namespace["result"]
+        assert isinstance(result, xr.DataArray)
+        xr.testing.assert_identical(result, manager.get_childtool(child_uid).result)
         assert ".isel()" not in copied
         assert "sort_coord_order" not in copied
         assert ".transpose(" in copied
@@ -2195,7 +2258,12 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         assert menu is not None
         action_map(menu)["Copy Full Code"].trigger()
         assert copied
-        assert copied[-1].startswith("result = era.image.diffn(")
+        namespace = _exec_generated_code(
+            copied[-1], {"data": child_tool.slicer_area.data.copy(deep=True)}
+        )
+        result = namespace["result"]
+        assert isinstance(result, xr.DataArray)
+        xr.testing.assert_identical(result, nested_tool.result)
 
 
 def test_manager_promote_action_enablement_and_menus(
@@ -2700,19 +2768,42 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             QtCore.Qt.Key.Key_C,
             QtCore.Qt.KeyboardModifier.ControlModifier,
         )
-        assert copied[-1] == (
-            'derived = derived.qsel.average("x")\nderived = derived.qsel.average("y")'
+        selected_namespace = _exec_generated_code(
+            copied[-1],
+            {"derived": data.copy(deep=True)},
+        )
+        selected_result = selected_namespace["derived"]
+        assert isinstance(selected_result, xr.DataArray)
+        xr.testing.assert_identical(
+            selected_result.rename(None),
+            data.qsel.average("x").qsel.average("y").rename(None),
         )
 
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         action_map(menu)["Copy Selected Code"].trigger()
-        assert copied[-1] == (
-            'derived = derived.qsel.average("x")\nderived = derived.qsel.average("y")'
+        selected_namespace = _exec_generated_code(
+            copied[-1],
+            {"derived": data.copy(deep=True)},
+        )
+        selected_result = selected_namespace["derived"]
+        assert isinstance(selected_result, xr.DataArray)
+        xr.testing.assert_identical(
+            selected_result.rename(None),
+            data.qsel.average("x").qsel.average("y").rename(None),
         )
 
         action_map(menu)["Copy Full Code"].trigger()
-        assert copied[-1] == "derived = data.qsel.average('x').qsel.average('y')"
+        full_namespace = _exec_generated_code(
+            copied[-1],
+            {"data": data.copy(deep=True)},
+        )
+        full_result = full_namespace["derived"]
+        assert isinstance(full_result, xr.DataArray)
+        xr.testing.assert_identical(
+            full_result.rename(None),
+            data.qsel.average("x").qsel.average("y").rename(None),
+        )
         assert ".rename(" not in copied[-1]
 
         manual = xr.DataArray(
@@ -2948,7 +3039,12 @@ def test_manager_watched_root_provenance_uses_variable_name(
         node = manager._imagetool_wrappers[0]
         provenance = node.provenance_spec
         assert provenance is not None
-        assert provenance.display_code() == "derived = my_data"
+        code = provenance.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"my_data": test_data.copy(deep=True)})
+        derived = namespace["derived"]
+        assert isinstance(derived, xr.DataArray)
+        xr.testing.assert_identical(derived, test_data)
         assert provenance.display_entries()[0].label == (
             "Start from watched variable 'my_data'"
         )
@@ -2965,7 +3061,13 @@ def test_manager_watched_root_provenance_uses_variable_name(
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         action_map(menu)["Copy Full Code"].trigger()
-        assert copied[-1] == "derived = my_data"
+        namespace = _exec_generated_code(
+            copied[-1],
+            {"my_data": test_data.copy(deep=True)},
+        )
+        derived = namespace["derived"]
+        assert isinstance(derived, xr.DataArray)
+        xr.testing.assert_identical(derived, test_data)
 
 
 def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
@@ -2992,8 +3094,15 @@ def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
 
         child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
-        assert "my_data" in copied
-        assert "derived = data" not in copied
+        namespace = _exec_generated_code(
+            copied,
+            {"my_data": parent_tool.slicer_area.data.copy(deep=True)},
+        )
+        result = namespace["result"]
+        assert isinstance(result, xr.DataArray)
+        child_tool = manager.get_childtool(child_uid)
+        assert isinstance(child_tool, DerivativeTool)
+        xr.testing.assert_identical(result, child_tool.result)
 
 
 def test_manager_watched_root_child_imagetool_copy_code_uses_variable_name(
@@ -3020,8 +3129,13 @@ def test_manager_watched_root_child_imagetool_copy_code_uses_variable_name(
 
         child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
-        assert copied.startswith("derived = my_data")
-        assert "derived = data" not in copied
+        namespace = _exec_generated_code(
+            copied,
+            {"my_data": test_data.copy(deep=True)},
+        )
+        derived = namespace["derived"]
+        assert isinstance(derived, xr.DataArray)
+        xr.testing.assert_identical(derived, fetch(child_uid))
 
 
 def test_manager_watched_root_ftool_copy_code_1d_omits_duplicate_seed_and_noop_squeeze(
@@ -3930,6 +4044,9 @@ def test_manager_workspace_roundtrip_fit1d_child(
 
         assert child._run_fit()
         qtbot.wait_until(lambda: child._last_result_ds is not None, timeout=10000)
+        assert child._last_result_ds is not None
+        expected_fit_ds = child._last_result_ds.copy(deep=True)
+        expected_status = child.tool_status.model_dump()
 
         tree = manager._to_datatree()
         manager.remove_all_tools()
@@ -3942,6 +4059,10 @@ def test_manager_workspace_roundtrip_fit1d_child(
         loaded_child = manager.get_childtool(child_uid)
         assert isinstance(loaded_child, Fit1DTool)
         assert loaded_child._last_result_ds is not None
+        assert_fit_result_dataset_equivalent(
+            loaded_child._last_result_ds, expected_fit_ds
+        )
+        assert loaded_child.tool_status.model_dump() == expected_status
         assert loaded_child._fit_is_current
         assert loaded_child.save_button.isEnabled()
         assert loaded_child.copy_button.isEnabled()
@@ -3985,6 +4106,10 @@ def test_manager_workspace_roundtrip_fit2d_child(
             lambda: all(ds is not None for ds in child._result_ds_full),
             timeout=10000,
         )
+        expected_results = [
+            None if ds is None else ds.copy(deep=True) for ds in child._result_ds_full
+        ]
+        expected_status = child.tool_status.model_dump()
 
         tree = manager._to_datatree()
         manager.remove_all_tools()
@@ -3997,6 +4122,10 @@ def test_manager_workspace_roundtrip_fit2d_child(
         loaded_child = manager.get_childtool(child_uid)
         assert isinstance(loaded_child, Fit2DTool)
         assert all(ds is not None for ds in loaded_child._result_ds_full)
+        assert_fit_result_list_equivalent(
+            loaded_child._result_ds_full, expected_results
+        )
+        assert loaded_child.tool_status.model_dump() == expected_status
         assert loaded_child._fit_is_current
         assert loaded_child.copy_full_button.isEnabled()
         assert loaded_child.save_full_button.isEnabled()

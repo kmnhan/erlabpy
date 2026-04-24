@@ -20,6 +20,28 @@ def _make_1d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("x",), coords={"x": x}, name="spec")
 
 
+def _assert_fit_result_dataset_equivalent(
+    actual: xr.Dataset, expected: xr.Dataset
+) -> None:
+    xr.testing.assert_identical(
+        actual.drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
+    )
+    actual_result = actual.modelfit_results.compute().item()
+    expected_result = expected.modelfit_results.compute().item()
+    assert type(actual_result.model) is type(expected_result.model)
+    assert list(actual_result.params.keys()) == list(expected_result.params.keys())
+    for name, expected_param in expected_result.params.items():
+        actual_param = actual_result.params[name]
+        assert actual_param.value == pytest.approx(expected_param.value)
+        if expected_param.stderr is None:
+            assert actual_param.stderr is None
+        else:
+            assert actual_param.stderr == pytest.approx(expected_param.stderr)
+        assert actual_param.expr == expected_param.expr
+        assert actual_param.vary == expected_param.vary
+
+
 def test_fit1d_fit_domain_descending_coords(qtbot) -> None:
     x = np.linspace(1.0, -1.0, 21)
     data = xr.DataArray(np.exp(-(x**2)), dims=("x",), coords={"x": x})
@@ -157,12 +179,17 @@ def test_fit1d_persistence_roundtrip_preserves_fit_result(
 
     assert win._run_fit()
     qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
+    assert win._last_result_ds is not None
+    expected_fit_ds = win._last_result_ds.copy(deep=True)
+    expected_status = win.tool_status.model_dump()
 
     win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
     qtbot.addWidget(win_restored)
     assert isinstance(win_restored, Fit1DTool)
 
     assert win_restored._last_result_ds is not None
+    _assert_fit_result_dataset_equivalent(win_restored._last_result_ds, expected_fit_ds)
+    assert win_restored.tool_status.model_dump() == expected_status
     assert win_restored._fit_is_current
     assert win_restored.save_button.isEnabled()
     assert win_restored.copy_button.isEnabled()
@@ -191,12 +218,16 @@ def test_fit1d_persistence_roundtrip_preserves_stale_fit(
     )
     assert win._last_result_ds is not None
     assert win._fit_is_current is False
+    expected_fit_ds = win._last_result_ds.copy(deep=True)
+    expected_status = win.tool_status.model_dump()
 
     win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
     qtbot.addWidget(win_restored)
     assert isinstance(win_restored, Fit1DTool)
 
     assert win_restored._last_result_ds is not None
+    _assert_fit_result_dataset_equivalent(win_restored._last_result_ds, expected_fit_ds)
+    assert win_restored.tool_status.model_dump() == expected_status
     assert win_restored._fit_is_current is False
     assert not win_restored.save_button.isEnabled()
     assert not win_restored.copy_button.isEnabled()

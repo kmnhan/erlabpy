@@ -1,11 +1,15 @@
 import enum
+import importlib
+import sys
 import tempfile
+import types
 import typing
 
 import lmfit
 import numpy as np
 import pydantic
 import pytest
+import qtpy
 import xarray as xr
 from qtpy import PYQT6, QtCore, QtGui, QtWidgets
 
@@ -25,6 +29,14 @@ from erlab.interactive.utils import (
     save_fit_ui,
     xImageItem,
 )
+
+
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    locals_ns = dict(namespace)
+    exec(code, {"__builtins__": {"slice": slice}}, locals_ns)  # noqa: S102
+    return locals_ns
 
 
 @pytest.fixture
@@ -204,23 +216,32 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
 
 
-def test_qt_object_is_valid_uses_shiboken_when_available() -> None:
+def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
     sentinel = object()
     other = object()
     calls: list[object] = []
+    fake_shiboken6 = types.ModuleType("shiboken6")
 
     def _fake_is_valid(obj: object) -> bool:
         calls.append(obj)
         return obj is sentinel
 
-    is_valid = erlab.interactive.utils._make_qt_object_is_valid_from_shiboken(
-        _fake_is_valid
-    )
+    fake_shiboken6.isValid = _fake_is_valid
 
-    assert is_valid(sentinel)
-    assert not is_valid(other)
-    assert not is_valid(None)
-    assert calls == [sentinel, other]
+    try:
+        with monkeypatch.context() as context:
+            context.setattr(qtpy, "PYSIDE6", True, raising=False)
+            context.setattr(qtpy, "PYQT6", False, raising=False)
+            context.setitem(sys.modules, "shiboken6", fake_shiboken6)
+
+            reloaded = importlib.reload(erlab.interactive.utils)
+
+            assert reloaded._qt_object_is_valid(sentinel)
+            assert not reloaded._qt_object_is_valid(other)
+            assert not reloaded._qt_object_is_valid(None)
+            assert calls == [sentinel, other]
+    finally:
+        importlib.reload(erlab.interactive.utils)
 
 
 @pytest.mark.parametrize(
@@ -657,10 +678,26 @@ def test_tool_window_declared_output_dispatch_and_validation(qtbot) -> None:
     spec = tool.output_imagetool_provenance(_DummyTool.Output.RESULT, expected)
     assert spec is not None
     assert spec.active_name == "result"
-    assert spec.display_code() == "result = data + 1"
+    spec_code = spec.display_code()
+    assert spec_code is not None
+    spec_namespace = _exec_generated_code(
+        spec_code,
+        {"data": tool.tool_data.copy(deep=True)},
+    )
+    spec_result = spec_namespace["result"]
+    assert isinstance(spec_result, xr.DataArray)
+    xr.testing.assert_identical(spec_result, expected)
     assert tool.current_provenance_spec() is not None
     assert tool.current_provenance_spec().active_name == "result"
-    assert tool.current_provenance_spec().display_code() == "result = data + 1"
+    current_code = tool.current_provenance_spec().display_code()
+    assert current_code is not None
+    current_namespace = _exec_generated_code(
+        current_code,
+        {"data": tool.tool_data.copy(deep=True)},
+    )
+    current_result = current_namespace["result"]
+    assert isinstance(current_result, xr.DataArray)
+    xr.testing.assert_identical(current_result, expected)
 
     with pytest.raises(ValueError, match="does not define ImageTool output"):
         tool.output_imagetool_data("dummy.unknown")

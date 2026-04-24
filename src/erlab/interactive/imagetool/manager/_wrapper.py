@@ -21,6 +21,7 @@ import erlab
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from erlab.interactive.imagetool.manager import ImageToolManager
@@ -108,7 +109,8 @@ def _format_chunk_summary(data: xr.DataArray) -> str:
 
 def _load_code_from_file_details(
     file_path: Path,
-    load_func: tuple[typing.Callable | str, dict[str, typing.Any], int] | None,
+    load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
+    | None,
 ) -> str | None:
     if load_func is None or load_func[2] != 0:
         return None
@@ -129,6 +131,7 @@ def _load_code_from_file_details(
         setup_lines.append(f"erlab.io.set_loader({loader_name!r})")
         loader_expr = "erlab.io.load"
     else:
+        assert not isinstance(loader, str)
         callable_loader_expr = _loader_callable_text(loader)
         if callable_loader_expr is None:
             return None
@@ -164,7 +167,8 @@ def _load_code_from_file_details(
 
 
 def _load_source_label_and_text(
-    load_func: tuple[typing.Callable | str, dict[str, typing.Any], int] | None,
+    load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
+    | None,
 ) -> tuple[str, str]:
     if load_func is None:
         return "Loader", "(unavailable)"
@@ -179,7 +183,7 @@ def _load_source_label_and_text(
     return "Load Function", loader_text
 
 
-def _loader_callable_text(loader: typing.Callable) -> str | None:
+def _loader_callable_text(loader: Callable[..., typing.Any]) -> str | None:
     module = getattr(loader, "__module__", None)
     qualname = getattr(loader, "__qualname__", getattr(loader, "__name__", None))
     if module is None or qualname is None or "<locals>" in qualname:

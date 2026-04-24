@@ -1240,9 +1240,18 @@ class Fit2DTool(Fit1DTool):
         for i, index in enumerate(sparse[self._PERSISTED_FIT_INDEX_DIM].values):
             idx = int(index)
             if 0 <= idx < y_size:
-                self._result_ds_full[idx] = sparse.isel(
+                result_ds = sparse.isel(
                     {self._PERSISTED_FIT_INDEX_DIM: i}, drop=True
                 ).copy()
+                if self._y_dim_name in self._data_full.coords:
+                    result_ds = result_ds.assign_coords(
+                        {
+                            self._y_dim_name: self._data_full.coords[
+                                self._y_dim_name
+                            ].isel({self._y_dim_name: idx})
+                        }
+                    )
+                self._result_ds_full[idx] = result_ds
         self._refresh_contents_from_index(
             mark_fit_stale=not bool(
                 ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)

@@ -2,6 +2,7 @@ import copy
 import logging
 import tempfile
 import types
+import typing
 import weakref
 
 import numpy as np
@@ -87,6 +88,39 @@ def _press_alt(monkeypatch):
     )
 
 
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    locals_ns = dict(namespace)
+    exec(  # noqa: S102
+        code,
+        {
+            "__builtins__": {"slice": slice, "__import__": __import__},
+            "np": np,
+            "xr": xr,
+            "erlab": erlab,
+            "era": erlab.analysis,
+        },
+        locals_ns,
+    )
+    return locals_ns
+
+
+def _exec_data_fragment(
+    data: xr.DataArray,
+    code: str,
+    *,
+    data_name: str = "data",
+) -> xr.DataArray:
+    statement = (
+        f"result = {data_name}{code}" if code.startswith(".") else f"result = {code}"
+    )
+    namespace = _exec_generated_code(statement, {data_name: data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    return result
+
+
 def _assert_guideline_state(
     plot_item,
     *,
@@ -129,10 +163,14 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
         main_image = win.slicer_area.images[0]
 
         logger.info("Test code generation")
+        selection_code = main_image.get_selection_code(placeholder="")
         if data.ndim == 2:
-            assert main_image.get_selection_code(placeholder="") == ""
+            assert not selection_code
         else:
-            assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
+            xarray.testing.assert_identical(
+                _exec_data_fragment(win.slicer_area.data, selection_code),
+                main_image.current_data,
+            )
 
         if condition == "binned":
             logger.info("Set bins")
@@ -2249,7 +2287,10 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
-    assert pyperclip.paste() == ".sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))"
+    xarray.testing.assert_allclose(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0)),
+    )
 
     win.close()
 
@@ -2303,7 +2344,10 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
-    assert pyperclip.paste() == ".sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))"
+    xarray.testing.assert_allclose(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0)),
+    )
 
     # 1D crop
     win.slicer_area.set_value(axis=0, value=4.0, cursor=1)
@@ -2324,7 +2368,10 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )
-    assert pyperclip.paste() == ".sel(x=slice(2.0, 4.0))"
+    xarray.testing.assert_allclose(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.sel(x=slice(2.0, 4.0)),
+    )
 
     win.close()
 
@@ -2613,9 +2660,20 @@ def test_itool_average(qtbot, accept_dialog) -> None:
         win.slicer_area._data.rename(None), data.qsel.average("x")
     )
 
-    assert pyperclip.paste() == '.qsel.average("x")'
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.qsel.average("x"),
+    )
     assert win.provenance_spec is not None
-    assert win.provenance_spec.display_code() == "derived = data.qsel.average('x')"
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    display_namespace = _exec_generated_code(
+        display_code,
+        {"data": data.copy(deep=True)},
+    )
+    derived = display_namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(derived, data.qsel.average("x"))
     win.close()
 
 
@@ -2659,7 +2717,10 @@ def test_average_dialog_make_code_preserves_nonstring_dim(qtbot) -> None:
     qtbot.addWidget(dialog)
     dialog.dim_checks["k-space"].setChecked(True)
 
-    assert dialog.make_code() == '.qsel.average("k-space")'
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()),
+        data.qsel.average("k-space"),
+    )
 
     dialog.close()
     win.close()
@@ -2823,7 +2884,16 @@ def test_coarsen_dialog_make_code_uses_watched_data_name(qtbot, monkeypatch) -> 
         property(lambda _self: "my_data"),
     )
 
-    assert dialog.make_code() == 'my_data.coarsen(x=2, boundary="trim").mean()'
+    namespace = _exec_generated_code(
+        f"result = {dialog.make_code()}",
+        {"my_data": data.copy(deep=True)},
+    )
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_identical(
+        result,
+        data.coarsen(x=2, boundary="trim").mean(),
+    )
 
     dialog.close()
     win.close()
@@ -2853,7 +2923,10 @@ def test_itool_thin(qtbot, accept_dialog) -> None:
         data.thin(y=3),
     )
 
-    assert pyperclip.paste() == ".thin(y=3)"
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.thin(y=3),
+    )
     win.close()
 
 
@@ -2879,7 +2952,10 @@ def test_itool_thin_global_factor(qtbot, accept_dialog) -> None:
         data.thin(2),
     )
 
-    assert pyperclip.paste() == ".thin(2)"
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.thin(2),
+    )
     win.close()
 
 
@@ -2915,7 +2991,7 @@ def test_itool_thin_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     win.close()
 
 
-def test_itool_symmetrize(qtbot, accept_dialog) -> None:
+def test_itool_symmetrize(qtbot, accept_dialog, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(60).reshape((3, 4, 5)).astype(float),
         dims=["x", "y", "z"],
@@ -2928,6 +3004,11 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "data"),
+    )
 
     # Test dialog
     def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
@@ -2943,11 +3024,20 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
         erlab.analysis.transform.symmetrize(data, "z", center=2),
     )
 
-    assert pyperclip.paste() == 'era.transform.symmetrize(, dim="z", center=2.0)'
+    namespace = _exec_generated_code(
+        f"result = {pyperclip.paste()}",
+        {"data": data.copy(deep=True)},
+    )
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_identical(
+        result,
+        erlab.analysis.transform.symmetrize(data, "z", center=2),
+    )
     win.close()
 
 
-def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
+def test_itool_symmetrize_nfold(qtbot, accept_dialog, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["y", "x"],
@@ -2958,6 +3048,11 @@ def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "data"),
+    )
 
     def _set_dialog_params(dialog: SymmetrizeNfoldDialog) -> None:
         assert dialog._axes == ("y", "x")
@@ -2986,13 +3081,23 @@ def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
         ),
     )
 
-    copied = pyperclip.paste()
-    assert copied.startswith("era.transform.symmetrize_nfold(")
-    assert "fold=6" in copied
-    assert 'axes=("y", "x")' in copied
-    assert 'center={"y": 1.0, "x": -1.0}' in copied
-    assert "reshape=False" in copied
-    assert "order=3" in copied
+    namespace = _exec_generated_code(
+        f"result = {pyperclip.paste()}",
+        {"data": data.copy(deep=True)},
+    )
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_allclose(
+        result,
+        erlab.analysis.transform.symmetrize_nfold(
+            data,
+            6,
+            axes=("y", "x"),
+            center={"y": 1.0, "x": -1.0},
+            reshape=False,
+            order=3,
+        ),
+    )
     win.close()
 
 

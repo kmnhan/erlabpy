@@ -8,6 +8,24 @@ from pydantic import ValidationError
 import erlab
 
 
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    locals_ns = dict(namespace)
+    exec(  # noqa: S102
+        code,
+        {
+            "__builtins__": {"slice": slice, "__import__": __import__},
+            "np": np,
+            "xr": xr,
+            "erlab": erlab,
+            "era": erlab.analysis,
+        },
+        locals_ns,
+    )
+    return locals_ns
+
+
 def _base_data() -> xr.DataArray:
     return xr.DataArray(
         np.arange(24).reshape((3, 4, 2)),
@@ -394,7 +412,16 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
     assert squeezed_entries[0].label == "Start from current parent ImageTool data"
     assert squeezed_entries[-1].label == "squeeze()"
     squeezed_code = typing.cast("str", squeezed_spec.display_code(parent_data=data))
-    assert squeezed_code == "derived = data.isel(z=slice(0, 1)).squeeze()"
+    squeezed_namespace = _exec_generated_code(
+        squeezed_code,
+        {"data": data.copy(deep=True)},
+    )
+    squeezed = squeezed_namespace["derived"]
+    assert isinstance(squeezed, xr.DataArray)
+    xr.testing.assert_identical(
+        squeezed,
+        data.isel(z=slice(0, 1)).squeeze(),
+    )
 
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
@@ -426,7 +453,19 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
         "transpose(('x', 'y', 'z'))",
         "squeeze()",
     ]
-    assert spec.display_code() == "derived = data.transpose(*('x', 'y', 'z')).squeeze()"
+    code = spec.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, {"data": _base_data().copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xr.testing.assert_identical(
+        derived,
+        _base_data().transpose(*("x", "y", "z")).squeeze(),
+    )
+    assert ".isel()" not in code
+    assert "sort_coord_order" not in code
+    assert ".transpose(" in code
+    assert ".squeeze()" in code
 
 
 def test_tool_provenance_rejects_unsupported_hashables() -> None:
@@ -656,7 +695,15 @@ def test_tool_provenance_compose_display_provenance_streamlines_live_source() ->
     )
 
     assert composed is not None
-    assert composed.display_code() == "derived = my_data_name.isel(z=0)"
+    code = composed.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(
+        code,
+        {"my_data_name": _base_data().copy(deep=True)},
+    )
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xr.testing.assert_identical(derived, _base_data().isel(z=0))
 
 
 def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> None:
@@ -674,7 +721,12 @@ def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> 
     )
 
     assert composed is not None
-    assert composed.display_code() == "derived = data.isel(z=0)"
+    code = composed.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, {"data": _base_data().copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xr.testing.assert_identical(derived, _base_data().isel(z=0))
 
 
 def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None:
@@ -730,4 +782,15 @@ def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> 
     )
 
     assert composed is not None
-    assert composed.display_code() == "derived = my_1d"
+    code = composed.display_code()
+    assert code is not None
+    watched_data = xr.DataArray(
+        np.arange(5),
+        dims=("x",),
+        coords={"x": np.arange(5)},
+    )
+    namespace = _exec_generated_code(code, {"my_1d": watched_data.copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xr.testing.assert_identical(derived, watched_data)
+    assert ".squeeze()" not in code
