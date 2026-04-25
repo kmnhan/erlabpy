@@ -43,6 +43,7 @@ from erlab.interactive.imagetool.manager._console import (
     _rewrite_console_source,
 )
 from erlab.interactive.imagetool.manager._dialogs import (
+    _ChooseFromDataTreeDialog,
     _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
@@ -62,7 +63,13 @@ from erlab.interactive.imagetool.manager._server import (
     _show_idx,
     _WatcherServer,
 )
-from erlab.interactive.imagetool.manager._wrapper import _load_code_from_file_details
+from erlab.interactive.imagetool.manager._wrapper import (
+    _format_chunk_summary,
+    _load_code_from_file_details,
+    _load_source_label_and_text,
+    _loader_callable_text,
+    _preview_from_imagetool,
+)
 from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
@@ -1434,6 +1441,216 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
         '**{"bad-key": 1, "single": True})'
     )
     assert code == expected
+
+
+def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
+    fallback = QtGui.QPixmap(3, 2)
+    fallback.fill(QtGui.QColor("red"))
+    rendered = QtGui.QPixmap(4, 6)
+    rendered.fill(QtGui.QColor("blue"))
+    invalid = object()
+
+    class _FakeImageItem:
+        def __init__(
+            self, pixmap: QtGui.QPixmap | None = None, *, raise_pixmap: bool = False
+        ) -> None:
+            self.pixmap = pixmap if pixmap is not None else rendered
+            self.raise_pixmap = raise_pixmap
+
+        def getPixmap(self) -> QtGui.QPixmap:
+            if self.raise_pixmap:
+                raise RuntimeError("pixmap unavailable")
+            return self.pixmap
+
+    class _FakeViewBox:
+        def __init__(self, width: float, height: float) -> None:
+            self._rect = QtCore.QRectF(0.0, 0.0, width, height)
+
+        def rect(self) -> QtCore.QRectF:
+            return self._rect
+
+    class _FakeMainImage:
+        def __init__(
+            self,
+            *,
+            view_box: object = None,
+            items: list[object] | None = None,
+        ) -> None:
+            self._view_box = (
+                view_box if view_box is not None else _FakeViewBox(2.0, 8.0)
+            )
+            self.slicer_data_items = [_FakeImageItem()] if items is None else items
+
+        def getViewBox(self) -> object:
+            return self._view_box
+
+    class _FakeSlicerArea:
+        def __init__(
+            self, main_image: object = None, *, raise_main: bool = False
+        ) -> None:
+            self._main_image = _FakeMainImage() if main_image is None else main_image
+            self._raise_main = raise_main
+
+        def _update_if_delayed(self) -> None:
+            return
+
+        @property
+        def main_image(self) -> object:
+            if self._raise_main:
+                raise RuntimeError("main image unavailable")
+            return self._main_image
+
+    class _FakeImageTool:
+        def __init__(self, slicer_area: _FakeSlicerArea) -> None:
+            self.slicer_area = slicer_area
+
+    def _preview(slicer_area: _FakeSlicerArea) -> tuple[float, QtGui.QPixmap]:
+        return _preview_from_imagetool(
+            typing.cast(
+                "erlab.interactive.imagetool.ImageTool",
+                _FakeImageTool(slicer_area),
+            ),
+            1.5,
+            fallback,
+        )
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "qt_is_valid",
+        lambda obj, *_args: obj is not invalid,
+    )
+
+    assert _preview_from_imagetool(None, 1.5, fallback) == (1.5, fallback)
+    assert _preview(_FakeSlicerArea(raise_main=True)) == (1.5, fallback)
+    assert _preview(_FakeSlicerArea(invalid)) == (1.5, fallback)
+    assert _preview(_FakeSlicerArea(_FakeMainImage(view_box=invalid))) == (
+        1.5,
+        fallback,
+    )
+    assert _preview(
+        _FakeSlicerArea(_FakeMainImage(view_box=_FakeViewBox(0.0, 2.0)))
+    ) == (
+        1.5,
+        fallback,
+    )
+    assert _preview(_FakeSlicerArea(_FakeMainImage(items=[]))) == (1.5, fallback)
+    assert _preview(_FakeSlicerArea(_FakeMainImage(items=[invalid]))) == (1.5, fallback)
+    assert _preview(
+        _FakeSlicerArea(_FakeMainImage(items=[_FakeImageItem(raise_pixmap=True)]))
+    ) == (1.5, fallback)
+    assert _preview(
+        _FakeSlicerArea(_FakeMainImage(items=[_FakeImageItem(QtGui.QPixmap())]))
+    ) == (1.5, fallback)
+
+    ratio, pixmap = _preview(_FakeSlicerArea(_FakeMainImage()))
+    assert ratio == 4.0
+    assert not pixmap.isNull()
+
+
+def test_wrapper_loader_code_and_metadata_helper_branches(
+    tmp_path: pathlib.Path,
+) -> None:
+    import math
+
+    file_path = tmp_path / "data.nc"
+
+    def _local_loader() -> None:
+        return None
+
+    def _missing_module_loader() -> None:
+        return None
+
+    _missing_module_loader.__module__ = "missing_erlab_loader_module"
+    _missing_module_loader.__qualname__ = "load"
+
+    def _missing_attr_loader() -> None:
+        return None
+
+    _missing_attr_loader.__module__ = "math"
+    _missing_attr_loader.__qualname__ = "missing_loader"
+
+    assert _load_code_from_file_details(file_path, None) is None
+    assert _load_code_from_file_details(file_path, ("example", {}, 1)) is None
+    assert _load_code_from_file_details(file_path, (_local_loader, {}, 0)) is None
+    assert _loader_callable_text(_local_loader) is None
+    assert _load_source_label_and_text(None) == ("Loader", "(unavailable)")
+    assert _load_source_label_and_text(("example", {}, 0)) == ("Loader", "example")
+    assert _load_source_label_and_text((_local_loader, {}, 0)) == (
+        "Load Function",
+        repr(_local_loader),
+    )
+    assert _loader_callable_text(_missing_module_loader) == (
+        "missing_erlab_loader_module.load"
+    )
+    assert _loader_callable_text(_missing_attr_loader) == "math.missing_loader"
+
+    math_code = _load_code_from_file_details(
+        file_path,
+        (math.sqrt, {"bad-key": 1}, 0),
+    )
+    assert math_code == (
+        f'import math\n\ndata = math.sqrt({str(file_path)!r}, **{{"bad-key": 1}})'
+    )
+
+    missing_module_code = _load_code_from_file_details(
+        file_path,
+        (_missing_module_loader, {}, 0),
+    )
+    assert missing_module_code == (
+        "import missing_erlab_loader_module\n\n"
+        f"data = missing_erlab_loader_module.load({str(file_path)!r})"
+    )
+
+    chunked = xr.DataArray(
+        np.zeros((5, 4)),
+        dims=("x", "y"),
+    ).chunk({"x": (2, 3), "y": 2})
+    assert _format_chunk_summary(xr.DataArray(np.zeros(2), dims=("x",))) == "In memory"
+    assert _format_chunk_summary(chunked) == "x=2, 3; y=2"
+
+
+def test_choose_from_datatree_dialog_tree_helper_branches(qtbot) -> None:
+    class _FakeManager(QtWidgets.QWidget):
+        next_idx = 7
+
+    manager = _FakeManager()
+    qtbot.addWidget(manager)
+    tree = xr.DataTree.from_dict(
+        {
+            "root/imagetool": xr.Dataset(attrs={"itool_title": "Root"}),
+            "root/childtools/child/tool": xr.Dataset(attrs={"tool_title": "Child"}),
+        }
+    )
+
+    dialog = _ChooseFromDataTreeDialog(
+        typing.cast("ImageToolManager", manager),
+        tree,
+        "load",
+    )
+    qtbot.addWidget(dialog)
+
+    root_item = dialog._tree_widget.topLevelItem(0)
+    assert root_item is not None
+    assert root_item.text(0) == "7: Root"
+    child_item = root_item.child(0)
+    assert child_item is not None
+    assert child_item.text(0) == "Child"
+
+    dialog._on_item_changed(root_item, 1)
+    dialog._uncheck_children()
+    assert child_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
+
+    dialog._check_all()
+    assert root_item.checkState(0) == QtCore.Qt.CheckState.Checked
+    assert child_item.checkState(0) == QtCore.Qt.CheckState.Checked
+
+    child_item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+    dialog._on_item_changed(child_item, 0)
+    assert root_item.checkState(0) == QtCore.Qt.CheckState.Unchecked
+
+    dialog._populate_tree(typing.cast("xr.DataTree", {"bad": object()}))
+    with pytest.raises(ValueError, match="supported payload"):
+        dialog._node_payload(xr.DataTree())
 
 
 def test_manager_goldtool_output_itool_stales_when_fit_results_change(

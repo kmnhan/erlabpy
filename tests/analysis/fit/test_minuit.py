@@ -22,6 +22,19 @@ def test_leastsq_visualize_accepts_iterable_model_points() -> None:
     plt.close("all")
 
 
+def test_leastsq_visualize_accepts_positive_model_point_count() -> None:
+    xval = np.linspace(0.0, 1.0, 5)
+    yval = 2.0 * xval + 1.0
+    yerr = np.ones_like(yval)
+
+    cost = LeastSq(xval, yval, yerr, lambda x, slope, intercept: slope * x + intercept)
+    (_x, _y, _ye), (xm, ym) = cost.visualize((2.0, 1.0), model_points=4)
+
+    np.testing.assert_allclose(xm, np.linspace(0.0, 1.0, 4))
+    np.testing.assert_allclose(ym, 2.0 * xm + 1.0)
+    plt.close("all")
+
+
 def test_minuit_from_lmfit() -> None:
     # Generate 2 lorentzian peaks with poisson noise
     xval = np.linspace(-1, 1, 250)

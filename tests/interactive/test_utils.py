@@ -1,5 +1,6 @@
 import enum
 import importlib
+import json
 import sys
 import tempfile
 import types
@@ -14,6 +15,13 @@ import xarray as xr
 from qtpy import PYQT6, QtCore, QtGui, QtWidgets
 
 import erlab.interactive.utils
+from erlab.interactive.imagetool.manager._modelview import (
+    _MIME,
+    _NODE_UID_ROLE,
+    _TOOL_TYPE_ROLE,
+    _ImageToolWrapperItemModel,
+)
+from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
 from erlab.interactive.utils import (
     ChunkEditDialog,
     IconActionButton,
@@ -867,6 +875,50 @@ def test_tool_script_provenance_definition_rejects_invalid_configurations(
         )
 
 
+def test_tool_script_helper_validation_branches() -> None:
+    with pytest.raises(TypeError, match="field must be a string"):
+        erlab.interactive.utils._validate_script_identifier(1, field_name="field")
+    with pytest.raises(ValueError, match="field must be a valid"):
+        erlab.interactive.utils._validate_script_identifier("for", field_name="field")
+    with pytest.raises(TypeError, match="field must be a string"):
+        erlab.interactive.utils._normalize_script_assign(1, field_name="field")
+    with pytest.raises(ValueError, match="field must not be empty"):
+        erlab.interactive.utils._normalize_script_assign([], field_name="field")
+    assert (
+        erlab.interactive.utils._validate_script_expression("   ", field_name="expr")
+        == ""
+    )
+    with pytest.raises(ValueError, match="valid Python statements"):
+        erlab.interactive.utils._validate_script_prelude("for", field_name="prelude")
+
+    assert erlab.interactive.utils._normalize_tool_output_id("out") == "out"
+    with pytest.raises(TypeError, match="output_id must be a string"):
+        erlab.interactive.utils._normalize_tool_output_id(1)
+    with pytest.raises(ValueError, match="must not be empty"):
+        erlab.interactive.utils._normalize_tool_output_id("")
+
+
+def test_tool_window_output_definition_rejects_duplicate_normalized_ids() -> None:
+    class _DuplicateOutputTool(_PersistentTool):
+        class Output(enum.Enum):
+            RESULT = "duplicate.result"
+
+        IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+            Output.RESULT: erlab.interactive.utils.ToolImageOutputDefinition(
+                data_method="_result_output_data"
+            ),
+            "duplicate.result": erlab.interactive.utils.ToolImageOutputDefinition(
+                data_method="_result_output_data"
+            ),
+        }
+
+        def _result_output_data(self) -> xr.DataArray:
+            return self.tool_data
+
+    with pytest.raises(ValueError, match="duplicate ImageTool output"):
+        _DuplicateOutputTool._image_output_definitions()
+
+
 def test_tool_script_provenance_rejects_invalid_expression(qtbot) -> None:
     class _DummyState(pydantic.BaseModel):
         value: int = 0
@@ -1152,6 +1204,122 @@ def test_tool_window_copy_provenance_code_handles_empty_specs(
     assert copied == [expected_code]
 
 
+def test_tool_window_output_target_cleanup_branches(qtbot, monkeypatch) -> None:
+    manager_module = erlab.interactive.imagetool.manager
+    tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
+    qtbot.addWidget(tool)
+
+    tool._output_imagetool_targets["out"] = "child"
+    monkeypatch.setattr(manager_module, "_manager_instance", None)
+    assert tool._output_imagetool_target("out") is None
+    assert "out" not in tool._output_imagetool_targets
+
+    widget = QtWidgets.QWidget()
+    qtbot.addWidget(widget)
+    tool._output_imagetool_targets["out"] = widget
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
+    assert tool._output_imagetool_target("out") is None
+
+    class _FakeManager:
+        def __init__(self) -> None:
+            self._all_nodes: dict[str, object] = {}
+
+        def _node_uid_from_window(self, window: object) -> str:
+            assert window is tool
+            return "parent"
+
+    fake_manager = _FakeManager()
+    monkeypatch.setattr(manager_module, "_manager_instance", fake_manager)
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: True)
+
+    stale_widget = QtWidgets.QWidget()
+    qtbot.addWidget(stale_widget)
+    tool._output_imagetool_targets["out"] = stale_widget
+    assert tool._output_imagetool_target("out") is None
+    assert "out" not in tool._output_imagetool_targets
+
+    tool._output_imagetool_targets["out"] = "missing"
+    assert tool._output_imagetool_target("out") is None
+
+    fake_manager._all_nodes["wrong-parent"] = types.SimpleNamespace(
+        is_imagetool=True,
+        parent_uid="other",
+    )
+    tool._output_imagetool_targets["out"] = "wrong-parent"
+    assert tool._output_imagetool_target("out") is None
+
+    fake_manager._all_nodes["child"] = types.SimpleNamespace(
+        is_imagetool=True,
+        parent_uid="parent",
+    )
+    tool._output_imagetool_targets["out"] = "child"
+    assert tool._output_imagetool_target("out") == "child"
+
+
+def test_tool_window_prompt_existing_output_choices(qtbot, monkeypatch) -> None:
+    tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
+    qtbot.addWidget(tool)
+
+    class _FakeMessageBox:
+        class Icon:
+            Question = object()
+
+        class ButtonRole:
+            AcceptRole = object()
+            ActionRole = object()
+
+        class StandardButton:
+            Cancel = object()
+
+        next_choice = "update"
+
+        def __init__(self, parent: QtWidgets.QWidget) -> None:
+            assert parent is tool
+            self._buttons: dict[str, object] = {}
+
+        def setIcon(self, icon: object) -> None:
+            assert icon is self.Icon.Question
+
+        def setWindowTitle(self, _title: str) -> None:
+            return
+
+        def setText(self, _text: str) -> None:
+            return
+
+        def setInformativeText(self, _text: str) -> None:
+            return
+
+        def addButton(self, *args: object) -> object:
+            button = object()
+            if args[0] == "Update Existing":
+                self._buttons["update"] = button
+            elif args[0] == "Open New":
+                self._buttons["new"] = button
+            else:
+                self._buttons["cancel"] = button
+            return button
+
+        def setDefaultButton(self, _button: QtWidgets.QPushButton) -> None:
+            return
+
+        def setEscapeButton(self, _button: object) -> None:
+            return
+
+        def exec(self) -> int:
+            return 0
+
+        def clickedButton(self) -> object:
+            return self._buttons[self.next_choice]
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.QtWidgets, "QMessageBox", _FakeMessageBox
+    )
+
+    for choice in ("update", "new", "cancel"):
+        _FakeMessageBox.next_choice = choice
+        assert tool._prompt_existing_output_imagetool() == choice
+
+
 def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> None:
     prov = erlab.interactive.imagetool.provenance
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
@@ -1176,6 +1344,477 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
     assert restored.source_auto_update is True
     assert restored.source_state == "stale"
     assert restored.input_provenance_spec == input_spec.to_replay_spec()
+
+
+def test_tool_window_dataset_ignores_invalid_saved_provenance(
+    qtbot,
+    caplog,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
+    tool = _PersistentTool(data)
+    qtbot.addWidget(tool)
+    ds = tool.to_dataset()
+    ds.attrs["tool_source_spec"] = "{not-json"
+    ds.attrs["tool_input_provenance_spec"] = "{not-json"
+
+    with caplog.at_level("WARNING", logger="erlab.interactive.utils"):
+        restored = erlab.interactive.utils.ToolWindow.from_dataset(ds)
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _PersistentTool)
+    assert restored.source_spec is None
+    assert restored.input_provenance_spec is None
+    assert "Ignoring invalid saved tool source provenance" in caplog.text
+    assert "Ignoring invalid saved tool input provenance" in caplog.text
+
+
+def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class _FakeTreeView:
+        def __init__(self) -> None:
+            self.refreshed: list[str] = []
+
+        def refresh(self, uid: str) -> None:
+            self.refreshed.append(uid)
+
+    class _FakeManager(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tree_view = _FakeTreeView()
+            self.updated: list[str] = []
+            self.propagated: list[tuple[str, object | None]] = []
+            self.marked: list[tuple[str, str]] = []
+            self.unavailable: list[str] = []
+            self.removed: list[str] = []
+
+        def _update_info(self, *, uid: str) -> None:
+            self.updated.append(uid)
+
+        def _propagate_source_change_from_uid(
+            self,
+            uid: str,
+            parent_data: object | None = None,
+        ) -> None:
+            self.propagated.append((uid, parent_data))
+
+        def _mark_descendants_source_state(self, uid: str, state: str) -> None:
+            self.marked.append((uid, state))
+
+        def _mark_descendants_source_unavailable(self, uid: str) -> None:
+            self.unavailable.append(uid)
+
+        def _remove_childtool(self, uid: str) -> None:
+            self.removed.append(uid)
+
+    manager = _FakeManager()
+    qtbot.addWidget(manager)
+    tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
+    qtbot.addWidget(tool)
+    node = _ManagedWindowNode(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        "child",
+        None,
+        tool,
+    )
+
+    with pytest.raises(TypeError, match="source_spec must be"):
+        node.set_source_binding(typing.cast("object", {"kind": "full_data"}))
+    with pytest.raises(ValueError, match="output_id must not be None"):
+        node.set_output_binding(typing.cast("str", None))
+    with pytest.raises(TypeError, match="output_id must be a string"):
+        node.set_output_binding(typing.cast("str", 1))
+    with pytest.raises(ValueError, match="output_id must not be empty"):
+        node.set_output_binding("")
+    with pytest.raises(TypeError, match="provenance_spec must be"):
+        node.set_output_binding(
+            "out",
+            provenance_spec=typing.cast("object", {"kind": "script"}),
+        )
+
+    node.set_output_binding("out", auto_update=True, state="stale")
+    assert node.output_id == "out"
+    assert node._source_state == "stale"
+    assert node._source_auto_update is True
+    assert node._output_id == "out"
+    assert manager.tree_view.refreshed[-1] == "child"
+    assert manager.updated[-1] == "child"
+
+    source_spec = prov.full_data()
+    tool.set_source_binding(source_spec, auto_update=True, state="stale")
+    assert node.source_spec == source_spec
+    assert node.source_state == "stale"
+    assert node.source_auto_update is True
+    assert node.has_source_binding is True
+    assert node.tree_uid_text == "child"
+    with pytest.raises(TypeError, match="Window transfer"):
+        node.take_window()
+
+    xr.testing.assert_identical(node.current_source_data(), tool.tool_data)
+
+    node._handle_tool_data_changed()
+    assert manager.marked[-1] == ("child", "stale")
+
+    tool.set_source_binding(source_spec, state="fresh")
+    node._handle_tool_data_changed()
+    assert manager.propagated[-1] == ("child", None)
+
+    node._suspend_descendant_signal_propagation = True
+    node._handle_tool_data_changed()
+    assert manager.propagated[-1] == ("child", None)
+    node._suspend_descendant_signal_propagation = False
+
+    unbound_tool = _PersistentTool(tool.tool_data)
+    qtbot.addWidget(unbound_tool)
+    unbound_node = _ManagedWindowNode(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        "unbound",
+        None,
+        unbound_tool,
+    )
+    assert not unbound_node.handle_parent_source_replaced(tool.tool_data)
+
+    updated = xr.DataArray(np.arange(4.0) + 10.0, dims=("x",), name="updated")
+    tool.set_source_binding(source_spec, state="stale")
+    assert not node._update_from_parent_source()
+    assert manager.marked[-1] == ("child", "stale")
+
+    tool.set_source_parent_fetcher(lambda: updated)
+    assert node._update_from_parent_source()
+    xr.testing.assert_identical(tool.tool_data, updated)
+    assert manager.propagated[-1] == ("child", None)
+
+    node.window = None
+    assert node._detach_imagetool() is None
+    assert node._metadata_data() is None
+    with pytest.raises(ValueError, match="ImageTool is not available"):
+        _ = node.slicer_area
+    with pytest.raises(ValueError, match="Managed node is not available"):
+        node.current_source_data()
+    node._handle_source_data_replaced(object())
+    assert manager.unavailable[-1] == "child"
+
+    stale_tool = _PersistentTool(tool.tool_data)
+    stale_imagetool = QtWidgets.QWidget()
+    qtbot.addWidget(stale_tool)
+    qtbot.addWidget(stale_imagetool)
+    node._tool_window = stale_tool
+    node._imagetool = typing.cast(
+        "erlab.interactive.imagetool.ImageTool", stale_imagetool
+    )
+    monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_args: False)
+    assert node.tool_window is None
+    assert node.imagetool is None
+
+
+def test_managed_tool_window_node_detached_update_branches(
+    qtbot,
+    monkeypatch,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    parent_data = xr.DataArray(np.arange(4.0), dims=("x",), name="parent")
+
+    class _FakeTreeView:
+        def __init__(self) -> None:
+            self.refreshed: list[str] = []
+
+        def refresh(self, uid: str) -> None:
+            self.refreshed.append(uid)
+
+    class _OutputTool(_PersistentTool):
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__(data)
+            self.output_data: xr.DataArray | None = None
+            self.output_provenance: (
+                erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+            ) = None
+
+        def output_imagetool_data(
+            self, output_id: str | enum.Enum
+        ) -> xr.DataArray | None:
+            assert output_id == "out"
+            return self.output_data
+
+        def output_imagetool_provenance(
+            self,
+            output_id: str | enum.Enum,
+            data: xr.DataArray,
+        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+            assert output_id == "out"
+            assert data is self.output_data
+            return self.output_provenance
+
+    class _FakeManager(QtWidgets.QWidget):
+        def __init__(self, parent_tool: _OutputTool) -> None:
+            super().__init__()
+            self.tree_view = _FakeTreeView()
+            self.updated: list[str] = []
+            self.marked: list[tuple[str, str]] = []
+            self.unavailable: list[str] = []
+            self.removed: list[str] = []
+            self.parent_node = types.SimpleNamespace(
+                tool_window=parent_tool,
+                provenance_spec=None,
+                current_source_data=lambda: parent_tool.tool_data,
+            )
+
+        def _update_info(self, *, uid: str) -> None:
+            self.updated.append(uid)
+
+        def _parent_node(self, _node: _ManagedWindowNode) -> object:
+            return self.parent_node
+
+        def _parent_source_data_for_uid(self, uid: str) -> xr.DataArray:
+            assert uid == "child"
+            return typing.cast("_OutputTool", self.parent_node.tool_window).tool_data
+
+        def _mark_descendants_source_state(self, uid: str, state: str) -> None:
+            self.marked.append((uid, state))
+
+        def _mark_descendants_source_unavailable(self, uid: str) -> None:
+            self.unavailable.append(uid)
+
+        def _remove_childtool(self, uid: str) -> None:
+            self.removed.append(uid)
+
+    parent_tool = _OutputTool(parent_data)
+    qtbot.addWidget(parent_tool)
+    manager = _FakeManager(parent_tool)
+    qtbot.addWidget(manager)
+    tool = _PersistentTool(parent_data)
+    qtbot.addWidget(tool)
+    node = _ManagedWindowNode(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        "child",
+        "parent",
+        tool,
+    )
+
+    with pytest.raises(TypeError, match="provenance_spec must be"):
+        node.set_source_binding(
+            prov.full_data(),
+            provenance_spec=typing.cast("object", {"kind": "full_data"}),
+        )
+    with pytest.raises(TypeError, match="provenance_spec must be"):
+        node.set_detached_provenance(typing.cast("object", {"kind": "script"}))
+
+    display_spec = prov.script(
+        prov.ScriptCodeOperation(label="Use output", code="result = data + 1"),
+        start_label="Start from data",
+        active_name="result",
+    )
+    node.set_detached_provenance(display_spec)
+    assert node._provenance_spec == display_spec
+
+    assert node._resolved_output_payload() is None
+    node.set_output_binding("out", state="fresh")
+    manager.parent_node.tool_window = None
+    assert node._resolved_output_payload() is None
+    manager.parent_node.tool_window = parent_tool
+    assert node._resolved_output_payload() is None
+
+    parent_tool.output_data = xr.DataArray(np.arange(4.0) + 1.0, dims=("x",))
+    payload = node._resolved_output_payload()
+    assert payload is not None
+    xr.testing.assert_identical(payload[0], parent_tool.output_data)
+
+    node.window = None
+    node.set_detached_provenance(display_spec)
+    assert node.derivation_lines == ["Start from data", "Use output"]
+    node._discard_archived_file()
+    node._handle_tool_data_changed()
+    node.show()
+    node.archive()
+
+    node.set_output_binding("out", state="fresh")
+    parent_tool.set_source_binding(prov.full_data(), state="stale")
+    assert not node._update_from_parent_source()
+    assert node.source_state == "stale"
+    assert manager.marked[-1] == ("child", "stale")
+
+    parent_tool.set_source_binding(prov.full_data(), state="fresh")
+    parent_tool.output_data = None
+    assert not node._update_from_parent_source()
+    assert node.source_state == "unavailable"
+
+    node.set_detached_provenance(None)
+    assert not node._update_from_parent_source()
+
+    parent_tool.output_data = xr.DataArray(np.arange(4.0) + 2.0, dims=("x",))
+    node.set_output_binding("out", auto_update=True, state="fresh")
+    assert not node._update_from_parent_source()
+    assert manager.unavailable[-1] == "child"
+
+    node.set_output_binding("out", auto_update=False, state="fresh")
+    assert not node.handle_parent_source_replaced(parent_data)
+    assert node.source_state == "stale"
+
+    node.set_output_binding("out", auto_update=True, state="fresh")
+    parent_tool.output_data = None
+    assert not node.handle_parent_source_replaced(parent_data)
+    assert node.source_state == "unavailable"
+
+    node.set_detached_provenance(None)
+    assert not node.handle_parent_source_replaced(parent_data)
+
+    node.set_source_binding(
+        prov.full_data(prov.IselOperation(kwargs={"missing": 0})),
+        state="stale",
+    )
+    assert not node.handle_parent_source_replaced(parent_data)
+    assert node.source_state == "unavailable"
+
+    node.set_source_binding(prov.full_data(), auto_update=True, state="stale")
+    assert not node.handle_parent_source_replaced(parent_data)
+    assert node.source_state == "unavailable"
+
+    node.set_detached_provenance(None)
+    assert node.show_source_update_dialog(parent=manager) == int(
+        QtWidgets.QDialog.DialogCode.Rejected
+    )
+
+    class _FakeSourceUpdateDialog:
+        def __init__(
+            self,
+            parent: QtWidgets.QWidget,
+            *,
+            state: str,
+            auto_update: bool,
+        ) -> None:
+            assert parent is manager
+            assert state == "stale"
+            assert auto_update is False
+            self.auto_update_check = types.SimpleNamespace(isChecked=lambda: True)
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "_ToolSourceUpdateDialog",
+        _FakeSourceUpdateDialog,
+    )
+    node.set_output_binding("out", auto_update=False, state="stale")
+    assert node.show_source_update_dialog(parent=manager) == int(
+        QtWidgets.QDialog.DialogCode.Accepted
+    )
+    assert node.source_auto_update is True
+    assert manager.updated[-1] == "child"
+
+
+def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+
+    class _FakeTreeView:
+        def refresh(self, _uid: str) -> None:
+            return
+
+    class _FakeManager(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tree_view = _FakeTreeView()
+            self._displayed_indices: list[int] = []
+            self._imagetool_wrappers: list[object] = []
+            self._all_nodes: dict[str, object] = {}
+            self.updated: list[str] = []
+            self.removed: list[str] = []
+            self.renamed: list[tuple[int, object]] = []
+
+        def _update_info(self, *, uid: str) -> None:
+            self.updated.append(uid)
+
+        def _remove_childtool(self, uid: str) -> None:
+            self.removed.append(uid)
+
+        def _child_node(self, uid: str) -> _ManagedWindowNode:
+            return typing.cast("_ManagedWindowNode", self._all_nodes[uid])
+
+        def rename_imagetool(self, index: int, value: object) -> None:
+            self.renamed.append((index, value))
+
+        def label_of_imagetool(self, index: int) -> str:
+            return f"label {index}"
+
+        def name_of_imagetool(self, index: int) -> str:
+            return f"name {index}"
+
+    manager = _FakeManager()
+    qtbot.addWidget(manager)
+    parent_tool = _PersistentTool(data)
+    child_tool = _PersistentTool(data + 1)
+    orphan_tool = _PersistentTool(data + 2)
+    qtbot.addWidget(parent_tool)
+    qtbot.addWidget(child_tool)
+    qtbot.addWidget(orphan_tool)
+
+    parent_node = _ManagedWindowNode(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        "parent",
+        None,
+        parent_tool,
+    )
+    child_node = _ManagedWindowNode(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        "child",
+        "parent",
+        child_tool,
+    )
+    orphan_node = _ManagedWindowNode(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        "orphan",
+        None,
+        orphan_tool,
+    )
+    parent_node.add_child_reference("child", child_tool)
+    manager._all_nodes.update(
+        {
+            "parent": parent_node,
+            "child": child_node,
+            "orphan": orphan_node,
+        }
+    )
+
+    model = _ImageToolWrapperItemModel(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager)
+    )
+    missing_index = model.createIndex(0, 0, "missing")
+    object_index = model.createIndex(0, 0, object())
+    child_index = model.createIndex(0, 0, "child")
+    orphan_index = model.createIndex(0, 0, "orphan")
+
+    assert model.data(object_index, QtCore.Qt.ItemDataRole.DisplayRole) is None
+    assert model.data(missing_index, QtCore.Qt.ItemDataRole.DisplayRole) is None
+    assert model.flags(object_index) == QtCore.Qt.ItemFlag.NoItemFlags
+    assert not model.setData(missing_index, "unused")
+    assert not model.parent(missing_index).isValid()
+    assert not model.parent(orphan_index).isValid()
+    with pytest.raises(KeyError):
+        model._childtool_uid(0, "missing-parent")
+
+    assert model._childtool(model.createIndex(0, 0, "child"), "parent") is child_node
+    assert not model._row_index("orphan").isValid()
+    assert model.data(child_index, QtCore.Qt.ItemDataRole.DisplayRole) == ""
+    assert model.data(child_index, _TOOL_TYPE_ROLE) == "persistent-dummy"
+    assert model.data(child_index, _NODE_UID_ROLE) == "child"
+    assert model.data(child_index, QtCore.Qt.ItemDataRole.SizeHintRole) == QtCore.QSize(
+        100, 25
+    )
+    assert model.data(child_index, QtCore.Qt.ItemDataRole.UserRole) is None
+
+    child_node.window = None
+    child_node.name = "Closed Child"
+    assert model.data(child_index, QtCore.Qt.ItemDataRole.EditRole) == "Closed Child"
+    assert model.flags(child_index) & QtCore.Qt.ItemFlag.ItemIsEditable
+
+    model.remove_rows(0, 1, missing_index)
+    monkeypatch.setattr(model, "_row_index", lambda _idx: missing_index)
+    model._insert_childtool("child", "missing-parent")
+    monkeypatch.setattr(
+        model, "parent", lambda _idx=None: model.createIndex(0, 0, "parent")
+    )
+    mime_data = model.mimeData([child_index])
+    payload = json.loads(bytes(mime_data.data(_MIME)).decode())
+    assert payload == {"parent_id": "parent", "rows": [0]}
 
 
 def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_separate(
