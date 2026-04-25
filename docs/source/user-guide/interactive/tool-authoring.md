@@ -711,7 +711,8 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
   tool uses them;
 - `validate_update_data()` and `update_data()` branches, including {guilabel}`Stale` or
   {guilabel}`Unavailable` cases after the ImageTool that opened the tool changes;
-- dialog accept and cancel paths for any new dialogs; and
+- dialog accept and cancel paths for any new dialogs, including {guilabel}`Save` and
+  {guilabel}`Update Now` paths if the tool participates in automatic updates; and
 - manager launch paths, preferably by patching manager functions unless a live manager
   is required.
 
