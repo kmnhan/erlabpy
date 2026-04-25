@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import html
+import inspect
 import typing
 import weakref
 
@@ -304,14 +306,84 @@ def _text_to_kwargs(text: str) -> dict[str, typing.Any]:
     return result
 
 
+def _is_loader_func(func: Callable) -> bool:
+    return isinstance(getattr(func, "__self__", None), erlab.io.dataloader.LoaderBase)
+
+
+def _text_to_loader_extension_value(
+    key: str, text: str
+) -> dict[str, typing.Any] | None:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        value = ast.literal_eval(text)
+    except (SyntaxError, ValueError) as e:
+        raise ValueError(f"Value for {key!r} is not a valid literal") from e
+    return {key: value}
+
+
+def _tooltip_with_example(text: str, example: str) -> str:
+    return f"<qt>{html.escape(text)}<br>Example: <tt>{html.escape(example)}</tt></qt>"
+
+
+_LOADER_EXTENSION_TOGGLE_TOOLTIP = _tooltip_with_example(
+    "Show optional literal erlab.io.extend_loader settings for this load. "
+    "Values are saved with reload metadata.",
+    "loader_extensions={'coordinate_attrs': ['polar']}",
+)
+
+_LOADER_EXTENSION_TOOLTIPS = {
+    "name_map": _tooltip_with_example(
+        "Literal dict mapping new coordinate/attribute names to original names.",
+        "{'theta': 'Theta'}",
+    ),
+    "coordinate_attrs": _tooltip_with_example(
+        "Literal list or tuple of attributes to promote to coordinates.",
+        "['polar', 'tilt']",
+    ),
+    "average_attrs": _tooltip_with_example(
+        "Literal list or tuple of attributes or coordinates to average when combining "
+        "files.",
+        "['temperature']",
+    ),
+    "additional_attrs": _tooltip_with_example(
+        "Literal dict of extra attributes to add after loading.",
+        "{'sample': 'A'}",
+    ),
+    "overridden_attrs": _tooltip_with_example(
+        "Literal list or tuple of additional_attrs keys that may replace existing "
+        "attributes.",
+        "['sample']",
+    ),
+    "additional_coords": _tooltip_with_example(
+        "Literal dict of extra coordinates to add after loading.",
+        "{'scan': 1}",
+    ),
+    "overridden_coords": _tooltip_with_example(
+        "Literal list or tuple of additional_coords keys that may replace existing "
+        "coordinates.",
+        "['scan']",
+    ),
+}
+
+
 class _NameFilterDialog(QtWidgets.QDialog):
     def __init__(
-        self, parent: ImageToolManager, valid_loaders: dict[str, tuple[Callable, dict]]
+        self,
+        parent: QtWidgets.QWidget,
+        valid_loaders: dict[str, tuple[Callable, dict]],
+        *,
+        loader_extensions: dict[str, dict[str, typing.Any]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Select Loader")
 
         self._valid_loaders = valid_loaders
+        self._loader_extensions = loader_extensions or {}
+        self._checked_kwargs: dict[str, typing.Any] | None = None
+        self._checked_loader_extensions: dict[str, typing.Any] | None = None
+        self._extensions_available = False
 
         layout = QtWidgets.QVBoxLayout(self)
         self._button_group = QtWidgets.QButtonGroup(self)
@@ -339,6 +411,53 @@ class _NameFilterDialog(QtWidgets.QDialog):
 
         layout.addWidget(self.kwargs_line)
 
+        self.extensions_toggle = QtWidgets.QToolButton()
+        self.extensions_toggle.setText("Loader Extensions")
+        self.extensions_toggle.setCheckable(True)
+        self.extensions_toggle.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        self.extensions_toggle.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.extensions_toggle.setToolTip(_LOADER_EXTENSION_TOGGLE_TOOLTIP)
+        self.extensions_toggle.toggled.connect(self._set_extensions_expanded)
+        layout.addWidget(self.extensions_toggle)
+
+        self.extensions_group = QtWidgets.QWidget()
+        extensions_layout = QtWidgets.QFormLayout(self.extensions_group)
+        self.loader_extension_lines: dict[
+            str, erlab.interactive.utils.SingleLinePlainTextEdit
+        ] = {}
+        self.loader_extension_highlighters: list[
+            erlab.interactive.utils.PythonHighlighter
+        ] = []
+        for key in inspect.signature(
+            erlab.io.dataloader.LoaderBase.extend_loader
+        ).parameters:
+            if key == "self":
+                continue
+            line = erlab.interactive.utils.SingleLinePlainTextEdit()
+            line.setFont(
+                QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.SystemFont.FixedFont)
+            )
+            self.loader_extension_highlighters.append(
+                erlab.interactive.utils.PythonHighlighter(line.document())
+            )
+            self.loader_extension_lines[key] = line
+            tooltip = _LOADER_EXTENSION_TOOLTIPS.get(
+                key,
+                _tooltip_with_example(
+                    "Literal value passed to erlab.io.extend_loader for this load.",
+                    "None",
+                ),
+            )
+            line.setToolTip(tooltip)
+            label = QtWidgets.QLabel(key)
+            label.setToolTip(tooltip)
+            extensions_layout.addRow(label, line)
+        layout.addWidget(self.extensions_group)
+        self.extensions_toggle.hide()
+        self.extensions_group.hide()
+
         button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
             | QtWidgets.QDialogButtonBox.StandardButton.Cancel
@@ -358,15 +477,83 @@ class _NameFilterDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _update_func_kwargs(self) -> None:
-        func, kargs = list(self._valid_loaders.values())[self._button_group.checkedId()]
+        name_filter = list(self._valid_loaders.keys())[self._button_group.checkedId()]
+        func, kargs = self._valid_loaders[name_filter]
         self.func_label.setText(f"Arguments for <code>{func.__name__}</code>:")
         self.kwargs_line.setText(_kwargs_to_text(kargs))
+        is_loader_func = _is_loader_func(func)
+        self._extensions_available = is_loader_func
+        self.extensions_toggle.setVisible(is_loader_func)
+        self.extensions_toggle.setEnabled(is_loader_func)
+        loader_extensions = self._loader_extensions.get(name_filter, {})
+        n_extensions = sum(value is not None for value in loader_extensions.values())
+        self.extensions_toggle.setText(
+            f"Loader Extensions ({n_extensions} set)"
+            if n_extensions
+            else "Loader Extensions"
+        )
+        was_blocked = self.extensions_toggle.blockSignals(True)
+        self.extensions_toggle.setChecked(False)
+        self.extensions_toggle.blockSignals(was_blocked)
+        self._set_extensions_expanded(False)
+        for key, line in self.loader_extension_lines.items():
+            value = loader_extensions.get(key)
+            line.setText("" if value is None else repr(value))
+
+    @QtCore.Slot(bool)
+    def _set_extensions_expanded(self, expanded: bool) -> None:
+        self.extensions_group.setVisible(expanded and self._extensions_available)
+        self.extensions_toggle.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow
+            if expanded
+            else QtCore.Qt.ArrowType.RightArrow
+        )
+        self.adjustSize()
+
+    def _parse_checked_values(
+        self,
+    ) -> tuple[dict[str, typing.Any], dict[str, typing.Any]]:
+        kwargs = _text_to_kwargs(self.kwargs_line.text())
+        loader_extensions: dict[str, typing.Any] = {}
+        name_filter = list(self._valid_loaders.keys())[self._button_group.checkedId()]
+        func = self._valid_loaders[name_filter][0]
+        if _is_loader_func(func):
+            for key, line in self.loader_extension_lines.items():
+                parsed = _text_to_loader_extension_value(key, line.text())
+                if parsed is not None:
+                    loader_extensions.update(parsed)
+            loader = getattr(func, "__self__", None)
+            if loader_extensions and isinstance(loader, erlab.io.dataloader.LoaderBase):
+                with loader.extend_loader(**loader_extensions):
+                    pass
+        return kwargs, loader_extensions
+
+    def accept(self) -> None:
+        try:
+            kwargs, loader_extensions = self._parse_checked_values()
+        except Exception as e:
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                "Error",
+                "Invalid loader arguments.",
+                str(e),
+            )
+            return
+        self._checked_kwargs = kwargs
+        self._checked_loader_extensions = loader_extensions
+        super().accept()
 
     def checked_filter(self) -> tuple[str, Callable, dict[str, typing.Any]]:
         idx = self._button_group.checkedId()
         filter_name = list(self._valid_loaders.keys())[idx]
         func = self._valid_loaders[filter_name][0]
-        kwargs = _text_to_kwargs(self.kwargs_line.text())
+        if self._checked_kwargs is None or self._checked_loader_extensions is None:
+            self._checked_kwargs, self._checked_loader_extensions = (
+                self._parse_checked_values()
+            )
+        kwargs = self._checked_kwargs.copy()
+        if self._checked_loader_extensions:
+            kwargs["loader_extensions"] = self._checked_loader_extensions.copy()
         return filter_name, func, kwargs
 
 

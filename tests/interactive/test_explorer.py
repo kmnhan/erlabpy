@@ -5,9 +5,10 @@ from collections.abc import Callable
 from qtpy import QtCore
 
 import erlab
+from erlab.interactive.explorer._base_explorer import _DataExplorer, _ReprFetcher
+from erlab.interactive.imagetool.manager import _dialogs
 
 if typing.TYPE_CHECKING:
-    from erlab.interactive.explorer._base_explorer import _DataExplorer
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
 
@@ -160,3 +161,119 @@ def test_explorer_general(
         # explorer._finder_act.trigger()
 
         explorer.close()
+
+
+def test_explorer_loader_extensions_apply_only_to_manager_loads(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+
+    file_path = example_data_dir / "data_002.h5"
+    assert explorer._manager_load_kwargs({"single": True}) == {"single": True}
+    explorer._loader_extensions_by_name["example"] = {
+        "additional_coords": {"gui_extra": 7.0}
+    }
+    assert explorer._manager_load_kwargs({"loader_extensions": ("ignored",)}) == {
+        "loader_extensions": {"additional_coords": {"gui_extra": 7.0}}
+    }
+
+    load_calls: list[tuple[list[pathlib.Path], str | None, dict[str, typing.Any]]] = []
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "is_running",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "load_in_manager",
+        lambda files, loader_name=None, **kwargs: load_calls.append(
+            (list(files), loader_name, kwargs)
+        ),
+    )
+
+    explorer.to_manager(files=[file_path])
+    assert load_calls == [
+        (
+            [file_path],
+            "example",
+            {"loader_extensions": {"additional_coords": {"gui_extra": 7.0}}},
+        )
+    ]
+
+    preview_calls: list[dict[str, typing.Any]] = []
+
+    def _preview_loader(_file_path, **kwargs):
+        preview_calls.append(kwargs)
+        return erlab.io.loaders["example"].load(
+            _file_path,
+            **kwargs,
+        )
+
+    worker = _ReprFetcher(file_path, _preview_loader, include_values=False)
+    worker.run()
+    assert preview_calls == [{"single": True, "load_kwargs": {"without_values": True}}]
+
+
+def test_explorer_loader_options_dialog_updates_kwargs(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    explorer._loader_kwargs_by_name["example"] = {"single": True}
+    explorer._loader_extensions_by_name["example"] = {
+        "coordinate_attrs": ("old_coord",)
+    }
+
+    dialogs = []
+    exec_results = [False, True]
+
+    class _FakeNameFilterDialog:
+        def __init__(self, parent, valid_loaders, *, loader_extensions=None) -> None:
+            assert parent is explorer
+            assert valid_loaders == {
+                "example": (erlab.io.loaders["example"].load, {"single": True})
+            }
+            assert loader_extensions == {
+                "example": {"coordinate_attrs": ("old_coord",)}
+            }
+            self.checked_name = None
+            dialogs.append(self)
+
+        def check_filter(self, name_filter: str | None) -> None:
+            self.checked_name = name_filter
+
+        def exec(self) -> bool:
+            return exec_results.pop(0)
+
+        def checked_filter(self):
+            return (
+                "example",
+                erlab.io.loaders["example"].load,
+                {
+                    "single": False,
+                    "loader_extensions": {"additional_coords": {"gui_extra": 7.0}},
+                },
+            )
+
+    monkeypatch.setattr(_dialogs, "_NameFilterDialog", _FakeNameFilterDialog)
+
+    explorer._open_loader_options()
+    assert dialogs[-1].checked_name == "example"
+    assert explorer._loader_kwargs_by_name["example"] == {"single": True}
+    assert explorer._loader_extensions_by_name["example"] == {
+        "coordinate_attrs": ("old_coord",)
+    }
+
+    explorer._open_loader_options()
+    assert dialogs[-1].checked_name == "example"
+    assert explorer._loader_kwargs_by_name["example"] == {"single": False}
+    assert explorer._loader_extensions_by_name["example"] == {
+        "additional_coords": {"gui_extra": 7.0}
+    }

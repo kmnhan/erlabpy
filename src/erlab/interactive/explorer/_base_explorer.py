@@ -824,6 +824,8 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
 
         self._slider_value: int | None = None
+        self._loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = {}
+        self._loader_extensions_by_name: dict[str, dict[str, typing.Any]] = {}
 
         self._setup_actions()
         self._setup_ui()
@@ -875,6 +877,12 @@ class _DataExplorer(QtWidgets.QMainWindow):
             "Each file will be opened in a separate window."
         )
 
+        self._loader_options_act = QtWidgets.QAction("Loader Options...", self)
+        self._loader_options_act.triggered.connect(self._open_loader_options)
+        self._loader_options_act.setToolTip(
+            "Configure loader arguments used when opening files in the manager"
+        )
+
         self._close_act = QtWidgets.QAction(
             "&Close Window"
             if (self.isWindow() and not hasattr(self.parent(), "close_tab"))
@@ -911,6 +919,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         file_menu = typing.cast("QtWidgets.QMenu", self.menu_bar.addMenu("&File"))
         file_menu.addAction(self._to_manager_act)
         file_menu.addAction(self._to_manager_single_act)
+        file_menu.addAction(self._loader_options_act)
         file_menu.addAction(self._finder_act)
         file_menu.addSeparator()
         file_menu.addAction(self._open_dir_act)
@@ -1005,6 +1014,11 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
         self._loader_combo.currentIndexChanged.connect(self._loader_changed)
         right_footer_layout.addWidget(self._loader_combo)
+        right_footer_layout.addWidget(
+            erlab.interactive.utils.IconActionButton(
+                self._loader_options_act, QtGui.QIcon.fromTheme("preferences-other")
+            )
+        )
         right_footer_layout.addStretch()
 
         self._preview_check = QtWidgets.QCheckBox("Preview")
@@ -1095,6 +1109,47 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._to_manager_single_act.setVisible(not always_single)
 
     @QtCore.Slot()
+    def _open_loader_options(self) -> None:
+        from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
+
+        loader_name = self.loader_name
+        loader = erlab.io.loaders[loader_name]
+        kwargs = self._loader_kwargs_by_name.get(loader_name, {})
+        extensions = self._loader_extensions_by_name.get(loader_name, {})
+        dialog = _NameFilterDialog(
+            self,
+            {loader_name: (loader.load, kwargs)},
+            loader_extensions={loader_name: extensions},
+        )
+        dialog.check_filter(loader_name)
+
+        if not dialog.exec():
+            return
+
+        _, _, selected_kwargs = dialog.checked_filter()
+        selected_extensions = selected_kwargs.pop("loader_extensions", {})
+        self._loader_kwargs_by_name[loader_name] = selected_kwargs
+        self._loader_extensions_by_name[loader_name] = selected_extensions
+
+    def _manager_load_kwargs(
+        self, kwargs: dict[str, typing.Any]
+    ) -> dict[str, typing.Any]:
+        loader_name = self.loader_name
+        load_kwargs = self._loader_kwargs_by_name.get(loader_name, {}).copy()
+        load_kwargs.update(kwargs)
+
+        stored_extensions = self._loader_extensions_by_name.get(loader_name, {})
+        if stored_extensions:
+            requested_extensions = load_kwargs.get("loader_extensions", {})
+            if isinstance(requested_extensions, dict):
+                load_kwargs["loader_extensions"] = (
+                    stored_extensions.copy() | requested_extensions
+                )
+            else:
+                load_kwargs["loader_extensions"] = stored_extensions.copy()
+        return load_kwargs
+
+    @QtCore.Slot()
     def _on_selection_changed(self) -> None:
         selected_files: list[pathlib.Path] = self._current_selection
         n_sel = len(selected_files)
@@ -1173,8 +1228,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
                 "Start the ImageTool Manager application and try again.",
             )
         else:
+            load_kwargs = self._manager_load_kwargs(kwargs)
             erlab.interactive.imagetool.manager.load_in_manager(
-                files, self.loader_name, **kwargs
+                files, self.loader_name, **load_kwargs
             )
 
     @QtCore.Slot()

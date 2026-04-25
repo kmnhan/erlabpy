@@ -27,6 +27,7 @@ from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ConcatDialog,
+    _is_loader_func,
     _NameFilterDialog,
     _RenameDialog,
     _StoreDialog,
@@ -132,6 +133,35 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
         )
 
 
+class _LoadSourceArgumentsEdit(QtWidgets.QPlainTextEdit):
+    _MAX_VISIBLE_ROWS = 4
+    _VERTICAL_PADDING = 12
+
+    def setPlainText(self, text: str | None) -> None:
+        super().setPlainText("" if text is None else text)
+        self._update_fixed_height()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._update_fixed_height()
+
+    def _visual_row_count(self) -> int:
+        document = typing.cast("QtGui.QTextDocument", self.document())
+        row_count = 0
+        block = document.firstBlock()
+        while block.isValid():
+            layout = typing.cast("QtGui.QTextLayout", block.layout())
+            row_count += max(1, layout.lineCount())
+            block = block.next()
+        return row_count
+
+    def _update_fixed_height(self) -> None:
+        row_count = max(1, min(self._MAX_VISIBLE_ROWS, self._visual_row_count()))
+        self.setFixedHeight(
+            row_count * self.fontMetrics().lineSpacing() + self._VERTICAL_PADDING
+        )
+
+
 class _LoadSourceDetailsDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -173,25 +203,23 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         self.loader_edit.setFont(mono_font)
         form_layout.addRow(details.loader_label, self.loader_edit)
 
-        self.kwargs_edit = QtWidgets.QPlainTextEdit(self)
+        self.kwargs_edit = _LoadSourceArgumentsEdit(self)
         self.kwargs_edit.setReadOnly(True)
         self.kwargs_edit.setFont(mono_font)
         self.kwargs_edit.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.kwargs_edit.setVerticalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.kwargs_edit.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        self.kwargs_edit.setLineWrapMode(
+            QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+        )
         self.kwargs_edit.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
-        self.kwargs_edit.setPlainText(details.kwargs_text)
-        document = self.kwargs_edit.document()
-        kwargs_height = (
-            max(1, min(4, 1 if document is None else document.blockCount()))
-            * QtGui.QFontMetrics(mono_font).lineSpacing()
-            + 12
+        self.kwargs_highlighter = erlab.interactive.utils.PythonHighlighter(
+            self.kwargs_edit.document()
         )
-        self.kwargs_edit.setFixedHeight(kwargs_height)
+        self.kwargs_edit.setPlainText(details.kwargs_text)
         form_layout.addRow("Load Arguments", self.kwargs_edit)
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
@@ -807,6 +835,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Store most recent name filter and directory for new windows
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
+        self._recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = {}
         self._metadata_full_code: str | None = None
         self._metadata_copy_selected_action = QtGui.QAction("Copy Selected Code", self)
         self._metadata_copy_selected_action.triggered.connect(
@@ -1917,6 +1946,29 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         return PeriodicTableWindow()
 
+    def _select_loader_options(
+        self,
+        valid_loaders: dict[str, tuple[Callable, dict]],
+        name_filter: str | None = None,
+    ) -> tuple[str, Callable, dict[str, typing.Any]] | None:
+        dialog = _NameFilterDialog(
+            self,
+            valid_loaders,
+            loader_extensions=self._recent_loader_extensions_by_filter,
+        )
+        dialog.check_filter(name_filter or self._recent_name_filter)
+
+        if not dialog.exec():
+            return None
+
+        selected_filter, func, kwargs = dialog.checked_filter()
+        self._recent_name_filter = selected_filter
+        loader_extensions = kwargs.get("loader_extensions", {})
+        self._recent_loader_extensions_by_filter[selected_filter] = (
+            loader_extensions.copy() if isinstance(loader_extensions, dict) else {}
+        )
+        return selected_filter, func, kwargs
+
     def _create_standalone_app_action(self, key: str) -> QtWidgets.QAction:
         spec = self._standalone_app_specs[key]
         action = QtWidgets.QAction(spec.text, self)
@@ -2767,6 +2819,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._recent_name_filter = dialog.selectedNameFilter()
             self._recent_directory = os.path.dirname(file_names[0])
             func, kwargs = valid_loaders[self._recent_name_filter]
+            if _is_loader_func(func):
+                selected = self._select_loader_options(
+                    {self._recent_name_filter: (func, kwargs)},
+                    self._recent_name_filter,
+                )
+                if selected is None:
+                    return
+                self._recent_name_filter, func, kwargs = selected
             self._add_from_multiple_files(
                 loaded=[],
                 queued=[pathlib.Path(f) for f in file_names],
@@ -2885,7 +2945,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             [],
             func=erlab.io.loaders[loader_name].load,
             kwargs=kwargs,
-            retry_callback=lambda _: self._data_load(paths, loader_name),
+            retry_callback=lambda _: self._data_load(paths, loader_name, kwargs),
         )
 
     @QtCore.Slot(list, list)
@@ -3203,16 +3263,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return
 
         if len(valid_loaders) == 1:
-            func, kargs = next(iter(valid_loaders.values()))
-            self._recent_name_filter = next(iter(valid_loaders.keys()))
-        else:
-            dialog = _NameFilterDialog(self, valid_loaders)
-            dialog.check_filter(self._recent_name_filter)
-
-            if dialog.exec():
-                self._recent_name_filter, func, kargs = dialog.checked_filter()
+            name_filter, (func, kargs) = next(iter(valid_loaders.items()))
+            if _is_loader_func(func):
+                selected = self._select_loader_options(valid_loaders, name_filter)
+                if selected is None:
+                    return
+                self._recent_name_filter, func, kargs = selected
             else:
+                self._recent_name_filter = name_filter
+        else:
+            selected = self._select_loader_options(valid_loaders)
+            if selected is None:
                 return
+            self._recent_name_filter, func, kargs = selected
 
         self._add_from_multiple_files(
             loaded, queued, failed, func, kargs, self.open_multiple_files

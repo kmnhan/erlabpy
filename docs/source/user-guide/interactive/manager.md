@@ -187,12 +187,16 @@ Once the manager is running, you can open ImageTools in several ways:
 - Drag and drop supported ARPES data into the manager window.
 
   In the dialog that appears, you can choose the plugin to use for loading the data.
+  For plugin loaders, expand {guilabel}`Loader Extensions` to set literal
+  {func}`erlab.io.extend_loader` options.
 
   :::{hint}
   For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with {guilabel}`Single File` in the dialog.
   :::
 
 - Launch the built-in data explorer from {guilabel}`File → Data Explorer` or {kbd}`Ctrl+E` when you want directory browsing and metadata preview before opening selected files in the manager.
+  Use the loader options button next to the loader selector to apply the same
+  `loader_extensions=` settings when opening selected files.
 
 - Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. See {ref}`working-with-notebooks`.
 
@@ -441,6 +445,13 @@ from erlab.interactive.imagetool.manager import load_in_manager, show_in_manager
 
 # Open raw files and let the manager choose the loader interactively
 load_in_manager(["scan1.pxt", "scan2.pxt"])
+
+# Open raw files with temporary loader extensions
+load_in_manager(
+    ["scan1.pxt", "scan2.pxt"],
+    "merlin",
+    loader_extensions={"coordinate_attrs": ("scan_number",)},
+)
 
 # Open two ImageTools and link their cursors
 show_in_manager([data_a, data_b], link=True)

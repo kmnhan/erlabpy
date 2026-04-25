@@ -26,6 +26,7 @@ from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
@@ -49,7 +50,9 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
+    _text_to_loader_extension_value,
 )
+from erlab.interactive.imagetool.manager._mainwindow import _LoadSourceDetailsDialog
 from erlab.interactive.imagetool.manager._modelview import (
     _MIME,
     _NODE_UID_ROLE,
@@ -70,6 +73,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _load_code_from_file_details,
     _load_source_label_and_text,
     _loader_callable_text,
+    _LoadSourceDetails,
     _preview_from_imagetool,
 )
 from erlab.interactive.ptable import PeriodicTableWindow
@@ -410,6 +414,43 @@ def copy_full_code_for_uid(
     action_map(menu)["Copy Full Code"].trigger()
     assert copied
     return copied[-1]
+
+
+def test_load_source_details_dialog_kwargs_editor_wraps_and_highlights(
+    qtbot, tmp_path
+) -> None:
+    kwargs_text = (
+        'engine="h5netcdf", '
+        "very_long_keyword_argument_name=123, "
+        'another_long_keyword_argument_name="abcdef"'
+    )
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=tmp_path / "scan.nc",
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text=kwargs_text,
+            load_code=None,
+        )
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    qtbot.wait_until(lambda: dialog.kwargs_edit._visual_row_count() > 1, timeout=2000)
+
+    expected_rows = min(
+        dialog.kwargs_edit._MAX_VISIBLE_ROWS,
+        dialog.kwargs_edit._visual_row_count(),
+    )
+    assert dialog.kwargs_edit.height() == (
+        expected_rows * dialog.kwargs_edit.fontMetrics().lineSpacing()
+        + dialog.kwargs_edit._VERTICAL_PADDING
+    )
+    assert isinstance(
+        dialog.kwargs_highlighter, erlab.interactive.utils.PythonHighlighter
+    )
+    dialog.kwargs_edit.setPlainText(None)
+    assert dialog.kwargs_edit.toPlainText() == ""
 
 
 @pytest.mark.parametrize("use_socket", [False, True], ids=["no_socket", "socket"])
@@ -1621,6 +1662,145 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
         '**{"bad-key": 1, "single": True})'
     )
     assert code == expected
+
+    extension_code = _load_code_from_file_details(
+        file_path,
+        (
+            "example",
+            {"loader_extensions": {"additional_coords": {"gui_extra": 7.0}}},
+            0,
+        ),
+    )
+    assert extension_code == (
+        "import erlab\n\n"
+        "erlab.io.set_loader('example')\n"
+        f"data = erlab.io.load({str(file_path)!r}, "
+        'loader_extensions={"additional_coords": {"gui_extra": 7.0}})'
+    )
+
+
+def test_loader_extension_literal_parser() -> None:
+    assert _text_to_loader_extension_value("coordinate_attrs", "['theta', 'phi']") == {
+        "coordinate_attrs": ["theta", "phi"]
+    }
+    assert _text_to_loader_extension_value("additional_coords", "{'scan': 1}") == {
+        "additional_coords": {"scan": 1}
+    }
+    assert _text_to_loader_extension_value(
+        "name_map", "{'theta': ['Theta', 'Angle']}"
+    ) == {"name_map": {"theta": ["Theta", "Angle"]}}
+
+    with pytest.raises(ValueError, match="not a valid literal"):
+        _text_to_loader_extension_value("additional_coords", "dict(scan=1)")
+
+
+def test_name_filter_dialog_loader_extensions_toggle_resizes(
+    qtbot, example_loader
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _NameFilterDialog(
+        parent,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.show()
+    QtWidgets.QApplication.processEvents()
+
+    collapsed_height = dialog.height()
+    assert dialog.extensions_toggle.isVisible()
+    assert "extend_loader" in dialog.extensions_toggle.toolTip()
+    assert "<tt>" in dialog.extensions_toggle.toolTip()
+    assert not dialog.extensions_group.isVisible()
+
+    dialog.extensions_toggle.setChecked(True)
+    QtWidgets.QApplication.processEvents()
+    expanded_height = dialog.height()
+    assert expanded_height > collapsed_height
+    extensions_layout = typing.cast(
+        "QtWidgets.QFormLayout", dialog.extensions_group.layout()
+    )
+    for field in dialog.loader_extension_lines.values():
+        label = extensions_layout.labelForField(field)
+        assert label is not None
+        assert field.toolTip()
+        assert "<tt>" in field.toolTip()
+        assert label.toolTip() == field.toolTip()
+
+    dialog.extensions_toggle.setChecked(False)
+    QtWidgets.QApplication.processEvents()
+    assert not dialog.extensions_group.isVisible()
+    assert dialog.height() < expanded_height
+
+    dialog.loader_extension_lines["additional_coords"].setText("{'scan': 1}")
+    filter_name, _func, kwargs = dialog.checked_filter()
+    assert filter_name == "Example Raw Data (*.h5)"
+    assert kwargs["loader_extensions"] == {"additional_coords": {"scan": 1}}
+
+
+def test_name_filter_dialog_without_loader_extensions_returns_kwargs(
+    qtbot,
+    example_loader,
+) -> None:
+    loader_dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+    )
+    qtbot.addWidget(loader_dialog)
+    loader_dialog.check_filter("Example Raw Data (*.h5)")
+    assert loader_dialog.checked_filter() == (
+        "Example Raw Data (*.h5)",
+        erlab.io.loaders["example"].load,
+        {},
+    )
+
+    def non_loader(*_args, **_kwargs) -> None:
+        return None
+
+    non_loader_dialog = _NameFilterDialog(
+        None,
+        {"Plain Files (*.txt)": (non_loader, {"plain": True})},
+    )
+    qtbot.addWidget(non_loader_dialog)
+    non_loader_dialog.check_filter("Plain Files (*.txt)")
+    assert not non_loader_dialog.extensions_toggle.isVisible()
+    assert non_loader_dialog.checked_filter() == (
+        "Plain Files (*.txt)",
+        non_loader,
+        {"plain": True},
+    )
+
+
+def test_name_filter_dialog_invalid_loader_extensions_shows_error(
+    qtbot,
+    monkeypatch,
+    example_loader,
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(lambda *args: critical_calls.append(args) or 0),
+    )
+
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.loader_extension_lines["additional_coords"].setText("dict(scan=1)")
+
+    dialog.accept()
+
+    assert critical_calls
+    assert critical_calls[0][1:4] == (
+        "Error",
+        "Invalid loader arguments.",
+        "Value for 'additional_coords' is not a valid literal",
+    )
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
 
 
 def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
@@ -5603,6 +5783,43 @@ def test_remove_selected_calls_batch_remove(
         manager._remove_imagetools = original_remove_imagetools
 
 
+def test_select_loader_options_cancel_keeps_recent_filter(
+    monkeypatch,
+    example_loader,
+) -> None:
+    class _CancelNameFilterDialog:
+        def __init__(self, parent, valid_loaders, *, loader_extensions=None) -> None:
+            assert valid_loaders == {
+                "Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})
+            }
+            assert loader_extensions == {"Example Raw Data (*.h5)": {}}
+            self.checked_name = None
+
+        def check_filter(self, name_filter: str | None) -> None:
+            self.checked_name = name_filter
+
+        def exec(self) -> bool:
+            assert self.checked_name == "Example Raw Data (*.h5)"
+            return False
+
+    monkeypatch.setattr(
+        manager_mainwindow, "_NameFilterDialog", _CancelNameFilterDialog
+    )
+    manager = types.SimpleNamespace(
+        _recent_loader_extensions_by_filter={"Example Raw Data (*.h5)": {}},
+        _recent_name_filter="Previous",
+    )
+
+    selected = ImageToolManager._select_loader_options(
+        manager,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+        "Example Raw Data (*.h5)",
+    )
+
+    assert selected is None
+    assert manager._recent_name_filter == "Previous"
+
+
 @pytest.mark.parametrize("mode", ["dragdrop", "ask"])
 def test_manager_open_files(
     qtbot,
@@ -5681,6 +5898,264 @@ def test_manager_open_files(
         xarray.testing.assert_identical(
             manager.get_imagetool(1).slicer_area.data, test_data
         )
+
+
+@pytest.mark.parametrize("case", ["loader_cancel", "non_loader"])
+def test_manager_open_loader_selection_branches(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+    case: str,
+) -> None:
+    file_path = tmp_path / "data_002.h5"
+    name_filter = "Example Raw Data (*.h5)"
+
+    class _FakeFileDialog:
+        AcceptMode = QtWidgets.QFileDialog.AcceptMode
+        FileMode = QtWidgets.QFileDialog.FileMode
+        Option = QtWidgets.QFileDialog.Option
+
+        def __init__(self, parent) -> None:
+            pass
+
+        def setAcceptMode(self, mode) -> None:
+            pass
+
+        def setFileMode(self, mode) -> None:
+            pass
+
+        def setNameFilters(self, filters) -> None:
+            pass
+
+        def setOption(self, option) -> None:
+            pass
+
+        def selectNameFilter(self, selected_filter: str) -> None:
+            pass
+
+        def setDirectory(self, directory: str) -> None:
+            pass
+
+        def exec(self) -> bool:
+            return True
+
+        def selectedFiles(self) -> list[str]:
+            return [str(file_path)]
+
+        def selectedNameFilter(self) -> str:
+            return name_filter
+
+    def non_loader(*_args, **_kwargs) -> None:
+        return None
+
+    add_calls: list[tuple[tuple[typing.Any, ...], dict[str, typing.Any]]] = []
+    select_calls: list[tuple[typing.Any, ...]] = []
+
+    def _select_loader_options(*args):
+        select_calls.append(args)
+
+    manager = types.SimpleNamespace(
+        _recent_name_filter=None,
+        _recent_directory=None,
+        _select_loader_options=_select_loader_options,
+        _add_from_multiple_files=lambda *args, **kwargs: add_calls.append(
+            (args, kwargs)
+        ),
+    )
+    monkeypatch.setattr(QtWidgets, "QFileDialog", _FakeFileDialog)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: {
+            name_filter: (
+                erlab.io.loaders["example"].load
+                if case == "loader_cancel"
+                else non_loader,
+                {},
+            )
+        },
+    )
+
+    ImageToolManager.open(manager, native=False)
+
+    if case == "loader_cancel":
+        assert len(select_calls) == 1
+        assert add_calls == []
+    else:
+        assert select_calls == []
+        assert len(add_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["single_non_loader", "single_loader_cancel", "multiple_cancel", "multiple_accept"],
+)
+def test_open_multiple_files_loader_selection_branches(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+    case: str,
+) -> None:
+    file_path = tmp_path / "data_002.h5"
+
+    def non_loader(*_args, **_kwargs) -> None:
+        return None
+
+    loader_func = erlab.io.loaders["example"].load
+    valid_loaders = {
+        "single_non_loader": {"Plain Files (*.txt)": (non_loader, {"plain": True})},
+        "single_loader_cancel": {"Example Raw Data (*.h5)": (loader_func, {})},
+        "multiple_cancel": {
+            "Example Raw Data (*.h5)": (loader_func, {}),
+            "Plain Files (*.txt)": (non_loader, {}),
+        },
+        "multiple_accept": {
+            "Example Raw Data (*.h5)": (loader_func, {}),
+            "Plain Files (*.txt)": (non_loader, {"plain": True}),
+        },
+    }[case]
+    select_result = {
+        "single_non_loader": None,
+        "single_loader_cancel": None,
+        "multiple_cancel": None,
+        "multiple_accept": ("Plain Files (*.txt)", non_loader, {"plain": True}),
+    }[case]
+
+    add_calls: list[
+        tuple[
+            list[pathlib.Path],
+            list[pathlib.Path],
+            list[pathlib.Path],
+            Callable,
+            dict[str, typing.Any],
+        ]
+    ] = []
+    select_calls: list[tuple[list[str], str | None]] = []
+
+    def _select_loader_options(loaders, name_filter=None):
+        select_calls.append((list(loaders), name_filter))
+        return select_result
+
+    def _retry_open_multiple_files(*_args, **_kwargs) -> None:
+        return None
+
+    manager = types.SimpleNamespace(
+        _recent_name_filter=None,
+        _select_loader_options=_select_loader_options,
+        open_multiple_files=_retry_open_multiple_files,
+        _add_from_multiple_files=lambda loaded, queued, failed, func, kwargs, _: (
+            add_calls.append((loaded, queued, failed, func, kwargs))
+        ),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: valid_loaders,
+    )
+
+    ImageToolManager.open_multiple_files(manager, [file_path])
+
+    if case == "single_non_loader":
+        assert select_calls == []
+        assert manager._recent_name_filter == "Plain Files (*.txt)"
+        assert add_calls == [
+            ([], [file_path], [], non_loader, {"plain": True}),
+        ]
+    elif case == "single_loader_cancel":
+        assert select_calls == [
+            (["Example Raw Data (*.h5)"], "Example Raw Data (*.h5)")
+        ]
+        assert add_calls == []
+    elif case == "multiple_cancel":
+        assert select_calls == [
+            (["Example Raw Data (*.h5)", "Plain Files (*.txt)"], None)
+        ]
+        assert add_calls == []
+    else:
+        assert select_calls == [
+            (["Example Raw Data (*.h5)", "Plain Files (*.txt)"], None)
+        ]
+        assert manager._recent_name_filter == "Plain Files (*.txt)"
+        assert add_calls == [
+            ([], [file_path], [], non_loader, {"plain": True}),
+        ]
+
+
+@pytest.mark.parametrize("entry_point", ["open", "drop"])
+def test_manager_file_loads_with_loader_extensions(
+    qtbot,
+    accept_dialog,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+    entry_point: str,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = example_data_dir / "data_002.h5"
+    name_filter = "Example Raw Data (*.h5)"
+
+    def _file_loaders(*_args):
+        return {name_filter: (erlab.io.loaders["example"].load, {})}
+
+    def _set_loader_extensions(dialog: _NameFilterDialog) -> None:
+        assert dialog.extensions_toggle.isVisible()
+        assert not dialog.extensions_group.isVisible()
+        dialog.extensions_toggle.setChecked(True)
+        assert dialog.extensions_group.isVisible()
+        dialog.loader_extension_lines["additional_coords"].setText("{'gui_extra': 7.0}")
+
+    monkeypatch.setattr(erlab.interactive.utils, "file_loaders", _file_loaders)
+
+    if entry_point == "open":
+        monkeypatch.setattr(QtWidgets.QFileDialog, "exec", lambda self: True)
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "selectedFiles", lambda self: [str(file_path)]
+        )
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "selectedNameFilter", lambda self: name_filter
+        )
+
+    with manager_context() as manager:
+        if entry_point == "open":
+
+            def _trigger_load():
+                return ImageToolManager.open(manager, native=False)
+
+        else:
+
+            def _trigger_load():
+                return manager.open_multiple_files([file_path])
+
+        accept_dialog(_trigger_load, pre_call=_set_loader_extensions)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=10000)
+
+        slicer_area = manager.get_imagetool(0).slicer_area
+        assert float(slicer_area._data["gui_extra"]) == 7.0
+        assert slicer_area._load_func is not None
+        assert slicer_area._load_func[1]["loader_extensions"] == {
+            "additional_coords": {"gui_extra": 7.0}
+        }
+
+        with qtbot.wait_signal(slicer_area.sigDataChanged, timeout=10000):
+            slicer_area.reload()
+        assert float(slicer_area._data["gui_extra"]) == 7.0
+
+        tree = manager._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        accept_dialog(lambda: manager._from_datatree(tree))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        restored_area = manager.get_imagetool(0).slicer_area
+        assert restored_area._load_func is not None
+        assert restored_area._load_func[1]["loader_extensions"] == {
+            "additional_coords": {"gui_extra": 7.0}
+        }
+        with qtbot.wait_signal(restored_area.sigDataChanged, timeout=10000):
+            restored_area.reload()
+        assert float(restored_area._data["gui_extra"]) == 7.0
 
 
 def test_manager_console(

@@ -32,7 +32,7 @@ import threading
 import traceback
 import typing
 import warnings
-from collections.abc import ItemsView
+from collections.abc import ItemsView, Iterable, Mapping
 
 import numpy as np
 import numpy.typing as npt
@@ -43,14 +43,7 @@ import erlab
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import (
-        Callable,
-        Iterable,
-        Iterator,
-        KeysView,
-        Mapping,
-        Sequence,
-    )
+    from collections.abc import Callable, Iterator, KeysView, Sequence
 
 
 class ValidationWarning(UserWarning):
@@ -557,6 +550,7 @@ class LoaderBase(metaclass=_Loader):
         parallel: bool | None = None,
         progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
+        loader_extensions: Mapping[str, typing.Any] | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -625,6 +619,9 @@ class LoaderBase(metaclass=_Loader):
         load_kwargs
             Additional keyword arguments to be passed to :meth:`load_single
             <erlab.io.dataloader.LoaderBase.load_single>`.
+        loader_extensions
+            Temporary extensions to loader attributes, with the same keys accepted by
+            :meth:`extend_loader <erlab.io.dataloader.LoaderBase.extend_loader>`.
         **kwargs
             Additional keyword arguments are passed to :meth:`identify
             <erlab.io.dataloader.LoaderBase.identify>`.
@@ -678,6 +675,20 @@ class LoaderBase(metaclass=_Loader):
           mind and try to keep all data files in the same level.
 
         """
+        if loader_extensions is not None:
+            with self.extend_loader(**loader_extensions):
+                return self.load(
+                    identifier,
+                    data_dir=data_dir,
+                    chunks=chunks,
+                    single=single,
+                    combine=combine,
+                    parallel=parallel,
+                    progress=progress,
+                    load_kwargs=load_kwargs,
+                    **kwargs,
+                )
+
         if self.always_single:
             single = True
         if load_kwargs is None:
@@ -818,8 +829,15 @@ class LoaderBase(metaclass=_Loader):
         This context manager can be used to temporarily customize the behavior of the
         data loader. This is particularly useful when loading data across multiple
         files, where the :attr:`coordinate_attrs
-        <erlab.io.dataloader.LoaderBase.coordinate_attrs>` can be extended to include
-        additional information in the output data.
+        <erlab.io.dataloader.LoaderBase.coordinate_attrs>` can be extended so that the
+        attributes in the data are promoted to coordinates and propagated when combining
+        data across files.
+
+        For one-off loads, the same arguments can be passed to :meth:`load
+        <erlab.io.dataloader.LoaderBase.load>` or :func:`erlab.io.load` with the
+        ``loader_extensions`` keyword. This keeps the extension settings attached to the
+        load call, which is useful for generated loading code and ImageTool manager
+        reload metadata.
 
         Parameters
         ----------
@@ -855,8 +873,15 @@ class LoaderBase(metaclass=_Loader):
             with erlab.io.extend_loader(coordinate_attrs=("scan_number",)):
                 data = erlab.io.load("file_name")
 
+            data = erlab.io.load(
+                "file_name",
+                loader_extensions={"coordinate_attrs": ("scan_number",)},
+            )
+
         See Also
         --------
+        :meth:`load <erlab.io.dataloader.LoaderBase.load>`
+            Load data with optional `loader_extensions`.
         :attr:`coordinate_attrs <erlab.io.dataloader.LoaderBase.coordinate_attrs>`
             The attribute that is temporarily extended.
         """
@@ -875,6 +900,8 @@ class LoaderBase(metaclass=_Loader):
                 old_vals[attr] = old_val
                 if isinstance(extend, dict):
                     new_val = old_val.copy() | extend
+                elif isinstance(extend, str):
+                    raise TypeError(f"{attr} must be an iterable, not a string")
                 else:
                     new_val = old_val + tuple(extend)
                 setattr(self, attr, new_val)
@@ -2427,6 +2454,7 @@ class LoaderRegistry(metaclass=_ReloadStableMeta):
         parallel: bool = False,
         progress: bool = True,
         load_kwargs: dict[str, typing.Any] | None = None,
+        loader_extensions: Mapping[str, typing.Any] | None = None,
         **kwargs,
     ) -> (
         xr.DataArray
@@ -2469,6 +2497,7 @@ class LoaderRegistry(metaclass=_ReloadStableMeta):
             parallel=parallel,
             progress=progress,
             load_kwargs=load_kwargs,
+            loader_extensions=loader_extensions,
             **kwargs,
         )
 

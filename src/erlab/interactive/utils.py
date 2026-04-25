@@ -120,7 +120,10 @@ _qt_object_is_valid: Callable[[object], bool] = _qt_object_is_valid_fallback
 
 if PYSIDE6:
     try:
-        from shiboken6 import isValid as _shiboken_is_valid
+        _shiboken_is_valid = typing.cast(
+            "Callable[[object], bool]",
+            importlib.import_module("shiboken6").isValid,
+        )
     except Exception:  # pragma: no cover - varies by Qt binding
         _qt_object_is_valid = _qt_object_is_valid_fallback
     else:
