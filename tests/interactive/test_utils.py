@@ -1782,13 +1782,15 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     model = _ImageToolWrapperItemModel(
         typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager)
     )
-    QtTest.QAbstractItemModelTester(
+    model_tester = QtTest.QAbstractItemModelTester(
         model,
         QtTest.QAbstractItemModelTester.FailureReportingMode.Fatal,
         model,
     )
+    assert model_tester.model() is model
+    wrong_pointer = object()
     missing_index = model.createIndex(0, 0, "missing")
-    object_index = model.createIndex(0, 0, object())
+    object_index = model.createIndex(0, 0, wrong_pointer)
     child_index = model._row_index("child")
     orphan_index = model.createIndex(0, 0, "orphan")
     nonzero_column_index = model.createIndex(0, 1, "child")
@@ -1830,7 +1832,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     with monkeypatch.context() as patch:
         patch.setattr(model, "_row_index", lambda _idx: missing_index)
         model._insert_childtool("child", "missing-parent")
-    mime_data = model.mimeData([child_index])
+    mime_data = model.mimeData([model._row_index("child")])
     payload = json.loads(bytes(mime_data.data(_MIME)).decode())
     assert payload == {"parent_id": "parent", "rows": [0]}
     assert _ImageToolWrapperItemModel._decode_mime(QtCore.QMimeData()) is None

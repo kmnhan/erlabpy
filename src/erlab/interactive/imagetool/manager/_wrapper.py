@@ -349,9 +349,13 @@ class _ManagedWindowNode(QtCore.QObject):
         self._imagetool = None
         tool.sigInfoChanged.connect(self._refresh_node_info)
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
-        tool.destroyed.connect(
-            lambda _=None, uid=self.uid: self.manager._remove_childtool(uid)
-        )
+        tool.destroyed.connect(self._handle_tool_window_destroyed)
+
+    def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
+        manager = self._manager()
+        if manager is None:
+            return
+        manager._remove_childtool(self.uid)
 
     def _detach_imagetool(
         self, *, close: bool = True, unlink: bool = True
