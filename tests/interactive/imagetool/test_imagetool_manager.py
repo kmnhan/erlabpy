@@ -113,6 +113,64 @@ def select_child_tool(
     )
 
 
+def child_status_badge(
+    manager: ImageToolManager, uid: str
+) -> tuple[QtCore.QRect, str | None, QtCore.QModelIndex]:
+    model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+    delegate = typing.cast(
+        "_ImageToolWrapperItemDelegate", manager.tree_view.itemDelegate()
+    )
+
+    ancestors: list[str] = []
+    node = manager._child_node(uid)
+    while node.parent_uid is not None:
+        ancestors.append(node.parent_uid)
+        parent = manager._all_nodes[node.parent_uid]
+        if not hasattr(parent, "parent_uid"):
+            break
+        node = typing.cast("typing.Any", parent)
+    for ancestor_uid in reversed(ancestors):
+        manager.tree_view.expand(model._row_index(ancestor_uid))
+
+    index = model._row_index(uid)
+    manager.tree_view.scrollTo(index)
+    option = QtWidgets.QStyleOptionViewItem()
+    option.rect = manager.tree_view.visualRect(index)
+    option.font = manager.tree_view.font()
+    badge_rect, badge_text, _ = delegate._compute_child_status_info(
+        option, manager._child_node(uid)
+    )
+    assert badge_rect is not None
+    return badge_rect, badge_text, index
+
+
+def click_child_status_badge(
+    manager: ImageToolManager,
+    uid: str,
+    accept_dialog,
+    *,
+    pre_call: Callable[[QtWidgets.QDialog], None] | None = None,
+    accept_call: Callable[[QtWidgets.QDialog], None] | None = None,
+) -> None:
+    badge_rect, _, _ = child_status_badge(manager, uid)
+    click_pos = badge_rect.center()
+    global_click_pos = manager.tree_view.viewport().mapToGlobal(click_pos)
+    accept_dialog(
+        lambda: manager.tree_view.mouseReleaseEvent(
+            QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseButtonRelease,
+                QtCore.QPointF(click_pos),
+                QtCore.QPointF(global_click_pos),
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+        ),
+        pre_call=pre_call,
+        accept_call=accept_call,
+    )
+
+
 def configure_goldtool_child(
     tool: GoldTool, *, fitted: bool = False, spline: bool = False
 ) -> None:
@@ -978,19 +1036,14 @@ def test_manager_childtool_source_updates(
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
         xr.testing.assert_identical(child.tool_data, initial)
 
+        badge_rect, badge_text, index = child_status_badge(manager, uid)
+        assert badge_text == "Stale"
         delegate = typing.cast(
             "_ImageToolWrapperItemDelegate", manager.tree_view.itemDelegate()
         )
-        model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
-        manager.tree_view.expand(model._row_index(0))
-        index = model._row_index(uid)
-        manager.tree_view.scrollTo(index)
         option = QtWidgets.QStyleOptionViewItem()
         option.rect = manager.tree_view.visualRect(index)
         option.font = manager.tree_view.font()
-        badge_rect, badge_text, _ = delegate._compute_child_status_info(option, child)
-        assert badge_rect is not None
-        assert badge_text == "Stale"
         tooltip_text = None
 
         def _show_tooltip(*args, **kwargs) -> None:
@@ -1005,32 +1058,54 @@ def test_manager_childtool_source_updates(
         )
         assert delegate.helpEvent(help_event, manager.tree_view, option, index)
         assert (
-            tooltip_text == "Click to update this tool from the latest ImageTool data."
+            tooltip_text == "Click to update this tool from the latest compatible data."
         )
-        click_pos = badge_rect.center()
-        assert model._row_index(uid) == manager.tree_view.indexAt(click_pos)
-        global_click_pos = manager.tree_view.viewport().mapToGlobal(click_pos)
+        assert index == manager.tree_view.indexAt(badge_rect.center())
 
         def _enable_auto_update(dialog: QtWidgets.QDialog) -> None:
             dialog.auto_update_check.setChecked(True)  # type: ignore[attr-defined]
 
-        accept_dialog(
-            lambda: manager.tree_view.mouseReleaseEvent(
-                QtGui.QMouseEvent(
-                    QtCore.QEvent.Type.MouseButtonRelease,
-                    QtCore.QPointF(click_pos),
-                    QtCore.QPointF(global_click_pos),
-                    QtCore.Qt.MouseButton.LeftButton,
-                    QtCore.Qt.MouseButton.LeftButton,
-                    QtCore.Qt.KeyboardModifier.NoModifier,
-                )
-            ),
+        def _update_now(dialog: QtWidgets.QDialog) -> None:
+            dialog.update_button.click()  # type: ignore[attr-defined]
+
+        click_child_status_badge(
+            manager,
+            uid,
+            accept_dialog,
             pre_call=_enable_auto_update,
+            accept_call=_update_now,
         )
 
         assert child.source_state == "fresh"
         assert child.source_auto_update is True
         xr.testing.assert_identical(child.tool_data, replaced.transpose("eV", "alpha"))
+        auto_badge_rect, auto_badge_text, _ = child_status_badge(manager, uid)
+        assert auto_badge_text == "Auto"
+        assert not child._source_status_bar.isHidden()
+        assert child.source_status_text == "Automatic Updates Enabled"
+
+        tooltip_text = None
+        auto_help_event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip,
+            auto_badge_rect.center(),
+            manager.tree_view.viewport().mapToGlobal(auto_badge_rect.center()),
+        )
+        assert delegate.helpEvent(auto_help_event, manager.tree_view, option, index)
+        assert tooltip_text == "Click to configure automatic updates."
+
+        def _disable_auto_update(dialog: QtWidgets.QDialog) -> None:
+            dialog.auto_update_check.setChecked(False)  # type: ignore[attr-defined]
+
+        click_child_status_badge(
+            manager,
+            uid,
+            accept_dialog,
+            pre_call=_disable_auto_update,
+        )
+
+        assert child.source_state == "fresh"
+        assert child.source_auto_update is False
+        assert child._source_status_bar.isHidden()
 
         replaced2 = replaced.copy(deep=True)
         replaced2.data = np.asarray(replaced2.data) + 5
@@ -1038,8 +1113,8 @@ def test_manager_childtool_source_updates(
         with qtbot.wait_signal(manager._sigDataReplaced):
             itool(replaced2, manager=True, replace=0)
 
-        qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
-        xr.testing.assert_identical(child.tool_data, replaced2.transpose("eV", "alpha"))
+        qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(child.tool_data, replaced.transpose("eV", "alpha"))
 
 
 def test_manager_full_data_childtool_updates_follow_transposed_view(
@@ -1423,6 +1498,89 @@ def test_manager_dtool_output_itool_refreshes_with_parent_updates(
         qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
         qtbot.wait_until(lambda: output_node.source_state == "fresh", timeout=5000)
         xr.testing.assert_identical(fetch(output_uid), child.result.T)
+
+
+def test_manager_output_itool_auto_update_can_be_disabled_from_auto_badge(
+    qtbot,
+    accept_dialog,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, DerivativeTool)
+        child.open_itool()
+
+        child_node = manager._child_node(child_uid)
+        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+        output_uid = child_node._childtool_indices[0]
+        output_node = manager._child_node(output_uid)
+
+        child.set_source_binding(child.source_spec, auto_update=True, state="fresh")
+
+        replaced = test_data.copy(deep=True)
+        replaced.data = np.asarray(replaced.data) * 2
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            itool(replaced, link=False, manager=True, replace=0)
+
+        qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
+
+        def _enable_auto_update(dialog: QtWidgets.QDialog) -> None:
+            dialog.auto_update_check.setChecked(True)  # type: ignore[attr-defined]
+
+        def _update_now(dialog: QtWidgets.QDialog) -> None:
+            dialog.update_button.click()  # type: ignore[attr-defined]
+
+        click_child_status_badge(
+            manager,
+            output_uid,
+            accept_dialog,
+            pre_call=_enable_auto_update,
+            accept_call=_update_now,
+        )
+
+        qtbot.wait_until(lambda: output_node.source_state == "fresh", timeout=5000)
+        assert output_node.source_auto_update is True
+        xr.testing.assert_identical(fetch(output_uid), child.result.T)
+        refreshed_output = fetch(output_uid).copy(deep=True)
+        _, badge_text, _ = child_status_badge(manager, output_uid)
+        assert badge_text == "Auto"
+
+        def _disable_auto_update(dialog: QtWidgets.QDialog) -> None:
+            dialog.auto_update_check.setChecked(False)  # type: ignore[attr-defined]
+
+        click_child_status_badge(
+            manager,
+            output_uid,
+            accept_dialog,
+            pre_call=_disable_auto_update,
+        )
+        assert output_node.source_auto_update is False
+
+        replaced2 = replaced.copy(deep=True)
+        replaced2.data = np.asarray(replaced2.data) + 5.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            itool(replaced2, link=False, manager=True, replace=0)
+
+        qtbot.wait_until(lambda: child.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(fetch(output_uid), refreshed_output)
 
 
 def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
@@ -2014,6 +2172,127 @@ def test_manager_nested_imagetool_refresh_updates_descendant_lineage(
         code = typing.cast("str", grandchild_node.provenance_spec.derivation_code())
         assert "derived = derived.isel(x=slice(1, 3))" in code
         assert "derived = derived.isel(x=slice(0, 2))" not in code
+
+
+def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    base = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_data = base.isel(x=slice(0, 2))
+        root_tool = itool(root_data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            root_tool,
+            show=False,
+            provenance_spec=prov.selection(
+                prov.IselOperation(kwargs={"x": slice(0, 2)})
+            ),
+        )
+
+        child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=False,
+        )
+        child_node = manager._child_node(child_uid)
+
+        updated = base.isel(x=slice(2, 4))
+        manager._imagetool_wrappers[0].set_detached_provenance(
+            prov.selection(prov.IselOperation(kwargs={"x": slice(2, 4)}))
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(fetch(child_uid), root_data)
+
+        def _enable_auto_update(dialog: QtWidgets.QDialog) -> None:
+            dialog.auto_update_check.setChecked(True)  # type: ignore[attr-defined]
+
+        def _update_now(dialog: QtWidgets.QDialog) -> None:
+            dialog.update_button.click()  # type: ignore[attr-defined]
+
+        click_child_status_badge(
+            manager,
+            child_uid,
+            accept_dialog,
+            pre_call=_enable_auto_update,
+            accept_call=_update_now,
+        )
+
+        qtbot.wait_until(lambda: child_node.source_state == "fresh", timeout=5000)
+        assert child_node.source_auto_update is True
+        xr.testing.assert_identical(fetch(child_uid), updated)
+        _, badge_text, _ = child_status_badge(manager, child_uid)
+        assert badge_text == "Auto"
+
+        def _disable_auto_update(dialog: QtWidgets.QDialog) -> None:
+            dialog.auto_update_check.setChecked(False)  # type: ignore[attr-defined]
+
+        click_child_status_badge(
+            manager,
+            child_uid,
+            accept_dialog,
+            pre_call=_disable_auto_update,
+        )
+        assert child_node.source_auto_update is False
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.source_update_action.isVisible()
+        assert manager.source_update_action.isEnabled()
+
+        unbound_tool = itool(updated.copy(deep=False), manager=False, execute=False)
+        assert isinstance(unbound_tool, erlab.interactive.imagetool.ImageTool)
+        unbound_uid = manager.add_imagetool_child(unbound_tool, 0, show=False)
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, unbound_uid)
+        manager._update_actions()
+        assert not manager.source_update_action.isVisible()
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        select_child_tool(manager, unbound_uid)
+        manager._update_actions()
+        assert not manager.source_update_action.isVisible()
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.source_update_action.isVisible()
+        select_tools(manager, [0])
+        manager._update_actions()
+        assert not manager.source_update_action.isVisible()
+
+        updated2 = base.isel(x=slice(4, 6))
+        manager._imagetool_wrappers[0].set_detached_provenance(
+            prov.selection(prov.IselOperation(kwargs={"x": slice(4, 6)}))
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated2)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(fetch(child_uid), updated)
 
 
 def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
@@ -2757,7 +3036,7 @@ def test_manager_promote_selected_cancel_keeps_nested_imagetool(
         manager.promote_action.trigger()
 
         assert captured["text"] == "Promote selected ImageTool to a top-level window?"
-        assert "live source linkage" in captured["info"].lower()
+        assert "live update linkage" in captured["info"].lower()
         assert "detached history" in captured["info"].lower()
         assert manager.ntools == 1
         assert parent._childtool_indices == [child_uid]

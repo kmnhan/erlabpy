@@ -308,14 +308,50 @@ def test_dtool_source_update_with_temporarily_missing_parent_stays_stale(qtbot) 
     xr.testing.assert_identical(win.tool_data, updated)
 
 
-def test_source_update_dialog_disables_auto_update_without_update_action(qtbot) -> None:
+@pytest.mark.parametrize(
+    ("state", "update_available"),
+    [("fresh", False), ("stale", True), ("unavailable", False)],
+)
+def test_source_update_dialog_actions(qtbot, state, update_available) -> None:
     dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
-        None, state="unavailable", auto_update=True
+        None, state=state, auto_update=True
     )
     qtbot.addWidget(dialog)
 
-    assert dialog.update_button.isEnabled() is False
-    assert dialog.auto_update_check.isEnabled() is False
+    assert isinstance(dialog, erlab.interactive.utils.MessageDialog)
+    assert dialog.text()
+    assert dialog.informativeText()
+    assert dialog.windowTitle() == "Automatic Updates"
+    assert dialog.auto_update_check.isEnabled() is True
+    assert dialog.save_button.isEnabled() is True
+    assert dialog.update_button.isEnabled() is update_available
+    assert dialog.update_button.isHidden() is not update_available
+    assert dialog.update_requested is False
+
+    dialog.save_button.click()
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert dialog.update_requested is False
+
+
+def test_source_update_dialog_update_now_requests_refresh(qtbot) -> None:
+    dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
+        None, state="stale", auto_update=False
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.update_button.click()
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+    assert dialog.update_requested is True
+
+
+def test_source_update_dialog_cancel_rejects(qtbot) -> None:
+    dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
+        None, state="fresh", auto_update=False
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.cancel_button.click()
+    assert dialog.result() == int(QtWidgets.QDialog.DialogCode.Rejected)
 
 
 def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
@@ -499,7 +535,7 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     )
     tool.set_source_binding(spec, auto_update=True, state="stale")
     assert tool.has_source_binding is True
-    assert tool.source_status_text == "Source Update Available"
+    assert tool.source_status_text == "Update Available"
     assert "Automatic updates are enabled." in tool._source_status_button.toolTip()
     copied_spec = tool.source_spec
     assert copied_spec is not None
@@ -508,8 +544,17 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert tool.source_spec == spec
 
     tool._set_source_state("unavailable")
-    assert tool.source_status_text == "Source Update Unavailable"
-    assert "can no longer update" in tool._source_status_button.toolTip()
+    assert tool.source_status_text == "Update Unavailable"
+    assert "cannot update from the current data" in tool._source_status_button.toolTip()
+
+    tool._set_source_state("fresh")
+    assert tool.source_status_text == "Automatic Updates Enabled"
+    assert not tool._source_status_bar.isHidden()
+    assert "configure automatic updates" in tool._source_status_button.toolTip()
+
+    tool._set_source_auto_update(False)
+    assert tool.source_status_text == ""
+    assert tool._source_status_bar.isHidden()
 
     tool.set_source_binding(None, auto_update=True, state="stale")
     assert tool.source_spec is None

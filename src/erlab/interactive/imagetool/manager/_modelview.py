@@ -611,6 +611,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             case "unavailable":
                 text = "Unavailable"
                 color = QtGui.QColor("#b24444")
+            case "fresh" if child_node.source_auto_update:
+                text = "Auto"
+                color = QtGui.QColor("#59636e")
             case _:
                 return None, None, None
 
@@ -716,12 +719,19 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         option, child_node
                     )
                     if status_rect and status_rect.contains(event.pos()):
-                        tooltip = (
-                            "Click to update this tool from the latest ImageTool data."
-                            if child_node.source_state == "stale"
-                            else "Click to review why this tool cannot update from the "
-                            "current ImageTool data."
-                        )
+                        match child_node.source_state:
+                            case "stale":
+                                tooltip = (
+                                    "Click to update this tool from the latest "
+                                    "compatible data."
+                                )
+                            case "unavailable":
+                                tooltip = (
+                                    "Click to review why this tool cannot update from "
+                                    "the current data."
+                                )
+                            case _:
+                                tooltip = "Click to configure automatic updates."
                         QtWidgets.QToolTip.showText(
                             event.globalPos(), tooltip, view, status_rect
                         )
@@ -1406,6 +1416,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._menu.addAction(manager.archive_action)
         self._menu.addAction(manager.unarchive_action)
         self._menu.addAction(manager.reload_action)
+        self._menu.addAction(manager.source_update_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.rename_action)
         self._menu.addAction(manager.link_action)

@@ -849,7 +849,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         """Normalize the spec into a replay-only script form.
 
         Replay specs are the canonical, composable form used for derivation metadata,
-        copy-code, save/load, and manager lineage. Live source updates continue to use
+        copy-code, save/load, and manager lineage. Live updates from ImageTool use
         the original non-script spec via :func:`require_live_source_spec`.
         """
         if self.kind == "script":
@@ -1241,7 +1241,9 @@ class ScriptCodeOperation(ToolProvenanceOperation):
     live_applicable: typing.ClassVar[bool] = False
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
-        raise TypeError("script_code operations do not support live source updates")
+        raise TypeError(
+            "script_code operations do not support live updates from ImageTool data"
+        )
 
     def derivation_entry(self) -> DerivationEntry:
         return DerivationEntry(self.label, self.code, self.copyable)

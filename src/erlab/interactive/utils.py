@@ -689,55 +689,86 @@ class _ToolWindowMeta(type(QtWidgets.QMainWindow)):  # type: ignore[misc]
         )
 
 
-class _ToolSourceUpdateDialog(QtWidgets.QDialog):
+class _ToolSourceUpdateDialog(MessageDialog):
     def __init__(
         self,
         parent: QtWidgets.QWidget | None,
         *,
-        state: typing.Literal["stale", "unavailable"],
+        state: typing.Literal["fresh", "stale", "unavailable"],
         auto_update: bool,
     ) -> None:
-        super().__init__(parent)
-        self.setModal(True)
-        self.setWindowTitle("Update Tool Data")
-
-        layout = QtWidgets.QVBoxLayout(self)
-
-        label = QtWidgets.QLabel(self)
-        label.setWordWrap(True)
         if state == "stale":
-            label.setText(
-                "This tool was created from ImageTool data that has since changed. "
-                "Update it to fetch the latest compatible selection."
+            text = "Update this item from its source?"
+            informative_text = (
+                "The ImageTool or tool that created this item has changed. Update "
+                "now to use the latest compatible data."
             )
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation
+        elif state == "unavailable":
+            text = "This item cannot be updated from its source."
+            informative_text = (
+                "The saved selection or operation cannot be repeated on the current "
+                "data. Reopen this item after the data becomes compatible again."
+            )
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning
         else:
-            label.setText(
-                "This tool was created from a selection that is not available in the "
-                "current ImageTool data. Reopen the tool from ImageTool after the "
-                "selection becomes compatible again."
+            text = "Automatic updates are configured for this item."
+            informative_text = (
+                "This item is up to date. Configure whether it should update "
+                "automatically when the window that created it changes."
             )
-        layout.addWidget(label)
+            icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation
 
-        self.auto_update_check = QtWidgets.QCheckBox(
-            "Update this tool automatically", self
+        super().__init__(
+            parent=parent,
+            title="Automatic Updates",
+            text=text,
+            informative_text=informative_text,
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            icon_pixmap=icon_pixmap,
         )
-        self.auto_update_check.setChecked(auto_update)
-        layout.addWidget(self.auto_update_check)
+        self.update_requested = False
 
-        self.button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Cancel, self
+        self.auto_update_check = QtWidgets.QCheckBox("Update automatically", self)
+        self.auto_update_check.setChecked(auto_update)
+        layout = self.layout()
+        if isinstance(layout, QtWidgets.QVBoxLayout):  # pragma: no branch
+            layout.insertWidget(1, self.auto_update_check)
+
+        self.button_box = self._button_box
+        self.save_button = typing.cast(
+            "QtWidgets.QPushButton",
+            self.button_box.addButton(
+                "Save", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+            ),
         )
         self.update_button = typing.cast(
             "QtWidgets.QPushButton",
             self.button_box.addButton(
-                "Update", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole
+                "Update Now", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
             ),
         )
+        self.cancel_button = typing.cast(
+            "QtWidgets.QPushButton",
+            self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Cancel),
+        )
         self.update_button.setEnabled(state == "stale")
-        self.auto_update_check.setEnabled(self.update_button.isEnabled())
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        layout.addWidget(self.button_box)
+        self.update_button.setVisible(state == "stale")
+        default_button = self.update_button if state == "stale" else self.save_button
+        default_button.setDefault(True)
+        default_button.setAutoDefault(True)
+        self.save_button.clicked.connect(self._save)
+        self.update_button.clicked.connect(self._update_now)
+
+    @QtCore.Slot()
+    def _save(self) -> None:
+        self.update_requested = False
+        self.accept()
+
+    @QtCore.Slot()
+    def _update_now(self) -> None:
+        self.update_requested = True
+        self.accept()
 
 
 def _is_kwarg_name(value: typing.Any) -> bool:
@@ -3545,11 +3576,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @property
     def source_status_text(self) -> str:
-        """Return the status label shown for non-fresh source bindings."""
+        """Return the status label shown for source bindings that need attention."""
+        if self._source_spec is None:
+            return ""
         if self._source_state == "stale":
-            return "Source Update Available"
+            return "Update Available"
         if self._source_state == "unavailable":
-            return "Source Update Unavailable"
+            return "Update Unavailable"
+        if self._source_auto_update:
+            return "Automatic Updates Enabled"
         return ""
 
     def set_source_binding(
@@ -3607,8 +3642,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self.sigInfoChanged.emit()
 
     def _refresh_source_status_widget(self) -> None:
-        """Refresh the inline banner that reports source update availability."""
-        if self._source_spec is None or self._source_state == "fresh":
+        """Refresh the inline banner that reports update availability."""
+        if self._source_spec is None or (
+            self._source_state == "fresh" and not self._source_auto_update
+        ):
             self._source_status_bar.hide()
             self._source_status_button.setToolTip("")
             return
@@ -3616,14 +3653,17 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if self._source_state == "stale":
             bgcolor = "#f4c26b"
             fgcolor = "#2d2212"
-            tooltip = "Click to review or apply the latest source data."
-        else:
+            tooltip = "Click to review or apply the latest compatible data."
+        elif self._source_state == "unavailable":
             bgcolor = "#ef8a8a"
             fgcolor = "#3b1111"
             tooltip = (
-                "Click to review why this tool can no longer update from the "
-                "current ImageTool data."
+                "Click to review why this item cannot update from the current data."
             )
+        else:
+            bgcolor = "#d8dee4"
+            fgcolor = "#24292f"
+            tooltip = "Click to configure automatic updates."
         if self._source_auto_update:
             tooltip += " Automatic updates are enabled."
         self._source_status_button.setText(self.source_status_text)
@@ -3659,7 +3699,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _cancel_background_work(self, *, timeout_ms: int) -> bool:
         """Stop any running background work before mutating the tool state.
 
-        Subclasses should override this when source updates must wait for worker
+        Subclasses should override this when updates from ImageTool must wait for worker
         shutdown before tearing down widgets or replacing internal state.
         """
         return True
@@ -3671,7 +3711,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         apply_update: Callable[[xr.DataArray], bool | None],
         timeout_ms: int | None = None,
     ) -> bool:
-        """Run a source update without tearing down the UI while workers are alive."""
+        """Run an update from ImageTool without tearing down active worker UI."""
         self._source_refresh_deferred = False
         validated = self.validate_update_data(new_data)
         if timeout_ms is None:
@@ -3785,8 +3825,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None
     ) -> int:
-        """Show the source update dialog and apply the user's selection."""
-        if self._source_spec is None or self._source_state == "fresh":
+        """Show automatic update controls and apply the user's selection."""
+        if self._source_spec is None:
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
         dialog = _ToolSourceUpdateDialog(
@@ -3797,20 +3837,20 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         result = dialog.exec()
         if result == int(QtWidgets.QDialog.DialogCode.Accepted):
             self._set_source_auto_update(dialog.auto_update_check.isChecked())
-            if self._source_state == "stale":
+            if dialog.update_requested and self._source_state == "stale":
                 self._update_from_parent_source()
         return result
 
     def update_data(self, new_data: xr.DataArray) -> bool | None:
         """Apply refreshed source data to the existing tool window.
 
-        Subclasses must override this when they support ImageTool source updates. Return
-        `False` to leave the tool marked as stale when the new data is recognized but
-        cannot be published as a fresh result immediately.
+        Subclasses must override this when they support updates from ImageTool data.
+        Return `False` to leave the tool marked as stale when the new data is recognized
+        but cannot be published as a fresh result immediately.
         """
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement update_data() to support "
-            "ImageTool source updates."
+            "updates from ImageTool data."
         )
 
     @property

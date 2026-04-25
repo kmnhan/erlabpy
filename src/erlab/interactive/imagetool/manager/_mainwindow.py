@@ -592,6 +592,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.unwatch_action.setToolTip("Stop watching selected windows")
         self.unwatch_action.setVisible(False)
 
+        self.source_update_action = QtWidgets.QAction("Automatic Updates...", self)
+        self.source_update_action.triggered.connect(self.show_selected_source_updates)
+        self.source_update_action.setToolTip(
+            "Turn automatic updates on or off for the selected child window"
+        )
+        self.source_update_action.setVisible(False)
+
         self.about_action = QtWidgets.QAction("About", self)
         self.about_action.setIcon(QtGui.QIcon.fromTheme("help-about"))
         self.about_action.triggered.connect(self.about)
@@ -955,6 +962,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if self._target_is_archived(uid):
             return None
         return uid
+
+    def _selected_source_update_child_uid(self) -> str | None:
+        selected_child_uids = self.tree_view.selected_childtool_uids
+        if len(selected_child_uids) != 1 or self.tree_view.selected_imagetool_indices:
+            return None
+        uid = selected_child_uids[0]
+        try:
+            node = self._child_node(uid)
+        except KeyError:
+            return None
+        return uid if node.has_source_binding else None
+
+    @QtCore.Slot()
+    def show_selected_source_updates(self) -> None:
+        """Show automatic update controls for the selected child window."""
+        uid = self._selected_source_update_child_uid()
+        if uid is None:
+            return
+        self._child_node(uid).show_source_update_dialog(parent=self)
 
     def _child_targets_of(self, target: int | str) -> list[str]:
         return list(self._node_for_target(target)._childtool_indices)
@@ -1616,6 +1642,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         selection_children = self._selected_tool_uids()
         imagetool_targets = self._selected_imagetool_targets()
         promotable_child_uid = self._selected_promotable_child_imagetool_uid()
+        source_update_child_uid = self._selected_source_update_child_uid()
 
         selection_archived: list[int | str] = []
         selection_unarchived: list[int | str] = []
@@ -1680,6 +1707,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 for s in imagetool_targets
             )
         )
+        self.source_update_action.setVisible(source_update_child_uid is not None)
+        self.source_update_action.setEnabled(source_update_child_uid is not None)
 
         if not imagetool_targets or selection_children or not only_unarchived:
             self.link_action.setDisabled(True)
@@ -2034,8 +2063,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg_box.setText("Promote selected ImageTool to a top-level window?")
         msg_box.setInformativeText(
-            "This will detach the ImageTool from its parent. Live source linkage and "
-            "automatic source updates from the parent will be removed, but existing "
+            "This will detach the ImageTool from its parent. Live update linkage and "
+            "automatic updates from the parent will be removed, but existing "
             "provenance and derivation metadata will be retained as detached history."
         )
         msg_box.setStandardButtons(
