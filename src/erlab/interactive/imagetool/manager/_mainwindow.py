@@ -137,8 +137,8 @@ class _LoadSourceArgumentsEdit(QtWidgets.QPlainTextEdit):
     _MAX_VISIBLE_ROWS = 4
     _VERTICAL_PADDING = 12
 
-    def setPlainText(self, text: str) -> None:
-        super().setPlainText(text)
+    def setPlainText(self, text: str | None) -> None:
+        super().setPlainText("" if text is None else text)
         self._update_fixed_height()
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
@@ -146,14 +146,12 @@ class _LoadSourceArgumentsEdit(QtWidgets.QPlainTextEdit):
         self._update_fixed_height()
 
     def _visual_row_count(self) -> int:
-        document = self.document()
-        if document is None:
-            return 1
-
+        document = typing.cast("QtGui.QTextDocument", self.document())
         row_count = 0
         block = document.firstBlock()
         while block.isValid():
-            row_count += max(1, block.layout().lineCount())
+            layout = typing.cast("QtGui.QTextLayout", block.layout())
+            row_count += max(1, layout.lineCount())
             block = block.next()
         return row_count
 
