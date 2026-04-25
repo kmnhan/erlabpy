@@ -6,6 +6,7 @@ import collections
 import contextlib
 import dataclasses
 import functools
+import gc
 import importlib
 import logging
 import threading
@@ -35,6 +36,34 @@ else:
 _P = typing.ParamSpec("_P")
 _R = typing.TypeVar("_R")
 logger = logging.getLogger(__name__)
+
+_fit_worker_gc_lock = threading.Lock()
+_fit_worker_gc_depth = 0
+_fit_worker_gc_restore_enabled = False
+
+
+@contextlib.contextmanager
+def _suspend_gc_in_fit_worker():
+    """Prevent cyclic GC from collecting Qt objects on fit worker threads."""
+    global _fit_worker_gc_depth, _fit_worker_gc_restore_enabled
+
+    with _fit_worker_gc_lock:
+        if _fit_worker_gc_depth == 0:
+            _fit_worker_gc_restore_enabled = gc.isenabled()
+            if _fit_worker_gc_restore_enabled:
+                gc.disable()
+        _fit_worker_gc_depth += 1
+
+    try:
+        yield
+    finally:
+        with _fit_worker_gc_lock:
+            _fit_worker_gc_depth -= 1
+            should_enable = _fit_worker_gc_depth == 0 and _fit_worker_gc_restore_enabled
+            if _fit_worker_gc_depth == 0:
+                _fit_worker_gc_restore_enabled = False
+            if should_enable:
+                gc.enable()
 
 
 class _PythonCodeEditor(QtWidgets.QTextEdit):
@@ -613,56 +642,58 @@ class _FitWorker(QtCore.QThread):
 
     @QtCore.Slot()
     def run(self) -> None:
-        t0 = time.perf_counter()
-        timed_out = False
-        cancelled = False
-        self._cancel.clear()
+        with _suspend_gc_in_fit_worker():
+            t0 = time.perf_counter()
+            timed_out = False
+            cancelled = False
+            self._cancel.clear()
 
-        def _callback(*args, **kwargs) -> bool | None:
-            nonlocal timed_out, cancelled
+            def _callback(*args, **kwargs) -> bool | None:
+                nonlocal timed_out, cancelled
 
-            interruption_requested = False
+                interruption_requested = False
+                try:
+                    interruption_requested = self.isInterruptionRequested()
+                except RuntimeError:
+                    # The worker can be deleted during shutdown; treat this as
+                    # cancellation.
+                    interruption_requested = True
+
+                if self._cancel.is_set() or interruption_requested:
+                    cancelled = True
+                    return True
+                if self._timeout > 0 and (time.perf_counter() - t0) >= self._timeout:
+                    timed_out = True
+                    return True
+                return None
+
             try:
-                interruption_requested = self.isInterruptionRequested()
-            except RuntimeError:
-                # The worker can be deleted during shutdown; treat this as cancellation.
-                interruption_requested = True
+                result_ds = self._fit_data.xlm.modelfit(
+                    self._coord_name,
+                    model=self._model,
+                    params=self._params,
+                    max_nfev=self._max_nfev if self._max_nfev > 0 else None,
+                    method=self._method,
+                    iter_cb=_callback,
+                )
+                # Resolve lazy fit outputs while the worker is alive so callbacks do not
+                # outlive the thread object.
+                result_ds = result_ds.load()
+            except Exception:
+                if timed_out:
+                    self.sigTimedOut.emit()
+                elif cancelled:
+                    self.sigCancelled.emit()
+                else:
+                    self.sigErrored.emit(traceback.format_exc())
+                return
 
-            if self._cancel.is_set() or interruption_requested:
-                cancelled = True
-                return True
-            if self._timeout > 0 and (time.perf_counter() - t0) >= self._timeout:
-                timed_out = True
-                return True
-            return None
-
-        try:
-            result_ds = self._fit_data.xlm.modelfit(
-                self._coord_name,
-                model=self._model,
-                params=self._params,
-                max_nfev=self._max_nfev if self._max_nfev > 0 else None,
-                method=self._method,
-                iter_cb=_callback,
-            )
-            # Resolve lazy fit outputs while the worker is alive so callbacks do not
-            # outlive the thread object.
-            result_ds = result_ds.load()
-        except Exception:
-            if timed_out:
-                self.sigTimedOut.emit()
-            elif cancelled:
+            if cancelled:
                 self.sigCancelled.emit()
+            elif timed_out:
+                self.sigTimedOut.emit()
             else:
-                self.sigErrored.emit(traceback.format_exc())
-            return
-
-        if cancelled:
-            self.sigCancelled.emit()
-        elif timed_out:
-            self.sigTimedOut.emit()
-        else:
-            self.sigFinished.emit(result_ds)
+                self.sigFinished.emit(result_ds)
 
 
 def _rebuild_ui(
