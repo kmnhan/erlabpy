@@ -5,9 +5,9 @@ from collections.abc import Callable
 from qtpy import QtCore
 
 import erlab
+from erlab.interactive.explorer._base_explorer import _DataExplorer, _ReprFetcher
 
 if typing.TYPE_CHECKING:
-    from erlab.interactive.explorer._base_explorer import _DataExplorer
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
 
@@ -160,3 +160,54 @@ def test_explorer_general(
         # explorer._finder_act.trigger()
 
         explorer.close()
+
+
+def test_explorer_loader_extensions_apply_only_to_manager_loads(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+
+    file_path = example_data_dir / "data_002.h5"
+    explorer._loader_extensions_by_name["example"] = {
+        "additional_coords": {"gui_extra": 7.0}
+    }
+
+    load_calls: list[tuple[list[pathlib.Path], str | None, dict[str, typing.Any]]] = []
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "is_running",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "load_in_manager",
+        lambda files, loader_name=None, **kwargs: load_calls.append(
+            (list(files), loader_name, kwargs)
+        ),
+    )
+
+    explorer.to_manager(files=[file_path])
+    assert load_calls == [
+        (
+            [file_path],
+            "example",
+            {"loader_extensions": {"additional_coords": {"gui_extra": 7.0}}},
+        )
+    ]
+
+    preview_calls: list[dict[str, typing.Any]] = []
+
+    def _preview_loader(_file_path, **kwargs):
+        preview_calls.append(kwargs)
+        return erlab.io.loaders["example"].load(
+            _file_path,
+            **kwargs,
+        )
+
+    worker = _ReprFetcher(file_path, _preview_loader, include_values=False)
+    worker.run()
+    assert preview_calls == [{"single": True, "load_kwargs": {"without_values": True}}]

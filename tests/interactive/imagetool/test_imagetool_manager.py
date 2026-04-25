@@ -49,7 +49,9 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ConcatDialog,
     _NameFilterDialog,
     _RenameDialog,
+    _text_to_loader_extension_value,
 )
+from erlab.interactive.imagetool.manager._mainwindow import _LoadSourceDetailsDialog
 from erlab.interactive.imagetool.manager._modelview import (
     _MIME,
     _NODE_UID_ROLE,
@@ -70,6 +72,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _load_code_from_file_details,
     _load_source_label_and_text,
     _loader_callable_text,
+    _LoadSourceDetails,
     _preview_from_imagetool,
 )
 from erlab.interactive.ptable import PeriodicTableWindow
@@ -410,6 +413,41 @@ def copy_full_code_for_uid(
     action_map(menu)["Copy Full Code"].trigger()
     assert copied
     return copied[-1]
+
+
+def test_load_source_details_dialog_kwargs_editor_wraps_and_highlights(
+    qtbot, tmp_path
+) -> None:
+    kwargs_text = (
+        'engine="h5netcdf", '
+        "very_long_keyword_argument_name=123, "
+        'another_long_keyword_argument_name="abcdef"'
+    )
+    dialog = _LoadSourceDetailsDialog(
+        _LoadSourceDetails(
+            path=tmp_path / "scan.nc",
+            loader_label="Loader",
+            loader_text="xarray.load_dataarray",
+            kwargs_text=kwargs_text,
+            load_code=None,
+        )
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    qtbot.wait_until(lambda: dialog.kwargs_edit._visual_row_count() > 1, timeout=2000)
+
+    expected_rows = min(
+        dialog.kwargs_edit._MAX_VISIBLE_ROWS,
+        dialog.kwargs_edit._visual_row_count(),
+    )
+    assert dialog.kwargs_edit.height() == (
+        expected_rows * dialog.kwargs_edit.fontMetrics().lineSpacing()
+        + dialog.kwargs_edit._VERTICAL_PADDING
+    )
+    assert isinstance(
+        dialog.kwargs_highlighter, erlab.interactive.utils.PythonHighlighter
+    )
 
 
 @pytest.mark.parametrize("use_socket", [False, True], ids=["no_socket", "socket"])
@@ -1621,6 +1659,76 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
         '**{"bad-key": 1, "single": True})'
     )
     assert code == expected
+
+    extension_code = _load_code_from_file_details(
+        file_path,
+        (
+            "example",
+            {"loader_extensions": {"additional_coords": {"gui_extra": 7.0}}},
+            0,
+        ),
+    )
+    assert extension_code == (
+        "import erlab\n\n"
+        "erlab.io.set_loader('example')\n"
+        f"data = erlab.io.load({str(file_path)!r}, "
+        'loader_extensions={"additional_coords": {"gui_extra": 7.0}})'
+    )
+
+
+def test_loader_extension_literal_parser() -> None:
+    assert _text_to_loader_extension_value("coordinate_attrs", "['theta', 'phi']") == {
+        "coordinate_attrs": ["theta", "phi"]
+    }
+    assert _text_to_loader_extension_value("additional_coords", "{'scan': 1}") == {
+        "additional_coords": {"scan": 1}
+    }
+    assert _text_to_loader_extension_value(
+        "name_map", "{'theta': ['Theta', 'Angle']}"
+    ) == {"name_map": {"theta": ["Theta", "Angle"]}}
+
+    with pytest.raises(ValueError, match="not a valid literal"):
+        _text_to_loader_extension_value("additional_coords", "dict(scan=1)")
+
+
+def test_name_filter_dialog_loader_extensions_toggle_resizes(
+    qtbot, example_loader
+) -> None:
+    parent = QtWidgets.QWidget()
+    qtbot.addWidget(parent)
+    dialog = _NameFilterDialog(
+        parent,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.show()
+    QtWidgets.QApplication.processEvents()
+
+    collapsed_height = dialog.height()
+    assert dialog.extensions_toggle.isVisible()
+    assert "extend_loader" in dialog.extensions_toggle.toolTip()
+    assert "<tt>" in dialog.extensions_toggle.toolTip()
+    assert not dialog.extensions_group.isVisible()
+
+    dialog.extensions_toggle.setChecked(True)
+    QtWidgets.QApplication.processEvents()
+    expanded_height = dialog.height()
+    assert expanded_height > collapsed_height
+    extensions_layout = typing.cast(
+        "QtWidgets.QFormLayout", dialog.extensions_group.layout()
+    )
+    for field in dialog.loader_extension_lines.values():
+        label = extensions_layout.labelForField(field)
+        assert label is not None
+        assert field.toolTip()
+        assert "<tt>" in field.toolTip()
+        assert label.toolTip() == field.toolTip()
+
+    dialog.extensions_toggle.setChecked(False)
+    QtWidgets.QApplication.processEvents()
+    assert not dialog.extensions_group.isVisible()
+    assert dialog.height() < expanded_height
 
 
 def test_wrapper_preview_fallback_branches(monkeypatch) -> None:
@@ -5681,6 +5789,83 @@ def test_manager_open_files(
         xarray.testing.assert_identical(
             manager.get_imagetool(1).slicer_area.data, test_data
         )
+
+
+@pytest.mark.parametrize("entry_point", ["open", "drop"])
+def test_manager_file_loads_with_loader_extensions(
+    qtbot,
+    accept_dialog,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+    entry_point: str,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = example_data_dir / "data_002.h5"
+    name_filter = "Example Raw Data (*.h5)"
+
+    def _file_loaders(*_args):
+        return {name_filter: (erlab.io.loaders["example"].load, {})}
+
+    def _set_loader_extensions(dialog: _NameFilterDialog) -> None:
+        assert dialog.extensions_toggle.isVisible()
+        assert not dialog.extensions_group.isVisible()
+        dialog.extensions_toggle.setChecked(True)
+        assert dialog.extensions_group.isVisible()
+        dialog.loader_extension_lines["additional_coords"].setText("{'gui_extra': 7.0}")
+
+    monkeypatch.setattr(erlab.interactive.utils, "file_loaders", _file_loaders)
+
+    if entry_point == "open":
+        monkeypatch.setattr(QtWidgets.QFileDialog, "exec", lambda self: True)
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "selectedFiles", lambda self: [str(file_path)]
+        )
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog, "selectedNameFilter", lambda self: name_filter
+        )
+
+    with manager_context() as manager:
+        if entry_point == "open":
+
+            def _trigger_load():
+                return ImageToolManager.open(manager, native=False)
+
+        else:
+
+            def _trigger_load():
+                return manager.open_multiple_files([file_path])
+
+        accept_dialog(_trigger_load, pre_call=_set_loader_extensions)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=10000)
+
+        slicer_area = manager.get_imagetool(0).slicer_area
+        assert float(slicer_area._data["gui_extra"]) == 7.0
+        assert slicer_area._load_func is not None
+        assert slicer_area._load_func[1]["loader_extensions"] == {
+            "additional_coords": {"gui_extra": 7.0}
+        }
+
+        with qtbot.wait_signal(slicer_area.sigDataChanged, timeout=10000):
+            slicer_area.reload()
+        assert float(slicer_area._data["gui_extra"]) == 7.0
+
+        tree = manager._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        accept_dialog(lambda: manager._from_datatree(tree))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        restored_area = manager.get_imagetool(0).slicer_area
+        assert restored_area._load_func is not None
+        assert restored_area._load_func[1]["loader_extensions"] == {
+            "additional_coords": {"gui_extra": 7.0}
+        }
+        with qtbot.wait_signal(restored_area.sigDataChanged, timeout=10000):
+            restored_area.reload()
+        assert float(restored_area._data["gui_extra"]) == 7.0
 
 
 def test_manager_console(

@@ -172,6 +172,51 @@ def test_lazy_namespace_exports_shared_loader_registry() -> None:
     assert namespace.loaders._lock is namespace.loaders._state.lock
 
 
+def test_loader_extensions_keyword_matches_context(
+    example_loader, example_data_dir: pathlib.Path
+) -> None:
+    extensions = {"additional_coords": {"gui_extra": 7.0}}
+
+    with erlab.io.loader_context("example", example_data_dir):
+        with erlab.io.extend_loader(**extensions):
+            expected = erlab.io.load(2)
+
+        actual = erlab.io.load(
+            2,
+            loader_extensions={"additional_coords": {"gui_extra": 7.0}},
+        )
+        assert "gui_extra" in actual.coords
+        np.testing.assert_equal(actual["gui_extra"].values, 7.0)
+
+        import xarray.testing
+
+        xarray.testing.assert_identical(actual, expected)
+        assert "gui_extra" not in erlab.io.load(2).coords
+
+    loader = erlab.io.loaders["example"]
+    assert "gui_extra" not in loader.additional_coords
+
+
+def test_loader_extensions_validation(
+    example_loader, example_data_dir: pathlib.Path
+) -> None:
+    with erlab.io.loader_context("example", example_data_dir):
+        loaded = erlab.io.load(2, loader_extensions={"coordinate_attrs": ["LensMode"]})
+        assert "LensMode" in loaded.coords
+
+        with pytest.raises(TypeError):
+            erlab.io.load(2, loader_extensions=[])
+
+        with pytest.raises(TypeError):
+            erlab.io.load(2, loader_extensions={"unknown": ()})
+
+        with pytest.raises(TypeError):
+            erlab.io.load(2, loader_extensions={"additional_coords": ()})
+
+        with pytest.raises(TypeError, match="not a string"):
+            erlab.io.load(2, loader_extensions={"coordinate_attrs": "theta"})
+
+
 def test_thread_safety():
     potential_loaders = list(erlab.io.loaders.keys())
 
