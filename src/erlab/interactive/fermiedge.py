@@ -413,11 +413,9 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
         self.controls.addWidget(self.params_roi)
         self.controls.addWidget(self.params_edge)
-        self.refit_on_source_update_check = QtWidgets.QCheckBox(
-            "Refit on source update"
-        )
+        self.refit_on_source_update_check = QtWidgets.QCheckBox("Refit after update")
         self.refit_on_source_update_check.setToolTip(
-            "If checked, rerun the edge fit when this tool refreshes from ImageTool."
+            "If checked, rerun the edge fit after this tool updates from ImageTool."
         )
         self.controls.addWidget(self.refit_on_source_update_check)
 
@@ -633,7 +631,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             ),
             ("Method", str(edge["Method"])),
             (
-                "Refit on source update",
+                "Refit after update",
                 self._bool_text(status.refit_on_source_update),
             ),
             (
@@ -1557,10 +1555,10 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.setWindowTitle("")
 
         self.refit_on_source_update_check = QtWidgets.QCheckBox(
-            "Refit on source update", self.groupBox_2
+            "Refit after update", self.groupBox_2
         )
         self.refit_on_source_update_check.setToolTip(
-            "If checked, rerun the resolution fit when this tool refreshes from "
+            "If checked, rerun the resolution fit after this tool updates from "
             "ImageTool."
         )
         typing.cast("QtWidgets.QGridLayout", self.groupBox_2.layout()).addWidget(

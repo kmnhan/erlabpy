@@ -880,7 +880,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 else str(self.nfev_spin.value()),
             ),
             (
-                "Refit on source update",
+                "Refit after update",
                 self._bool_text(self.refit_on_source_update_check.isChecked()),
             ),
         ]
@@ -1321,11 +1321,9 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             ]
         )
         self.method_combo.setCurrentText("least_squares")
-        self.refit_on_source_update_check = QtWidgets.QCheckBox(
-            "Refit on source update"
-        )
+        self.refit_on_source_update_check = QtWidgets.QCheckBox("Refit after update")
         self.refit_on_source_update_check.setToolTip(
-            "If checked, rerun the fit when this tool refreshes from ImageTool."
+            "If checked, rerun the fit after this tool updates from ImageTool."
         )
         self.refit_on_source_update_check.toggled.connect(self._emit_info_changed)
         self.timeout_spin.valueChanged.connect(self._emit_info_changed)

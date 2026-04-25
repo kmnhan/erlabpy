@@ -1047,7 +1047,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.tool_window is not None:
             return self.tool_window.show_source_update_dialog(parent=parent)
 
-        if not self.has_source_binding or self._source_state == "fresh":
+        if not self.has_source_binding:
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
         dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
@@ -1058,7 +1058,7 @@ class _ManagedWindowNode(QtCore.QObject):
         result = dialog.exec()
         if result == int(QtWidgets.QDialog.DialogCode.Accepted):
             self._set_source_auto_update(dialog.auto_update_check.isChecked())
-            if self._source_state == "stale":
+            if dialog.update_requested and self._source_state == "stale":
                 self._update_from_parent_source()
         return result
 

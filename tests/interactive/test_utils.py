@@ -1687,6 +1687,7 @@ def test_managed_tool_window_node_detached_update_branches(
             assert parent is manager
             assert state == "stale"
             assert auto_update is False
+            self.update_requested = True
             self.auto_update_check = types.SimpleNamespace(isChecked=lambda: True)
 
         def exec(self) -> int:
