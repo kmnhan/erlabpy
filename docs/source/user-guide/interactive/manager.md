@@ -95,13 +95,20 @@ may no longer match it. The manager shows this with badges:
 - {guilabel}`Unavailable` means the manager cannot repeat the saved selection or
   operation on the current data, such as when a dimension, coordinate, or selection has
   changed too much.
+- {guilabel}`Auto` means the row is up to date and automatic updates are enabled.
 
 Click the badge in the tree, or the update banner inside the tool window, to review the
-update. You can apply a one-time update or enable automatic updates for future changes
-to the ImageTool or tool that created the row.
+update. The {guilabel}`Automatic Updates` dialog lets you apply a one-time update with
+{guilabel}`Update Now`, or turn automatic updates on or off and save that preference with
+{guilabel}`Save`. Saving only changes the automatic-update preference; it does not
+refresh a stale row.
+
+When automatic updates are enabled and the row is up to date, the tree keeps showing the
+{guilabel}`Auto` badge so you can turn automatic updates off again. You can also
+right-click a child row and choose {guilabel}`Automatic Updates...`.
 
 Fitting tools can also take part in this flow. {guilabel}`ftool`, {guilabel}`goldtool`,
-and {guilabel}`restool` include {guilabel}`Refit on source update`; when it is enabled,
+and {guilabel}`restool` include {guilabel}`Refit after update`; when it is enabled,
 the tool reruns the same fit after compatible data from the ImageTool that opened it is
 updated.
 
@@ -226,9 +233,9 @@ The following lists common actions included in the {guilabel}`File`, {guilabel}`
 
 Icons next to each entry indicate special states: linked windows share a colored badge,
 chunked Dask arrays show the dask icon, watched variables display their notebook name,
-and rows opened from another row can show the {guilabel}`Stale` or
-{guilabel}`Unavailable` badges
-described in {ref}`imagetool-manager-refresh`.
+and rows opened from another row can show the {guilabel}`Stale`,
+{guilabel}`Unavailable`, or {guilabel}`Auto` badges described in
+{ref}`imagetool-manager-refresh`.
 
 (imagetool-manager-archive-workspace)=
 

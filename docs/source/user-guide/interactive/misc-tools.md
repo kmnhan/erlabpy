@@ -190,7 +190,7 @@ Use the `%goldtool` magic (see {ref}`interactive-misc-magics`) to launch it dire
 When `goldtool` is opened from an ImageTool in the manager, it remembers the selected
 spectrum or slice that opened it. If that ImageTool changes, the manager can mark the
 tool and its corrected ImageTool window as {guilabel}`Stale`. Enable
-{guilabel}`Refit on source update` when you want the edge fit to rerun automatically
+{guilabel}`Refit after update` when you want the edge fit to rerun automatically
 after compatible updates.
 
 (guide-ftool)=
@@ -229,7 +229,7 @@ There are three ways to start `ftool`.
 
 When `ftool` is opened from an ImageTool in the manager, it remembers the slice or line
 cut that opened it. If that ImageTool changes, the manager can update the tool from the
-latest compatible data. Enable {guilabel}`Refit on source update` when the same fit
+latest compatible data. Enable {guilabel}`Refit after update` when the same fit
 should rerun after updates. For 2D fits, parameter maps opened in ImageTool appear as
 child rows under `ftool`.
 
@@ -493,7 +493,7 @@ The `%restool` magic (see {ref}`interactive-misc-magics`) provides a quick way t
 
 When `restool` is launched from an ImageTool in the manager, it remembers the selected
 EDC that opened it. If that ImageTool is replaced with compatible data, the manager can
-update the tool and optionally rerun the fit when {guilabel}`Refit on source update` is
+update the tool and optionally rerun the fit when {guilabel}`Refit after update` is
 enabled.
 
 (guide-meshtool)=
