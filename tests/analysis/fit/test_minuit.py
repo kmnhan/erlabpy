@@ -1,11 +1,38 @@
 import lmfit
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.ndimage
 from numpy.testing import assert_approx_equal
 
 from erlab.analysis.fit.functions import lorentzian, lorentzian_wh
-from erlab.analysis.fit.minuit import Minuit
+from erlab.analysis.fit.minuit import LeastSq, Minuit
 from erlab.analysis.fit.models import MultiPeakModel
+
+
+def test_leastsq_visualize_accepts_iterable_model_points() -> None:
+    xval = np.linspace(0.0, 1.0, 5)
+    yval = 2.0 * xval + 1.0
+    yerr = np.ones_like(yval)
+
+    cost = LeastSq(xval, yval, yerr, lambda x, slope, intercept: slope * x + intercept)
+    (_x, _y, _ye), (xm, ym) = cost.visualize((2.0, 1.0), model_points=[0.0, 0.5, 1.0])
+
+    np.testing.assert_allclose(xm, [0.0, 0.5, 1.0])
+    np.testing.assert_allclose(ym, [1.0, 2.0, 3.0])
+    plt.close("all")
+
+
+def test_leastsq_visualize_accepts_positive_model_point_count() -> None:
+    xval = np.linspace(0.0, 1.0, 5)
+    yval = 2.0 * xval + 1.0
+    yerr = np.ones_like(yval)
+
+    cost = LeastSq(xval, yval, yerr, lambda x, slope, intercept: slope * x + intercept)
+    (_x, _y, _ye), (xm, ym) = cost.visualize((2.0, 1.0), model_points=4)
+
+    np.testing.assert_allclose(xm, np.linspace(0.0, 1.0, 4))
+    np.testing.assert_allclose(ym, 2.0 * xm + 1.0)
+    plt.close("all")
 
 
 def test_minuit_from_lmfit() -> None:

@@ -2,6 +2,7 @@ import copy
 import logging
 import tempfile
 import types
+import typing
 import weakref
 
 import numpy as np
@@ -87,6 +88,39 @@ def _press_alt(monkeypatch):
     )
 
 
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    locals_ns = dict(namespace)
+    exec(  # noqa: S102
+        code,
+        {
+            "__builtins__": {"slice": slice, "__import__": __import__},
+            "np": np,
+            "xr": xr,
+            "erlab": erlab,
+            "era": erlab.analysis,
+        },
+        locals_ns,
+    )
+    return locals_ns
+
+
+def _exec_data_fragment(
+    data: xr.DataArray,
+    code: str,
+    *,
+    data_name: str = "data",
+) -> xr.DataArray:
+    statement = (
+        f"result = {data_name}{code}" if code.startswith(".") else f"result = {code}"
+    )
+    namespace = _exec_generated_code(statement, {data_name: data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    return result
+
+
 def _assert_guideline_state(
     plot_item,
     *,
@@ -129,10 +163,14 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
         main_image = win.slicer_area.images[0]
 
         logger.info("Test code generation")
+        selection_code = main_image.get_selection_code(placeholder="")
         if data.ndim == 2:
-            assert main_image.get_selection_code(placeholder="") == ""
+            assert not selection_code
         else:
-            assert main_image.get_selection_code(placeholder="") == ".qsel(beta=2.0)"
+            xarray.testing.assert_identical(
+                _exec_data_fragment(win.slicer_area.data, selection_code),
+                main_image.current_data,
+            )
 
         if condition == "binned":
             logger.info("Set bins")
@@ -609,6 +647,25 @@ def test_selection_expr_for_cursor_uniform_axis_only(qtbot) -> None:
     win.close()
 
 
+def test_selection_expr_for_cursor_preserves_nonstring_qsel_dim(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(24).reshape((2, 3, 4)),
+        dims=["k-space", "y", "z"],
+        coords={
+            "k-space": np.arange(2, dtype=float),
+            "y": np.arange(3),
+            "z": np.arange(4),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    expr = win.slicer_area.main_image._selection_expr_for_cursor("data", 0, (0,))
+    assert expr == 'data.qsel(**{"k-space": 0.0})'
+
+    win.close()
+
+
 @pytest.mark.parametrize("bin_value", [1, 3])
 def test_plot_code_multicursor_line_supports_nonuniform_hidden_axis(
     qtbot, bin_value
@@ -652,7 +709,7 @@ def test_plot_code_multicursor_image_with_non_identifier_dim_name(qtbot) -> None
     main_image = win.slicer_area.images[0]
 
     code = main_image._plot_code_multicursor()
-    assert '**{"k-space": 2.0}' in code
+    assert 'selected = data.qsel(**{"k-space": 2.0})' in code
 
     win.close()
 
@@ -1299,26 +1356,86 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     selection_spec = win.slicer_area.images[0].make_tool_source_spec(
         transpose=True, squeeze=True
     )
-    assert selection_spec["kind"] == "selection"
-    assert [op["op"] for op in selection_spec["operations"]] == [
-        "isel",
+    assert selection_spec.kind == "selection"
+    assert [op.op for op in selection_spec.operations] == [
         "sort_coord_order",
         "transpose",
-        "squeeze",
     ]
 
     win.slicer_area.open_in_meshtool()
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
     child = next(iter(win.slicer_area._associated_tools.values()))
-    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
-        "full_data"
-    )
+    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
     assert child.source_state == "fresh"
 
     new_data = data.copy(deep=True)
     new_data.data = np.asarray(new_data.data) * 2
     win.slicer_area.set_data(new_data)
     assert child.source_state == "fresh"
+
+
+def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+
+    derivative = dtool(
+        image.current_data.T,
+        data_name=image.get_selection_code(),
+        execute=False,
+    )
+    qtbot.addWidget(derivative)
+    derivative.set_source_binding(image.make_tool_source_spec(transpose=True))
+
+    derivative_code = derivative.copy_code()
+    assert ".isel()" not in derivative_code
+    assert "sort_coord_order" not in derivative_code
+    assert ".transpose(" in derivative_code
+
+    squeezed_child = dtool(
+        _TEST_DATA["2D"].copy(),
+        data_name="data",
+        execute=False,
+    )
+    qtbot.addWidget(squeezed_child)
+    squeezed_child.set_source_parent_fetcher(lambda: _TEST_DATA["2D"].copy())
+    squeezed_child.set_source_binding(prov.selection(prov.SqueezeOperation()))
+
+    squeezed_code = squeezed_child.copy_code()
+    assert ".isel()" not in squeezed_code
+    assert "sort_coord_order" not in squeezed_code
+    assert ".squeeze()" not in squeezed_code
+
+    squeezed_child.close()
+    derivative.close()
+    win.close()
+
+
+def test_child_tool_copy_code_keeps_meaningful_parent_selection(qtbot) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.set_value(1, 3.0)
+    image = win.slicer_area.images[0]
+
+    child = dtool(
+        image.current_data.T,
+        data_name=image.get_selection_code(),
+        execute=False,
+    )
+    qtbot.addWidget(child)
+    child.set_source_binding(image.make_tool_source_spec(transpose=True))
+
+    code = child.copy_code()
+    assert "sort_coord_order" not in code
+    assert ".isel()" not in code
+    assert ".qsel(" in code
+    assert ".transpose(" in code
+
+    child.close()
+    win.close()
 
 
 def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
@@ -1341,12 +1458,8 @@ def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
     )
 
     spec = image.make_tool_source_spec()
-    sel_kwargs = erlab.interactive.utils._decode_tool_source_value(
-        next(op["kwargs"] for op in spec["operations"] if op["op"] == "sel")
-    )
-    isel_kwargs = erlab.interactive.utils._decode_tool_source_value(
-        [op["kwargs"] for op in spec["operations"] if op["op"] == "isel"][-1]
-    )
+    sel_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
+    isel_kwargs = [op.decoded_kwargs for op in spec.operations if op.op == "isel"][-1]
 
     assert sel_kwargs == {"alpha": slice(1, 4)}
     assert isel_kwargs == {"eV": slice(0, 2)}
@@ -1657,7 +1770,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: RotationDialog) -> None:
         dialog.angle_spin.setValue(60.0)
         dialog.reshape_check.setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
@@ -1682,7 +1795,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
         dialog.reshape_check.setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
@@ -1866,9 +1979,7 @@ def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -
 
     win.slicer_area.open_in_ktool()
 
-    assert child.source_spec == erlab.interactive.utils.make_tool_source_spec(
-        "full_data"
-    )
+    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
     assert child.source_state == "fresh"
 
     win.close()
@@ -1947,6 +2058,29 @@ def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) ->
     assert child.source_spec == image.make_tool_source_spec(squeeze=True)
     assert child.source_state == "fresh"
 
+    win.close()
+
+
+def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
+    qtbot, monkeypatch
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    child = dtool(_TEST_DATA["2D"].copy(), execute=False)
+    monkeypatch.setattr(erlab.interactive, "ftool", lambda *args, **kwargs: child)
+
+    profile = win.slicer_area.profiles[0]
+    profile.open_in_ftool()
+
+    assert child.source_spec is not None
+    assert not any(
+        isinstance(operation, prov.SqueezeOperation)
+        for operation in child.source_spec.operations
+    )
+
+    child.close()
     win.close()
 
 
@@ -2070,7 +2204,7 @@ def test_itool_rotate_center_accepts_out_of_bounds_values(qtbot, accept_dialog) 
         assert dialog.center_spins[0].value() == center[0]
         assert dialog.center_spins[1].value() == center[1]
         dialog.reshape_check.setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._rotate, pre_call=_set_dialog_params)
 
@@ -2147,13 +2281,16 @@ def test_itool_crop_view(qtbot, accept_dialog) -> None:
         dialog.dim_checks["y"].setChecked(True)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._crop_to_view, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
-    assert pyperclip.paste() == ".sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))"
+    xarray.testing.assert_allclose(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0)),
+    )
 
     win.close()
 
@@ -2201,13 +2338,16 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["y"].setChecked(True)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))
     )
-    assert pyperclip.paste() == ".sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0))"
+    xarray.testing.assert_allclose(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.sel(x=slice(1.0, 4.0), y=slice(0.0, 3.0)),
+    )
 
     # 1D crop
     win.slicer_area.set_value(axis=0, value=4.0, cursor=1)
@@ -2222,13 +2362,16 @@ def test_itool_crop(qtbot, accept_dialog) -> None:
         dialog.dim_checks["y"].setChecked(False)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._crop, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
         win.slicer_area._data, data.sel(x=slice(2.0, 4.0), y=slice(0.0, 3.0))
     )
-    assert pyperclip.paste() == ".sel(x=slice(2.0, 4.0))"
+    xarray.testing.assert_allclose(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.sel(x=slice(2.0, 4.0)),
+    )
 
     win.close()
 
@@ -2510,14 +2653,72 @@ def test_itool_average(qtbot, accept_dialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None), data.qsel.average("x")
     )
 
-    assert pyperclip.paste() == '.qsel.average("x")'
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.qsel.average("x"),
+    )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    display_namespace = _exec_generated_code(
+        display_code,
+        {"data": data.copy(deep=True)},
+    )
+    derived = display_namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(derived, data.qsel.average("x"))
+    win.close()
+
+
+def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(20).reshape((5, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+    dialog = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["y"].setChecked(True)
+
+    spec = dialog.source_spec("scan_avg")
+    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        dialog.process_data(win.slicer_area.data)
+    ).rename("scan_avg")
+    refreshed = spec.apply(win.slicer_area.data)
+
+    assert spec.kind == "full_data"
+    assert [op.op for op in spec.operations] == [
+        "average",
+        "restore_nonuniform_dims",
+        "rename",
+    ]
+    assert refreshed.dims == ("x",)
+    xarray.testing.assert_identical(refreshed, expected)
+
+    display_code = spec.display_code(parent_data=win.slicer_area.data)
+    assert display_code is not None
+    assert "restore_nonuniform_dims" in display_code
+    display_namespace = _exec_generated_code(
+        display_code,
+        {"data": win.slicer_area.data.copy(deep=True)},
+    )
+    derived = display_namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
+
+    dialog.close()
     win.close()
 
 
@@ -2535,7 +2736,7 @@ def test_itool_average_marks_incompatible_child_tools_unavailable(
 
     def _set_dialog_params(dialog: AverageDialog) -> None:
         dialog.dim_checks["alpha"].setChecked(True)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     with qtbot.wait_signal(win.slicer_area.sigSourceDataReplaced):
         accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
@@ -2544,6 +2745,178 @@ def test_itool_average_marks_incompatible_child_tools_unavailable(
         win.slicer_area._data.rename(None), data.qsel.average("alpha")
     )
     qtbot.wait_until(lambda: child.source_state == "unavailable", timeout=5000)
+
+    win.close()
+
+
+def test_average_dialog_make_code_preserves_nonstring_dim(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["k-space", "y"],
+        coords={"k-space": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["k-space"].setChecked(True)
+
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()),
+        data.qsel.average("k-space"),
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_average_dialog_rejects_empty_dimension_selection(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda _parent, title, text: warnings.append((title, text)),
+    )
+
+    dialog = AverageDialog(win.slicer_area)
+    dialog.accept()
+
+    assert warnings == [
+        ("No Dimensions Selected", "You need to select at least one dimension.")
+    ]
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+    xarray.testing.assert_identical(win.slicer_area._data, data)
+
+    dialog.close()
+    win.close()
+
+
+def test_transform_dialog_restores_filter_after_processing_error(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _filter(darr: xr.DataArray) -> xr.DataArray:
+        return darr + 1
+
+    win.slicer_area.apply_func(_filter)
+
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, title, text, **_kwargs: errors.append((title, text)),
+    )
+
+    dialog = AverageDialog(win.slicer_area)
+    dialog.dim_checks["x"].setChecked(True)
+    monkeypatch.setattr(
+        dialog,
+        "process_data",
+        lambda _data: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    dialog.accept()
+
+    assert errors == [("Error", "An error occurred while processing data.")]
+    assert win.slicer_area._applied_func is _filter
+
+    dialog.close()
+    win.close()
+
+
+def test_transform_replace_composes_after_script_active_name(qtbot) -> None:
+    source = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        name="source",
+    )
+    displayed = (source + 1).rename("result")
+    win = itool(displayed, execute=False)
+    qtbot.addWidget(win)
+
+    win.set_provenance_spec(
+        erlab.interactive.imagetool.provenance.script(
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label="Compute intermediate result",
+                code="result = data + 1",
+            ),
+            start_label="Start from current tool input data",
+            active_name="result",
+        )
+    )
+
+    dialog = AverageDialog(win.slicer_area)
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
+    dialog.accept()
+
+    assert win.provenance_spec is not None
+    code = win.provenance_spec.derivation_code()
+    assert code == (
+        'result = data + 1\nderived = result\nderived = derived.qsel.average("x")'
+    )
+    namespace = _exec_generated_code(code, {"data": source.copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(
+        derived.rename(None), displayed.qsel.average("x").rename(None)
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_average_dialog_launch_modes_for_standalone(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    mode_labels = [
+        dialog.launch_mode_combo.itemText(i)
+        for i in range(dialog.launch_mode_combo.count())
+    ]
+    assert mode_labels == ["Replace Current", "Open Top-Level Window"]
+    assert dialog.launch_mode == "detach"
+    launched: list[xr.DataArray] = []
+    monkeypatch.setattr(
+        erlab.interactive,
+        "itool",
+        lambda *args, **kwargs: launched.append(kwargs["data"]) or None,
+    )
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.accept()
+    xarray.testing.assert_identical(launched[0].rename(None), data.qsel.average("x"))
+
+    dialog_replace = AverageDialog(win.slicer_area)
+    qtbot.addWidget(dialog_replace)
+    dialog_replace.dim_checks["y"].setChecked(True)
+    dialog_replace.launch_mode_combo.setCurrentText("Replace Current")
+    dialog_replace.accept()
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.qsel.average("y")
+    )
 
     win.close()
 
@@ -2602,7 +2975,7 @@ def test_itool_coarsen(qtbot, accept_dialog) -> None:
         dialog.reducer_combo.setCurrentText("sum")
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._coarsen, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2635,13 +3008,18 @@ def test_itool_coarsen_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         dialog.window_spins["x"].setValue(2)
         assert dialog.boundary_combo.currentText() == "trim"
         assert dialog.coord_func_combo.currentText() == "mean"
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._coarsen, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None),
         data.coarsen(x=2, boundary="trim", side="left", coord_func="mean").mean(),
     )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert "coarsen(x=2" in display_code
+    assert "x_idx" not in display_code
 
     win.close()
 
@@ -2662,7 +3040,16 @@ def test_coarsen_dialog_make_code_uses_watched_data_name(qtbot, monkeypatch) -> 
         property(lambda _self: "my_data"),
     )
 
-    assert dialog.make_code() == 'my_data.coarsen(x=2, boundary="trim").mean()'
+    namespace = _exec_generated_code(
+        f"result = {dialog.make_code()}",
+        {"my_data": data.copy(deep=True)},
+    )
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_identical(
+        result,
+        data.coarsen(x=2, boundary="trim").mean(),
+    )
 
     dialog.close()
     win.close()
@@ -2684,7 +3071,7 @@ def test_itool_thin(qtbot, accept_dialog) -> None:
         dialog.factor_spins["y"].setValue(3)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2692,7 +3079,10 @@ def test_itool_thin(qtbot, accept_dialog) -> None:
         data.thin(y=3),
     )
 
-    assert pyperclip.paste() == ".thin(y=3)"
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.thin(y=3),
+    )
     win.close()
 
 
@@ -2710,7 +3100,7 @@ def test_itool_thin_global_factor(qtbot, accept_dialog) -> None:
         dialog.global_spin.setValue(2)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2718,7 +3108,10 @@ def test_itool_thin_global_factor(qtbot, accept_dialog) -> None:
         data.thin(2),
     )
 
-    assert pyperclip.paste() == ".thin(2)"
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()),
+        data.thin(2),
+    )
     win.close()
 
 
@@ -2738,18 +3131,23 @@ def test_itool_thin_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         assert "x_idx" not in dialog.dim_checks
         dialog.dim_checks["x"].setChecked(True)
         dialog.factor_spins["x"].setValue(2)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._thin, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None),
         data.thin(x=2),
     )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert "thin(x=2)" in display_code
+    assert "x_idx" not in display_code
 
     win.close()
 
 
-def test_itool_symmetrize(qtbot, accept_dialog) -> None:
+def test_itool_symmetrize(qtbot, accept_dialog, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(60).reshape((3, 4, 5)).astype(float),
         dims=["x", "y", "z"],
@@ -2762,6 +3160,11 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "data"),
+    )
 
     # Test dialog
     def _set_dialog_params(dialog: SymmetrizeDialog) -> None:
@@ -2769,7 +3172,7 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
         dialog._center_spin.setValue(2.0)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._symmetrize, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -2777,11 +3180,20 @@ def test_itool_symmetrize(qtbot, accept_dialog) -> None:
         erlab.analysis.transform.symmetrize(data, "z", center=2),
     )
 
-    assert pyperclip.paste() == 'era.transform.symmetrize(, dim="z", center=2.0)'
+    namespace = _exec_generated_code(
+        f"result = {pyperclip.paste()}",
+        {"data": data.copy(deep=True)},
+    )
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_identical(
+        result,
+        erlab.analysis.transform.symmetrize(data, "z", center=2),
+    )
     win.close()
 
 
-def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
+def test_itool_symmetrize_nfold(qtbot, accept_dialog, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["y", "x"],
@@ -2792,6 +3204,11 @@ def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "data"),
+    )
 
     def _set_dialog_params(dialog: SymmetrizeNfoldDialog) -> None:
         assert dialog._axes == ("y", "x")
@@ -2805,7 +3222,7 @@ def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
         dialog.order_spin.setValue(3)
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._symmetrize_nfold, pre_call=_set_dialog_params)
     xarray.testing.assert_allclose(
@@ -2820,13 +3237,23 @@ def test_itool_symmetrize_nfold(qtbot, accept_dialog) -> None:
         ),
     )
 
-    copied = pyperclip.paste()
-    assert copied.startswith("era.transform.symmetrize_nfold(")
-    assert "fold=6" in copied
-    assert "axes=('y', 'x')" in copied
-    assert 'center={"y": 1.0, "x": -1.0}' in copied
-    assert "reshape=False" in copied
-    assert "order=3" in copied
+    namespace = _exec_generated_code(
+        f"result = {pyperclip.paste()}",
+        {"data": data.copy(deep=True)},
+    )
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_allclose(
+        result,
+        erlab.analysis.transform.symmetrize_nfold(
+            data,
+            6,
+            axes=("y", "x"),
+            center={"y": 1.0, "x": -1.0},
+            reshape=False,
+            order=3,
+        ),
+    )
     win.close()
 
 
@@ -2933,7 +3360,7 @@ def test_itool_edgecorr(qtbot, accept_dialog, gold, gold_fit_res, shift_coords) 
         # Test dialog
         def _set_dialog_params(dialog: EdgeCorrectionDialog) -> None:
             dialog.shift_coord_check.setChecked(shift_coords)
-            dialog.new_window_check.setChecked(False)
+            dialog.launch_mode_combo.setCurrentText("Replace Current")
 
         def _go_to_file(dialog: QtWidgets.QFileDialog):
             dialog.setDirectory(tmp_dir_name)
@@ -2997,7 +3424,7 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
         dialog._coord_combo.setCurrentText("t")
         dialog.coord_widget.mode_combo.setCurrentIndex(1)  # Set to 'Delta'
         dialog.coord_widget.spin0.setValue(1)
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
@@ -3021,7 +3448,7 @@ def test_itool_swap_dims(qtbot, accept_dialog) -> None:
 
     def _set_dialog_params(dialog: SwapDimsDialog) -> None:
         dialog.target_combos["x"].setCurrentText("u")
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -3052,7 +3479,7 @@ def test_itool_swap_dims_multiple_and_code(qtbot, accept_dialog) -> None:
         dialog.target_combos["y"].setCurrentText("v")
         with qtbot.wait_signal(dialog._sigCodeCopied):
             dialog.copy_button.click()
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
@@ -3086,12 +3513,17 @@ def test_itool_swap_dims_nonuniform_public_dims(qtbot, accept_dialog) -> None:
         assert "x" in dialog.target_combos
         assert "x_idx" not in dialog.target_combos
         dialog.target_combos["x"].setCurrentText("temperature")
-        dialog.new_window_check.setChecked(False)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._swap_dims, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None), data.swap_dims({"x": "temperature"})
     )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert "swap_dims(x='temperature')" in display_code
+    assert "x_idx" not in display_code
 
     win.close()
 

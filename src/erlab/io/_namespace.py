@@ -1,7 +1,8 @@
 """Namespace for high-level data loader functionality for lazy loading."""
 
-from erlab.io.dataloader import loaders
+import erlab.io.dataloader
 
+loaders = erlab.io.dataloader.loaders
 load = loaders.load
 loader_context = loaders.loader_context
 set_data_dir = loaders.set_data_dir

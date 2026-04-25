@@ -500,6 +500,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
     """
 
     @property
+    def provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Canonical replay provenance for the current ImageTool data."""
+        return typing.cast(
+            "erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None",
+            getattr(self.parent(), "provenance_spec", None),
+        )
+
+    @property
     def COLORS(self) -> tuple[QtGui.QColor, ...]:
         r""":class:`PySide6.QtGui.QColor`\ s for multiple cursors."""
         return tuple(
@@ -2385,7 +2395,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if transfer_to_manager and self._in_manager:
             manager = self._manager_instance
             if manager:  # pragma: no branch
-                if isinstance(widget, erlab.interactive.utils.ToolWindow):
+                if isinstance(
+                    widget,
+                    (
+                        erlab.interactive.utils.ToolWindow,
+                        erlab.interactive.imagetool.ImageTool,
+                    ),
+                ):
                     manager._add_childtool_from_slicerarea(widget, self)
                 else:
                     manager.add_widget(widget)
@@ -2394,6 +2410,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if isinstance(widget, erlab.interactive.utils.ToolWindow):
             widget.set_source_parent_fetcher(lambda: self._tool_source_parent_data())
             self.sigSourceDataReplaced.connect(widget.handle_parent_source_replaced)
+            widget.set_input_provenance_parent_fetcher(lambda: self.provenance_spec)
 
         uid: str = str(uuid.uuid4())
         with self._assoc_tools_lock:
@@ -2479,9 +2496,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(
-                erlab.interactive.utils.make_tool_source_spec("full_data")
-            )
+            tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
         self.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -2491,9 +2506,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.data, data_name=self.watched_data_name, execute=False
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(
-                erlab.interactive.utils.make_tool_source_spec("full_data")
-            )
+            tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
         self.add_tool_window(tool)
 
     def adjust_layout(

@@ -20,6 +20,28 @@ def _make_1d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("x",), coords={"x": x}, name="spec")
 
 
+def _assert_fit_result_dataset_equivalent(
+    actual: xr.Dataset, expected: xr.Dataset
+) -> None:
+    xr.testing.assert_identical(
+        actual.drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
+    )
+    actual_result = actual.modelfit_results.compute().item()
+    expected_result = expected.modelfit_results.compute().item()
+    assert type(actual_result.model) is type(expected_result.model)
+    assert list(actual_result.params.keys()) == list(expected_result.params.keys())
+    for name, expected_param in expected_result.params.items():
+        actual_param = actual_result.params[name]
+        assert actual_param.value == pytest.approx(expected_param.value)
+        if expected_param.stderr is None:
+            assert actual_param.stderr is None
+        else:
+            assert actual_param.stderr == pytest.approx(expected_param.stderr)
+        assert actual_param.expr == expected_param.expr
+        assert actual_param.vary == expected_param.vary
+
+
 def test_fit1d_fit_domain_descending_coords(qtbot) -> None:
     x = np.linspace(1.0, -1.0, 21)
     data = xr.DataArray(np.exp(-(x**2)), dims=("x",), coords={"x": x})
@@ -140,6 +162,75 @@ def test_fit1d_open_saved_fit_dataset(qtbot, exp_decay_model) -> None:
     assert win_restored.save_button.isEnabled()
     assert win_restored.copy_button.isEnabled()
     assert isinstance(win_restored._model, type(exp_decay_model))
+
+
+def test_fit1d_persistence_roundtrip_preserves_fit_result(
+    qtbot, exp_decay_model
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    assert win._run_fit()
+    qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
+    assert win._last_result_ds is not None
+    expected_fit_ds = win._last_result_ds.copy(deep=True)
+    expected_status = win.tool_status.model_dump()
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit1DTool)
+
+    assert win_restored._last_result_ds is not None
+    _assert_fit_result_dataset_equivalent(win_restored._last_result_ds, expected_fit_ds)
+    assert win_restored.tool_status.model_dump() == expected_status
+    assert win_restored._fit_is_current
+    assert win_restored.save_button.isEnabled()
+    assert win_restored.copy_button.isEnabled()
+
+
+def test_fit1d_persistence_roundtrip_preserves_stale_fit(
+    qtbot, exp_decay_model
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    data = xr.DataArray(
+        3.0 * np.exp(-t / 2.0), dims=("t",), coords={"t": t}, name="decay"
+    )
+    params = exp_decay_model.make_params(n0=2.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+
+    assert win._run_fit()
+    qtbot.waitUntil(lambda: win._last_result_ds is not None, timeout=10000)
+
+    index = win.param_model.index(0, 1)
+    current_value = float(win.param_model.data(index, QtCore.Qt.ItemDataRole.EditRole))
+    assert win.param_model.setData(
+        index, f"{current_value + 0.5}", QtCore.Qt.ItemDataRole.EditRole
+    )
+    assert win._last_result_ds is not None
+    assert win._fit_is_current is False
+    expected_fit_ds = win._last_result_ds.copy(deep=True)
+    expected_status = win.tool_status.model_dump()
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit1DTool)
+
+    assert win_restored._last_result_ds is not None
+    _assert_fit_result_dataset_equivalent(win_restored._last_result_ds, expected_fit_ds)
+    assert win_restored.tool_status.model_dump() == expected_status
+    assert win_restored._fit_is_current is False
+    assert not win_restored.save_button.isEnabled()
+    assert not win_restored.copy_button.isEnabled()
 
 
 def test_fit1d_update_data_preserves_state_and_refit(
@@ -340,7 +431,7 @@ def test_fit1d_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
 
-    assert win.update_data(updated) is True
+    assert win.update_data(updated) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted
@@ -389,9 +480,12 @@ def test_parameter_table_model_and_delegate(qtbot) -> None:
 
     assert model.rowCount() == 2
     assert model.columnCount() == 6
+    assert model.rowCount(model.index(0, 0)) == 0
+    assert model.columnCount(model.index(0, 0)) == 0
     assert (
         model.headerData(0, QtCore.Qt.Orientation.Horizontal) == model._COLUMN_NAMES[0]
     )
+    assert model.headerData(99, QtCore.Qt.Orientation.Horizontal) is None
 
     value_index = model.index(0, 1)
     assert model.setData(value_index, "1.5", QtCore.Qt.ItemDataRole.EditRole)

@@ -15,6 +15,7 @@ Modules
    controls
    dialogs
    manager
+   provenance
 
 """
 

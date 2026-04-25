@@ -139,7 +139,7 @@ class ReplacePacket(_BasePacket):
 
     packet_type: typing.Literal["replace"]
     data_list: list[xr.DataArray]
-    replace_idxs: list[int]
+    replace_idxs: list[int | str]
 
 
 class WatchPacket(_BasePacket):
@@ -740,7 +740,7 @@ def show_in_manager(
 
 @_manager_running
 def replace_data(
-    index: int | Collection[int],
+    index: int | str | Collection[int | str],
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
     | npt.NDArray
@@ -764,7 +764,7 @@ def replace_data(
     """
     data_list = erlab.interactive.imagetool.viewer._parse_input(data)
 
-    if isinstance(index, int):
+    if isinstance(index, (int, str)):
         index = [index]
 
     if len(data_list) != len(index):

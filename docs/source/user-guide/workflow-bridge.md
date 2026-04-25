@@ -71,7 +71,7 @@ code for reproducibility and batch processing.
   - {ref}`ROI context menu <imagetool-roi>`
   - {func}`erlab.analysis.mask.mask_with_polygon`
 - - Momentum conversion
-  - {ref}`ktool <guide-ktool>` (Can be launced from the View menu)
+  - {ref}`ktool <guide-ktool>` (Can be launched from the View menu)
   - {meth}`xarray.DataArray.kspace.convert`
 - - Interactive fitting
   - {ref}`ftool <guide-ftool>`, {ref}`goldtool <guide-goldtool>`, and {ref}`restool <guide-restool>`

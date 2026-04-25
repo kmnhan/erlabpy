@@ -27,6 +27,40 @@ def _make_2d_data() -> xr.DataArray:
     return xr.DataArray(data, dims=("y", "x"), coords={"y": y, "x": x}, name="map")
 
 
+def _assert_fit_result_dataset_equivalent(
+    actual: xr.Dataset, expected: xr.Dataset
+) -> None:
+    xr.testing.assert_identical(
+        actual.drop_vars("modelfit_results"),
+        expected.drop_vars("modelfit_results"),
+    )
+    actual_result = actual.modelfit_results.compute().item()
+    expected_result = expected.modelfit_results.compute().item()
+    assert type(actual_result.model) is type(expected_result.model)
+    assert list(actual_result.params.keys()) == list(expected_result.params.keys())
+    for name, expected_param in expected_result.params.items():
+        actual_param = actual_result.params[name]
+        assert actual_param.value == pytest.approx(expected_param.value)
+        if expected_param.stderr is None:
+            assert actual_param.stderr is None
+        else:
+            assert actual_param.stderr == pytest.approx(expected_param.stderr)
+        assert actual_param.expr == expected_param.expr
+        assert actual_param.vary == expected_param.vary
+
+
+def _assert_fit_result_list_equivalent(
+    actual: list[xr.Dataset | None], expected: list[xr.Dataset | None]
+) -> None:
+    assert len(actual) == len(expected)
+    for actual_ds, expected_ds in zip(actual, expected, strict=True):
+        if expected_ds is None:
+            assert actual_ds is None
+            continue
+        assert actual_ds is not None
+        _assert_fit_result_dataset_equivalent(actual_ds, expected_ds)
+
+
 def _configure_fit2d_for_tests(
     win: Fit2DTool, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str, str | None]]]:
@@ -460,7 +494,7 @@ def test_fit2d_update_data_auto_refit_after_waiting_cancelled_thread(
     updated = data.copy(deep=True)
     updated.data = np.asarray(updated.data) * 1.1
 
-    assert win.update_data(updated) is True
+    assert win.update_data(updated) is False
     assert started == [True]
     assert old_thread.cancel_called
     assert old_thread.interrupted
@@ -628,6 +662,114 @@ def test_fit2d_open_saved_fit_dataset(qtbot, exp_decay_model, monkeypatch) -> No
     assert win_restored.save_full_button.isEnabled()
 
 
+def test_fit2d_persistence_roundtrip_preserves_fit_results(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
+    data = xr.DataArray(data, dims=("y", "t"), coords={"y": y, "t": t}, name="decay2d")
+
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win.nfev_spin.setValue(0)
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
+    )
+    assert not warnings
+    assert not errors
+    expected_results = [
+        None if ds is None else ds.copy(deep=True) for ds in win._result_ds_full
+    ]
+    expected_status = win.tool_status.model_dump()
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit2DTool)
+
+    restored_warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win_restored,
+        "_show_warning",
+        lambda title, text: restored_warnings.append((title, text)),
+    )
+
+    assert win_restored._fit_is_current
+    assert all(ds is not None for ds in win_restored._result_ds_full)
+    _assert_fit_result_list_equivalent(win_restored._result_ds_full, expected_results)
+    assert win_restored.tool_status.model_dump() == expected_status
+    assert win_restored.copy_full_button.isEnabled()
+    assert win_restored.save_full_button.isEnabled()
+    assert win_restored.current_provenance_spec() is not None
+    assert not restored_warnings
+
+
+def test_fit2d_persistence_roundtrip_preserves_sparse_results(
+    qtbot, exp_decay_model, monkeypatch
+) -> None:
+    t = np.linspace(0.0, 4.0, 25)
+    y = np.arange(3)
+    data = np.stack([((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in y], axis=0)
+    data = xr.DataArray(data, dims=("y", "t"), coords={"y": y, "t": t}, name="decay2d")
+
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+    win = erlab.interactive.ftool(
+        data, model=exp_decay_model, params=params, execute=False
+    )
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+    warnings, errors = _configure_fit2d_for_tests(win, monkeypatch)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win.nfev_spin.setValue(0)
+    win._run_fit_2d("up")
+    qtbot.waitUntil(
+        lambda: all(ds is not None for ds in win._result_ds_full), timeout=10000
+    )
+    assert not warnings
+    assert not errors
+
+    win._result_ds_full[1] = None
+    win.y_index_spin.setValue(0)
+    win._mark_fit_stale()
+    expected_results = [
+        None if ds is None else ds.copy(deep=True) for ds in win._result_ds_full
+    ]
+    expected_status = win.tool_status.model_dump()
+
+    win_restored = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit2DTool)
+
+    restored_warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        win_restored,
+        "_show_warning",
+        lambda title, text: restored_warnings.append((title, text)),
+    )
+
+    assert [ds is not None for ds in win_restored._result_ds_full] == [
+        True,
+        False,
+        True,
+    ]
+    _assert_fit_result_list_equivalent(win_restored._result_ds_full, expected_results)
+    assert win_restored.tool_status.model_dump() == expected_status
+    assert win_restored._fit_is_current is False
+    assert not win_restored.copy_full_button.isEnabled()
+    assert not win_restored.save_full_button.isEnabled()
+    assert win_restored.current_provenance_spec() is None
+    assert not restored_warnings
+
+
 def test_fit2d_full_save_and_param_plot(qtbot, exp_decay_model, monkeypatch) -> None:
     t = np.linspace(0.0, 4.0, 25)
     y = np.arange(3)
@@ -763,7 +905,7 @@ def test_fit2d_copy_code_full_inconsistent_expr_warning(qtbot, monkeypatch) -> N
 
     monkeypatch.setattr(win, "_show_warning", _warn)
     code = win._copy_code_full()
-    assert code == ""
+    assert not code
     assert warnings
 
 
@@ -785,7 +927,7 @@ def test_fit2d_copy_code_full_missing_fit_warning(qtbot, monkeypatch) -> None:
 
     monkeypatch.setattr(win, "_show_warning", _warn)
     code = win._copy_code_full()
-    assert code == ""
+    assert not code
     assert warnings
 
 
@@ -811,7 +953,7 @@ def test_fit2d_copy_code_full_inconsistent_params_warning(qtbot, monkeypatch) ->
 
     monkeypatch.setattr(win, "_show_warning", _warn)
     code = win._copy_code_full()
-    assert code == ""
+    assert not code
     assert warnings
 
 
@@ -877,6 +1019,7 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
     params_1[center_name].stderr = 0.02
     params_2[center_name].stderr = None
     win._params_full = [params_0, params_1, params_2]
+    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
     win.param_plot_combo.setCurrentText(center_name)
 
     values = win._param_plot_dataarray(center_name)
@@ -887,7 +1030,7 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
     assert stderr.name == f"{center_name}_stderr"
 
     saved: list[xr.DataArray] = []
-    shown: list[xr.DataArray] = []
+    shown: list[tuple[xr.DataArray, str]] = []
     monkeypatch.setattr(
         win.param_plot,
         "_save_dataarray_as_hdf5",
@@ -896,7 +1039,7 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(
         win,
         "_show_dataarray_in_itool",
-        lambda da: shown.append(da.copy(deep=True)),
+        lambda da, *, output_id=None: shown.append((da.copy(deep=True), output_id)),
     )
 
     win.param_plot._save_parameter_values()
@@ -908,13 +1051,64 @@ def test_fit2d_param_plot_dataarray_context_actions(qtbot, monkeypatch) -> None:
         f"{center_name}_values",
         f"{center_name}_stderr",
     ]
-    assert [da.name for da in shown] == [
+    assert [da.name for da, _ in shown] == [
         f"{center_name}_values",
         f"{center_name}_stderr",
     ]
+    assert [output_id for _, output_id in shown] == [
+        Fit2DTool.Output.PARAMETER_VALUES,
+        Fit2DTool.Output.PARAMETER_STDERR,
+    ]
 
 
-def test_fit2d_show_dataarray_in_itool_respects_manager_state(
+def test_fit2d_parameter_output_provenance_uses_distinct_active_names(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    center_name = "p0_center"
+    params_0 = win._params.copy()
+    params_1 = win._params.copy()
+    params_2 = win._params.copy()
+    params_0[center_name].set(value=0.1)
+    params_1[center_name].set(value=0.2)
+    params_2[center_name].set(value=0.3)
+    params_0[center_name].stderr = 0.01
+    params_1[center_name].stderr = 0.02
+    params_2[center_name].stderr = None
+    win._params_full = [params_0, params_1, params_2]
+    win._result_ds_full = [xr.Dataset() for _ in range(len(win._result_ds_full))]
+    win.param_plot_combo.setCurrentText(center_name)
+
+    values = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_VALUES)
+    stderr = win.output_imagetool_data(Fit2DTool.Output.PARAMETER_STDERR)
+    assert values is not None
+    assert stderr is not None
+
+    values_spec = win.output_imagetool_provenance(
+        Fit2DTool.Output.PARAMETER_VALUES, values
+    )
+    stderr_spec = win.output_imagetool_provenance(
+        Fit2DTool.Output.PARAMETER_STDERR, stderr
+    )
+
+    assert values_spec is not None
+    assert stderr_spec is not None
+    assert values_spec.active_name == "parameter_values"
+    assert stderr_spec.active_name == "parameter_stderr"
+
+    values_code = values_spec.display_code()
+    stderr_code = stderr_spec.display_code()
+    assert values_code is not None
+    assert stderr_code is not None
+    assert ".modelfit_coefficients.sel(param='p0_center')" in values_code
+    assert ".modelfit_stderr.sel(param='p0_center')" in stderr_code
+    assert ".rename(" not in values_code
+    assert ".rename(" not in stderr_code
+
+
+def test_fit2d_show_dataarray_in_itool_uses_detached_launcher(
     qtbot, monkeypatch
 ) -> None:
     data = _make_2d_data()
@@ -922,24 +1116,25 @@ def test_fit2d_show_dataarray_in_itool_respects_manager_state(
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    calls: list[tuple[xr.DataArray, bool | None, bool | None]] = []
+    calls: list[tuple[xr.DataArray, object]] = []
     return_widget = QtWidgets.QWidget()
     qtbot.addWidget(return_widget)
 
-    def _itool_stub(
-        data: xr.DataArray, *, manager: bool | None = None, execute: bool | None = None
+    def _launch_stub(
+        data: xr.DataArray,
+        *,
+        provenance_spec: object,
     ) -> QtWidgets.QWidget:
-        calls.append((data, manager, execute))
+        calls.append((data, provenance_spec))
         return return_widget
 
-    monkeypatch.setattr(erlab.interactive, "itool", _itool_stub)
-    monkeypatch.setattr(win, "_is_in_manager", lambda: True)
+    monkeypatch.setattr(win, "_launch_detached_output_imagetool", _launch_stub)
 
     da = xr.DataArray(np.arange(3.0), dims=("y",), coords={"y": np.arange(3)})
     win._show_dataarray_in_itool(da)
     assert calls
-    assert calls[0][1] is True
-    assert calls[0][2] is False
+    assert calls[0][1] is None
+    assert win._itool is return_widget
 
 
 def test_fit2d_param_plot_context_actions_missing_selection(qtbot, monkeypatch) -> None:
@@ -1094,27 +1289,28 @@ def test_fit2d_is_in_manager_false_when_no_manager(qtbot, monkeypatch) -> None:
     assert win._is_in_manager() is False
 
 
-def test_fit2d_is_in_manager_wrapper_lookup(qtbot, monkeypatch) -> None:
+def test_fit2d_is_in_manager_node_lookup(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    class _Wrapper:
-        def __init__(self, childtools: dict[str, object]) -> None:
-            self._childtools = childtools
-
     class _Manager:
-        def __init__(self, wrappers: dict[int, _Wrapper]) -> None:
-            self._imagetool_wrappers = wrappers
+        def __init__(self, managed: object | None) -> None:
+            self._managed = managed
 
-    manager = _Manager({0: _Wrapper({"x": object()}), 1: _Wrapper({"y": win})})
+        def _node_uid_from_window(self, widget) -> str | None:
+            if widget is self._managed:
+                return "y"
+            return None
+
+    manager = _Manager(win)
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager, "_manager_instance", manager
     )
     assert win._is_in_manager() is True
 
-    manager = _Manager({0: _Wrapper({"x": object()})})
+    manager = _Manager(None)
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager, "_manager_instance", manager
     )
@@ -1127,7 +1323,9 @@ def test_fit2d_show_dataarray_in_itool_non_widget_return(qtbot, monkeypatch) -> 
     qtbot.addWidget(win)
     assert isinstance(win, Fit2DTool)
 
-    monkeypatch.setattr(erlab.interactive, "itool", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        win, "_launch_detached_output_imagetool", lambda *args, **kwargs: None
+    )
     da = xr.DataArray(np.arange(3.0), dims=("y",), coords={"y": np.arange(3)})
     win._show_dataarray_in_itool(da)
     assert not hasattr(win, "_itool")

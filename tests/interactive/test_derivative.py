@@ -1,14 +1,33 @@
 import tempfile
+import typing
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import xarray as xr
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool, dtool
+
+
+def _exec_generated_code(
+    code: str, namespace: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    locals_ns = dict(namespace)
+    exec(  # noqa: S102
+        code,
+        {
+            "__builtins__": {"range": range, "slice": slice},
+            "np": np,
+            "xr": xr,
+            "erlab": erlab,
+            "era": erlab.analysis,
+        },
+        locals_ns,
+    )
+    return locals_ns
 
 
 @pytest.mark.parametrize("method_idx", [0, 1, 2, 3, 4])
@@ -31,9 +50,13 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
     qtbot.addWidget(win)
 
     def check_generated_code(w: DerivativeTool) -> None:
-        namespace = {"era": erlab.analysis, "data": data, "np": np, "result": None}
-        exec(w.copy_code(), {"__builtins__": {"range": range}}, namespace)  # noqa: S102
-        xr.testing.assert_identical(w.result, namespace["result"])
+        namespace = _exec_generated_code(
+            w.copy_code(),
+            {"data": data.copy(deep=True), "result": None},
+        )
+        result = namespace["result"]
+        assert isinstance(result, xr.DataArray)
+        xr.testing.assert_identical(w.result, result)
 
     win.interp_group.setChecked(interpmode == "interp")
     win.smooth_group.setChecked(smoothmode != "none")
@@ -53,7 +76,7 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
 
     check_generated_code(win)
     win.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        erlab.interactive.imagetool.provenance.full_data(),
         auto_update=True,
         state="stale",
     )
@@ -73,6 +96,30 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
         assert win_restored.source_auto_update is True
         assert win_restored.source_state == "stale"
         check_generated_code(win_restored)
+
+
+def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+    win.smooth_group.setChecked(True)
+
+    code = win.copy_code()
+    assert "\t" not in code
+    assert "era.image.gaussian_filter(data" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert isinstance(namespace["result"], xr.DataArray)
+    xr.testing.assert_identical(win.result, namespace["result"])
+
+    win.sn_spin.setValue(2)
+    code = win.copy_code()
+    assert "\t" not in code
+    assert "for _ in range(2):\n    _processed = era.image.gaussian_filter(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert isinstance(namespace["result"], xr.DataArray)
+    xr.testing.assert_identical(win.result, namespace["result"])
 
 
 def test_dtool_update_data_preserves_state(qtbot) -> None:
@@ -105,6 +152,54 @@ def test_dtool_update_data_preserves_state(qtbot) -> None:
     assert win.result.shape == win.processed_data.shape
 
 
+def test_dtool_open_itool_uses_output_launcher(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    calls: list[tuple[xr.DataArray, str]] = []
+    return_widget = QtWidgets.QWidget()
+    qtbot.addWidget(return_widget)
+
+    def _launch_stub(data: xr.DataArray, *, output_id: str) -> QtWidgets.QWidget:
+        calls.append((data.copy(deep=True), output_id))
+        return return_widget
+
+    monkeypatch.setattr(win, "_launch_output_imagetool", _launch_stub)
+
+    win.open_itool()
+
+    assert calls
+    assert calls[0][1] == DerivativeTool.Output.RESULT.value
+    xr.testing.assert_identical(calls[0][0], win.result.T)
+    assert win._itool is return_widget
+
+
+def test_dtool_output_imagetool_provenance_transposes_result(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    win: DerivativeTool = dtool(data, execute=False)
+    qtbot.addWidget(win)
+
+    xr.testing.assert_identical(
+        win.output_imagetool_data(DerivativeTool.Output.RESULT),
+        win.result.T,
+    )
+
+    spec = win.output_imagetool_provenance(DerivativeTool.Output.RESULT, win.result.T)
+
+    assert spec is not None
+    code = spec.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xr.testing.assert_identical(result, win.result.T)
+
+
 def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
@@ -113,8 +208,8 @@ def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> N
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec(
-            "selection", operations=[{"op": "transpose"}]
+        erlab.interactive.imagetool.provenance.selection(
+            erlab.interactive.imagetool.provenance.TransposeOperation()
         ),
         auto_update=True,
     )
@@ -141,7 +236,7 @@ def test_dtool_full_data_source_update_marks_unavailable_for_incompatible_data(
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        erlab.interactive.imagetool.provenance.full_data(),
         auto_update=False,
     )
 
@@ -160,7 +255,7 @@ def test_dtool_restored_source_binding_without_parent_stays_stale(qtbot) -> None
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        erlab.interactive.imagetool.provenance.full_data(),
         auto_update=True,
         state="stale",
     )
@@ -189,7 +284,7 @@ def test_dtool_source_update_with_temporarily_missing_parent_stays_stale(qtbot) 
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"),
+        erlab.interactive.imagetool.provenance.full_data(),
         auto_update=True,
         state="stale",
     )
@@ -223,8 +318,8 @@ def test_source_update_dialog_disables_auto_update_without_update_action(qtbot) 
     assert dialog.auto_update_check.isEnabled() is False
 
 
-def test_tool_source_spec_helpers_roundtrip_and_resolve_selection() -> None:
-    encoded = erlab.interactive.utils._encode_tool_source_value(
+def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
+    encoded = erlab.interactive.imagetool.provenance.encode_provenance_value(
         {
             "outer": {
                 "sel": slice(0.5, 2.5),
@@ -233,11 +328,11 @@ def test_tool_source_spec_helpers_roundtrip_and_resolve_selection() -> None:
         }
     )
 
-    decoded = erlab.interactive.utils._decode_tool_source_value(encoded)
+    decoded = erlab.interactive.imagetool.provenance.decode_provenance_value(encoded)
     assert decoded == {
         "outer": {
             "sel": slice(0.5, 2.5),
-            "items": [slice(1, 4, 2), [3], {"beta": 1.5}],
+            "items": (slice(1, 4, 2), [3], {"beta": 1.5}),
         }
     }
 
@@ -248,74 +343,43 @@ def test_tool_source_spec_helpers_roundtrip_and_resolve_selection() -> None:
         name="data",
     )
 
-    resolved_full = erlab.interactive.utils._resolve_tool_source_spec(
-        parent, erlab.interactive.utils.make_tool_source_spec("full_data")
-    )
+    resolved_full = erlab.interactive.imagetool.provenance.full_data().apply(parent)
     xr.testing.assert_identical(resolved_full, parent)
 
-    resolved_qsel = erlab.interactive.utils._resolve_tool_source_spec(
-        parent,
-        erlab.interactive.utils.make_tool_source_spec(
-            "selection",
-            operations=[
-                {
-                    "op": "qsel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        {"x": 1.0, "x_width": 1.0}
-                    ),
-                }
-            ],
-        ),
-    )
-    xr.testing.assert_identical(resolved_qsel, parent.qsel(x=1.0, x_width=1.0))
-
-    resolved_selection = erlab.interactive.utils._resolve_tool_source_spec(
-        parent,
-        erlab.interactive.utils.make_tool_source_spec(
-            "selection",
-            operations=[
-                {
-                    "op": "isel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        {"x": slice(1, None), "z": 1}
-                    ),
-                },
-                {
-                    "op": "sel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        {"y": slice(11.0, 12.0)}
-                    ),
-                },
-                {"op": "sort_coord_order"},
-                {"op": "transpose", "dims": ["y", "x"]},
-            ],
-        ),
+    resolved_qsel = erlab.interactive.imagetool.provenance.selection(
+        erlab.interactive.imagetool.provenance.QSelOperation(
+            kwargs={"x": 1.0, "x_width": 1.0}
+        )
     )
     xr.testing.assert_identical(
-        resolved_selection,
+        resolved_qsel.apply(parent), parent.qsel(x=1.0, x_width=1.0)
+    )
+
+    resolved_selection = erlab.interactive.imagetool.provenance.selection(
+        erlab.interactive.imagetool.provenance.IselOperation(
+            kwargs={"x": slice(1, None), "z": 1}
+        ),
+        erlab.interactive.imagetool.provenance.SelOperation(
+            kwargs={"y": slice(11.0, 12.0)}
+        ),
+        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
+        erlab.interactive.imagetool.provenance.TransposeOperation(dims=("y", "x")),
+    )
+    xr.testing.assert_identical(
+        resolved_selection.apply(parent),
         parent.isel({"x": slice(1, None), "z": 1})
         .sel({"y": slice(11.0, 12.0)})
         .transpose("y", "x"),
     )
 
-    resolved_squeezed = erlab.interactive.utils._resolve_tool_source_spec(
-        parent,
-        erlab.interactive.utils.make_tool_source_spec(
-            "selection",
-            operations=[
-                {
-                    "op": "isel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        {"z": 0}
-                    ),
-                },
-                {"op": "transpose"},
-                {"op": "squeeze"},
-            ],
-        ),
+    resolved_squeezed = erlab.interactive.imagetool.provenance.selection(
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"z": 0}),
+        erlab.interactive.imagetool.provenance.TransposeOperation(),
+        erlab.interactive.imagetool.provenance.SqueezeOperation(),
     )
     xr.testing.assert_identical(
-        resolved_squeezed, parent.isel({"z": 0}).transpose("y", "x").squeeze()
+        resolved_squeezed.apply(parent),
+        parent.isel({"z": 0}).transpose("y", "x").squeeze(),
     )
 
     parent_nonuniform_public = xr.DataArray(
@@ -331,41 +395,29 @@ def test_tool_source_spec_helpers_roundtrip_and_resolve_selection() -> None:
     parent_nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(
         parent_nonuniform_public
     )
-    resolved_nonuniform = erlab.interactive.utils._resolve_tool_source_spec(
-        parent_nonuniform,
-        erlab.interactive.utils.make_tool_source_spec(
-            "selection",
-            operations=[
-                {
-                    "op": "qsel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        {"beta": 2.0}
-                    ),
-                },
-                {
-                    "op": "isel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        {"alpha": slice(1, 3)}
-                    ),
-                },
-                {"op": "sort_coord_order"},
-            ],
+    resolved_nonuniform = erlab.interactive.imagetool.provenance.selection(
+        erlab.interactive.imagetool.provenance.QSelOperation(kwargs={"beta": 2.0}),
+        erlab.interactive.imagetool.provenance.IselOperation(
+            kwargs={"alpha": slice(1, 3)}
         ),
+        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
-        resolved_nonuniform,
+        resolved_nonuniform.apply(parent_nonuniform),
         parent_nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
-    with pytest.raises(ValueError, match="Unsupported tool source kind"):
-        erlab.interactive.utils._resolve_tool_source_spec(parent, {"kind": "invalid"})
+    with pytest.raises(
+        ValidationError,
+        match="full_data', 'public_data', 'selection' or 'script",
+    ):
+        erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+            {"kind": "invalid"}
+        )
 
-    with pytest.raises(ValueError, match="Unsupported tool source operation"):
-        erlab.interactive.utils._resolve_tool_source_spec(
-            parent,
-            erlab.interactive.utils.make_tool_source_spec(
-                "selection", operations=[{"op": "invalid"}]
-            ),
+    with pytest.raises(ValidationError, match="Unknown provenance operation"):
+        erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+            {"kind": "selection", "operations": [{"op": "invalid"}]}
         )
 
 
@@ -376,6 +428,14 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
         StateModel = _DummyState
         tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
 
         def __init__(self, data: xr.DataArray) -> None:
             super().__init__()
@@ -406,6 +466,15 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
                 raise RuntimeError("update failed")
             self._data = new_data
 
+        def _dummy_expression(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
+
     data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
     updated = xr.DataArray(
         np.arange(9, 18).reshape((3, 3)), dims=("x", "y"), name="data"
@@ -425,16 +494,8 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     tool.setCentralWidget(replacement)
     assert tool.centralWidget() is replacement
 
-    spec = erlab.interactive.utils.make_tool_source_spec(
-        "selection",
-        operations=[
-            {
-                "op": "isel",
-                "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                    {"x": slice(0, 2)}
-                ),
-            }
-        ],
+    spec = erlab.interactive.imagetool.provenance.selection(
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"x": slice(0, 2)})
     )
     tool.set_source_binding(spec, auto_update=True, state="stale")
     assert tool.has_source_binding is True
@@ -442,7 +503,8 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert "Automatic updates are enabled." in tool._source_status_button.toolTip()
     copied_spec = tool.source_spec
     assert copied_spec is not None
-    copied_spec["kind"] = "changed"
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        copied_spec.kind = "changed"
     assert tool.source_spec == spec
 
     tool._set_source_state("unavailable")
@@ -462,13 +524,16 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     tool.handle_parent_source_replaced(updated)
     assert tool.source_state == "fresh"
 
-    tool.set_source_binding({"kind": "selection", "operations": [{"op": "invalid"}]})
+    with pytest.raises(TypeError, match="ToolProvenanceSpec or None"):
+        tool.set_source_binding(
+            {"kind": "selection", "operations": [{"op": "invalid"}]}
+        )
     tool.set_source_parent_fetcher(lambda: updated)
     assert tool._update_from_parent_source() is False
     assert tool.source_state == "unavailable"
 
     tool.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"), auto_update=True
+        erlab.interactive.imagetool.provenance.full_data(), auto_update=True
     )
     tool.fail_validate = True
     assert tool._update_from_parent_source() is False
@@ -485,13 +550,13 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     xr.testing.assert_identical(tool.tool_data, updated)
 
     tool.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"), auto_update=False
+        erlab.interactive.imagetool.provenance.full_data(), auto_update=False
     )
     tool.handle_parent_source_replaced(updated * 2)
     assert tool.source_state == "stale"
 
     tool.set_source_binding(
-        erlab.interactive.utils.make_tool_source_spec("full_data"), auto_update=True
+        erlab.interactive.imagetool.provenance.full_data(), auto_update=True
     )
     tool.fail_validate = True
     tool.handle_parent_source_replaced(updated)
@@ -511,6 +576,240 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
             _has_hv=False,
         )
     )
-    tool.set_source_binding({"kind": "selection", "operations": [{"op": "invalid"}]})
+    tool.set_source_binding(
+        erlab.interactive.imagetool.provenance.full_data(), auto_update=True
+    )
     tool.handle_parent_source_replaced(bad_parent)
     assert tool.source_state == "unavailable"
+
+
+def test_tool_copy_code_includes_parent_lineage_for_standalone_imagetool(qtbot) -> None:
+    class _DummyState(BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def _dummy_expression(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+    data = xr.DataArray(np.arange(9).reshape((3, 3)), dims=("x", "y"), name="data")
+    parent = erlab.interactive.itool(data, execute=False, manager=False)
+    assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(parent)
+    parent.set_provenance_spec(
+        erlab.interactive.imagetool.provenance.selection(
+            erlab.interactive.imagetool.provenance.IselOperation(
+                kwargs={"x": slice(0, 2)}
+            )
+        )
+    )
+
+    tool = _DummyTool(data.isel(x=slice(0, 2)))
+    qtbot.addWidget(tool)
+    tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+    parent.slicer_area.add_tool_window(tool, transfer_to_manager=False)
+
+    code = tool.copy_code()
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xr.testing.assert_identical(result, data.isel(x=slice(0, 2)).mean())
+
+
+def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
+    class _DummyState(BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def _dummy_expression(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+    data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
+    parent_provenance = {
+        "spec": erlab.interactive.imagetool.provenance.selection(
+            erlab.interactive.imagetool.provenance.IselOperation(
+                kwargs={"x": slice(0, 2)}
+            )
+        )
+    }
+
+    tool = _DummyTool(data.isel(x=slice(0, 2)))
+    qtbot.addWidget(tool)
+    tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+    tool.set_input_provenance_parent_fetcher(lambda: parent_provenance["spec"])
+
+    initial_code = tool.copy_code()
+    initial_namespace = _exec_generated_code(
+        initial_code,
+        {"data": data.copy(deep=True)},
+    )
+    initial_result = initial_namespace["result"]
+    assert isinstance(initial_result, xr.DataArray)
+    xr.testing.assert_identical(initial_result, data.isel(x=slice(0, 2)).mean())
+
+    parent_provenance["spec"] = erlab.interactive.imagetool.provenance.selection(
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"y": slice(0, 2)})
+    )
+    stale_code = tool.copy_code()
+    stale_namespace = _exec_generated_code(
+        stale_code,
+        {"data": data.copy(deep=True)},
+    )
+    stale_result = stale_namespace["result"]
+    assert isinstance(stale_result, xr.DataArray)
+    xr.testing.assert_identical(stale_result, data.isel(x=slice(0, 2)).mean())
+
+    tool._data = data.isel(y=slice(0, 2))
+    tool.finalize_source_refresh()
+
+    refreshed_code = tool.copy_code()
+    refreshed_namespace = _exec_generated_code(
+        refreshed_code,
+        {"data": data.copy(deep=True)},
+    )
+    refreshed_result = refreshed_namespace["result"]
+    assert isinstance(refreshed_result, xr.DataArray)
+    xr.testing.assert_identical(refreshed_result, data.isel(y=slice(0, 2)).mean())
+
+
+def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -> None:
+    class _DummyState(BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy-tool input data",
+                label="Compute dummy output",
+                expression_method="_dummy_expression",
+                assign="result",
+            )
+        )
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def _dummy_expression(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
+
+    tool = _DummyTool(data)
+    qtbot.addWidget(tool)
+    tool.set_source_binding(prov.selection(prov.SqueezeOperation()))
+    tool.set_input_provenance_parent_fetcher(lambda: None)
+
+    early_code = tool.copy_code()
+    early_namespace = _exec_generated_code(early_code, {"data": data.copy(deep=True)})
+    early_result = early_namespace["result"]
+    assert isinstance(early_result, xr.DataArray)
+    xr.testing.assert_identical(early_result, data.mean())
+    assert ".squeeze()" in early_code
+
+    tool.set_source_parent_fetcher(lambda: data)
+
+    refreshed_code = tool.copy_code()
+    refreshed_namespace = _exec_generated_code(
+        refreshed_code,
+        {"data": data.copy(deep=True)},
+    )
+    refreshed_result = refreshed_namespace["result"]
+    assert isinstance(refreshed_result, xr.DataArray)
+    xr.testing.assert_identical(refreshed_result, data.mean())
+    assert ".squeeze()" not in refreshed_code

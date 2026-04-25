@@ -2,6 +2,7 @@ __all__ = ["goldtool", "restool"]
 
 import contextlib
 import dataclasses
+import enum
 import importlib.resources
 import logging
 import os
@@ -150,6 +151,12 @@ class _GoldUpdateRequest:
     refit: bool
 
 
+class _GoldFitSnapshot(pydantic.BaseModel):
+    along_coords: list[float]
+    edge_center: list[float]
+    edge_stderr: list[float]
+
+
 class GoldTool(erlab.interactive.utils.AnalysisWindow):
     """Interactive gold edge fitting.
 
@@ -178,6 +185,41 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     """
 
     tool_name = "goldtool"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current goldtool input data",
+            label_method="_current_mode_copy_label",
+            expression_method="_current_mode_copy_expression",
+            assign_method="_current_mode_copy_assign",
+            prelude_method="_current_mode_copy_prelude",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        CORRECTED = "goldtool.corrected"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.CORRECTED: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_corrected_output",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current goldtool input data",
+                label_method="_current_mode_corrected_label",
+                prelude_method="_current_mode_corrected_prelude",
+                expression_method="_current_mode_corrected_expression",
+                assign="corrected",
+            ),
+        )
+    }
+
+    class StateModel(pydantic.BaseModel):
+        data_name: str
+        roi_limits: tuple[float, float, float, float]
+        edge_values: dict[str, typing.Any]
+        poly_values: dict[str, typing.Any]
+        spline_values: dict[str, typing.Any]
+        tab_index: typing.Literal[0, 1]
+        refit_on_source_update: bool = False
+        fit_snapshot: _GoldFitSnapshot | None = None
 
     sigProgressUpdated = QtCore.Signal(int)  #: :meta private:
     sigAbortFitting = QtCore.Signal()  #: :meta private:
@@ -324,7 +366,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "notrack": True,
                     "showlabel": False,
                     "text": "Copy code to clipboard",
-                    "clicked": lambda: self.gen_code("poly"),
+                    "clicked": self.copy_code,
                 },
                 "save": {
                     "qwtype": "pushbtn",
@@ -361,19 +403,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
                     "notrack": True,
                     "showlabel": False,
                     "text": "Copy code to clipboard",
-                    "clicked": lambda: self.gen_code("spl"),
+                    "clicked": self.copy_code,
                 },
             }
         )
         auto_check = typing.cast("QtWidgets.QCheckBox", self.params_spl.widgets["Auto"])
-        self.params_spl.widgets["lambda"].setDisabled(
-            auto_check.checkState() == QtCore.Qt.CheckState.Checked
-        )
-        auto_check.toggled.connect(
-            lambda _: self.params_spl.widgets["lambda"].setDisabled(
-                auto_check.checkState() == QtCore.Qt.CheckState.Checked
-            )
-        )
+        self._sync_spline_lambda_enabled()
+        auto_check.toggled.connect(lambda _: self._sync_spline_lambda_enabled())
 
         self.controls.addWidget(self.params_roi)
         self.controls.addWidget(self.params_edge)
@@ -417,6 +453,13 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self.axes[i].addItem(self.polycurves[i])
         self.params_poly.sigParameterChanged.connect(self.perform_fit)
         self.params_spl.sigParameterChanged.connect(self.perform_fit)
+        self.params_roi.sigParameterChanged.connect(self._emit_info_changed)
+        self.params_roi.roi.sigRegionChanged.connect(self._emit_info_changed)
+        self.params_edge.sigParameterChanged.connect(self._emit_info_changed)
+        self.params_poly.sigParameterChanged.connect(self._emit_info_changed)
+        self.params_spl.sigParameterChanged.connect(self._emit_info_changed)
+        self.params_tab.currentChanged.connect(self._emit_info_changed)
+        self.refit_on_source_update_check.toggled.connect(self._emit_info_changed)
 
         self.axes[0].disableAutoRange()
 
@@ -467,6 +510,183 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         # Initialize fit result
         self.result: scipy.interpolate.BSpline | xr.Dataset | None = None
 
+    @property
+    def data_name(self) -> str:
+        return typing.cast("str", self._argnames["data"])
+
+    @data_name.setter
+    def data_name(self, value: str) -> None:
+        self._argnames["data"] = value
+
+    @property
+    def tool_status(self) -> StateModel:
+        fit_snapshot: _GoldFitSnapshot | None = None
+        if hasattr(self, "edge_center") and hasattr(self, "edge_stderr"):
+            fit_snapshot = _GoldFitSnapshot(
+                along_coords=np.asarray(
+                    self.edge_center[self._along_dim].values, dtype=float
+                ).tolist(),
+                edge_center=np.asarray(self.edge_center.values, dtype=float).tolist(),
+                edge_stderr=np.asarray(self.edge_stderr.values, dtype=float).tolist(),
+            )
+        return self.StateModel(
+            data_name=self.data_name,
+            roi_limits=self.params_roi.roi_limits,
+            edge_values=dict(self.params_edge.values),
+            poly_values=dict(self.params_poly.values),
+            spline_values=dict(self.params_spl.values),
+            tab_index=typing.cast(
+                "typing.Literal[0, 1]", self.params_tab.currentIndex()
+            ),
+            refit_on_source_update=self.refit_on_source_update_check.isChecked(),
+            fit_snapshot=fit_snapshot,
+        )
+
+    @tool_status.setter
+    def tool_status(self, status: StateModel) -> None:
+        self.data_name = status.data_name
+        self._clear_edge_fit_results()
+
+        with (
+            QtCore.QSignalBlocker(self.params_edge),
+            QtCore.QSignalBlocker(self.params_poly),
+            QtCore.QSignalBlocker(self.params_spl),
+            QtCore.QSignalBlocker(self.params_tab),
+            QtCore.QSignalBlocker(self.refit_on_source_update_check),
+        ):
+            self._restore_parameter_group_values(self.params_edge, status.edge_values)
+            self._restore_parameter_group_values(self.params_poly, status.poly_values)
+            self._restore_parameter_group_values(self.params_spl, status.spline_values)
+            self.params_tab.setCurrentIndex(status.tab_index)
+            self.refit_on_source_update_check.setChecked(status.refit_on_source_update)
+
+        self.params_roi.modify_roi(*self._clamp_roi_limits_to_bounds(status.roi_limits))
+        self.params_roi.update_pos()
+        self._toggle_fast()
+        self._sync_spline_lambda_enabled()
+
+        if status.fit_snapshot is not None:
+            self._restore_fit_snapshot(status.fit_snapshot)
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self.data
+
+    @property
+    def preview_imageitem(self) -> pg.ImageItem:
+        return self.images[0]
+
+    def _emit_info_changed(self, *_args: typing.Any) -> None:
+        self.sigInfoChanged.emit()
+
+    @staticmethod
+    def _bool_text(value: bool) -> str:
+        return "On" if value else "Off"
+
+    @staticmethod
+    def _summary_section(title: str, rows: typing.Iterable[tuple[str, str]]) -> str:
+        from erlab.utils.formatting import format_html_accent, format_html_table
+
+        normalized_rows = list(rows)
+        if not normalized_rows:
+            return ""
+        return f"<br><b>{title}</b>" + format_html_table(
+            [[format_html_accent(key), value] for key, value in normalized_rows]
+        )
+
+    def _edge_fit_status_text(self, status: StateModel) -> str:
+        if self._fit_task is not None:
+            return "Fit running"
+        if status.fit_snapshot is None:
+            return "Not fit yet"
+        if getattr(self, "result", None) is None:
+            return "Edge fit available"
+        return "Fit available"
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import format_darr_shape_html
+
+        status = self.tool_status
+        edge = status.edge_values
+        mode = "Polynomial" if status.tab_index == 0 else "Spline"
+        mode_params = (
+            status.poly_values if status.tab_index == 0 else status.spline_values
+        )
+
+        roi_rows = [
+            ("Along range", f"{status.roi_limits[0]} to {status.roi_limits[2]}"),
+            ("eV range", f"{status.roi_limits[1]} to {status.roi_limits[3]}"),
+        ]
+        edge_rows = [
+            ("Status", self._edge_fit_status_text(status)),
+            (
+                "T",
+                f"{edge['T (K)']} K ({'fixed' if edge['Fix T'] else 'varied'})",
+            ),
+            ("Bin x / y", f"{edge['Bin x']} / {edge['Bin y']}"),
+            ("Resolution", f"{edge['Resolution']} eV"),
+            ("Fast", self._bool_text(bool(edge["Fast"]))),
+            (
+                "Background above EF",
+                "Linear" if bool(edge["Linear"]) else "Constant",
+            ),
+            ("Method", str(edge["Method"])),
+            (
+                "Refit on source update",
+                self._bool_text(status.refit_on_source_update),
+            ),
+            (
+                "Current mode result",
+                "Available"
+                if getattr(self, "result", None) is not None
+                else "Unavailable",
+            ),
+        ]
+        mode_rows: list[tuple[str, str]] = [("Mode", mode)]
+        if status.tab_index == 0:
+            mode_rows.extend(
+                [
+                    ("Degree", str(mode_params["Degree"])),
+                    ("Scale cov", self._bool_text(bool(mode_params["Scale cov"]))),
+                    ("Residuals", self._bool_text(bool(mode_params["Residuals"]))),
+                    (
+                        "Corrected output",
+                        self._bool_text(bool(mode_params["Corrected"])),
+                    ),
+                    (
+                        "Shift coords",
+                        self._bool_text(bool(mode_params["Shift coords"])),
+                    ),
+                ]
+            )
+        else:
+            mode_rows.extend(
+                [
+                    (
+                        "Lambda",
+                        "Auto"
+                        if bool(mode_params["Auto"])
+                        else str(mode_params["lambda"]),
+                    ),
+                    ("Residuals", self._bool_text(bool(mode_params["Residuals"]))),
+                    (
+                        "Corrected output",
+                        self._bool_text(bool(mode_params["Corrected"])),
+                    ),
+                    (
+                        "Shift coords",
+                        self._bool_text(bool(mode_params["Shift coords"])),
+                    ),
+                ]
+            )
+
+        info = f"<b>{self.tool_name}</b>" + format_darr_shape_html(self.tool_data)
+        info += self._summary_section("ROI", roi_rows)
+        info += self._summary_section("Edge Fit", edge_rows)
+        info += self._summary_section("Active Mode", mode_rows)
+        return info
+
     def _clear_edge_fit_results(self) -> None:
         self.result = None
         self._fit_task = None
@@ -490,6 +710,66 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             del self.edge_center
         with contextlib.suppress(AttributeError):
             del self.edge_stderr
+        self._emit_info_changed()
+
+    def _sync_spline_lambda_enabled(self) -> None:
+        auto_check = typing.cast("QtWidgets.QCheckBox", self.params_spl.widgets["Auto"])
+        self.params_spl.widgets["lambda"].setDisabled(
+            auto_check.checkState() == QtCore.Qt.CheckState.Checked
+        )
+
+    @staticmethod
+    def _restore_parameter_group_values(
+        group: erlab.interactive.utils.ParameterGroup,
+        values: dict[str, typing.Any],
+    ) -> None:
+        for name, value in values.items():
+            widget = group.widgets[name]
+            widget.blockSignals(True)
+            try:
+                if hasattr(widget, "setValue"):
+                    widget.setValue(value)
+                elif isinstance(widget, QtWidgets.QAbstractButton):
+                    if widget.isCheckable():
+                        widget.setChecked(bool(value))
+                elif isinstance(widget, QtWidgets.QComboBox):
+                    index = widget.findText(str(value))
+                    if index < 0:
+                        raise ValueError(
+                            f"Unknown saved value {value!r} for {name!r} in goldtool"
+                        )
+                    widget.setCurrentIndex(index)
+            finally:
+                widget.blockSignals(False)
+
+    def _restore_fit_snapshot(self, snapshot: _GoldFitSnapshot) -> None:
+        if not (
+            len(snapshot.along_coords)
+            == len(snapshot.edge_center)
+            == len(snapshot.edge_stderr)
+        ):
+            raise ValueError("Saved goldtool fit snapshot has mismatched array lengths")
+
+        coords = {self._along_dim: np.asarray(snapshot.along_coords, dtype=float)}
+        self.post_fit(
+            xr.DataArray(
+                np.asarray(snapshot.edge_center, dtype=float),
+                coords=coords,
+                dims=(self._along_dim,),
+            ),
+            xr.DataArray(
+                np.asarray(snapshot.edge_stderr, dtype=float),
+                coords=coords,
+                dims=(self._along_dim,),
+            ),
+        )
+
+    def _ensure_serializable_state(self) -> None:
+        if self.data_corr is not None:
+            raise ValueError(
+                "goldtool save/load/duplication is unsupported when `data_corr` "
+                "is provided separately"
+            )
 
     @staticmethod
     def _clamp_roi_interval(
@@ -531,7 +811,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             refit=self.refit_on_source_update_check.isChecked(),
         )
 
-    def _apply_update_request(self, request: _GoldUpdateRequest) -> None:
+    def _apply_update_request(self, request: _GoldUpdateRequest) -> bool:
         self._clear_edge_fit_results()
         self.data = request.data
         self._along_dim = str(self.data.dims[1])
@@ -570,14 +850,18 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             QtCore.QSignalBlocker(self.params_spl),
             QtCore.QSignalBlocker(self.params_tab),
         ):
-            self.params_edge.set_values(**request.edge_values)
-            self.params_poly.set_values(**request.poly_values)
-            self.params_spl.set_values(**request.spline_values)
+            self._restore_parameter_group_values(self.params_edge, request.edge_values)
+            self._restore_parameter_group_values(self.params_poly, request.poly_values)
+            self._restore_parameter_group_values(self.params_spl, request.spline_values)
             self.params_tab.setCurrentIndex(request.tab_index)
         self._toggle_fast()
+        self._sync_spline_lambda_enabled()
 
         if request.had_fit and request.refit:
+            self._source_refresh_deferred = self.has_source_binding
             self.perform_edge_fit()
+            return False
+        return True
 
     @QtCore.Slot()
     def _flush_pending_update(self) -> None:
@@ -588,18 +872,20 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             self._pending_update_timer.start(50)
             return
         self._pending_update_request = None
-        self._apply_update_request(request)
-        self._set_source_state("fresh")
+        if self._apply_update_request(request):
+            self.finalize_source_refresh()
 
     def update_data(self, new_data: xr.DataArray) -> bool:
+        self._source_refresh_deferred = False
         data = self.validate_update_data(new_data)
-        self._pending_update_request = self._make_update_request(data)
+        request = self._make_update_request(data)
+        self._pending_update_request = request
         self._abort_fit_task()
         if self._threadpool.activeThreadCount():
             self._pending_update_timer.start(50)
             return False
-        self._flush_pending_update()
-        return True
+        self._pending_update_request = None
+        return self._apply_update_request(request)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -673,6 +959,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             lambda message, task=task: self._handle_fit_failed(message, task=task)
         )
         self._threadpool.start(task)
+        self._emit_info_changed()
 
     @QtCore.Slot()
     def abort_fit(self) -> None:
@@ -710,6 +997,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self._fit_task = None
         task.abort_fit()
         self.progress.reset()
+        self._emit_info_changed()
 
     def _handle_fit_failed(
         self, message: str, *, task: EdgeFitTask | None = None
@@ -718,6 +1006,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
             return
         self.progress.reset()
         self._fit_task = None
+        self._emit_info_changed()
         erlab.interactive.utils.MessageDialog.critical(
             self,
             "Fermi Edge Fitting Failed",
@@ -766,6 +1055,10 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         self.aw.axes[2].setVisible(params["Corrected"])
         self.aw.hists[2].setVisible(params["Corrected"])
         self.sigUpdated.emit()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
+        else:
+            self._notify_data_changed()
 
     def _perform_poly_fit(self):
         params = self.params_poly.values
@@ -813,15 +1106,24 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
 
     @QtCore.Slot()
     def open_itool(self) -> None:
-        tool = erlab.interactive.itool(self.corrected, execute=False)
-        if isinstance(tool, QtWidgets.QWidget):
-            if self._itool is not None:
-                self._itool.close()
-                self._itool.deleteLater()
+        tool = self._launch_output_imagetool(
+            self.corrected,
+            output_id=self.Output.CORRECTED,
+        )
+        if tool is not None:
             self._itool = tool
-            self._itool.show()
 
-    def gen_code(self, mode: str) -> str:
+    def _current_fit_mode(self) -> typing.Literal["poly", "spl"]:
+        return "poly" if self.params_tab.currentIndex() == 0 else "spl"
+
+    def _fit_expression(
+        self,
+        mode: typing.Literal["poly", "spl"] | None = None,
+        *,
+        input_name: str | None = None,
+    ) -> str:
+        if mode is None:
+            mode = self._current_fit_mode()
         p0 = self.params_edge.values
         match mode:
             case "poly":
@@ -861,23 +1163,142 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         if mode == "poly" and not p1["Scale cov"]:
             arg_dict["scale_covar"] = False
 
-        code_str = erlab.interactive.utils.generate_code(
+        source_name = input_name or str(self._argnames["data"])
+        return erlab.interactive.utils.generate_code(
             func,
-            [f"|{self._argnames['data']}|"],
+            [f"|{source_name}|"],
             arg_dict,
             module="era.gold",
-            assign="modelresult",
         )
+
+    def _corrected_expression(
+        self,
+        mode: typing.Literal["poly", "spl"] | None = None,
+        *,
+        input_name: str | None = None,
+    ) -> str:
+        if mode is None:
+            mode = self._current_fit_mode()
+        match mode:
+            case "poly":
+                p1 = self.params_poly.values
+            case "spl":
+                p1 = self.params_spl.values
+        corrected_target = (
+            self._argnames["data_corr"]
+            if self.data_corr is not None
+            else input_name or self._argnames["data"]
+        )
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.gold.correct_with_edge,
+            args=[f"|{corrected_target}|", "|modelresult|"],
+            kwargs={"along": self._along_dim, "shift_coords": p1["Shift coords"]},
+            module="era.gold",
+        )
+
+    def _copy_label(
+        self,
+        mode: typing.Literal["poly", "spl"],
+        *,
+        include_corrected: bool | None = None,
+    ) -> str:
+        return (
+            "Fit and correct current data with the polynomial edge model"
+            if mode == "poly" and include_corrected
+            else "Fit current data with the polynomial edge model"
+            if mode == "poly"
+            else "Fit and correct current data with the spline edge model"
+            if include_corrected
+            else "Fit current data with the spline edge model"
+        )
+
+    def _current_mode_copy_label(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return self._copy_label(
+            self._current_fit_mode(), include_corrected=self.data_corr is not None
+        )
+
+    def _current_mode_copy_assign(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return "corrected" if self.data_corr is not None else "modelresult"
+
+    def _current_mode_corrected_label(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return self._copy_label(self._current_fit_mode(), include_corrected=True)
+
+    def _current_mode_copy_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
         if self.data_corr is not None:
-            code_str += "\n" + erlab.interactive.utils.generate_code(
-                erlab.analysis.gold.correct_with_edge,
-                args=[f"|{self._argnames['data_corr']}|", "|modelresult|"],
-                kwargs={"along": self._along_dim, "shift_coords": p1["Shift coords"]},
-                module="era.gold",
-                assign="corrected",
+            return self._corrected_expression(
+                self._current_fit_mode(),
+                input_name=input_name,
             )
-        erlab.interactive.utils.copy_to_clipboard(code_str)
-        return code_str
+        return self._fit_expression(
+            self._current_fit_mode(),
+            input_name=input_name,
+        )
+
+    def _current_mode_copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        if self.data_corr is None:
+            return ""
+        return "modelresult = " + self._fit_expression(
+            self._current_fit_mode(),
+            input_name=input_name,
+        )
+
+    def _current_mode_corrected_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return "modelresult = " + self._fit_expression(
+            self._current_fit_mode(),
+            input_name=input_name,
+        )
+
+    def _current_mode_corrected_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return self._corrected_expression(
+            self._current_fit_mode(),
+            input_name=input_name,
+        )
+
+    def _corrected_output(self) -> xr.DataArray:
+        return self.corrected
+
+    def to_dataset(self) -> xr.Dataset:
+        self._ensure_serializable_state()
+        return super().to_dataset()
+
+    def duplicate(self, **kwargs) -> typing.Self:
+        self._ensure_serializable_state()
+        return super().duplicate(**kwargs)
 
     def _stop_server(self) -> bool:
         """Stop the fitter thread properly."""
@@ -976,6 +1397,14 @@ class ResolutionFitThread(QtCore.QThread):
 
 class ResolutionTool(erlab.interactive.utils.ToolWindow):
     tool_name = "restool"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current restool input data",
+            label="Fit the current averaged edge distribution",
+            expression_method="_copy_expression",
+            assign="result",
+        )
+    )
 
     class StateModel(pydantic.BaseModel):
         data_name: str
@@ -997,6 +1426,13 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         max_nfev: int
         use_mev: bool
         results: tuple[str, str, str, str, str]
+
+    def _emit_info_changed(self, *_args: typing.Any) -> None:
+        self.sigInfoChanged.emit()
+
+    @property
+    def preview_imageitem(self) -> pg.ImageItem:
+        return self.image
 
     @property
     def info_text(self) -> str:
@@ -1283,6 +1719,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.center_val.setText("—")
         self.res_val.setText("—")
         self.redchi_val.setText("—")
+        self._emit_info_changed()
 
     @property
     def _x_range_ui(self) -> tuple[float, float]:
@@ -1353,15 +1790,18 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             update={"results": ("No fit results", "—", "—", "—", "—")}
         )
 
-        def _apply_update(validated: xr.DataArray) -> None:
+        def _apply_update(validated: xr.DataArray) -> bool:
             self._configure_data(validated)
             self._clear_fit_outputs()
             self.tool_status = status
             self._update_edc()
-            self.sigInfoChanged.emit()
+            self._notify_data_changed()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
+                self._source_refresh_deferred = self.has_source_binding
                 self.do_fit()
+                return False
+            return True
 
         return self._perform_source_update(new_data, apply_update=_apply_update)
 
@@ -1426,6 +1866,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.overview_label.setText(
             f'<span style="font-weight:600; color:#ff5555;">{info_text}</span>'
         )
+        self._emit_info_changed()
 
     def _current_fit_signature(self) -> tuple[typing.Any, ...]:
         params = self.fit_params
@@ -1604,6 +2045,9 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             textedit.setText(_get_param_text(param))
         redchi: float | None = modelresult.redchi
         self.redchi_val.setText(f"{redchi:.4f}" if redchi is not None else "—")
+        self._emit_info_changed()
+        if self._source_refresh_deferred:
+            self.finalize_source_refresh()
 
     @QtCore.Slot()
     def do_fit(self) -> None:
@@ -1629,14 +2073,32 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
         self.guess_center_btn.clicked.connect(self._guess_center)
         self.copy_btn.clicked.connect(self.copy_code)
 
-    @QtCore.Slot()
-    def copy_code(self) -> str:
-        """Copy the code for the current fit to the clipboard."""
+        self.x_region.sigRegionChanged.connect(self._emit_info_changed)
+        self.y_region.sigRegionChanged.connect(self._emit_info_changed)
+        self.refit_on_source_update_check.toggled.connect(self._emit_info_changed)
+        self.temp_spin.valueChanged.connect(self._emit_info_changed)
+        self.fix_temp_check.toggled.connect(self._emit_info_changed)
+        self.center_spin.valueChanged.connect(self._emit_info_changed)
+        self.fix_center_check.toggled.connect(self._emit_info_changed)
+        self.res_spin.valueChanged.connect(self._emit_info_changed)
+        self.fix_res_check.toggled.connect(self._emit_info_changed)
+        self.slope_check.toggled.connect(self._emit_info_changed)
+        self.method_combo.currentTextChanged.connect(self._emit_info_changed)
+        self.timeout_spin.valueChanged.connect(self._emit_info_changed)
+        self.nfev_spin.valueChanged.connect(self._emit_info_changed)
+        self.mev_check.toggled.connect(self._emit_info_changed)
+
+    def _copy_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
         data_name = erlab.interactive.utils.generate_code(
             xr.DataArray.sel,
             args=[],
             kwargs={self.y_dim: slice(*self.y_range)},
-            module=self.data_name,
+            module=input_name or self.data_name,
         )
 
         # Check if any parameters are the same as the automatically guessed ones
@@ -1653,7 +2115,7 @@ class ResolutionTool(erlab.interactive.utils.ToolWindow):
             args=[f"|{data_name}|"],
             kwargs=params,
             module="era.gold",
-            copy=True,
+            copy=False,
         )
 
     @QtCore.Slot()
@@ -1737,6 +2199,7 @@ def goldtool(
         Overrides automatic detection.
     **kwargs
         Arguments passed onto `erlab.interactive.utils.AnalysisWindow`.
+
     """
     if data_name is None:
         try:

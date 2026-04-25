@@ -1,3 +1,5 @@
+import typing
+
 import numpy as np
 import pytest
 import xarray as xr
@@ -88,6 +90,38 @@ def test_meshtool_update_and_copy_code(qtbot, meshy_data) -> None:
 
     xr.testing.assert_identical(win._corrected, namespace["corrected"])
     xr.testing.assert_identical(win._mesh, namespace["mesh"])
+
+
+def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
+    qtbot, meshy_data
+) -> None:
+    win: MeshTool = meshtool(meshy_data, data_name="mesh_data", execute=False)
+    qtbot.addWidget(win)
+
+    win._corrected = meshy_data.copy(deep=True) + 1
+    win._mesh = meshy_data.copy(deep=True) - 1
+
+    for output_id, expected_name in (
+        (MeshTool.Output.CORRECTED, "corrected"),
+        (MeshTool.Output.MESH, "mesh"),
+    ):
+        spec = win.output_imagetool_provenance(
+            output_id,
+            typing.cast("xr.DataArray", win.output_imagetool_data(output_id)),
+        )
+        assert spec is not None
+        payload = spec.model_dump(mode="json")
+        assert payload["active_name"] == expected_name
+
+        reparsed = erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+            payload
+        )
+        assert reparsed is not None
+        code = reparsed.display_code()
+        assert code is not None
+        assert "corrected, mesh =" in code
+        assert ")[0]" not in code
+        assert ")[1]" not in code
 
 
 def test_meshtool_autofind_and_persistence(

@@ -6,8 +6,10 @@ of pyqtgraph and Qt.
 
 from __future__ import annotations
 
+import ast
 import bisect
 import contextlib
+import enum
 import fnmatch
 import importlib
 import inspect
@@ -27,7 +29,8 @@ import typing
 import warnings
 import weakref
 import webbrowser
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Sequence
+from dataclasses import dataclass
 
 import numpy as np
 import numpy.typing as npt
@@ -67,9 +70,12 @@ __all__ = [
     "ResizingLineEdit",
     "RotatableLine",
     "SingleLinePlainTextEdit",
+    "ToolImageOutputDefinition",
+    "ToolScriptProvenanceDefinition",
     "ToolWindow",
     "copy_to_clipboard",
     "file_loaders",
+    "format_call_kwargs",
     "format_kwargs",
     "generate_code",
     "load_fit_ui",
@@ -100,6 +106,15 @@ def _make_qt_object_is_valid_from_sip(
     return _qt_object_is_valid
 
 
+def _make_qt_object_is_valid_from_shiboken(
+    is_valid: Callable[[object], bool],
+) -> Callable[[object], bool]:
+    def _qt_object_is_valid(arg__1: object) -> bool:
+        return arg__1 is not None and is_valid(arg__1)
+
+    return _qt_object_is_valid
+
+
 _qt_object_is_valid: Callable[[object], bool] = _qt_object_is_valid_fallback
 
 
@@ -109,9 +124,7 @@ if PYSIDE6:
     except Exception:  # pragma: no cover - varies by Qt binding
         _qt_object_is_valid = _qt_object_is_valid_fallback
     else:
-
-        def _qt_object_is_valid(arg__1: object) -> bool:
-            return arg__1 is not None and _shiboken_is_valid(arg__1)
+        _qt_object_is_valid = _make_qt_object_is_valid_from_shiboken(_shiboken_is_valid)
 
 elif PYQT6:
     try:
@@ -654,96 +667,26 @@ def copy_to_clipboard(content: str | list[str]) -> str:
 _TOOL_SOURCE_SPEC_ATTR = "tool_source_spec"
 _TOOL_SOURCE_STATE_ATTR = "tool_source_state"
 _TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
-_TOOL_SOURCE_SLICE_MARKER = "__erlab_slice__"
+_TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
 
 
-def _encode_tool_source_value(value: typing.Any) -> typing.Any:
-    if isinstance(value, slice):
-        return {
-            _TOOL_SOURCE_SLICE_MARKER: [
-                _encode_tool_source_value(value.start),
-                _encode_tool_source_value(value.stop),
-                _encode_tool_source_value(value.step),
-            ]
-        }
-    if isinstance(value, tuple):
-        return [_encode_tool_source_value(item) for item in value]
-    if isinstance(value, list):
-        return [_encode_tool_source_value(item) for item in value]
-    if isinstance(value, dict):
-        return {
-            str(key): _encode_tool_source_value(item) for key, item in value.items()
-        }
-    return erlab.utils.misc._convert_to_native(value)
+class _ToolWindowMeta(type(QtWidgets.QMainWindow)):  # type: ignore[misc]
+    """Keep ToolWindow subclass checks stable across module reloads."""
 
+    def __instancecheck__(cls, instance: object) -> bool:
+        return super().__instancecheck__(instance) or cls.__subclasscheck__(
+            type(instance)
+        )
 
-def _decode_tool_source_value(value: typing.Any) -> typing.Any:
-    if isinstance(value, dict):
-        if _TOOL_SOURCE_SLICE_MARKER in value:
-            start, stop, step = value[_TOOL_SOURCE_SLICE_MARKER]
-            return slice(
-                _decode_tool_source_value(start),
-                _decode_tool_source_value(stop),
-                _decode_tool_source_value(step),
-            )
-        return {
-            str(key): _decode_tool_source_value(item) for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_decode_tool_source_value(item) for item in value]
-    return value
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        if super().__subclasscheck__(subclass):
+            return True
 
-
-def _resolve_tool_source_spec(
-    parent_data: xr.DataArray, spec: dict[str, typing.Any]
-) -> xr.DataArray:
-    kind = spec.get("kind", "")
-    if kind == "full_data":
-        return parent_data.copy(deep=False)
-
-    if kind != "selection":
-        raise ValueError(f"Unsupported tool source kind: {kind!r}")
-
-    # Source specs are recorded against ImageTool's public data model, which restores
-    # non-uniform dimensions from their internal ``*_idx`` representation. Rebuild that
-    # public view before replaying selection operations so recorded dimension names
-    # continue to resolve after source data refreshes.
-    data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
-        parent_data.copy(deep=False)
-    )
-    for operation in spec.get("operations", []):
-        op_name = operation.get("op", "")
-        kwargs = _decode_tool_source_value(operation.get("kwargs", {}))
-        if op_name == "qsel":
-            data = data.qsel(**kwargs)
-        elif op_name == "isel":
-            data = data.isel(kwargs)
-        elif op_name == "sel":
-            data = data.sel(kwargs)
-        elif op_name == "sort_coord_order":
-            data = erlab.utils.array.sort_coord_order(data, parent_data.coords.keys())
-        elif op_name == "transpose":
-            dims = typing.cast("list[typing.Any] | None", operation.get("dims"))
-            if dims:
-                data = data.transpose(*dims)
-            else:
-                data = data.transpose(*reversed(data.dims))
-        elif op_name == "squeeze":
-            data = data.squeeze()
-        else:
-            raise ValueError(f"Unsupported tool source operation: {op_name!r}")
-    return data
-
-
-def make_tool_source_spec(
-    kind: typing.Literal["full_data", "selection"],
-    *,
-    operations: list[dict[str, typing.Any]] | None = None,
-) -> dict[str, typing.Any]:
-    spec: dict[str, typing.Any] = {"kind": kind}
-    if operations:
-        spec["operations"] = operations
-    return spec
+        target = (cls.__module__, cls.__qualname__)
+        return any(
+            (base.__module__, base.__qualname__) == target
+            for base in getattr(subclass, "__mro__", ())
+        )
 
 
 class _ToolSourceUpdateDialog(QtWidgets.QDialog):
@@ -797,7 +740,13 @@ class _ToolSourceUpdateDialog(QtWidgets.QDialog):
         layout.addWidget(self.button_box)
 
 
-def format_kwargs(d: dict[Hashable, typing.Any]) -> str:
+def _is_kwarg_name(value: typing.Any) -> bool:
+    return (
+        isinstance(value, str) and value.isidentifier() and not keyword.iskeyword(value)
+    )
+
+
+def format_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
     If the keys are valid Python identifiers, the output will be formatted as keyword
@@ -809,13 +758,31 @@ def format_kwargs(d: dict[Hashable, typing.Any]) -> str:
         Dictionary of keyword arguments.
 
     """
-    if all(isinstance(k, str) and k.isidentifier() for k in d):
+    if all(_is_kwarg_name(k) for k in d):
         return ", ".join(f"{k}={_parse_single_arg(v)!s}" for k, v in d.items())
-    out = ", ".join(f'"{k}": {_parse_single_arg(v)!s}' for k, v in d.items())
+    out = ", ".join(
+        f"{_parse_single_arg(k)!s}: {_parse_single_arg(v)!s}" for k, v in d.items()
+    )
     return "{" + out + "}"
 
 
-def _parse_single_arg(arg):
+def format_call_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
+    """Format mapping arguments for a call site.
+
+    If all keys are identifier strings, emit plain keyword syntax. If all keys are
+    strings but at least one is not an identifier, emit ``**{...}`` so the generated
+    call still uses keyword expansion. Non-string keys fall back to a positional
+    mapping literal.
+    """
+    string_keys = [k for k in d if isinstance(k, str)]
+    if len(string_keys) == len(d):
+        if all(_is_kwarg_name(k) for k in string_keys):
+            return format_kwargs(d)
+        return f"**{format_kwargs(d)}"
+    return format_kwargs(d)
+
+
+def _parse_single_arg(arg: typing.Any) -> str:
     arg = erlab.utils.misc._convert_to_native(arg)
 
     if isinstance(arg, str):
@@ -827,12 +794,27 @@ def _parse_single_arg(arg):
             arg = f"'''{arg}'''" if "\n" in arg else f"'{arg}'"
         else:
             arg = f'"""{arg}"""' if "\n" in arg else f'"{arg}"'
+    elif isinstance(arg, tuple):
+        inner = ", ".join(_parse_single_arg(item) for item in arg)
+        if len(arg) == 1:
+            inner += ","
+        arg = f"({inner})"
+    elif isinstance(arg, list):
+        arg = "[" + ", ".join(_parse_single_arg(item) for item in arg) + "]"
     elif isinstance(arg, dict):
         # If the argument is a dict, convert to string
-        arg = {k: erlab.utils.misc._convert_to_native(v) for k, v in arg.items()}
+        arg = {
+            erlab.utils.misc._convert_to_native(k): erlab.utils.misc._convert_to_native(
+                v
+            )
+            for k, v in arg.items()
+        }
         arg = (
             "{"
-            + ", ".join([f'"{k}": {_parse_single_arg(v)}' for k, v in arg.items()])
+            + ", ".join(
+                f"{_parse_single_arg(k)}: {_parse_single_arg(v)}"
+                for k, v in arg.items()
+            )
             + "}"
         )
     elif isinstance(arg, slice):
@@ -843,7 +825,7 @@ def _parse_single_arg(arg):
             args = [stop]
         else:
             args = [start, stop]
-        return f"slice({', '.join(repr(_parse_single_arg(a)) for a in args)})"
+        return f"slice({', '.join(_parse_single_arg(a) for a in args)})"
     elif isinstance(arg, np.ndarray):
         arg = np.array2string(
             arg,
@@ -853,7 +835,7 @@ def _parse_single_arg(arg):
         ).replace("\n", "")
         arg = f"np.array({arg})"
 
-    return arg
+    return str(arg)
 
 
 # @functools.cache
@@ -1023,14 +1005,18 @@ def _handle_xarray_dict_or_kwargs(
     dictionary contains at least one key that contains spaces, a conversion of kwargs to
     the first positional argument is attempted.
     """
-    if len(args) != 0 or all(k.isidentifier() for k in kwargs):
+    if len(args) != 0 or all(_is_kwarg_name(k) for k in kwargs):
         return args, kwargs
 
     params = inspect.signature(func).parameters
 
     param_order = list(params.keys())
+    if not param_order:
+        return args, kwargs
     if param_order[0] == "self":
         param_order = param_order[1:]
+    if not param_order:
+        return args, kwargs
 
     # Name of first positional argument
     arg_name = param_order[0]
@@ -1133,9 +1119,15 @@ def _gen_single_function_code(
         # Add positional argument to code string
         code += f"{TAB}{_parse_single_arg(v)},\n"
 
+    invalid_kwargs: dict[str, typing.Any] = {}
     for k, v in kwargs.items():
-        # Add keyword argument to code string
-        code += f"{TAB}{k}={_parse_single_arg(v)},\n"
+        if _is_kwarg_name(k):
+            code += f"{TAB}{k}={_parse_single_arg(v)},\n"
+        else:
+            invalid_kwargs[k] = v
+
+    if invalid_kwargs:
+        code += f"{TAB}**{_parse_single_arg(invalid_kwargs)},\n"
 
     # Add closing parenthesis
     code += ")"
@@ -1236,6 +1228,41 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
             )
 
     return None
+
+
+def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
+    from xarray_lmfit._io import _dumps_result, _patch_encode4js
+
+    serialized = ds.copy()
+    with _patch_encode4js():
+        for var in serialized.data_vars:
+            if str(var).endswith("modelfit_results"):
+                serialized[var] = xr.apply_ufunc(
+                    _dumps_result,
+                    serialized[var],
+                    vectorize=True,
+                    output_dtypes=[str],
+                )
+    blob = serialized.to_netcdf(path=None, engine="h5netcdf", invalid_netcdf=True)
+    return np.frombuffer(blob, dtype=np.uint8).copy()
+
+
+def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
+    from xarray_lmfit._io import _loads_result
+
+    restored = xr.load_dataset(
+        memoryview(np.asarray(blob, dtype=np.uint8).tobytes()),
+        engine="h5netcdf",
+    )
+    for var in restored.data_vars:
+        if str(var).endswith("modelfit_results"):
+            restored[var] = xr.apply_ufunc(
+                lambda s: _loads_result(s, None),
+                restored[var],
+                vectorize=True,
+                output_dtypes=[object],
+            )
+    return restored
 
 
 def make_help_actions(parent: QtCore.QObject) -> tuple[QtGui.QAction, ...]:
@@ -1925,6 +1952,16 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
             if isinstance(p, pg.PlotItem):
                 return p
 
+    def _owner_tool_window(self) -> ToolWindow | None:
+        scene = self.scene()
+        if scene is None:
+            return None
+        for view in scene.views():
+            owner_window = view.window()
+            if isinstance(owner_window, ToolWindow):
+                return owner_window
+        return None
+
     @QtCore.Slot()
     def open_itool(self) -> None:
         if self.data_array is None:
@@ -1933,6 +1970,27 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
             da = xr.DataArray(np.asarray(self.image)).T
         else:
             da = self.data_array.T
+
+        owner_tool = self._owner_tool_window()
+        if owner_tool is not None:
+            manager, parent_uid = owner_tool._managed_output_imagetool_parent()
+            provenance_spec = None
+            if manager is None or parent_uid is None:
+                provenance_spec = owner_tool.detached_output_imagetool_provenance(
+                    da,
+                    source=self,
+                )
+            tool: (
+                erlab.interactive.imagetool.ImageTool
+                | list[erlab.interactive.imagetool.ImageTool]
+                | None
+            ) = owner_tool._launch_detached_output_imagetool(
+                da,
+                provenance_spec=provenance_spec,
+            )
+            if tool is not None:
+                self._itool = tool
+            return
 
         tool = erlab.interactive.itool(da, execute=False)
         if isinstance(tool, QtWidgets.QWidget):
@@ -2331,9 +2389,7 @@ class ROIControls(ParameterGroup):
         if bounds is None:
             coords = (-np.inf, -np.inf, np.inf, np.inf)
         else:
-            coords = typing.cast(
-                "tuple[float, float, float, float]", bounds.getCoords()
-            )
+            coords = bounds.getCoords()
         return coords
 
     @typing.no_type_check
@@ -2438,7 +2494,174 @@ class ROIControls(ParameterGroup):
 M = typing.TypeVar("M", bound="pydantic.BaseModel")
 
 
-class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
+def _validate_script_identifier(value: typing.Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    if not value.isidentifier() or keyword.iskeyword(value):
+        raise ValueError(f"{field_name} must be a valid Python identifier")
+    return value
+
+
+def _normalize_script_assign(
+    value: typing.Any, *, field_name: str
+) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return (_validate_script_identifier(value, field_name=field_name),)
+    if not isinstance(value, Sequence):
+        raise TypeError(f"{field_name} must be a string, a tuple of strings, or None")
+    assign = tuple(
+        _validate_script_identifier(item, field_name=field_name) for item in value
+    )
+    if not assign:
+        raise ValueError(f"{field_name} must not be empty")
+    return assign
+
+
+def _validate_script_expression(value: str, *, field_name: str) -> str:
+    expression = value.strip()
+    if not expression:
+        return ""
+    try:
+        ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"{field_name} must return a valid Python expression") from exc
+    return expression
+
+
+def _validate_script_prelude(value: str, *, field_name: str) -> str:
+    prelude = value.strip()
+    if not prelude:
+        return ""
+    try:
+        ast.parse(prelude, mode="exec")
+    except SyntaxError as exc:
+        raise ValueError(f"{field_name} must return valid Python statements") from exc
+    return prelude
+
+
+def _script_assignment_code(assign: tuple[str, ...], expression: str) -> str:
+    lhs = assign[0] if len(assign) == 1 else ", ".join(assign)
+    return f"{lhs} = {expression}"
+
+
+@dataclass(frozen=True)
+class ToolScriptProvenanceDefinition:
+    """Declarative script-style provenance for a ToolWindow action or output."""
+
+    start_label: str
+    label: str | None = None
+    label_method: str | None = None
+    expression_method: str | None = None
+    operations_method: str | None = None
+    assign: str | tuple[str, ...] | None = None
+    assign_method: str | None = None
+    prelude: str | None = None
+    prelude_method: str | None = None
+    active_name: str | None = None
+    active_name_method: str | None = None
+    seed_code: str | None = None
+    seed_code_method: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.expression_method is None) == (self.operations_method is None):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition must define exactly one of "
+                "`expression_method` or `operations_method`"
+            )
+        if (
+            self.expression_method is not None
+            and self.label is None
+            and self.label_method is None
+        ):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition with `expression_method` must define "
+                "`label` or `label_method`"
+            )
+        if (
+            self.expression_method is not None
+            and self.assign is None
+            and self.assign_method is None
+        ):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition with `expression_method` must define "
+                "`assign` or `assign_method`"
+            )
+        if self.operations_method is not None:
+            for field_name in (
+                "label",
+                "label_method",
+                "assign",
+                "assign_method",
+                "prelude",
+                "prelude_method",
+            ):
+                if getattr(self, field_name) is not None:
+                    raise ValueError(
+                        "ToolScriptProvenanceDefinition with `operations_method` "
+                        f"must not define `{field_name}`"
+                    )
+        for field_name, method_name in (
+            ("label", "label_method"),
+            ("assign", "assign_method"),
+            ("prelude", "prelude_method"),
+            ("active_name", "active_name_method"),
+            ("seed_code", "seed_code_method"),
+        ):
+            if (
+                getattr(self, field_name) is not None
+                and getattr(self, method_name) is not None
+            ):
+                raise ValueError(
+                    f"ToolScriptProvenanceDefinition must not define both "
+                    f"`{field_name}` and `{method_name}`"
+                )
+        assign = _normalize_script_assign(self.assign, field_name="assign")
+        if self.active_name is not None:
+            _validate_script_identifier(self.active_name, field_name="active_name")
+        if assign is not None and self.active_name is not None:
+            if len(assign) == 1 and self.active_name != assign[0]:
+                raise ValueError(
+                    "ToolScriptProvenanceDefinition single-target `assign` must "
+                    "match `active_name` when both are defined"
+                )
+            if len(assign) > 1 and self.active_name not in assign:
+                raise ValueError(
+                    "ToolScriptProvenanceDefinition tuple `assign` must include "
+                    "`active_name`"
+                )
+        if (
+            assign is not None
+            and len(assign) > 1
+            and self.active_name is None
+            and self.active_name_method is None
+        ):
+            raise ValueError(
+                "ToolScriptProvenanceDefinition tuple `assign` must define "
+                "`active_name` or `active_name_method`"
+            )
+
+
+@dataclass(frozen=True)
+class ToolImageOutputDefinition:
+    """Definition for a manager-tracked ImageTool output exposed by a ToolWindow."""
+
+    data_method: str
+    provenance: ToolScriptProvenanceDefinition | None = None
+
+
+def _normalize_tool_output_id(output_id: str | enum.Enum) -> str:
+    if isinstance(output_id, enum.Enum):
+        output_id = output_id.value
+    if not isinstance(output_id, str):
+        raise TypeError("output_id must be a string or a str-valued enum member")
+    if not output_id:
+        raise ValueError("output_id must not be empty")
+    return output_id
+
+
+class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindowMeta):
     """A window that can be saved and restored from a netcdf file.
 
     Mainly for interactive tools used in the ImageTool manager.
@@ -2475,11 +2698,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
       before `update_data` mutates the tool state. Override
       `BACKGROUND_TASK_TIMEOUT_MS` as needed to change the default wait timeout.
 
-    For full compatibility with the ImageTool manager, the following optional attributes
-    or properties can also be set:
+    For full compatibility with the ImageTool manager, the following optional
+    attributes, properties, or hooks can also be set:
 
     - The class attribute `tool_name` should be set to a short string identifying the
       tool. For example, `"dtool"`, `"ktool"`, etc.
+
+    - The class attribute `IMAGE_TOOL_OUTPUTS` can be populated with named
+      manager-tracked outputs that should open as refreshable child ImageTools. Each
+      output id maps to a `ToolImageOutputDefinition`.
 
     - The property `preview_imageitem` can be implemented to return a
       :class:`pyqtgraph.ImageItem` which will be used to generate a preview image in the
@@ -2491,15 +2718,24 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     - If you implement `preview_imageitem` or `info_text`, you should emit the signal
       ``sigInfoChanged`` without any arguments whenever the content of these properties
       changes. This will ensure that the ImageTool manager updates its display.
+
+    - Emit ``sigDataChanged`` whenever the displayed tool data or any manager-visible
+      ImageTool outputs have changed. Managed descendants use this to become stale or
+      auto-refresh from the current tool state.
     """
 
     tool_name: str = "tool"
     BACKGROUND_TASK_TIMEOUT_MS: typing.ClassVar[int] = 5000
+    COPY_PROVENANCE: typing.ClassVar[ToolScriptProvenanceDefinition | None] = None
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar[
+        Mapping[str | enum.Enum, ToolImageOutputDefinition]
+    ] = {}
     __tool_display_name: str = ""
 
     StateModel: type[M]
 
     sigInfoChanged = QtCore.Signal()  #: :meta private:
+    sigDataChanged = QtCore.Signal()  #: :meta private:
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -2527,10 +2763,25 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self._tool_root_layout.addWidget(self._source_status_bar, 0)
         QtWidgets.QMainWindow.setCentralWidget(self, self._tool_root_widget)
 
-        self._source_spec: dict[str, typing.Any] | None = None
+        self._source_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ) = None
+        self._input_provenance_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ) = None
+        self._input_provenance_parent_fetcher: (
+            Callable[
+                [],
+                erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+            ]
+            | None
+        ) = None
+        self._source_refreshing: bool = False
+        self._source_refresh_deferred: bool = False
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
+        self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
 
         # Initialize a menu bar to correctly apply keyboard shortcuts on some platforms
         self.menuBar()
@@ -2577,10 +2828,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         manager = erlab.interactive.imagetool.manager._manager_instance
         if manager is None:
             return False
-        return any(
-            self in wrapper._childtools.values()
-            for wrapper in manager._imagetool_wrappers.values()
-        )
+        return manager._node_uid_from_window(self) is not None
 
     def _show_warning_if_not_in_manager(self, title: str, text: str) -> bool:
         """Show a warning dialog unless managed by ImageTool manager.
@@ -2609,14 +2857,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         """Remove this tool from the ImageTool manager, if present."""
         manager = erlab.interactive.imagetool.manager._manager_instance
         if manager:  # pragma: no branch
-            uid: str | None = None
-            for wrapper in manager._imagetool_wrappers.values():
-                for k, v in wrapper._childtools.items():
-                    if v is self:
-                        uid = k
-                        break
-                if uid is not None:
-                    break
+            uid = manager._node_uid_from_window(self)
             if uid is not None:  # pragma: no branch
                 msg_box = QtWidgets.QMessageBox(self)
                 msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
@@ -2633,6 +2874,634 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
                 if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
                     single_shot(manager, 0, lambda: manager._remove_childtool(uid))
+
+    def _managed_output_imagetool_parent(
+        self,
+    ) -> tuple[erlab.interactive.imagetool.manager.ImageToolManager | None, str | None]:
+        manager = erlab.interactive.imagetool.manager._manager_instance
+        if manager is None:
+            return None, None
+        return manager, manager._node_uid_from_window(self)
+
+    @classmethod
+    def _image_output_definitions(cls) -> dict[str, ToolImageOutputDefinition]:
+        definitions: dict[str, ToolImageOutputDefinition] = {}
+        for output_id, definition in cls.IMAGE_TOOL_OUTPUTS.items():
+            normalized_id = _normalize_tool_output_id(output_id)
+            if normalized_id in definitions:
+                raise ValueError(
+                    f"{cls.__name__} defines duplicate ImageTool output "
+                    f"{normalized_id!r}"
+                )
+            definitions[normalized_id] = definition
+        return definitions
+
+    def _image_output_definition(
+        self, output_id: str | enum.Enum
+    ) -> tuple[str, ToolImageOutputDefinition]:
+        normalized_id = _normalize_tool_output_id(output_id)
+        definition = self._image_output_definitions().get(normalized_id)
+        if definition is None:
+            raise ValueError(
+                f"{type(self).__name__} does not define ImageTool output "
+                f"{normalized_id!r}"
+            )
+        return normalized_id, definition
+
+    def _clear_output_imagetool_target(self, key: str) -> None:
+        self._output_imagetool_targets.pop(key, None)
+
+    def _clear_output_imagetool_target_if_matches(
+        self, key: str, expected: str | QtWidgets.QWidget
+    ) -> None:
+        current = self._output_imagetool_targets.get(key)
+        if isinstance(expected, str):
+            if current == expected:
+                self._clear_output_imagetool_target(key)
+            return
+        if current is expected:
+            self._clear_output_imagetool_target(key)
+
+    def _register_output_imagetool_target(
+        self, key: str, target: str | QtWidgets.QWidget
+    ) -> None:
+        self._output_imagetool_targets[key] = target
+        if isinstance(target, QtWidgets.QWidget):
+            target.destroyed.connect(
+                lambda _=None, target_key=key, widget=target: (
+                    self._clear_output_imagetool_target_if_matches(target_key, widget)
+                )
+            )
+
+    def _output_imagetool_target(self, key: str) -> str | QtWidgets.QWidget | None:
+        target = self._output_imagetool_targets.get(key)
+        if target is None:
+            return None
+
+        manager, parent_uid = self._managed_output_imagetool_parent()
+        if manager is None or parent_uid is None:
+            if isinstance(target, str):
+                self._clear_output_imagetool_target(key)
+                return None
+            if not qt_is_valid(target):
+                self._clear_output_imagetool_target(key)
+                return None
+            return target
+
+        if not isinstance(target, str):
+            if qt_is_valid(target):
+                target.close()
+                target.deleteLater()
+            self._clear_output_imagetool_target(key)
+            return None
+
+        node = manager._all_nodes.get(target)
+        if node is None or not node.is_imagetool or node.parent_uid != parent_uid:
+            self._clear_output_imagetool_target(key)
+            return None
+        return target
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return replay provenance for the main copy-code action.
+
+        Set ``COPY_PROVENANCE`` for the common declarative script-based case. Override
+        this method only when the tool needs custom behavior beyond
+        ``ToolScriptProvenanceDefinition``. This describes the main tool action, not
+        any manager-tracked child ImageTool outputs declared in ``IMAGE_TOOL_OUTPUTS``.
+        """
+        return self._resolve_script_provenance(self.COPY_PROVENANCE)
+
+    @property
+    def input_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return the replay provenance snapshot for the displayed tool input data."""
+        return self._input_provenance_spec
+
+    def set_input_provenance_spec(
+        self,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | typing.Mapping[str, typing.Any]
+        | None,
+    ) -> None:
+        """Set the replay provenance snapshot for the displayed tool input data."""
+        self._input_provenance_spec = (
+            erlab.interactive.imagetool.provenance.to_replay_provenance_spec(
+                provenance_spec
+            )
+        )
+
+    def set_input_provenance_parent_fetcher(
+        self,
+        fetcher: Callable[
+            [], erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ]
+        | None,
+    ) -> None:
+        """Set the callback used to resolve lineage for future source refreshes."""
+        self._input_provenance_parent_fetcher = fetcher
+        if fetcher is not None and self._source_state == "fresh":
+            self._sync_input_provenance_snapshot()
+
+    def _parent_input_provenance(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if self._input_provenance_parent_fetcher is None:
+            return None
+        return erlab.interactive.imagetool.provenance.to_replay_provenance_spec(
+            self._input_provenance_parent_fetcher()
+        )
+
+    def _snapshot_input_provenance(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        parent_data: xr.DataArray | None = None
+        if self._source_parent_fetcher is not None:
+            try:
+                parent_data = self._source_parent_fetcher()
+            except Exception:
+                parent_data = None
+
+        parent_provenance = None
+        if self._input_provenance_parent_fetcher is not None:
+            parent_provenance = self._parent_input_provenance()
+        return erlab.interactive.imagetool.provenance.compose_display_provenance(
+            parent_provenance,
+            self._source_spec,
+            parent_data=parent_data,
+        )
+
+    def _sync_input_provenance_snapshot(self) -> None:
+        """Refresh the stored input-lineage snapshot for the displayed tool data."""
+        self._input_provenance_spec = self._snapshot_input_provenance()
+
+    def _effective_input_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if self._input_provenance_spec is not None:
+            return self._input_provenance_spec
+        return self._snapshot_input_provenance()
+
+    def _call_script_provenance_method(
+        self,
+        method_name: str,
+        *,
+        input_name: str | None,
+        data: xr.DataArray | None,
+    ) -> typing.Any:
+        return getattr(self, method_name)(input_name=input_name, data=data)
+
+    def _normalize_script_provenance_operations(
+        self,
+        operations: erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        | Sequence[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]
+        | None,
+    ) -> tuple[erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...]:
+        if operations is None:
+            return ()
+        if isinstance(
+            operations,
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        ):
+            return (operations,)
+        return tuple(operations)
+
+    def _build_script_provenance(
+        self,
+        definition: ToolScriptProvenanceDefinition,
+        *,
+        input_name: str | None,
+        data: xr.DataArray | None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        operations: tuple[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...
+        ]
+        if definition.operations_method is None:
+            label = definition.label
+            if definition.label_method is not None:
+                label = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.label_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+            expression = typing.cast(
+                "str | None",
+                self._call_script_provenance_method(
+                    typing.cast("str", definition.expression_method),
+                    input_name=input_name,
+                    data=data,
+                ),
+            )
+            raw_assign: typing.Any = definition.assign
+            if definition.assign_method is not None:
+                raw_assign = self._call_script_provenance_method(
+                    definition.assign_method,
+                    input_name=input_name,
+                    data=data,
+                )
+            if not label or not expression or raw_assign is None:
+                return None
+            expression = _validate_script_expression(
+                expression,
+                field_name=typing.cast("str", definition.expression_method),
+            )
+            if not expression:
+                return None
+            assign = _normalize_script_assign(raw_assign, field_name="assign")
+            if assign is None:
+                return None
+            prelude = definition.prelude
+            if definition.prelude_method is not None:
+                prelude = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.prelude_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+                if prelude is None:
+                    return None
+            if prelude is not None:
+                prelude = _validate_script_prelude(
+                    prelude,
+                    field_name=(
+                        definition.prelude_method
+                        if definition.prelude_method is not None
+                        else "prelude"
+                    ),
+                )
+            active_name = definition.active_name
+            if definition.active_name_method is not None:
+                active_name = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.active_name_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+            if active_name is None and len(assign) == 1:
+                active_name = assign[0]
+            elif active_name is not None:
+                active_name = _validate_script_identifier(
+                    active_name,
+                    field_name="active_name",
+                )
+                if len(assign) == 1 and active_name != assign[0]:
+                    raise ValueError(
+                        "single-target `assign` must match `active_name` when both "
+                        "are defined"
+                    )
+                if len(assign) > 1 and active_name not in assign:
+                    raise ValueError(
+                        "tuple `assign` must include `active_name` when both are "
+                        "defined"
+                    )
+            if active_name is None and len(assign) > 1:
+                raise ValueError("tuple `assign` must define `active_name`")
+            code = _script_assignment_code(assign, expression)
+            if prelude:
+                code = f"{prelude}\n{code}"
+            operations = (
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label=label,
+                    code=code,
+                ),
+            )
+        else:
+            operations = self._normalize_script_provenance_operations(
+                typing.cast(
+                    (
+                        "erlab.interactive.imagetool.provenance."
+                        "ToolProvenanceOperation | Sequence[erlab.interactive."
+                        "imagetool.provenance.ToolProvenanceOperation] | None"
+                    ),
+                    self._call_script_provenance_method(
+                        definition.operations_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+            )
+            if not operations:
+                return None
+            active_name = definition.active_name
+            if definition.active_name_method is not None:
+                active_name = typing.cast(
+                    "str | None",
+                    self._call_script_provenance_method(
+                        definition.active_name_method,
+                        input_name=input_name,
+                        data=data,
+                    ),
+                )
+
+        seed_code = definition.seed_code
+        if definition.seed_code_method is not None:
+            seed_code = typing.cast(
+                "str | None",
+                self._call_script_provenance_method(
+                    definition.seed_code_method,
+                    input_name=input_name,
+                    data=data,
+                ),
+            )
+
+        return erlab.interactive.imagetool.provenance.script(
+            *operations,
+            start_label=definition.start_label,
+            seed_code=seed_code,
+            active_name=active_name,
+        )
+
+    def _resolve_script_provenance(
+        self,
+        definition: ToolScriptProvenanceDefinition | None,
+        *,
+        data: xr.DataArray | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if definition is None:
+            return None
+        input_provenance = self._effective_input_provenance_spec()
+        direct_input_name = (
+            erlab.interactive.imagetool.provenance.direct_replay_input_name(
+                input_provenance
+            )
+            if input_provenance is not None
+            else None
+        )
+        input_name = erlab.interactive.imagetool.provenance.replay_input_name(
+            input_provenance
+        )
+        local_spec = self._build_script_provenance(
+            definition,
+            input_name=input_name if input_provenance is not None else None,
+            data=data,
+        )
+        if direct_input_name is not None:
+            assert input_provenance is not None
+            if local_spec is None:
+                return input_provenance
+            replay_spec = (
+                erlab.interactive.imagetool.provenance.to_replay_provenance_spec(
+                    local_spec
+                )
+            )
+            assert replay_spec is not None
+            return replay_spec.model_copy(
+                update={"start_label": typing.cast("str", input_provenance.start_label)}
+            )
+        return erlab.interactive.imagetool.provenance.compose_full_provenance(
+            input_provenance, local_spec
+        )
+
+    def output_imagetool_data(self, output_id: str | enum.Enum) -> xr.DataArray | None:
+        """Return the current data for a manager-tracked output declared in the class.
+
+        Subclasses should declare outputs in ``IMAGE_TOOL_OUTPUTS`` instead of
+        overriding this method directly. The base implementation resolves
+        ``output_id`` against that mapping and calls the declared data method.
+        """
+        _, definition = self._image_output_definition(output_id)
+        return typing.cast(
+            "Callable[[], xr.DataArray | None]",
+            getattr(self, definition.data_method),
+        )()
+
+    def output_imagetool_provenance(
+        self, output_id: str | enum.Enum, data: xr.DataArray
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return replay provenance for a manager-tracked output declared in the class.
+
+        Subclasses should declare outputs in ``IMAGE_TOOL_OUTPUTS`` instead of
+        overriding this method directly. The base implementation resolves
+        ``output_id`` against that mapping and resolves the declared provenance
+        definition.
+        """
+        _, definition = self._image_output_definition(output_id)
+        return self._resolve_script_provenance(definition.provenance, data=data)
+
+    def detached_output_imagetool_provenance(
+        self,
+        data: xr.DataArray,
+        *,
+        source: QtCore.QObject | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return replay provenance for an unbound ImageTool opened from this tool.
+
+        Override this only when an unbound ImageTool should display different replay
+        lineage from `current_provenance_spec()`. Managed launches discard this
+        lineage because they become independent top-level manager windows, so this
+        hook must stay free of blocking side effects such as warning dialogs.
+        """
+        del data, source
+        return self.current_provenance_spec()
+
+    def _copy_provenance_code(
+        self,
+        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+    ) -> str:
+        code = None if spec is None else spec.display_code()
+        if not code:
+            return ""
+        return copy_to_clipboard(code)
+
+    @QtCore.Slot()
+    def copy_code(self) -> str:
+        """Copy the current tool provenance code to the clipboard."""
+        return self._copy_provenance_code(self.current_provenance_spec())
+
+    def _notify_data_changed(self) -> None:
+        """Notify manager-facing listeners that displayed tool data has changed."""
+        self.sigInfoChanged.emit()
+        if not self._source_refreshing:
+            self.sigDataChanged.emit()
+
+    def _prompt_existing_output_imagetool(
+        self,
+    ) -> typing.Literal["update", "new", "cancel"]:
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        msg_box.setWindowTitle("ImageTool output already open")
+        msg_box.setText("An ImageTool opened from this action is already available.")
+        msg_box.setInformativeText(
+            "Update the existing child ImageTool, open a new child ImageTool, "
+            "or cancel."
+        )
+        update_button = msg_box.addButton(
+            "Update Existing", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        new_button = msg_box.addButton(
+            "Open New", QtWidgets.QMessageBox.ButtonRole.ActionRole
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", update_button))
+        msg_box.setEscapeButton(cancel_button)
+        msg_box.exec()
+
+        clicked = msg_box.clickedButton()
+        if clicked is update_button:
+            return "update"
+        if clicked is new_button:
+            return "new"
+        return "cancel"
+
+    def _launch_output_imagetool(
+        self,
+        data: xr.DataArray,
+        *,
+        output_id: str | enum.Enum,
+    ) -> erlab.interactive.imagetool.ImageTool | None:
+        """Open or refresh a manager-tracked child ImageTool for a declared output."""
+        normalized_output_id, _ = self._image_output_definition(output_id)
+        return self._open_output_imagetool(
+            data,
+            output_id=normalized_output_id,
+            provenance_spec=self.output_imagetool_provenance(
+                normalized_output_id, data
+            ),
+            prompt_on_reuse=True,
+        )
+
+    def _launch_detached_output_imagetool(
+        self,
+        data: xr.DataArray,
+        *,
+        provenance_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ) = None,
+    ) -> erlab.interactive.imagetool.ImageTool | None:
+        """Open a new unbound ImageTool from this tool.
+
+        Managed tools create a fresh independent top-level manager window.
+        Standalone tools create a fresh standalone ImageTool window.
+        """
+        return self._open_output_imagetool(
+            data,
+            output_id=None,
+            provenance_spec=provenance_spec,
+            prompt_on_reuse=False,
+        )
+
+    def _open_output_imagetool(
+        self,
+        data: xr.DataArray,
+        *,
+        output_id: str | None,
+        provenance_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ),
+        prompt_on_reuse: bool,
+    ) -> erlab.interactive.imagetool.ImageTool | None:
+        manager, parent_uid = self._managed_output_imagetool_parent()
+        output_source_state: typing.Literal["fresh", "stale", "unavailable"] = (
+            self.source_state if self.has_source_binding else "fresh"
+        )
+
+        if output_id is None:
+            tool = erlab.interactive.itool(data, manager=False, execute=False)
+            if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+                return None
+
+            if manager is None or parent_uid is None:
+                tool.set_provenance_spec(provenance_spec)
+                tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+                tool.show()
+                tool.raise_()
+                tool.activateWindow()
+                return tool
+
+            manager.add_imagetool(
+                tool,
+                show=True,
+                activate=True,
+                provenance_spec=None,
+                source_spec=None,
+                source_auto_update=False,
+                source_state="fresh",
+            )
+            return tool
+
+        existing_target = self._output_imagetool_target(output_id)
+
+        if manager is None or parent_uid is None:
+            if isinstance(
+                existing_target, erlab.interactive.imagetool.ImageTool
+            ) and qt_is_valid(existing_target):
+                existing_target.set_provenance_spec(provenance_spec)
+                existing_target.slicer_area.replace_source_data(data)
+                existing_target.show()
+                existing_target.raise_()
+                existing_target.activateWindow()
+                return existing_target
+            if isinstance(existing_target, QtWidgets.QWidget):
+                existing_target.close()
+                existing_target.deleteLater()
+            tool = erlab.interactive.itool(data, manager=False, execute=False)
+            if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+                return None
+            tool.set_provenance_spec(provenance_spec)
+            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+            self._register_output_imagetool_target(output_id, tool)
+            tool.show()
+            tool.raise_()
+            tool.activateWindow()
+            return tool
+
+        if isinstance(existing_target, str):
+            node = manager._child_node(existing_target)
+            action = (
+                self._prompt_existing_output_imagetool()
+                if prompt_on_reuse
+                else "update"
+            )
+            if action == "cancel":
+                return None
+            if action == "update":
+                if node.archived:
+                    node.unarchive()
+                node.set_output_binding(
+                    output_id,
+                    auto_update=node.source_auto_update,
+                    state=output_source_state,
+                )
+                node._replace_imagetool_data(
+                    data,
+                    provenance_spec,
+                    state=output_source_state,
+                    propagate_descendants=True,
+                )
+                manager.show_childtool(existing_target)
+                return manager.get_imagetool(existing_target)
+
+        tool = erlab.interactive.itool(data, manager=False, execute=False)
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            return None
+        tool.set_provenance_spec(provenance_spec)
+
+        child_uid = manager.add_imagetool_child(
+            tool,
+            parent_uid,
+            show=True,
+            activate=True,
+            provenance_spec=provenance_spec,
+            source_spec=None,
+            source_state=output_source_state,
+            output_id=output_id,
+        )
+        self._register_output_imagetool_target(output_id, child_uid)
+        tool.destroyed.connect(
+            lambda _=None, target_output_id=output_id, uid=child_uid: (
+                self._clear_output_imagetool_target_if_matches(target_output_id, uid)
+            )
+        )
+        return tool
 
     @property
     def tool_status(self) -> M:
@@ -2653,11 +3522,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
 
     @property
-    def source_spec(self) -> dict[str, typing.Any] | None:
-        """Return a detached copy of the current ImageTool source specification."""
-        if self._source_spec is None:
-            return None
-        return json.loads(json.dumps(self._source_spec))
+    def source_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return the current ImageTool source specification."""
+        return self._source_spec
 
     @property
     def source_state(self) -> typing.Literal["fresh", "stale", "unavailable"]:
@@ -2685,16 +3554,25 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
     def set_source_binding(
         self,
-        source_spec: dict[str, typing.Any] | None,
+        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
         *,
         auto_update: bool = False,
         state: typing.Literal["fresh", "stale", "unavailable"] = "fresh",
     ) -> None:
         """Bind this tool to an ImageTool source specification and status state."""
+        if source_spec is not None and not isinstance(
+            source_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        ):
+            raise TypeError(
+                "source_spec must be a ToolProvenanceSpec or None. Use "
+                "parse_tool_provenance_spec() when deserializing saved payloads."
+            )
         self._source_spec = (
-            json.loads(json.dumps(source_spec)) if source_spec is not None else None
+            erlab.interactive.imagetool.provenance.require_live_source_spec(source_spec)
         )
         self._source_auto_update = bool(auto_update)
+        if self._source_spec is not None and state == "fresh":
+            self._sync_input_provenance_snapshot()
         self._set_source_state(state if self._source_spec is not None else "fresh")
 
     def set_source_parent_fetcher(
@@ -2702,6 +3580,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
     ) -> None:
         """Set the callback used to fetch the latest parent ImageTool data."""
         self._source_parent_fetcher = fetcher
+        if fetcher is not None and self._source_state == "fresh":
+            self._sync_input_provenance_snapshot()
+
+    def finalize_source_refresh(self) -> None:
+        """Record that the current source refresh has been applied to the tool."""
+        self._source_refresh_deferred = False
+        self._sync_input_provenance_snapshot()
+        self._set_source_state("fresh")
+        self.sigDataChanged.emit()
 
     def _set_source_auto_update(self, value: bool) -> None:
         """Update the auto-refresh flag and notify manager-facing UI state."""
@@ -2713,6 +3600,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self, state: typing.Literal["fresh", "stale", "unavailable"]
     ) -> None:
         """Update the source state, refresh the banner, and emit info changes."""
+        if state != "stale":
+            self._source_refresh_deferred = False
         self._source_state = state
         self._refresh_source_status_widget()
         self.sigInfoChanged.emit()
@@ -2756,7 +3645,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         """Resolve the current source specification against replacement parent data."""
         if self._source_spec is None:
             raise RuntimeError("Tool is not bound to an ImageTool source.")
-        return _resolve_tool_source_spec(parent_data, self._source_spec)
+        return self._source_spec.apply(parent_data)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         """Validate or normalize source data before `update_data` consumes it.
@@ -2779,10 +3668,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         self,
         new_data: xr.DataArray,
         *,
-        apply_update: Callable[[xr.DataArray], None],
+        apply_update: Callable[[xr.DataArray], bool | None],
         timeout_ms: int | None = None,
     ) -> bool:
         """Run a source update without tearing down the UI while workers are alive."""
+        self._source_refresh_deferred = False
         validated = self.validate_update_data(new_data)
         if timeout_ms is None:
             timeout_ms = self.BACKGROUND_TASK_TIMEOUT_MS
@@ -2792,8 +3682,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 self.tool_name,
             )
             return False
-        apply_update(validated)
-        return True
+        return apply_update(validated) is not False
 
     @staticmethod
     def _wait_for_threadpool(
@@ -2839,6 +3728,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             return False
 
         try:
+            self._source_refresh_deferred = False
+            self._source_refreshing = True
             update_complete = self.update_data(resolved)
         except Exception:
             logger.exception(
@@ -2846,10 +3737,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             )
             self._set_source_state("unavailable")
             return False
+        finally:
+            self._source_refreshing = False
         if update_complete is False:
             self._set_source_state("stale")
             return False
-        self._set_source_state("fresh")
+        self.finalize_source_refresh()
         return True
 
     def handle_parent_source_replaced(self, parent_data: xr.DataArray) -> None:
@@ -2868,8 +3761,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             self._set_source_state("unavailable")
             return
 
+        self._source_refresh_deferred = False
         if self._source_auto_update:
             try:
+                self._source_refreshing = True
                 update_complete = self.update_data(resolved)
             except Exception:
                 logger.exception(
@@ -2878,10 +3773,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
                 )
                 self._set_source_state("unavailable")
                 return
+            finally:
+                self._source_refreshing = False
             if update_complete is False:
                 self._set_source_state("stale")
                 return
-            self._set_source_state("fresh")
+            self.finalize_source_refresh()
         else:
             self._set_source_state("stale")
 
@@ -2909,7 +3806,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
 
         Subclasses must override this when they support ImageTool source updates. Return
         `False` to leave the tool marked as stale when the new data is recognized but
-        cannot be applied immediately.
+        cannot be published as a fresh result immediately.
         """
         raise NotImplementedError(
             "Subclasses of ToolWindow must implement update_data() to support "
@@ -2947,9 +3844,16 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             "erlab_version": erlab.__version__,
         }
         if self._source_spec is not None:
-            attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(self._source_spec)
+            attrs[_TOOL_SOURCE_SPEC_ATTR] = json.dumps(
+                self._source_spec.model_dump(mode="json")
+            )
             attrs[_TOOL_SOURCE_STATE_ATTR] = self._source_state
             attrs[_TOOL_SOURCE_AUTO_UPDATE_ATTR] = bool(self._source_auto_update)
+        input_provenance = self._effective_input_provenance_spec()
+        if input_provenance is not None:
+            attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR] = json.dumps(
+                input_provenance.model_dump(mode="json")
+            )
         return attrs
 
     @classmethod
@@ -2963,6 +3867,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
         return has_data and has_status
 
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        """Append optional save-only payload that should not participate in history."""
+        return ds
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        """Restore optional payload saved by `_append_persistence_payload()`."""
+        return
+
     def to_dataset(self) -> xr.Dataset:
         """Get the :class:`xarray.Dataset` representation of the tool window.
 
@@ -2972,9 +3884,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
             A dataset containing the data and attributes needed to restore the tool.
 
         """
-        return self.tool_data.to_dataset(
+        ds = self.tool_data.to_dataset(
             name="<saved-tool-data>", promote_attrs=False
         ).assign_attrs(self._saved_tool_attrs)
+        return self._append_persistence_payload(ds)
 
     @classmethod
     def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
@@ -3014,14 +3927,52 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M]):
         )
         tool._tool_display_name = ds.attrs.get("tool_display_name", "")
         if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
-            tool.set_source_binding(
-                json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
-                auto_update=bool(ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)),
-                state=typing.cast(
-                    "typing.Literal['fresh', 'stale', 'unavailable']",
-                    ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
-                ),
-            )
+            try:
+                source_spec = (
+                    erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+                        typing.cast(
+                            "Mapping[str, typing.Any]",
+                            json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
+                        )
+                    )
+                )
+                source_spec = (
+                    erlab.interactive.imagetool.provenance.require_live_source_spec(
+                        source_spec
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved tool source provenance for %s",
+                    cls_obj.__qualname__,
+                    exc_info=True,
+                )
+            else:
+                tool.set_source_binding(
+                    source_spec,
+                    auto_update=bool(
+                        ds.attrs.get(_TOOL_SOURCE_AUTO_UPDATE_ATTR, False)
+                    ),
+                    state=typing.cast(
+                        "typing.Literal['fresh', 'stale', 'unavailable']",
+                        ds.attrs.get(_TOOL_SOURCE_STATE_ATTR, "fresh"),
+                    ),
+                )
+        if _TOOL_INPUT_PROVENANCE_SPEC_ATTR in ds.attrs:
+            try:
+                tool.set_input_provenance_spec(
+                    typing.cast(
+                        "typing.Mapping[str, typing.Any]",
+                        json.loads(ds.attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR]),
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved tool input provenance for %s",
+                    cls_obj.__qualname__,
+                    exc_info=True,
+                )
+        tool._restore_persistence_payload(ds)
         tool.setWindowTitle(ds.attrs["tool_title"])
         tool.setGeometry(*ds.attrs["tool_rect"])
         return tool

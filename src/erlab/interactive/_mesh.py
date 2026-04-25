@@ -1,5 +1,6 @@
 __all__ = ["meshtool"]
 
+import enum
 import importlib.resources
 import os
 import typing
@@ -18,10 +19,49 @@ import erlab
 
 class MeshTool(erlab.interactive.utils.ToolWindow):
     tool_name = "meshtool"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current meshtool input data",
+            label="Remove mesh from current data",
+            expression_method="_mesh_expression",
+            assign=("corrected", "mesh"),
+            active_name="corrected",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        CORRECTED = "meshtool.corrected_output"
+        MESH = "meshtool.mesh_output"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.CORRECTED: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_corrected_output",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current meshtool input data",
+                label="Compute mesh-corrected output",
+                expression_method="_mesh_expression",
+                assign=("corrected", "mesh"),
+                active_name="corrected",
+            ),
+        ),
+        Output.MESH: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_mesh_output",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current meshtool input data",
+                label="Compute extracted mesh output",
+                expression_method="_mesh_expression",
+                assign=("corrected", "mesh"),
+                active_name="mesh",
+            ),
+        ),
+    }
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
         return self.main_image
+
+    def _emit_info_changed(self, *_args: typing.Any) -> None:
+        self.sigInfoChanged.emit()
 
     class StateModel(pydantic.BaseModel):
         first_order_peaks: list[list[int]]
@@ -68,6 +108,49 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
     @property
     def tool_data(self) -> xr.DataArray:
         return self._data
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import (
+            format_darr_shape_html,
+            format_html_accent,
+            format_html_table,
+        )
+
+        status = self.tool_status
+        rows = [
+            ("Method", status.method),
+            (
+                "Peak 1",
+                f"({status.first_order_peaks[1][0]}, {status.first_order_peaks[1][1]})",
+            ),
+            (
+                "Peak 2",
+                f"({status.first_order_peaks[2][0]}, {status.first_order_peaks[2][1]})",
+            ),
+            ("Order", str(status.order)),
+            ("Padding", str(status.n_pad)),
+            ("ROI half-width", str(status.roi_hw)),
+            ("k", str(status.k)),
+            ("Feather", str(status.feather)),
+            (
+                "Undo edge correction",
+                "On" if status.undo_edge_correction else "Off",
+            ),
+            (
+                "Corrected output",
+                "Available" if self._corrected is not None else "Unavailable",
+            ),
+            ("Mesh output", "Available" if self._mesh is not None else "Unavailable"),
+        ]
+        return (
+            f"<b>{self.tool_name}</b>"
+            + format_darr_shape_html(self.tool_data)
+            + "<br><b>Setup</b>"
+            + format_html_table(
+                [[format_html_accent(key), value] for key, value in rows]
+            )
+        )
 
     def __init__(self, data: xr.DataArray, *, data_name: str | None = None) -> None:
         if data_name is None:
@@ -214,16 +297,27 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         self.go_btn.clicked.connect(self.update)
 
         self.order_spin.valueChanged.connect(self._update_higher_order_targets)
+        self.order_spin.valueChanged.connect(self._emit_info_changed)
 
         self.p0_spin0.valueChanged.connect(self._update_target_pos)
         self.p0_spin1.valueChanged.connect(self._update_target_pos)
         self.p1_spin0.valueChanged.connect(self._update_target_pos)
         self.p1_spin1.valueChanged.connect(self._update_target_pos)
+        self.p0_spin0.valueChanged.connect(self._emit_info_changed)
+        self.p0_spin1.valueChanged.connect(self._emit_info_changed)
+        self.p1_spin0.valueChanged.connect(self._emit_info_changed)
+        self.p1_spin1.valueChanged.connect(self._emit_info_changed)
 
         self.p0_target.sigPositionChanged.connect(self._target_moved)
         self.p1_target.sigPositionChanged.connect(self._target_moved)
 
         self.undo_edge_correction_check.toggled.connect(self.set_data_beforecalc)
+        self.undo_edge_correction_check.toggled.connect(self._emit_info_changed)
+        self.n_pad_spin.valueChanged.connect(self._emit_info_changed)
+        self.roi_hw_spin.valueChanged.connect(self._emit_info_changed)
+        self.k_spin.valueChanged.connect(self._emit_info_changed)
+        self.feather_spin.valueChanged.connect(self._emit_info_changed)
+        self.method_combo.currentTextChanged.connect(self._emit_info_changed)
 
         self.itool_corr_btn.clicked.connect(self._corr_itool)
         self.itool_mesh_btn.clicked.connect(self._mesh_itool)
@@ -295,6 +389,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             self.p1_spin0.setValue(int(p1_pos.y()))
             self.p1_spin1.setValue(int(p1_pos.x()))
         self._update_higher_order_targets()
+        self._emit_info_changed()
 
     @QtCore.Slot()
     def _update_higher_order_targets(self) -> None:
@@ -402,6 +497,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             self.corr_image.setDataArray(corrected.T, update_labels=False)
             self.mesh_image.setDataArray(mesh.T, update_labels=False)
             self.corr_fft_image.setImage(log_magnitude_corr)
+        self._notify_data_changed()
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
@@ -425,7 +521,7 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
         self.tool_status = status
         self.set_data_beforecalc(initial=True)
         self._update_target_pos()
-        self.sigInfoChanged.emit()
+        self._notify_data_changed()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -436,24 +532,43 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
     @QtCore.Slot()
     def _corr_itool(self) -> None:
         if self._corrected is not None:  # pragma: no branch
-            tool = erlab.interactive.itool(self._corrected, execute=False)
-            if isinstance(tool, QtWidgets.QWidget):
-                if self._itool_corr is not None:
-                    self._itool_corr.close()
-                    self._itool_corr.deleteLater()
+            tool = self._launch_output_imagetool(
+                self._corrected,
+                output_id=self.Output.CORRECTED,
+            )
+            if tool is not None:
                 self._itool_corr = tool
-                self._itool_corr.show()
 
     @QtCore.Slot()
     def _mesh_itool(self) -> None:
         if self._mesh is not None:  # pragma: no branch
-            tool = erlab.interactive.itool(self._mesh, execute=False)
-            if isinstance(tool, QtWidgets.QWidget):
-                if self._itool_mesh is not None:
-                    self._itool_mesh.close()
-                    self._itool_mesh.deleteLater()
+            tool = self._launch_output_imagetool(
+                self._mesh,
+                output_id=self.Output.MESH,
+            )
+            if tool is not None:
                 self._itool_mesh = tool
-                self._itool_mesh.show()
+
+    def _mesh_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.mesh.remove_mesh,
+            args=[f"|{input_name or self.data_name}|"],
+            kwargs=self.get_params_dict(),
+            module="era.mesh",
+            remove_defaults=False,
+            copy=False,
+        )
+
+    def _corrected_output(self) -> xr.DataArray | None:
+        return self._corrected
+
+    def _mesh_output(self) -> xr.DataArray | None:
+        return self._mesh
 
     @QtCore.Slot()
     def save_mesh(self) -> None:
@@ -482,18 +597,6 @@ class MeshTool(erlab.interactive.utils.ToolWindow):
             filename = dialog.selectedFiles()[0]
             self._mesh.to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
             pg.PlotItem.lastFileDir = os.path.dirname(filename)
-
-    @QtCore.Slot()
-    def copy_code(self) -> str:
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.mesh.remove_mesh,
-            args=[f"|{self.data_name}|"],
-            kwargs=self.get_params_dict(),
-            module="era.mesh",
-            assign=("corrected", "mesh"),
-            remove_defaults=False,
-            copy=True,
-        )
 
 
 def meshtool(

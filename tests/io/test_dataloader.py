@@ -1,4 +1,5 @@
 import errno
+import importlib
 import os
 import pathlib
 import re
@@ -125,6 +126,50 @@ def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> 
 
     assert len(shown_data) == 1
     assert shown_data[0].name == "data_001_S001"
+
+
+def test_loader_registry_survives_dataloader_reload(
+    example_loader, example_data_dir: pathlib.Path
+) -> None:
+    cached_loaders = erlab.io.loaders
+    cached_load = erlab.io.load
+    cached_set_loader = erlab.io.set_loader
+
+    cached_set_loader("example")
+    erlab.io.set_data_dir(example_data_dir)
+
+    importlib.reload(erlab.io.dataloader)
+
+    assert "example" in erlab.io.loaders
+    assert isinstance(erlab.io.loaders["example"], example_loader)
+    assert isinstance(cached_loaders, erlab.io.dataloader.LoaderRegistry)
+    assert "example" in cached_loaders
+    assert cached_loaders["example"] is erlab.io.loaders["example"]
+    assert erlab.io.loaders.current_loader is not None
+    assert erlab.io.loaders.current_loader.name == "example"
+    assert cached_loaders.current_loader is erlab.io.loaders.current_loader
+    assert erlab.io.loaders.current_data_dir == example_data_dir
+    assert cached_loaders.current_data_dir == example_data_dir
+
+    cached_load(2)
+    erlab.io.load(2)
+
+    erlab.io.set_loader(None)
+    erlab.io.set_data_dir(None)
+
+
+def test_lazy_namespace_exports_shared_loader_registry() -> None:
+    import erlab.io._namespace as namespace
+
+    assert isinstance(namespace.loaders, erlab.io.dataloader.LoaderRegistry)
+    assert namespace.loaders._state is erlab.io.dataloader.loaders._state
+    assert namespace.load.__self__ is namespace.loaders
+    assert namespace.loader_context.__self__ is namespace.loaders
+    assert namespace.set_data_dir.__self__ is namespace.loaders
+    assert namespace.set_loader.__self__ is namespace.loaders
+    assert namespace.extend_loader.__self__ is namespace.loaders
+    assert namespace.summarize.__self__ is namespace.loaders
+    assert namespace.loaders._lock is namespace.loaders._state.lock
 
 
 def test_thread_safety():

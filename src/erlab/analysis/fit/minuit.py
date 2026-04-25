@@ -34,18 +34,19 @@ class LeastSq(iminuit.cost.LeastSquares):
         plt.errorbar(
             x, y, ye, fmt="o", lw=0.75, ms=3, mfc="w", zorder=2, c="0.4", capsize=0
         )
+        params = tuple(float(arg) for arg in np.atleast_1d(args))
         if isinstance(model_points, Iterable):
             xm = np.array(model_points)
-            ym = self.model(xm, *args)
+            ym = self.model(xm, *params)
         elif model_points > 0:
             if _detect_log_spacing(x):
                 xm = np.geomspace(x[0], x[-1], model_points)
             else:
                 xm = np.linspace(x[0], x[-1], model_points)
-            ym = self.model(xm, *args)
+            ym = self.model(xm, *params)
         else:
             xm, ym = _smart_sampling(
-                lambda x: self.model(x, *args), x[0], x[-1], start=len(x)
+                lambda x: self.model(x, *params), x[0], x[-1], start=len(x)
             )
         plt.plot(xm, ym, "r-", lw=1, zorder=3)
         return (x, y, ye), (xm, ym)

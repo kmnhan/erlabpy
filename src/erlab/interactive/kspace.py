@@ -17,6 +17,7 @@ from __future__ import annotations
 
 __all__ = ["ktool"]
 
+import enum
 import hashlib
 import importlib.resources
 import typing
@@ -355,6 +356,31 @@ class KspaceToolGUI(erlab.interactive.utils.ToolWindow):
 
 class KspaceTool(KspaceToolGUI):
     tool_name = "ktool"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current ktool input data",
+            label="Convert to momentum space",
+            prelude_method="_copy_prelude",
+            expression_method="_copy_expression",
+            assign_method="_copy_assign_target",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        CONVERTED = "ktool.converted_output"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.CONVERTED: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_converted_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current ktool input data",
+                label="Convert current data to momentum space",
+                prelude_method="_copy_prelude",
+                expression_method="_copy_expression",
+                assign_method="_copy_assign_target",
+            ),
+        )
+    }
     _sigTriggerUpdate = QtCore.Signal()
     _UPDATE_LIMIT_HZ = 10.0
 
@@ -832,7 +858,7 @@ class KspaceTool(KspaceToolGUI):
             self.energy_group.setDisabled(True)
 
         self.tool_status = status
-        self.sigInfoChanged.emit()
+        self._notify_data_changed()
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
         data = erlab.interactive.utils.parse_data(new_data)
@@ -938,38 +964,49 @@ class KspaceTool(KspaceToolGUI):
             )
         )
 
-    @QtCore.Slot()
-    def show_converted(self) -> None:
+    def _converted_output(self) -> xr.DataArray:
         data = self._assign_params(self.data.copy(deep=False))
         self._validate_kinetic_energy(data, context="opening converted data from ktool")
-        with erlab.interactive.utils.wait_dialog(self, "Converting..."):
-            data_kconv = data.kspace.convert(
-                bounds=self.bounds, resolution=self.resolution
-            )
-
-        tool = erlab.interactive.itool(data_kconv, execute=False)
-        if isinstance(tool, QtWidgets.QWidget):
-            if self._itool is not None:
-                self._itool.close()
-                self._itool.deleteLater()
-            self._itool = tool
-            self._itool.show()
+        return data.kspace.convert(bounds=self.bounds, resolution=self.resolution)
 
     @QtCore.Slot()
-    def copy_code(self) -> str:
-        arg_dict: dict[str, typing.Any] = {}
-        if self.bounds is not None:
-            arg_dict["bounds"] = self.bounds
-        if self.resolution is not None:
-            arg_dict["resolution"] = self.resolution
+    def show_converted(self) -> None:
+        with erlab.interactive.utils.wait_dialog(self, "Converting..."):
+            data_kconv = self._converted_output()
 
-        # Detected input name must be single identifier.
-        # Otherwise the generated code will not apply offsets correctly.
-        input_name: str = str(self._argnames["data"])
-        if not input_name.isidentifier():
-            input_name = "data"
+        tool = self._launch_output_imagetool(
+            data_kconv,
+            output_id=self.Output.CONVERTED,
+        )
+        if tool is not None:
+            self._itool = tool
 
+    def _copy_input_reference(self, input_name: str | None = None) -> str:
+        if input_name is None:
+            # Detected input name must be single identifier.
+            # Otherwise the generated code will not apply offsets correctly.
+            input_name = str(self._argnames["data"])
+            if not erlab.interactive.utils._is_kwarg_name(input_name):
+                input_name = "data"
+        return input_name
+
+    def _copy_data_name(self, input_name: str | None = None) -> str:
+        input_ref = self._copy_input_reference(input_name)
+        if erlab.interactive.utils._is_kwarg_name(input_ref):
+            return input_ref
+        return "target"
+
+    def _copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        input_ref = self._copy_input_reference(input_name)
+        input_name = self._copy_data_name(input_name)
         out_lines: list[str] = []
+        if input_ref != input_name:
+            out_lines.append(f"{input_name} = {input_ref}")
 
         if self.data.kspace._has_hv:
             v0: float = self._inner_potential
@@ -984,23 +1021,41 @@ class KspaceTool(KspaceToolGUI):
 
         alpha_normal, beta_normal = self._current_normal_emission_angles()
         delta_offset = self.offset_dict["delta"]
+        out_lines.append(
+            f"{input_name}.kspace.set_normal("
+            f"alpha={alpha_normal!r}, beta={beta_normal!r}, delta={delta_offset!r})"
+        )
+        return "\n".join(out_lines)
 
-        out_lines.extend(
-            (
-                f"{input_name}.kspace.set_normal("
-                f"alpha={alpha_normal!r}, beta={beta_normal!r}, delta={delta_offset!r}"
-                f")",
-                erlab.interactive.utils.generate_code(
-                    MomentumAccessor.convert,
-                    [],
-                    arg_dict,
-                    module=f"{input_name}.kspace",
-                    assign=f"{input_name}_kconv",
-                ),
-            )
+    def _copy_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        arg_dict: dict[str, typing.Any] = {}
+        if self.bounds is not None:
+            arg_dict["bounds"] = self.bounds
+        if self.resolution is not None:
+            arg_dict["resolution"] = self.resolution
+
+        return erlab.interactive.utils.generate_code(
+            MomentumAccessor.convert,
+            [],
+            arg_dict,
+            module=f"{self._copy_data_name(input_name)}.kspace",
         )
 
-        return erlab.interactive.utils.copy_to_clipboard(out_lines)
+    def _copy_assign_target(
+        self,
+        input_name: str | None = None,
+        *,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        return f"{self._copy_data_name(input_name)}_kconv"
+
+    def _converted_output_data(self) -> xr.DataArray:
+        return self._converted_output()
 
     @property
     def bounds(self) -> dict[str, tuple[float, float]] | None:
@@ -1172,7 +1227,7 @@ class KspaceTool(KspaceToolGUI):
             k_preview = self._symmetrized_preview(k_preview)
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k_preview)
-        self.sigInfoChanged.emit()
+        self._notify_data_changed()
         if self.bz_group.isChecked():
             self.update_bz()
 

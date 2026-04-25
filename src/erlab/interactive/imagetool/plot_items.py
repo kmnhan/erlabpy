@@ -33,6 +33,7 @@ if typing.TYPE_CHECKING:
     import matplotlib.colors
     import qtawesome
 
+    from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 else:
     import lazy_loader as _lazy
@@ -953,33 +954,37 @@ class ItoolPlotItem(pg.PlotItem):
             sel_indexers = self._crop_indexers
             isel_indexers: dict[Hashable, slice] = {}
             for k in list(sel_indexers.keys()):
-                if str(k).endswith("_idx"):
-                    isel_indexers[str(k).removesuffix("_idx")] = sel_indexers.pop(k)
+                if isinstance(k, str) and k.endswith("_idx"):
+                    isel_indexers[k.removesuffix("_idx")] = sel_indexers.pop(k)
 
             if sel_code.startswith(".qsel"):
                 qsel_kw = self.array_slicer.qsel_args(cursor, self.display_axis)
                 qsel_kw = qsel_kw | sel_indexers
 
-                sel_code = erlab.interactive.utils.format_kwargs(qsel_kw)
+                sel_code = erlab.interactive.utils.format_call_kwargs(qsel_kw)
                 sel_code = f".qsel({sel_code})"
 
                 if isel_indexers:
-                    isel_code = erlab.interactive.utils.format_kwargs(isel_indexers)
+                    isel_code = erlab.interactive.utils.format_call_kwargs(
+                        isel_indexers
+                    )
                     sel_code = sel_code + f".isel({isel_code})"
 
                 return sel_code
 
+            isel_kw: dict[Hashable, slice | int] = {}
             if sel_code.startswith(".isel"):
                 isel_kw = self.array_slicer.isel_args(
                     cursor, self.display_axis, int_if_one=True
                 )
-                isel_kw = isel_kw | isel_indexers
 
-                sel_code = erlab.interactive.utils.format_kwargs(isel_kw)
+            if isel_kw or isel_indexers:
+                isel_kw.update(isel_indexers)
+                sel_code = erlab.interactive.utils.format_call_kwargs(isel_kw)
                 sel_code = f".isel({sel_code})"
 
             if sel_indexers:
-                crop_code = erlab.interactive.utils.format_kwargs(sel_indexers)
+                crop_code = erlab.interactive.utils.format_call_kwargs(sel_indexers)
                 sel_code = sel_code + f".sel({crop_code})"
 
         return sel_code
@@ -1006,76 +1011,67 @@ class ItoolPlotItem(pg.PlotItem):
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
-    ) -> dict[str, typing.Any]:
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
         cursor = self.slicer_area.current_cursor
         alt_pressed: bool = (
             QtCore.Qt.KeyboardModifier.AltModifier
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         selection_code = self.selection_code_for_cursor(cursor)
+        operations: list[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        ] = []
         if selection_code.startswith(".qsel"):
-            operations: list[dict[str, typing.Any]] = [
-                {
-                    "op": "qsel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        self.array_slicer.qsel_args(cursor, self.display_axis)
-                    ),
-                }
-            ]
+            qsel_kwargs = self.array_slicer.qsel_args(cursor, self.display_axis)
+            if qsel_kwargs:
+                operations.append(
+                    erlab.interactive.imagetool.provenance.QSelOperation(
+                        kwargs=qsel_kwargs
+                    )
+                )
         else:
-            operations = [
-                {
-                    "op": "isel",
-                    "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                        self.array_slicer.isel_args(
-                            cursor, self.display_axis, int_if_one=True
-                        )
-                    ),
-                }
-            ]
+            isel_kwargs = self.array_slicer.isel_args(
+                cursor, self.display_axis, int_if_one=True
+            )
+            if isel_kwargs:
+                operations.append(
+                    erlab.interactive.imagetool.provenance.IselOperation(
+                        kwargs=isel_kwargs
+                    )
+                )
 
         if alt_pressed:
             crop_indexers = dict(self._crop_indexers)
-            isel_indexers: dict[str, slice] = {}
+            isel_indexers: dict[Hashable, slice] = {}
             for key in list(crop_indexers.keys()):
-                key_str = str(key)
-                if key_str.endswith("_idx"):
-                    isel_indexers[key_str.removesuffix("_idx")] = crop_indexers.pop(key)
+                if isinstance(key, str) and key.endswith("_idx"):
+                    isel_indexers[key.removesuffix("_idx")] = crop_indexers.pop(key)
 
             if crop_indexers:
                 operations.append(
-                    {
-                        "op": "sel",
-                        "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                            crop_indexers
-                        ),
-                    }
+                    erlab.interactive.imagetool.provenance.SelOperation(
+                        kwargs=crop_indexers
+                    )
                 )
             if isel_indexers:
                 operations.append(
-                    {
-                        "op": "isel",
-                        "kwargs": erlab.interactive.utils._encode_tool_source_value(
-                            isel_indexers
-                        ),
-                    }
+                    erlab.interactive.imagetool.provenance.IselOperation(
+                        kwargs=isel_indexers
+                    )
                 )
 
-        operations.append({"op": "sort_coord_order"})
+        operations.append(
+            erlab.interactive.imagetool.provenance.SortCoordOrderOperation()
+        )
         if transpose:
             operations.append(
-                {
-                    "op": "transpose",
-                    "dims": erlab.interactive.utils._encode_tool_source_value(
-                        list(reversed(self.current_data.dims))
-                    ),
-                }
+                erlab.interactive.imagetool.provenance.TransposeOperation(
+                    dims=tuple(reversed(self.current_data.dims))
+                )
             )
-        if squeeze:
-            operations.append({"op": "squeeze"})
-        return erlab.interactive.utils.make_tool_source_spec(
-            "selection", operations=operations
-        )
+        if squeeze and any(size == 1 for size in self.current_data.shape):
+            operations.append(erlab.interactive.imagetool.provenance.SqueezeOperation())
+        return erlab.interactive.imagetool.provenance.selection(*operations)
 
     @property
     def is_guidelines_visible(self) -> bool:
@@ -1465,7 +1461,7 @@ class ItoolPlotItem(pg.PlotItem):
         """
         isel_kwargs: dict[Hashable, slice | int] = {}
         qsel_kwargs: dict[Hashable, float] = {}
-        avg_nonuniform_dims: list[str] = []
+        avg_nonuniform_dims: list[Hashable] = []
         binned = self.array_slicer.get_binned(cursor)
 
         for axis in non_display_axes:
@@ -1475,7 +1471,7 @@ class ItoolPlotItem(pg.PlotItem):
                     cursor, axis, int_if_one=True
                 )
                 if binned[axis]:
-                    avg_nonuniform_dims.append(str(dim_name))
+                    avg_nonuniform_dims.append(dim_name)
                 continue
 
             # Build qsel args one axis at a time so non-uniform axes are never passed
@@ -1487,26 +1483,22 @@ class ItoolPlotItem(pg.PlotItem):
 
         selected = data_name
         if isel_kwargs:
-            selected += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
+            selected += (
+                f".isel({erlab.interactive.utils.format_call_kwargs(isel_kwargs)})"
+            )
         if qsel_kwargs:
-            selected += f".qsel({erlab.interactive.utils.format_kwargs(qsel_kwargs)})"
+            selected += (
+                f".qsel({erlab.interactive.utils.format_call_kwargs(qsel_kwargs)})"
+            )
         if avg_nonuniform_dims:
-
-            def _double_quoted_literal(value: str) -> str:
-                if '"' in value:
-                    return f"'{value}'"
-                return f'"{value}"'
-
-            if len(avg_nonuniform_dims) == 1:
-                avg_arg = _double_quoted_literal(avg_nonuniform_dims[0])
-            else:
-                avg_arg = (
-                    "("
-                    + ", ".join(
-                        _double_quoted_literal(dim) for dim in avg_nonuniform_dims
-                    )
-                    + ")"
+            avg_arg = (
+                erlab.interactive.utils._parse_single_arg(avg_nonuniform_dims[0])
+                if len(avg_nonuniform_dims) == 1
+                and isinstance(avg_nonuniform_dims[0], str)
+                else erlab.interactive.utils._parse_single_arg(
+                    tuple(avg_nonuniform_dims)
                 )
+            )
             selected += f".qsel.average({avg_arg})"
         return selected
 
@@ -1627,12 +1619,16 @@ class ItoolPlotItem(pg.PlotItem):
             )
             selected = (
                 f"{data_name}.qsel("
-                f"{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)})"
+                f"{erlab.interactive.utils.format_call_kwargs(qsel_kwargs_nonnull)})"
             )
             if variable_dim is None:
                 plot_lines.append(selected + ".plot(ax=ax)")
                 return "\n".join(plot_lines)
-            iterable_expr = selected + f'.transpose("{variable_dim}", ...)'
+            iterable_expr = (
+                selected
+                + ".transpose("
+                + f"{erlab.interactive.utils._parse_single_arg(variable_dim)}, ...)"
+            )
             selected_lines = None
 
         colors: list[str] = [
@@ -1754,13 +1750,35 @@ class ItoolPlotItem(pg.PlotItem):
         qsel_kwargs_nonnull = typing.cast(
             "dict[Hashable, float | list[float]]", qsel_kwargs
         )
-        plot_args: list[typing.Any] = [f"|[{data_name}]|"]
-        if all(isinstance(k, str) and k.isidentifier() for k in qsel_kwargs_nonnull):
-            plot_kwargs.update({str(k): v for k, v in qsel_kwargs_nonnull.items()})
-        else:
-            plot_args.append(
-                f"|**{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)}|"
+        if not all(
+            erlab.interactive.utils._is_kwarg_name(k) for k in qsel_kwargs_nonnull
+        ):
+            if variable_dim is None:
+                selected_maps = [
+                    f"{data_name}.qsel("
+                    f"{erlab.interactive.utils.format_call_kwargs(qsel_kwargs_nonnull)})"
+                ]
+            else:
+                selected_maps = []
+                for cursor in range(self.slicer_area.n_cursors):
+                    selected_map = {
+                        key: value[cursor] if isinstance(value, list) else value
+                        for key, value in qsel_kwargs_nonnull.items()
+                    }
+                    selected_maps.append(
+                        f"{data_name}.qsel("
+                        f"{erlab.interactive.utils.format_call_kwargs(selected_map)})"
+                    )
+            return self._plot_code_image(
+                data_name,
+                variable_dim,
+                dim_order_plot,
+                selected_maps=selected_maps,
             )
+
+        plot_args: list[typing.Any] = [f"|[{data_name}]|"]
+        if all(erlab.interactive.utils._is_kwarg_name(k) for k in qsel_kwargs_nonnull):
+            plot_kwargs.update({str(k): v for k, v in qsel_kwargs_nonnull.items()})
 
         return erlab.interactive.utils.generate_code(
             erlab.plotting.plot_slices,
@@ -1876,11 +1894,37 @@ class ItoolPlotItem(pg.PlotItem):
         if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
             itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
 
-        tool = typing.cast(
-            "QtWidgets.QWidget | None", erlab.interactive.itool(**itool_kw)
-        )
-        if tool is not None:  # pragma: no branch
-            self.slicer_area.add_tool_window(tool)
+        if self.slicer_area._in_manager:
+            manager = self.slicer_area._manager_instance
+            target = (
+                None
+                if manager is None
+                else manager.target_from_slicer_area(self.slicer_area)
+            )
+            if manager is not None and target is not None:
+                tool = typing.cast(
+                    "ImageTool | None",
+                    erlab.interactive.itool(manager=False, **itool_kw),
+                )
+                if tool is not None:  # pragma: no branch
+                    manager.add_imagetool_child(
+                        tool,
+                        target,
+                        source_spec=self.make_tool_source_spec(),
+                    )
+                return
+
+        tool_window = erlab.interactive.itool(**itool_kw)
+        if isinstance(tool_window, erlab.interactive.imagetool.ImageTool):
+            tool_window.set_provenance_spec(
+                erlab.interactive.imagetool.provenance.compose_display_provenance(
+                    self.slicer_area.provenance_spec,
+                    self.make_tool_source_spec(),
+                    parent_data=self.slicer_area._tool_source_parent_data(),
+                )
+            )
+        if isinstance(tool_window, QtWidgets.QWidget):  # pragma: no branch
+            self.slicer_area.add_tool_window(tool_window)
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:

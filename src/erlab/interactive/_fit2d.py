@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import enum
 import functools
 import os
 import typing
@@ -179,7 +181,10 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
     def _show_parameter_values(self) -> None:
         da = self._current_param_dataarray(stderr=False)
         if da is not None:
-            self._tool._show_dataarray_in_itool(da)
+            self._tool._show_dataarray_in_itool(
+                da,
+                output_id=Fit2DTool.Output.PARAMETER_VALUES,
+            )
 
     @QtCore.Slot()
     def _save_parameter_stderr(self) -> None:
@@ -191,17 +196,73 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
     def _show_parameter_stderr(self) -> None:
         da = self._current_param_dataarray(stderr=True)
         if da is not None:
-            self._tool._show_dataarray_in_itool(da)
+            self._tool._show_dataarray_in_itool(
+                da,
+                output_id=Fit2DTool.Output.PARAMETER_STDERR,
+            )
 
 
 class Fit2DTool(Fit1DTool):
     """Interactive tool for fitting 1D curves to images."""
 
     tool_name = "ftool_2d"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current ftool input data",
+            label="Fit current 2D data with the current model",
+            prelude_method="_checked_full_copy_prelude",
+            expression_method="_full_fit_expression",
+            assign="result",
+        )
+    )
+    _DETACHED_COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current ftool input data",
+            label="Fit current 2D data with the current model",
+            prelude_method="_detached_full_copy_prelude",
+            expression_method="_full_fit_expression",
+            assign="result",
+        )
+    )
+    _PERSISTED_FIT_RESULT_VAR: typing.ClassVar[str] = "__ftool_fit_results__"
+    _PERSISTED_FIT_RESULT_DIM: typing.ClassVar[str] = "__ftool_fit_results_bytes__"
+    _PERSISTED_FIT_INDEX_DIM: typing.ClassVar[str] = "__ftool_fit_result_index__"
+    _PERSISTED_FIT_CURRENT_ATTR: typing.ClassVar[str] = "__ftool_fit_is_current__"
+
+    class Output(enum.StrEnum):
+        PARAMETER_VALUES = "fit2d.param_plot.values"
+        PARAMETER_STDERR = "fit2d.param_plot.stderr"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.PARAMETER_VALUES: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_parameter_values_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current fit-tool input data",
+                label="Extract current parameter values",
+                prelude_method="_parameter_output_prelude",
+                expression_method="_parameter_values_output_expression",
+                assign="parameter_values",
+            ),
+        ),
+        Output.PARAMETER_STDERR: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_parameter_stderr_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current fit-tool input data",
+                label="Extract current parameter standard errors",
+                prelude_method="_parameter_output_prelude",
+                expression_method="_parameter_stderr_output_expression",
+                assign="parameter_stderr",
+            ),
+        ),
+    }
 
     @property
     def tool_data(self) -> xr.DataArray:
         return self._data_full
+
+    @property
+    def preview_imageitem(self) -> pg.ImageItem:
+        return self.image
 
     def __init__(
         self,
@@ -256,6 +317,38 @@ class Fit2DTool(Fit1DTool):
         self.param_model.sigParamsChanged.connect(self._update_params_full)
         self._refresh_contents_from_index()
         self._reset_history_stack()
+
+    def _summary_2d_rows(self) -> list[tuple[str, str]]:
+        y_values = self._y_values()
+        min_idx = self.y_min_spin.value()
+        max_idx = self.y_max_spin.value()
+        total_slices = max_idx - min_idx + 1
+        fitted_slices = sum(
+            ds is not None for ds in self._result_ds_full[self._y_range_slice()]
+        )
+        param_name = self.param_plot_combo.currentText().strip()
+
+        return [
+            (
+                "Current slice",
+                f"Index {self._current_idx} at {y_values[self._current_idx]}",
+            ),
+            ("Fit range", f"Indices {min_idx} to {max_idx}"),
+            ("Y range", f"{y_values[min_idx]} to {y_values[max_idx]}"),
+            ("Coverage", f"{fitted_slices} / {total_slices} slices fit"),
+            ("Parameter plot", param_name or "None"),
+        ]
+
+    @property
+    def info_text(self) -> str:
+        from erlab.utils.formatting import format_darr_shape_html
+
+        info = f"<b>{self.tool_name}</b>" + format_darr_shape_html(self.tool_data)
+        info += self._summary_section("Setup", self._summary_setup_rows())
+        info += self._summary_section("2D Context", self._summary_2d_rows())
+        info += self._summary_section("Current Slice Fit", self._summary_fit_rows())
+        info += self._summary_section("Current Slice Stats", self._fit_stats_rows())
+        return info
 
     def _init_full_data_state(self, data: xr.DataArray, *, data_name: str) -> None:
         self._data_full: xr.DataArray = data
@@ -339,6 +432,7 @@ class Fit2DTool(Fit1DTool):
         param_plot_controls.addWidget(QtWidgets.QLabel("Parameter"))
         self.param_plot_combo = QtWidgets.QComboBox()
         self.param_plot_combo.currentIndexChanged.connect(self._update_param_plot)
+        self.param_plot_combo.currentTextChanged.connect(self._emit_info_changed)
         param_plot_controls.addWidget(self.param_plot_combo)
 
         self.param_plot_widget = pg.GraphicsLayoutWidget()
@@ -550,9 +644,12 @@ class Fit2DTool(Fit1DTool):
 
         self.copy_button.setText("Copy 1D code")
         self.save_button.setText("Save 1D fit")
+        with contextlib.suppress(TypeError):
+            self.copy_button.clicked.disconnect(self.copy_code)
+        self.copy_button.clicked.connect(self.copy_code_1d)
 
         self.copy_full_button = QtWidgets.QPushButton("Copy code")
-        self.copy_full_button.clicked.connect(self._copy_code_full)
+        self.copy_full_button.clicked.connect(self.copy_code)
         self.save_full_button = QtWidgets.QPushButton("Save fit")
         self.save_full_button.clicked.connect(self._save_fit_full)
 
@@ -821,6 +918,7 @@ class Fit2DTool(Fit1DTool):
         self.param_plot_scatter.setData(x=param_values, y=plot_y)
         self._sync_param_plot_overlay_check()
         self._update_param_plot_overlays()
+        self._notify_data_changed()
 
     def _on_image_legend_sample_clicked(self, sample, event=None) -> None:
         """Mirror legend-driven visibility changes to error bars and state."""
@@ -908,23 +1006,21 @@ class Fit2DTool(Fit1DTool):
             name=f"{param_name}_{kind}",
         )
 
-    def _is_in_manager(self) -> bool:
-        manager = erlab.interactive.imagetool.manager._manager_instance
-        if manager is None:
-            return False
-        return any(
-            self in wrapper._childtools.values()
-            for wrapper in manager._imagetool_wrappers.values()
-        )
-
-    def _show_dataarray_in_itool(self, data: xr.DataArray) -> None:
-        tool = erlab.interactive.itool(
-            data, manager=self._is_in_manager(), execute=False
-        )
-        if isinstance(tool, QtWidgets.QWidget):
-            tool.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
+    def _show_dataarray_in_itool(
+        self,
+        data: xr.DataArray,
+        *,
+        output_id: str | enum.Enum | None = None,
+    ) -> None:
+        if output_id is None:
+            tool = self._launch_detached_output_imagetool(
+                data,
+                provenance_spec=None,
+            )
+        else:
+            tool = self._launch_output_imagetool(data, output_id=output_id)
+        if tool is not None:
             self._itool = tool
-            self._itool.show()
 
     def _update_param_plot_overlays(self) -> None:
         """Update overlay items and legend for active parameters."""
@@ -1042,6 +1138,7 @@ class Fit2DTool(Fit1DTool):
         else:
             self._set_fit_stats(None)
             self._mark_fit_stale()
+        self._emit_info_changed()
 
     @_rebuild_ui(mark_fresh=True)
     def _restore_from_fit_dataset(
@@ -1107,6 +1204,60 @@ class Fit2DTool(Fit1DTool):
         self._result_ds_full = [slice_ds for _, slice_ds in slice_states]
         self._fit_is_current = True
 
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        saved_results = [
+            result_ds.expand_dims({self._PERSISTED_FIT_INDEX_DIM: [idx]})
+            for idx, result_ds in enumerate(self._result_ds_full)
+            if result_ds is not None
+        ]
+        if not saved_results:
+            return ds
+        sparse = xr.concat(
+            saved_results,
+            dim=self._PERSISTED_FIT_INDEX_DIM,
+            data_vars="all",
+            coords="all",
+            compat="override",
+            join="override",
+            combine_attrs="override",
+        )
+        ds = ds.copy()
+        ds[self._PERSISTED_FIT_RESULT_VAR] = xr.DataArray(
+            erlab.interactive.utils._serialize_fit_dataset_blob(sparse),
+            dims=(self._PERSISTED_FIT_RESULT_DIM,),
+        )
+        ds.attrs[self._PERSISTED_FIT_CURRENT_ATTR] = bool(self._fit_is_current)
+        return ds
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        if self._PERSISTED_FIT_RESULT_VAR not in ds:
+            return
+        sparse = erlab.interactive.utils._deserialize_fit_dataset_blob(
+            ds[self._PERSISTED_FIT_RESULT_VAR].values
+        )
+        y_size = int(self._data_full.sizes[self._y_dim_name])
+        self._result_ds_full = [None] * y_size
+        for i, index in enumerate(sparse[self._PERSISTED_FIT_INDEX_DIM].values):
+            idx = int(index)
+            if 0 <= idx < y_size:
+                result_ds = sparse.isel(
+                    {self._PERSISTED_FIT_INDEX_DIM: i}, drop=True
+                ).copy()
+                if self._y_dim_name in self._data_full.coords:
+                    result_ds = result_ds.assign_coords(
+                        {
+                            self._y_dim_name: self._data_full.coords[
+                                self._y_dim_name
+                            ].isel({self._y_dim_name: idx})
+                        }
+                    )
+                self._result_ds_full[idx] = result_ds
+        self._refresh_contents_from_index(
+            mark_fit_stale=not bool(
+                ds.attrs.get(self._PERSISTED_FIT_CURRENT_ATTR, False)
+            )
+        )
+
     @QtCore.Slot()
     def _y_minmax_changed(self) -> None:
         y_vals = self._y_values()
@@ -1126,6 +1277,7 @@ class Fit2DTool(Fit1DTool):
         self._update_full_fit_saveable()
         self._update_param_plot()
         self._write_state()
+        self._emit_info_changed()
 
     def _y_range_slice(self) -> slice:
         return slice(self.y_min_spin.value(), self.y_max_spin.value() + 1)
@@ -1397,7 +1549,7 @@ class Fit2DTool(Fit1DTool):
         status = self.tool_status
         old_geom = self.saveGeometry()
 
-        def _apply_update(validated: xr.DataArray) -> None:
+        def _apply_update(validated: xr.DataArray) -> bool:
             old_cw = self.centralWidget()
             if old_cw is not None:
                 old_cw.setParent(None)
@@ -1422,10 +1574,13 @@ class Fit2DTool(Fit1DTool):
             self._reset_history_stack()
             self._mark_fit_stale()
             self.restoreGeometry(old_geom)
-            self.sigInfoChanged.emit()
+            self._notify_data_changed()
 
             if had_fit and self.refit_on_source_update_check.isChecked():
+                self._source_refresh_deferred = self.has_source_binding
                 self._run_fit()
+                return False
+            return True
 
         return self._perform_source_update(new_data, apply_update=_apply_update)
 
@@ -1461,9 +1616,16 @@ class Fit2DTool(Fit1DTool):
             )
         erlab.interactive.utils.save_fit_ui(full_ds, parent=self)
 
-    @QtCore.Slot()
-    def _copy_code_full(self) -> str:
-        data_name, model_name, lines = self._make_model_code(self._data_name_full)
+    def _build_full_copy_prelude(
+        self, *, warn: bool = True, input_name: str | None = None
+    ) -> str:
+        data_name, _model_name, lines = self._make_model_code(
+            input_name or self._data_name_full
+        )
+
+        def _warn_user(title: str, text: str) -> None:
+            if warn:
+                self._show_warning(title, text)
 
         isel_kw = erlab.interactive.utils.format_kwargs(
             {self._y_dim_name: self._y_range_slice()}
@@ -1487,6 +1649,8 @@ class Fit2DTool(Fit1DTool):
                 f'{data_name} / {data_name}.mean("{self._coord_name}")'
             )
             data_name = f"{data_name}_norm"
+
+        lines.append(f"_fit_data = {data_name}")
 
         param_names: list[str] = []
         param_names_all: list[str] = []
@@ -1518,7 +1682,7 @@ class Fit2DTool(Fit1DTool):
         ):
             if ds is None or params is None:
                 real_index = i + self.y_min_spin.value()
-                self._show_warning(
+                _warn_user(
                     "Missing Fit",
                     f"No fit result for index {real_index}. Please fit all indices "
                     "in the range before saving the full fit.",
@@ -1528,14 +1692,14 @@ class Fit2DTool(Fit1DTool):
                 if expr_param in params:
                     this_expr = params[expr_param].expr
                     if this_expr != params_expr[expr_param]:
-                        self._show_warning(
+                        _warn_user(
                             "Inconsistent Parameters",
                             f"Parameter {expr_param!r} has differing expressions "
                             "between fits. Cannot generate combined fit code.",
                         )
                         return ""
                     continue
-                self._show_warning(
+                _warn_user(
                     "Inconsistent Parameters",
                     f"Parameter {expr_param!r} not found in fit at index "
                     f"{real_index}. Cannot generate combined fit code.",
@@ -1544,7 +1708,7 @@ class Fit2DTool(Fit1DTool):
 
             valid_params = [k for k in params if params[k].expr is None]
             if valid_params != param_names:
-                self._show_warning(
+                _warn_user(
                     "Inconsistent Parameters",
                     "Parameter names or counts differ between fits. "
                     "Cannot generate combined fit code.",
@@ -1559,7 +1723,7 @@ class Fit2DTool(Fit1DTool):
                     params_vary[name] = param.vary
                 else:
                     if params_vary[name] != param.vary:
-                        self._show_warning(
+                        _warn_user(
                             "Inconsistent Parameters",
                             "Parameter vary flags differ between fits. "
                             "Cannot generate combined fit code.",
@@ -1631,22 +1795,136 @@ class Fit2DTool(Fit1DTool):
             param_entries.append(f'"{name}": dict({", ".join(entry_kwargs_lines)}),')
 
         lines.extend(["params = {", "\n    ".join(param_entries), "}\n"])
+        return "\n".join(lines)
 
-        lines.append(
-            erlab.interactive.utils.generate_code(
-                self._data_full.xlm.modelfit,
-                args=[self._coord_name],
-                kwargs={
-                    "model": f"|{model_name}|",
-                    "params": "|params|",
-                    "method": self.method_combo.currentText(),
-                },
-                name="modelfit",
-                module=f"{data_name}.xlm",
-                assign="result",
-            )
+    def _full_fit_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        _, model_name, _ = self._make_model_code(input_name or self._data_name_full)
+        return erlab.interactive.utils.generate_code(
+            self._data_full.xlm.modelfit,
+            args=[self._coord_name],
+            kwargs={
+                "model": f"|{model_name}|",
+                "params": "|params|",
+                "method": self.method_combo.currentText(),
+            },
+            name="modelfit",
+            module="_fit_data.xlm",
         )
-        return erlab.interactive.utils.copy_to_clipboard(lines)
+
+    def _checked_full_copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str | None:
+        prelude = self._build_full_copy_prelude(input_name=input_name, warn=True)
+        return prelude or None
+
+    def _detached_full_copy_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str | None:
+        prelude = self._build_full_copy_prelude(input_name=input_name, warn=False)
+        return prelude or None
+
+    def current_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        # Manager metadata and other passive provenance consumers should not trigger
+        # interactive warnings for incomplete fit ranges.
+        return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
+
+    @QtCore.Slot()
+    def copy_code(self) -> str:
+        return self._copy_provenance_code(
+            self._resolve_script_provenance(self.COPY_PROVENANCE)
+        )
+
+    @QtCore.Slot()
+    def _copy_code_full(self) -> str:
+        return self.copy_code()
+
+    @QtCore.Slot()
+    def copy_code_1d(self) -> str:
+        return self._copy_provenance_code(
+            self._resolve_script_provenance(Fit1DTool.COPY_PROVENANCE)
+        )
+
+    def detached_output_imagetool_provenance(
+        self,
+        data: xr.DataArray,
+        *,
+        source: QtCore.QObject | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if source is None:
+            return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
+        return super().detached_output_imagetool_provenance(
+            data,
+            source=source,
+        )
+
+    def _current_param_output(self, *, stderr: bool) -> tuple[str, xr.DataArray] | None:
+        param_name = self.param_plot_combo.currentText().strip()
+        if not param_name:
+            return None
+        return param_name, self._param_plot_dataarray(param_name, stderr=stderr)
+
+    def _parameter_output_prelude(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str | None:
+        prelude = self._build_full_copy_prelude(warn=False, input_name=input_name)
+        expression = self._full_fit_expression(input_name=input_name)
+        if not prelude or not expression:
+            return None
+        return "\n".join((prelude, f"result = {expression}"))
+
+    def _parameter_values_output_data(self) -> xr.DataArray | None:
+        current = self._current_param_output(stderr=False)
+        if current is None:
+            return None
+        return current[1]
+
+    def _parameter_stderr_output_data(self) -> xr.DataArray | None:
+        current = self._current_param_output(stderr=True)
+        if current is None:
+            return None
+        return current[1]
+
+    def _parameter_values_output_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        current = self._current_param_output(stderr=False)
+        if current is None:
+            return ""
+        param_name, _ = current
+        return (
+            f'result.modelfit_coefficients.sel(param={param_name!r}).drop_vars("param")'
+        )
+
+    def _parameter_stderr_output_expression(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> str:
+        current = self._current_param_output(stderr=True)
+        if current is None:
+            return ""
+        param_name, _ = current
+        return f'result.modelfit_stderr.sel(param={param_name!r}).drop_vars("param")'
 
 
 def ftool(

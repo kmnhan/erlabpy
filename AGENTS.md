@@ -34,10 +34,12 @@ Use modern typing syntax as a default rule: use built-in generics (`list[str]`, 
 
 Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py` beside the code they cover. Loader plugins need regression data in `tests/io/plugins/test_<plugin>.py`; set `ERLAB_TEST_DATA_DIR` to a local clone of `erlabpy-data` so fixtures resolve. Coverage already skips legacy updater code, so aim for branch coverage elsewhere and parametrize datasets to catch multidimensional regressions.
 
+- If newly added or expanded tests fail after an initial implementation, re-examine the runtime code before assuming the tests are wrong. Do not modify tests only to make them pass unless you can clearly justify that the asserted behavior is incorrect; otherwise you may mask a real defect in the implementation.
 - The fast PR workflow runs one fully covered, sharded `3.13 + pyqt6` lane plus smaller compatibility smoke jobs. The weekly compatibility workflow keeps the full upgraded `3.11-3.14 x pyqt6/pyside6` matrix.
 - Test grouping is centralized in `scripts/_ci_test_groups.py`. When adding a new top-level test module under `tests/analysis/`, `tests/interactive/`, `tests/io/`, or `tests/`, update that file so the new test lands in exactly one coverage shard and, if appropriate, in the compatibility smoke set.
 - `tests/conftest.py` assigns the `compat`, `gui`, and `serial` markers during collection based on the centralized grouping rules. Keep those markers semantically meaningful; do not scatter ad hoc CI-only marker assignments across unrelated test files.
 - Run `uv run python -m scripts.ci_test_groups --check-partition` after changing the test tree or CI grouping rules.
+- Tests and monkeypatched stubs must implement the current runtime contract. Do not add production fallbacks or compatibility branches only to accommodate outdated fake objects in tests.
 
 ## Interactive Qt Notes
 
@@ -55,6 +57,8 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 - If a code path already shows an explicit UI dialog (`MessageDialog`/`QMessageBox`), avoid duplicate manager alert popups by logging with `extra={"suppress_ui_alert": True}`.
 - `# pragma: no cover` / `# pragma: no branch` is allowed for edge cases that are hard or impractical to exercise in CI; prefer tests when feasible and add a brief comment explaining why the pragma is needed.
 - Do not export private compatibility shims only for monkeypatched tests; update tests to patch the real module/function location instead.
+- When manager internals change, update test doubles and helper methods to the new interface instead of preserving obsolete paths in runtime code with `hasattr` guards or wrapper-scanning fallbacks.
+- If a subclass override only delegates to `super()`, remove the override instead of leaving a redundant forwarding method behind. Audit nearby overrides when consolidating logic into a base class.
 - Keep watcher semantics stable for IPython users when adding non-IPython support; validate both post-run-cell (IPython) and polling fallback (e.g., marimo/plain namespace) paths in tests.
 
 ## Commit & Pull Request Guidelines

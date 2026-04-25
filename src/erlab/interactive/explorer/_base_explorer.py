@@ -540,10 +540,14 @@ class _LoaderInfoModel(QtCore.QAbstractTableModel):
                     return "Description"
         return None
 
-    def rowCount(self, index: QtCore.QModelIndex | None = None) -> int:
+    def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
+        if parent is not None and parent.isValid():
+            return 0
         return len(erlab.io.loaders.keys())
 
-    def columnCount(self, index: QtCore.QModelIndex | None = None) -> int:
+    def columnCount(self, parent: QtCore.QModelIndex | None = None) -> int:
+        if parent is not None and parent.isValid():
+            return 0
         return 2
 
 
@@ -563,7 +567,7 @@ class _LoaderWidget(QtWidgets.QComboBox):
         self.setView(view)
         view.resizeColumnsToContents()
         view.setMinimumWidth(
-            sum(view.columnWidth(i) for i in range(model.columnCount(0)))
+            sum(view.columnWidth(i) for i in range(model.columnCount()))
         )
 
 

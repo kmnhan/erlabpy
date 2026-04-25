@@ -10,8 +10,10 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 - Unlimited number of cursors with independent binning and code export for each line cut.
 - Rich colormap controls with power law scaling, midpoint-aware scaling, and live color range adjustment.
 - Built-in menus for rotation, symmetrization, averaging, cropping, coordinate reassignment, Fermi edge correction, and other common operations.
-- Tight integration with common analysis helper tools such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, and other tools listed in {ref}`interactive-misc-tools`, all accessible from ImageTool’s menus and context menus.
-- Seamless integration with {ref}`ImageTool manager <imagetool-manager>` when you need to organize many windows, share workspaces, or synchronize with Jupyter notebooks.
+- Tight integration with tools such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, and other tools listed in {ref}`interactive-misc-tools`, all accessible from ImageTool’s menus and context menus.
+- Seamless integration with {ref}`ImageTool manager <imagetool-manager>` when you need
+  to organize top-level ImageTool rows, tools opened from those ImageTools, ImageTool
+  windows made by those tools, shared workspaces, or synchronized Jupyter notebooks.
 
 (imagetool-launch)=
 
@@ -75,7 +77,7 @@ If you use VS Code with the Jupyter extension, add this to your workspace or use
 
 :::
 
-To integrate ImageTool windows with notebook variables—including bi-directional updates—switch to the {ref}`ImageTool manager <imagetool-manager>` and use the `%watch` magic described in {ref}`working-with-notebooks`.
+To integrate ImageTool windows with notebook variables—including bi-directional updates—switch to the {ref}`ImageTool manager <imagetool-manager>` and use the `%watch` magic described in {ref}`working-with-notebooks`. When an ImageTool is open in the manager, ImageTool windows opened from it or from its tools can stay in the same tree branch as the row that made them, as described in {ref}`imagetool-manager-nested-results`.
 
 (imagetool-round-trip)=
 
@@ -88,7 +90,11 @@ selection or transform back into a notebook. If edits should update a live noteb
 variable instead of the clipboard, move the window to the {ref}`manager
 <imagetool-manager>` and use `%watch`.
 
-The full GUI/API mapping lives in {ref}`workflow-bridge-operations`.
+For rows in the manager, the side panel can also show the data in the ImageTool that
+started the workflow, the steps that created the selected row, and code that repeats
+those steps; see
+{ref}`imagetool-manager-replay-code`. The full GUI/API mapping lives in
+{ref}`workflow-bridge-operations`.
 
 (imagetool-interface)=
 
@@ -166,15 +172,17 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - To move all cursors simultaneously, hold {kbd}`Alt` while dragging a cursor line, or use {kbd}`Ctrl+Alt` while dragging on the image.
 
-- Right-click on an image plot or line plot to open a useful context menu. Common options include copying the slicing code, locking the aspect ratio on image plots, exporting the current selection, and opening helper tools.
+- Right-click on an image plot or line plot to open a useful context menu. Common options include copying the slicing code, locking the aspect ratio on image plots, exporting the current selection, and opening tools.
 
   On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`, {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
 
-  Helper tools opened from ImageTool keep track of the slice or selection that created
-  them. If the parent ImageTool is updated with compatible data, the child tool shows a
-  stale marker instead of silently keeping outdated input. Click the marker inside the
-  tool window to refresh it from the latest compatible data, or enable automatic updates
-  for future source replacements.
+  Tools opened from ImageTool remember the slice or selection that opened them. If that
+  ImageTool is updated with compatible data, the tool shows a {guilabel}`Stale` badge
+  instead of silently keeping old input. Click the badge inside the tool window to
+  update it from the latest compatible data, or enable automatic updates for future
+  changes. When ImageTool is open in the manager, ImageTool windows opened from those
+  tools can appear as child rows under the tool row; see
+  {ref}`imagetool-manager-nested-results` and {ref}`imagetool-manager-refresh`.
 
   :::{hint}
   Holding {kbd}`Alt` while opening the menu switches many actions to cropped mode, which crops the data to what is currently visible in the plot before performing the action. This is useful for conducting analysis on a specific region.
@@ -184,7 +192,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
   The guideline center moves together with the cursor. The center and the angle of the guidelines feed directly into the {guilabel}`Rotate` dialog and {guilabel}`ktool` for fast alignment.
 
-- Use {guilabel}`View → Open ktool` and {guilabel}`View → Open meshtool` for the helper tools launched from the main menu rather than the plot context menu.
+- Use {guilabel}`View → Open ktool` and {guilabel}`View → Open meshtool` for tools launched from the main menu rather than the plot context menu.
 
 - The default color cycle of cursors is user configurable. See [](./options.md).
 
@@ -208,7 +216,14 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 ## Editing and filtering data
 
-Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most transforms are destructive yet provide an {guilabel}`Open in New Window` checkbox so you can keep the original data. When {guilabel}`Copy Code` is available, the generated snippet is placed on your clipboard, ready to paste into a script or notebook for reproducibility.
+Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
+transforms are destructive, but they let you keep the data as it was before the edit by
+opening the result separately. When the current ImageTool is open in the manager, use
+{guilabel}`Result Placement` to choose whether the new data opens as a child row of the
+current ImageTool, opens as a separate top-level window, or replaces the current ImageTool; see
+{ref}`imagetool-manager-result-placement`. When {guilabel}`Copy Code` is available, the
+generated snippet is placed on your clipboard, ready to paste into a script or notebook
+for reproducibility.
 
 - {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the angle and center from the guideline.
 - {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
@@ -221,7 +236,7 @@ Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
 - {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, which applies a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
 - {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, which applies a non-destructive filter that applies coordinate-aware Gaussian broadening along selected dimensions.
 
-Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional helper windows opened from the context menus, so everything is closed cleanly when the main window exits.
+Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional tool windows opened from the context menus, so everything is closed cleanly when the main window exits.
 
 (imagetool-roi)=
 
@@ -246,7 +261,9 @@ Two additional context-menu actions appear upon right-clicking on a ROI:
 
 - **Slice Along ROI Path** interpolates the data with {func}`erlab.analysis.interpolate.slice_along_path`.
 
-  Choose a step size and a name for the new path dimension, then decide whether to open the result in a new window or replace the current data.
+  Choose a step size and a name for the new path dimension, then decide where the result
+  should go. In the manager, this uses the same {guilabel}`Result Placement` choices as
+  other transforms.
 
 - **Mask Data with ROI** calls {func}`erlab.analysis.mask.mask_with_polygon` to mask the data with the ROI.
 

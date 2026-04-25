@@ -56,6 +56,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs
     ) -> None:
         super().__init__(parent=parent)
+        self._provenance_spec: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+        ) = None
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
         )
@@ -112,23 +115,46 @@ class BaseImageTool(QtWidgets.QMainWindow):
         """  # noqa: D205
         return self.slicer_area.array_slicer
 
+    @property
+    def provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Canonical replay provenance for the current ImageTool data."""
+        return self._provenance_spec
+
+    def set_provenance_spec(
+        self,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | typing.Mapping[str, typing.Any]
+        | None,
+    ) -> None:
+        """Set canonical replay provenance for the current ImageTool data."""
+        self._provenance_spec = (
+            erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+                provenance_spec
+            )
+        )
+
     def to_dataset(self) -> xr.Dataset:
         name = self.slicer_area._data.name
         if name is None:
             name = ""
-
-        return self.slicer_area._data.to_dataset(
+        ds = self.slicer_area._data.to_dataset(
             name=_ITOOL_DATA_NAME, promote_attrs=False
-        ).assign_attrs(
-            {
-                "itool_state": json.dumps(self.slicer_area.state),
-                "itool_title": self.windowTitle(),
-                "itool_name": str(name),
-                "itool_rect": self.geometry().getRect(),
-                "itool_visible": bool(self.isVisible()),
-                "erlab_version": erlab.__version__,
-            }
         )
+        attrs = {
+            "itool_state": json.dumps(self.slicer_area.state),
+            "itool_title": self.windowTitle(),
+            "itool_name": str(name),
+            "itool_rect": self.geometry().getRect(),
+            "itool_visible": bool(self.isVisible()),
+            "erlab_version": erlab.__version__,
+        }
+        if self._provenance_spec is not None:
+            attrs["itool_provenance_spec"] = json.dumps(
+                self._provenance_spec.model_dump(mode="json")
+            )
+        return ds.assign_attrs(attrs)
 
     def to_file(self, filename: str | os.PathLike) -> None:
         """Save the data, state, title, and geometry of the tool to a file.
@@ -170,6 +196,18 @@ class BaseImageTool(QtWidgets.QMainWindow):
             state=json.loads(ds.attrs["itool_state"]),
             **kwargs,
         )
+        provenance_spec = ds.attrs.get("itool_provenance_spec")
+        if provenance_spec is not None:
+            try:
+                tool.set_provenance_spec(
+                    typing.cast(
+                        "typing.Mapping[str, typing.Any]", json.loads(provenance_spec)
+                    )
+                )
+            except Exception:
+                erlab.utils.misc.emit_user_level_warning(
+                    "Ignoring invalid saved ImageTool provenance metadata.",
+                )
         tool.setWindowTitle(ds.attrs["itool_title"])
         tool.setGeometry(*ds.attrs["itool_rect"])
         return tool
@@ -206,6 +244,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         """
         kwargs["state"] = self.slicer_area.state.copy()
         new_tool = self.__class__(self.slicer_area._data.copy(deep=False), **kwargs)
+        new_tool.set_provenance_spec(self.provenance_spec)
         new_tool.setGeometry(self.geometry())
         return new_tool
 

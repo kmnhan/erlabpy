@@ -4,7 +4,16 @@
 
 In addition to ImageTool and the ImageTool manager, other interactive tools for specific tasks are available in the {mod}`erlab.interactive` module.
 
-Most of these tools can be opened as auxiliary windows from within ImageTool, and are also integrated into the ImageTool manager, allowing you to manage them alongside your ImageTool windows.
+Most of these tools can be opened from within ImageTool, and are also integrated into
+the ImageTool manager, allowing you to manage them alongside your ImageTool windows.
+
+When a tool is launched from an ImageTool that is open in the manager, the manager can
+show the tool as a child row under that ImageTool. ImageTool windows opened from the
+tool can also appear as child rows under the tool instead of as unrelated top-level
+windows. This keeps the data in the ImageTool that opened the tool, the tool settings,
+update status, and code for repeating the steps together; see
+{ref}`imagetool-manager-nested-results`,
+{ref}`imagetool-manager-refresh`, and {ref}`imagetool-manager-replay-code`.
 
 More interactive tools will be added in the near future.
 
@@ -40,7 +49,7 @@ There are four ways to start `ktool`.
 
    The button will be disabled if the data is not compatible with {func}`ktool <erlab.interactive.ktool>`.
 
-   When the source ImageTool data contains both `alpha` and `beta` dimensions, the normal emission values are set from the active cursor position.
+   When the ImageTool data contains both `alpha` and `beta` dimensions, the normal emission values are set from the active cursor position.
 
    If a rotation guideline is visible on the main image, the guideline's angle and center will be applied instead.
 
@@ -68,7 +77,9 @@ The first tab is for setting momentum conversion parameters. The image is update
 
 Clicking {guilabel}`Copy code` will copy the code for conversion to the clipboard.
 
-{guilabel}`Open in ImageTool` performs a full conversion and opens the result in a new ImageTool.
+{guilabel}`Open in ImageTool` performs a full conversion. When `ktool` was opened from
+an ImageTool in the manager, the converted data opens as a child row under `ktool`;
+outside the manager, it opens as a normal standalone ImageTool window.
 
 ```{image} ../../images/ktool_2_light.png
 :align: center
@@ -152,7 +163,11 @@ The `%dtool` line magic (see {ref}`interactive-misc-magics`) provides the same e
 
 - Clicking the copy button will copy the code for differentiation to the clipboard.
 
-- Both the smoothed data and the result can be opened in ImageTool from the right-click menu of each plot, where it can be analyzed further or saved to disk.
+- Both the smoothed data and the result can be opened in ImageTool from the right-click
+  menu of each plot, where it can be analyzed further or saved to disk. When `dtool`
+  was opened from an ImageTool in the manager, these ImageTool windows stay under
+  `dtool` in the manager tree and can be updated when the ImageTool that opened
+  `dtool` changes.
 
 (guide-goldtool)=
 
@@ -171,6 +186,12 @@ eri.goldtool(data)
 It can also be opened from the right-click context menu of any image plot in ImageTool.
 
 Use the `%goldtool` magic (see {ref}`interactive-misc-magics`) to launch it directly from IPython.
+
+When `goldtool` is opened from an ImageTool in the manager, it remembers the selected
+spectrum or slice that opened it. If that ImageTool changes, the manager can mark the
+tool and its corrected ImageTool window as {guilabel}`Stale`. Enable
+{guilabel}`Refit on source update` when you want the edge fit to rerun automatically
+after compatible updates.
 
 (guide-ftool)=
 
@@ -205,6 +226,12 @@ There are three ways to start `ftool`.
    %ftool data
    %ftool --model my_model data
    ```
+
+When `ftool` is opened from an ImageTool in the manager, it remembers the slice or line
+cut that opened it. If that ImageTool changes, the manager can update the tool from the
+latest compatible data. Enable {guilabel}`Refit on source update` when the same fit
+should rerun after updates. For 2D fits, parameter maps opened in ImageTool appear as
+child rows under `ftool`.
 
 ### Overview
 
@@ -354,7 +381,10 @@ Some models have additional options that appear below the model selector that ar
    {guilabel}`Fit ×20` performs a sequence of 20 fits on the *same* data. After each run, the fitted parameters are fed back in as the initial parameters for the next run. This can help in nonlinear or highly correlated models where a single fit gets close but not fully converged. Reusing the previous best-fit parameters often nudges the optimizer into a better solution without you having to manually tweak values between runs.
    :::
 
-5. Use {guilabel}`Copy code` to copy the reproducible code for this fit to the clipboard, or use {guilabel}`Save fit` to save the results with {func}`xarray_lmfit.save_fit`.
+5. Use {guilabel}`Copy code` to copy the reproducible code for this fit to the
+   clipboard, or use {guilabel}`Save fit` to save the results with
+   {func}`xarray_lmfit.save_fit`. In the manager, the side panel can also show code for
+   the ImageTool selections and tool steps that led to the fit.
 
 ### Workflow for 2D data
 
@@ -422,7 +452,11 @@ For 2D data, the tool fits a *stack* of 1D curves.
 
 7. Inspect the parameter plot to verify trends. If a slice fails, move to it with {guilabel}`Index`, fix the parameters, then continue the sequence.
 
-8. When all indices in the range are fitted, click {guilabel}`Save fit` to export the combined results or {guilabel}`Copy code` to generate reproducible code for the full 2D fit. These buttons are only enabled after the full sequence is complete.
+8. When all indices in the range are fitted, click {guilabel}`Save fit` to export the
+   combined results or {guilabel}`Copy code` to generate reproducible code for the full
+   2D fit. These buttons are only enabled after the full sequence is complete. When
+   `ftool` is open in the manager, parameter maps opened in ImageTool appear as child
+   rows under `ftool`.
 
 ### Reopening saved fits
 
@@ -431,7 +465,12 @@ You can reopen a saved fit by loading the dataset with {func}`xarray_lmfit.load_
 Saved fits restore the stored data, the serialized model (when available), and the fitted parameter values. For 2D fits, all slices must share the same model definition.
 
 :::{note}
-The data is cropped to the fit range used during saving, so reopening a saved fit will only show the data within the original fit window. To preserve the full data, open {guilabel}`ftool` from data in the [ImageTool manager](imagetool-manager) and [save as a workspace](imagetool-manager-archive-workspace).
+The data is cropped to the fit range used during saving, so reopening a saved fit will
+only show the data within the fit window used when the fit was saved. To preserve the
+full data in the ImageTool window, `ftool` settings, fit result, and any ImageTool
+windows opened from `ftool`, open {guilabel}`ftool` from data in the
+{ref}`ImageTool manager <imagetool-manager>` and
+{ref}`save as a workspace <imagetool-manager-archive-workspace>`.
 :::
 
 (guide-restool)=
@@ -451,6 +490,11 @@ eri.restool(data)
 It can also be opened from the ImageTool image-plot context menu when the data contains an energy axis.
 
 The `%restool` magic (see {ref}`interactive-misc-magics`) provides a quick way to launch it from IPython.
+
+When `restool` is launched from an ImageTool in the manager, it remembers the selected
+EDC that opened it. If that ImageTool is replaced with compatible data, the manager can
+update the tool and optionally rerun the fit when {guilabel}`Refit on source update` is
+enabled.
 
 (guide-meshtool)=
 
@@ -486,7 +530,7 @@ The `%meshtool` magic (see {ref}`interactive-misc-magics`) provides a quick way 
 
 :::
 
-This tool accepts any DataArray with `eV` and `alpha` dimensions. When additional dimensions are present, the data will be averaged over those dimensions to detect the mesh pattern. The original data will be corrected using the detected mesh parameters.
+This tool accepts any DataArray with `eV` and `alpha` dimensions. When additional dimensions are present, the data will be averaged over those dimensions to detect the mesh pattern. `meshtool` then applies the detected mesh parameters to the full input DataArray.
 
 - The first checkbox enables/disables undoing of software edge correction for straight analyzer slits that some analyzers apply automatically (currently only tested with Scienta DA30L).
 
@@ -498,6 +542,11 @@ This tool accepts any DataArray with `eV` and `alpha` dimensions. When additiona
 - In the final section, several parameters for mesh removal are provided. For more information on these parameters, see the documentation for {func}`erlab.analysis.mesh.remove_mesh`. You may have to experiment with these parameters to achieve optimal results for your dataset.
 
 - Once you are satisfied with the parameters, click {guilabel}`Go!` to perform mesh removal.
+
+If you open the corrected data in ImageTool from a `meshtool` that was opened from an
+ImageTool in the manager, the new ImageTool window is kept as a child row under
+`meshtool` in the manager tree. The manager side panel can then show the data in the
+ImageTool that opened `meshtool` and the code for repeating the mesh-removal steps.
 
 :::{note}
 Mesh removal is currently experimental and may not work well for all datasets, and may introduce unwanted artifacts. Please use with caution and verify the results carefully.

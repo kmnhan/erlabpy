@@ -8,6 +8,7 @@ __all__ = [
     "fastslicing",
     "itool",
     "manager",
+    "provenance",
     "slicer",
     "viewer",
 ]
@@ -19,6 +20,7 @@ from . import (
     fastbinning,
     fastslicing,
     manager,
+    provenance,
     slicer,
     viewer,
 )

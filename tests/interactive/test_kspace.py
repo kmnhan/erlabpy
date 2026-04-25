@@ -401,7 +401,7 @@ def test_ktool_copy_code_uses_set_normal(
     assert ".kspace.offsets =" not in code
 
     input_name = str(win._argnames["data"])
-    if not input_name.isidentifier():
+    if not erlab.interactive.utils._is_kwarg_name(input_name):
         input_name = "data"
 
     namespace = {input_name: data.copy(deep=True)}
@@ -416,6 +416,51 @@ def test_ktool_copy_code_uses_set_normal(
         )
 
     xr.testing.assert_allclose(expected, namespace[f"{input_name}_kconv"])
+
+
+def test_ktool_output_provenance_uses_converted_output_name(qtbot) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    converted = win.output_imagetool_data(KspaceTool.Output.CONVERTED)
+    assert converted is not None
+
+    spec = win.output_imagetool_provenance(KspaceTool.Output.CONVERTED, converted)
+    assert spec is not None
+
+    input_name = str(win._argnames["data"])
+    if not erlab.interactive.utils._is_kwarg_name(input_name):
+        input_name = "data"
+
+    assert spec.active_name == f"{input_name}_kconv"
+    code = spec.display_code()
+    assert code is not None
+    assert f"{input_name}_kconv" in code
+    assert ".kspace.set_normal(" in code
+
+
+def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+    win.set_input_provenance_spec(
+        erlab.interactive.imagetool.provenance.script(
+            start_label="Start from watched variable 'my_data'",
+            seed_code="derived = my_data.astype(np.float64)",
+            active_name="derived",
+        )
+    )
+
+    code = win.copy_code()
+
+    assert "target = my_data.astype(np.float64)" in code
+    assert "target.kspace.set_normal(" in code
+    assert "target_kconv = target.kspace.convert(" in code
+    assert "astype(np.float64)_kconv" not in code
+    namespace = {"my_data": data.copy(deep=True), "np": np}
+    exec(code, {"__builtins__": {}, "np": np}, namespace)  # noqa: S102
+    assert "target_kconv" in namespace
 
 
 def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:

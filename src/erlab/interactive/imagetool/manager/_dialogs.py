@@ -102,7 +102,7 @@ class _ConcatDialog(QtWidgets.QDialog):
         manager = self._manager()
         if manager is not None:  # pragma: no branch
             try:
-                selected = list(manager.tree_view.selected_imagetool_indices)
+                selected = list(manager._selected_imagetool_targets())
                 to_concat = [
                     manager.get_imagetool(idx).slicer_area._data for idx in selected
                 ]
@@ -119,9 +119,13 @@ class _ConcatDialog(QtWidgets.QDialog):
                 if self._remove_original_check.isChecked():
                     for index in sorted(
                         selected,
+                        key=str,
                         reverse=True,
                     ):
-                        manager.remove_imagetool(index)
+                        if isinstance(index, int):
+                            manager.remove_imagetool(index)
+                        else:
+                            manager._remove_childtool(index)
         super().accept()
 
 
@@ -214,13 +218,13 @@ class _StoreDialog(QtWidgets.QDialog):
             data = manager.get_imagetool(tool_idx).slicer_area._data
             wrapper = manager._imagetool_wrappers[tool_idx]
             default_name = data.name
-            if not (isinstance(default_name, str) and default_name.isidentifier()):
-                if wrapper.name.isidentifier():
+            if not erlab.interactive.utils._is_kwarg_name(default_name):
+                if erlab.interactive.utils._is_kwarg_name(wrapper.name):
                     default_name = wrapper.name
                 else:
                     default_name = f"data_{tool_idx}"
 
-            line_new = QtWidgets.QLineEdit(default_name)
+            line_new = QtWidgets.QLineEdit(str(default_name))
             line_new.setPlaceholderText("Enter variable name")
             line_new.setValidator(erlab.interactive.utils.IdentifierValidator())
             self._layout.addRow(wrapper.label_text, line_new)
@@ -479,10 +483,65 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
                 if item is not None:  # pragma: no branch
                     if not only_children:
                         item.setCheckState(0, state)
-                    for j in range(item.childCount()):
-                        child_item = item.child(j)
-                        if child_item is not None:  # pragma: no branch
-                            child_item.setCheckState(0, state)
+                    self._set_child_check_state(item, state)
+
+    def _set_child_check_state(
+        self, item: QtWidgets.QTreeWidgetItem, state: QtCore.Qt.CheckState
+    ) -> None:
+        for i in range(item.childCount()):
+            child = item.child(i)
+            if child is None:
+                continue
+            child.setCheckState(0, state)
+            self._set_child_check_state(child, state)
+
+    def _node_payload(
+        self, node: xarray.DataTree
+    ) -> tuple[typing.Literal["imagetool", "tool"], xr.Dataset]:
+        if "imagetool" in node:
+            return (
+                "imagetool",
+                typing.cast("xarray.DataTree", node["imagetool"]).to_dataset(
+                    inherit=False
+                ),
+            )
+        if "tool" in node:
+            return "tool", typing.cast("xarray.DataTree", node["tool"]).to_dataset(
+                inherit=False
+            )
+        raise ValueError("Workspace node does not contain a supported payload")
+
+    def _populate_tree_item(
+        self,
+        parent_item: QtWidgets.QTreeWidgetItem,
+        node: xarray.DataTree,
+        *,
+        key: str,
+        root_name: str | None = None,
+    ) -> QtWidgets.QTreeWidgetItem:
+        kind, ds = self._node_payload(node)
+        title_attr = "itool_title" if kind == "imagetool" else "tool_title"
+        title = str(ds.attrs.get(title_attr, ""))
+        text = title
+        if root_name is not None:
+            text = root_name if not title else f"{root_name}: {title}"
+        if not text:
+            text = key
+
+        item = QtWidgets.QTreeWidgetItem(parent_item, [text])
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
+        item.setFlags(
+            QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        )
+        item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+
+        if "childtools" in node:
+            for child_key, child_node in typing.cast(
+                "xarray.DataTree", node["childtools"]
+            ).items():
+                if isinstance(child_node, xr.DataTree):
+                    self._populate_tree_item(item, child_node, key=child_key)
+        return item
 
     def _populate_tree(self, tree: xarray.DataTree) -> None:
         root: QtWidgets.QTreeWidgetItem | None = self._tree_widget.invisibleRootItem()
@@ -490,35 +549,14 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
 
         if root is not None and manager is not None:  # pragma: no branch
             start = int(manager.next_idx)
-            for i, (key, node) in enumerate(tree.items()):
-                title = node["imagetool"].attrs["itool_title"]
-
-                # Use candidate if loading, current index if saving
-                name = str(key) if self._saving else str(start + i)
-                if title:
-                    name = f"{name}: {title}"
-
-                item = QtWidgets.QTreeWidgetItem(root, [name])
-                item.setFlags(
-                    QtCore.Qt.ItemFlag.ItemIsEnabled
-                    | QtCore.Qt.ItemFlag.ItemIsUserCheckable
-                )
-
-                if "childtools" in node:
-                    for cnode in typing.cast(
-                        "xarray.DataTree", node["childtools"]
-                    ).values():
-                        citem = QtWidgets.QTreeWidgetItem(
-                            item, [cnode.attrs["tool_title"]]
-                        )
-                        citem.setFlags(
-                            QtCore.Qt.ItemFlag.ItemIsEnabled
-                            | QtCore.Qt.ItemFlag.ItemIsUserCheckable
-                        )
-                        citem.setCheckState(0, QtCore.Qt.CheckState.Checked)
-                        item.addChild(citem)
-                item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+            n_items = 0
+            for key, node in tree.items():
+                if not isinstance(node, xr.DataTree):
+                    continue
+                name = str(key) if self._saving else str(start + n_items)
+                item = self._populate_tree_item(root, node, key=key, root_name=name)
                 self._tree_widget.addTopLevelItem(item)
+                n_items += 1
             self._tree_widget.expandAll()
 
     def imagetool_selected(self, index: int) -> bool:
@@ -541,57 +579,30 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
 
     @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
     def _on_item_changed(self, item: QtWidgets.QTreeWidgetItem, column: int) -> None:
-        if column == 0:  # pragma: no branch
-            if item.parent() is None:
-                # Parent item changed
-                check_state = item.checkState(0)
-                # Checked or Unchecked since PartiallyChecked cannot be set by user
+        if column != 0:
+            return
 
-                # Make children check state match parent
-                for i in range(item.childCount()):
-                    child = item.child(i)
-                    if child is not None:  # pragma: no branch
-                        self._tree_widget.blockSignals(True)
-                        child.setCheckState(0, check_state)
-                        self._tree_widget.blockSignals(False)
+        check_state = item.checkState(0)
+        if check_state != QtCore.Qt.CheckState.PartiallyChecked:
+            self._tree_widget.blockSignals(True)
+            self._set_child_check_state(item, check_state)
+            self._tree_widget.blockSignals(False)
 
-                if check_state == QtCore.Qt.CheckState.Checked:
-                    n_children = item.childCount()
-                    if n_children == 0:
-                        return
-
-                    n_checked_children: int = sum(
-                        typing.cast(
-                            "QtWidgets.QTreeWidgetItem", item.child(i)
-                        ).checkState(0)
-                        == QtCore.Qt.CheckState.Checked
-                        for i in range(n_children)
-                    )
-                    if n_checked_children < n_children:
-                        # Some children are unchecked, set to partially checked
-                        self._tree_widget.blockSignals(True)
-                        item.setCheckState(0, QtCore.Qt.CheckState.PartiallyChecked)
-                        self._tree_widget.blockSignals(False)
+        parent = item.parent()
+        while parent is not None:
+            child_states = [
+                typing.cast("QtWidgets.QTreeWidgetItem", parent.child(i)).checkState(0)
+                for i in range(parent.childCount())
+            ]
+            if not child_states:
+                break
+            if all(state == QtCore.Qt.CheckState.Checked for state in child_states):
+                state = QtCore.Qt.CheckState.Checked
+            elif all(state == QtCore.Qt.CheckState.Unchecked for state in child_states):
+                state = QtCore.Qt.CheckState.Unchecked
             else:
-                # Child item changed
-                parent = item.parent()
-                if parent is not None:  # pragma: no branch
-                    n_children = parent.childCount()
-                    n_checked_children = sum(
-                        typing.cast(
-                            "QtWidgets.QTreeWidgetItem", parent.child(i)
-                        ).checkState(0)
-                        == QtCore.Qt.CheckState.Checked
-                        for i in range(n_children)
-                    )
-                    if n_checked_children < n_children:
-                        # Partial
-                        self._tree_widget.blockSignals(True)
-                        parent.setCheckState(0, QtCore.Qt.CheckState.PartiallyChecked)
-                        self._tree_widget.blockSignals(False)
-
-                    elif n_checked_children == n_children:
-                        # All children checked, parent must be checked
-                        self._tree_widget.blockSignals(True)
-                        parent.setCheckState(0, QtCore.Qt.CheckState.Checked)
-                        self._tree_widget.blockSignals(False)
+                state = QtCore.Qt.CheckState.PartiallyChecked
+            self._tree_widget.blockSignals(True)
+            parent.setCheckState(0, state)
+            self._tree_widget.blockSignals(False)
+            parent = parent.parent()

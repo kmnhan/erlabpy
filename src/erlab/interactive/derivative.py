@@ -15,8 +15,10 @@
 
 __all__ = ["dtool"]
 
+import enum
 import functools
 import importlib.resources
+import textwrap
 import typing
 from collections.abc import Callable, Hashable
 
@@ -38,6 +40,27 @@ else:
 
 class DerivativeTool(erlab.interactive.utils.ToolWindow):
     tool_name = "dtool"
+    COPY_PROVENANCE: typing.ClassVar = (
+        erlab.interactive.utils.ToolScriptProvenanceDefinition(
+            start_label="Start from current dtool input data",
+            operations_method="_copy_provenance_operations",
+            active_name="result",
+        )
+    )
+
+    class Output(enum.StrEnum):
+        RESULT = "dtool.result"
+
+    IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+        Output.RESULT: erlab.interactive.utils.ToolImageOutputDefinition(
+            data_method="_result_output_data",
+            provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dtool input data",
+                operations_method="_output_provenance_operations",
+                active_name="result",
+            ),
+        )
+    }
 
     @property
     def preview_imageitem(self) -> pg.ImageItem:
@@ -261,6 +284,9 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         self.curv_a0_spin.valueChanged.connect(self.update_result)
         self.curv_factor_spin.valueChanged.connect(self.update_result)
 
+        self._itool: QtWidgets.QWidget | None = None
+
+        self.open_btn.clicked.connect(self.open_itool)
         self.copy_btn.clicked.connect(self.copy_code)
 
         self.images[0].setDataArray(self.data)
@@ -432,7 +458,16 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     def update_result(self) -> None:
         if not self._pause_update:
             self.result = self.process_func(self.processed_data, **self.process_kwargs)
-            self.sigInfoChanged.emit()
+            self._notify_data_changed()
+
+    @QtCore.Slot()
+    def open_itool(self) -> None:
+        tool = self._launch_output_imagetool(
+            self.result.T,
+            output_id=self.Output.RESULT,
+        )
+        if tool is not None:
+            self._itool = tool
 
     def update_data(self, new_data: xr.DataArray) -> None:
         status = self.tool_status
@@ -456,12 +491,10 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             raise ValueError("Input DataArray must be 2D")
         return data
 
-    def copy_code(self) -> str:
+    def _build_copy_code(self, *, input_name: str | None = None) -> str:
         lines: list[str] = []
 
-        data_name = (
-            self.data_name
-        )  # "".join([s.strip() for s in self.data_name.split("\n")])
+        data_name = input_name or self.data_name
 
         if self.data_has_nan:
             data_name = f"{data_name}.fillna(0)"
@@ -498,26 +531,31 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
             n_repeat = self.sn_spin.value()
 
-            if n_repeat > 1:
-                lines.append(f"_processed = {data_name}.copy()")
-                data_name = "_processed"
-
-            smooth_func_code: str = erlab.interactive.utils.generate_code(
-                smooth_func,
-                [f"|{data_name}|"],
-                smooth_kwargs,
-                module="era.image",
-                assign=data_name if (n_repeat > 1) else None,
-            )
             if n_repeat == 1:
-                data_name = smooth_func_code.replace(" = ", "=")
+                smooth_func_code = erlab.interactive.utils.generate_code(
+                    smooth_func,
+                    [f"|{data_name}|"],
+                    smooth_kwargs,
+                    module="era.image",
+                    assign="_processed",
+                )
+                lines.append(smooth_func_code)
             else:
+                lines.append(f"_processed = {data_name}.copy()")
+                smooth_func_code = erlab.interactive.utils.generate_code(
+                    smooth_func,
+                    ["|_processed|"],
+                    smooth_kwargs,
+                    module="era.image",
+                    assign="_processed",
+                )
                 lines.extend(
                     (
                         f"for _ in range({self.sn_spin.value()}):",
-                        f"\t{smooth_func_code}",
+                        textwrap.indent(smooth_func_code, "    "),
                     )
                 )
+            data_name = "_processed"
 
         lines.append(
             erlab.interactive.utils.generate_code(
@@ -530,7 +568,47 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             )
         )
 
-        return erlab.interactive.utils.copy_to_clipboard(lines)
+        return "\n".join(lines)
+
+    def _result_provenance_operations(
+        self, *, input_name: str | None = None, transpose_output: bool = False
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptCodeOperation, ...]:
+        operations = [
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label="Compute derivative output",
+                code=self._build_copy_code(input_name=input_name),
+            )
+        ]
+        if transpose_output:
+            operations.append(
+                erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                    label="Transpose derivative output for ImageTool display",
+                    code="result = result.transpose()",
+                )
+            )
+        return tuple(operations)
+
+    def _copy_provenance_operations(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptCodeOperation, ...]:
+        return self._result_provenance_operations(input_name=input_name)
+
+    def _output_provenance_operations(
+        self,
+        *,
+        input_name: str | None = None,
+        data: xr.DataArray | None = None,
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptCodeOperation, ...]:
+        return self._result_provenance_operations(
+            input_name=input_name,
+            transpose_output=True,
+        )
+
+    def _result_output_data(self) -> xr.DataArray:
+        return self.result.T
 
 
 def dtool(

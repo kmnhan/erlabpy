@@ -559,11 +559,22 @@
         </widget>
        </item>
        <item>
-        <widget class="QPushButton" name="copy_btn">
-         <property name="text">
-          <string>Copy code to clipboard</string>
-         </property>
-        </widget>
+        <layout class="QHBoxLayout" name="horizontalLayout_6">
+         <item>
+          <widget class="QPushButton" name="open_btn">
+           <property name="text">
+            <string>Open in ImageTool</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="copy_btn">
+           <property name="text">
+            <string>Copy code to clipboard</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
        </item>
       </layout>
      </widget>
