@@ -1407,6 +1407,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _mark_descendants_source_unavailable(self, uid: str) -> None:
             self.unavailable.append(uid)
 
+        def _resume_pending_source_refreshes(self, uid: str) -> None:
+            self.updated.append(f"resumed:{uid}")
+
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
 
@@ -1577,6 +1580,13 @@ def test_managed_tool_window_node_detached_update_branches(
         def _mark_descendants_source_unavailable(self, uid: str) -> None:
             self.unavailable.append(uid)
 
+        def _resume_pending_source_refreshes(self, uid: str) -> None:
+            self.updated.append(f"resumed:{uid}")
+
+        def _refresh_source_chain_to_uid(self, uid: str) -> bool:
+            self.updated.append(f"refresh:{uid}")
+            return True
+
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
 
@@ -1703,7 +1713,7 @@ def test_managed_tool_window_node_detached_update_branches(
         QtWidgets.QDialog.DialogCode.Accepted
     )
     assert node.source_auto_update is True
-    assert manager.updated[-1] == "child"
+    assert manager.updated[-1] == "refresh:child"
 
 
 def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) -> None:

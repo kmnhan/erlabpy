@@ -2812,6 +2812,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._source_state: typing.Literal["fresh", "stale", "unavailable"] = "fresh"
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
+        self._managed_source_update_dialog: Callable[..., int] | None = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
 
         # Initialize a menu bar to correctly apply keyboard shortcuts on some platforms
@@ -3618,6 +3619,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if fetcher is not None and self._source_state == "fresh":
             self._sync_input_provenance_snapshot()
 
+    def _set_managed_source_update_dialog(
+        self, callback: Callable[..., int] | None
+    ) -> None:
+        """Set the manager-owned source update dialog callback."""
+        self._managed_source_update_dialog = callback
+
     def finalize_source_refresh(self) -> None:
         """Record that the current source refresh has been applied to the tool."""
         self._source_refresh_deferred = False
@@ -3826,6 +3833,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self, *, parent: QtWidgets.QWidget | None = None
     ) -> int:
         """Show automatic update controls and apply the user's selection."""
+        if self._managed_source_update_dialog is not None:
+            return self._managed_source_update_dialog(parent=parent)
+
         if self._source_spec is None:
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
