@@ -1,4 +1,5 @@
 import tempfile
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,6 +11,11 @@ import erlab
 from erlab.constants import AxesConfiguration
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
+
+_MISSING_KSPACE_PARAMETER_WARNINGS = {
+    "Work function not found in data attributes, assuming 4.5 eV",
+    "Inner potential not found in data attributes, assuming 10 eV",
+}
 
 _NORMAL_EMISSION_CASES = [
     pytest.param(
@@ -41,6 +47,16 @@ _NORMAL_EMISSION_CASES = [
         id="Type2DA",
     ),
 ]
+
+
+def _missing_kspace_parameter_warnings(
+    caught: list[warnings.WarningMessage],
+) -> list[warnings.WarningMessage]:
+    return [
+        warning
+        for warning in caught
+        if str(warning.message) in _MISSING_KSPACE_PARAMETER_WARNINGS
+    ]
 
 
 def _make_ktool_data(
@@ -584,6 +600,37 @@ def test_ktool_resolution_estimate_uses_current_work_function(qtbot, anglemap) -
         assert np.isclose(spin.value(), np.round(expected, spin.decimals()))
 
     assert not np.isclose(win._resolution_spins["kx"].value(), initial_kx_resolution)
+
+
+def test_ktool_suppresses_missing_kspace_parameter_warnings(qtbot) -> None:
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+    data = data.copy(deep=True)
+    data.attrs.pop("sample_workfunction", None)
+    data.attrs.pop("inner_potential", None)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert not _missing_kspace_parameter_warnings(caught)
+    assert win._offset_spins["wf"].value() == pytest.approx(4.5)
+    assert win._offset_spins["V0"].value() == pytest.approx(10.0)
+
+    original_attrs = win.data.attrs.copy()
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.01
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        win.calculate_bounds()
+        win.calculate_resolution()
+        win.get_data()
+        win.copy_code()
+        win.update_data(updated)
+
+    assert not _missing_kspace_parameter_warnings(caught)
+    assert win.data.attrs == original_attrs
 
 
 def test_ktool_shallow_copy_paths_do_not_mutate_tool_data_attrs(

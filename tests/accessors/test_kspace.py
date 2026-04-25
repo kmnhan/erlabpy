@@ -920,6 +920,24 @@ def test_kconv_missing_attr(missing_attr, anglemap):
         data.kspace.convert(silent=True)
 
 
+def test_missing_kspace_parameter_accessors_warn(anglemap) -> None:
+    data = anglemap.copy(deep=True)
+    data.attrs.pop("sample_workfunction", None)
+    data.attrs.pop("inner_potential", None)
+
+    with pytest.warns(
+        UserWarning,
+        match=r"Work function not found in data attributes, assuming 4\.5 eV",
+    ):
+        assert data.kspace.work_function == pytest.approx(4.5)
+
+    with pytest.warns(
+        UserWarning,
+        match=r"Inner potential not found in data attributes, assuming 10 eV",
+    ):
+        assert data.kspace.inner_potential == pytest.approx(10.0)
+
+
 def test_kspace_set_existing_configuration(anglemap):
     data = anglemap.copy().assign_coords(chi=0.0)
 
