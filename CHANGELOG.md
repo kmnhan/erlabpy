@@ -2,6 +2,24 @@
 
 ### ✨ Features
 
+- **manager:** add refreshable nested ImageTool workflows (#308) ([f19cf12](https://github.com/kmnhan/erlabpy/commit/f19cf123b275222579d54fa722c28c3269d1be33))
+
+  This is a major update to the ImageTool Manager that changes the workflow for ImageTool-based analysis.
+
+  Previously, ImageTool windows were always top-level items in the manager, while tools launched from ImageTool were nested under their source ImageTool. This made derived ImageTool outputs inconsistent: opening an ImageTool from an existing ImageTool created a sibling window instead of a child, and the manager could not track the relationship between the output and its source.
+
+  Starting with this release, ImageTool windows can be nested below the tool or ImageTool that created them, and the manager tracks parent-child relationships between source data, tools, and derived outputs. Results are organized under their source in the manager tree, and their lineage is tracked back to the original data. When parent data changes, child tools and outputs are marked as stale and can be refreshed manually or automatically. `ftool`, `goldtool`, and `restool` can also be configured to rerun fits when their source data updates.
+
+  ImageTool transform dialogs now include a `Result Placement` selector. In manager-backed windows, the default is `Open Child Window`. Choose `Open Top-Level Window` to keep the previous detached-window behavior, or `Replace Current` to overwrite the active ImageTool.
+
+  The manager side panel now shows source metadata, derivation steps, and copyable replay code for derived results. Select individual derivation steps to copy only the relevant code, or copy the full derivation at once. This makes it easier to inspect how a result was created and move the workflow into reproducible code.
+
+  Workspaces are upgraded so that nested tools, nested ImageTool outputs, fit results, source bindings, and derivation metadata persist across save/load.
+
+- **manager:** let child tools refresh after source data changes (#305) ([c8180b2](https://github.com/kmnhan/erlabpy/commit/c8180b25dd6cf29d4c41d66d4dcbfe159c5261dc))
+
+  Child tools opened from ImageTool, such as `dtool`, `goldtool`, `restool`, `ktool`, and `meshtool`, now keep track of the selection they were opened from. When the parent ImageTool is updated with compatible new data, for example after reload, replace, watch updates, or in-place editing dialogs, those tools no longer silently stay on outdated data. Instead, they are marked as stale or unavailable in both the tool window and the ImageTool manager. Users can click the marker to refresh the tool from the latest source data, and can optionally enable automatic updates for future replacements. This makes real-time and iterative analysis much smoother because helper tools no longer need to be reopened every time the parent data changes.
+
 - **imagetool:** add interface for `symmetrize_nfold` ([07eb6c8](https://github.com/kmnhan/erlabpy/commit/07eb6c86bd8cfb58bb7501e5f10b5922ec8d702c))
 
   Adds a new `Edit → Symmetrize → Rotational...` dialog to ImageTool as an interface to `era.transform.symmetrize_nfold`. The interface for `era.transform.symmetrize` is moved to `Edit → Symmetrize → Mirror...`.
