@@ -1,3 +1,5 @@
+import gc
+
 import lmfit
 import numpy as np
 import pytest
@@ -1308,6 +1310,43 @@ def test_fit_worker_loads_result_before_emit(
 
     assert dummy.loaded
     assert finished["result"] is dummy
+
+
+def test_fit_worker_suspends_gc_during_run(qtbot, exp_decay_model, monkeypatch) -> None:
+    t = np.linspace(0.0, 1.0, 11)
+    data = xr.DataArray(np.exp(-t), dims=("t",), coords={"t": t}, name="decay")
+    params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+
+    worker = fit1d._FitWorker(
+        data,
+        "t",
+        exp_decay_model,
+        params,
+        max_nfev=5,
+        method="least_squares",
+        timeout=1.0,
+    )
+
+    class _DummyResult:
+        def load(self):
+            return self
+
+    gc_enabled = gc.isenabled()
+    gc.enable()
+    gc_states: list[bool] = []
+
+    def _modelfit(*_args, **_kwargs):
+        gc_states.append(gc.isenabled())
+        return _DummyResult()
+
+    try:
+        monkeypatch.setattr(data.xlm, "modelfit", _modelfit)
+        worker.run()
+        assert gc_states == [False]
+        assert gc.isenabled()
+    finally:
+        if not gc_enabled:
+            gc.disable()
 
 
 def test_fit1d_finalize_fit_thread_cancelled_deletes_thread(qtbot) -> None:

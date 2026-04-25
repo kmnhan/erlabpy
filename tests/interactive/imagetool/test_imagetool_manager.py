@@ -234,6 +234,46 @@ def configure_goldtool_child(
         tool.post_fit(edge_center, edge_stderr)
 
 
+class _UnserializableChildState(pydantic.BaseModel):
+    value: int = 0
+
+
+class _UnserializableChildTool(
+    erlab.interactive.utils.ToolWindow[_UnserializableChildState]
+):
+    StateModel = _UnserializableChildState
+    tool_name = "unserializable-child"
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__()
+        self._data = data
+        self._status = _UnserializableChildState()
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def tool_status(self) -> _UnserializableChildState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _UnserializableChildState) -> None:
+        self._status = status
+
+    def _raise_serialization_error(self) -> typing.NoReturn:
+        raise ValueError(
+            "goldtool save/load/duplication is unsupported when `data_corr` "
+            "is provided separately"
+        )
+
+    def to_dataset(self) -> xr.Dataset:
+        self._raise_serialization_error()
+
+    def duplicate(self, **kwargs) -> typing.Self:
+        self._raise_serialization_error()
+
+
 def make_fit2d_child(
     manager: ImageToolManager, parent: int | str, exp_decay_model
 ) -> tuple[str, Fit2DTool]:
@@ -6575,7 +6615,7 @@ def test_error_creating_imagetool_does_not_duplicate_alert_dialog(
         assert manager._alert_dialogs == []
 
 
-def test_manager_duplicate_goldtool_child_with_data_corr_shows_error(
+def test_manager_duplicate_unserializable_child_shows_error(
     qtbot,
     gold,
     monkeypatch,
@@ -6602,10 +6642,8 @@ def test_manager_duplicate_goldtool_child_with_data_corr_shows_error(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        corrected = gold.copy(deep=True)
-        corrected.data = np.asarray(corrected.data) * 1.01
         child_uid = manager.add_childtool(
-            GoldTool(gold.copy(deep=True), data_corr=corrected, data_name="gold_input"),
+            _UnserializableChildTool(gold.copy(deep=True)),
             0,
             show=False,
         )
@@ -6621,7 +6659,7 @@ def test_manager_duplicate_goldtool_child_with_data_corr_shows_error(
         assert "data_corr" in critical_calls[0][1]["detailed_text"]
 
 
-def test_manager_save_goldtool_child_with_data_corr_shows_error(
+def test_manager_save_unserializable_child_shows_error(
     qtbot,
     accept_dialog,
     gold,
@@ -6649,10 +6687,8 @@ def test_manager_save_goldtool_child_with_data_corr_shows_error(
         itool(gold, link=False, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        corrected = gold.copy(deep=True)
-        corrected.data = np.asarray(corrected.data) * 1.01
         manager.add_childtool(
-            GoldTool(gold.copy(deep=True), data_corr=corrected, data_name="gold_input"),
+            _UnserializableChildTool(gold.copy(deep=True)),
             0,
             show=False,
         )
