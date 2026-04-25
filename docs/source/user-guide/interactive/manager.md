@@ -20,18 +20,107 @@
 
 :::
 
-{class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>` keeps large analysis sessions organized. It tracks every ImageTool window, preview, and metadata entry in a single tree view so you can link, archive, and share them without juggling dozens of floating windows.
+{class}`ImageToolManager <erlab.interactive.imagetool.manager.ImageToolManager>` is
+the workspace for a full ImageTool analysis session. It keeps top-level ImageTool rows
+(ImageTools that are not child rows), tools opened from those ImageTools, and ImageTool
+windows opened from those tools in one tree. The manager also shows when a row created
+by another row needs to be updated because the ImageTool or tool that created it
+changed, and it can show code that repeats the selected steps in a notebook or script.
 
 (imagetool-manager-overview)=
 
 ## Why use the manager?
 
 - Launch and watch many ImageTool windows simultaneously without interrupting your notebook or script.
+- Keep top-level ImageTool rows, tools opened from them, and ImageTool windows made
+  from those tools in a single tree.
+- Update tools and ImageTool windows when the ImageTool or tool that created them changes.
 - Link multiple ImageTools, duplicate them, or update their data in place in case of real-time data acquisition.
-- Save and reopen complete workspaces, including colormaps, cursor positions, window geometry, and ROIs.
+- Save and reopen complete workspaces, including tools and ImageTool windows opened from other rows, colormaps, cursor positions, window geometry, and ROIs.
 - Archive rarely used windows to disk so they can be restored later without consuming RAM.
-- Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, and perform quick analyses through a built-in IPython console.
+- Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, copy code that repeats GUI steps, and perform quick analyses through a built-in IPython console.
 - Drag-and-drop files to open them quickly, or use the integrated data explorer to browse preview data.
+
+(imagetool-manager-nested-results)=
+
+## Results kept with the window that made them
+
+The manager tree is not just a flat list of ImageTool windows. It can show the
+relationship between top-level ImageTool rows, the tools opened from those ImageTools,
+and the ImageTool windows those tools create.
+
+Earlier versions always placed ImageTool windows at the top level. For example, if you
+opened an ImageTool window from another ImageTool, the new window appeared beside the
+one that made it. That made it hard to tell which window came from which data.
+
+Now, when you are working in the manager, a new ImageTool window can appear as a child
+row under the tool or ImageTool that created it. A typical session looks like this:
+
+1. Open data in the manager, or watch a notebook variable, so it appears as an ImageTool row.
+2. Launch {guilabel}`dtool`, {guilabel}`ktool`, or another tool from that ImageTool.
+3. Use {guilabel}`Open in ImageTool` from that tool.
+4. The new ImageTool window appears under the tool or ImageTool that made it instead of as an unrelated
+   top-level window.
+
+That new ImageTool row remembers the selection or operation that made it. When the
+ImageTool or tool that created it changes, the manager can mark it as out of date,
+update it, and show the steps and code in the side panel.
+
+(imagetool-manager-result-placement)=
+
+## Choosing where new data opens
+
+ImageTool transform dialogs use {guilabel}`Result Placement` to decide what happens to
+the transformed data:
+
+- {guilabel}`Open Child Window` creates a new ImageTool row as a child of the current ImageTool.
+  This is the default for ImageTool windows that are already in the manager.
+- {guilabel}`Open Top-Level Window` creates a separate top-level ImageTool. Choose this
+  when you want the older detached-window behavior.
+- {guilabel}`Replace Current` overwrites the active ImageTool with the transformed data.
+
+Outside the manager, transform dialogs still open normal standalone ImageTool windows.
+Inside the manager, prefer {guilabel}`Open Child Window` when the result should stay as
+part of the window that made it and be saved with the rest of the manager tree.
+
+(imagetool-manager-refresh)=
+
+## Updating rows when the window that made them changes
+
+When data changes in an ImageTool or tool, the tools and ImageTool windows it created
+may no longer match it. The manager shows this with badges:
+
+- {guilabel}`Stale` means the ImageTool or tool that created this row changed, and this
+  row can probably be updated.
+- {guilabel}`Unavailable` means the manager cannot repeat the saved selection or
+  operation on the current data, such as when a dimension, coordinate, or selection has
+  changed too much.
+
+Click the badge in the tree, or the update banner inside the tool window, to review the
+update. You can apply a one-time update or enable automatic updates for future changes
+to the ImageTool or tool that created the row.
+
+Fitting tools can also take part in this flow. {guilabel}`ftool`, {guilabel}`goldtool`,
+and {guilabel}`restool` include {guilabel}`Refit on source update`; when it is enabled,
+the tool reruns the same fit after compatible data from the ImageTool that opened it is
+updated.
+
+(imagetool-manager-replay-code)=
+
+## Details and code for repeating steps
+
+Selecting a row fills the side panel with details about that item. For an ImageTool
+window created from another row, the panel can show:
+
+- the file or data that started the workflow;
+- the steps used to create the selected ImageTool window;
+- code that can be pasted into a notebook or script to repeat those steps.
+
+Use the steps list to copy exactly what you need. Select one or more steps and copy the
+selected code, or use {guilabel}`Copy Full Code` to copy the whole workflow from the
+data in the ImageTool that started the workflow to the selected ImageTool window. When
+the selected item came from a file, the details dialog can also copy the file path or a
+loading snippet when that information is available.
 
 (imagetool-manager-round-trip)=
 
@@ -108,13 +197,19 @@ When you open multiple DataArrays at once, the manager adds each window to the l
 
 ## Navigating and organizing tools
 
-The left pane lists every ImageTool window by index and optional name (`index: name`). Selecting entries populates the right pane with metadata and a live preview.
+The left pane lists ImageTool windows, tools opened from ImageTool, and ImageTool
+windows opened from those tools. Top-level ImageTool windows use an index and optional
+name (`index: name`). Rows made from another row appear as child rows under the row that
+made them.
+Selecting entries populates the right pane with details, a steps list when available,
+and a live preview.
 
 :::{note}
 Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over the list.
 :::
 
-Child analysis windows opened from an ImageTool appear as nested rows under their parent.
+Analysis tools and ImageTool windows opened from an ImageTool appear as child rows of
+the ImageTool that opened them.
 
 The following lists common actions included in the {guilabel}`File`, {guilabel}`Edit`, and right-click context menus:
 
@@ -129,9 +224,11 @@ The following lists common actions included in the {guilabel}`File`, {guilabel}`
 - {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
 - {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. Handy when data is updated during acquisition.
 
-Icons next to each entry indicate special states: linked windows share a colored badge, chunked Dask arrays show the dask icon, and watched variables display their notebook name.
-
-Child tools may also show {guilabel}`Stale` or {guilabel}`Unavailable` badges after the parent source data changes. Click those badges in the tree to open the same update dialog that appears inside the child tool itself, refresh from the latest compatible data, and optionally enable automatic updates for future replacements.
+Icons next to each entry indicate special states: linked windows share a colored badge,
+chunked Dask arrays show the dask icon, watched variables display their notebook name,
+and rows opened from another row can show the {guilabel}`Stale` or
+{guilabel}`Unavailable` badges
+described in {ref}`imagetool-manager-refresh`.
 
 (imagetool-manager-archive-workspace)=
 
@@ -139,14 +236,24 @@ Child tools may also show {guilabel}`Stale` or {guilabel}`Unavailable` badges af
 
 Choose {guilabel}`File → Save Workspace As…` to save multiple open windows to a single `.itws` file. Workspaces store not only the data, but also the ImageTool settings such as cursor locations, colormaps, window geometry, and ROIs.
 
-When supported, savable child tools opened from managed ImageTools are stored alongside the parent window as well.
+When supported, workspaces also store tools opened from ImageTool rows, ImageTool
+windows opened from tools or other ImageTools, fit results, the information needed to
+update rows after data changes, and the steps shown in the side panel. This lets a
+reopened workspace keep the same tree instead of moving those windows to unrelated
+top-level entries.
 
 Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…` or by dragging the `.itws` file back into the manager to recreate your windows exactly as they were. Share the file with collaborators and they will see the identical layout.
 
+:::{note}
+Older workspace files still load. Workspaces saved with tools and ImageTool windows
+opened from other rows need this release or later to preserve the full tree and update
+status.
+:::
+
 ## Data Explorer and Console
 
-In addition to ImageTool windows and child analysis tools, the manager can also launch
-standalone helper apps that stay outside the tree view and workspace files.
+In addition to ImageTool windows and analysis tools opened from them, the manager can
+also launch standalone apps that stay outside the tree view and workspace files.
 
 (imagetool-manager-data-explorer)=
 
@@ -199,7 +306,8 @@ in a notebook.
 
 ## Notebook integration
 
-The manager keeps notebooks synchronized through the `%watch` magic and exposes helper APIs for retrieving and storing data.
+The manager keeps notebooks synchronized through the `%watch` magic and provides
+functions for retrieving and storing data.
 
 :::{tip}
 If you are using VS Code (or other editor that supports VS Code extensions), the dedicated `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ) adds convenient commands for working with the manager directly from notebooks. Search for `erlab` in the extensions panel of your editor to install it.
@@ -282,7 +390,7 @@ Use {func}`shutdown <erlab.interactive.imagetool.manager.shutdown>` to stop thre
 
 :::{note}
 
-{func}`watch <erlab.interactive.imagetool.manager.watch>` can infer a namespace automatically, but providing an explicit `namespace=` argument is safer when you call it indirectly (for example, from helper functions, callbacks, or wrappers) where the caller scope may not be obvious. In those cases, pass the exact mapping you want to watch, like `namespace=globals()`.
+{func}`watch <erlab.interactive.imagetool.manager.watch>` can infer a namespace automatically, but providing an explicit `namespace=` argument is safer when you call it indirectly (for example, from small utility functions, callbacks, or wrappers) where the caller scope may not be obvious. In those cases, pass the exact mapping you want to watch, like `namespace=globals()`.
 
 :::
 
@@ -319,7 +427,7 @@ If you are using VS Code (or other editor that supports VS Code extensions), the
 
 ## Automation APIs
 
-If you wish to integrate the manager into custom workflows, you can programmatically load data and control ImageTool windows in the manager. Use the public helpers exported from {mod}`erlab.interactive.imagetool.manager`:
+If you wish to integrate the manager into custom workflows, you can programmatically load data and control ImageTool windows in the manager. Use the public functions exported from {mod}`erlab.interactive.imagetool.manager`:
 
 ```python
 from erlab.interactive.imagetool.manager import load_in_manager, show_in_manager
@@ -336,7 +444,7 @@ show_in_manager(new_data, replace=3)
 
 Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>` and {func}`watch <erlab.interactive.imagetool.manager.watch>` give you finer control when building custom acquisition pipelines.
 
-Under the hood these helpers communicate with the GUI via ZeroMQ, so they can be called from any Python process that can reach the manager (even on a different machine). See the API docs for details.
+Under the hood these functions communicate with the GUI via ZeroMQ, so they can be called from any Python process that can reach the manager (even on a different machine). See the API docs for details.
 
 (imagetool-manager-standalone)=
 

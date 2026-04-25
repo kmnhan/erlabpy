@@ -55,8 +55,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Search `xlm.modelfit`, `MultiPeakModel`, `FermiEdgeModel`, `gold`, `ftool`,
   `restool`, or `goldtool` for fitting questions.
 - Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,
-  `show_in_manager`, `load_in_manager`, or `workflow-bridge` for notebook and
-  interactive-workflow questions.
+  `show_in_manager`, `load_in_manager`, `Result Placement`, `stale`,
+  `code for repeating steps`, `ImageTool windows opened from tools`, or
+  `workflow-bridge` for notebook and interactive-workflow questions.
 - Search `interactive-tool-authoring`, `ToolWindow`, `tool_status`,
   `_append_persistence_payload`, `_restore_persistence_payload`,
   `COPY_PROVENANCE`, `ToolScriptProvenanceDefinition`, `expression_method`,
@@ -85,8 +86,10 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   about ImageTool, Manager, or other GUIs.
 - Prefer `ftool` for interactive fitting of 1D slices across 2D data,
   especially when parameter propagation between slices matters.
-- Prefer the manager workflow when the user needs multiple windows, notebook
-  synchronization, or reusable workspaces.
+- Prefer the manager workflow when the user needs a tree that shows top-level ImageTool
+  rows, tools opened from those ImageTools, and ImageTool windows made by those tools;
+  rows that update after data changes; code that repeats GUI steps; multiple windows;
+  notebook synchronization; or reusable workspaces.
 - Mention `%watch` or `erlab.interactive.imagetool.manager.watch()` when
   notebook synchronization is relevant.
 

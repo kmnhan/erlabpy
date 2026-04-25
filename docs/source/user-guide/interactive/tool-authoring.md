@@ -7,9 +7,16 @@ This section is aimed at experienced users who are already comfortable with Qt,
 {mod}`erlab.interactive`.
 
 It focuses on ERLab-specific integration points: the `ToolWindow` class, manager
-support, source updates, public launch paths, and the test/docs work expected in a
-contribution. For general repository conventions, see the [contributing
+support, updates when ImageTool data changes, public launch paths, and the test/docs
+work expected in a contribution. For general repository conventions, see the [contributing
 guide](../../contributing.md).
+
+For the user-facing workflow, start with the manager guide sections on
+{ref}`rows kept with the window that made them <imagetool-manager-nested-results>`,
+{ref}`result placement <imagetool-manager-result-placement>`,
+{ref}`updating rows marked Stale <imagetool-manager-refresh>`, and
+{ref}`code for repeating steps <imagetool-manager-replay-code>`. This page explains how
+tool authors make those features work.
 
 ## Start with the right shape
 
@@ -24,20 +31,19 @@ In practice, `ToolWindow` enables several things:
   save-only payload hooks for persisted data that should stay out of undo/redo history;
 - integration with the ImageTool manager, including tool naming, preview images, rich
   info text, and manager refresh notifications through `sigInfoChanged`;
-- binding to ImageTool source data, including persisted source metadata, stale or
-  unavailable status tracking, and the built-in source-update dialog; and
-- child ImageTool windows declared in `IMAGE_TOOL_OUTPUTS` that appear beneath the
-  tool's node in the ImageTool manager and can be reopened, refreshed, and persisted;
-  and
-- the update hooks used by source-aware tools, such as `validate_update_data()`,
-  `update_data()`, and `_cancel_background_work()`.
+- remembering which ImageTool data and selection opened the tool, including saved
+  metadata, stale or unavailable status tracking, and the built-in update dialog;
+- ImageTool windows declared in `IMAGE_TOOL_OUTPUTS` that appear as child rows of the
+  tool in the ImageTool manager and can be reopened, refreshed, and persisted; and
+- the update hooks used by tools that can react when ImageTool data changes, such as
+  `validate_update_data()`, `update_data()`, and `_cancel_background_work()`.
 
 Use `ToolWindow` when your tool should do any of the following:
 
 - accept an `xarray.DataArray` as its main input;
 - serialize and restore itself through `to_dataset()` / `from_dataset()`;
-- appear as a child tool inside the {ref}`ImageTool manager <imagetool-manager>` or
-- refresh itself when the source ImageTool data changes.
+- appear as a child row of an ImageTool in the {ref}`ImageTool manager <imagetool-manager>`; or
+- refresh itself when that ImageTool's data changes.
 
 `ToolWindow` assumes a few things about your implementation:
 
@@ -54,10 +60,10 @@ As a practical authoring checklist:
 
 - Required for the core `ToolWindow` interface:
   constructor with `data`, `StateModel`, `tool_data`, and `tool_status`.
-- Required if the tool can be refreshed from an ImageTool source:
+- Required if the tool can be refreshed from ImageTool data:
   `update_data()`. In practice, this is the normal baseline for repository tools, so
   the examples below implement it even in the minimal case. Return `False` when the
-  new source data is accepted but the tool cannot publish a fresh result yet.
+  new data is accepted but the tool cannot publish a fresh result yet.
 - Optional, but strongly recommended for user-facing tools:
   `tool_name` (the base class default is just `"tool"`).
 - Optional for tools with expensive or bulky save-only state:
@@ -78,52 +84,56 @@ up the corresponding `ToolWindow` surface:
 
 - Save and restore the tool window:
   required; implement `StateModel`, `tool_status`, and `tool_data`. If save/load also
-  needs expensive derived results, keep them out of `tool_status` and use
+  needs large arrays calculated by the tool, keep them out of `tool_status` and use
   `_append_persistence_payload()` / `_restore_persistence_payload()` instead.
 - Show rich metadata in the ImageTool manager:
   optional; implement `info_text`, `preview_imageitem`, and emit `sigInfoChanged` when
   either changes.
-- Refresh the tool from parent ImageTool data:
+- Refresh the tool when the ImageTool that opened it changes:
   `update_data()` is part of the minimal tool surface; `validate_update_data()` and
   `_cancel_background_work()` are optional additions when normalization or worker
   shutdown matter.
-- Generate replayable code for the tool's main action:
+- Generate code that repeats the tool's main action:
   optional; usually set `COPY_PROVENANCE` to a `ToolScriptProvenanceDefinition`. Prefer
   `label + expression_method + assign` for the common single-step case, add
-  `prelude_method` when the replay code needs setup statements before the final
-  expression, and use `operations_method` only when the copied replay script truly
+  `prelude_method` when the generated code needs setup statements before the final
+  expression, and use `operations_method` only when the copied script truly
   needs multiple labeled operations.
-- Expose refreshable child ImageTool windows beneath the tool's manager node:
+- Expose ImageTool windows as child rows of the tool and let the manager update them later:
   optional; declare a stable output id, preferably with `enum.StrEnum`, and add it to
   `IMAGE_TOOL_OUTPUTS` with a `ToolImageOutputDefinition(data_method=...,
   provenance=...)`. `data_method` should name a zero-argument instance method that
   returns the current output `DataArray`. The string output id is what the manager
   persists in saved workspaces, so use a tool-qualified name such as
   `"mytool.filtered"`.
-- Open an ImageTool that is not a declared manager-tracked output binding:
+- Open an ImageTool that is not one of the declared outputs:
   optional; call `_launch_detached_output_imagetool(...)`. In the manager, that opens
-  a fresh independent top-level ImageTool window with no parent/source/output binding.
+  a fresh independent top-level ImageTool window with no saved parent row or output id.
   Outside the manager, each call opens a new standalone ImageTool window. Override
   `detached_output_imagetool_provenance()` only when standalone launches should show
-  different replay lineage from `current_provenance_spec()`, and keep that hook free
+  different generated code from `current_provenance_spec()`, and keep that hook free
   of blocking side effects such as modal warnings.
 
-The important distinction is that outputs declared in `IMAGE_TOOL_OUTPUTS` become child
-ImageTool windows beneath the tool's node in the manager, keyed by a serialized
+The important distinction is that outputs declared in `IMAGE_TOOL_OUTPUTS` become
+ImageTool windows as child rows of the tool in the manager, keyed by a serialized
 `output_id`. Any ImageTool opened without an `output_id` is not reproducible as one of
-those child windows. Do not use `_launch_detached_output_imagetool(...)` as a
-substitute for a real declared child ImageTool output.
+those windows. Do not use `_launch_detached_output_imagetool(...)` as a substitute for
+a real declared ImageTool output.
+
+In user-facing terms, this is the difference between an ImageTool window kept with the
+tool that made it and a detached top-level window; see
+{ref}`imagetool-manager-result-placement`.
 
 A real example is `Fit2DTool`:
 
 - `Fit2DTool.Output.PARAMETER_VALUES` and `Fit2DTool.Output.PARAMETER_STDERR` are
-  declared in `IMAGE_TOOL_OUTPUTS`, so those parameter plots become child ImageTool
-  windows beneath the fit tool's node, with persisted `output_id`s.
+  declared in `IMAGE_TOOL_OUTPUTS`, so those parameter plots become ImageTool
+  windows as child rows of the fit tool, with persisted `output_id`s.
 - `Fit2DTool._show_dataarray_in_itool()` also has a generic path for arbitrary
   `DataArray`s that are not declared outputs. In the manager, that path opens a fresh
   independent top-level ImageTool window each time. Outside the manager, it opens a
   fresh standalone ImageTool window each time.
-- That generic path is intentionally not a nested child binding because the manager
+- That generic path is intentionally not a declared ImageTool output because the manager
   cannot recreate it from either `source_spec` or `output_id`.
 
 ## Build two concrete examples
@@ -132,15 +142,15 @@ Create the runtime module in `src/erlab/interactive/` and keep any `.ui` file (i
 use Qt Designer) next to it. The rest of this page uses two real examples:
 
 - a minimal tool that only implements the required `ToolWindow` surface; and
-- a fuller tool that also opts into manager metadata, replayable copy-code support, and
-  a child ImageTool output shown beneath the tool in the manager.
+- a fuller tool that also opts into manager metadata, copy-code support, and an
+  ImageTool window kept with the tool in the manager.
 
 ### Minimal example: only the required `ToolWindow` methods
 
 If you only want to remember the minimum required pieces, this is it. The tool below is still
 fully functional: it displays a scaled 2D array, saves and restores its state, and can
 accept replacement data. It intentionally does **not** implement any of the optional
-manager niceties or provenance hooks, but it still includes `update_data()` because
+manager integration or provenance hooks, but it still includes `update_data()` because
 that is the practical baseline for tools that may be launched from ImageTool.
 
 ```python
@@ -236,11 +246,12 @@ That is the minimum `ToolWindow` surface to keep in your head:
 
 Everything below is optional integration that you add when the tool needs it.
 
-### Full example: a manager-aware tool that implements the optional hooks too
+### Full example: a tool that works well inside the manager
 
 The next example uses the same core `ToolWindow` interface, but it also implements the
 optional pieces that make a tool feel fully integrated with ERLabPy: manager preview
-metadata, copy-code provenance, source validation, and a child ImageTool output.
+metadata, copy-code provenance, input validation, and an ImageTool window kept with the
+tool row.
 
 ```python
 import enum
@@ -271,7 +282,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         )
     )
 
-    # Optional: declare a child ImageTool window that appears under this tool in the manager.
+    # Optional: declare an ImageTool window that appears under this tool in the manager.
     IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
         Output.FILTERED: erlab.interactive.utils.ToolImageOutputDefinition(
             data_method="_filtered_output",
@@ -317,7 +328,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         self.sigma_spin.setValue(1.0)
         self.sigma_spin.valueChanged.connect(self._refresh)
         self.reference_check.toggled.connect(self._refresh)
-        # COPY_PROVENANCE only defines the replay code. A UI button still has to
+        # COPY_PROVENANCE only defines the generated code. A UI button still has to
         # connect to the built-in copy_code() slot explicitly.
         self.copy_btn.clicked.connect(self.copy_code)
         self.open_filtered_btn.clicked.connect(self.open_filtered)
@@ -372,7 +383,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         self._refresh(notify=False)
 
     def validate_update_data(self, new_data: xr.DataArray) -> xr.DataArray:
-        # Optional but recommended: normalize / reject source updates in one place.
+        # Optional but recommended: normalize / reject data updates in one place.
         data = erlab.interactive.utils.parse_data(new_data)
         if data.ndim != 2:
             raise ValueError("`data` must be 2D")
@@ -390,7 +401,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         return max(1, int(round(self.sigma_spin.value())))
 
     def _filtered_output(self) -> xr.DataArray:
-        # Optional output helper used by IMAGE_TOOL_OUTPUTS.
+        # Optional output method used by IMAGE_TOOL_OUTPUTS.
         window = self._filter_window()
         filtered = self.tool_data.rolling(
             {dim: window for dim in self.tool_data.dims},
@@ -405,7 +416,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        # Optional provenance helper: return the final expression only.
+        # Optional provenance method: return the final expression only.
         del data
         input_expr = input_name or "data"
         window = self._filter_window()
@@ -421,7 +432,7 @@ class MyTool(erlab.interactive.utils.ToolWindow):
     @QtCore.Slot()
     def open_filtered(self) -> None:
         # Declaring IMAGE_TOOL_OUTPUTS is not enough by itself. The tool still needs
-        # an action that opens the child ImageTool through _launch_output_imagetool().
+        # an action that opens the ImageTool through _launch_output_imagetool().
         tool = self._launch_output_imagetool(
             self._filtered_output(),
             output_id=self.Output.FILTERED,
@@ -443,11 +454,10 @@ Some implementation details matter:
 - Call `super().__init__()` before creating your UI. `ToolWindow` installs the manager
   status banner and keyboard shortcuts.
 - Always use `self.setCentralWidget(...)`, not `QtWidgets.QMainWindow.setCentralWidget`.
-  `ToolWindow` wraps the actual content widget so it can show source-update status above
-  it.
+  `ToolWindow` wraps the actual content widget so it can show update status above it.
 - Keep `StateModel` focused on UI state. The main data already comes from `tool_data`
   and is stored separately when the tool is archived. If you need to persist expensive
-  derived results, use the explicit persistence hooks instead of `tool_status` so
+  calculated arrays, use the explicit persistence hooks instead of `tool_status` so
   ordinary history snapshots stay cheap.
 - Make the `tool_status` getter and setter fully describe and restore the current UI
   state. A restored tool should look the same as one configured interactively.
@@ -456,25 +466,26 @@ Some implementation details matter:
   so the class body remains readable and testable.
 - If you want a visible "Copy Code" button, create that button in the UI and connect
   it to `self.copy_code`. Declaring `COPY_PROVENANCE` only tells `ToolWindow` how to
-  generate the replay code when that slot is called.
-- Keep provenance helper methods on the shared `ToolWindow` calling convention:
+  generate the code when that slot is called.
+- Keep provenance methods on the shared `ToolWindow` calling convention:
   `(*, input_name: str | None = None, data: xr.DataArray | None = None)`. Most
-  single-step helpers should return only the unassigned final expression. Let
+  single-step methods should return only the unassigned final expression. Let
   `ToolScriptProvenanceDefinition(assign=...)` or `assign_method=...` define the final
-  variable name, and use `prelude_method` only when the replay code needs setup
+  variable name, and use `prelude_method` only when the generated code needs setup
   statements before that final expression. Output-specific helpers can still inspect
-  `data` when the generated replay code depends on the current output array.
-- Prefer `expression_method` for ordinary single-step replay code. Use
-  `operations_method` only when the replay needs multiple labeled steps, and reach for
+  `data` when the generated code depends on the current output array.
+- Prefer `expression_method` for ordinary single-step generated code. Use
+  `operations_method` only when the generated code needs multiple labeled steps, and reach for
   `seed_code`, `seed_code_method`, or explicit `active_name` only for the rarer cases
   where the simpler expression-plus-assignment path cannot describe the tool cleanly.
-- If replay code should be unavailable for the current state, return `None` from a
-  dynamic provenance helper such as `label_method`, `assign_method`, or
+- If generated code should be unavailable for the current state, return `None` from a
+  dynamic provenance method such as `label_method`, `assign_method`, or
   `prelude_method` rather than returning partial code.
-- If `_refresh()` changes manager-visible data, previews, or child outputs, call
+- If `_refresh()` changes manager-visible data, previews, or ImageTool windows opened
+  from the tool, call
   `_notify_data_changed()` from that path rather than emitting raw signals manually.
-- If you want a child ImageTool window to appear beneath the tool's node in the
-  manager, do both pieces: declare it in `IMAGE_TOOL_OUTPUTS` and open it through
+- If you want an ImageTool window to appear as a child row of the tool in the manager, do
+  both pieces: declare it in `IMAGE_TOOL_OUTPUTS` and open it through
   `_launch_output_imagetool(..., output_id=...)`. Declaring the output alone does not
   create any user-facing action.
 
@@ -484,7 +495,8 @@ array while preserving the current settings.
 
 ## Add manager-facing metadata
 
-The ImageTool manager can display a preview image and rich HTML summary for child tools.
+The ImageTool manager can display a preview image and rich HTML summary for tools opened
+from ImageTool.
 These are optional, but tools feel much more integrated when they provide them.
 
 The working `MyTool` reference above already implements both, so use it as the baseline
@@ -500,17 +512,17 @@ Whenever the preview or info text changes, emit `sigInfoChanged`. This is what c
 the manager to refresh its side panel and thumbnails. `KspaceToolGUI` and
 `DerivativeTool` are good references for this pattern.
 
-If the tool can change its displayed data or any manager-visible ImageTool outputs
-without going through the built-in source-refresh flow, call
-`self._notify_data_changed()`. That helper emits both `sigInfoChanged` and
-`sigDataChanged`, which is what lets managed descendants become stale or auto-refresh
+If the tool can change its displayed data or any ImageTool window opened from the tool
+without going through the built-in update flow, call
+`self._notify_data_changed()`. That method emits both `sigInfoChanged` and
+`sigDataChanged`, which is what lets rows created by the tool become stale or update
 from the current tool state. Emit `sigInfoChanged` directly only for metadata-only
 changes.
 
-## Support source updates from ImageTool
+## Support updates from ImageTool data
 
-If a tool can be launched from ImageTool or tracked by the manager, it should usually be
-able to react when the parent data changes.
+If a tool can be launched from ImageTool or opened from ImageTool in the manager, it
+should usually be able to react when the ImageTool that opened it changes.
 
 `ToolWindow` gives you three hooks for this:
 
@@ -539,10 +551,10 @@ There are three common update strategies in the current codebase:
 3. Deferred updates for tools that accept the new input before they can publish a fresh
    result.
 
-   `GoldTool.update_data()` returns `False` while a queued source update or refit is
+   `GoldTool.update_data()` returns `False` while a queued data update or refit is
    still pending, and `Fit1DTool`, `Fit2DTool`, and `ResolutionTool` return `False`
-   when they have accepted new source data but must finish an asynchronous refit before
-   their current outputs are fresh again. Returning `False` keeps the tool marked as
+   when they have accepted new data but must finish an asynchronous refit before their
+   current outputs are fresh again. Returning `False` keeps the tool marked as
    stale until that follow-up work finishes and the tool calls
    `finalize_source_refresh()`.
 
@@ -570,45 +582,45 @@ def update_data(self, new_data: xr.DataArray) -> bool:
 
 If `_apply_update(...)` starts asynchronous follow-up work such as a refit, return
 `False` instead and call `finalize_source_refresh()` only after the new result has been
-published. This is what prevents manager-tracked descendants from refreshing against
-stale derived outputs.
+published. This is what prevents rows created by the tool from updating against old
+calculated arrays.
 
-If the tool is launched from an ImageTool selection, the launch site should also bind
-the tool back to its source data:
+If the tool is launched from an ImageTool selection, the launch site should also record
+which ImageTool data and selection opened it:
 
 - Use `ItoolPlotItem.make_tool_source_spec(...)` when the tool is created from the
   active cursor or cropped selection.
 - Use ``erlab.interactive.imagetool.provenance.full_data()`` when the whole current
-  array is the logical source.
+  array should be used again during an update.
 - Use the operation models in ``erlab.interactive.imagetool.provenance`` such as
   ``QSelOperation(...)``, ``IselOperation(...)``, ``SelOperation(...)``,
   ``AverageOperation(...)``, and ``TransposeOperation(...)`` when a tool needs to
-  author or modify provenance explicitly. Pass those operation instances to
+  write or modify the saved operation list explicitly. Pass those operation instances to
   ``selection(...)`` or ``full_data(...)``.
 - When implementing a custom ``ToolProvenanceOperation.derivation_entry()``, return a
   ``DerivationEntry`` for steps that should appear in the manager derivation list or
-  copied provenance code. Return ``None`` only for operations that must still replay at
-  runtime but should stay hidden from the derivation UI and generated code, such as an
-  internal bookkeeping rename. If the step should remain visible but code generation
-  should stop, return ``DerivationEntry(..., code=None)`` instead.
+  copied code. Return ``None`` only for operations that must still run during an update
+  but should stay hidden from the steps list and generated code, such as an internal
+  bookkeeping rename. If the step should remain visible but code generation should
+  stop, return ``DerivationEntry(..., code=None)`` instead.
 - Ensure the caller sets `set_source_binding(...)`; the manager wrapper will provide
   `set_source_parent_fetcher(...)` and `set_input_provenance_parent_fetcher(...)` when
-  the tool is attached to a managed ImageTool.
+  the tool is attached to an ImageTool in the manager.
 
-If the tool offers "Copy Code" or otherwise generates replayable code from its current
-input, also implement provenance for that code path:
+If the tool offers "Copy Code" or otherwise generates code from its current input, also
+implement provenance for that code path:
 
 - Implement `COPY_PROVENANCE` with a `ToolScriptProvenanceDefinition` for the main
   copy-code action.
 - Override `current_provenance_spec()` only when the declarative script metadata cannot
-  describe the tool's replay code.
-- Declare outputs in `IMAGE_TOOL_OUTPUTS` when the tool exposes child ImageTool windows
-  beneath its manager node whose replay code differs from the main tool action. The
+  describe the tool's generated code.
+- Declare outputs in `IMAGE_TOOL_OUTPUTS` when the tool exposes ImageTool windows
+  as a child row of the tool whose generated code differs from the main tool action. The
   base `ToolWindow.output_imagetool_data()` and
   `ToolWindow.output_imagetool_provenance()` methods resolve those declared outputs for
   the manager, so authors should not override those methods for new outputs.
 - Override `detached_output_imagetool_provenance()` only when non-bound standalone
-  ImageTool launches should use different replay lineage from `current_provenance_spec()`.
+  ImageTool launches should use different generated code from `current_provenance_spec()`.
   This provenance is evaluated while opening the new window, so return `None` or
   side-effect-free provenance instead of warning the user from inside this hook.
 
@@ -620,18 +632,18 @@ The full `MyTool` example above already shows the preferred pattern:
   copy-code slot.
 - `ToolScriptProvenanceDefinition(expression_method=..., assign=...)` keeps the class
   declarative while the framework owns the final assignment target and active variable.
-- `IMAGE_TOOL_OUTPUTS[Output.FILTERED]` declares the filtered child ImageTool output
-  shown beneath the tool's manager node, with `data_method="_filtered_output"` and a
+- `IMAGE_TOOL_OUTPUTS[Output.FILTERED]` declares the filtered ImageTool window
+  shown as a child row of the tool, with `data_method="_filtered_output"` and a
   second provenance definition whose `assign` target is `"filtered"`.
 - `open_filtered()` uses `_launch_output_imagetool(..., output_id=self.Output.FILTERED)`
-  so the manager can persist and refresh that child output.
+  so the manager can persist and refresh that ImageTool window.
 
 Use the current codebase as the source of truth for variants:
 
-- `DerivativeTool` is the reference for `operations_method` when a replay script needs
+- `DerivativeTool` is the reference for `operations_method` when generated code needs
   more than one operation, i.e., the tool does more than a single function call.
-- `KspaceTool`, `GoldTool`, `MeshTool`, and `Fit2DTool` are good manager-output
-  references.
+- `KspaceTool`, `GoldTool`, `MeshTool`, and `Fit2DTool` are good examples for
+  ImageTool windows that appear as child rows of a tool in the manager.
 - `Fit1DTool` and `Fit2DTool` are good main copy-code references.
 
 The relevant examples live in `erlab.interactive.imagetool.plot_items.ItoolPlotItem` and
@@ -668,7 +680,7 @@ def mytool(
 
 This launcher is what should get the user-facing docstring. Treat it as part of the
 real tool API, not as a thin convenience wrapper: built-in tools typically infer
-`data_name` here, then pass that stable name into the `ToolWindow` instance so replay
+`data_name` here, then pass that stable name into the `ToolWindow` instance so generated
 code and saved state stay readable.
 
 To make the tool discoverable across ERLabPy, update the relevant entry points:
@@ -680,9 +692,10 @@ To make the tool discoverable across ERLabPy, update the relevant entry points:
   selection; and
 - update the user guide so people can find it without reading the source.
 
-If the tool should be available from a managed ImageTool, check both the unmanaged and
-managed launch paths. Manager-aware flows are slightly different because the child tool
-can be hidden, archived, restored, or rebound to watched notebook data.
+If the tool should be available from an ImageTool in the manager, check both the plain
+ImageTool launch path and the manager launch path. The manager flow is slightly
+different because the tool row can be hidden, archived, restored, or rebound to watched
+notebook data.
 
 ## Test and document the contribution
 
@@ -696,11 +709,11 @@ At minimum, add tests in `tests/interactive/test_<tool>.py` that cover:
 - `to_dataset()` / `from_dataset()` if the tool is savable, including any
   `_append_persistence_payload()` / `_restore_persistence_payload()` roundtrip when the
   tool uses them;
-- `validate_update_data()` and `update_data()` branches, including stale or unavailable
-  source cases when relevant;
+- `validate_update_data()` and `update_data()` branches, including {guilabel}`Stale` or
+  {guilabel}`Unavailable` cases after the ImageTool that opened the tool changes;
 - dialog accept and cancel paths for any new dialogs; and
-- manager-aware dispatch paths, preferably by patching manager helpers unless a live
-  manager is required.
+- manager launch paths, preferably by patching manager functions unless a live manager
+  is required.
 
 If you add a new top-level test module, also update `scripts/_ci_test_groups.py` so the
 CI shards still partition the suite correctly.
