@@ -317,6 +317,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 old.sigInfoChanged.disconnect(self._refresh_node_info)
             with contextlib.suppress(TypeError, RuntimeError):
                 old.sigDataChanged.disconnect(self._handle_tool_data_changed)
+            old._set_managed_source_update_dialog(None)
             old.set_source_parent_fetcher(None)
             old.set_input_provenance_parent_fetcher(None)
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -350,6 +351,7 @@ class _ManagedWindowNode(QtCore.QObject):
         tool.sigInfoChanged.connect(self._refresh_node_info)
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
         tool.destroyed.connect(self._handle_tool_window_destroyed)
+        tool._set_managed_source_update_dialog(self.show_source_update_dialog)
 
     def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
         manager = self._manager()
@@ -796,6 +798,8 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.uid, tool_window.source_state
             )
         self.manager.tree_view.refresh(self.uid)
+        if tool_window.source_state == "fresh":
+            self.manager._resume_pending_source_refreshes(self.uid)
 
     def _set_source_auto_update(self, value: bool) -> None:
         self._source_auto_update = bool(value)
@@ -1044,22 +1048,24 @@ class _ManagedWindowNode(QtCore.QObject):
     def show_source_update_dialog(
         self, *, parent: QtWidgets.QWidget | None = None
     ) -> int:
-        if self.tool_window is not None:
-            return self.tool_window.show_source_update_dialog(parent=parent)
-
         if not self.has_source_binding:
             return int(QtWidgets.QDialog.DialogCode.Rejected)
 
         dialog = erlab.interactive.utils._ToolSourceUpdateDialog(
             parent if parent is not None else self.manager,
-            state=self._source_state,
-            auto_update=self._source_auto_update,
+            state=self.source_state,
+            auto_update=self.source_auto_update,
         )
         result = dialog.exec()
         if result == int(QtWidgets.QDialog.DialogCode.Accepted):
-            self._set_source_auto_update(dialog.auto_update_check.isChecked())
-            if dialog.update_requested and self._source_state == "stale":
-                self._update_from_parent_source()
+            if self.tool_window is not None:
+                self.tool_window._set_source_auto_update(
+                    dialog.auto_update_check.isChecked()
+                )
+            else:
+                self._set_source_auto_update(dialog.auto_update_check.isChecked())
+            if dialog.update_requested and self.source_state == "stale":
+                self.manager._refresh_source_chain_to_uid(self.uid)
         return result
 
     @QtCore.Slot(object)

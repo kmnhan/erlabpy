@@ -447,6 +447,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._all_nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
+        self._pending_source_refresh_targets: dict[str, set[str]] = {}
         self._displayed_indices: list[int] = []
         self._node_uid_counter: int = 0
         self._linkers: list[erlab.interactive.imagetool.viewer.SlicerLinkProxy] = []
@@ -884,6 +885,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node = self._all_nodes.pop(uid, None)
         if node is None:
             return
+        self._pending_source_refresh_targets.pop(uid, None)
+        for blocker_uid, target_uids in list(
+            self._pending_source_refresh_targets.items()
+        ):
+            target_uids.discard(uid)
+            if not target_uids:
+                self._pending_source_refresh_targets.pop(blocker_uid, None)
         if node.parent_uid is not None:
             parent = typing.cast(
                 "_ImageToolWrapper | _ManagedWindowNode",
@@ -998,17 +1006,61 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 stack.append(child_uid)
         return descendants
 
-    def _ancestor_chain(self, uid: str) -> list[int | str]:
-        chain: list[int | str] = []
-        node = self._child_node(uid)
+    def _refresh_source_chain_to_uid(self, uid: str) -> bool:
+        """Refresh stale ancestors before refreshing a managed child node."""
+        try:
+            node = self._child_node(uid)
+        except KeyError:
+            return False
+
+        refresh_chain = [node]
         while True:
-            parent = self._parent_node(node)
+            try:
+                parent = self._parent_node(node)
+            except KeyError:
+                return False
             if isinstance(parent, _ImageToolWrapper):
-                chain.append(parent.index)
                 break
-            chain.append(parent.uid)
+            refresh_chain.append(parent)
             node = parent
-        return chain
+
+        for node in reversed(refresh_chain):
+            current_uid = node.uid
+
+            if not node.has_source_binding or node.source_state == "fresh":
+                continue
+            if node.archived:
+                self._mark_descendants_source_state(current_uid, node.source_state)
+                return False
+
+            updated = node._update_from_parent_source()
+            if updated and node.source_state == "fresh":
+                continue
+            tool = node.tool_window
+            if (
+                tool is not None
+                and tool.source_state == "stale"
+                and getattr(tool, "_source_refresh_deferred", False)
+            ):
+                self._pending_source_refresh_targets.setdefault(current_uid, set()).add(
+                    uid
+                )
+                return False
+            if node.source_state != "fresh":
+                self._mark_descendants_source_state(current_uid, node.source_state)
+            return False
+
+        try:
+            return self._child_node(uid).source_state == "fresh"
+        except KeyError:
+            return False
+
+    def _resume_pending_source_refreshes(self, uid: str) -> None:
+        target_uids = self._pending_source_refresh_targets.pop(uid, set())
+        for target_uid in list(target_uids):
+            if target_uid not in self._all_nodes:
+                continue
+            self._refresh_source_chain_to_uid(target_uid)
 
     def _parent_source_data_for_uid(self, uid: str) -> xr.DataArray:
         node = self._child_node(uid)

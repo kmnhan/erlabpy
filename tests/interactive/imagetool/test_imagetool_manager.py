@@ -1,6 +1,7 @@
 import ast
 import concurrent.futures
 import contextlib
+import enum
 import gc
 import io
 import json
@@ -16,6 +17,7 @@ import webbrowser
 from collections.abc import Callable
 
 import numpy as np
+import pydantic
 import pytest
 import xarray as xr
 import xarray.testing
@@ -1068,6 +1070,17 @@ def test_manager_childtool_source_updates(
         def _update_now(dialog: QtWidgets.QDialog) -> None:
             dialog.update_button.click()  # type: ignore[attr-defined]
 
+        refresh_calls: list[str] = []
+        original_refresh_chain = manager._refresh_source_chain_to_uid
+
+        def _track_refresh_chain(refresh_uid: str) -> bool:
+            refresh_calls.append(refresh_uid)
+            return original_refresh_chain(refresh_uid)
+
+        monkeypatch.setattr(
+            manager, "_refresh_source_chain_to_uid", _track_refresh_chain
+        )
+
         click_child_status_badge(
             manager,
             uid,
@@ -1076,6 +1089,7 @@ def test_manager_childtool_source_updates(
             accept_call=_update_now,
         )
 
+        assert refresh_calls == [uid]
         assert child.source_state == "fresh"
         assert child.source_auto_update is True
         xr.testing.assert_identical(child.tool_data, replaced.transpose("eV", "alpha"))
@@ -1115,6 +1129,14 @@ def test_manager_childtool_source_updates(
 
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
         xr.testing.assert_identical(child.tool_data, replaced.transpose("eV", "alpha"))
+
+        accept_dialog(
+            lambda: child._source_status_button.click(), accept_call=_update_now
+        )
+
+        assert refresh_calls == [uid, uid]
+        assert child.source_state == "fresh"
+        xr.testing.assert_identical(child.tool_data, replaced2.transpose("eV", "alpha"))
 
 
 def test_manager_full_data_childtool_updates_follow_transposed_view(
@@ -2360,6 +2382,189 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         qtbot.wait_until(lambda: grandchild_node.source_state == "stale", timeout=5000)
 
 
+def test_manager_manual_nested_refresh_updates_stale_ancestors(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    base = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_data = base.isel(x=slice(0, 2))
+        root_tool = itool(root_data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(
+            root_tool,
+            show=False,
+            provenance_spec=prov.selection(
+                prov.IselOperation(kwargs={"x": slice(0, 2)})
+            ),
+        )
+
+        child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=False,
+        )
+
+        grandchild_tool = itool(
+            root_data.isel(y=slice(0, 2)), manager=False, execute=False
+        )
+        assert isinstance(grandchild_tool, erlab.interactive.imagetool.ImageTool)
+        grandchild_uid = manager.add_imagetool_child(
+            grandchild_tool,
+            child_uid,
+            show=False,
+            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_auto_update=False,
+        )
+
+        child_node = manager._child_node(child_uid)
+        grandchild_node = manager._child_node(grandchild_uid)
+        updated_root = base.isel(x=slice(2, 4))
+
+        manager._imagetool_wrappers[0].set_detached_provenance(
+            prov.selection(prov.IselOperation(kwargs={"x": slice(2, 4)}))
+        )
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_root)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: grandchild_node.source_state == "stale", timeout=5000)
+
+        def _update_now(dialog: QtWidgets.QDialog) -> None:
+            dialog.update_button.click()  # type: ignore[attr-defined]
+
+        click_child_status_badge(
+            manager,
+            grandchild_uid,
+            accept_dialog,
+            accept_call=_update_now,
+        )
+
+        qtbot.wait_until(lambda: child_node.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: grandchild_node.source_state == "fresh", timeout=5000)
+        assert child_node.source_auto_update is False
+        assert grandchild_node.source_auto_update is False
+        xr.testing.assert_identical(fetch(child_uid), updated_root)
+        xr.testing.assert_identical(
+            fetch(grandchild_uid), updated_root.isel(y=slice(0, 2))
+        )
+
+
+def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class _DeferredToolState(pydantic.BaseModel):
+        value: int = 0
+
+    class _DeferredTool(erlab.interactive.utils.ToolWindow[_DeferredToolState]):
+        StateModel = _DeferredToolState
+        tool_name = "deferred-dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+            self._status = _DeferredToolState()
+            self.pending_data: xr.DataArray | None = None
+
+        @property
+        def tool_status(self) -> _DeferredToolState:
+            return self._status
+
+        @tool_status.setter
+        def tool_status(self, status: _DeferredToolState) -> None:
+            self._status = status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> bool:
+            self.pending_data = new_data
+            self._source_refresh_deferred = self.has_source_binding
+            return False
+
+        def finish_deferred_update(self) -> None:
+            if self.pending_data is None:
+                raise RuntimeError("No deferred data is pending")
+            self._data = self.pending_data
+            self.pending_data = None
+            self.finalize_source_refresh()
+
+    base = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_data = base.isel(x=slice(0, 2))
+        root_tool = itool(root_data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        parent_tool = _DeferredTool(root_data)
+        parent_uid = manager.add_childtool(parent_tool, 0, show=False)
+        parent_tool.set_source_binding(prov.full_data(), auto_update=False)
+
+        leaf_tool = itool(root_data.isel(y=slice(0, 2)), manager=False, execute=False)
+        assert isinstance(leaf_tool, erlab.interactive.imagetool.ImageTool)
+        leaf_uid = manager.add_imagetool_child(
+            leaf_tool,
+            parent_uid,
+            show=False,
+            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_auto_update=False,
+        )
+
+        parent_node = manager._child_node(parent_uid)
+        leaf_node = manager._child_node(leaf_uid)
+        updated_root = base.isel(x=slice(2, 4))
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated_root)
+
+        qtbot.wait_until(lambda: parent_node.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: leaf_node.source_state == "stale", timeout=5000)
+
+        assert manager._refresh_source_chain_to_uid(leaf_uid) is False
+        assert parent_tool.pending_data is not None
+        xr.testing.assert_identical(fetch(leaf_uid), root_data.isel(y=slice(0, 2)))
+
+        parent_tool.finish_deferred_update()
+
+        qtbot.wait_until(lambda: parent_node.source_state == "fresh", timeout=5000)
+        qtbot.wait_until(lambda: leaf_node.source_state == "fresh", timeout=5000)
+        xr.testing.assert_identical(parent_tool.tool_data, updated_root)
+        xr.testing.assert_identical(fetch(leaf_uid), updated_root.isel(y=slice(0, 2)))
+        assert manager._pending_source_refresh_targets == {}
+
+
 def test_manager_archived_nested_imagetool_refreshes_descendants_on_unarchive(
     qtbot,
     manager_context: Callable[
@@ -2632,46 +2837,107 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         assert ".modelfit_stderr.sel(param=" in stderr_code
 
 
-def test_manager_fit2d_output_refresh_requires_fresh_parent_source(
+def test_manager_output_refresh_updates_stale_parent_source(
     qtbot,
-    exp_decay_model,
-    test_data,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class _OutputToolState(pydantic.BaseModel):
+        value: int = 0
+
+    class _OutputTool(erlab.interactive.utils.ToolWindow[_OutputToolState]):
+        StateModel = _OutputToolState
+        tool_name = "output-dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+            self._status = _OutputToolState()
+            self.refreshed_inputs: list[xr.DataArray] = []
+
+        @property
+        def tool_status(self) -> _OutputToolState:
+            return self._status
+
+        @tool_status.setter
+        def tool_status(self, status: _OutputToolState) -> None:
+            self._status = status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> bool:
+            self.refreshed_inputs.append(new_data)
+            self._data = new_data
+            return True
+
+        def output_imagetool_data(
+            self, output_id: str | enum.Enum
+        ) -> xr.DataArray | None:
+            assert output_id == "out"
+            return self._data + 10.0
+
+        def output_imagetool_provenance(
+            self, output_id: str | enum.Enum, data: xr.DataArray
+        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+            assert output_id == "out"
+            return prov.script(
+                prov.ScriptCodeOperation(label="Use output", code="result = data + 10"),
+                start_label="Start from parent",
+                active_name="result",
+            )
+
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="scan",
+    )
+
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        itool(test_data, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
 
-        child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
-        child.timeout_spin.setValue(30.0)
-        child.nfev_spin.setValue(0)
-        child.y_index_spin.setValue(child.y_min_spin.value())
-        child._run_fit_2d("up")
-        qtbot.wait_until(
-            lambda: all(ds is not None for ds in child._result_ds_full),
-            timeout=10000,
+        child = _OutputTool(data)
+        child_uid = manager.add_childtool(child, 0, show=False)
+        child.set_source_binding(prov.full_data(), auto_update=False)
+
+        initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
+        output_tool = itool(initial_output, manager=False, execute=False)
+        assert isinstance(output_tool, erlab.interactive.imagetool.ImageTool)
+        output_uid = manager.add_imagetool_child(
+            output_tool,
+            child_uid,
+            show=False,
+            provenance_spec=child.output_imagetool_provenance("out", initial_output),
+            source_state="fresh",
+            output_id="out",
         )
 
-        child.param_plot_combo.setCurrentIndex(0)
-        child.param_plot._show_parameter_values()
         child_node = manager._child_node(child_uid)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
+        output_node = manager._child_node(output_uid)
+        updated = data * 2.0
 
-        values_uid = child_node._childtool_indices[0]
-        values_node = manager._child_node(values_uid)
-        before = fetch(values_uid).copy(deep=True)
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
 
-        child._set_source_state("stale")
-        values_node._set_source_state("stale")
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        qtbot.wait_until(lambda: output_node.source_state == "stale", timeout=5000)
+        xr.testing.assert_identical(fetch(output_uid), initial_output)
 
-        assert values_node._update_from_parent_source() is False
-        assert values_node.source_state == "stale"
-        xr.testing.assert_identical(fetch(values_uid), before)
+        assert manager._refresh_source_chain_to_uid(output_uid) is True
+        assert child.refreshed_inputs
+        assert child.source_state == "fresh"
+        assert output_node.source_state == "fresh"
+        xr.testing.assert_identical(fetch(output_uid), updated + 10.0)
 
 
 def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_windows(
