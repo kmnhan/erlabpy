@@ -480,9 +480,12 @@ def test_parameter_table_model_and_delegate(qtbot) -> None:
 
     assert model.rowCount() == 2
     assert model.columnCount() == 6
+    assert model.rowCount(model.index(0, 0)) == 0
+    assert model.columnCount(model.index(0, 0)) == 0
     assert (
         model.headerData(0, QtCore.Qt.Orientation.Horizontal) == model._COLUMN_NAMES[0]
     )
+    assert model.headerData(99, QtCore.Qt.Orientation.Horizontal) is None
 
     value_index = model.index(0, 1)
     assert model.setData(value_index, "1.5", QtCore.Qt.ItemDataRole.EditRole)

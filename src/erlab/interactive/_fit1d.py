@@ -316,9 +316,13 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
         self.sigParamsChanged.emit()
 
     def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
+        if parent is not None and parent.isValid():
+            return 0
         return len(self._param_names)
 
     def columnCount(self, parent: QtCore.QModelIndex | None = None) -> int:
+        if parent is not None and parent.isValid():
+            return 0
         return len(self._COLUMN_NAMES)
 
     def headerData(
@@ -330,6 +334,7 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
         if (
             role == QtCore.Qt.ItemDataRole.DisplayRole
             and orientation == QtCore.Qt.Orientation.Horizontal
+            and 0 <= section < len(self._COLUMN_NAMES)
         ):
             return self._COLUMN_NAMES[section]
         return None

@@ -12,7 +12,7 @@ import pydantic
 import pytest
 import qtpy
 import xarray as xr
-from qtpy import PYQT6, QtCore, QtGui, QtWidgets
+from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 
 import erlab.interactive.utils
 from erlab.interactive.imagetool.manager._modelview import (
@@ -21,7 +21,10 @@ from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemModel,
 )
-from erlab.interactive.imagetool.manager._wrapper import _ManagedWindowNode
+from erlab.interactive.imagetool.manager._wrapper import (
+    _ImageToolWrapper,
+    _ManagedWindowNode,
+)
 from erlab.interactive.utils import (
     ChunkEditDialog,
     IconActionButton,
@@ -1747,10 +1750,10 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     qtbot.addWidget(child_tool)
     qtbot.addWidget(orphan_tool)
 
-    parent_node = _ManagedWindowNode(
+    parent_node = _ImageToolWrapper(
         typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        0,
         "parent",
-        None,
         parent_tool,
     )
     child_node = _ManagedWindowNode(
@@ -1766,6 +1769,8 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
         orphan_tool,
     )
     parent_node.add_child_reference("child", child_tool)
+    manager._displayed_indices.append(0)
+    manager._imagetool_wrappers.append(parent_node)
     manager._all_nodes.update(
         {
             "parent": parent_node,
@@ -1777,17 +1782,32 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     model = _ImageToolWrapperItemModel(
         typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager)
     )
+    QtTest.QAbstractItemModelTester(
+        model,
+        QtTest.QAbstractItemModelTester.FailureReportingMode.Fatal,
+        model,
+    )
     missing_index = model.createIndex(0, 0, "missing")
     object_index = model.createIndex(0, 0, object())
-    child_index = model.createIndex(0, 0, "child")
+    child_index = model._row_index("child")
     orphan_index = model.createIndex(0, 0, "orphan")
+    nonzero_column_index = model.createIndex(0, 1, "child")
 
     assert model.data(object_index, QtCore.Qt.ItemDataRole.DisplayRole) is None
     assert model.data(missing_index, QtCore.Qt.ItemDataRole.DisplayRole) is None
+    assert model.data(nonzero_column_index, QtCore.Qt.ItemDataRole.DisplayRole) is None
+    assert model.flags(QtCore.QModelIndex()) == QtCore.Qt.ItemFlag.ItemIsDropEnabled
     assert model.flags(object_index) == QtCore.Qt.ItemFlag.NoItemFlags
+    assert model.flags(nonzero_column_index) == QtCore.Qt.ItemFlag.NoItemFlags
     assert not model.setData(missing_index, "unused")
+    assert not model.setData(nonzero_column_index, "unused")
     assert not model.parent(missing_index).isValid()
     assert not model.parent(orphan_index).isValid()
+    assert isinstance(model.parent(child_index), QtCore.QModelIndex)
+    assert model.parent(child_index).internalPointer() is parent_node
+    assert model.rowCount(nonzero_column_index) == 0
+    assert not model.hasChildren(nonzero_column_index)
+    assert model.mimeTypes() == [_MIME]
     with pytest.raises(KeyError):
         model._childtool_uid(0, "missing-parent")
 
@@ -1807,14 +1827,13 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     assert model.flags(child_index) & QtCore.Qt.ItemFlag.ItemIsEditable
 
     model.remove_rows(0, 1, missing_index)
-    monkeypatch.setattr(model, "_row_index", lambda _idx: missing_index)
-    model._insert_childtool("child", "missing-parent")
-    monkeypatch.setattr(
-        model, "parent", lambda _idx=None: model.createIndex(0, 0, "parent")
-    )
+    with monkeypatch.context() as patch:
+        patch.setattr(model, "_row_index", lambda _idx: missing_index)
+        model._insert_childtool("child", "missing-parent")
     mime_data = model.mimeData([child_index])
     payload = json.loads(bytes(mime_data.data(_MIME)).decode())
     assert payload == {"parent_id": "parent", "rows": [0]}
+    assert _ImageToolWrapperItemModel._decode_mime(QtCore.QMimeData()) is None
 
 
 def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_separate(

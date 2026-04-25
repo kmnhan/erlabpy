@@ -874,6 +874,8 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if parent is None:  # pragma: no branch
             parent = QtCore.QModelIndex()
 
+        if parent.column() > 0:
+            return False
         if not parent.isValid():
             return len(self.manager._displayed_indices) > 0
 
@@ -889,6 +891,8 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if parent is None:  # pragma: no branch
             parent = QtCore.QModelIndex()
 
+        if parent.column() > 0:
+            return 0
         if not parent.isValid():
             # Top-level; ImageTool
             return len(self.manager._displayed_indices)
@@ -908,7 +912,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     def data(
         self, index: QtCore.QModelIndex, role: int = QtCore.Qt.ItemDataRole.DisplayRole
     ) -> typing.Any:
-        if not index.isValid():  # pragma: no branch
+        if not index.isValid() or index.column() != 0:  # pragma: no branch
             return None
 
         ptr = index.internalPointer()
@@ -957,9 +961,9 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     def flags(self, index: QtCore.QModelIndex) -> QtCore.Qt.ItemFlag:
         if not index.isValid():
             # Allow drops at root for top-level reordering
-            return (
-                QtCore.Qt.ItemFlag.ItemIsDropEnabled | QtCore.Qt.ItemFlag.ItemIsEnabled
-            )
+            return QtCore.Qt.ItemFlag.ItemIsDropEnabled
+        if index.column() != 0:
+            return QtCore.Qt.ItemFlag.NoItemFlags
 
         node = index.internalPointer()
 
@@ -1064,7 +1068,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         value: typing.Any,
         role: int = QtCore.Qt.ItemDataRole.EditRole,
     ) -> bool:
-        if not index.isValid():  # pragma: no branch
+        if not index.isValid() or index.column() != 0:  # pragma: no branch
             return False
 
         ptr = index.internalPointer()
@@ -1086,7 +1090,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
         return False
 
-    def mimeTypes(self):
+    def mimeTypes(self) -> list[str]:
         return [_MIME]
 
     def mimeData(self, indexes: Iterable[QtCore.QModelIndex]) -> QtCore.QMimeData:
@@ -1101,11 +1105,16 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             if isinstance(node, _ImageToolWrapper):
                 current_parent_pointer = None
             else:
-                current_parent = self.parent(idx).internalPointer()
+                parent_index = self.parent(idx)
+                if not parent_index.isValid():
+                    return QtCore.QMimeData()
+                current_parent = parent_index.internalPointer()
                 if isinstance(current_parent, _ImageToolWrapper):
                     current_parent_pointer = current_parent.uid
+                elif isinstance(current_parent, str):
+                    current_parent_pointer = current_parent
                 else:
-                    current_parent_pointer = typing.cast("str", current_parent)
+                    return QtCore.QMimeData()
 
             if parent_pointer is None and current_parent_pointer is None:
                 parent_pointer = None
@@ -1138,11 +1147,24 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         raw: bytes = mime.data(_MIME).data()
         try:
             payload = json.loads(raw.decode("utf-8"))
-            if not {"parent_id", "rows"} <= payload.keys():
-                return None
         except Exception:
             return None
-        return payload
+        if not isinstance(payload, dict) or not {"parent_id", "rows"} <= payload.keys():
+            return None
+
+        parent_id = payload["parent_id"]
+        rows = payload["rows"]
+        if parent_id is not None and not isinstance(parent_id, str):
+            return None
+        if not isinstance(rows, list):
+            return None
+        if any(
+            not isinstance(row, int) or isinstance(row, bool) or row < 0 for row in rows
+        ):
+            return None
+        if len(set(rows)) != len(rows):
+            return None
+        return {"parent_id": parent_id, "rows": sorted(rows)}
 
     @staticmethod
     def _contiguous_runs(rows: list[int]) -> list[tuple[int, int]]:
@@ -1174,7 +1196,12 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if data is None:
             logger.debug("canDropMimeData: no data")
             return False
-        if action != QtCore.Qt.DropAction.MoveAction or column > 0:
+        if (
+            action != QtCore.Qt.DropAction.MoveAction
+            or column < -1
+            or column > 0
+            or row < -1
+        ):
             logger.debug("canDropMimeData: wrong action/column")
             return False
         if _MIME not in data.formats():
@@ -1195,11 +1222,13 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             if expected_parent_id is None and isinstance(parent_ptr, _ImageToolWrapper):
                 actual_parent_id = None
             else:
-                actual_parent_id = (
-                    parent_ptr.uid
-                    if isinstance(parent_ptr, _ImageToolWrapper)
-                    else parent_ptr
-                )
+                if isinstance(parent_ptr, _ImageToolWrapper):
+                    actual_parent_id = parent_ptr.uid
+                elif isinstance(parent_ptr, str):
+                    actual_parent_id = parent_ptr
+                else:
+                    logger.debug("canDropMimeData: invalid parent index")
+                    return False
         if actual_parent_id != expected_parent_id:
             logger.debug("canDropMimeData: parent mismatch")
             return False
@@ -1211,22 +1240,29 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         moves: list[tuple[int, int]],
         source_parent: QtCore.QModelIndex,
         destination_parent: QtCore.QModelIndex,
-    ) -> None:
+    ) -> bool:
         if parent_id is None:
             root_result = self.manager._displayed_indices.copy()
             for src, dest in moves:
                 root_result.insert(dest, root_result.pop(src))
-                self.beginMoveRows(source_parent, src, src, destination_parent, dest)
+                if not self.beginMoveRows(
+                    source_parent, src, src, destination_parent, dest
+                ):
+                    return False
                 self.manager._displayed_indices = root_result
                 self.endMoveRows()
-            return
+            return True
 
         child_result = self.manager._all_nodes[parent_id]._childtool_indices.copy()
         for src, dest in moves:
             child_result.insert(dest, child_result.pop(src))
-            self.beginMoveRows(source_parent, src, src, destination_parent, dest)
+            if not self.beginMoveRows(
+                source_parent, src, src, destination_parent, dest
+            ):
+                return False
             self.manager._all_nodes[parent_id]._childtool_indices = child_result
             self.endMoveRows()
+        return True
 
     @staticmethod
     def _get_moves(list_original: list, list_shuffled: list) -> list[tuple[int, int]]:
@@ -1278,6 +1314,11 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if not original or not source_rows:
             logger.debug("dropMimeData: empty target or source")
             return False
+        if row > len(original) or any(
+            source >= len(original) for source in source_rows
+        ):
+            logger.debug("dropMimeData: invalid target or source row")
+            return False
 
         # Compute insertion position
         dest: int = len(original) if row < 0 or row > len(original) else row
@@ -1302,8 +1343,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             logger.debug("dropMimeData: invalid moves")
             return False
 
-        self._apply_moves(parent_id, moves, parent_index, parent_index)
-        return True
+        return self._apply_moves(parent_id, moves, parent_index, parent_index)
 
 
 class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
