@@ -141,6 +141,28 @@ def test_icon_action_button_ignores_deleted_action(qtbot, action) -> None:
     assert button._action is None
 
 
+def test_icon_action_button_set_action_after_deleted_action(qtbot, action) -> None:
+    old_triggered: list[bool] = []
+    action.triggered.connect(lambda: old_triggered.append(True))
+
+    button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
+    qtbot.addWidget(button)
+
+    action.deleteLater()
+    qtbot.waitUntil(lambda: not qt_is_valid(action))
+
+    new_action = QtGui.QAction("New Action")
+    new_action.setCheckable(True)
+    new_triggered: list[bool] = []
+    new_action.triggered.connect(lambda: new_triggered.append(True))
+
+    button.setAction(new_action)
+    qtbot.mouseClick(button, QtCore.Qt.LeftButton)
+
+    assert old_triggered == []
+    assert new_triggered == [True]
+
+
 @pytest.fixture
 def fit_result_ds():
     rng = np.random.default_rng(1)

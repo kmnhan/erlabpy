@@ -4657,26 +4657,25 @@ class IconActionButton(IconButton):
             with contextlib.suppress(TypeError, RuntimeError):
                 self._action.changed.disconnect(self._update_from_action)
             with contextlib.suppress(TypeError, RuntimeError):
-                self._action.destroyed.disconnect(self._handle_action_destroyed)
-            with contextlib.suppress(TypeError, RuntimeError):
                 self.clicked.disconnect(self._action.trigger)
 
         self._action = action
         if qt_is_valid(action):
             self._update_from_action()
             action.changed.connect(self._update_from_action)
-            action.destroyed.connect(self._handle_action_destroyed)
             self.clicked.connect(action.trigger)
 
     def _update_action_icon(self) -> None:
         """Update the icon of the associated QAction to match the button's icon."""
-        if self._action is not None and qt_is_valid(self._action):  # pragma: no branch
-            self._action.blockSignals(True)
-            self._action.setIcon(self.icon())
-            self._action.blockSignals(False)
-
-    def _handle_action_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
-        self._action = None
+        action = self._action
+        if action is None:
+            return
+        if not qt_is_valid(action):
+            self._action = None
+            return
+        action.blockSignals(True)
+        action.setIcon(self.icon())
+        action.blockSignals(False)
 
     def _update_from_action(self) -> None:
         """Update the button's properties based on the associated QAction."""
