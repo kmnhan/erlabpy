@@ -59,6 +59,10 @@ jobs:
           cache-dependency-glob: uv.lock
           python-version: "3.13"
 
+      - name: Install macOS runtime libraries
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - name: Install project with all optional deps and pyinstaller
         shell: bash
         run: |
