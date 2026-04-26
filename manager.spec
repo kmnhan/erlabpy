@@ -33,10 +33,37 @@ datas = []
 binaries = []
 hiddenimports = ["PyQt6", "dask", "distributed"]
 
+
+def find_libomp_dylib():
+    candidates = [
+        pathlib.Path(sys.prefix) / "lib/libomp.dylib",
+        pathlib.Path(sys.base_prefix) / "lib/libomp.dylib",
+        pathlib.Path(os.environ.get("CONDA_PREFIX", "")) / "lib/libomp.dylib",
+        pathlib.Path("/opt/homebrew/opt/libomp/lib/libomp.dylib"),
+        pathlib.Path("/usr/local/opt/libomp/lib/libomp.dylib"),
+    ]
+    candidates.extend(
+        pathlib.Path("/opt/homebrew/Cellar/libomp").glob("*/lib/libomp.dylib")
+    )
+    candidates.extend(
+        pathlib.Path("/usr/local/Cellar/libomp").glob("*/lib/libomp.dylib")
+    )
+
+    for path in candidates:
+        if path.is_file():
+            return path.resolve()
+
+    return None
+
+
 if sys.platform.startswith("win"):
     # Required for numba cache directory resolution on Windows
     # Used in numba.misc.appdirs._get_win_folder_with_pywin32
     hiddenimports += ["win32com"]
+elif sys.platform == "darwin":
+    libomp_path = find_libomp_dylib()
+    if libomp_path is not None:
+        binaries += [(str(libomp_path), ".")]
 
 for module_name in (
     "erlab",
@@ -49,6 +76,8 @@ for module_name in (
     "seaborn",  # Colormap library
     "xarray",  # Full xarray for repr, etc.
     "igorwriter",  # Igor file writing
+    "xraydb",  # Periodic table and XPS database
+    "nexusformat",  # NeXus definitions for LOREA/NXS loading
 ):
     tmp_ret = collect_all(module_name)
     datas += tmp_ret[0]
