@@ -1,6 +1,12 @@
-## Unreleased
+## v3.21.0 (2026-04-26)
 
 ### ✨ Features
+
+- **io:** add `loader_extensions` keyword argument to `load` (#313) ([ccccc1a](https://github.com/kmnhan/erlabpy/commit/ccccc1a704a2382dd741522cb9dcec76ad620883))
+
+  This allows passing temporary loader extension settings to a single load call without needing to wrap it in `erlab.io.extend_loader`.
+
+  Also implement GUI for setting `loader_extensions` in the ImageTool Manager and the Data Explorer.
 
 - **manager:** add refreshable nested ImageTool workflows (#308) ([f19cf12](https://github.com/kmnhan/erlabpy/commit/f19cf123b275222579d54fa722c28c3269d1be33))
 
@@ -85,6 +91,8 @@
   Also adds support for lazy-computing dask-based inputs.
 
 ### 🐞 Bug Fixes
+
+- **ktool:** suppress warnings about missing k-space parameters in ktool ([3388182](https://github.com/kmnhan/erlabpy/commit/3388182de88d2d4a02fc48d56c85b2190a6ff565))
 
 - **imagetool:** properly include watched data name in generated code for average and crop dialogs ([1e1d4ef](https://github.com/kmnhan/erlabpy/commit/1e1d4ef8342191062a6d5eb75405fcc1532d5fa9))
 
