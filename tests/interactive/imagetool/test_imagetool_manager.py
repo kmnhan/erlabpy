@@ -59,6 +59,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
     _ImageToolWrapperItemModel,
+    _RowBadge,
 )
 from erlab.interactive.imagetool.manager._server import (
     AddDataPacket,
@@ -1253,6 +1254,25 @@ def test_manager_childtool_source_updates(
         assert refresh_calls == [uid, uid]
         assert child.source_state == "fresh"
         xr.testing.assert_identical(child.tool_data, replaced2.transpose("eV", "alpha"))
+
+        child._set_source_state("unavailable")
+        qtbot.wait_until(lambda: child.source_state == "unavailable", timeout=5000)
+        unavailable_badge_rect, unavailable_badge_text, _ = child_status_badge(
+            manager, uid
+        )
+        assert isinstance(unavailable_badge_text, str)
+        assert unavailable_badge_text.strip()
+
+        tooltip_text = None
+        unavailable_help_event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip,
+            unavailable_badge_rect.center(),
+            manager.tree_view.viewport().mapToGlobal(unavailable_badge_rect.center()),
+        )
+        assert delegate.helpEvent(
+            unavailable_help_event, manager.tree_view, option, index
+        )
+        assert_nonempty_tooltip(tooltip_text)
 
 
 def test_manager_full_data_childtool_updates_follow_transposed_view(
@@ -6619,6 +6639,144 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
         assert not handled
         assert text is None
+
+
+def test_manager_badge_hit_testing_edge_paths(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        view = manager.tree_view
+        model = view._model
+        delegate = view._delegate
+        index = model.index(0, 0)
+        wrapper = manager._imagetool_wrappers[0]
+
+        manager.get_imagetool(0).slicer_area._auto_chunk()
+        view.refresh(0)
+        option = delegate._option_for_index(view, index)
+        _, dask_rect, _, _ = delegate._compute_icons_info(option, wrapper)
+        assert dask_rect is not None
+
+        assert delegate._badge_at(option, QtCore.QModelIndex(), QtCore.QPoint()) is None
+        assert (
+            delegate._badge_at(
+                option, model.createIndex(0, 0, object()), option.rect.center()
+            )
+            is None
+        )
+        missing_child_index = model.createIndex(0, 0, "missing-child")
+        assert (
+            delegate._badge_at(option, missing_child_index, option.rect.center())
+            is None
+        )
+        view._handle_badge_click(
+            missing_child_index, _RowBadge("source_status", QtCore.QRect(), "")
+        )
+        for kind in ("dask", "link", "watched"):
+            view._handle_badge_click(
+                missing_child_index, _RowBadge(kind, QtCore.QRect(), "")
+            )
+        for kind in ("tool_type", "source_status"):
+            view._handle_badge_click(index, _RowBadge(kind, QtCore.QRect(), ""))
+
+        def _left_release(pos: QtCore.QPoint) -> QtGui.QMouseEvent:
+            global_pos = view.viewport().mapToGlobal(pos)
+            return QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseButtonRelease,
+                QtCore.QPointF(pos),
+                QtCore.QPointF(global_pos),
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.MouseButton.LeftButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+
+        view.mouseReleaseEvent(_left_release(QtCore.QPoint(-10, -10)))
+        view.mouseReleaseEvent(_left_release(option.rect.center()))
+
+        def _mouse_move(pos: QtCore.QPoint) -> QtGui.QMouseEvent:
+            global_pos = view.viewport().mapToGlobal(pos)
+            return QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseMove,
+                QtCore.QPointF(pos),
+                QtCore.QPointF(global_pos),
+                QtCore.Qt.MouseButton.NoButton,
+                QtCore.Qt.MouseButton.NoButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+
+        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
+        assert (
+            view.viewport().cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor
+        )
+
+        delegate.eventFilter(view.viewport(), _mouse_move(option.rect.center()))
+        assert (
+            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
+        )
+
+        delegate.eventFilter(view.viewport(), _mouse_move(QtCore.QPoint(-10, -10)))
+        assert (
+            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
+        )
+
+        delegate.eventFilter(view.viewport(), QtCore.QEvent(QtCore.QEvent.Type.Leave))
+        assert (
+            view.viewport().cursor().shape() != QtCore.Qt.CursorShape.PointingHandCursor
+        )
+        delegate.eventFilter(None, QtCore.QEvent(QtCore.QEvent.Type.Leave))
+        delegate.eventFilter(None, _mouse_move(dask_rect.center()))
+
+        fake_link_rect = QtCore.QRect(
+            option.rect.left() + 4, option.rect.top() + 4, 16, 16
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                delegate,
+                "_compute_icons_info",
+                lambda option_arg, wrapper_arg: (16, None, fake_link_rect, None),
+            )
+            patch.setattr(wrapper.slicer_area, "_linking_proxy", None)
+            assert delegate._badge_at(option, index, fake_link_rect.center()) is None
+
+        view._show_dask_badge_menu(
+            types.SimpleNamespace(imagetool=None),
+            QtCore.QRect(),
+        )
+        view._stop_watching_badge_target(wrapper)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(lambda: len(wrapper._childtool_indices) == 1, timeout=5000)
+        child_uid = wrapper._childtool_indices[0]
+        child_index = model._row_index(child_uid)
+        child_node = manager._child_node(child_uid)
+        child_option = delegate._option_for_index(view, child_index)
+        assert (
+            delegate._badge_at(child_option, child_index, child_option.rect.center())
+            is None
+        )
+
+        source_dialog_parents: list[ImageToolManager] = []
+        monkeypatch.setattr(
+            child_node,
+            "show_source_update_dialog",
+            lambda *, parent: source_dialog_parents.append(parent),
+        )
+        view._handle_badge_click(
+            child_index, _RowBadge("source_status", QtCore.QRect(), "")
+        )
+        assert source_dialog_parents == [manager]
 
 
 def test_warning_alert(
