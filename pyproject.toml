@@ -60,6 +60,7 @@ io = [
     "astropy>=5.1.1",
     "nexusformat>=1.0.6",
     "zarr>=3.1.2",
+    "pillow>=10.0.0",
 ]
 perf = ["numbagg>=0.8.1"]
 misc = ["iminuit>=2.25.2,!=2.31.2", "csaps>=1.1.0", "numdifftools>=0.9.42"]
