@@ -2,14 +2,35 @@ import pathlib
 import typing
 from collections.abc import Callable
 
-from qtpy import QtCore
+from qtpy import QtCore, QtGui
 
 import erlab
 from erlab.interactive.explorer._base_explorer import _DataExplorer, _ReprFetcher
+from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.imagetool.manager import _dialogs
 
-if typing.TYPE_CHECKING:
-    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+
+def test_explorer_last_tab_closes_without_manager(qtbot, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
+
+    class _TrackingTabbedExplorer(_TabbedExplorer):
+        def __init__(self, *args, **kwargs) -> None:
+            self.close_event_count = 0
+            super().__init__(*args, **kwargs)
+
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            self.close_event_count += 1
+            super().closeEvent(event)
+
+    win = _TrackingTabbedExplorer(root_path=tmp_path)
+    qtbot.addWidget(win)
+    with qtbot.waitExposed(win):
+        win.show()
+
+    win.close_tab(0)
+
+    qtbot.wait_until(lambda: not win.isVisible())
+    assert win.close_event_count == 1
 
 
 def test_explorer_general(

@@ -289,6 +289,33 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
 
 
+def test_close_shortcut_reaches_child_line_edit(qtbot) -> None:
+    window = QtWidgets.QMainWindow()
+    line_edit = QtWidgets.QLineEdit(window)
+    calls: list[str] = []
+    window.setCentralWidget(line_edit)
+    qtbot.addWidget(window)
+
+    shortcut = erlab.interactive.utils._install_close_shortcut(
+        window, lambda: calls.append("close")
+    )
+    with qtbot.waitExposed(window):
+        window.show()
+    line_edit.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+
+    qtbot.keyClick(
+        line_edit,
+        QtCore.Qt.Key.Key_W,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+
+    qtbot.waitUntil(lambda: calls == ["close"])
+    assert (
+        shortcut.key().toString(QtGui.QKeySequence.SequenceFormat.PortableText)
+        == "Ctrl+W"
+    )
+
+
 def test_qt_object_is_valid_uses_shiboken_when_available(monkeypatch) -> None:
     sentinel = object()
     other = object()

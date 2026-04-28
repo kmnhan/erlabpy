@@ -11,6 +11,7 @@ import bisect
 import contextlib
 import enum
 import fnmatch
+import functools
 import importlib
 import inspect
 import itertools
@@ -203,6 +204,82 @@ def single_shot(
             raise
 
     QtCore.QTimer.singleShot(msec, _call)
+
+
+class _CloseShortcutEventFilter(QtCore.QObject):
+    def __init__(self, widget: QtWidgets.QWidget, callback: Callable[[], None]) -> None:
+        super().__init__(widget)
+        self._widget = widget
+        self._callback = callback
+
+    def eventFilter(
+        self,
+        watched: QtCore.QObject | None,
+        event: QtCore.QEvent | None,
+    ) -> bool:
+        if (
+            event is None
+            or event.type() != QtCore.QEvent.Type.KeyPress
+            or not isinstance(event, QtGui.QKeyEvent)
+        ):
+            return False
+
+        focused = watched if isinstance(watched, QtWidgets.QWidget) else None
+        if (
+            focused is None
+            or not self._widget.isVisible()
+            or (focused is not self._widget and focused.window() is not self._widget)
+        ):
+            return False
+
+        relevant_modifiers = (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            | QtCore.Qt.KeyboardModifier.ShiftModifier
+            | QtCore.Qt.KeyboardModifier.AltModifier
+            | QtCore.Qt.KeyboardModifier.MetaModifier
+        )
+        modifiers = event.modifiers() & relevant_modifiers
+        close_shortcut = event.matches(QtGui.QKeySequence.StandardKey.Close) or (
+            event.key() == QtCore.Qt.Key.Key_W
+            and modifiers == QtCore.Qt.KeyboardModifier.ControlModifier
+        )
+        if not close_shortcut:
+            return False
+
+        self._callback()
+        event.accept()
+        return True
+
+
+def _hide_or_close_with_manager(widget: QtWidgets.QWidget) -> None:
+    if erlab.interactive.imagetool.manager._manager_instance is None:
+        widget.close()
+    else:
+        widget.hide()
+
+
+def _install_close_shortcut(
+    widget: QtWidgets.QWidget, callback: Callable[[], None] | None = None
+) -> QtWidgets.QShortcut:
+    """Install robust Ctrl+W handling on a widget and its child widgets."""
+    if callback is None:
+        callback = functools.partial(_hide_or_close_with_manager, widget)
+
+    if isinstance(widget, QtWidgets.QMainWindow):
+        widget.menuBar()
+
+    shortcut = QtWidgets.QShortcut("Ctrl+W", widget, callback)
+    shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+
+    application = QtWidgets.QApplication.instance()
+    if isinstance(application, QtWidgets.QApplication):
+        shortcut_filter = _CloseShortcutEventFilter(widget, callback)
+        application.installEventFilter(shortcut_filter)
+        widget.destroyed.connect(lambda: application.removeEventFilter(shortcut_filter))
+        widget._erlab_close_shortcut_refs = (shortcut, shortcut_filter)  # type: ignore[attr-defined]
+    else:
+        widget._erlab_close_shortcut_refs = (shortcut,)  # type: ignore[attr-defined]
+    return shortcut
 
 
 @contextlib.contextmanager

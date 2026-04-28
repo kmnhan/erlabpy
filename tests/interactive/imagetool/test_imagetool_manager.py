@@ -1,6 +1,7 @@
 import ast
 import concurrent.futures
 import contextlib
+import dataclasses
 import enum
 import gc
 import io
@@ -7357,19 +7358,43 @@ def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    class _TrackingTabbedExplorer(_TabbedExplorer):
+        def __init__(self, *args, **kwargs) -> None:
+            self.close_event_count = 0
+            super().__init__(*args, **kwargs)
+
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            self.close_event_count += 1
+            super().closeEvent(event)
+
     with (
         manager_context() as manager,
         tempfile.TemporaryDirectory() as recent_dir,
         tempfile.TemporaryDirectory() as dropped_dir,
     ):
         manager._recent_directory = recent_dir
+        spec = manager._standalone_app_specs["explorer"]
+        manager._standalone_app_specs["explorer"] = dataclasses.replace(
+            spec,
+            factory=lambda: _TrackingTabbedExplorer(
+                root_path=manager._recent_directory,
+                loader_name=manager._recent_loader_name,
+            ),
+        )
 
         manager.ensure_explorer_initialized()
         explorer = manager.explorer
 
-        assert isinstance(explorer, _TabbedExplorer)
+        assert isinstance(explorer, _TrackingTabbedExplorer)
         assert hasattr(manager, "explorer")
         assert explorer.tab_widget.count() == 1
+
+        explorer.close_tab(0)
+        qtbot.wait_until(lambda: not explorer.isVisible())
+        assert explorer.close_event_count == 0
+        manager.show_explorer()
+        qtbot.wait_until(explorer.isVisible)
+        assert manager.explorer is explorer
 
         explorer.hide()
         manager.show_explorer()
@@ -7395,17 +7420,43 @@ def test_manager_ptable_launcher_reuses_instance_without_affecting_tree(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    class _TrackingPeriodicTableWindow(PeriodicTableWindow):
+        def __init__(self) -> None:
+            self.close_event_count = 0
+            super().__init__()
+
+        def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+            self.close_event_count += 1
+            super().closeEvent(event)
+
     with manager_context() as manager:
         initial_ntools = manager.ntools
         initial_rows = manager.tree_view.model().rowCount(QtCore.QModelIndex())
+        spec = manager._standalone_app_specs["ptable"]
+        manager._standalone_app_specs["ptable"] = dataclasses.replace(
+            spec,
+            factory=_TrackingPeriodicTableWindow,
+        )
 
         manager.show_ptable()
         ptable = manager.ptable_window
 
         qtbot.wait_until(ptable.isVisible)
-        assert isinstance(ptable, PeriodicTableWindow)
+        assert isinstance(ptable, _TrackingPeriodicTableWindow)
         assert manager.ntools == initial_ntools
         assert manager.tree_view.model().rowCount(QtCore.QModelIndex()) == initial_rows
+
+        ptable.search_edit.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
+        qtbot.keyClick(
+            ptable.search_edit,
+            QtCore.Qt.Key.Key_W,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        qtbot.wait_until(lambda: not ptable.isVisible())
+        manager.show_ptable()
+        qtbot.wait_until(ptable.isVisible)
+        assert manager.ptable_window is ptable
+        assert ptable.close_event_count == 0
 
         ptable.hide()
         manager.show_ptable()
