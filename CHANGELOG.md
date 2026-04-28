@@ -1,3 +1,27 @@
+## Unreleased
+
+### ✨ Features
+
+- **io.plugins.merlin:** add support for loading beamline control system scans (#317) ([43ae4a6](https://github.com/kmnhan/erlabpy/commit/43ae4a6461a301c1a2218a420ebf35b66d6434a8))
+
+  Adds a new function `load_bcs` to the MERLIN plugin, which can load beamline control system (BCS) scan data from text files. Currently only tested with DiagOn images, but should be flexible enough to support other image columns and varying/constant numeric columns.
+
+  This adds Pillow as a new optional dependency which is required to load `.png` image files.
+
+- **imagetool:** support Igor binary wave export (#318) ([e06f735](https://github.com/kmnhan/erlabpy/commit/e06f735d9f8912016449f983b3bb3f1f37070710))
+
+  ImageTool’s File -> Save As dialog now includes an Igor Binary Waves (`.ibw`) option. Exports use `erlab.io.igor.save_wave`, making it easier to save displayed data directly for use in Igor Pro.
+
+### 🐞 Bug Fixes
+
+- **interactive:** make standalone windows close consistently (#320) ([7937bdd](https://github.com/kmnhan/erlabpy/commit/7937bdd75f05d0e7fcc67277c4499890702436f3))
+
+  Fixes inconsistent Ctrl+W keyboard shortcut behavior for standalone apps like Periodic Table and Data Explorer.
+
+- **imagetool:** make manager row badges consistently interactive (#319) ([f04ec18](https://github.com/kmnhan/erlabpy/commit/f04ec185fb905f0bcf5a1950b4a04cf167c4b11c))
+
+  ImageTool manager row badges now all show tooltips and respond to clicks. Dask badges open Dask/chunk controls, link and watched-variable badges expose the relevant row-specific actions with confirmation for destructive changes, tool-type badges focus the child tool, and source-status badges keep opening update controls.
+
 ## v3.21.0 (2026-04-26)
 
 ### ✨ Features
