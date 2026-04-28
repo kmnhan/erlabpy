@@ -1084,6 +1084,34 @@ def test_itool_save(qtbot, accept_dialog) -> None:
     win.close()
 
 
+def test_itool_save_igor_wave(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=np.float32).reshape((5, 5)), dims=["x", "y"], name="wave0"
+    )
+    expected = data.assign_coords(
+        {dim: np.arange(data.sizes[dim], dtype=np.float64) for dim in data.dims}
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_name:
+        filename = f"{tmp_dir_name}/data.ibw"
+
+        def _go_to_file(dialog: QtWidgets.QFileDialog):
+            dialog.selectNameFilter("Igor Binary Waves (*.ibw)")
+            dialog.setDirectory(tmp_dir_name)
+            dialog.selectFile(filename)
+            focused = dialog.focusWidget()
+            if isinstance(focused, QtWidgets.QLineEdit):
+                focused.setText("data.ibw")
+
+        accept_dialog(lambda: win._export_file(native=False), pre_call=_go_to_file)
+        loaded = xr.load_dataarray(filename, engine="erlab-igor")
+        xr.testing.assert_allclose(loaded, expected, atol=1e-6)
+
+    win.close()
+
+
 @pytest.mark.parametrize("use_dask", [True, False], ids=["dask", "no_dask"])
 def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])

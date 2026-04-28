@@ -290,7 +290,7 @@ Python. See {ref}`workflow-bridge-operations` for the maintained crosswalk.
 
 ## Exporting and settings
 
-- {guilabel}`File → Save As…` exports the current data to NetCDF or HDF5.
+- {guilabel}`File → Save As…` exports the current data to NetCDF, HDF5, or Igor Binary Wave (`.ibw`).
 
 - {guilabel}`File → Move to Manager` hands the window off to the {ref}`ImageTool manager <imagetool-manager>`.
 

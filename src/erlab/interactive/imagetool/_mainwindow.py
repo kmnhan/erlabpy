@@ -475,7 +475,7 @@ class ImageTool(BaseImageTool):
         if not native:
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
-        # To avoid importing erlab.io, we define the following functions here
+        # Keep format-specific saver logic local to the export action.
         def _add_igor_scaling(darr: xr.DataArray) -> xr.DataArray:
             scaling = [[1, 0]]
             for i in range(darr.ndim):
@@ -493,12 +493,23 @@ class ImageTool(BaseImageTool):
         def _to_hdf5(darr: xr.DataArray, file: str, **kwargs) -> None:
             _to_netcdf(_add_igor_scaling(darr), file, **kwargs)
 
+        def _to_igor_wave(darr: xr.DataArray, file: str) -> None:
+            implicit_coords = {
+                dim: np.arange(darr.sizes[dim], dtype=np.float64)
+                for dim in darr.dims
+                if dim not in darr.coords
+            }
+            if implicit_coords:
+                darr = darr.assign_coords(implicit_coords)
+            erlab.io.igor.save_wave(darr, file)
+
         valid_savers: dict[str, tuple[Callable, dict[str, typing.Any]]] = {
             "xarray HDF5 Files (*.h5)": (
                 _to_hdf5,
                 {"engine": "h5netcdf", "invalid_netcdf": True},
             ),
             "NetCDF Files (*.nc *.nc4 *.cdf)": (_to_netcdf, {}),
+            "Igor Binary Waves (*.ibw)": (_to_igor_wave, {}),
         }
 
         dialog.setNameFilters(valid_savers.keys())
