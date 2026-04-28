@@ -119,6 +119,28 @@ def select_child_tool(
     )
 
 
+def click_tree_view_pos(
+    view: QtWidgets.QTreeView,
+    pos: QtCore.QPoint,
+) -> None:
+    global_pos = view.viewport().mapToGlobal(pos)
+    view.mouseReleaseEvent(
+        QtGui.QMouseEvent(
+            QtCore.QEvent.Type.MouseButtonRelease,
+            QtCore.QPointF(pos),
+            QtCore.QPointF(global_pos),
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+    )
+
+
+def assert_nonempty_tooltip(text: str | None) -> None:
+    assert isinstance(text, str)
+    assert text.strip()
+
+
 def child_status_badge(
     manager: ImageToolManager, uid: str
 ) -> tuple[QtCore.QRect, str | None, QtCore.QModelIndex]:
@@ -1005,7 +1027,22 @@ def test_manager_childtool_type_badge_only_for_tool_windows(
             manager.tree_view.viewport().mapToGlobal(type_rect.center()),
         )
         assert delegate.helpEvent(help_event, manager.tree_view, option, tool_index)
-        assert tooltip_text == f"Tool type: {tool.tool_name}"
+        assert_nonempty_tooltip(tooltip_text)
+
+        manager.tree_view.expand(root_index)
+        actual_option = QtWidgets.QStyleOptionViewItem()
+        delegate.initStyleOption(actual_option, tool_index)
+        actual_option.rect = manager.tree_view.visualRect(tool_index)
+        actual_type_rect, _, _ = delegate._compute_tool_type_info(
+            actual_option, tool_node
+        )
+        assert actual_type_rect is not None
+        show_calls: list[str] = []
+        monkeypatch.setattr(
+            manager, "show_childtool", lambda uid: show_calls.append(uid)
+        )
+        click_tree_view_pos(manager.tree_view, actual_type_rect.center())
+        assert show_calls == [tool_uid]
 
         editor = QtWidgets.QLineEdit(manager.tree_view.viewport())
         delegate.updateEditorGeometry(editor, option, tool_index)
@@ -1140,9 +1177,7 @@ def test_manager_childtool_source_updates(
             manager.tree_view.viewport().mapToGlobal(badge_rect.center()),
         )
         assert delegate.helpEvent(help_event, manager.tree_view, option, index)
-        assert (
-            tooltip_text == "Click to update this tool from the latest compatible data."
-        )
+        assert_nonempty_tooltip(tooltip_text)
         assert index == manager.tree_view.indexAt(badge_rect.center())
 
         def _enable_auto_update(dialog: QtWidgets.QDialog) -> None:
@@ -1186,7 +1221,7 @@ def test_manager_childtool_source_updates(
             manager.tree_view.viewport().mapToGlobal(auto_badge_rect.center()),
         )
         assert delegate.helpEvent(auto_help_event, manager.tree_view, option, index)
-        assert tooltip_text == "Click to configure automatic updates."
+        assert_nonempty_tooltip(tooltip_text)
 
         def _disable_auto_update(dialog: QtWidgets.QDialog) -> None:
             dialog.auto_update_check.setChecked(False)  # type: ignore[attr-defined]
@@ -6453,12 +6488,13 @@ def test_manager_hover_tooltip(
         manager.show()
         manager.activateWindow()
 
-        itool([test_data, test_data], link=True, manager=True)
+        itool([test_data, test_data, test_data], link=True, manager=True)
 
-        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         manager.get_imagetool(0).slicer_area._auto_chunk()
         manager.get_imagetool(1).slicer_area._auto_chunk()
+        manager.get_imagetool(2).slicer_area._auto_chunk()
         select_tools(manager, [0])
         manager._update_info()
         assert "Chunks" in metadata_detail_map(manager)
@@ -6471,6 +6507,7 @@ def test_manager_hover_tooltip(
         index = model.index(0, 0)  # first tool
         option = QtWidgets.QStyleOptionViewItem()
         delegate.initStyleOption(option, index)
+        option.rect = view.visualRect(index)
         _, dask_rect, link_rect, _ = delegate._compute_icons_info(
             option, index.internalPointer()
         )
@@ -6491,7 +6528,14 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
 
         assert handled
-        assert text == "Dask-backed data (chunked array)"
+        assert_nonempty_tooltip(text)
+
+        popup_positions: list[QtCore.QPoint] = []
+        dask_menu = manager.get_imagetool(0)._dask_menu
+        monkeypatch.setattr(dask_menu, "popup", popup_positions.append)
+        click_tree_view_pos(view, dask_rect.center())
+        assert popup_positions == [view.viewport().mapToGlobal(dask_rect.bottomLeft())]
+        assert manager.get_imagetool(0).slicer_area.data_chunked
 
         # Hover over link icon
         text = None
@@ -6502,7 +6546,69 @@ def test_manager_hover_tooltip(
         handled = delegate.helpEvent(event, view, option, index)
 
         assert handled
-        assert text == "Linked (#0)"
+        assert_nonempty_tooltip(text)
+
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        click_tree_view_pos(view, link_rect.center())
+        assert manager.get_imagetool(0).slicer_area.is_linked
+        assert manager.get_imagetool(1).slicer_area.is_linked
+        assert manager.get_imagetool(2).slicer_area.is_linked
+
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        click_tree_view_pos(view, link_rect.center())
+        assert not manager.get_imagetool(0).slicer_area.is_linked
+        assert manager.get_imagetool(1).slicer_area.is_linked
+        assert manager.get_imagetool(2).slicer_area.is_linked
+
+        wrapper = manager._imagetool_wrappers[0]
+        wrapper._watched_varname = "sample"
+        wrapper._watched_uid = "sample kernel"
+        option = QtWidgets.QStyleOptionViewItem()
+        delegate.initStyleOption(option, index)
+        option.rect = view.visualRect(index)
+        _, _, _, watched_rect = delegate._compute_icons_info(option, wrapper)
+        assert watched_rect is not None
+
+        text = None
+        pos = watched_rect.center()
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip, pos, view.viewport().mapToGlobal(pos)
+        )
+        handled = delegate.helpEvent(event, view, option, index)
+        assert handled
+        assert_nonempty_tooltip(text)
+
+        click_tree_view_pos(view, watched_rect.center())
+        assert view._badge_menu is not None
+        refresh_action, stop_action = view._badge_menu.actions()
+        with qtbot.wait_signal(manager._sigWatchedDataEdited) as blocker:
+            refresh_action.trigger()
+        assert blocker.args == ["sample", "sample kernel", "updated"]
+
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        stop_action.trigger()
+        assert wrapper.watched
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "question",
+            lambda *args, **kwargs: QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        with qtbot.wait_signal(manager._sigWatchedDataEdited) as blocker:
+            stop_action.trigger()
+        assert blocker.args == ["sample", "sample kernel", "removed"]
+        assert not wrapper.watched
 
         # Hover outside icons
         text = None

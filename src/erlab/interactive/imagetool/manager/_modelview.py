@@ -11,6 +11,7 @@ import math
 import os
 import typing
 import weakref
+from dataclasses import dataclass
 
 import qtawesome as qta
 from qtpy import QtCore, QtGui, QtWidgets
@@ -30,6 +31,21 @@ logger = logging.getLogger(__name__)
 
 _NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
 _TOOL_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 129
+_RowBadgeKind = typing.Literal["dask", "link", "watched", "tool_type", "source_status"]
+
+
+@dataclass(frozen=True)
+class _RowBadge:
+    """Hit-test result for a painted manager-row badge.
+
+    The delegate paints badges manually, so Qt does not expose child widgets for them.
+    Keep this as the single payload passed from delegate hit-testing to tooltip and
+    click handling so their geometry cannot drift apart.
+    """
+
+    kind: _RowBadgeKind
+    rect: QtCore.QRect
+    tooltip: str
 
 
 def _fill_rounded_rect(
@@ -628,6 +644,102 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         rect_x = option.rect.right() - badge_width - self.icon_right_pad
         return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
 
+    def _option_for_index(
+        self,
+        view: QtWidgets.QAbstractItemView,
+        index: QtCore.QModelIndex,
+    ) -> QtWidgets.QStyleOptionViewItem:
+        """Build the same style option used for painting a visible row.
+
+        Badge hit-testing must use the current visual row rectangle. Relying on a
+        default style option gives correct font/palette data but a stale rect,
+        especially after scrolling or expanding nested rows.
+        """
+        option = QtWidgets.QStyleOptionViewItem()
+        self.initStyleOption(option, index)
+        option.rect = view.visualRect(index)
+        option.widget = view
+        return option
+
+    def _badge_at(
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        index: QtCore.QModelIndex,
+        pos: QtCore.QPoint,
+    ) -> _RowBadge | None:
+        """Return the badge under ``pos`` using the same geometry as painting.
+
+        The ordering here mirrors the visual layout. For top-level rows the badges are
+        right-aligned; for child rows the tool-type badge is checked before the
+        right-side source status badge. Tooltip, cursor, and click paths all call this
+        method so any badge geometry change has one source of truth.
+        """
+        if not index.isValid():
+            return None
+
+        node = index.internalPointer()
+        if isinstance(node, _ImageToolWrapper):
+            _, dask_rect, link_rect, watched_rect = self._compute_icons_info(
+                option, node
+            )
+            if dask_rect is not None and dask_rect.contains(pos):
+                return _RowBadge(
+                    "dask",
+                    dask_rect,
+                    "Dask-backed data. Click to open Dask and chunk controls.",
+                )
+            if link_rect is not None and link_rect.contains(pos):
+                proxy = node.slicer_area._linking_proxy
+                if proxy is not None:
+                    linker_index = self.manager._linkers.index(proxy)
+                    return _RowBadge(
+                        "link",
+                        link_rect,
+                        f"Linked (#{linker_index}). Click to unlink this window.",
+                    )
+            if watched_rect is not None and watched_rect.contains(pos):
+                varname = str(node._watched_varname)
+                return _RowBadge(
+                    "watched",
+                    watched_rect,
+                    f"Watching variable {varname!r}. Click for watch actions.",
+                )
+            return None
+
+        if not isinstance(node, str):
+            return None
+        try:
+            child_node = self.manager._child_node(node)
+        except KeyError:
+            return None
+
+        type_rect, type_text, _ = self._compute_tool_type_info(option, child_node)
+        if type_rect is not None and type_text is not None and type_rect.contains(pos):
+            return _RowBadge(
+                "tool_type",
+                type_rect,
+                f"Tool type: {type_text}. Click to show this tool.",
+            )
+
+        status_rect, _, _ = self._compute_child_status_info(option, child_node)
+        if status_rect is None or not status_rect.contains(pos):
+            return None
+        match child_node.source_state:
+            case "stale":
+                tooltip = (
+                    "Stale. Click to update this tool from the latest compatible data."
+                )
+            case "unavailable":
+                tooltip = (
+                    "Unavailable. Click to review why this tool cannot update from the "
+                    "current data."
+                )
+            case _:
+                tooltip = (
+                    "Automatic updates enabled. Click to configure automatic updates."
+                )
+        return _RowBadge("source_status", status_rect, tooltip)
+
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
@@ -639,12 +751,24 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     | QtCore.QEvent.Type.WindowStateChange
                 ):
                     self.preview_popup.hide()
+                    if isinstance(obj, QtWidgets.QWidget):
+                        obj.unsetCursor()
                 case QtCore.QEvent.Type.MouseMove:
-                    index = typing.cast(
-                        "_ImageToolWrapperTreeView", self.parent()
-                    ).indexAt(typing.cast("QtGui.QMouseEvent", event).pos())
+                    view = typing.cast("_ImageToolWrapperTreeView", self.parent())
+                    pos = typing.cast("QtGui.QMouseEvent", event).pos()
+                    index = view.indexAt(pos)
                     if not index.isValid():
                         self.preview_popup.hide()
+                    if isinstance(obj, QtWidgets.QWidget):
+                        if not index.isValid():
+                            badge = None
+                        else:
+                            option = self._option_for_index(view, index)
+                            badge = self._badge_at(option, index, pos)
+                        if badge is None:
+                            obj.unsetCursor()
+                        else:
+                            obj.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
         return super().eventFilter(obj, event)
 
@@ -662,80 +786,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         index: QtCore.QModelIndex,
     ) -> bool:
         if isinstance(event, QtGui.QHelpEvent) and index.isValid():
-            tool_wrapper = index.internalPointer()
-            if isinstance(tool_wrapper, _ImageToolWrapper):  # pragma: no branch
-                (
-                    _,
-                    dask_rect,
-                    link_rect,
-                    watched_rect,
-                ) = self._compute_icons_info(option, tool_wrapper)
-                pos = event.pos()
-                if dask_rect and dask_rect.contains(pos):
-                    QtWidgets.QToolTip.showText(
-                        event.globalPos(),
-                        "Dask-backed data (chunked array)",
-                        view,
-                        dask_rect,
-                    )
-                    return True
-                if link_rect and link_rect.contains(pos):
-                    proxy = tool_wrapper.slicer_area._linking_proxy
-                    if proxy:  # pragma: no branch
-                        linker_index = self.manager._linkers.index(proxy)
-                        QtWidgets.QToolTip.showText(
-                            event.globalPos(),
-                            f"Linked (#{linker_index})",
-                            view,
-                            link_rect,
-                        )
-                        return True
-                if watched_rect and watched_rect.contains(pos):
-                    QtWidgets.QToolTip.showText(
-                        event.globalPos(),
-                        "Variable synced with IPython",
-                        view,
-                        watched_rect,
-                    )
-                    return True
-            elif isinstance(tool_wrapper, str):
-                try:
-                    child_node = self.manager._child_node(tool_wrapper)
-                except KeyError:
-                    child_node = None
-                if child_node is not None:
-                    type_rect, type_text, _ = self._compute_tool_type_info(
-                        option, child_node
-                    )
-                    if type_rect and type_text and type_rect.contains(event.pos()):
-                        QtWidgets.QToolTip.showText(
-                            event.globalPos(),
-                            f"Tool type: {type_text}",
-                            view,
-                            type_rect,
-                        )
-                        return True
-                    status_rect, _, _ = self._compute_child_status_info(
-                        option, child_node
-                    )
-                    if status_rect and status_rect.contains(event.pos()):
-                        match child_node.source_state:
-                            case "stale":
-                                tooltip = (
-                                    "Click to update this tool from the latest "
-                                    "compatible data."
-                                )
-                            case "unavailable":
-                                tooltip = (
-                                    "Click to review why this tool cannot update from "
-                                    "the current data."
-                                )
-                            case _:
-                                tooltip = "Click to configure automatic updates."
-                        QtWidgets.QToolTip.showText(
-                            event.globalPos(), tooltip, view, status_rect
-                        )
-                        return True
+            badge = self._badge_at(option, index, event.pos())
+            if badge is not None:
+                QtWidgets.QToolTip.showText(
+                    event.globalPos(), badge.tooltip, view, badge.rect
+                )
+                return True
 
         return super().helpEvent(event, view, option, index)
 
@@ -1401,6 +1457,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
         self._menu = QtWidgets.QMenu("Menu", self)
+        self._badge_menu: QtWidgets.QMenu | None = None
         self._menu.setToolTipsVisible(True)
         self._menu.addAction(manager.reindex_action)
         self._menu.addSeparator()
@@ -1474,25 +1531,117 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
         if event is not None and event.button() == QtCore.Qt.MouseButton.LeftButton:
             index = self.indexAt(event.pos())
-            if index.isValid() and isinstance(index.internalPointer(), str):
-                option = QtWidgets.QStyleOptionViewItem()
-                option.rect = self.visualRect(index)
-                option.font = self.font()
-                try:
-                    child_node = self._model.manager._child_node(
-                        index.internalPointer()
-                    )
-                except KeyError:
-                    child_node = None
-                if child_node is not None:
-                    status_rect, _, _ = self._delegate._compute_child_status_info(
-                        option, child_node
-                    )
-                    if status_rect and status_rect.contains(event.pos()):
-                        child_node.show_source_update_dialog(parent=self._model.manager)
-                        event.accept()
-                        return
+            if index.isValid():
+                option = self._delegate._option_for_index(self, index)
+                badge = self._delegate._badge_at(option, index, event.pos())
+                if badge is not None:
+                    self._handle_badge_click(index, badge)
+                    event.accept()
+                    return
         super().mouseReleaseEvent(event)
+
+    def _handle_badge_click(self, index: QtCore.QModelIndex, badge: _RowBadge) -> None:
+        """Dispatch a click on a painted badge to the row-specific action.
+
+        Badge clicks intentionally operate on the clicked row only. They do not reuse
+        selection-based actions because a selected group can contain unrelated rows,
+        while the badge affordance belongs to one painted row.
+        """
+        node = index.internalPointer()
+        match badge.kind:
+            case "dask":
+                if isinstance(node, _ImageToolWrapper):
+                    self._show_dask_badge_menu(node, badge.rect)
+            case "link":
+                if isinstance(node, _ImageToolWrapper):
+                    self._unlink_badge_target(node)
+            case "watched":
+                if isinstance(node, _ImageToolWrapper):
+                    self._show_watched_badge_menu(node, badge.rect)
+            case "tool_type":
+                if isinstance(node, str):
+                    self._model.manager.show_childtool(node)
+            case "source_status":
+                if isinstance(node, str):
+                    try:
+                        child_node = self._model.manager._child_node(node)
+                    except KeyError:
+                        return
+                    child_node.show_source_update_dialog(parent=self._model.manager)
+
+    def _show_dask_badge_menu(
+        self, wrapper: _ImageToolWrapper, badge_rect: QtCore.QRect
+    ) -> None:
+        """Open the clicked tool's Dask menu at the badge location."""
+        tool = wrapper.imagetool
+        if tool is None:
+            return
+        tool.slicer_area.compute_act.setEnabled(tool.slicer_area.data_chunked)
+        tool._dask_menu.update_actions_visibility()
+        viewport = self.viewport()
+        assert viewport is not None
+        tool._dask_menu.popup(viewport.mapToGlobal(badge_rect.bottomLeft()))
+
+    def _unlink_badge_target(self, wrapper: _ImageToolWrapper) -> None:
+        """Confirm and unlink only the ImageTool represented by ``wrapper``."""
+        if (
+            QtWidgets.QMessageBox.question(
+                self._model.manager,
+                "Unlink ImageTool?",
+                "Unlink this ImageTool from linked cursor and color updates?",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.Cancel,
+                QtWidgets.QMessageBox.StandardButton.Cancel,
+            )
+            != QtWidgets.QMessageBox.StandardButton.Yes
+        ):
+            return
+
+        wrapper.slicer_area.unlink()
+        self._model.manager._sigReloadLinkers.emit()
+        self.refresh(wrapper.index)
+
+    def _show_watched_badge_menu(
+        self, wrapper: _ImageToolWrapper, badge_rect: QtCore.QRect
+    ) -> None:
+        """Show per-row watch actions for the clicked watched-variable badge."""
+        menu = QtWidgets.QMenu("Watch", self)
+        menu.setToolTipsVisible(True)
+        refresh_action = menu.addAction("Refresh From Variable")
+        assert refresh_action is not None
+        refresh_action.setToolTip("Refresh this ImageTool from the watched variable")
+        refresh_action.triggered.connect(wrapper._trigger_watched_update)
+        stop_action = menu.addAction("Stop Watching...")
+        assert stop_action is not None
+        stop_action.setToolTip("Detach this ImageTool from the watched variable")
+        stop_action.triggered.connect(
+            lambda _checked=False, target=wrapper: self._stop_watching_badge_target(
+                target
+            )
+        )
+        self._badge_menu = menu
+        viewport = self.viewport()
+        assert viewport is not None
+        menu.popup(viewport.mapToGlobal(badge_rect.bottomLeft()))
+
+    def _stop_watching_badge_target(self, wrapper: _ImageToolWrapper) -> None:
+        """Confirm and detach the clicked ImageTool from its watched variable."""
+        varname = wrapper._watched_varname
+        if varname is None:
+            return
+        if (
+            QtWidgets.QMessageBox.question(
+                self._model.manager,
+                "Stop Watching Variable?",
+                f"Stop watching variable {varname!r} for this ImageTool?",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.Cancel,
+                QtWidgets.QMessageBox.StandardButton.Cancel,
+            )
+            != QtWidgets.QMessageBox.StandardButton.Yes
+        ):
+            return
+        wrapper.unwatch()
 
     def imagetool_added(self, index: int) -> None:
         """Update the list view when a new ImageTool is added to the manager.
