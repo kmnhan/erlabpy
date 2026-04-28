@@ -1946,6 +1946,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         return PeriodicTableWindow()
 
+    def _preferred_name_filter(
+        self, valid_loaders: dict[str, tuple[Callable, dict]]
+    ) -> str | None:
+        if self._recent_name_filter in valid_loaders:
+            return self._recent_name_filter
+
+        default_loader = erlab.interactive.options.model.io.default_loader
+        if default_loader == "None" or default_loader not in erlab.io.loaders:
+            return None
+
+        return next(
+            (
+                name_filter
+                for name_filter in erlab.io.loaders[default_loader].file_dialog_methods
+                if name_filter in valid_loaders
+            ),
+            None,
+        )
+
     def _select_loader_options(
         self,
         valid_loaders: dict[str, tuple[Callable, dict]],
@@ -1956,7 +1975,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             valid_loaders,
             loader_extensions=self._recent_loader_extensions_by_filter,
         )
-        dialog.check_filter(name_filter or self._recent_name_filter)
+        dialog.check_filter(name_filter or self._preferred_name_filter(valid_loaders))
 
         if not dialog.exec():
             return None
@@ -2809,8 +2828,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if not native:
             dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
 
-        if self._recent_name_filter is not None:
-            dialog.selectNameFilter(self._recent_name_filter)
+        preferred_name_filter = self._preferred_name_filter(valid_loaders)
+        if preferred_name_filter is not None:
+            dialog.selectNameFilter(preferred_name_filter)
         if self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
 

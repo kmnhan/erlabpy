@@ -5916,6 +5916,177 @@ def test_select_loader_options_cancel_keeps_recent_filter(
     assert manager._recent_name_filter == "Previous"
 
 
+def _set_default_loader_option(monkeypatch, loader_name: str) -> None:
+    options = erlab.interactive.options.model
+    monkeypatch.setattr(
+        erlab.interactive.options,
+        "model",
+        options.model_copy(
+            update={"io": options.io.model_copy(update={"default_loader": loader_name})}
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("default_loader", "recent_filter", "expected_filter"),
+    [
+        ("example", "xarray HDF5 Files (*.h5)", "xarray HDF5 Files (*.h5)"),
+        ("example", None, "Example Raw Data (*.h5)"),
+        ("example", "Missing (*.missing)", "Example Raw Data (*.h5)"),
+        ("None", None, None),
+    ],
+)
+def test_preferred_name_filter_precedence(
+    monkeypatch,
+    example_loader,
+    default_loader: str,
+    recent_filter: str | None,
+    expected_filter: str | None,
+) -> None:
+    _set_default_loader_option(monkeypatch, default_loader)
+    example_filter = "Example Raw Data (*.h5)"
+    xarray_filter = "xarray HDF5 Files (*.h5)"
+    valid_loaders = {
+        xarray_filter: (xr.load_dataarray, {"engine": "h5netcdf"}),
+        example_filter: erlab.io.loaders["example"].file_dialog_methods[example_filter],
+    }
+    manager = types.SimpleNamespace(_recent_name_filter=recent_filter)
+
+    assert (
+        ImageToolManager._preferred_name_filter(manager, valid_loaders)
+        == expected_filter
+    )
+
+
+def test_preferred_name_filter_uses_default_loader_method_order(monkeypatch) -> None:
+    _set_default_loader_option(monkeypatch, "merlin")
+    loader_methods = erlab.io.loaders["merlin"].file_dialog_methods
+    first_filter = "ALS BL4.0.3 Data (*.pxt *.ibw)"
+    second_filter = "ALS BL4.0.3 Single File (*.pxt)"
+    valid_loaders = {
+        second_filter: loader_methods[second_filter],
+        first_filter: loader_methods[first_filter],
+    }
+    manager = types.SimpleNamespace(_recent_name_filter=None)
+
+    assert (
+        ImageToolManager._preferred_name_filter(manager, valid_loaders) == first_filter
+    )
+
+
+def test_open_multiple_files_preselects_default_loader_filter(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    example_loader,
+) -> None:
+    _set_default_loader_option(monkeypatch, "example")
+    file_path = tmp_path / "data_002.h5"
+    example_filter = "Example Raw Data (*.h5)"
+    valid_loaders = {
+        "xarray HDF5 Files (*.h5)": (xr.load_dataarray, {"engine": "h5netcdf"}),
+        example_filter: erlab.io.loaders["example"].file_dialog_methods[example_filter],
+    }
+    dialogs = []
+
+    class _CancelNameFilterDialog:
+        def __init__(self, parent, valid_loaders, *, loader_extensions=None) -> None:
+            self.checked_name = None
+            dialogs.append(self)
+
+        def check_filter(self, name_filter: str | None) -> None:
+            self.checked_name = name_filter
+
+        def exec(self) -> bool:
+            return False
+
+    manager = types.SimpleNamespace(
+        _recent_loader_extensions_by_filter={},
+        _recent_name_filter=None,
+        _add_from_multiple_files=lambda *_args, **_kwargs: None,
+        open_multiple_files=lambda *_args, **_kwargs: None,
+    )
+    manager._preferred_name_filter = types.MethodType(
+        ImageToolManager._preferred_name_filter, manager
+    )
+    manager._select_loader_options = types.MethodType(
+        ImageToolManager._select_loader_options, manager
+    )
+    monkeypatch.setattr(
+        manager_mainwindow, "_NameFilterDialog", _CancelNameFilterDialog
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: valid_loaders,
+    )
+
+    ImageToolManager.open_multiple_files(manager, [file_path])
+
+    assert dialogs[-1].checked_name == example_filter
+
+
+def test_manager_open_preselects_default_loader_filter(
+    monkeypatch,
+    example_loader,
+) -> None:
+    _set_default_loader_option(monkeypatch, "example")
+    example_filter = "Example Raw Data (*.h5)"
+    selected_filters: list[str] = []
+    real_file_dialog = QtWidgets.QFileDialog
+
+    class _FakeFileDialog:
+        AcceptMode = real_file_dialog.AcceptMode
+        FileMode = real_file_dialog.FileMode
+        Option = real_file_dialog.Option
+
+        def __init__(self, parent) -> None:
+            pass
+
+        def setAcceptMode(self, mode) -> None:
+            pass
+
+        def setFileMode(self, mode) -> None:
+            pass
+
+        def setNameFilters(self, filters) -> None:
+            pass
+
+        def setOption(self, option) -> None:
+            pass
+
+        def selectNameFilter(self, selected_filter: str) -> None:
+            selected_filters.append(selected_filter)
+
+        def setDirectory(self, directory: str) -> None:
+            pass
+
+        def exec(self) -> bool:
+            return False
+
+    manager = types.SimpleNamespace(_recent_name_filter=None, _recent_directory=None)
+    manager._preferred_name_filter = types.MethodType(
+        ImageToolManager._preferred_name_filter, manager
+    )
+    monkeypatch.setattr(QtWidgets, "QFileDialog", _FakeFileDialog)
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: {
+            "xarray HDF5 Files (*.h5)": (
+                xr.load_dataarray,
+                {"engine": "h5netcdf"},
+            ),
+            example_filter: erlab.io.loaders["example"].file_dialog_methods[
+                example_filter
+            ],
+        },
+    )
+
+    ImageToolManager.open(manager, native=False)
+
+    assert selected_filters == [example_filter]
+
+
 @pytest.mark.parametrize("mode", ["dragdrop", "ask"])
 def test_manager_open_files(
     qtbot,
@@ -6057,6 +6228,9 @@ def test_manager_open_loader_selection_branches(
         _add_from_multiple_files=lambda *args, **kwargs: add_calls.append(
             (args, kwargs)
         ),
+    )
+    manager._preferred_name_filter = types.MethodType(
+        ImageToolManager._preferred_name_filter, manager
     )
     monkeypatch.setattr(QtWidgets, "QFileDialog", _FakeFileDialog)
     monkeypatch.setattr(
