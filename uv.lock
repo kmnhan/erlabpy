@@ -904,11 +904,13 @@ complete = [
     { name = "nexusformat" },
     { name = "numbagg" },
     { name = "numdifftools" },
+    { name = "pillow" },
     { name = "zarr" },
 ]
 io = [
     { name = "astropy" },
     { name = "nexusformat" },
+    { name = "pillow" },
     { name = "zarr" },
 ]
 misc = [
@@ -1006,6 +1008,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pickleshare", specifier = ">=0.7.5" },
+    { name = "pillow", marker = "extra == 'io'", specifier = ">=10.0.0" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "pygments", specifier = ">=2.11.0" },
     { name = "pyperclip", specifier = ">=1.8.2" },
