@@ -854,7 +854,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def try_close(self) -> None:
         if self.isWindow() and not hasattr(self.parent(), "close_tab"):
-            self.hide()
+            erlab.interactive.utils._hide_or_close_with_manager(self)
         else:
             self.sigCloseRequested.emit(self)
 

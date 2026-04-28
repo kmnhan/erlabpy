@@ -3691,10 +3691,11 @@ def test_ptable_find_shortcut_uses_search_controller(
     win.close()
 
 
-def test_ptable_close_shortcut_hides_window(
+def test_ptable_close_shortcut_closes_without_manager(
     qtbot,
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
     monkeypatch.setattr(erlab.analysis.xps, "get_edge", lambda _symbol: {"1s": 10.0})
     monkeypatch.setattr(erlab.analysis.xps, "get_cross_section", _fake_cross_sections)
 
@@ -3707,22 +3708,27 @@ def test_ptable_close_shortcut_hides_window(
             self.close_event_count += 1
             super().closeEvent(event)
 
-    win = _TrackingPeriodicTableWindow()
-    _show_window(qtbot, win)
+    for focus_widget_name in ("search_edit", "hv_edit", "table_view"):
+        win = _TrackingPeriodicTableWindow()
+        _show_window(qtbot, win)
 
-    assert (
-        win.close_shortcut.key().toString(
-            QtGui.QKeySequence.SequenceFormat.PortableText
+        assert (
+            win.close_shortcut.key().toString(
+                QtGui.QKeySequence.SequenceFormat.PortableText
+            )
+            == "Ctrl+W"
         )
-        == "Ctrl+W"
-    )
+        focus_widget = getattr(win, focus_widget_name)
+        focus_widget.setFocus(QtCore.Qt.FocusReason.ShortcutFocusReason)
 
-    win.close_shortcut.activated.emit()
+        qtbot.keyClick(
+            focus_widget,
+            QtCore.Qt.Key.Key_W,
+            QtCore.Qt.KeyboardModifier.ControlModifier,
+        )
+        qtbot.waitUntil(lambda win=win: not win.isVisible())
 
-    assert win.isVisible() is False
-    assert win.close_event_count == 0
-
-    win.close()
+        assert win.close_event_count == 1
 
 
 def test_ptable_keyboard_navigation_and_background_clear(

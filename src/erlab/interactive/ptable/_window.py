@@ -454,8 +454,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         header_layout.addStretch(1)
         self.find_shortcut = QtGui.QShortcut(QtGui.QKeySequence.StandardKey.Find, self)
         self.find_shortcut.activated.connect(self._focus_search_edit)
-        self.close_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+W"), self)
-        self.close_shortcut.activated.connect(self.hide)
+        self.close_shortcut = erlab.interactive.utils._install_close_shortcut(self)
 
         self.notation_frame = QtWidgets.QFrame(self.header)
         notation_layout = QtWidgets.QHBoxLayout(self.notation_frame)
@@ -589,11 +588,13 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self._application = (
             application if isinstance(application, QtWidgets.QApplication) else None
         )
+        self._application_events_connected = False
         if self._application is not None:
             self._application.installEventFilter(self)
             self._application.focusChanged.connect(
                 self._handle_application_focus_changed
             )
+            self._application_events_connected = True
 
         self._sync_vertical_minimum_height()
         self._apply_theme()
@@ -758,13 +759,23 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         if self.search_popup.isVisible():
             self._show_search_popup()
 
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        if self._application is not None and not self._application_events_connected:
+            self._application.installEventFilter(self)
+            self._application.focusChanged.connect(
+                self._handle_application_focus_changed
+            )
+            self._application_events_connected = True
+
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        if self._application is not None:
+        if self._application is not None and self._application_events_connected:
             self._application.removeEventFilter(self)
             with contextlib.suppress(TypeError):
                 self._application.focusChanged.disconnect(
                     self._handle_application_focus_changed
                 )
+            self._application_events_connected = False
         self.category_legend.cleanup()
         self._hide_search_popup(reset_navigation=False)
         super().closeEvent(event)

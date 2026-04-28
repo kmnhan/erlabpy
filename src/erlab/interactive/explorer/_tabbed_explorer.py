@@ -213,7 +213,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
     @QtCore.Slot(object)
     def close_tab(self, index: int | _DataExplorer) -> None:
         if self.tab_widget.count() == 1:
-            self.hide()
+            erlab.interactive.utils._hide_or_close_with_manager(self)
         else:
             if isinstance(index, _DataExplorer):
                 # If index is a DataExplorer instance, find its tab index by iteration
