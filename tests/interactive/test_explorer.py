@@ -256,7 +256,9 @@ def test_explorer_loader_options_dialog_updates_kwargs(
     exec_results = [False, True]
 
     class _FakeNameFilterDialog:
-        def __init__(self, parent, valid_loaders, *, loader_extensions=None) -> None:
+        def __init__(
+            self, parent, valid_loaders, *, loader_extensions=None, sample_paths=None
+        ) -> None:
             assert parent is explorer
             assert valid_loaders == {
                 "example": (erlab.io.loaders["example"].load, {"single": True})
@@ -264,6 +266,7 @@ def test_explorer_loader_options_dialog_updates_kwargs(
             assert loader_extensions == {
                 "example": {"coordinate_attrs": ("old_coord",)}
             }
+            assert list(sample_paths or ()) == []
             self.checked_name = None
             dialogs.append(self)
 

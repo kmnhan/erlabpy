@@ -188,7 +188,9 @@ Once the manager is running, you can open ImageTools in several ways:
 
   In the dialog that appears, you can choose the plugin to use for loading the data.
   For plugin loaders, expand {guilabel}`Loader Extensions` to set literal
-  {func}`erlab.io.extend_loader` options.
+  {func}`erlab.io.extend_loader` options. The {guilabel}`name_map` and
+  {guilabel}`coordinate_attrs` rows also have buttons that inspect the first
+  selected file and help build the literal values interactively.
 
   :::{hint}
   For scans that are recorded across multiple files, drag and dropping any file in the scan will automatically load and concatenate the entire scan. If you want to load only the file you dropped, choose the plugin suffixed with {guilabel}`Single File` in the dialog.
