@@ -26,6 +26,7 @@ from erlab.interactive.imagetool.dialogs import (
     CoarsenDialog,
     CropDialog,
     CropToViewDialog,
+    DivideByCoordDialog,
     EdgeCorrectionDialog,
     GaussianFilterDialog,
     NormalizeDialog,
@@ -3830,6 +3831,121 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
         accept_call=lambda d: d.reject(),
     )
     xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    win.close()
+
+
+def test_itool_divide_by_coord(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)) + 1.0,
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "mesh_current": ("x", [1.0, 2.0, 4.0]),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: DivideByCoordDialog) -> None:
+        dialog.coord_combo.setCurrentText("mesh_current")
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._divide_by_coord, pre_call=_set_dialog_params)
+
+    expected = (data / data.mesh_current).rename("scan_div_mesh_current")
+    xarray.testing.assert_identical(win.slicer_area._data, expected)
+    copied_code = pyperclip.paste()
+    assert "data.mesh_current" in copied_code
+    namespace: dict[str, typing.Any] = {"data": data.copy(deep=True)}
+    exec(f"result = {copied_code}", {}, namespace)  # noqa: S102
+    xarray.testing.assert_identical(
+        namespace["result"].rename(None), expected.rename(None)
+    )
+
+    win.close()
+
+
+def test_itool_divide_by_coord_rejects_zero_values(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)) + 1.0,
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "mesh_current": ("x", [1.0, 0.0, 4.0]),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = DivideByCoordDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.coord_combo.setCurrentText("mesh_current")
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+
+    assert warnings == [
+        (
+            "Zero Coordinate Values",
+            "The selected coordinate contains zero values and cannot be used as a "
+            "divisor.",
+        )
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data, data)
+
+    dialog.close()
+    win.close()
+
+
+def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)) + 1.0,
+        dims=["x", "y"],
+        coords={
+            "x": np.array([0.0, 0.4, 1.0]),
+            "y": np.arange(4),
+            "mesh_current": ("x", [1.0, 2.0, 4.0]),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: DivideByCoordDialog) -> None:
+        assert "x_idx" not in dialog.coord_dims_label.text()
+        dialog.coord_combo.setCurrentText("mesh_current")
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._divide_by_coord, pre_call=_set_dialog_params)
+
+    restored = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        win.slicer_area._data.rename(None)
+    )
+    xarray.testing.assert_identical(restored, (data / data.mesh_current).rename(None))
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert "mesh_current" in display_code
+    assert "x_idx" not in display_code
+    namespace = {"data": data.copy(deep=True)}
+    exec(display_code, {}, namespace)  # noqa: S102
+    xarray.testing.assert_identical(
+        namespace["derived"].rename(None), (data / data.mesh_current).rename(None)
+    )
 
     win.close()
 

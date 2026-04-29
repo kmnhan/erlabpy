@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import re
 import typing
 import weakref
 
@@ -1579,6 +1580,126 @@ class NormalizeDialog(DataFilterDialog):
             return data - minimum
 
         return (data - minimum) / area
+
+
+class DivideByCoordDialog(DataTransformDialog):
+    title = "Divide by Coordinate"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+        self.coord_combo = QtWidgets.QComboBox()
+        self.coord_dims_label = QtWidgets.QLabel()
+
+        data_dims = set(self._source_data.dims)
+        for name, coord in self._source_data.coords.items():
+            coord_dims = tuple(coord.dims)
+            if (
+                set(coord_dims).issubset(data_dims)
+                and np.issubdtype(coord.dtype, np.number)
+                and not np.issubdtype(coord.dtype, np.complexfloating)
+            ):
+                self.coord_combo.addItem(str(name), userData=name)
+
+        self.coord_combo.currentIndexChanged.connect(self._update_coord_dims_label)
+        self.layout_.addRow("Coordinate", self.coord_combo)
+        self.layout_.addRow("Coordinate Dims", self.coord_dims_label)
+        self._update_coord_dims_label()
+
+    @property
+    def _selected_coord_name(self) -> Hashable | None:
+        if self.coord_combo.currentIndex() < 0:
+            return None
+        return typing.cast(
+            "Hashable",
+            self.coord_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def suffix(self) -> str:
+        coord_name = self._selected_coord_name
+        suffix = "" if coord_name is None else str(coord_name)
+        suffix = re.sub(r"[^0-9A-Za-z_]+", "_", suffix).strip("_")
+        if not suffix:
+            suffix = "coord"
+        elif suffix[0].isdigit():
+            suffix = f"coord_{suffix}"
+        return f"_div_{suffix}"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _update_coord_dims_label(self, index: int | None = None) -> None:
+        coord_name = self._selected_coord_name
+        if coord_name is None:
+            self.coord_dims_label.setText("")
+            return
+        coord_dims = self._source_data.coords[coord_name].dims
+        self.coord_dims_label.setText(
+            "scalar" if not coord_dims else ", ".join(str(dim) for dim in coord_dims)
+        )
+
+    def _validate(self) -> QtWidgets.QDialog.DialogCode:
+        if self.coord_combo.count() == 0:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Coordinates",
+                "No numeric coordinates that can be broadcast to the data were found.",
+            )
+            return QtWidgets.QDialog.DialogCode.Rejected
+        return super()._validate()
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        coord_name = self._selected_coord_name
+        if coord_name is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Coordinate Selected",
+                "Choose a coordinate to divide by.",
+            )
+            return
+        coord = self._source_data.coords[coord_name]
+        try:
+            erlab.interactive.imagetool.provenance.DivideByCoordOperation._raise_if_zero(
+                coord
+            )
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Zero Coordinate Values",
+                "The selected coordinate contains zero values and cannot be used as a "
+                "divisor.",
+            )
+            return
+        super().accept()
+
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        coord_name = self._selected_coord_name
+        if coord_name is None:
+            raise ValueError("No coordinate selected")
+        return erlab.interactive.imagetool.provenance.DivideByCoordOperation(
+            coord_name=coord_name
+        )
+
+    def make_code(self) -> str:
+        coord_name = self._selected_coord_name
+        if coord_name is None:
+            return ""
+        placeholder = self.slicer_area.watched_data_name or "data"
+        operation = erlab.interactive.imagetool.provenance.DivideByCoordOperation(
+            coord_name=coord_name
+        )
+        return f"{placeholder} / {operation.divisor_code(placeholder)}"
 
 
 class GaussianFilterDialog(DataFilterDialog):

@@ -279,6 +279,67 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     xr.testing.assert_identical(assigned, expected_assigned)
 
 
+def test_tool_provenance_divide_by_coord_operation() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().assign_coords(mesh_current=("x", [1.0, 2.0, 4.0]))
+
+    spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh_current"))
+    xr.testing.assert_identical(spec.apply(data), data / data.mesh_current)
+    code = spec.derivation_code()
+    assert code is not None
+    assert "derived.mesh_current" in code
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], data / data.mesh_current)
+
+    reparsed = prov.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+    assert reparsed == spec
+    xr.testing.assert_identical(reparsed.apply(data), data / data.mesh_current)
+
+
+def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().assign_coords(
+        {
+            "mesh current": ("x", [1.0, 2.0, 4.0]),
+            "mesh_map": (
+                ("x", "y"),
+                np.arange(12, dtype=float).reshape(3, 4) + 1.0,
+            ),
+            "mean": ("x", [1.0, 2.0, 4.0]),
+        }
+    )
+
+    spaced_spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh current"))
+    spaced_code = spaced_spec.derivation_code()
+    assert spaced_code is not None
+    assert 'derived.coords["mesh current"]' in spaced_code
+    namespace = _exec_generated_code(spaced_code, {"data": data})
+    xr.testing.assert_identical(
+        namespace["derived"], data / data.coords["mesh current"]
+    )
+
+    conflict_spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mean"))
+    conflict_code = conflict_spec.derivation_code()
+    assert conflict_code is not None
+    assert 'derived.coords["mean"]' in conflict_code
+    namespace = _exec_generated_code(conflict_code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], data / data.coords["mean"])
+
+    broadcast_spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh_map"))
+    xr.testing.assert_identical(
+        broadcast_spec.apply(data), data / data.coords["mesh_map"]
+    )
+
+
+def test_tool_provenance_divide_by_coord_rejects_zero_values() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().assign_coords(mesh_current=("x", [1.0, 0.0, 4.0]))
+    spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh_current"))
+
+    with pytest.raises(ValueError, match="zero values"):
+        spec.apply(data)
+
+
 def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> None:
     prov = erlab.interactive.imagetool.provenance
     public = xr.DataArray(
