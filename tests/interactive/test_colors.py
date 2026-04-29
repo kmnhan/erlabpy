@@ -1,4 +1,5 @@
 import numpy as np
+import pyqtgraph as pg
 import pytest
 from qtpy import QtGui, QtWidgets
 
@@ -151,6 +152,84 @@ def test_pg_colormap_powernorm_sets_metadata() -> None:
     assert attrs["reverse"] is True
     assert attrs["high_contrast"] is True
     assert attrs["zero_centered"] is False
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"gamma": 0.6}, id="normal-gamma"),
+        pytest.param({"gamma": 0.01}, id="aggressive-gamma"),
+        pytest.param({"gamma": 0.6, "reverse": True}, id="reverse"),
+        pytest.param({"gamma": 0.6, "high_contrast": True}, id="high-contrast"),
+        pytest.param({"gamma": 0.6, "zero_centered": True}, id="zero-centered"),
+    ],
+)
+def test_lut_powernorm_matches_dense_powernorm(kwargs) -> None:
+    colors_mod = erlab.interactive.colors
+
+    dense = pg_colormap_powernorm("viridis", **kwargs)
+    lut_cmap = colors_mod._pg_colormap_powernorm_lut("viridis", **kwargs)
+
+    assert lut_cmap.name == "viridis"
+    assert np.array_equal(lut_cmap.getStops()[1], dense.getStops()[1])
+
+
+def test_better_image_item_lut_matches_dense_powernorm() -> None:
+    kwargs = {
+        "gamma": 0.01,
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": True,
+    }
+    image = BetterImageItem(np.arange(16, dtype=float).reshape(4, 4))
+    image.set_colormap("magma", **kwargs)
+
+    dense = pg_colormap_powernorm("magma", **kwargs)
+
+    assert np.array_equal(image.lut, dense.getStops()[1])
+
+
+def test_lut_powernorm_returns_read_only_shared_arrays() -> None:
+    colors_mod = erlab.interactive.colors
+
+    cmap = colors_mod._pg_colormap_powernorm_lut("viridis", gamma=0.6)
+    pos, lut = cmap.getStops()
+
+    assert not pos.flags.writeable
+    assert not lut.flags.writeable
+    with pytest.raises(ValueError, match="read-only"):
+        lut[0, 0] = lut[0, 0]
+
+
+def test_better_image_item_shares_named_powernorm_lut() -> None:
+    data = np.arange(16, dtype=float).reshape(4, 4)
+    images = [BetterImageItem(data), BetterImageItem(data)]
+
+    for image in images:
+        image.set_colormap("viridis", gamma=0.6, reverse=True)
+
+    assert images[0].lut is images[1].lut
+    assert images[0]._colorMap.getStops()[1] is images[1]._colorMap.getStops()[1]
+
+
+def test_better_image_item_custom_colormap_bypasses_named_lut_cache() -> None:
+    data = np.arange(16, dtype=float).reshape(4, 4)
+    custom = pg.ColorMap(
+        [0.0, 0.5, 1.0],
+        [(0, 0, 0, 255), (128, 32, 16, 255), (255, 255, 255, 255)],
+        name="custom",
+    )
+    original_pos = custom.pos.copy()
+    original_color = custom.color.copy()
+    images = [BetterImageItem(data), BetterImageItem(data)]
+
+    for image in images:
+        image.set_colormap(custom, gamma=0.6, reverse=True)
+
+    assert images[0]._colorMap.name == "custom"
+    assert images[0].lut is not images[1].lut
+    assert np.array_equal(custom.pos, original_pos)
+    assert np.array_equal(custom.color, original_color)
 
 
 def _colorbar_edit_widget(colorbar: BetterColorBarItem) -> QtWidgets.QWidget:

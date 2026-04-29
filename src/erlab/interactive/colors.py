@@ -37,6 +37,7 @@ if typing.TYPE_CHECKING:
 _ALL_COLORMAPS_LOADED: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "all_colormaps_loaded", default=False
 )
+_POWER_NORM_LUT_CACHE_SIZE = 64
 
 
 def load_all_colormaps() -> None:
@@ -319,7 +320,7 @@ class BetterImageItem(pg.ImageItem):
         zero_centered: bool = False,
         update: bool = True,
     ) -> None:
-        cmap = pg_colormap_powernorm(
+        cmap = _pg_colormap_powernorm_lut(
             cmap,
             gamma,
             reverse,
@@ -932,17 +933,12 @@ def pg_colormap_from_name(name: str, skipCache: bool = True) -> pg.ColorMap:
     return cmap
 
 
-def pg_colormap_powernorm(
-    cmap: str | pg.ColorMap,
+def _powernorm_mapping(
     gamma: float,
-    reverse: bool = False,
-    high_contrast: bool = False,
-    zero_centered: bool = False,
-    N: int = 65536,
-) -> pg.ColorMap:
-    if isinstance(cmap, str):
-        cmap = pg_colormap_from_name(cmap, skipCache=True)
-
+    high_contrast: bool,
+    zero_centered: bool,
+    N: int,
+) -> npt.NDArray[np.float64]:
     gamma = float(gamma)
 
     if gamma == 1.0:
@@ -974,6 +970,123 @@ def pg_colormap_powernorm(
         mapping = mapping_fn(x)
     mapping[mapping > 1] = 1
     mapping[mapping < 0] = 0
+    return mapping
+
+
+@functools.lru_cache(maxsize=16)
+def _normalized_lut_positions(N: int) -> npt.NDArray[np.float64]:
+    pos = np.linspace(0, 1, N)
+    pos.setflags(write=False)
+    return pos
+
+
+def _powernorm_lut(
+    cmap: pg.ColorMap,
+    gamma: float,
+    reverse: bool,
+    high_contrast: bool,
+    zero_centered: bool,
+    N: int,
+) -> npt.NDArray[np.uint8]:
+    mapping = _powernorm_mapping(gamma, high_contrast, zero_centered, N)
+    if reverse:
+        mapping = 1 - mapping
+    lut = (cmap.mapToFloat(mapping) * 255).astype(np.ubyte)
+    lut.setflags(write=False)
+    return lut
+
+
+@functools.lru_cache(maxsize=_POWER_NORM_LUT_CACHE_SIZE)
+def _cached_powernorm_lut(
+    name: str,
+    gamma: float,
+    reverse: bool,
+    high_contrast: bool,
+    zero_centered: bool,
+    N: int,
+) -> npt.NDArray[np.uint8]:
+    cmap = pg_colormap_from_name(name, skipCache=True)
+    return _powernorm_lut(
+        cmap,
+        gamma,
+        reverse,
+        high_contrast,
+        zero_centered,
+        N,
+    )
+
+
+def _pg_colormap_powernorm_lut(
+    cmap: str | pg.ColorMap,
+    gamma: float,
+    reverse: bool = False,
+    high_contrast: bool = False,
+    zero_centered: bool = False,
+    N: int = 65536,
+) -> pg.ColorMap:
+    # ImageTool only needs the byte LUT. Keep pg_colormap_powernorm() dense-float
+    # for public callers that use ColorMap.mapToFloat(), mode=FLOAT, or .color.
+    gamma = float(gamma)
+    reverse = bool(reverse)
+    high_contrast = bool(high_contrast)
+    zero_centered = bool(zero_centered)
+    N = int(N)
+
+    if isinstance(cmap, str):
+        name = cmap
+        mapping = pg.ColorMap.CLIP
+        lut = _cached_powernorm_lut(
+            name,
+            gamma,
+            reverse,
+            high_contrast,
+            zero_centered,
+            N,
+        )
+    else:
+        name = cmap.name
+        mapping = cmap.mapping_mode
+        lut = _powernorm_lut(
+            cmap,
+            gamma,
+            reverse,
+            high_contrast,
+            zero_centered,
+            N,
+        )
+
+    pos = _normalized_lut_positions(N)
+    cmap = pg.ColorMap(
+        [0.0, 1.0],
+        [(0, 0, 0, 255), (255, 255, 255, 255)],
+        mapping=mapping,
+        name=name,
+    )
+    cmap.pos = pos
+    cmap.color = lut
+    cmap.stopsCache = {pg.ColorMap.BYTE: (pos, lut)}
+    cmap._erlab_attrs = {
+        "gamma": gamma,
+        "reverse": reverse,
+        "high_contrast": high_contrast,
+        "zero_centered": zero_centered,
+    }
+    return cmap
+
+
+def pg_colormap_powernorm(
+    cmap: str | pg.ColorMap,
+    gamma: float,
+    reverse: bool = False,
+    high_contrast: bool = False,
+    zero_centered: bool = False,
+    N: int = 65536,
+) -> pg.ColorMap:
+    if isinstance(cmap, str):
+        cmap = pg_colormap_from_name(cmap, skipCache=True)
+
+    gamma = float(gamma)
+    mapping = _powernorm_mapping(gamma, high_contrast, zero_centered, N)
 
     if reverse:
         cmap.reverse()
