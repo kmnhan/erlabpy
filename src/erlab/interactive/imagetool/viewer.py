@@ -1408,29 +1408,35 @@ class ImageSlicerArea(QtWidgets.QWidget):
     ) -> None:
         cursor_color_params = self.array_slicer._cursor_color_params
         if cursor_color_params is not None:
-            dim_name, coord_name, cmap, reverse, vmin, vmax = cursor_color_params
-            if (axes is not None) and (
-                dim_name not in tuple(self.data.dims[ax] for ax in axes)
-            ):
-                return
-
+            coord_dims, coord_name, cmap, reverse, vmin, vmax = cursor_color_params
             if isinstance(cursor, int):
                 cursor = (cursor,)
 
-            axis_idx = self.data.dims.index(dim_name)
-            if coord_name == dim_name:
-                target_coord = self.array_slicer.coords[axis_idx]
-            else:
-                target_coord = self.array_slicer.associated_coords[dim_name][
-                    coord_name
-                ][1]
+            coord_info = self.array_slicer.cursor_color_coord(
+                cursor[0], coord_dims, coord_name
+            )
+            if coord_info is None:
+                self.array_slicer._cursor_color_params = None
+                return
+            coord_dims, target_coord, _ = coord_info
+            if axes is not None and not any(
+                self.data.dims[ax] in coord_dims for ax in axes
+            ):
+                return
+
             mn, mx = np.min(target_coord), np.max(target_coord)
             scale_factor = (vmax - vmin) / (mx - mn)
             cmap = erlab.interactive.colors.pg_colormap_from_name(cmap)
 
             for cursor_idx in cursor:
-                value_idx: int = self.array_slicer.get_indices(cursor_idx)[axis_idx]
-                value = (target_coord[value_idx] - mn) * scale_factor + vmin
+                coord_info = typing.cast(
+                    "tuple[tuple[Hashable, ...], npt.NDArray[np.float64], float]",
+                    self.array_slicer.cursor_color_coord(
+                        cursor_idx, coord_dims, coord_name
+                    ),
+                )
+                coord_value = coord_info[2]
+                value = (coord_value - mn) * scale_factor + vmin
                 if reverse:
                     value = 1 - value
                 color = cmap.map(value, mode=cmap.QCOLOR)

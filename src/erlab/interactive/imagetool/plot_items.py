@@ -617,6 +617,9 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.sigShapeChanged.connect(self.remove_guidelines)
             self.slicer_area.sigShapeChanged.connect(self.clear_rois)
         else:
+            self.slicer_area.sigIndexChanged.connect(self.update_twin_plots)
+            self.slicer_area.sigBinChanged.connect(self.update_twin_plots)
+            self.slicer_area.sigCurrentCursorChanged.connect(self.update_twin_plots)
             self.slicer_area.sigDataChanged.connect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.connect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.connect(self.update_twin_plots)
@@ -636,6 +639,9 @@ class ItoolPlotItem(pg.PlotItem):
             self.slicer_area.sigShapeChanged.disconnect(self.remove_guidelines)
             self.slicer_area.sigShapeChanged.disconnect(self.clear_rois)
         else:
+            self.slicer_area.sigIndexChanged.disconnect(self.update_twin_plots)
+            self.slicer_area.sigBinChanged.disconnect(self.update_twin_plots)
+            self.slicer_area.sigCurrentCursorChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigDataChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigShapeChanged.disconnect(self.update_twin_plots)
             self.slicer_area.sigTwinChanged.disconnect(self.update_twin_plots)
@@ -700,7 +706,10 @@ class ItoolPlotItem(pg.PlotItem):
             self.vb1.setRange(**kwargs)
 
     @QtCore.Slot()
-    def update_twin_plots(self) -> None:
+    @QtCore.Slot(int)
+    @QtCore.Slot(int, object)
+    @QtCore.Slot(object, object)
+    def update_twin_plots(self, *_args) -> None:
         if not self.isVisible():
             return
         if self.vb1 is None:
@@ -712,11 +721,6 @@ class ItoolPlotItem(pg.PlotItem):
                 # Defer setup until first use
                 return
 
-        display_dim: str = str(self.slicer_area.data.dims[self.display_axis[0]])
-        associated: dict[Hashable, tuple[npt.NDArray, npt.NDArray]] = (
-            self.array_slicer.associated_coords[display_dim]
-        )
-
         n_plots: int = 0
         labels: list[str] = []
         if self.vb1 is None:  # pragma: no cover
@@ -725,9 +729,13 @@ class ItoolPlotItem(pg.PlotItem):
                 "Please report a bug."
             )
 
+        coord_names = tuple(self.array_slicer.associated_coord_dims)
         for k in tuple(self.array_slicer.twin_coord_names):
-            if k in associated:
-                x, y = associated[k]
+            profile = self.array_slicer.associated_coord_profile(
+                k, self.slicer_area.current_cursor, self.display_axis
+            )
+            if profile is not None:
+                x, y = profile
                 if n_plots >= len(self.other_data_items):
                     item = pg.PlotDataItem()
                     self.other_data_items.append(item)
@@ -736,9 +744,8 @@ class ItoolPlotItem(pg.PlotItem):
                     item = self.other_data_items[n_plots]
 
                 clr: QtGui.QColor = self.slicer_area.TWIN_COLORS[
-                    tuple(associated.keys()).index(k)
-                    % len(self.slicer_area.TWIN_COLORS)
-                ]  # Color by index among coords associated with this dim
+                    coord_names.index(k) % len(self.slicer_area.TWIN_COLORS)
+                ]  # Color by index among associated coords
                 labels.append(
                     "<tr>"
                     f"<td style='color:{clr.name()}; text-align: center;'>{k}</td>"
@@ -759,6 +766,7 @@ class ItoolPlotItem(pg.PlotItem):
         ax.setStyle(showValues=self._twin_visible)
 
         if self._twin_visible:
+            self._update_twin_geometry()
             label_html = "<table cellspacing='0'>" + "".join(labels) + "</table>"
             ax.setLabel(text=label_html)
             ax.resizeEvent()

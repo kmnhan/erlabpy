@@ -140,7 +140,9 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Dask-backed arrays are fully supported. The dedicated {guilabel}`Dask` menu exposes actions to compute the array into memory, rechunk automatically, or choose custom chunk shapes within ImageTool.
 
-- Overlay plots of non-dimensional coordinates (e.g., temperature) on the data from {guilabel}`View → Plot Associated Coordinates`.
+- Overlay plots of numeric non-dimensional coordinates (e.g., temperature) on profile plots from {guilabel}`View → Plot Associated Coordinates`. Multi-dimensional coordinates are sliced with the active cursor and averaged over binned hidden dimensions.
+
+- Use {guilabel}`View → Set Cursor Colors by Coordinate...` to color cursors by a dimension coordinate or numeric associated coordinate value at each cursor position.
 
 (imagetool-slicing)=
 
