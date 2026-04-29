@@ -26,13 +26,13 @@ class _AssociatedCoordsDialog(QtWidgets.QDialog):
         self.setLayout(self._layout)
 
         self._checks: dict[Hashable, QtWidgets.QCheckBox] = {}
-        for dim, coords in slicer_area.array_slicer.associated_coords.items():
-            for k in coords:
-                self._checks[k] = QtWidgets.QCheckBox(str(k))
-                self._checks[k].setChecked(
-                    k in slicer_area.array_slicer.twin_coord_names
-                )
-                self._layout.addRow(self._checks[k], QtWidgets.QLabel(f"({dim})"))
+        for name, dims in slicer_area.array_slicer.associated_coord_dims.items():
+            self._checks[name] = QtWidgets.QCheckBox(str(name))
+            self._checks[name].setChecked(
+                name in slicer_area.array_slicer.twin_coord_names
+            )
+            dim_label = ", ".join(str(dim) for dim in dims)
+            self._layout.addRow(self._checks[name], QtWidgets.QLabel(f"({dim_label})"))
 
         self._button_box = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok
@@ -47,7 +47,7 @@ class _AssociatedCoordsDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self,
                 "No Associated Coordinates",
-                "No 1D non-dimension coordinates were found in the data.",
+                "No numeric non-dimension coordinates were found in the data.",
             )
             return QtWidgets.QDialog.DialogCode.Rejected
         return super().exec()
@@ -85,7 +85,7 @@ class _CursorColorCoordDialog(QtWidgets.QDialog):
     def choose_coord(self, coord_name: Hashable) -> None:
         self.coord_combo.setCurrentText(str(coord_name))
 
-    def get_checked_coord_name(self) -> tuple[Hashable, Hashable] | None:
+    def get_checked_coord_name(self) -> tuple[tuple[Hashable, ...], Hashable] | None:
         if not self.main_group.isChecked():
             return None
         slicer_area = self._slicer_area()
@@ -94,11 +94,10 @@ class _CursorColorCoordDialog(QtWidgets.QDialog):
         coord_name = self.coord_combo.currentText()
         for dim_name in slicer_area.data.dims:
             if coord_name == str(dim_name):
-                return dim_name, dim_name
-        for dim, coords in slicer_area.array_slicer.associated_coords.items():
-            for k in coords:
-                if coord_name == str(k):
-                    return dim, k
+                return (dim_name,), dim_name
+        for name, dims in slicer_area.array_slicer.associated_coord_dims.items():
+            if coord_name == str(name):
+                return dims, name
         return None
 
     def setup_ui(self):
@@ -125,9 +124,8 @@ class _CursorColorCoordDialog(QtWidgets.QDialog):
         for name in slicer_area.data.dims:
             self.coord_combo.addItem(str(name))
 
-        for coords in slicer_area.array_slicer.associated_coords.values():
-            for k in coords:
-                self.coord_combo.addItem(str(k))
+        for name in slicer_area.array_slicer.associated_coord_dims:
+            self.coord_combo.addItem(str(name))
 
         # Colormap selection
         cmap_group = QtWidgets.QGroupBox("Colormap parameters", self)
@@ -188,9 +186,9 @@ class _CursorColorCoordDialog(QtWidgets.QDialog):
             if dim_and_coord_names is None:
                 slicer_area.array_slicer._cursor_color_params = None
             else:
-                dim_name, coord_name = dim_and_coord_names
+                coord_dims, coord_name = dim_and_coord_names
                 slicer_area.array_slicer._cursor_color_params = (
-                    dim_name,
+                    coord_dims,
                     coord_name,
                     self.cmap_combo.currentText(),
                     self.reverse_check.isChecked(),

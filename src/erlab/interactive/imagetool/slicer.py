@@ -8,7 +8,6 @@ import typing
 
 import numpy as np
 import numpy.typing as npt
-import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
@@ -17,6 +16,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
 
     import dask.array
+    import xarray as xr
 
 
 class ArraySlicerState(typing.TypedDict):
@@ -29,7 +29,7 @@ class ArraySlicerState(typing.TypedDict):
     snap_to_data: bool
     twin_coord_names: typing.NotRequired[tuple[Hashable, ...]]
     cursor_color_params: typing.NotRequired[
-        tuple[Hashable, Hashable, str, bool, float, float] | None
+        tuple[tuple[Hashable, ...], Hashable, str, bool, float, float] | None
     ]
 
 
@@ -289,7 +289,7 @@ class ArraySlicer(QtCore.QObject):
             ]
             self._twin_coord_names = set()
             self._cursor_color_params: (
-                tuple[Hashable, Hashable, str, bool, float, float] | None
+                tuple[tuple[Hashable, ...], Hashable, str, bool, float, float] | None
             ) = None
             self.snap_to_data = False
         else:
@@ -299,34 +299,83 @@ class ArraySlicer(QtCore.QObject):
         return reset
 
     @functools.cached_property
-    def associated_coords(
-        self,
-    ) -> dict[
-        Hashable,
-        dict[Hashable, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
-    ]:
-        out: dict[
-            Hashable,
-            dict[Hashable, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
-        ] = {d: {} for d in self._obj.dims}
-        for k, coord in self._obj.coords.items():
-            # Select 1D coords that are not the dimension itself
+    def associated_coord_dims(self) -> dict[Hashable, tuple[Hashable, ...]]:
+        """Numeric non-dimension coordinates that can be plotted with data profiles."""
+        dims = set(self._obj.dims)
+        out: dict[Hashable, tuple[Hashable, ...]] = {}
+        for name, coord in self._obj.coords.items():
+            coord_dims = tuple(coord.dims)
             if (
-                isinstance(coord, xr.DataArray)
-                and len(coord.dims) == 1
-                and coord.dims[0] != k
+                name not in dims
+                and coord_dims
+                and set(coord_dims).issubset(dims)
+                and np.issubdtype(coord.dtype, np.number)
+                and not np.issubdtype(coord.dtype, np.complexfloating)
             ):
-                try:
-                    vals = coord.values.astype(np.float64)
-                except ValueError:
-                    # Cannot convert to float64, nontrivial to plot these coords so skip
-                    continue
-                else:
-                    out[coord.dims[0]][k] = (
-                        coord[coord.dims[0]].values.astype(np.float64),
-                        vals,
-                    )
+                out[name] = coord_dims
         return out
+
+    def associated_coord_profile(
+        self, coord_name: Hashable, cursor: int, display_axis: Sequence[int]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]] | None:
+        """Return a 1D associated-coordinate profile for a profile plot."""
+        if len(display_axis) != 1:
+            return None
+
+        dims = self.associated_coord_dims.get(coord_name)
+        if dims is None:
+            return None
+
+        axis = display_axis[0]
+        display_dim = self._obj.dims[axis]
+        if display_dim not in dims:
+            return None
+
+        coord = self._obj.coords[coord_name]
+        isel_kw: dict[Hashable, slice | int] = {}
+        mean_dims: list[Hashable] = []
+        for dim in dims:
+            if dim == display_dim:
+                continue
+            axis_idx = self._dim_indices.get(dim)
+            if axis_idx is None:  # pragma: no cover
+                return None
+            if self._binned[cursor][axis_idx]:
+                isel_kw[dim] = self._bin_slice(cursor, axis_idx)
+                mean_dims.append(dim)
+            else:
+                isel_kw[dim] = self._indices[cursor][axis_idx]
+
+        selected = coord.isel(isel_kw)
+        if mean_dims:
+            selected = selected.mean(dim=mean_dims, skipna=True)
+        if set(selected.dims) != {display_dim}:
+            return None
+
+        return (
+            self.coords_uniform[axis].astype(np.float64),
+            selected.transpose(display_dim).values.astype(np.float64),
+        )
+
+    def cursor_color_coord(
+        self, cursor: int, coord_dims: tuple[Hashable, ...], coord_name: Hashable
+    ) -> tuple[tuple[Hashable, ...], npt.NDArray[np.float64], float] | None:
+        """Return dims, all values, and cursor value for coordinate-based coloring."""
+        if coord_name in self._dim_indices and coord_dims == (coord_name,):
+            axis_idx = self._dim_indices[coord_name]
+            values = self.coords[axis_idx].astype(np.float64)
+        else:
+            if self.associated_coord_dims.get(coord_name) != coord_dims:
+                return None
+            values = self._obj.coords[coord_name].values.astype(np.float64)
+
+        cursor_index: list[int] = []
+        for dim in coord_dims:
+            coord_axis_idx = self._dim_indices.get(dim)
+            if coord_axis_idx is None:  # pragma: no cover
+                return None
+            cursor_index.append(self._indices[cursor][coord_axis_idx])
+        return coord_dims, values, float(values[tuple(cursor_index)])
 
     @functools.cached_property
     def coords(self) -> tuple[npt.NDArray[np.floating], ...]:
@@ -463,7 +512,21 @@ class ArraySlicer(QtCore.QObject):
             # We call set_array below so use update=False
 
         self.twin_coord_names = set(state.get("twin_coord_names", set()))
-        self._cursor_color_params = state.get("cursor_color_params", None)
+        cursor_color_params = state.get("cursor_color_params", None)
+        if cursor_color_params is not None:
+            coord_dims, coord_name, cmap, reverse, vmin, vmax = cursor_color_params
+            if not isinstance(coord_dims, tuple):
+                coord_dims = (coord_dims,)
+            self._cursor_color_params = (
+                coord_dims,
+                coord_name,
+                cmap,
+                reverse,
+                vmin,
+                vmax,
+            )
+        else:
+            self._cursor_color_params = None
 
         self.set_array(self._obj, validate=False)
         # Not sure why the last line is needed but the cursor is not fully restored
@@ -582,7 +645,7 @@ class ArraySlicer(QtCore.QObject):
         """
         for prop in (
             "coords",
-            "associated_coords",
+            "associated_coord_dims",
             "coords_uniform",
             "incs",
             "incs_uniform",
