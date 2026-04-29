@@ -3911,6 +3911,73 @@ def test_itool_divide_by_coord_rejects_zero_values(qtbot, monkeypatch) -> None:
     win.close()
 
 
+def test_divide_by_coord_dialog_edge_paths(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)) + 1.0,
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "2 current": ("x", [1.0, 2.0, 4.0]),
+            "scalar_current": 2.0,
+            "label": ("x", ["a", "b", "c"]),
+            "complex_current": ("x", [1.0 + 0.0j, 2.0 + 0.0j, 4.0 + 0.0j]),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = DivideByCoordDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    coord_names = {
+        dialog.coord_combo.itemData(i, QtCore.Qt.ItemDataRole.UserRole)
+        for i in range(dialog.coord_combo.count())
+    }
+    assert "label" not in coord_names
+    assert "complex_current" not in coord_names
+
+    dialog.coord_combo.setCurrentText("scalar_current")
+    assert dialog.coord_dims_label.text() == "scalar"
+    assert dialog.suffix == "_div_scalar_current"
+    dialog.suffix = ""
+
+    dialog.coord_combo.setCurrentText("2 current")
+    assert dialog.suffix == "_div_coord_2_current"
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.coord_combo.setCurrentIndex(-1)
+    dialog._update_coord_dims_label()
+    assert dialog.coord_dims_label.text() == ""
+    assert dialog.suffix == "_div_coord"
+    assert dialog.make_code() == ""
+    with pytest.raises(ValueError, match="No coordinate selected"):
+        dialog.source_transform_operation()
+
+    dialog.accept()
+    assert warnings == [("No Coordinate Selected", "Choose a coordinate to divide by.")]
+
+    warnings.clear()
+    dialog.coord_combo.clear()
+    assert dialog._validate() == QtWidgets.QDialog.DialogCode.Rejected
+    assert warnings == [
+        (
+            "No Coordinates",
+            "No numeric coordinates that can be broadcast to the data were found.",
+        )
+    ]
+
+    dialog.close()
+    win.close()
+
+
 def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(12, dtype=float).reshape((3, 4)) + 1.0,
