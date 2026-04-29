@@ -918,6 +918,8 @@ def test_associated_coord_profile_nd_cursor_and_bins(qtbot) -> None:
             "plane": (("x", "y"), plane),
             "full": (("x", "y", "z"), full),
             "label": ("x", ["a", "b", "c"]),
+            "complex": ("x", np.arange(3, dtype=complex)),
+            "scalar": 1.0,
         },
     )
     win = itool(data, execute=False)
@@ -949,6 +951,37 @@ def test_associated_coord_profile_nd_cursor_and_bins(qtbot) -> None:
     np.testing.assert_allclose(plane_profile, x * 10.0 + np.mean([0.0, 1.0, 4.0]))
 
     assert slicer.associated_coord_profile("plane", 0, (2,)) is None
+    assert slicer.associated_coord_profile("plane", 0, (0, 1)) is None
+    assert slicer.associated_coord_profile("missing", 0, (0,)) is None
+    assert slicer.cursor_color_coord(0, ("y", "x"), "plane") is None
+    win.close()
+
+
+def test_associated_coord_dialog_empty_warning(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = _AssociatedCoordsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    assert dialog.exec() == QtWidgets.QDialog.DialogCode.Rejected
+    assert warnings == [
+        (
+            "No Associated Coordinates",
+            "No numeric non-dimension coordinates were found in the data.",
+        )
+    ]
     win.close()
 
 
@@ -975,6 +1008,15 @@ def test_cursor_colors_from_nd_associated_coord(qtbot) -> None:
     dialog.main_group.setChecked(True)
     dialog.coord_combo.setCurrentText("temp")
     assert dialog.get_checked_coord_name() == (("x", "y"), "temp")
+    dialog.coord_combo.setCurrentText("x")
+    assert dialog.get_checked_coord_name() == (("x",), "x")
+    dialog.main_group.setChecked(False)
+    assert dialog.get_checked_coord_name() is None
+    dialog.main_group.setChecked(True)
+    dialog.coord_combo.setEditable(True)
+    dialog.coord_combo.setCurrentText("missing")
+    assert dialog.get_checked_coord_name() is None
+    dialog.coord_combo.setCurrentText("temp")
 
     slicer.array_slicer._cursor_color_params = (
         ("x", "y"),
@@ -1000,6 +1042,100 @@ def test_cursor_colors_from_nd_associated_coord(qtbot) -> None:
     expected = cmap.map(raw, mode=cmap.QCOLOR).name()
     assert slicer.cursor_colors[0].name() == expected
 
+    win.close()
+
+
+def test_cursor_color_invalid_state_is_cleared(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    slicer = win.slicer_area
+    slicer.array_slicer._cursor_color_params = (
+        ("x",),
+        "missing",
+        "viridis",
+        False,
+        0.0,
+        1.0,
+    )
+
+    slicer._refresh_cursor_colors(tuple(range(slicer.n_cursors)), None)
+
+    assert slicer.array_slicer._cursor_color_params is None
+    win.close()
+
+
+def test_cursor_color_dialog_accept_disabled_clears_params(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(5),
+            "temp": ("x", np.linspace(-1, 1, 5)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    slicer = win.slicer_area
+    slicer.array_slicer._cursor_color_params = (
+        ("x",),
+        "temp",
+        "viridis",
+        False,
+        0.0,
+        1.0,
+    )
+    dialog = _CursorColorCoordDialog(slicer)
+    qtbot.addWidget(dialog)
+    dialog.main_group.setChecked(False)
+
+    dialog.accept()
+
+    assert slicer.array_slicer._cursor_color_params is None
+    win.close()
+
+
+def test_cursor_color_state_restores_legacy_dim(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(5),
+            "temp": ("x", np.linspace(-1, 1, 5)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    state = win.slicer_area.array_slicer.state
+    state["cursor_color_params"] = ("x", "temp", "magma", True, 0.1, 0.9)
+
+    win.slicer_area.array_slicer.state = state
+
+    assert win.slicer_area.array_slicer._cursor_color_params == (
+        ("x",),
+        "temp",
+        "magma",
+        True,
+        0.1,
+        0.9,
+    )
+
+    state = win.slicer_area.array_slicer.state
+    win.slicer_area.array_slicer.state = state
+    assert win.slicer_area.array_slicer._cursor_color_params == (
+        ("x",),
+        "temp",
+        "magma",
+        True,
+        0.1,
+        0.9,
+    )
     win.close()
 
 

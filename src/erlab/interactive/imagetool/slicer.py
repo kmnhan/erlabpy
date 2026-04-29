@@ -349,8 +349,6 @@ class ArraySlicer(QtCore.QObject):
         selected = coord.isel(isel_kw)
         if mean_dims:
             selected = selected.mean(dim=mean_dims, skipna=True)
-        if set(selected.dims) != {display_dim}:
-            return None
 
         return (
             self.coords_uniform[axis].astype(np.float64),

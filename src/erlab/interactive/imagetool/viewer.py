@@ -1429,11 +1429,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             cmap = erlab.interactive.colors.pg_colormap_from_name(cmap)
 
             for cursor_idx in cursor:
-                coord_info = self.array_slicer.cursor_color_coord(
-                    cursor_idx, coord_dims, coord_name
+                coord_info = typing.cast(
+                    "tuple[tuple[Hashable, ...], npt.NDArray[np.float64], float]",
+                    self.array_slicer.cursor_color_coord(
+                        cursor_idx, coord_dims, coord_name
+                    ),
                 )
-                if coord_info is None:
-                    continue
                 coord_value = coord_info[2]
                 value = (coord_value - mn) * scale_factor + vmin
                 if reverse:
