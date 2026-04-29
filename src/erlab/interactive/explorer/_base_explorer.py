@@ -1120,6 +1120,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
             self,
             {loader_name: (loader.load, kwargs)},
             loader_extensions={loader_name: extensions},
+            sample_paths=self._current_selection,
         )
         dialog.check_filter(loader_name)
 

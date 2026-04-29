@@ -44,7 +44,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.ptable import PeriodicTableWindow
@@ -1969,11 +1969,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self,
         valid_loaders: dict[str, tuple[Callable, dict]],
         name_filter: str | None = None,
+        *,
+        sample_paths: Iterable[str | pathlib.Path] | None = None,
     ) -> tuple[str, Callable, dict[str, typing.Any]] | None:
         dialog = _NameFilterDialog(
             self,
             valid_loaders,
             loader_extensions=self._recent_loader_extensions_by_filter,
+            sample_paths=sample_paths,
         )
         dialog.check_filter(name_filter or self._preferred_name_filter(valid_loaders))
 
@@ -2843,6 +2846,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 selected = self._select_loader_options(
                     {self._recent_name_filter: (func, kwargs)},
                     self._recent_name_filter,
+                    sample_paths=file_names,
                 )
                 if selected is None:
                     return
@@ -3285,14 +3289,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if len(valid_loaders) == 1:
             name_filter, (func, kargs) = next(iter(valid_loaders.items()))
             if _is_loader_func(func):
-                selected = self._select_loader_options(valid_loaders, name_filter)
+                selected = self._select_loader_options(
+                    valid_loaders, name_filter, sample_paths=queued
+                )
                 if selected is None:
                     return
                 self._recent_name_filter, func, kargs = selected
             else:
                 self._recent_name_filter = name_filter
         else:
-            selected = self._select_loader_options(valid_loaders)
+            selected = self._select_loader_options(valid_loaders, sample_paths=queued)
             if selected is None:
                 return
             self._recent_name_filter, func, kargs = selected

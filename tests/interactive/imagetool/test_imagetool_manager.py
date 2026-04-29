@@ -27,6 +27,7 @@ from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
@@ -49,7 +50,9 @@ from erlab.interactive.imagetool.manager._console import (
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ConcatDialog,
+    _CoordinateAttrsPickerDialog,
     _NameFilterDialog,
+    _NameMapEditorDialog,
     _RenameDialog,
     _text_to_loader_extension_value,
 )
@@ -1817,12 +1820,24 @@ def test_name_filter_dialog_loader_extensions_toggle_resizes(
     extensions_layout = typing.cast(
         "QtWidgets.QFormLayout", dialog.extensions_group.layout()
     )
-    for field in dialog.loader_extension_lines.values():
+    for field in dialog.loader_extension_fields.values():
         label = extensions_layout.labelForField(field)
         assert label is not None
         assert field.toolTip()
         assert "<tt>" in field.toolTip()
         assert label.toolTip() == field.toolTip()
+    assert dialog.name_map_editor_button is not None
+    assert (
+        dialog.loader_extension_lines["name_map"].sizePolicy().horizontalPolicy()
+        == QtWidgets.QSizePolicy.Policy.Ignored
+    )
+    assert dialog.coordinate_attrs_picker_button is not None
+    assert (
+        dialog.loader_extension_lines["coordinate_attrs"]
+        .sizePolicy()
+        .horizontalPolicy()
+        == QtWidgets.QSizePolicy.Policy.Ignored
+    )
 
     dialog.extensions_toggle.setChecked(False)
     QtWidgets.QApplication.processEvents()
@@ -1833,6 +1848,573 @@ def test_name_filter_dialog_loader_extensions_toggle_resizes(
     filter_name, _func, kwargs = dialog.checked_filter()
     assert filter_name == "Example Raw Data (*.h5)"
     assert kwargs["loader_extensions"] == {"additional_coords": {"scan": 1}}
+
+
+def _tree_item_by_text(
+    tree: QtWidgets.QTreeWidget, column: int, text: str
+) -> QtWidgets.QTreeWidgetItem:
+    for i in range(tree.topLevelItemCount()):
+        item = tree.topLevelItem(i)
+        if item is not None and item.text(column) == text:
+            return item
+    raise AssertionError(f"Could not find tree item {text!r}")
+
+
+def _table_row_by_text(table: QtWidgets.QTableWidget, column: int, text: str) -> int:
+    for row in range(table.rowCount()):
+        item = table.item(row, column)
+        if item is not None and item.text() == text:
+            return row
+    raise AssertionError(f"Could not find table row {text!r}")
+
+
+def _dialog_label_text(dialog: QtWidgets.QDialog) -> str:
+    return "\n".join(label.text() for label in dialog.findChildren(QtWidgets.QLabel))
+
+
+def test_loader_extension_literal_helpers_handle_edge_cases() -> None:
+    assert manager_dialogs._string_tuple_from_literal("coordinate_attrs", "") == ()
+    with pytest.raises(TypeError, match="not a string"):
+        manager_dialogs._string_tuple_from_literal("coordinate_attrs", "'theta'")
+    with pytest.raises(TypeError, match=r"coordinate_attrs must be an iterable$"):
+        manager_dialogs._string_tuple_from_literal("coordinate_attrs", "1")
+
+    assert manager_dialogs._name_map_from_literal("") == {}
+    with pytest.raises(TypeError, match="name_map must be a dict"):
+        manager_dialogs._name_map_from_literal("['theta']")
+
+    assert list(
+        manager_dialogs._iter_name_map_pairs({"theta": ["Theta", "Angle"]})
+    ) == [("theta", "Theta"), ("theta", "Angle")]
+    assert manager_dialogs._name_map_from_pairs(
+        [("theta", "Theta"), ("theta", "Theta"), ("theta", "Angle")]
+    ) == {"theta": ["Theta", "Angle"]}
+    assert manager_dialogs._name_map_literal({}) == ""
+    assert manager_dialogs._coordinate_attrs_literal(()) == ""
+
+
+def test_coordinate_attrs_sample_attrs_handles_loader_variants() -> None:
+    class _PlainLoader:
+        def __init__(self) -> None:
+            self.paths: list[pathlib.Path] = []
+
+        def load_single(self, path: pathlib.Path) -> types.SimpleNamespace:
+            self.paths.append(path)
+            return types.SimpleNamespace(attrs={"LensMode": "Angular"})
+
+    plain_loader = _PlainLoader()
+    plain_path = pathlib.Path("plain.h5")
+    assert manager_dialogs._coordinate_attrs_sample_attrs(
+        typing.cast("erlab.io.dataloader.LoaderBase", plain_loader),
+        plain_path,
+    ) == {"LensMode": "Angular"}
+    assert plain_loader.paths == [plain_path]
+
+    class _RetryLoader:
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def load_single(
+            self, _path: pathlib.Path, *, without_values: bool = False
+        ) -> object:
+            self.calls.append(without_values)
+            if without_values:
+                raise TypeError("without_values is unavailable")
+            return object()
+
+    retry_loader = _RetryLoader()
+    assert (
+        manager_dialogs._coordinate_attrs_sample_attrs(
+            typing.cast("erlab.io.dataloader.LoaderBase", retry_loader),
+            pathlib.Path("retry.h5"),
+        )
+        == {}
+    )
+    assert retry_loader.calls == [True, False]
+
+    class _FailingLoader:
+        def load_single(self, _path: pathlib.Path) -> object:
+            raise TypeError("load failed")
+
+    with pytest.raises(TypeError, match="load failed"):
+        manager_dialogs._coordinate_attrs_sample_attrs(
+            typing.cast("erlab.io.dataloader.LoaderBase", _FailingLoader()),
+            pathlib.Path("failed.h5"),
+        )
+
+
+def test_name_map_editor_emits_custom_mapping_and_omits_blank_rows(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    editor = _NameMapEditorDialog(
+        None,
+        erlab.io.loaders["example"],
+        example_data_dir / "data_002.h5",
+        {},
+    )
+    qtbot.addWidget(editor)
+
+    table = editor.findChild(QtWidgets.QTableWidget)
+    assert table is not None
+
+    lens_mode_row = _table_row_by_text(table, 0, "LensMode")
+    lens_mode_target = table.item(lens_mode_row, 1)
+    assert lens_mode_target is not None
+    assert lens_mode_target.text() == ""
+    assert lens_mode_target.flags() & QtCore.Qt.ItemFlag.ItemIsEditable
+    lens_mode_target.setText("lens_mode")
+
+    temp_row = _table_row_by_text(table, 0, "TB")
+    temp_target = table.item(temp_row, 1)
+    assert temp_target is not None
+    assert temp_target.text() == "sample_temp"
+    assert not (temp_target.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled)
+    assert not (temp_target.flags() & QtCore.Qt.ItemFlag.ItemIsEditable)
+
+    editor.accept()
+    assert editor.selected_name_map() == {"lens_mode": "LensMode"}
+
+
+def test_name_map_editor_prefills_and_preserves_unmatched_mappings(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    editor = _NameMapEditorDialog(
+        None,
+        erlab.io.loaders["example"],
+        example_data_dir / "data_002.h5",
+        {"lens_mode": "LensMode", "legacy": "MissingRaw"},
+    )
+    qtbot.addWidget(editor)
+
+    table = editor.findChild(QtWidgets.QTableWidget)
+    assert table is not None
+    lens_mode_row = _table_row_by_text(table, 0, "LensMode")
+    lens_mode_target = table.item(lens_mode_row, 1)
+    assert lens_mode_target is not None
+    assert lens_mode_target.text() == "lens_mode"
+
+    editor.accept()
+    assert editor.selected_name_map() == {
+        "legacy": "MissingRaw",
+        "lens_mode": "LensMode",
+    }
+
+
+def test_name_map_editor_disabled_sample_states(
+    qtbot,
+    monkeypatch,
+    example_loader,
+) -> None:
+    no_sample = _NameMapEditorDialog(
+        None,
+        erlab.io.loaders["example"],
+        None,
+        {"legacy": "MissingRaw"},
+    )
+    qtbot.addWidget(no_sample)
+    assert no_sample.findChild(QtWidgets.QTableWidget) is None
+    assert "No sample file is available." in _dialog_label_text(no_sample)
+    assert no_sample.selected_name_map() == {"legacy": "MissingRaw"}
+
+    def _raise_sample_attrs(*_args: object) -> dict[str, typing.Any]:
+        raise RuntimeError("sample failed")
+
+    monkeypatch.setattr(
+        manager_dialogs,
+        "_coordinate_attrs_sample_attrs",
+        _raise_sample_attrs,
+    )
+    failed_sample = _NameMapEditorDialog(
+        None,
+        erlab.io.loaders["example"],
+        pathlib.Path("bad.h5"),
+        {"legacy": "MissingRaw"},
+    )
+    qtbot.addWidget(failed_sample)
+    assert failed_sample.findChild(QtWidgets.QTableWidget) is None
+    failed_text = _dialog_label_text(failed_sample)
+    assert "Could not inspect the selected file." in failed_text
+    assert "RuntimeError: sample failed" in failed_text
+
+    monkeypatch.setattr(
+        manager_dialogs,
+        "_coordinate_attrs_sample_attrs",
+        lambda *_args: {},
+    )
+    empty_sample = _NameMapEditorDialog(
+        None,
+        erlab.io.loaders["example"],
+        pathlib.Path("empty.h5"),
+        {"legacy": "MissingRaw"},
+    )
+    qtbot.addWidget(empty_sample)
+    assert empty_sample.findChild(QtWidgets.QTableWidget) is None
+    assert "No attributes were found in the sample." in _dialog_label_text(empty_sample)
+
+
+def test_name_filter_dialog_name_map_editor_updates_literal(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    file_path = example_data_dir / "data_002.h5"
+    editor_calls: list[tuple[typing.Any, ...]] = []
+
+    class _FakeNameMapEditorDialog:
+        def __init__(
+            self,
+            parent,
+            loader,
+            sample_path,
+            current_name_map,
+        ) -> None:
+            editor_calls.append((parent, loader, sample_path, current_name_map))
+
+        def exec(self) -> bool:
+            return True
+
+        def selected_name_map(self) -> dict[str, str]:
+            return {"lens_mode": "LensMode"}
+
+    monkeypatch.setattr(
+        manager_dialogs,
+        "_NameMapEditorDialog",
+        _FakeNameMapEditorDialog,
+    )
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+        sample_paths=[file_path],
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.loader_extension_lines["name_map"].setText("{'old_name': 'Old Raw'}")
+
+    dialog._open_name_map_editor()
+
+    assert editor_calls == [
+        (
+            dialog,
+            erlab.io.loaders["example"],
+            file_path,
+            {"old_name": "Old Raw"},
+        )
+    ]
+    assert dialog.loader_extension_lines["name_map"].text() == (
+        "{'lens_mode': 'LensMode'}"
+    )
+
+
+def test_name_filter_dialog_invalid_name_map_editor_literal_shows_error(
+    qtbot,
+    monkeypatch,
+    example_loader,
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(lambda *args: critical_calls.append(args) or 0),
+    )
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.loader_extension_lines["name_map"].setText("dict(scan=1)")
+
+    dialog._open_name_map_editor()
+
+    assert critical_calls
+    assert critical_calls[0][1:4] == (
+        "Error",
+        "Invalid loader arguments.",
+        "Value for 'name_map' is not a valid literal",
+    )
+
+
+def test_name_filter_dialog_editor_cancel_leaves_literals(
+    qtbot,
+    monkeypatch,
+    example_loader,
+) -> None:
+    class _CancelNameMapEditorDialog:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def exec(self) -> bool:
+            return False
+
+        def selected_name_map(self) -> dict[str, str]:
+            raise AssertionError("selected_name_map must not be called")
+
+    class _CancelCoordinateAttrsPickerDialog:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def exec(self) -> bool:
+            return False
+
+        def selected_coordinate_attrs(self) -> tuple[str, ...]:
+            raise AssertionError("selected_coordinate_attrs must not be called")
+
+    monkeypatch.setattr(
+        manager_dialogs,
+        "_NameMapEditorDialog",
+        _CancelNameMapEditorDialog,
+    )
+    monkeypatch.setattr(
+        manager_dialogs,
+        "_CoordinateAttrsPickerDialog",
+        _CancelCoordinateAttrsPickerDialog,
+    )
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+        sample_paths=[pathlib.Path("sample.h5")],
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.loader_extension_lines["name_map"].setText("{'old_name': 'Old Raw'}")
+    dialog.loader_extension_lines["coordinate_attrs"].setText("['old_coord']")
+
+    dialog._open_name_map_editor()
+    dialog._open_coordinate_attrs_picker()
+
+    assert dialog.loader_extension_lines["name_map"].text() == "{'old_name': 'Old Raw'}"
+    assert dialog.loader_extension_lines["coordinate_attrs"].text() == "['old_coord']"
+
+
+def test_name_filter_dialog_editor_helpers_ignore_non_loader_functions(qtbot) -> None:
+    def non_loader(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    dialog = _NameFilterDialog(
+        None,
+        {"Plain Files (*.txt)": (non_loader, {})},
+        sample_paths=[pathlib.Path("plain.txt")],
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Plain Files (*.txt)")
+    dialog.loader_extension_lines["name_map"].setText("{'old_name': 'Old Raw'}")
+    dialog.loader_extension_lines["coordinate_attrs"].setText("['old_coord']")
+
+    dialog._open_name_map_editor()
+    dialog._open_coordinate_attrs_picker()
+
+    assert dialog.loader_extension_lines["name_map"].text() == "{'old_name': 'Old Raw'}"
+    assert dialog.loader_extension_lines["coordinate_attrs"].text() == "['old_coord']"
+
+
+def test_name_filter_dialog_invalid_coordinate_attrs_picker_literal_shows_error(
+    qtbot,
+    monkeypatch,
+    example_loader,
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(lambda *args: critical_calls.append(args) or 0),
+    )
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.loader_extension_lines["coordinate_attrs"].setText("'LensMode'")
+
+    dialog._open_coordinate_attrs_picker()
+
+    assert critical_calls
+    assert critical_calls[0][1:4] == (
+        "Error",
+        "Invalid loader arguments.",
+        "coordinate_attrs must be an iterable, not a string",
+    )
+
+
+def test_coordinate_attrs_picker_shows_mapped_and_builtin_attrs(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    picker = _CoordinateAttrsPickerDialog(
+        None,
+        erlab.io.loaders["example"],
+        example_data_dir / "data_002.h5",
+        ("LensMode",),
+        {},
+    )
+    qtbot.addWidget(picker)
+
+    tree = picker.findChild(QtWidgets.QTreeWidget)
+    assert tree is not None
+
+    lens_mode_item = _tree_item_by_text(tree, 0, "LensMode")
+    assert lens_mode_item.text(1) == ""
+    assert lens_mode_item.checkState(0) == QtCore.Qt.CheckState.Checked
+    assert lens_mode_item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable
+
+    temp_item = _tree_item_by_text(tree, 0, "TB")
+    assert temp_item.text(1) == "sample_temp"
+    assert temp_item.checkState(0) == QtCore.Qt.CheckState.Checked
+    assert not (temp_item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled)
+    assert not (temp_item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+
+    picker.accept()
+    assert picker.selected_coordinate_attrs() == ("LensMode",)
+
+
+def test_coordinate_attrs_picker_uses_literal_name_map(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    picker = _CoordinateAttrsPickerDialog(
+        None,
+        erlab.io.loaders["example"],
+        example_data_dir / "data_002.h5",
+        (),
+        {"lens_mode": "LensMode"},
+    )
+    qtbot.addWidget(picker)
+
+    tree = picker.findChild(QtWidgets.QTreeWidget)
+    assert tree is not None
+    lens_mode_item = _tree_item_by_text(tree, 0, "LensMode")
+    assert lens_mode_item.text(1) == "lens_mode"
+
+    lens_mode_item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+    picker.accept()
+    assert picker.selected_coordinate_attrs() == ("lens_mode",)
+
+
+def test_name_filter_dialog_coordinate_attrs_picker_updates_literal(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    file_path = example_data_dir / "data_002.h5"
+    picker_calls: list[tuple[typing.Any, ...]] = []
+
+    class _FakeCoordinateAttrsPickerDialog:
+        def __init__(
+            self,
+            parent,
+            loader,
+            sample_path,
+            current_values,
+            name_map,
+        ) -> None:
+            picker_calls.append((parent, loader, sample_path, current_values, name_map))
+
+        def exec(self) -> bool:
+            return True
+
+        def selected_coordinate_attrs(self) -> tuple[str, ...]:
+            return ("LensMode", "extra_coord")
+
+    monkeypatch.setattr(
+        manager_dialogs,
+        "_CoordinateAttrsPickerDialog",
+        _FakeCoordinateAttrsPickerDialog,
+    )
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+        sample_paths=[file_path],
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.loader_extension_lines["coordinate_attrs"].setText("['old_coord']")
+    dialog.loader_extension_lines["name_map"].setText("{'extra_coord': 'Extra Raw'}")
+
+    dialog._open_coordinate_attrs_picker()
+
+    assert picker_calls == [
+        (
+            dialog,
+            erlab.io.loaders["example"],
+            file_path,
+            ("old_coord",),
+            {"extra_coord": "Extra Raw"},
+        )
+    ]
+    assert (
+        dialog.loader_extension_lines["coordinate_attrs"].text()
+        == "['LensMode', 'extra_coord']"
+    )
+
+
+def test_coordinate_attrs_picker_failure_leaves_literal_editor(
+    qtbot,
+    example_loader,
+) -> None:
+    dialog = _NameFilterDialog(
+        None,
+        {"Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})},
+        sample_paths=[pathlib.Path("missing.h5")],
+    )
+    qtbot.addWidget(dialog)
+    dialog.check_filter("Example Raw Data (*.h5)")
+    dialog.loader_extension_lines["coordinate_attrs"].setText("['LensMode']")
+
+    picker = _CoordinateAttrsPickerDialog(
+        dialog,
+        erlab.io.loaders["example"],
+        pathlib.Path("missing.h5"),
+        ("LensMode",),
+        {},
+    )
+    qtbot.addWidget(picker)
+
+    assert picker.findChild(QtWidgets.QTreeWidget) is None
+    assert picker.selected_coordinate_attrs() == ("LensMode",)
+    assert dialog.loader_extension_lines["coordinate_attrs"].text() == "['LensMode']"
+
+
+def test_coordinate_attrs_picker_disabled_sample_states(
+    qtbot,
+    monkeypatch,
+    example_loader,
+) -> None:
+    no_sample = _CoordinateAttrsPickerDialog(
+        None,
+        erlab.io.loaders["example"],
+        None,
+        ("legacy_coord",),
+        {},
+    )
+    qtbot.addWidget(no_sample)
+    assert no_sample.findChild(QtWidgets.QTreeWidget) is None
+    assert "No sample file is available." in _dialog_label_text(no_sample)
+    assert no_sample.selected_coordinate_attrs() == ("legacy_coord",)
+
+    monkeypatch.setattr(
+        manager_dialogs,
+        "_coordinate_attrs_sample_attrs",
+        lambda *_args: {},
+    )
+    empty_sample = _CoordinateAttrsPickerDialog(
+        None,
+        erlab.io.loaders["example"],
+        pathlib.Path("empty.h5"),
+        ("legacy_coord",),
+        {},
+    )
+    qtbot.addWidget(empty_sample)
+    assert empty_sample.findChild(QtWidgets.QTreeWidget) is None
+    assert "No attributes were found in the sample." in _dialog_label_text(empty_sample)
+    assert empty_sample.selected_coordinate_attrs() == ("legacy_coord",)
 
 
 def test_name_filter_dialog_without_loader_extensions_returns_kwargs(
@@ -5884,11 +6466,14 @@ def test_select_loader_options_cancel_keeps_recent_filter(
     example_loader,
 ) -> None:
     class _CancelNameFilterDialog:
-        def __init__(self, parent, valid_loaders, *, loader_extensions=None) -> None:
+        def __init__(
+            self, parent, valid_loaders, *, loader_extensions=None, sample_paths=None
+        ) -> None:
             assert valid_loaders == {
                 "Example Raw Data (*.h5)": (erlab.io.loaders["example"].load, {})
             }
             assert loader_extensions == {"Example Raw Data (*.h5)": {}}
+            assert sample_paths is None
             self.checked_name = None
 
         def check_filter(self, name_filter: str | None) -> None:
@@ -5989,8 +6574,11 @@ def test_open_multiple_files_preselects_default_loader_filter(
     dialogs = []
 
     class _CancelNameFilterDialog:
-        def __init__(self, parent, valid_loaders, *, loader_extensions=None) -> None:
+        def __init__(
+            self, parent, valid_loaders, *, loader_extensions=None, sample_paths=None
+        ) -> None:
             self.checked_name = None
+            assert list(sample_paths or ()) == [file_path]
             dialogs.append(self)
 
         def check_filter(self, name_filter: str | None) -> None:
@@ -6218,8 +6806,8 @@ def test_manager_open_loader_selection_branches(
     add_calls: list[tuple[tuple[typing.Any, ...], dict[str, typing.Any]]] = []
     select_calls: list[tuple[typing.Any, ...]] = []
 
-    def _select_loader_options(*args):
-        select_calls.append(args)
+    def _select_loader_options(*args, **kwargs):
+        select_calls.append((*args, kwargs))
 
     manager = types.SimpleNamespace(
         _recent_name_filter=None,
@@ -6250,6 +6838,7 @@ def test_manager_open_loader_selection_branches(
 
     if case == "loader_cancel":
         assert len(select_calls) == 1
+        assert list(select_calls[0][-1]["sample_paths"]) == [str(file_path)]
         assert add_calls == []
     else:
         assert select_calls == []
@@ -6300,10 +6889,10 @@ def test_open_multiple_files_loader_selection_branches(
             dict[str, typing.Any],
         ]
     ] = []
-    select_calls: list[tuple[list[str], str | None]] = []
+    select_calls: list[tuple[list[str], str | None, list[pathlib.Path]]] = []
 
-    def _select_loader_options(loaders, name_filter=None):
-        select_calls.append((list(loaders), name_filter))
+    def _select_loader_options(loaders, name_filter=None, *, sample_paths=None):
+        select_calls.append((list(loaders), name_filter, list(sample_paths or ())))
         return select_result
 
     def _retry_open_multiple_files(*_args, **_kwargs) -> None:
@@ -6333,17 +6922,17 @@ def test_open_multiple_files_loader_selection_branches(
         ]
     elif case == "single_loader_cancel":
         assert select_calls == [
-            (["Example Raw Data (*.h5)"], "Example Raw Data (*.h5)")
+            (["Example Raw Data (*.h5)"], "Example Raw Data (*.h5)", [file_path])
         ]
         assert add_calls == []
     elif case == "multiple_cancel":
         assert select_calls == [
-            (["Example Raw Data (*.h5)", "Plain Files (*.txt)"], None)
+            (["Example Raw Data (*.h5)", "Plain Files (*.txt)"], None, [file_path])
         ]
         assert add_calls == []
     else:
         assert select_calls == [
-            (["Example Raw Data (*.h5)", "Plain Files (*.txt)"], None)
+            (["Example Raw Data (*.h5)", "Plain Files (*.txt)"], None, [file_path])
         ]
         assert manager._recent_name_filter == "Plain Files (*.txt)"
         assert add_calls == [

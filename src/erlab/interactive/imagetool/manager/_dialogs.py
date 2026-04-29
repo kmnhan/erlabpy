@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import html
 import inspect
+import pathlib
 import typing
 import weakref
 
@@ -14,7 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable, Iterator
 
     import xarray
 
@@ -323,6 +324,83 @@ def _text_to_loader_extension_value(
     return {key: value}
 
 
+def _string_tuple_from_literal(key: str, text: str) -> tuple[str, ...]:
+    parsed = _text_to_loader_extension_value(key, text)
+    if parsed is None:
+        return ()
+    value = parsed[key]
+    if isinstance(value, str):
+        raise TypeError(f"{key} must be an iterable, not a string")
+    try:
+        return tuple(str(v) for v in value)
+    except TypeError as e:
+        raise TypeError(f"{key} must be an iterable") from e
+
+
+def _name_map_from_literal(text: str) -> dict[str, str | Iterable[str]]:
+    parsed = _text_to_loader_extension_value("name_map", text)
+    if parsed is None:
+        return {}
+    value = parsed["name_map"]
+    if not isinstance(value, dict):
+        raise TypeError("name_map must be a dict")
+    return value
+
+
+def _iter_name_map_pairs(
+    name_map: dict[str, str | Iterable[str]],
+) -> Iterator[tuple[str, str]]:
+    for new_name, originals in name_map.items():
+        if isinstance(originals, str):
+            yield str(new_name), originals
+        else:
+            for original in originals:
+                yield str(new_name), str(original)
+
+
+def _name_map_from_pairs(
+    pairs: Iterable[tuple[str, str]],
+) -> dict[str, str | Iterable[str]]:
+    grouped: dict[str, list[str]] = {}
+    for new_name, original in pairs:
+        values = grouped.setdefault(new_name, [])
+        if original not in values:
+            values.append(original)
+    out: dict[str, str | Iterable[str]] = {}
+    for new_name, originals in grouped.items():
+        out[new_name] = originals[0] if len(originals) == 1 else originals
+    return out
+
+
+def _name_map_literal(name_map: dict[str, str | Iterable[str]]) -> str:
+    return repr(name_map) if name_map else ""
+
+
+def _coordinate_attrs_literal(values: tuple[str, ...]) -> str:
+    return repr(list(values)) if values else ""
+
+
+def _coordinate_attrs_sample_attrs(
+    loader: erlab.io.dataloader.LoaderBase, sample_path: pathlib.Path
+) -> dict[str, typing.Any]:
+    load_kwargs: dict[str, typing.Any] = {}
+    load_single = getattr(loader, "_original_load_single", loader.load_single)
+    if erlab.utils.misc.accepts_kwarg(load_single, "without_values", strict=False):
+        load_kwargs["without_values"] = True
+
+    try:
+        data = loader.load_single(sample_path, **load_kwargs)
+    except TypeError:
+        if not load_kwargs:
+            raise
+        data = loader.load_single(sample_path)
+
+    attrs = getattr(data, "attrs", None)
+    if attrs is None:
+        return {}
+    return dict(attrs)
+
+
 def _tooltip_with_example(text: str, example: str) -> str:
     return f"<qt>{html.escape(text)}<br>Example: <tt>{html.escape(example)}</tt></qt>"
 
@@ -368,6 +446,271 @@ _LOADER_EXTENSION_TOOLTIPS = {
 }
 
 
+class _NameMapEditorDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget,
+        loader: erlab.io.dataloader.LoaderBase,
+        sample_path: pathlib.Path | None,
+        current_name_map: dict[str, str | Iterable[str]],
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Name Map")
+        self._selected_name_map: dict[str, str | Iterable[str]] = current_name_map
+        self._rows: list[tuple[str, QtWidgets.QTableWidgetItem, bool]] = []
+        self._unmatched_pairs: tuple[tuple[str, str], ...] = ()
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        if sample_path is None:
+            layout.addWidget(QtWidgets.QLabel("No sample file is available."))
+            self._add_button_box(layout, editor_enabled=False)
+            return
+
+        try:
+            attrs = _coordinate_attrs_sample_attrs(loader, sample_path)
+        except Exception as e:
+            label = QtWidgets.QLabel(
+                "Could not inspect the selected file. Edit name_map directly instead."
+                f"\n\n{type(e).__name__}: {e}"
+            )
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            self._add_button_box(layout, editor_enabled=False)
+            return
+
+        if not attrs:
+            layout.addWidget(
+                QtWidgets.QLabel("No attributes were found in the sample.")
+            )
+            self._add_button_box(layout, editor_enabled=False)
+            return
+
+        table = QtWidgets.QTableWidget(len(attrs), 2, self)
+        table.setHorizontalHeaderLabels(["File attribute", "Renamed to"])
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditTrigger.EditKeyPressed
+            | QtWidgets.QAbstractItemView.EditTrigger.SelectedClicked
+        )
+        layout.addWidget(table)
+        self._table = table
+
+        built_in_reversed = loader._reverse_mapping(loader.name_map)
+        current_reversed = loader._reverse_mapping(current_name_map)
+        represented_originals = set(attrs)
+        self._unmatched_pairs = tuple(
+            (new_name, original)
+            for new_name, original in _iter_name_map_pairs(current_name_map)
+            if original not in represented_originals
+        )
+
+        for row, original in enumerate(attrs):
+            built_in_new = built_in_reversed.get(original)
+            current_new = current_reversed.get(original)
+            target = built_in_new or current_new or ""
+            is_built_in = built_in_new is not None
+
+            original_item = QtWidgets.QTableWidgetItem(original)
+            target_item = QtWidgets.QTableWidgetItem(target)
+            if is_built_in:
+                flags = QtCore.Qt.ItemFlag.ItemIsSelectable
+                tooltip = f"{original} is already renamed to {built_in_new}"
+                original_item.setFlags(flags)
+                target_item.setFlags(flags)
+                original_item.setToolTip(tooltip)
+                target_item.setToolTip(tooltip)
+            else:
+                original_item.setFlags(
+                    QtCore.Qt.ItemFlag.ItemIsEnabled
+                    | QtCore.Qt.ItemFlag.ItemIsSelectable
+                )
+                target_item.setFlags(
+                    QtCore.Qt.ItemFlag.ItemIsEnabled
+                    | QtCore.Qt.ItemFlag.ItemIsSelectable
+                    | QtCore.Qt.ItemFlag.ItemIsEditable
+                )
+            table.setItem(row, 0, original_item)
+            table.setItem(row, 1, target_item)
+            self._rows.append((original, target_item, is_built_in))
+
+        table.resizeColumnsToContents()
+        header = table.horizontalHeader()
+        if header is not None:  # pragma: no branch
+            header.setStretchLastSection(True)
+        self._add_button_box(layout, editor_enabled=True)
+
+    def _add_button_box(
+        self, layout: QtWidgets.QVBoxLayout, *, editor_enabled: bool
+    ) -> None:
+        buttons = (
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            if editor_enabled
+            else QtWidgets.QDialogButtonBox.StandardButton.Close
+        )
+        button_box = QtWidgets.QDialogButtonBox(buttons)
+        if editor_enabled:
+            button_box.accepted.connect(self.accept)
+            button_box.rejected.connect(self.reject)
+        else:
+            button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def selected_name_map(self) -> dict[str, str | Iterable[str]]:
+        return self._selected_name_map
+
+    def accept(self) -> None:
+        pairs = list(self._unmatched_pairs)
+        for original, target_item, is_built_in in self._rows:
+            if is_built_in:
+                continue
+            new_name = target_item.text().strip()
+            if new_name and new_name != original:
+                pairs.append((new_name, original))
+        self._selected_name_map = _name_map_from_pairs(pairs)
+        super().accept()
+
+
+class _CoordinateAttrsPickerDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget,
+        loader: erlab.io.dataloader.LoaderBase,
+        sample_path: pathlib.Path | None,
+        current_values: tuple[str, ...],
+        name_map: dict[str, str | Iterable[str]],
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Promote Attributes to Coordinates")
+        self._selected_values: tuple[str, ...] = current_values
+        self._items: list[QtWidgets.QTreeWidgetItem] = []
+        self._unmatched_values: tuple[str, ...] = ()
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        if sample_path is None:
+            layout.addWidget(QtWidgets.QLabel("No sample file is available."))
+            self._add_button_box(layout, picker_enabled=False)
+            return
+
+        try:
+            attrs = _coordinate_attrs_sample_attrs(loader, sample_path)
+        except Exception as e:
+            label = QtWidgets.QLabel(
+                "Could not inspect the selected file. "
+                "Edit coordinate_attrs directly instead.\n\n"
+                f"{type(e).__name__}: {e}"
+            )
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            self._add_button_box(layout, picker_enabled=False)
+            return
+
+        if not attrs:
+            layout.addWidget(
+                QtWidgets.QLabel("No attributes were found in the sample.")
+            )
+            self._add_button_box(layout, picker_enabled=False)
+            return
+
+        tree = QtWidgets.QTreeWidget(self)
+        tree.setColumnCount(2)
+        tree.setHeaderLabels(["File attribute", "Renamed to"])
+        tree.setRootIsDecorated(False)
+        tree.setAlternatingRowColors(True)
+        tree.setUniformRowHeights(True)
+        layout.addWidget(tree)
+        self._tree = tree
+
+        built_in = set(loader.coordinate_attrs)
+        selected = set(current_values)
+        name_map_reversed = loader._reverse_mapping(loader.name_map | name_map)
+        represented_values: set[str] = set()
+
+        for original in attrs:
+            renamed = name_map_reversed.get(original, original)
+            renamed_text = renamed if renamed != original else ""
+            represented_values.add(renamed)
+            is_built_in = renamed in built_in
+            is_checked = is_built_in or renamed in selected or original in selected
+            item = QtWidgets.QTreeWidgetItem(tree, [original, renamed_text])
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, renamed)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole + 1, is_built_in)
+            item.setCheckState(
+                0,
+                QtCore.Qt.CheckState.Checked
+                if is_checked
+                else QtCore.Qt.CheckState.Unchecked,
+            )
+            flags = (
+                QtCore.Qt.ItemFlag.ItemIsEnabled | QtCore.Qt.ItemFlag.ItemIsSelectable
+            )
+            if not is_built_in:
+                flags |= QtCore.Qt.ItemFlag.ItemIsUserCheckable
+            item.setFlags(flags)
+            item.setDisabled(is_built_in)
+            if original != renamed:
+                item.setToolTip(0, f"{original} is renamed to {renamed}")
+                item.setToolTip(1, f"Original attribute: {original}")
+            if is_built_in:
+                item.setToolTip(
+                    0,
+                    "Already promoted by the selected loader"
+                    if original == renamed
+                    else f"{original} is renamed to {renamed} and already promoted "
+                    "by the selected loader",
+                )
+                item.setToolTip(1, "Already promoted by the selected loader")
+            self._items.append(item)
+
+        for column in range(tree.columnCount()):
+            tree.resizeColumnToContents(column)
+
+        self._unmatched_values = tuple(
+            v
+            for v in current_values
+            if v not in represented_values and v not in built_in
+        )
+        self._add_button_box(layout, picker_enabled=True)
+
+    def _add_button_box(
+        self, layout: QtWidgets.QVBoxLayout, *, picker_enabled: bool
+    ) -> None:
+        buttons = (
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            if picker_enabled
+            else QtWidgets.QDialogButtonBox.StandardButton.Close
+        )
+        button_box = QtWidgets.QDialogButtonBox(buttons)
+        if picker_enabled:
+            button_box.accepted.connect(self.accept)
+            button_box.rejected.connect(self.reject)
+        else:
+            button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def selected_coordinate_attrs(self) -> tuple[str, ...]:
+        return self._selected_values
+
+    def accept(self) -> None:
+        values: list[str] = []
+        for item in self._items:
+            is_built_in = bool(item.data(0, QtCore.Qt.ItemDataRole.UserRole + 1))
+            if is_built_in:
+                continue
+            if item.checkState(0) == QtCore.Qt.CheckState.Checked:
+                values.append(str(item.data(0, QtCore.Qt.ItemDataRole.UserRole)))
+        values.extend(v for v in self._unmatched_values if v not in values)
+        self._selected_values = tuple(values)
+        super().accept()
+
+
 class _NameFilterDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -375,12 +718,14 @@ class _NameFilterDialog(QtWidgets.QDialog):
         valid_loaders: dict[str, tuple[Callable, dict]],
         *,
         loader_extensions: dict[str, dict[str, typing.Any]] | None = None,
+        sample_paths: Iterable[str | pathlib.Path] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Select Loader")
 
         self._valid_loaders = valid_loaders
         self._loader_extensions = loader_extensions or {}
+        self._sample_paths = tuple(pathlib.Path(p) for p in sample_paths or ())
         self._checked_kwargs: dict[str, typing.Any] | None = None
         self._checked_loader_extensions: dict[str, typing.Any] | None = None
         self._extensions_available = False
@@ -430,6 +775,9 @@ class _NameFilterDialog(QtWidgets.QDialog):
         self.loader_extension_highlighters: list[
             erlab.interactive.utils.PythonHighlighter
         ] = []
+        self.loader_extension_fields: dict[str, QtWidgets.QWidget] = {}
+        self.name_map_editor_button: QtWidgets.QToolButton | None = None
+        self.coordinate_attrs_picker_button: QtWidgets.QToolButton | None = None
         for key in inspect.signature(
             erlab.io.dataloader.LoaderBase.extend_loader
         ).parameters:
@@ -453,7 +801,37 @@ class _NameFilterDialog(QtWidgets.QDialog):
             line.setToolTip(tooltip)
             label = QtWidgets.QLabel(key)
             label.setToolTip(tooltip)
-            extensions_layout.addRow(label, line)
+            if key in {"name_map", "coordinate_attrs"}:
+                field = QtWidgets.QWidget()
+                field_layout = QtWidgets.QHBoxLayout(field)
+                field_layout.setContentsMargins(0, 0, 0, 0)
+                field_layout.setSpacing(4)
+                line.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Ignored,
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                )
+                field_layout.addWidget(line, 1)
+                button = QtWidgets.QToolButton()
+                if key == "name_map":
+                    button.setText("Edit...")
+                    button.setToolTip(
+                        "Inspect the selected file and edit attribute renames."
+                    )
+                    button.clicked.connect(self._open_name_map_editor)
+                    self.name_map_editor_button = button
+                else:
+                    button.setText("Edit...")
+                    button.setToolTip(
+                        "Inspect the selected file and choose coordinate attributes."
+                    )
+                    button.clicked.connect(self._open_coordinate_attrs_picker)
+                    self.coordinate_attrs_picker_button = button
+                field_layout.addWidget(button)
+            else:
+                field = line
+            field.setToolTip(tooltip)
+            self.loader_extension_fields[key] = field
+            extensions_layout.addRow(label, field)
         layout.addWidget(self.extensions_group)
         self.extensions_toggle.hide()
         self.extensions_group.hide()
@@ -499,6 +877,68 @@ class _NameFilterDialog(QtWidgets.QDialog):
         for key, line in self.loader_extension_lines.items():
             value = loader_extensions.get(key)
             line.setText("" if value is None else repr(value))
+
+    @QtCore.Slot()
+    def _open_name_map_editor(self) -> None:
+        line = self.loader_extension_lines["name_map"]
+        try:
+            current_name_map = _name_map_from_literal(line.text())
+        except Exception as e:
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                "Error",
+                "Invalid loader arguments.",
+                str(e),
+            )
+            return
+
+        name_filter = list(self._valid_loaders.keys())[self._button_group.checkedId()]
+        func = self._valid_loaders[name_filter][0]
+        loader = getattr(func, "__self__", None)
+        if not isinstance(loader, erlab.io.dataloader.LoaderBase):
+            return
+
+        dialog = _NameMapEditorDialog(
+            self,
+            loader,
+            self._sample_paths[0] if self._sample_paths else None,
+            current_name_map,
+        )
+        if dialog.exec():
+            line.setText(_name_map_literal(dialog.selected_name_map()))
+
+    @QtCore.Slot()
+    def _open_coordinate_attrs_picker(self) -> None:
+        line = self.loader_extension_lines["coordinate_attrs"]
+        try:
+            current_values = _string_tuple_from_literal("coordinate_attrs", line.text())
+            name_map = _name_map_from_literal(
+                self.loader_extension_lines["name_map"].text()
+            )
+        except Exception as e:
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                "Error",
+                "Invalid loader arguments.",
+                str(e),
+            )
+            return
+
+        name_filter = list(self._valid_loaders.keys())[self._button_group.checkedId()]
+        func = self._valid_loaders[name_filter][0]
+        loader = getattr(func, "__self__", None)
+        if not isinstance(loader, erlab.io.dataloader.LoaderBase):
+            return
+
+        dialog = _CoordinateAttrsPickerDialog(
+            self,
+            loader,
+            self._sample_paths[0] if self._sample_paths else None,
+            current_values,
+            name_map,
+        )
+        if dialog.exec():
+            line.setText(_coordinate_attrs_literal(dialog.selected_coordinate_attrs()))
 
     @QtCore.Slot(bool)
     def _set_extensions_expanded(self, expanded: bool) -> None:

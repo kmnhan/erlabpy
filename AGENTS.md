@@ -29,6 +29,7 @@ Use 4-space indentation, Ruff’s 88-character limit, and double quotes. Modules
 Prefer importing top-level `erlab` in modules that already use `lazy_loader`, even if a narrower import is possible.
 Follow package import conventions by preferring absolute imports over relative imports.
 Use modern typing syntax as a default rule: use built-in generics (`list[str]`, `dict[str, int]`) and `collections.abc` types (for example `Callable`), and avoid deprecated `typing` aliases (deprecated since Python 3.9).
+Typing rule: do not write `typing.Iterable`, `typing.Iterator`, `typing.Mapping`, `typing.Sequence`, `typing.Callable`, `typing.Dict`, `typing.List`, or `typing.Tuple`. Import abstract collection types from `collections.abc` (inside `if typing.TYPE_CHECKING:` when used only for annotations) and use built-in containers such as `list[str]` and `dict[str, int]`.
 
 ## Testing Guidelines
 
