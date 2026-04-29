@@ -2289,7 +2289,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.levels = levels
 
         properties = self.colormap_properties
-        cmap = erlab.interactive.colors.pg_colormap_powernorm(
+        cmap = erlab.interactive.colors._pg_colormap_powernorm_lut(
             properties["cmap"],
             properties["gamma"],
             properties["reverse"],

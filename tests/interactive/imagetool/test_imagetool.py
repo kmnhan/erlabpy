@@ -528,6 +528,25 @@ def test_plot_code_multicursor_image_includes_norm_settings(qtbot) -> None:
     win.close()
 
 
+def test_slicer_area_colormap_lut_matches_dense_powernorm(qtbot) -> None:
+    kwargs = {
+        "cmap": "magma",
+        "gamma": 0.01,
+        "reverse": True,
+        "high_contrast": True,
+        "zero_centered": True,
+    }
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.set_colormap(**kwargs)
+    dense = erlab.interactive.colors.pg_colormap_powernorm(**kwargs)
+
+    assert np.array_equal(win.slicer_area._imageitems[0].lut, dense.getStops()[1])
+
+    win.close()
+
+
 def test_plot_code_multicursor_image_without_cursor_variation_nonuniform(qtbot) -> None:
     data = _TEST_DATA["3D_nonuniform"].copy()
     win = itool(data, execute=False)
