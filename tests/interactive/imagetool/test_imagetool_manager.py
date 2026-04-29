@@ -4045,6 +4045,90 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert manager._build_metadata_derivation_menu() is None
 
 
+def test_manager_divide_by_coord_child_refresh_and_code(
+    qtbot,
+    accept_dialog,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)) + 1.0,
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "mesh_current": ("x", [1.0, 2.0, 4.0]),
+        },
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+
+        def _nest_divide(dialog) -> None:
+            assert dialog.launch_mode == "nest"
+            dialog.coord_combo.setCurrentText("mesh_current")
+
+        accept_dialog(parent_tool.mnb._divide_by_coord, pre_call=_nest_divide)
+
+        parent = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_tool = manager.get_imagetool(child_uid)
+
+        expected = (data / data.mesh_current).rename("scan_div_mesh_current")
+        xr.testing.assert_identical(child_tool.slicer_area._data, expected)
+        assert child_node.source_spec is not None
+        operations = [
+            op for op in child_node.source_spec.operations if op.op == "divide_by_coord"
+        ]
+        assert len(operations) == 1
+        assert operations[0].coord_name == "mesh_current"
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_info(uid=child_uid)
+        derivation = metadata_derivation_texts(manager)
+        assert any("Divide by Coordinate" in line for line in derivation)
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Full Code"].trigger()
+        assert "derived.mesh_current" in copied[-1]
+
+        namespace = _exec_generated_code(copied[-1], {"data": data.copy(deep=True)})
+        xr.testing.assert_identical(
+            namespace["derived"].rename(None), expected.rename(None)
+        )
+
+        updated = data.copy(deep=True)
+        updated.data = np.asarray(updated.data) * 2
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node._update_from_parent_source() is True
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            (updated / updated.mesh_current).rename(None),
+        )
+
+
 def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(
     qtbot,
     monkeypatch,

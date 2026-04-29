@@ -65,6 +65,7 @@ __all__ = [
     "CoarsenOperation",
     "CorrectWithEdgeOperation",
     "DerivationEntry",
+    "DivideByCoordOperation",
     "IselOperation",
     "MaskWithPolygonOperation",
     "QSelOperation",
@@ -1447,6 +1448,41 @@ class AverageOperation(ToolProvenanceOperation):
         return DerivationEntry(
             f"Average({_format_derivation_value(label_kwargs)})",
             f"derived = derived.qsel.average({arg})",
+            True,
+        )
+
+
+class DivideByCoordOperation(ToolProvenanceOperation):
+    op: typing.Literal["divide_by_coord"] = "divide_by_coord"
+    coord_name: ProvenanceHashable
+
+    @staticmethod
+    def _raise_if_zero(coord: xr.DataArray) -> None:
+        if np.any(np.asarray(coord.values) == 0):
+            raise ValueError("Coordinate contains zero values and cannot be a divisor.")
+
+    def divisor_code(self, data_name: str) -> str:
+        if (
+            isinstance(self.coord_name, str)
+            and self.coord_name.isidentifier()
+            and not keyword.iskeyword(self.coord_name)
+            and not self.coord_name.startswith("_")
+            and not hasattr(xr.DataArray, self.coord_name)
+        ):
+            return f"{data_name}.{self.coord_name}"
+        coord_name = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        return f"{data_name}.coords[{coord_name}]"
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        coord = data.coords[self.coord_name]
+        self._raise_if_zero(coord)
+        return data / coord
+
+    def derivation_entry(self) -> DerivationEntry:
+        label_kwargs = {"coord_name": self.coord_name}
+        return DerivationEntry(
+            f"Divide by Coordinate({_format_derivation_value(label_kwargs)})",
+            f"derived = derived / {self.divisor_code('derived')}",
             True,
         )
 
