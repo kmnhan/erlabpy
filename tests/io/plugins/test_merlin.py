@@ -7,7 +7,7 @@ import pytest
 import xarray as xr
 
 import erlab
-from erlab.io.plugins import merlin as merlin_plugin
+from erlab.io.plugins import _merlin_bcs
 from erlab.io.plugins.merlin import load_bcs
 
 
@@ -180,15 +180,23 @@ def _save_png(path, values) -> None:
     image_module.fromarray(np.asarray(values)).save(path)
 
 
+def _save_text_payload(path, columns, rows) -> None:
+    path.parent.mkdir(exist_ok=True)
+    data_table = "\t".join(columns) + "\n" + "\n".join("\t".join(row) for row in rows)
+    path.write_text(data_table, encoding="utf-8")
+
+
 def test_load_bcs_dataarray(tmp_path) -> None:
     scan_path, expected_images = _write_bcs_scan(tmp_path)
 
     data = load_bcs(scan_path)
 
     assert isinstance(data, xr.DataArray)
-    assert data.dims == ("EPU Gap", "y", "x")
+    assert data.dims == ("y", "x", "EPU Gap")
     assert data.dtype == np.uint16
-    np.testing.assert_array_equal(data.values, np.stack(expected_images["DiagOn YAG"]))
+    np.testing.assert_array_equal(
+        data.values, np.moveaxis(np.stack(expected_images["DiagOn YAG"]), 0, -1)
+    )
     np.testing.assert_allclose(data["EPU Gap"].values, [20.0, 20.2])
     np.testing.assert_allclose(data["EPU Gap Actual"].values, [20.01, 20.21])
     np.testing.assert_allclose(data["Beam Current"].values, [500.0, 501.0])
@@ -220,7 +228,7 @@ def test_load_bcs_multiple_image_columns(tmp_path) -> None:
     for image_column in expected_images:
         arr = data[image_column].to_dataset()[image_column]
         np.testing.assert_array_equal(
-            arr.values, np.stack(expected_images[image_column])
+            arr.values, np.moveaxis(np.stack(expected_images[image_column]), 0, -1)
         )
         np.testing.assert_allclose(arr["EPU Gap"].values, [20.0, 20.2])
         assert "General" not in arr.attrs
@@ -239,7 +247,7 @@ def test_load_bcs_scan_axis_fallbacks(tmp_path) -> None:
         [["1.5", str(image_path)]],
     )
     data = load_bcs(scan_path)
-    assert data.dims == ("Motor", "y", "x")
+    assert data.dims == ("y", "x", "Motor")
     np.testing.assert_allclose(data["Motor"].values, [1.5])
 
     scan_path = tmp_path / "step.txt"
@@ -255,7 +263,7 @@ def test_load_bcs_scan_axis_fallbacks(tmp_path) -> None:
         [[str(image_path)]],
     )
     data = load_bcs(scan_path)
-    assert data.dims == ("Missing", "y", "x")
+    assert data.dims == ("y", "x", "Missing")
     np.testing.assert_allclose(data["Missing"].values, [0.0])
     assert "Missing" not in data.attrs
     assert "Motors" not in data.attrs
@@ -276,10 +284,153 @@ def test_load_bcs_absolute_rgb_images(tmp_path) -> None:
 
     data = load_bcs(scan_path)
 
-    assert data.dims == ("step", "y", "x", "channel")
+    assert data.dims == ("y", "x", "channel", "step")
     np.testing.assert_array_equal(data["step"].values, [0.0, 1.0])
     np.testing.assert_array_equal(data["channel"].values, [0, 1, 2])
-    assert data.shape == (2, 2, 3, 3)
+    assert data.shape == (2, 3, 3, 2)
+
+
+def test_load_bcs_single_row_text_payload(tmp_path) -> None:
+    payload_path = tmp_path / "f 000097 Spectrums" / "f 000097 001.txt"
+    _save_text_payload(
+        payload_path,
+        ["Kinetic Energy [eV]", "Counts [a.u.]"],
+        [["88.633", "10.0"], ["88.635", "12.0"]],
+    )
+
+    scan_path = tmp_path / "f 000097.txt"
+    _write_bcs_text(
+        scan_path,
+        {
+            "Scan Type": "Image Single Motor Scan",
+            "Image Single Motor Scan": {
+                "Instrument": "Scienta",
+                "X Motor": "Fake Motor",
+            },
+            "Motors": {"Fake Motor": 0.0, "BL Energy": 105.0},
+        },
+        ["Time (s)", "Fake Motor Goal", "Fake Motor Actual", "Scienta"],
+        [["0.294", "0.0", "0.0", r"..\f 000097 Spectrums\f 000097 001.txt"]],
+    )
+
+    data = load_bcs(scan_path)
+
+    assert data.name == "Scienta"
+    assert data.dims == ("Kinetic Energy [eV]", "Fake Motor")
+    assert data.shape == (2, 1)
+    np.testing.assert_allclose(data["Kinetic Energy [eV]"].values, [88.633, 88.635])
+    np.testing.assert_allclose(data["Fake Motor"].values, [0.0])
+    np.testing.assert_allclose(data.values, [[10.0], [12.0]])
+    assert "eV" not in data.coords
+    assert data.attrs["BCS value column"] == "Counts [a.u.]"
+
+
+def test_load_bcs_multi_row_text_payload(tmp_path) -> None:
+    payload_dir = tmp_path / "spectra"
+    _save_text_payload(
+        payload_dir / "a.txt",
+        ["energy", "counts"],
+        [["1.0", "10.0"], ["2.0", "20.0"]],
+    )
+    _save_text_payload(
+        payload_dir / "b.txt",
+        ["energy", "counts"],
+        [["1.0", "30.0"], ["2.0", "40.0"]],
+    )
+
+    scan_path = tmp_path / "scan.txt"
+    _write_bcs_text(
+        scan_path,
+        {"Scan Type": "Single Motor Scan", "Single Motor Scan": {"X Motor": "Motor"}},
+        ["Motor Goal", "Spectrum"],
+        [
+            ["0.0", r"..\spectra\a.txt"],
+            ["1.0", r"..\spectra\b.txt"],
+        ],
+    )
+
+    data = load_bcs(scan_path)
+
+    assert data.dims == ("energy", "Motor")
+    np.testing.assert_allclose(data["Motor"].values, [0.0, 1.0])
+    np.testing.assert_allclose(data.values, [[10.0, 30.0], [20.0, 40.0]])
+
+
+def test_load_bcs_text_payload_multiple_value_columns(tmp_path) -> None:
+    payload_path = tmp_path / "tables" / "a.txt"
+    _save_text_payload(
+        payload_path,
+        ["axis", "A", "B"],
+        [["1.0", "10.0", "20.0"], ["2.0", "30.0", "40.0"]],
+    )
+
+    scan_path = tmp_path / "scan.txt"
+    _write_bcs_text(
+        scan_path,
+        {"Scan Type": "Single Motor Scan"},
+        ["Table"],
+        [[r"..\tables\a.txt"]],
+    )
+
+    data = load_bcs(scan_path)
+
+    assert data.dims == ("axis", "column", "step")
+    np.testing.assert_array_equal(data["column"].values, ["A", "B"])
+    np.testing.assert_allclose(data.values[:, :, 0], [[10.0, 20.0], [30.0, 40.0]])
+
+
+def test_load_bcs_mixed_payload_columns_return_datatree(tmp_path) -> None:
+    image_path = tmp_path / "camera.png"
+    _save_png(image_path, np.arange(6, dtype=np.uint16).reshape(2, 3))
+    payload_path = tmp_path / "spectra" / "a.txt"
+    _save_text_payload(
+        payload_path,
+        ["energy", "counts"],
+        [["1.0", "10.0"], ["2.0", "20.0"]],
+    )
+
+    scan_path = tmp_path / "scan.txt"
+    _write_bcs_text(
+        scan_path,
+        {"Scan Type": "Single Motor Scan", "Single Motor Scan": {"X Motor": "Motor"}},
+        ["Motor Goal", "Camera", "Spectrum"],
+        [["0.0", str(image_path), r"..\spectra\a.txt"]],
+    )
+
+    data = load_bcs(scan_path)
+
+    assert isinstance(data, xr.DataTree)
+    assert set(data.children) == {"Camera", "Spectrum"}
+    assert data["Camera"].to_dataset()["Camera"].dims == ("y", "x", "Motor")
+    assert data["Spectrum"].to_dataset()["Spectrum"].dims == ("energy", "Motor")
+
+
+def test_load_bcs_text_payload_mismatched_axes(tmp_path) -> None:
+    payload_dir = tmp_path / "spectra"
+    _save_text_payload(
+        payload_dir / "a.txt",
+        ["energy", "counts"],
+        [["1.0", "10.0"], ["2.0", "20.0"]],
+    )
+    _save_text_payload(
+        payload_dir / "b.txt",
+        ["energy", "counts"],
+        [["1.0", "30.0"], ["3.0", "40.0"]],
+    )
+
+    scan_path = tmp_path / "scan.txt"
+    _write_bcs_text(
+        scan_path,
+        {"Scan Type": "Single Motor Scan", "Single Motor Scan": {"X Motor": "Motor"}},
+        ["Motor Goal", "Spectrum"],
+        [
+            ["0.0", r"..\spectra\a.txt"],
+            ["1.0", r"..\spectra\b.txt"],
+        ],
+    )
+
+    with pytest.raises(ValueError, match="text payload axes differ"):
+        load_bcs(scan_path)
 
 
 @pytest.mark.parametrize(
@@ -288,7 +439,7 @@ def test_load_bcs_absolute_rgb_images(tmp_path) -> None:
         ("DATA\nx\n1\n", "not a valid BCS data file"),
         ("HEADER\n{}\nDATA\n", "missing BCS data table"),
         ("HEADER\n{}\nDATA\nx\n", "contains no BCS data rows"),
-        ("HEADER\n{}\nDATA\nx\n1\n", "contains no BCS image columns"),
+        ("HEADER\n{}\nDATA\nx\n1\n", "contains no BCS payload columns"),
     ],
 )
 def test_load_bcs_invalid_files(tmp_path, text, match) -> None:
@@ -385,5 +536,5 @@ def test_load_bcs_pillow_missing(tmp_path, monkeypatch) -> None:
 def test_load_bcs_private_name_deduplication() -> None:
     existing = {"name", "name raw", "name raw 1"}
 
-    assert merlin_plugin._unique_name("name", existing) == "name raw 2"
+    assert _merlin_bcs._unique_name("name", existing) == "name raw 2"
     assert "name raw 2" in existing
