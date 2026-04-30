@@ -41,6 +41,7 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 - `tests/conftest.py` assigns the `compat`, `gui`, and `serial` markers during collection based on the centralized grouping rules. Keep those markers semantically meaningful; do not scatter ad hoc CI-only marker assignments across unrelated test files.
 - Run `uv run python -m scripts.ci_test_groups --check-partition` after changing the test tree or CI grouping rules.
 - Tests and monkeypatched stubs must implement the current runtime contract. Do not add production fallbacks or compatibility branches only to accommodate outdated fake objects in tests.
+- Do not assert user-facing text label content in tests; prefer stable metadata, object names, roles, or behavioral state. When testing copied code, execute the copied code with `exec()` in an explicit namespace and assert the produced object/value exactly matches the expected result instead of comparing raw text.
 
 ## Interactive Qt Notes
 

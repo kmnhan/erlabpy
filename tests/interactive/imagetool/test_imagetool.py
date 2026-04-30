@@ -19,7 +19,10 @@ import erlab
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
-from erlab.interactive.imagetool.controls import ItoolColormapControls
+from erlab.interactive.imagetool.controls import (
+    ItoolColormapControls,
+    ItoolCrosshairControls,
+)
 from erlab.interactive.imagetool.dialogs import (
     AssignCoordsDialog,
     AverageDialog,
@@ -122,6 +125,12 @@ def _exec_data_fragment(
     return result
 
 
+def _menu_action_by_data(menu: QtWidgets.QMenu, data: object) -> QtGui.QAction:
+    matches = [action for action in menu.actions() if action.data() == data]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def _assert_guideline_state(
     plot_item,
     *,
@@ -188,9 +197,6 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
                 QtCore.QEvent.KeyPress, QtCore.Qt.Key_Alt, QtCore.Qt.AltModifier
             ),
         )
-        for action in main_image.vb.menu.actions():
-            if action.text().startswith("goldtool"):
-                action.text().endswith("(Crop)")
 
         logger.info("Check access to cropped data")
         assert isinstance(main_image._current_data_cropped, xr.DataArray)
@@ -264,7 +270,11 @@ def test_copy_selection_code_includes_crop_with_alt(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", fake_copy)
 
     main_image.copy_selection_code()
-    assert copied == [".sel(x=slice(1.0, 3.0), y=slice(0.0, 2.0))"]
+    assert len(copied) == 1
+    xr.testing.assert_identical(
+        _exec_data_fragment(data, copied[0]),
+        data.sel(x=slice(1.0, 3.0), y=slice(0.0, 2.0)),
+    )
     win.close()
 
 
@@ -290,7 +300,11 @@ def test_copy_selection_code_descending_coords(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", fake_copy)
 
     main_image.copy_selection_code()
-    assert copied == [".sel(x=slice(3.0, 1.0), y=slice(2.0, 0.0))"]
+    assert len(copied) == 1
+    xr.testing.assert_identical(
+        _exec_data_fragment(data, copied[0]),
+        data.sel(x=slice(3.0, 1.0), y=slice(2.0, 0.0)),
+    )
     win.close()
 
 
@@ -791,6 +805,8 @@ def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
 
 
 def test_copy_matplotlib_code_uses_generated_output(qtbot, monkeypatch) -> None:
+    import matplotlib.pyplot as plt
+
     data = _TEST_DATA["3D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -800,7 +816,6 @@ def test_copy_matplotlib_code_uses_generated_output(qtbot, monkeypatch) -> None:
     win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=2, value=3.0, cursor=1)
 
-    expected = main_image._plot_code_multicursor()
     copied: dict[str, str] = {}
 
     def _copy(arg: str) -> None:
@@ -809,8 +824,13 @@ def test_copy_matplotlib_code_uses_generated_output(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", _copy)
 
     main_image.copy_matplotlib_code()
-    assert copied["text"] == expected
-    assert "beta=[1.0, 3.0]" in expected
+    namespace = _exec_generated_code(
+        copied["text"],
+        {"data": data.copy(deep=True), "plt": plt, "eplt": erlab.plotting},
+    )
+    assert "fig" in namespace
+    assert len(np.asarray(namespace["axs"]).ravel()) == 2
+    plt.close(namespace["fig"])
 
     win.close()
 
@@ -955,6 +975,137 @@ def test_associated_coord_profile_nd_cursor_and_bins(qtbot) -> None:
     assert slicer.associated_coord_profile("plane", 0, (0, 1)) is None
     assert slicer.associated_coord_profile("missing", 0, (0,)) is None
     assert slicer.cursor_color_coord(0, ("y", "x"), "plane") is None
+    win.close()
+
+
+def test_point_value_context_menu_selects_associated_coord(qtbot) -> None:
+    temp = np.arange(25, dtype=float).reshape(5, 5) + 100.0
+    data = xr.DataArray(
+        np.zeros((5, 5), dtype=float),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5, dtype=float),
+            "y": np.arange(5, dtype=float),
+            "temp": (("x", "y"), temp),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    control = win.docks[0].widget().findChild(ItoolCrosshairControls)
+    assert control is not None
+    control.update_content()
+
+    win.slicer_area.array_slicer.twin_coord_names = {"temp"}
+    menu = control._build_point_value_context_menu()
+    action_data = [
+        action.data() for action in menu.actions() if not action.isSeparator()
+    ]
+
+    assert control._readout_source_indicator.isHidden()
+    header_action = _menu_action_by_data(menu, ("display_header", None))
+    assert header_action.isSeparator()
+    assert action_data == [
+        ("copy", None),
+        ("select_all", None),
+        ("data", None),
+        ("coord", "temp"),
+    ]
+    assert _menu_action_by_data(menu, ("data", None)).isChecked()
+    temp_action = _menu_action_by_data(menu, ("coord", "temp"))
+    assert not temp_action.icon().isNull()
+
+    temp_action.trigger()
+    assert control._readout_source == "temp"
+    assert not control._readout_source_indicator.isHidden()
+    assert control.spin_dat.value() == temp[2, 2]
+
+    win.slicer_area.set_index(0, 4)
+    assert control.spin_dat.value() == temp[4, 2]
+
+    control._set_computed_point_value(-1.0)
+    assert control.spin_dat.value() == temp[4, 2]
+
+    win.slicer_area.array_slicer.twin_coord_names = set()
+    assert control._readout_source is None
+    assert control._readout_source_indicator.isHidden()
+    assert control.spin_dat.value() == 0.0
+    win.close()
+
+
+def test_profile_menu_opens_associated_coord_targets(
+    qtbot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    x = np.arange(3, dtype=float)
+    y = np.arange(4, dtype=float)
+    plane = x[:, None] * 10.0 + y[None, :]
+    data = xr.DataArray(
+        np.zeros((3, 4, 2), dtype=float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": x,
+            "y": y,
+            "z": np.arange(2, dtype=float),
+            "plane": (("x", "y"), plane),
+            "temp": ("x", x + 100.0),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    profile = win.slicer_area.profiles[0]
+    win.slicer_area.array_slicer.twin_coord_names = {"plane", "temp"}
+
+    captured: list[
+        tuple[
+            xr.DataArray,
+            erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+            bool,
+        ]
+    ] = []
+
+    def _capture_open(data, source_spec, *, use_parent_colormap):
+        captured.append((data, source_spec, use_parent_colormap))
+
+    monkeypatch.setattr(profile, "_open_data_in_new_window", _capture_open)
+
+    profile._refresh_associated_coord_menu()
+    assert profile._associated_coord_menu is not None
+    assert profile._associated_coord_menu.menuAction().isVisible()
+    plot_actions = profile.vb.menu.actions()
+    menu_index = plot_actions.index(profile._associated_coord_menu.menuAction())
+    assert plot_actions[menu_index - 1].isSeparator()
+    assert plot_actions[menu_index - 1].isVisible()
+    assert plot_actions[menu_index + 1].isSeparator()
+    assert plot_actions[menu_index + 1].isVisible()
+
+    temp_action = _menu_action_by_data(
+        profile._associated_coord_menu, ("associated_coord_open", "temp")
+    )
+    assert temp_action.menu() is None
+    temp_action.trigger()
+    temp_data, temp_spec, use_parent_colormap = captured[-1]
+    xr.testing.assert_identical(temp_data, data.coords["temp"])
+    assert temp_spec.kind == "public_data"
+    assert temp_spec.operations[-1].op == "select_coord"
+    assert use_parent_colormap is False
+
+    coord_menu = _menu_action_by_data(
+        profile._associated_coord_menu, ("associated_coord", "plane")
+    ).menu()
+    assert coord_menu is not None
+
+    _menu_action_by_data(coord_menu, ("associated_coord_full", "plane")).trigger()
+    full_data, full_spec, use_parent_colormap = captured[-1]
+    xr.testing.assert_identical(full_data, data.coords["plane"])
+    assert full_spec.kind == "public_data"
+    assert full_spec.operations[-1].op == "select_coord"
+    assert use_parent_colormap is False
+
+    _menu_action_by_data(coord_menu, ("associated_coord_profile", "plane")).trigger()
+    profile_data, profile_spec, use_parent_colormap = captured[-1]
+    xr.testing.assert_identical(profile_data, data.isel(y=1, z=0).coords["plane"])
+    assert profile_spec.kind == "selection"
+    assert profile_spec.operations[-1].op == "select_coord"
+    assert use_parent_colormap is False
     win.close()
 
 

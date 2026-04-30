@@ -623,6 +623,29 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
         prov.script(start_label="Start", active_name="derived")._display_operations()
 
 
+def test_select_coord_operation_round_trips_and_applies() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().assign_coords(temp=("x", [100.0, 200.0, 300.0]))
+    operation = prov.SelectCoordOperation(coord_name="temp")
+
+    xr.testing.assert_identical(
+        operation.apply(data, parent_data=data), data.coords["temp"]
+    )
+
+    entry = operation.derivation_entry()
+    assert entry.copyable is True
+    assert entry.code is not None
+    namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], data.coords["temp"])
+
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+
+    spec = prov.public_data(operation)
+    assert prov.require_live_source_spec(spec) == spec
+    xr.testing.assert_identical(spec.apply(data), data.coords["temp"])
+
+
 def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -> None:
     prov = erlab.interactive.imagetool.provenance
     data = _base_data()

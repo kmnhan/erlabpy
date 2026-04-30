@@ -13,6 +13,11 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool.viewer import (
+    _associated_coord_color,
+    _associated_coord_icon,
+    _plotted_associated_coord_names,
+)
 
 if typing.TYPE_CHECKING:
     import xarray as xr
@@ -210,6 +215,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
     def __init__(
         self, *args, orientation=QtCore.Qt.Orientation.Vertical, **kwargs
     ) -> None:
+        self._readout_source: typing.Hashable | None = None
         self.orientation = orientation
         super().__init__(*args, **kwargs)
 
@@ -264,6 +270,22 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.spin_dat = erlab.interactive.utils.BetterSpinBox(
             self.values_groups[-1], discrete=False, scientific=True, readOnly=True
         )
+        self.spin_dat.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.spin_dat.customContextMenuRequested.connect(
+            self._show_point_value_context_menu
+        )
+        self._spin_dat_line_edit = self.spin_dat.lineEdit()
+        self._spin_dat_text_margins: QtCore.QMargins | None = None
+        if self._spin_dat_line_edit is not None:
+            self._spin_dat_text_margins = self._spin_dat_line_edit.textMargins()
+            self._spin_dat_line_edit.installEventFilter(self)
+        self._readout_source_indicator = QtWidgets.QFrame(self.spin_dat)
+        self._readout_source_indicator.setObjectName("associatedCoordValueIndicator")
+        self._readout_source_indicator.setFixedSize(9, 9)
+        self._readout_source_indicator.hide()
+        self.spin_dat.installEventFilter(self)
         try:
             with np.errstate(divide="ignore"):
                 approx_abs_max = np.nanmax(
@@ -374,7 +396,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigIndexChanged.connect(self.update_spins)
         self.slicer_area.sigBinChanged.connect(self.update_spins)
         self.slicer_area.sigCursorColorsChanged.connect(self.update_colors)
-        self.slicer_area.sigPointValueChanged.connect(self.spin_dat.setValue)
+        self.slicer_area.sigTwinChanged.connect(self.update_point_value_readout)
+        self.slicer_area.sigPointValueChanged.connect(self._set_computed_point_value)
 
     def disconnect_signals(self) -> None:
         super().disconnect_signals()
@@ -385,7 +408,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self.slicer_area.sigIndexChanged.disconnect(self.update_spins)
         self.slicer_area.sigBinChanged.disconnect(self.update_spins)
         self.slicer_area.sigCursorColorsChanged.disconnect(self.update_colors)
-        self.slicer_area.sigPointValueChanged.disconnect(self.spin_dat.setValue)
+        self.slicer_area.sigTwinChanged.disconnect(self.update_point_value_readout)
+        self.slicer_area.sigPointValueChanged.disconnect(self._set_computed_point_value)
 
     @QtCore.Slot()
     def update_colors(self) -> None:
@@ -394,6 +418,170 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.cb_cursors.setItemIcon(i, self.slicer_area._cursor_icon(i))
             self.cb_cursors.setItemText(i, self.slicer_area._cursor_name(i))
         self.cb_cursors.setCurrentIndex(self.current_cursor)
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> bool:
+        if (
+            obj in (self.spin_dat, self._spin_dat_line_edit)
+            and event is not None
+            and event.type()
+            in (
+                QtCore.QEvent.Type.Resize,
+                QtCore.QEvent.Type.Show,
+                QtCore.QEvent.Type.LayoutRequest,
+            )
+        ):
+            self._position_readout_source_indicator()
+        return super().eventFilter(obj, event)
+
+    def _position_readout_source_indicator(self) -> None:
+        if self._spin_dat_line_edit is None:
+            return
+        rect = self._spin_dat_line_edit.geometry()
+        self._readout_source_indicator.move(
+            rect.left() + 5,
+            rect.top() + (rect.height() - self._readout_source_indicator.height()) // 2,
+        )
+        self._readout_source_indicator.raise_()
+
+    def _set_readout_source_indicator(self, coord_name: typing.Hashable | None) -> None:
+        if (
+            self._spin_dat_line_edit is not None
+            and self._spin_dat_text_margins is not None
+        ):
+            base = self._spin_dat_text_margins
+            margins = QtCore.QMargins(
+                base.left(), base.top(), base.right(), base.bottom()
+            )
+            if coord_name is not None:
+                margins.setLeft(margins.left() + 16)
+            self._spin_dat_line_edit.setTextMargins(margins)
+
+        if coord_name is None:
+            self._readout_source_indicator.setToolTip("")
+            self._readout_source_indicator.hide()
+            return
+
+        color = _associated_coord_color(self.slicer_area, coord_name)
+        self._readout_source_indicator.setStyleSheet(
+            "QFrame#associatedCoordValueIndicator {"
+            f"background-color: {color.name()};"
+            f"border: 1px solid {color.darker(130).name()};"
+            "border-radius: 4px;"
+            "}"
+        )
+        self._readout_source_indicator.setToolTip(
+            f"Associated coordinate: {coord_name}"
+        )
+        self._position_readout_source_indicator()
+        self._readout_source_indicator.show()
+
+    @staticmethod
+    def _readout_value_to_float(value: object) -> float | None:
+        if value is None:
+            return None
+        compute = getattr(value, "compute", None)
+        if callable(compute):
+            value = compute()
+        arr = np.asarray(value)
+        if arr.size == 0:
+            return None
+        if arr.size != 1:
+            with np.errstate(all="ignore"):
+                return float(np.nanmean(arr))
+        return float(arr.reshape(()))
+
+    def _set_spin_dat_value(self, value: object) -> None:
+        readout_value = self._readout_value_to_float(value)
+        if readout_value is not None:
+            self.spin_dat.setValue(readout_value)
+
+    def _set_readout_source(self, source: typing.Hashable | None) -> None:
+        self._readout_source = source
+        self.update_point_value_readout()
+
+    @QtCore.Slot(float)
+    def _set_computed_point_value(self, value: object) -> None:
+        if self._readout_source is None:
+            self._set_spin_dat_value(value)
+
+    @QtCore.Slot()
+    def update_point_value_readout(self, *_args) -> None:
+        plotted_coords = _plotted_associated_coord_names(self.array_slicer)
+        if (
+            self._readout_source is not None
+            and self._readout_source not in plotted_coords
+        ):
+            self._readout_source = None
+        self._set_readout_source_indicator(self._readout_source)
+
+        if self._readout_source is None:
+            if not self.slicer_area.data_chunked:
+                self._set_spin_dat_value(
+                    self.array_slicer.point_value(self.current_cursor, binned=True)
+                )
+            return
+
+        self._set_spin_dat_value(
+            self.array_slicer.associated_coord_point_value(
+                self._readout_source, self.current_cursor, binned=True
+            )
+        )
+
+    def _build_point_value_context_menu(self) -> QtWidgets.QMenu:
+        menu = QtWidgets.QMenu(self.spin_dat)
+        line_edit = self.spin_dat.lineEdit()
+
+        copy_action = menu.addAction("Copy")
+        copy_action.setData(("copy", None))
+        copy_action.setEnabled(line_edit is not None and line_edit.hasSelectedText())
+        if line_edit is not None:
+            copy_action.triggered.connect(line_edit.copy)
+
+        select_all_action = menu.addAction("Select All")
+        select_all_action.setData(("select_all", None))
+        select_all_action.setEnabled(line_edit is not None)
+        if line_edit is not None:
+            select_all_action.triggered.connect(line_edit.selectAll)
+
+        menu.addSeparator()
+        display_header = menu.addSection("Display Value")
+        display_header.setData(("display_header", None))
+
+        action_group = QtGui.QActionGroup(menu)
+        action_group.setExclusive(True)
+
+        data_action = menu.addAction("Data")
+        data_action.setData(("data", None))
+        data_action.setCheckable(True)
+        data_action.setChecked(self._readout_source is None)
+        data_action.setActionGroup(action_group)
+        data_action.triggered.connect(lambda: self._set_readout_source(None))
+
+        for coord_name in _plotted_associated_coord_names(self.array_slicer):
+            coord_action = menu.addAction(str(coord_name))
+            coord_action.setData(("coord", coord_name))
+            coord_action.setCheckable(True)
+            coord_action.setChecked(self._readout_source == coord_name)
+            coord_action.setActionGroup(action_group)
+            coord_action.setIcon(
+                _associated_coord_icon(
+                    _associated_coord_color(self.slicer_area, coord_name)
+                )
+            )
+            coord_action.setIconVisibleInMenu(True)
+            coord_action.triggered.connect(
+                lambda _checked=False, name=coord_name: self._set_readout_source(name)
+            )
+
+        return menu
+
+    @QtCore.Slot(QtCore.QPoint)
+    def _show_point_value_context_menu(self, position: QtCore.QPoint) -> None:
+        menu = self._build_point_value_context_menu()
+        menu.exec(self.spin_dat.mapToGlobal(position))
+        menu.deleteLater()
 
     @QtCore.Slot()
     def update_content(self) -> None:
@@ -435,9 +623,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
                 self.spin_dat.setDecimals(round(abs(np.log10(approx_abs_max)) + 1))
         except Exception:
             self.spin_dat.setDecimals(4)
-        self.spin_dat.setValue(
-            self.array_slicer.point_value(self.current_cursor, binned=True)
-        )
+        self.update_point_value_readout()
 
     def update_spins(self, *, axes=None) -> None:
         if axes is None:
@@ -456,10 +642,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
 
         # For chunked data, updating the point value is expensive, we let slicer_area
         # emit sigPointValueChanged after computation is done
-        if not self.slicer_area.data_chunked:
-            self.spin_dat.setValue(
-                self.array_slicer.point_value(self.current_cursor, binned=True)
-            )
+        self.update_point_value_readout()
 
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:

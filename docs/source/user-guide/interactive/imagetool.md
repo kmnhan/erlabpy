@@ -140,7 +140,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Dask-backed arrays are fully supported. The dedicated {guilabel}`Dask` menu exposes actions to compute the array into memory, rechunk automatically, or choose custom chunk shapes within ImageTool.
 
-- Overlay plots of numeric non-dimensional coordinates (e.g., temperature) on profile plots from {guilabel}`View → Plot Associated Coordinates`. Multi-dimensional coordinates are sliced with the active cursor and averaged over binned hidden dimensions.
+- Overlay plots of numeric non-dimensional coordinates (e.g., temperature) on profile plots from {guilabel}`View → Plot Associated Coordinates`. Multi-dimensional coordinates are sliced with the active cursor and averaged over binned hidden dimensions. Right-click a profile plot to open associated coordinates in a new ImageTool window.
 
 - Use {guilabel}`View → Set Cursor Colors by Coordinate...` to color cursors by a dimension coordinate or numeric associated coordinate value at each cursor position.
 
@@ -169,6 +169,8 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 - Hover over any toolbar icon to see a short description of its function.
 
 - Copy the numeric readouts at any time with {kbd}`Ctrl+Shift+C` (cursor values) or {kbd}`Ctrl+Alt+C` (cursor indices). ImageTool copies native Python literals so you can paste them directly into scripts.
+
+- Right-click the data value readout in the cursor panel to switch it between the data value and any currently plotted associated coordinate value at the active cursor.
 
 - Multiple cursors can be added to the image using the {material-regular}`add` button in the cursor panel. They can each be dragged independently, and their bin widths can be set separately in the binning panel. To switch the active cursor, simply click on it or select it from dropdown menu in the cursor panel.
 
