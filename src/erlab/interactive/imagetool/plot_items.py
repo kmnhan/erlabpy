@@ -601,7 +601,9 @@ class ItoolPlotItem(pg.PlotItem):
             self._associated_coord_menu = self.vb.menu.addMenu(
                 "Open Associated Coordinate"
             )
-            self._associated_coord_menu.menuAction().setVisible(False)
+            typing.cast(
+                "QtGui.QAction", self._associated_coord_menu.menuAction()
+            ).setVisible(False)
             self._associated_coord_menu_separator_below = self.vb.menu.addSeparator()
             self._associated_coord_menu_separator_below.setVisible(False)
             self.vb.menu.aboutToShow.connect(self._refresh_associated_coord_menu)
@@ -747,7 +749,7 @@ class ItoolPlotItem(pg.PlotItem):
         menu.clear()
         coord_profiles = self._displayed_associated_coord_profiles()
         has_coord_profiles = bool(coord_profiles)
-        menu.menuAction().setVisible(has_coord_profiles)
+        typing.cast("QtGui.QAction", menu.menuAction()).setVisible(has_coord_profiles)
         for separator in (
             self._associated_coord_menu_separator_above,
             self._associated_coord_menu_separator_below,
@@ -756,7 +758,9 @@ class ItoolPlotItem(pg.PlotItem):
                 separator.setVisible(has_coord_profiles)
         for coord_name, _profile in coord_profiles:
             if len(self.array_slicer.associated_coord_dims[coord_name]) == 1:
-                coord_action = menu.addAction(str(coord_name))
+                coord_action = typing.cast(
+                    "QtGui.QAction", menu.addAction(str(coord_name))
+                )
                 coord_action.setData(("associated_coord_open", coord_name))
                 coord_action.setIcon(
                     _associated_coord_icon(
@@ -771,16 +775,19 @@ class ItoolPlotItem(pg.PlotItem):
                 )
                 continue
 
-            coord_menu = menu.addMenu(str(coord_name))
-            coord_menu.menuAction().setData(("associated_coord", coord_name))
-            coord_menu.menuAction().setIcon(
+            coord_menu = typing.cast("QtWidgets.QMenu", menu.addMenu(str(coord_name)))
+            coord_menu_action = typing.cast("QtGui.QAction", coord_menu.menuAction())
+            coord_menu_action.setData(("associated_coord", coord_name))
+            coord_menu_action.setIcon(
                 _associated_coord_icon(
                     _associated_coord_color(self.slicer_area, coord_name)
                 )
             )
-            coord_menu.menuAction().setIconVisibleInMenu(True)
+            coord_menu_action.setIconVisibleInMenu(True)
 
-            full_action = coord_menu.addAction("Full Coordinate")
+            full_action = typing.cast(
+                "QtGui.QAction", coord_menu.addAction("Full Coordinate")
+            )
             full_action.setData(("associated_coord_full", coord_name))
             full_action.triggered.connect(
                 lambda _checked=False, name=coord_name: self.open_associated_coord(
@@ -788,7 +795,9 @@ class ItoolPlotItem(pg.PlotItem):
                 )
             )
 
-            profile_action = coord_menu.addAction("Displayed Profile")
+            profile_action = typing.cast(
+                "QtGui.QAction", coord_menu.addAction("Displayed Profile")
+            )
             profile_action.setData(("associated_coord_profile", coord_name))
             profile_action.triggered.connect(
                 lambda _checked=False, name=coord_name: self.open_associated_coord(

@@ -533,26 +533,26 @@ class ItoolCrosshairControls(ItoolControlsBase):
         menu = QtWidgets.QMenu(self.spin_dat)
         line_edit = self.spin_dat.lineEdit()
 
-        copy_action = menu.addAction("Copy")
+        copy_action = typing.cast("QtGui.QAction", menu.addAction("Copy"))
         copy_action.setData(("copy", None))
         copy_action.setEnabled(line_edit is not None and line_edit.hasSelectedText())
         if line_edit is not None:
             copy_action.triggered.connect(line_edit.copy)
 
-        select_all_action = menu.addAction("Select All")
+        select_all_action = typing.cast("QtGui.QAction", menu.addAction("Select All"))
         select_all_action.setData(("select_all", None))
         select_all_action.setEnabled(line_edit is not None)
         if line_edit is not None:
             select_all_action.triggered.connect(line_edit.selectAll)
 
         menu.addSeparator()
-        display_header = menu.addSection("Display Value")
+        display_header = typing.cast("QtGui.QAction", menu.addSection("Display Value"))
         display_header.setData(("display_header", None))
 
         action_group = QtGui.QActionGroup(menu)
         action_group.setExclusive(True)
 
-        data_action = menu.addAction("Data")
+        data_action = typing.cast("QtGui.QAction", menu.addAction("Data"))
         data_action.setData(("data", None))
         data_action.setCheckable(True)
         data_action.setChecked(self._readout_source is None)
@@ -560,7 +560,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         data_action.triggered.connect(lambda: self._set_readout_source(None))
 
         for coord_name in _plotted_associated_coord_names(self.array_slicer):
-            coord_action = menu.addAction(str(coord_name))
+            coord_action = typing.cast("QtGui.QAction", menu.addAction(str(coord_name)))
             coord_action.setData(("coord", coord_name))
             coord_action.setCheckable(True)
             coord_action.setChecked(self._readout_source == coord_name)
