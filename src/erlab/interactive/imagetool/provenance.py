@@ -74,6 +74,7 @@ __all__ = [
     "RotateOperation",
     "ScriptCodeOperation",
     "SelOperation",
+    "SelectCoordOperation",
     "SliceAlongPathOperation",
     "SortCoordOrderOperation",
     "SqueezeOperation",
@@ -1320,6 +1321,23 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
         return DerivationEntry(
             "Sort coordinates to parent order",
             "derived = erlab.utils.array.sort_coord_order(derived, data.coords.keys())",
+            True,
+        )
+
+
+class SelectCoordOperation(ToolProvenanceOperation):
+    op: typing.Literal["select_coord"] = "select_coord"
+    coord_name: ProvenanceHashable
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.coords[self.coord_name].copy(deep=False)
+
+    def derivation_entry(self) -> DerivationEntry:
+        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        label_kwargs = {"coord_name": self.coord_name}
+        return DerivationEntry(
+            f"Select Coordinate({_format_derivation_value(label_kwargs)})",
+            f"derived = derived.coords[{coord_name_code}]",
             True,
         )
 

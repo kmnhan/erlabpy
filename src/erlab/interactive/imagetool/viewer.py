@@ -44,7 +44,7 @@ if typing.TYPE_CHECKING:
         ItoolImageItem,
         ItoolPlotItem,
     )
-    from erlab.interactive.imagetool.slicer import ArraySlicerState
+    from erlab.interactive.imagetool.slicer import ArraySlicer, ArraySlicerState
 else:
     import lazy_loader as _lazy
 
@@ -140,6 +140,35 @@ def _make_cursor_colors(
     clr_span_edge.setAlphaF(0.35)
 
     return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
+
+
+def _plotted_associated_coord_names(
+    array_slicer: ArraySlicer,
+) -> tuple[Hashable, ...]:
+    plotted = array_slicer.twin_coord_names
+    return tuple(name for name in array_slicer.associated_coord_dims if name in plotted)
+
+
+def _associated_coord_color(
+    slicer_area: ImageSlicerArea, coord_name: Hashable
+) -> QtGui.QColor:
+    coord_names = tuple(slicer_area.array_slicer.associated_coord_dims)
+    return slicer_area.TWIN_COLORS[
+        coord_names.index(coord_name) % len(slicer_area.TWIN_COLORS)
+    ]
+
+
+def _associated_coord_icon(color: QtGui.QColor) -> QtGui.QIcon:
+    img = QtGui.QImage(16, 16, QtGui.QImage.Format.Format_RGBA64)
+    img.fill(QtCore.Qt.GlobalColor.transparent)
+
+    painter = QtGui.QPainter(img)
+    painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+    painter.setBrush(color)
+    painter.drawEllipse(2, 2, 12, 12)
+    painter.end()
+    return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
 
 
 def _parse_input(

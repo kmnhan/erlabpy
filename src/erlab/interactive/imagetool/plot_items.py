@@ -20,7 +20,10 @@ import erlab
 from erlab.interactive.imagetool.viewer import (
     GuidelineState,
     PlotItemState,
+    _associated_coord_color,
+    _associated_coord_icon,
     _make_cursor_colors,
+    _plotted_associated_coord_names,
     record_history,
     suppress_history,
     suppressnanwarning,
@@ -475,6 +478,9 @@ class ItoolPlotItem(pg.PlotItem):
         self._roi_list: list[ItoolPolyLineROI] = []
 
     def setup_actions(self) -> None:
+        self._associated_coord_menu: QtWidgets.QMenu | None = None
+        self._associated_coord_menu_separator_above: QtGui.QAction | None = None
+        self._associated_coord_menu_separator_below: QtGui.QAction | None = None
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
 
@@ -589,7 +595,21 @@ class ItoolPlotItem(pg.PlotItem):
             norm_action.setCheckable(True)
             norm_action.setChecked(False)
             norm_action.toggled.connect(self.set_normalize)
-        self.vb.menu.addSeparator()
+
+            self._associated_coord_menu_separator_above = self.vb.menu.addSeparator()
+            self._associated_coord_menu_separator_above.setVisible(False)
+            self._associated_coord_menu = self.vb.menu.addMenu(
+                "Open Associated Coordinate"
+            )
+            typing.cast(
+                "QtGui.QAction", self._associated_coord_menu.menuAction()
+            ).setVisible(False)
+            self._associated_coord_menu_separator_below = self.vb.menu.addSeparator()
+            self._associated_coord_menu_separator_below.setVisible(False)
+            self.vb.menu.aboutToShow.connect(self._refresh_associated_coord_menu)
+
+        if self.is_image:
+            self.vb.menu.addSeparator()
 
         self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
         self.vb.menu.installEventFilter(self._menu_filter)
@@ -705,6 +725,86 @@ class ItoolPlotItem(pg.PlotItem):
                     kwargs["yRange"] = [full_bounds.bottom(), full_bounds.top()]
             self.vb1.setRange(**kwargs)
 
+    def _displayed_associated_coord_profiles(
+        self,
+    ) -> tuple[
+        tuple[Hashable, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]],
+        ...,
+    ]:
+        profiles = []
+        for name in _plotted_associated_coord_names(self.array_slicer):
+            profile = self.array_slicer.associated_coord_profile(
+                name, self.slicer_area.current_cursor, self.display_axis
+            )
+            if profile is not None:
+                profiles.append((name, profile))
+        return tuple(profiles)
+
+    @QtCore.Slot()
+    def _refresh_associated_coord_menu(self) -> None:
+        menu = self._associated_coord_menu
+        if menu is None:
+            return
+
+        menu.clear()
+        coord_profiles = self._displayed_associated_coord_profiles()
+        has_coord_profiles = bool(coord_profiles)
+        typing.cast("QtGui.QAction", menu.menuAction()).setVisible(has_coord_profiles)
+        for separator in (
+            self._associated_coord_menu_separator_above,
+            self._associated_coord_menu_separator_below,
+        ):
+            if separator is not None:
+                separator.setVisible(has_coord_profiles)
+        for coord_name, _profile in coord_profiles:
+            if len(self.array_slicer.associated_coord_dims[coord_name]) == 1:
+                coord_action = typing.cast(
+                    "QtGui.QAction", menu.addAction(str(coord_name))
+                )
+                coord_action.setData(("associated_coord_open", coord_name))
+                coord_action.setIcon(
+                    _associated_coord_icon(
+                        _associated_coord_color(self.slicer_area, coord_name)
+                    )
+                )
+                coord_action.setIconVisibleInMenu(True)
+                coord_action.triggered.connect(
+                    lambda _checked=False, name=coord_name: self.open_associated_coord(
+                        name, displayed_profile=False
+                    )
+                )
+                continue
+
+            coord_menu = typing.cast("QtWidgets.QMenu", menu.addMenu(str(coord_name)))
+            coord_menu_action = typing.cast("QtGui.QAction", coord_menu.menuAction())
+            coord_menu_action.setData(("associated_coord", coord_name))
+            coord_menu_action.setIcon(
+                _associated_coord_icon(
+                    _associated_coord_color(self.slicer_area, coord_name)
+                )
+            )
+            coord_menu_action.setIconVisibleInMenu(True)
+
+            full_action = typing.cast(
+                "QtGui.QAction", coord_menu.addAction("Full Coordinate")
+            )
+            full_action.setData(("associated_coord_full", coord_name))
+            full_action.triggered.connect(
+                lambda _checked=False, name=coord_name: self.open_associated_coord(
+                    name, displayed_profile=False
+                )
+            )
+
+            profile_action = typing.cast(
+                "QtGui.QAction", coord_menu.addAction("Displayed Profile")
+            )
+            profile_action.setData(("associated_coord_profile", coord_name))
+            profile_action.triggered.connect(
+                lambda _checked=False, name=coord_name: self.open_associated_coord(
+                    name, displayed_profile=True
+                )
+            )
+
     @QtCore.Slot()
     @QtCore.Slot(int)
     @QtCore.Slot(int, object)
@@ -729,36 +829,26 @@ class ItoolPlotItem(pg.PlotItem):
                 "Please report a bug."
             )
 
-        coord_names = tuple(self.array_slicer.associated_coord_dims)
-        for k in tuple(self.array_slicer.twin_coord_names):
-            profile = self.array_slicer.associated_coord_profile(
-                k, self.slicer_area.current_cursor, self.display_axis
+        for k, (x, y) in self._displayed_associated_coord_profiles():
+            if n_plots >= len(self.other_data_items):
+                item = pg.PlotDataItem()
+                self.other_data_items.append(item)
+                self.vb1.addItem(item)
+            else:
+                item = self.other_data_items[n_plots]
+
+            clr = _associated_coord_color(self.slicer_area, k)
+            labels.append(
+                f"<tr><td style='color:{clr.name()}; text-align: center;'>{k}</td></tr>"
             )
-            if profile is not None:
-                x, y = profile
-                if n_plots >= len(self.other_data_items):
-                    item = pg.PlotDataItem()
-                    self.other_data_items.append(item)
-                    self.vb1.addItem(item)
-                else:
-                    item = self.other_data_items[n_plots]
 
-                clr: QtGui.QColor = self.slicer_area.TWIN_COLORS[
-                    coord_names.index(k) % len(self.slicer_area.TWIN_COLORS)
-                ]  # Color by index among associated coords
-                labels.append(
-                    "<tr>"
-                    f"<td style='color:{clr.name()}; text-align: center;'>{k}</td>"
-                    "</tr>"
-                )
-
-                x, y = _pad_1d_plot(x, y)
-                if self.slicer_data_items[-1].is_vertical:
-                    item.setData(y, x)
-                else:
-                    item.setData(x, y)
-                item.setPen(width=2, color=clr)
-                n_plots += 1
+            x, y = _pad_1d_plot(x, y)
+            if self.slicer_data_items[-1].is_vertical:
+                item.setData(y, x)
+            else:
+                item.setData(x, y)
+            item.setPen(width=2, color=clr)
+            n_plots += 1
 
         self._twin_visible = n_plots > 0
         ax = self.getAxis(self.twin_axes_location)
@@ -1881,26 +1971,35 @@ class ItoolPlotItem(pg.PlotItem):
                 item.normalize = normalize
                 item.refresh_data()
 
-    @QtCore.Slot()
-    def open_in_new_window(self) -> None:
-        """Open the current data in a new window."""
-        data = self.current_data
+    def _open_data_in_new_window(
+        self,
+        data: xr.DataArray,
+        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        *,
+        use_parent_colormap: bool,
+    ) -> None:
+        itool_kw: dict[str, typing.Any] = {"data": data, "execute": False}
 
-        color_props = self.slicer_area.colormap_properties
-        itool_kw: dict[str, typing.Any] = {
-            "data": data,
-            "cmap": color_props["cmap"],
-            "gamma": color_props["gamma"],
-            "high_contrast": color_props["high_contrast"],
-            "zero_centered": color_props["zero_centered"],
-            "transpose": (self.is_image and data.dims[0] != self.axis_dims[0]),
-            "file_path": self.slicer_area._file_path,
-            "execute": False,
-        }
-        if color_props["levels_locked"]:
-            itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
-        if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
-            itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
+        if use_parent_colormap:
+            color_props = self.slicer_area.colormap_properties
+            itool_kw.update(
+                {
+                    "cmap": color_props["cmap"],
+                    "gamma": color_props["gamma"],
+                    "high_contrast": color_props["high_contrast"],
+                    "zero_centered": color_props["zero_centered"],
+                    "transpose": (
+                        self.is_image
+                        and len(data.dims) >= 2
+                        and data.dims[0] != self.axis_dims[0]
+                    ),
+                    "file_path": self.slicer_area._file_path,
+                }
+            )
+            if color_props["levels_locked"]:
+                itool_kw["vmin"], itool_kw["vmax"] = color_props["levels"]
+            if color_props["reverse"] and isinstance(itool_kw["cmap"], str):
+                itool_kw["cmap"] = f"{itool_kw['cmap']}_r"
 
         if self.slicer_area._in_manager:
             manager = self.slicer_area._manager_instance
@@ -1915,11 +2014,7 @@ class ItoolPlotItem(pg.PlotItem):
                     erlab.interactive.itool(manager=False, **itool_kw),
                 )
                 if tool is not None:  # pragma: no branch
-                    manager.add_imagetool_child(
-                        tool,
-                        target,
-                        source_spec=self.make_tool_source_spec(),
-                    )
+                    manager.add_imagetool_child(tool, target, source_spec=source_spec)
                 return
 
         tool_window = erlab.interactive.itool(**itool_kw)
@@ -1927,12 +2022,41 @@ class ItoolPlotItem(pg.PlotItem):
             tool_window.set_provenance_spec(
                 erlab.interactive.imagetool.provenance.compose_display_provenance(
                     self.slicer_area.provenance_spec,
-                    self.make_tool_source_spec(),
+                    source_spec,
                     parent_data=self.slicer_area._tool_source_parent_data(),
                 )
             )
         if isinstance(tool_window, QtWidgets.QWidget):  # pragma: no branch
             self.slicer_area.add_tool_window(tool_window)
+
+    @QtCore.Slot()
+    def open_in_new_window(self) -> None:
+        """Open the current data in a new window."""
+        data = self.current_data
+        self._open_data_in_new_window(
+            data,
+            self.make_tool_source_spec(),
+            use_parent_colormap=True,
+        )
+
+    @QtCore.Slot(object)
+    def open_associated_coord(
+        self, coord_name: Hashable, *, displayed_profile: bool
+    ) -> None:
+        operation = erlab.interactive.imagetool.provenance.SelectCoordOperation(
+            coord_name=coord_name
+        )
+        source_spec = (
+            self.make_tool_source_spec().append_operations(operation)
+            if displayed_profile
+            else erlab.interactive.imagetool.provenance.public_data(operation)
+        )
+        data = source_spec.apply(self.slicer_area._tool_source_parent_data())
+        self._open_data_in_new_window(
+            data,
+            source_spec,
+            use_parent_colormap=False,
+        )
 
     @QtCore.Slot()
     def open_in_goldtool(self) -> None:

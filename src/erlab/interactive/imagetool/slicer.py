@@ -355,6 +355,32 @@ class ArraySlicer(QtCore.QObject):
             selected.transpose(display_dim).values.astype(np.float64),
         )
 
+    def associated_coord_point_value(
+        self, coord_name: Hashable, cursor: int, binned: bool = True
+    ) -> np.floating | dask.array.Array | None:
+        """Return an associated-coordinate value at the cursor position."""
+        dims = self.associated_coord_dims.get(coord_name)
+        if dims is None:
+            return None
+
+        coord = self._obj.coords[coord_name]
+        isel_kw: dict[Hashable, slice | int] = {}
+        mean_dims: list[Hashable] = []
+        for dim in dims:
+            axis_idx = self._dim_indices.get(dim)
+            if axis_idx is None:  # pragma: no cover
+                return None
+            if binned and self._binned[cursor][axis_idx]:
+                isel_kw[dim] = self._bin_slice(cursor, axis_idx)
+                mean_dims.append(dim)
+            else:
+                isel_kw[dim] = self._indices[cursor][axis_idx]
+
+        selected = coord.isel(isel_kw)
+        if mean_dims:
+            selected = selected.mean(dim=mean_dims, skipna=True)
+        return selected.data
+
     def cursor_color_coord(
         self, cursor: int, coord_dims: tuple[Hashable, ...], coord_name: Hashable
     ) -> tuple[tuple[Hashable, ...], npt.NDArray[np.float64], float] | None:

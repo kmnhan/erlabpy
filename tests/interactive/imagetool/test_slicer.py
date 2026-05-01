@@ -346,6 +346,44 @@ def test_point_value_unbinned_returns_current_scalar(qtbot) -> None:
     assert slicer.point_value(0, binned=False) == values[2, 3]
 
 
+def test_associated_coord_point_value_handles_bins_and_missing(qtbot) -> None:
+    x = np.arange(3, dtype=float)
+    y = np.arange(4, dtype=float)
+    z = np.arange(5, dtype=float)
+    plane = x[:, None] * 10.0 + y[None, :] ** 2
+    plane[1, 1] = np.nan
+    xz = x[:, None] * 1000.0 + z[None, :]
+    data = xr.DataArray(
+        np.zeros((3, 4, 5), dtype=np.float32),
+        dims=("x", "y", "z"),
+        coords={
+            "x": x,
+            "y": y,
+            "z": z,
+            "temp": ("x", x + 300.0),
+            "plane": (("x", "y"), plane),
+            "xz": (("x", "z"), xz),
+            "label": ("x", ["a", "b", "c"]),
+        },
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [1, 1, 3], update=False)
+
+    assert float(np.asarray(slicer.associated_coord_point_value("temp", 0))) == 301.0
+    assert np.isnan(float(np.asarray(slicer.associated_coord_point_value("plane", 0))))
+    assert float(np.asarray(slicer.associated_coord_point_value("xz", 0))) == 1003.0
+    assert slicer.associated_coord_point_value("missing", 0) is None
+
+    slicer.set_bin(0, 1, 3, update=False)
+
+    np.testing.assert_allclose(
+        slicer.associated_coord_point_value("plane", 0),
+        np.nanmean([10.0, np.nan, 14.0]),
+    )
+    assert float(np.asarray(slicer.associated_coord_point_value("xz", 0))) == 1003.0
+
+
 def test_value_of_index_uniform_path_on_nonuniform_axis(qtbot) -> None:
     data = xr.DataArray(
         np.zeros((4, 3), dtype=np.float32),
