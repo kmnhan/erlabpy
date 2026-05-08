@@ -43,6 +43,7 @@ _WAVE_SHAPE_PATTERN = re.compile(
     r"WAVES.*/N=\(([\d,]+)\)\s+[\"\']?([^\'\"\v:;]+)[\"\']?"
 )  # 2D/3D/4D wave with shape
 _SETSCALE_PATTERN = re.compile(r"SetScale\s*((?:/I)|(?:/P))?(.*)")
+_NOTE_PATTERN = re.compile(r"Note\s+[^,]+,\s*(.*)")
 
 
 class IgorBackendEntrypoint(BackendEntrypoint):
@@ -560,8 +561,51 @@ def set_scale(
 
     if units_str:
         darr = darr.rename({dim_name: units_str})
+    elif dim_name != dim:
+        darr = darr.rename({dim_name: dim})
 
     return darr
+
+
+def _parse_note_line(note_line: str) -> str | None:
+    m = _NOTE_PATTERN.match(note_line.strip())
+    if m is None:
+        return None
+
+    note = m.group(1).strip()
+    try:
+        parts = shlex.split(note)
+    except ValueError:
+        return note.strip("\"'")
+
+    if len(parts) == 0:
+        return ""
+    return parts[0]
+
+
+def _parse_key_value_line(
+    line: str, *, skip_time_colons: bool = False
+) -> tuple[str, str] | None:
+    if "=" in line:
+        delim = "="
+    elif ":" in line:
+        delim_idx = line.index(":")
+        if (
+            skip_time_colons
+            and delim_idx > 0
+            and delim_idx + 1 < len(line)
+            and line[delim_idx - 1].isdigit()
+            and line[delim_idx + 1].isdigit()
+        ):
+            return None
+        delim = ":"
+    else:
+        return None
+
+    key, val = line.split(delim, 1)
+    if not val.strip() and delim == ":":
+        return None
+    return key.strip(), val.strip()
 
 
 def load_text(
@@ -587,8 +631,14 @@ def load_text(
     -------
     DataArray
         The loaded data.
+
+    .. versionchanged:: 3.22.0
+
+       Empty-unit ``SetScale`` axes are named with Igor axis letters, and ``X Note``
+       key-value metadata is parsed into attributes.
     """
     comments: dict[str, str] = {}
+    note_lines: list[str] = []
     setscale_lines: list[str] = []
 
     shape: tuple[int, ...] | None = None
@@ -612,22 +662,24 @@ def load_text(
                 # Parse key-value pairs from comment lines
                 comment_line: str = line.removeprefix("X //").strip()
 
-                if "=" in comment_line:
-                    delim = "="
-                elif ":" in comment_line:
-                    delim = ":"
-                else:
+                parsed_comment = _parse_key_value_line(comment_line)
+                if parsed_comment is None:
                     continue
 
-                key, val = comment_line.split(delim, 1)
-                if not val.strip() and delim == ":":
-                    # Header line with no value, skipping
-                    continue
-
+                key, val = parsed_comment
                 comments[key.strip()] = val.strip()
                 continue
             if line.startswith("X SetScale"):
                 setscale_lines.extend(line.removeprefix("X ").strip().split(";"))
+                continue
+            if line.startswith("X Note"):
+                note = _parse_note_line(line.removeprefix("X "))
+                if note is None:
+                    continue
+                note_lines.append(note)
+                parsed_note = _parse_key_value_line(note, skip_time_colons=True)
+                if parsed_note is not None:
+                    comments[parsed_note[0]] = parsed_note[1]
                 continue
             if line.startswith("WAVES"):
                 if wave_name is not None:
@@ -643,6 +695,9 @@ def load_text(
         raise ValueError(
             "No valid wave definition found in the file. Check the file format."
         )
+
+    if note_lines:
+        comments["IGORWaveNote"] = "\n".join(note_lines)
 
     if shape is None:
         # 1D wave
