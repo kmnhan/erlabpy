@@ -61,7 +61,10 @@ from __future__ import annotations
 
 __all__ = [
     "AffineCoordOperation",
+    "AssignAttrsOperation",
+    "AssignCoord1DOperation",
     "AssignCoordsOperation",
+    "AssignScalarCoordOperation",
     "AverageOperation",
     "CoarsenOperation",
     "CorrectWithEdgeOperation",
@@ -1959,6 +1962,121 @@ class AssignCoordsOperation(ToolProvenanceOperation):
         return DerivationEntry(
             f"Assign Coordinates({_format_derivation_value(label_kwargs)})",
             code,
+            True,
+        )
+
+
+class AssignScalarCoordOperation(ToolProvenanceOperation):
+    op: typing.Literal["assign_scalar_coord"] = "assign_scalar_coord"
+    coord_name: ProvenanceHashable
+    value: typing.Any
+
+    @pydantic.field_validator("value", mode="before")
+    @classmethod
+    def _validate_value(cls, value: typing.Any) -> typing.Any:
+        encoded = encode_provenance_value(value)
+        decoded = decode_provenance_value(encoded)
+        if isinstance(decoded, (Mapping, Sequence)) and not isinstance(decoded, str):
+            raise TypeError("scalar coordinate value must be scalar")
+        return encoded
+
+    @property
+    def decoded_value(self) -> typing.Any:
+        return self._decode_stored_field(self.value)
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return erlab.utils.array.sort_coord_order(
+            data.assign_coords({self.coord_name: self.decoded_value}),
+            keys=data.coords.keys(),
+            dims_first=False,
+        )
+
+    def derivation_entry(self) -> DerivationEntry:
+        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        value_code = erlab.interactive.utils._parse_single_arg(self.decoded_value)
+        code = f"derived = derived.assign_coords({{{coord_name_code}: {value_code}}})"
+        label_kwargs = {
+            "coord_name": self.coord_name,
+            "value": self.value,
+        }
+        return DerivationEntry(
+            f"Assign Scalar Coordinate({_format_derivation_value(label_kwargs)})",
+            code,
+            True,
+        )
+
+
+class AssignCoord1DOperation(ToolProvenanceOperation):
+    op: typing.Literal["assign_coord_1d"] = "assign_coord_1d"
+    coord_name: ProvenanceHashable
+    dim: ProvenanceHashable
+    values: typing.Any
+
+    @pydantic.field_validator("values", mode="before")
+    @classmethod
+    def _validate_values(cls, value: typing.Any) -> typing.Any:
+        return cls._validate_encoded_field(
+            value,
+            error="1D coordinate values must be array-like",
+            predicate=lambda encoded: (
+                isinstance(encoded, list)
+                or (isinstance(encoded, Mapping) and _TUPLE_MARKER in encoded)
+            ),
+        )
+
+    @property
+    def decoded_values(self) -> np.ndarray:
+        return np.asarray(self._decode_stored_field(self.values))
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        values = self.decoded_values
+        if values.ndim != 1:
+            raise ValueError("1D coordinate values must be one-dimensional.")
+        if self.dim not in data.sizes:
+            raise ValueError(f"Dimension {self.dim!r} is not present in the data.")
+        if values.size != data.sizes[self.dim]:
+            raise ValueError(
+                f"Coordinate {self.coord_name!r} has length {values.size}, expected "
+                f"{data.sizes[self.dim]} for dimension {self.dim!r}."
+            )
+        return erlab.utils.array.sort_coord_order(
+            data.assign_coords({self.coord_name: (self.dim, values)}),
+            keys=data.coords.keys(),
+            dims_first=False,
+        )
+
+    def derivation_entry(self) -> DerivationEntry:
+        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
+        values_code = erlab.interactive.utils._parse_single_arg(self.decoded_values)
+        code = (
+            f"derived = derived.assign_coords({{{coord_name_code}: "
+            f"({dim_code}, {values_code})}})"
+        )
+        label_kwargs = {
+            "coord_name": self.coord_name,
+            "dim": self.dim,
+            "values": self.values,
+        }
+        return DerivationEntry(
+            f"Assign 1D Coordinate({_format_derivation_value(label_kwargs)})",
+            code,
+            True,
+        )
+
+
+class AssignAttrsOperation(ToolProvenanceOperation):
+    op: typing.Literal["assign_attrs"] = "assign_attrs"
+    attrs: ProvenanceMapping = pydantic.Field(default_factory=dict)
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.assign_attrs(self.attrs)
+
+    def derivation_entry(self) -> DerivationEntry:
+        kwargs = erlab.interactive.utils.format_call_kwargs(self.attrs)
+        return DerivationEntry(
+            f"Assign Attributes({_format_derivation_value(self.attrs)})",
+            f"derived = derived.assign_attrs({kwargs})",
             True,
         )
 

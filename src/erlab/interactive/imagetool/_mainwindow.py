@@ -588,6 +588,9 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "Edit Coordinates": {
                         "triggered": self._assign_coords,
                     },
+                    "Edit Attributes": {
+                        "triggered": self._assign_attrs,
+                    },
                     "Rename...": {
                         "triggered": self._rename_dims_coords,
                     },
@@ -822,6 +825,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _assign_coords(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.AssignCoordsDialog)
+
+    @QtCore.Slot()
+    def _assign_attrs(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.AssignAttrsDialog)
 
     @QtCore.Slot()
     def _rename_dims_coords(self) -> None:

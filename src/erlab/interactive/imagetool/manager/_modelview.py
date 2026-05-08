@@ -1579,7 +1579,8 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         tool.slicer_area.compute_act.setEnabled(tool.slicer_area.data_chunked)
         tool._dask_menu.update_actions_visibility()
         viewport = self.viewport()
-        assert viewport is not None
+        if viewport is None:
+            return
         tool._dask_menu.popup(viewport.mapToGlobal(badge_rect.bottomLeft()))
 
     def _unlink_badge_target(self, wrapper: _ImageToolWrapper) -> None:
@@ -1607,12 +1608,12 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         """Show per-row watch actions for the clicked watched-variable badge."""
         menu = QtWidgets.QMenu("Watch", self)
         menu.setToolTipsVisible(True)
-        refresh_action = menu.addAction("Refresh From Variable")
-        assert refresh_action is not None
+        refresh_action = typing.cast(
+            "QtGui.QAction", menu.addAction("Refresh From Variable")
+        )
         refresh_action.setToolTip("Refresh this ImageTool from the watched variable")
         refresh_action.triggered.connect(wrapper._trigger_watched_update)
-        stop_action = menu.addAction("Stop Watching...")
-        assert stop_action is not None
+        stop_action = typing.cast("QtGui.QAction", menu.addAction("Stop Watching..."))
         stop_action.setToolTip("Detach this ImageTool from the watched variable")
         stop_action.triggered.connect(
             lambda _checked=False, target=wrapper: self._stop_watching_badge_target(
@@ -1621,7 +1622,8 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         )
         self._badge_menu = menu
         viewport = self.viewport()
-        assert viewport is not None
+        if viewport is None:
+            return
         menu.popup(viewport.mapToGlobal(badge_rect.bottomLeft()))
 
     def _stop_watching_badge_target(self, wrapper: _ImageToolWrapper) -> None:

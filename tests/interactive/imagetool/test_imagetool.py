@@ -24,6 +24,7 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.dialogs import (
+    AssignAttrsDialog,
     AssignCoordsDialog,
     AverageDialog,
     CoarsenDialog,
@@ -3914,6 +3915,263 @@ def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.y.values, 2.0 * np.arange(4) + 0.5)
+
+
+def _combo_index_for_data(combo: QtWidgets.QComboBox, data: object) -> int:
+    index = combo.findData(data, QtCore.Qt.ItemDataRole.UserRole)
+    assert index >= 0
+    return index
+
+
+def test_itool_assign_coords_add_scalar(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
+        dialog._mode_tabs.setCurrentIndex(1)
+        dialog._add_name_edit.setText("temperature")
+        dialog._add_kind_combo.setCurrentText("Scalar")
+        dialog._add_literal_edit.setText("21.5")
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
+    assert win.slicer_area._data.coords["temperature"].dims == ()
+    assert float(win.slicer_area._data.temperature) == pytest.approx(21.5)
+
+
+def test_itool_assign_coords_add_1d_numeric(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
+        dialog._mode_tabs.setCurrentIndex(1)
+        dialog._add_name_edit.setText("delay")
+        dialog._add_kind_combo.setCurrentText("1D Along Coordinate")
+        dialog._add_ref_combo.setCurrentIndex(
+            _combo_index_for_data(dialog._add_ref_combo, "x")
+        )
+        dialog._add_value_mode_combo.setCurrentText("Numeric Values")
+        dialog._add_coord_widget.mode_combo.setCurrentText("Delta")
+        dialog._add_coord_widget.spin0.setValue(10.0)
+        dialog._add_coord_widget.spin1.setValue(2.0)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
+    assert win.slicer_area._data.delay.dims == ("x",)
+    np.testing.assert_allclose(win.slicer_area._data.delay.values, [10.0, 12.0, 14.0])
+
+
+def test_itool_assign_coords_add_1d_literal(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
+        dialog._mode_tabs.setCurrentIndex(1)
+        dialog._add_name_edit.setText("label")
+        dialog._add_kind_combo.setCurrentText("1D Along Coordinate")
+        dialog._add_ref_combo.setCurrentIndex(
+            _combo_index_for_data(dialog._add_ref_combo, "x")
+        )
+        dialog._add_value_mode_combo.setCurrentText("Python Literal")
+        dialog._add_literal_edit.setText("['low', 'mid', 'high']")
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
+    assert win.slicer_area._data.label.dims == ("x",)
+    assert win.slicer_area._data.label.values.tolist() == ["low", "mid", "high"]
+
+
+def test_assign_coords_add_dialog_accept_validates_inputs(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = AssignCoordsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog._mode_tabs.setCurrentIndex(1)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog._add_name_edit.setText("x")
+    dialog.accept()
+    dialog._add_name_edit.setText("new_coord")
+    dialog._add_kind_combo.setCurrentText("Scalar")
+    dialog._add_literal_edit.setText("{bad")
+    dialog.accept()
+    dialog._add_kind_combo.setCurrentText("1D Along Coordinate")
+    dialog._add_ref_combo.setCurrentIndex(
+        _combo_index_for_data(dialog._add_ref_combo, "x")
+    )
+    dialog._add_value_mode_combo.setCurrentText("Python Literal")
+    dialog._add_literal_edit.setText("[1.0]")
+    dialog.accept()
+
+    assert warnings[0] == (
+        "Duplicate Name",
+        "A coordinate or dimension named 'x' already exists.",
+    )
+    assert [title for title, _message in warnings[1:]] == [
+        "Invalid Coordinate Value",
+        "Invalid Coordinate Value",
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+def _attr_row(dialog: AssignAttrsDialog, key: object) -> int:
+    for row in range(dialog.table.rowCount()):
+        if dialog._row_key(row) == key:
+            return row
+    raise AssertionError(f"Attribute row {key!r} was not found")
+
+
+def _attr_type_combo(dialog: AssignAttrsDialog, row: int) -> QtWidgets.QComboBox:
+    return typing.cast("QtWidgets.QComboBox", dialog.table.cellWidget(row, 1))
+
+
+def test_itool_assign_attrs_typed_values(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        attrs={"source": "old", "count": 1},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignAttrsDialog) -> None:
+        source_row = _attr_row(dialog, "source")
+        source_type_combo = _attr_type_combo(dialog, source_row)
+        type_names = [
+            source_type_combo.itemText(index)
+            for index in range(source_type_combo.count())
+        ]
+        assert "Bool" in type_names
+        assert "None" not in type_names
+        dialog.table.item(source_row, 2).setText("new")
+        dialog._add_empty_row()
+        new_row = dialog.table.rowCount() - 1
+        dialog.table.item(new_row, 0).setText("temperature")
+        _attr_type_combo(dialog, new_row).setCurrentText("Float")
+        dialog.table.item(new_row, 2).setText("21.5")
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_attrs, pre_call=_set_dialog_params, timeout=10.0)
+    assert win.slicer_area._data.attrs == {
+        "source": "new",
+        "count": 1,
+        "temperature": 21.5,
+    }
+
+
+def test_itool_assign_attrs_blank_string_does_not_delete(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        attrs={"note": "keep"},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignAttrsDialog) -> None:
+        note_row = _attr_row(dialog, "note")
+        dialog.table.item(note_row, 2).setText("")
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_attrs, pre_call=_set_dialog_params, timeout=10.0)
+    assert "note" in win.slicer_area._data.attrs
+    assert win.slicer_area._data.attrs["note"] == ""
+
+
+def test_itool_assign_attrs_python_literal_none(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignAttrsDialog) -> None:
+        dialog._add_empty_row()
+        new_row = dialog.table.rowCount() - 1
+        dialog.table.item(new_row, 0).setText("optional_note")
+        _attr_type_combo(dialog, new_row).setCurrentText("Python literal")
+        dialog.table.item(new_row, 2).setText("None")
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_attrs, pre_call=_set_dialog_params, timeout=10.0)
+    assert win.slicer_area._data.attrs == {"optional_note": None}
+
+
+def test_assign_attrs_dialog_accept_validates_inputs(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        attrs={"count": 1},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = AssignAttrsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+    dialog._add_empty_row()
+    dialog.accept()
+    new_row = dialog.table.rowCount() - 1
+    dialog.table.item(new_row, 0).setText("count")
+    dialog.accept()
+    dialog.table.item(new_row, 0).setText("bad")
+    _attr_type_combo(dialog, new_row).setCurrentText("Python literal")
+    dialog.table.item(new_row, 2).setText("{bad")
+    dialog.accept()
+
+    assert [title for title, _message in warnings] == [
+        "No Attributes Changed",
+        "Invalid Attribute Value",
+        "Duplicate Names",
+        "Invalid Attribute Value",
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
 
 
 def _set_rename_dialog_name(
