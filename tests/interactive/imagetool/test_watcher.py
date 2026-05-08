@@ -454,6 +454,52 @@ def test_manager_magic_delegates_to_manager_target_api(
     assert defaults[-1] is None
 
 
+def test_manager_magic_empty_and_invalid_paths(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+
+    class _EmptyManagers:
+        def __bool__(self):
+            return False
+
+    monkeypatch.setattr(watcher_ipy, "managers", _EmptyManagers())
+    monkeypatch.setattr(watcher_ipy, "get_default_manager", lambda: None)
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append(message),
+    )
+
+    ip_shell.run_line_magic("manager", "list")
+    assert messages[-1] == "No ImageTool managers are running."
+
+    ip_shell.run_line_magic("manager", "current")
+    assert messages[-1] == "No default ImageTool manager is set."
+
+    with pytest.raises(ValueError, match="Usage: %manager use"):
+        ip_shell.run_line_magic("manager", "use")
+    with pytest.raises(ValueError, match="Usage: %manager"):
+        ip_shell.run_line_magic("manager", "unknown")
+
+
+def test_watch_magic_no_variables_message(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+
+    monkeypatch.setattr(watcher_ipy, "watched_variables", lambda shell: ())
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append(message),
+    )
+
+    ip_shell.run_line_magic("watch", "")
+
+    assert messages == ["No variables are being watched."]
+
+
 def test_watch_api_fallback_namespace_without_ipython(patch_manager, monkeypatch):
     monkeypatch.setattr(watcher_ipy, "_safe_get_ipython_shell", lambda: None)
     monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)

@@ -28,9 +28,11 @@ from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._registry as manager_registry
+import erlab.interactive.imagetool.manager._server as manager_server
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
@@ -9003,6 +9005,125 @@ def test_manager_registry_hides_starting_records(monkeypatch, tmp_path) -> None:
     assert registry.manager_selection_info()["reason"] == "single"
 
 
+def test_manager_registry_handles_invalid_records_and_paths(
+    monkeypatch, tmp_path
+) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    monkeypatch.setenv("ITOOL_MANAGER_REGISTRY", str(tmp_path / "custom.json"))
+
+    assert registry._default_registry_path() == tmp_path / "custom.json"
+    assert registry._ManagerRecord.from_dict({"state": "unknown"}) is None
+    assert registry._ManagerRecord.from_dict({"state": "ready"}) is None
+
+    registry._REGISTRY_PATH.write_text("{", encoding="utf-8")
+    assert registry._read_records_unlocked() == []
+
+    registry._REGISTRY_PATH.write_text('{"records": []}', encoding="utf-8")
+    assert registry._read_records_unlocked() == []
+
+    record = registry._ManagerRecord(
+        internal_id="abc",
+        index=0,
+        pid=123,
+        host="localhost",
+        port=45555,
+        watch_port=45556,
+        started="2026-05-08T10:00:00",
+        version="3.22.0",
+        heartbeat=100.0,
+    )
+    registry._REGISTRY_PATH.write_text(
+        json.dumps([1, {"state": "unknown"}, dataclasses.asdict(record)]),
+        encoding="utf-8",
+    )
+
+    assert registry._read_records_unlocked() == [record]
+
+
+def test_manager_registry_write_open_and_commit_failures(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+
+    class _OpenFailSaveFile:
+        def __init__(self, _path: str) -> None:
+            return None
+
+        def open(self, _mode) -> bool:
+            return False
+
+        def errorString(self) -> str:
+            return "open failed"
+
+    monkeypatch.setattr(registry.QtCore, "QSaveFile", _OpenFailSaveFile)
+    with pytest.raises(registry.ImageToolManagerRegistryError, match="open failed"):
+        registry._write_records_unlocked([])
+
+    class _CommitFailSaveFile:
+        def __init__(self, _path: str) -> None:
+            return None
+
+        def open(self, _mode) -> bool:
+            return True
+
+        def write(self, payload: bytes) -> int:
+            return len(payload)
+
+        def commit(self) -> bool:
+            return False
+
+        def errorString(self) -> str:
+            return "commit failed"
+
+    monkeypatch.setattr(registry.QtCore, "QSaveFile", _CommitFailSaveFile)
+    with pytest.raises(registry.ImageToolManagerRegistryError, match="commit failed"):
+        registry._write_records_unlocked([])
+
+
+def test_manager_registry_process_and_activity_helpers(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    record = registry._ManagerRecord(
+        internal_id="abc",
+        index=0,
+        pid=999999,
+        host="localhost",
+        port=45555,
+        watch_port=45556,
+        started="2026-05-08T10:00:00",
+        version="3.22.0",
+        heartbeat=100.0,
+    )
+
+    assert registry._pid_exists(0) is False
+    with pytest.raises(ValueError, match="Manager index must be >= 0"):
+        registry._normalize_manager_index(-1, label="index")
+
+    monkeypatch.setattr(registry.os, "kill", lambda *_args: None)
+    assert registry._pid_exists(999999) is True
+    monkeypatch.setattr(
+        registry.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(ProcessLookupError),
+    )
+    assert registry._pid_exists(999999) is False
+    monkeypatch.setattr(
+        registry.os,
+        "kill",
+        lambda *_args: (_ for _ in ()).throw(PermissionError),
+    )
+    assert registry._pid_exists(999999) is True
+    monkeypatch.setattr(
+        registry.os, "kill", lambda *_args: (_ for _ in ()).throw(OSError)
+    )
+    assert registry._pid_exists(999999) is False
+
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: False)
+    assert registry._record_is_active(record, now=101.0) is False
+
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(registry, "_is_tcp_port_open", lambda *_args: False)
+    assert registry._record_is_active(record, now=101.0) is True
+    assert registry._record_is_active(record, now=200.0) is False
+
+
 def test_manager_registry_does_not_reuse_holes(monkeypatch, tmp_path) -> None:
     registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
@@ -9041,6 +9162,51 @@ def test_manager_registry_removes_stale_starting_records(monkeypatch, tmp_path) 
     assert registry.live_manager_records() == ()
     with registry._registry_lock():
         assert registry._read_records_unlocked() == []
+
+
+def test_manager_registry_target_resolution_edges(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(registry, "_is_tcp_port_open", lambda *_args: True)
+
+    with pytest.raises(ValueError, match="No live ImageTool manager"):
+        registry.set_default_manager(0)
+    with pytest.raises(registry.ImageToolManagerNotFoundError, match="not running"):
+        registry.resolve_manager_record()
+
+    records = [
+        registry.activate_manager_record(
+            registry.reserve_manager_record(host="localhost").internal_id,
+            port=45555 + idx * 2,
+            watch_port=45556 + idx * 2,
+        )
+        for idx in range(2)
+    ]
+
+    with pytest.raises(registry.ImageToolManagerNotFoundError, match="index 99"):
+        registry.resolve_manager_record(99)
+    with pytest.raises(registry.ImageToolManagerAmbiguousError, match="Multiple"):
+        registry.resolve_manager_record()
+
+    registry._default_manager_index = 99
+    assert registry.get_default_manager() is None
+    registry._default_manager_index = 99
+    info = registry.manager_selection_info()
+    assert info["reason"] == "multiple"
+    assert info["default_index"] is None
+
+    registry.set_default_manager(records[0].index)
+    assert registry.resolve_manager_record() == records[0]
+    with registry.use_manager(records[1].index):
+        assert registry.get_default_manager() == records[1].index
+    assert registry.get_default_manager() == records[0].index
+
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        registry.use_manager(records[1].index),
+    ):
+        raise RuntimeError("boom")
+    assert registry.get_default_manager() == records[0].index
 
 
 def test_manager_registry_write_failure_preserves_existing_file(
@@ -9138,6 +9304,49 @@ def test_itool_manager_accepts_index_like_values(monkeypatch, test_data) -> None
 
     assert calls[0]["target"] == 2
     assert calls[1]["target"] is None
+
+
+def test_itool_manager_invalid_index_object_and_unavailable_fallback(
+    monkeypatch, test_data
+) -> None:
+    warnings: list[str] = []
+    running_targets: list[int | None] = []
+
+    class _DummyImageTool:
+        def __init__(self, data, **_kwargs) -> None:
+            self.data = data
+
+        def show(self) -> None:
+            return None
+
+        def activateWindow(self) -> None:
+            return None
+
+        def raise_(self) -> None:
+            return None
+
+    monkeypatch.setattr(itool_mod, "_parse_input", lambda _data: [test_data])
+    monkeypatch.setattr(erlab.interactive.imagetool, "ImageTool", _DummyImageTool)
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "is_running",
+        lambda target=None: running_targets.append(target) or False,
+    )
+    monkeypatch.setattr(
+        erlab.utils.misc,
+        "emit_user_level_warning",
+        lambda message: warnings.append(message),
+    )
+
+    direct_tool = itool(test_data, manager=object(), execute=False)
+    fallback_tool = itool(test_data, manager=3, execute=False)
+
+    assert isinstance(direct_tool, _DummyImageTool)
+    assert isinstance(fallback_tool, _DummyImageTool)
+    assert running_targets == [3]
+    assert warnings == [
+        "The manager is not running. Opening the ImageTool window(s) directly."
+    ]
 
 
 def test_manager_target_validation_rejects_bool(monkeypatch, tmp_path) -> None:
@@ -9257,6 +9466,137 @@ def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -
     assert socket.bound == [f"tcp://*:{erlab.interactive.imagetool.manager.PORT_WATCH}"]
     assert socket.sent == []
     assert socket.closed
+
+
+def test_manager_server_wait_until_bound_errors() -> None:
+    watcher_server = _WatcherServer()
+    with pytest.raises(TimeoutError, match="watcher server"):
+        watcher_server.wait_until_bound(timeout_ms=1)
+    watcher_error = RuntimeError("watcher bind failed")
+    watcher_server._bind_error = watcher_error
+    watcher_server._bound_event.set()
+    with pytest.raises(RuntimeError, match="Watcher server failed") as exc_info:
+        watcher_server.wait_until_bound(timeout_ms=1)
+    assert exc_info.value.__cause__ is watcher_error
+
+    manager = manager_server._ManagerServer()
+    with pytest.raises(TimeoutError, match="manager server"):
+        manager.wait_until_bound(timeout_ms=1)
+    manager_error = RuntimeError("manager bind failed")
+    manager._bind_error = manager_error
+    manager._bound_event.set()
+    with pytest.raises(RuntimeError, match="Manager server failed") as exc_info:
+        manager.wait_until_bound(timeout_ms=1)
+    assert exc_info.value.__cause__ is manager_error
+
+
+def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:
+    class _FailingSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def setsockopt(self, *args) -> None:
+            return None
+
+        def bind(self, _address: str) -> None:
+            raise RuntimeError("bind failed")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _FailingSocket) -> None:
+            self._socket = socket
+
+        def socket(self, *_args) -> _FailingSocket:
+            return self._socket
+
+    watcher_socket = _FailingSocket()
+    monkeypatch.setattr(
+        zmq.Context,
+        "instance",
+        staticmethod(lambda: _DummyContext(watcher_socket)),
+    )
+    watcher_server = _WatcherServer(port=45556)
+    watcher_server.run()
+    assert watcher_server._bound_event.is_set()
+    assert isinstance(watcher_server._bind_error, RuntimeError)
+    assert watcher_socket.closed
+
+    manager_socket = _FailingSocket()
+    monkeypatch.setattr(
+        zmq.Context,
+        "instance",
+        staticmethod(lambda: _DummyContext(manager_socket)),
+    )
+    manager = manager_server._ManagerServer(port=45555)
+    manager.run()
+    assert manager._bound_event.is_set()
+    assert isinstance(manager._bind_error, RuntimeError)
+    assert manager_socket.closed
+
+
+def test_manager_server_client_helpers_target_socket_branches(
+    monkeypatch, tmp_path, test_data
+) -> None:
+    calls: list[tuple[typing.Any, dict[str, typing.Any]]] = []
+    record = manager_registry._ManagerRecord(
+        internal_id="abc",
+        index=2,
+        pid=123,
+        host="localhost",
+        port=45555,
+        watch_port=45556,
+        started="2026-05-08T10:00:00",
+        version="3.22.0",
+        heartbeat=100.0,
+    )
+
+    monkeypatch.setattr(erlab.interactive.imagetool.manager, "_manager_instance", None)
+    monkeypatch.setattr(
+        manager_server, "resolve_manager_record", lambda target=None: record
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_query_zmq",
+        lambda payload, **kwargs: (
+            calls.append((payload, kwargs)) or Response(status="ok", data=test_data)
+        ),
+    )
+
+    path = tmp_path / "data.dat"
+    path.write_text("data", encoding="utf-8")
+    manager_server.load_in_manager((path,), target=2)
+    manager_server.show_in_manager(None, target=2)
+    manager_server.replace_data(0, test_data, target=2)
+    manager_server._watch_data("data", "uid", test_data, show=True, target=2)
+    assert manager_server._unwatch_data("uid", target=2).status == "ok"
+    assert manager_server._unwatch_data("uid", remove=True, target=2).status == "ok"
+    xr.testing.assert_identical(manager_server.fetch("uid", target=2), test_data)
+    with pytest.warns(DeprecationWarning, match="watch_data"):
+        manager_server.watch_data("data", "uid", test_data)
+    with pytest.warns(DeprecationWarning, match="unwatch_data"):
+        assert manager_server.unwatch_data("uid").status == "ok"
+
+    with pytest.raises(FileNotFoundError):
+        manager_server.load_in_manager((tmp_path / "missing.dat",), target=2)
+    with pytest.raises(ValueError, match="Mismatch"):
+        manager_server.replace_data([0, 1], test_data, target=2)
+
+    packet_types = [payload.packet_type for payload, _kwargs in calls]
+    assert packet_types == [
+        "open",
+        "add",
+        "replace",
+        "watch",
+        "command",
+        "command",
+        "command",
+        "command",
+        "watch",
+        "command",
+    ]
+    assert all(kwargs["record"] == record for _payload, kwargs in calls)
 
 
 def test_manager_progressbar_alert(
@@ -9650,6 +9990,69 @@ def test_launch_new_manager_instance_uses_macos_app_bundle(
                 "close_fds": True,
                 "start_new_session": True,
             },
+        )
+    ]
+
+
+def test_launch_new_manager_instance_uses_windows_detached_flags(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict[str, typing.Any]]] = []
+
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", "win32")
+    monkeypatch.setattr(manager_mainwindow.sys, "executable", r"C:\env\python.exe")
+    monkeypatch.setattr(
+        manager_mainwindow.subprocess, "DETACHED_PROCESS", 8, raising=False
+    )
+    monkeypatch.setattr(
+        manager_mainwindow.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        512,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        manager_mainwindow.subprocess,
+        "Popen",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    manager_mainwindow._launch_new_manager_instance()
+
+    assert calls == [
+        (
+            [r"C:\env\python.exe", "-m", "erlab.interactive.imagetool.manager"],
+            {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "close_fds": True,
+                "creationflags": 520,
+            },
+        )
+    ]
+
+
+def test_open_new_manager_instance_shows_error_dialog(monkeypatch) -> None:
+    dialogs: list[tuple[object, str, str]] = []
+
+    monkeypatch.setattr(
+        manager_mainwindow,
+        "_launch_new_manager_instance",
+        lambda: (_ for _ in ()).throw(RuntimeError("launch failed")),
+    )
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda parent, *, title, text: dialogs.append((parent, title, text)),
+    )
+
+    parent = object()
+    manager_mainwindow.ImageToolManager.open_new_manager_instance(parent)
+
+    assert dialogs == [
+        (
+            parent,
+            "New Manager Instance",
+            "Could not open another ImageTool Manager instance.",
         )
     ]
 
