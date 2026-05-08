@@ -1,5 +1,6 @@
 import copy
 import logging
+import pathlib
 import tempfile
 import types
 import typing
@@ -1534,6 +1535,83 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
             win.slicer_area._data.rename(None),
             updated.astype(np.float64).qsel.average("x").rename(None),
         )
+
+    win.close()
+
+
+def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
+    qtbot,
+    tmp_path: pathlib.Path,
+) -> None:
+    win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
+    qtbot.addWidget(win)
+    prov = erlab.interactive.imagetool.provenance
+
+    with pytest.raises(RuntimeError, match="cannot be reloaded"):
+        win.slicer_area._fetch_for_provenance_reload()
+
+    def _file_source(path: pathlib.Path) -> prov.FileLoadSource:
+        return prov.FileLoadSource(
+            path=path,
+            loader_label="Loader",
+            loader_text="xarray",
+            kwargs_text="(none)",
+            load_code=None,
+        )
+
+    missing_file = tmp_path / "missing.h5"
+    win.set_provenance_spec(
+        prov.script(
+            start_label="Load missing file",
+            seed_code="derived = xr.DataArray([1.0])",
+            active_name="derived",
+            file_load_source=_file_source(missing_file),
+        )
+    )
+    assert not win.slicer_area.reloadable
+    with pytest.raises(FileNotFoundError):
+        win.slicer_area._fetch_for_provenance_reload()
+
+    source_file = tmp_path / "source.h5"
+    source_file.touch()
+    win.set_provenance_spec(
+        prov.script(
+            start_label="Needs external data",
+            seed_code="derived = data",
+            active_name="derived",
+            file_load_source=_file_source(source_file),
+        )
+    )
+    assert not win.slicer_area.reloadable
+    with pytest.raises(RuntimeError, match="provenance"):
+        win.slicer_area._fetch_for_provenance_reload()
+
+    win.set_provenance_spec(
+        prov.script(
+            start_label="Wrong active name",
+            seed_code="other = xr.DataArray([1.0])",
+            active_name="derived",
+            file_load_source=_file_source(source_file),
+        )
+    )
+    assert win.slicer_area.reloadable
+    with pytest.raises(RuntimeError, match="active data"):
+        win.slicer_area._fetch_for_provenance_reload()
+
+    win.set_provenance_spec(
+        prov.script(
+            start_label="Multiple outputs",
+            seed_code=("derived = [xr.DataArray([1.0]), xr.DataArray([2.0])]"),
+            active_name="derived",
+            file_load_source=_file_source(source_file),
+        )
+    )
+    with pytest.raises(RuntimeError, match="multiple data arrays"):
+        win.slicer_area._fetch_for_provenance_reload()
+
+    win.set_provenance_spec(None)
+    with pytest.raises(RuntimeError, match="cannot be reloaded"):
+        win.slicer_area._fetch_reload_data()
 
     win.close()
 

@@ -41,6 +41,8 @@ from erlab.interactive.imagetool._load_source import (
     _load_source_label_and_text,
     _loader_callable_text,
     _LoadSourceDetails,
+    _resolve_identified_path,
+    _scan_number_load_call_args,
 )
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
@@ -1857,6 +1859,74 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
         f"data = erlab.io.load(2, data_dir={str(example_data_dir)!r}, "
         'loader_extensions={"additional_coords": {"gui_extra": 7.0}})'
     )
+
+    del example_loader
+    bound_loader_code = _load_code_from_file_details(
+        file_path, (erlab.io.loaders["example"].load, {}, 0)
+    )
+    assert bound_loader_code == code
+
+
+def test_scan_number_load_call_args_rejects_ambiguous_loader_matches(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    file_path = tmp_path / "scan_007.h5"
+    file_path.touch()
+    assert _resolve_identified_path("scan_007.h5", tmp_path) == file_path.resolve()
+    assert _scan_number_load_call_args(file_path, "missing_loader", {}) is None
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {1: "bad"}) is None
+
+    class _FakeLoader:
+        infer_result: typing.Any = (7, {})
+        identify_result: typing.Any = ([str(file_path)],)
+        infer_error = False
+        identify_error = False
+
+        def infer_index(self, stem: str) -> typing.Any:
+            assert stem == file_path.stem
+            if self.infer_error:
+                raise RuntimeError("infer failed")
+            return self.infer_result
+
+        def identify(
+            self, scan_num: int, data_dir: pathlib.Path, **kwargs
+        ) -> typing.Any:
+            assert scan_num == 7
+            assert data_dir == tmp_path
+            if self.identify_error:
+                raise RuntimeError("identify failed")
+            return self.identify_result
+
+    loader = _FakeLoader()
+    monkeypatch.setattr(erlab.io, "loaders", {"coverage_loader": loader})
+
+    loader.infer_error = True
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {}) is None
+
+    loader.infer_error = False
+    loader.infer_result = (7, None)
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {}) == [
+        "7",
+        f"data_dir={str(tmp_path)!r}",
+    ]
+
+    loader.infer_result = (7, ["not", "mapping"])
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {}) is None
+
+    loader.infer_result = (7, {"data_dir": tmp_path})
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {}) is None
+
+    loader.infer_result = (7, {})
+    loader.identify_error = True
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {}) is None
+
+    loader.identify_error = False
+    loader.identify_result = None
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {}) is None
+
+    loader.identify_result = ([str(tmp_path / "other.h5")],)
+    assert _scan_number_load_call_args(file_path, "coverage_loader", {}) is None
 
 
 def test_loader_extension_literal_parser() -> None:
@@ -4560,6 +4630,84 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         manager._update_actions()
         assert not detached.reloadable
         assert not manager.reload_action.isVisible()
+
+
+def test_manager_prompt_replay_input_name_accept_cancel_and_invalid(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _Node:
+        def __init__(self, name: str | None) -> None:
+            self.data = xr.DataArray(np.arange(2), dims=("x",), name=name)
+
+        def _metadata_data(self) -> xr.DataArray:
+            return self.data
+
+    class _FakeLineEdit:
+        def __init__(self) -> None:
+            self.validator_set = False
+            self.selected = False
+
+        def setValidator(self, _validator) -> None:
+            self.validator_set = True
+
+        def selectAll(self) -> None:
+            self.selected = True
+
+    class _FakeInputDialog:
+        InputMode = QtWidgets.QInputDialog.InputMode
+        responses: typing.ClassVar[list[tuple[int, str]]] = []
+        instances: typing.ClassVar[list[typing.Any]] = []
+
+        def __init__(self, _parent) -> None:
+            self.line_edit = _FakeLineEdit()
+            self.initial_text = ""
+            self._result, self._text = self.responses.pop(0)
+            self.instances.append(self)
+
+        def setWindowTitle(self, _title: str) -> None:
+            pass
+
+        def setLabelText(self, _text: str) -> None:
+            pass
+
+        def setTextValue(self, text: str) -> None:
+            self.initial_text = text
+
+        def setInputMode(self, _mode) -> None:
+            pass
+
+        def findChild(self, _cls):
+            return self.line_edit
+
+        def exec(self) -> int:
+            return self._result
+
+        def textValue(self) -> str:
+            return self._text
+
+    accepted = int(QtWidgets.QDialog.DialogCode.Accepted)
+    rejected = int(QtWidgets.QDialog.DialogCode.Rejected)
+    _FakeInputDialog.responses = [
+        (rejected, ""),
+        (accepted, "bad-name"),
+        (accepted, " custom_source "),
+    ]
+    monkeypatch.setattr(QtWidgets, "QInputDialog", _FakeInputDialog)
+
+    with manager_context() as manager:
+        assert manager._prompt_replay_input_name(_Node("data")) is None
+        assert _FakeInputDialog.instances[0].initial_text == "source_data"
+        assert _FakeInputDialog.instances[0].line_edit.validator_set
+        assert _FakeInputDialog.instances[0].line_edit.selected
+
+        assert manager._prompt_replay_input_name(_Node("valid_name")) is None
+        assert _FakeInputDialog.instances[1].initial_text == "valid_name"
+
+        assert manager._prompt_replay_input_name(_Node(None)) == "custom_source"
+        assert _FakeInputDialog.instances[2].initial_text == "source_data"
 
 
 def test_manager_nonuniform_transform_children_refresh_from_public_data(
