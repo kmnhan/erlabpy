@@ -1771,6 +1771,7 @@ def test_manager_output_itool_auto_update_can_be_disabled_from_auto_badge(
 
 def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     tmp_path: pathlib.Path,
+    example_loader,
 ) -> None:
     file_path = tmp_path / "example.pxt"
     code = _load_code_from_file_details(
@@ -1806,6 +1807,52 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
         "import erlab\n\n"
         "erlab.io.set_loader('example')\n"
         f"data = erlab.io.load({str(file_path)!r}, "
+        'loader_extensions={"additional_coords": {"gui_extra": 7.0}})'
+    )
+
+
+def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    file_path = example_data_dir / "data_002.h5"
+    code = _load_code_from_file_details(file_path, ("example", {}, 0))
+    assert code == (
+        "import erlab\n\n"
+        "erlab.io.set_loader('example')\n"
+        f"data = erlab.io.load(2, data_dir={str(example_data_dir)!r})"
+    )
+
+    multi_file_code = _load_code_from_file_details(
+        example_data_dir / "data_001_S001.h5", ("example", {}, 0)
+    )
+    assert multi_file_code == (
+        "import erlab\n\n"
+        "erlab.io.set_loader('example')\n"
+        f"data = erlab.io.load(1, data_dir={str(example_data_dir)!r})"
+    )
+
+    single_file_code = _load_code_from_file_details(
+        file_path, ("example", {"single": True}, 0)
+    )
+    assert single_file_code == (
+        "import erlab\n\n"
+        "erlab.io.set_loader('example')\n"
+        f"data = erlab.io.load({str(file_path)!r}, single=True)"
+    )
+
+    extension_code = _load_code_from_file_details(
+        file_path,
+        (
+            "example",
+            {"loader_extensions": {"additional_coords": {"gui_extra": 7.0}}},
+            0,
+        ),
+    )
+    assert extension_code == (
+        "import erlab\n\n"
+        "erlab.io.set_loader('example')\n"
+        f"data = erlab.io.load(2, data_dir={str(example_data_dir)!r}, "
         'loader_extensions={"additional_coords": {"gui_extra": 7.0}})'
     )
 
@@ -5150,6 +5197,61 @@ def test_manager_file_backed_full_code_uses_load_code(
         xr.testing.assert_identical(
             namespace["derived"], test_data.qsel.average("alpha")
         )
+
+
+def test_manager_file_backed_full_code_prefers_scan_number_loader(
+    qtbot,
+    monkeypatch,
+    example_loader,
+    example_data_dir: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = example_data_dir / "data_002.h5"
+    data = erlab.io.loaders["example"].load(file_path)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            data,
+            manager=True,
+            file_path=file_path,
+            load_func=("example", {}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        node = manager._imagetool_wrappers[0]
+        node.set_detached_provenance(
+            erlab.interactive.imagetool.provenance.full_data(
+                erlab.interactive.imagetool.provenance.AverageOperation(dims=("alpha",))
+            )
+        )
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: pytest.fail("file-backed replay should not prompt"),
+        )
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info(uid=node.uid)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Full Code"].trigger()
+
+        assert copied
+        assert f"erlab.io.load(2, data_dir={str(example_data_dir)!r})" in copied[-1]
+        namespace = _exec_generated_code(copied[-1], {})
+        xr.testing.assert_identical(namespace["derived"], data.qsel.average("alpha"))
 
 
 def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
