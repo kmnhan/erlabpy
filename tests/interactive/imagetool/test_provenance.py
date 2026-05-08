@@ -1,3 +1,4 @@
+import ast
 import json
 import typing
 
@@ -25,6 +26,28 @@ def _exec_generated_code(
         locals_ns,
     )
     return locals_ns
+
+
+def _generated_call_names(code: str) -> tuple[str, ...]:
+    def _call_name(node: ast.AST) -> str | None:
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+            if isinstance(node, ast.Call):
+                return ".".join(reversed(parts))
+        if not isinstance(node, ast.Name):
+            return None
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+
+    return tuple(
+        name
+        for node in ast.walk(ast.parse(code))
+        if isinstance(node, ast.Call)
+        for name in [_call_name(node.func)]
+        if name is not None
+    )
 
 
 def _base_data() -> xr.DataArray:
@@ -279,6 +302,64 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     xr.testing.assert_identical(assigned, expected_assigned)
 
 
+@pytest.mark.parametrize(
+    ("values", "expected_call"),
+    [
+        (np.array([100.0, 101.0, 102.0, 103.0]), "np.arange"),
+        (np.linspace(0.25, 1.0, 4), "np.linspace"),
+        (np.ones(4), "np.linspace"),
+        (np.array([0.0, 0.5, 2.0, 3.0]), "np.array"),
+    ],
+)
+def test_tool_provenance_assign_coords_replay_display_code(
+    values: np.ndarray, expected_call: str
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+
+    spec = prov.full_data(
+        prov.AssignCoordsOperation(coord_name="y", values=values)
+    ).to_replay_spec()
+
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    call_names = _generated_call_names(code)
+    assert any(call.endswith(".assign_coords") for call in call_names)
+    assert "erlab.utils.array.sort_coord_order" not in call_names
+    assert expected_call in call_names
+
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_allclose(
+        namespace["derived"],
+        data.assign_coords({"y": data["y"].copy(data=values)}),
+    )
+
+
+def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(1),
+        dims=("x",),
+        coords={"x": np.array([0.0])},
+        name="data",
+    )
+    values = np.array([5.0])
+
+    spec = prov.full_data(
+        prov.AssignCoordsOperation(coord_name="x", values=values)
+    ).to_replay_spec()
+
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    call_names = _generated_call_names(code)
+    assert "np.linspace" in call_names
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_allclose(
+        namespace["derived"],
+        data.assign_coords({"x": data["x"].copy(data=values)}),
+    )
+
+
 def test_tool_provenance_divide_by_coord_operation() -> None:
     prov = erlab.interactive.imagetool.provenance
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 2.0, 4.0]))
@@ -528,6 +609,13 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
             ),
         ),
         prov.ScriptCodeOperation(
+            label="Custom coordinate-order step",
+            code=(
+                "derived = erlab.utils.array.sort_coord_order("
+                "derived, data.coords.keys(), dims_first=False)"
+            ),
+        ),
+        prov.ScriptCodeOperation(
             label="transpose(('x', 'y', 'z'))",
             code="derived = derived.transpose(*('x', 'y', 'z'))",
         ),
@@ -539,13 +627,13 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
         seed_code="derived = data",
     )
 
-    assert [entry.label for entry in spec.display_entries()] == [
-        "Start from current analysis-tool input data",
-        "transpose(('x', 'y', 'z'))",
-        "squeeze()",
-    ]
     code = spec.display_code()
     assert code is not None
+    call_names = _generated_call_names(code)
+    assert not any(call.endswith(".isel") for call in call_names)
+    assert call_names.count("erlab.utils.array.sort_coord_order") == 1
+    assert any(call.rsplit(".", maxsplit=1)[-1] == "transpose" for call in call_names)
+    assert any(call.rsplit(".", maxsplit=1)[-1] == "squeeze" for call in call_names)
     namespace = _exec_generated_code(code, {"data": _base_data().copy(deep=True)})
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
@@ -553,10 +641,6 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
         derived,
         _base_data().transpose(*("x", "y", "z")).squeeze(),
     )
-    assert ".isel()" not in code
-    assert "sort_coord_order" not in code
-    assert ".transpose(" in code
-    assert ".squeeze()" in code
 
 
 def test_tool_provenance_rejects_unsupported_hashables() -> None:

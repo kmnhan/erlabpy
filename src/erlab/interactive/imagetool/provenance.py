@@ -123,6 +123,10 @@ _TUPLE_MARKER = "__erlab_tuple__"
 _MAPPING_MARKER = "__erlab_mapping__"
 _DEFAULT_REPLAY_SEED_CODE = "derived = data"
 _PROMOTED_1D_SOURCE_ATTR = "_erlab_promoted_from_1d_source"
+_SORT_COORD_ORDER_DERIVATION_LABEL = "Sort coordinates to parent order"
+_SORT_COORD_ORDER_DERIVATION_CODE = (
+    "derived = erlab.utils.array.sort_coord_order(derived, data.coords.keys())"
+)
 
 
 @dataclass(frozen=True)
@@ -147,6 +151,13 @@ def _decode_fit_dataset(value: typing.Any) -> xr.Dataset:
         else value
     )
     return erlab.interactive.utils._deserialize_fit_dataset_blob(payload)
+
+
+def _is_internal_sort_coord_order_entry(entry: DerivationEntry) -> bool:
+    return (
+        entry.label == _SORT_COORD_ORDER_DERIVATION_LABEL
+        and entry.code == _SORT_COORD_ORDER_DERIVATION_CODE
+    )
 
 
 def encode_provenance_value(value: typing.Any) -> typing.Any:
@@ -1007,7 +1018,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 }:
                     continue
                 # Rule 2: hide internal coordinate-order normalization.
-                if entry.code is not None and "sort_coord_order(" in entry.code:
+                if _is_internal_sort_coord_order_entry(entry):
                     continue
                 entries.append(entry)
             return entries
@@ -1396,8 +1407,8 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
 
     def derivation_entry(self) -> DerivationEntry:
         return DerivationEntry(
-            "Sort coordinates to parent order",
-            "derived = erlab.utils.array.sort_coord_order(derived, data.coords.keys())",
+            _SORT_COORD_ORDER_DERIVATION_LABEL,
+            _SORT_COORD_ORDER_DERIVATION_CODE,
             True,
         )
 
@@ -1831,12 +1842,56 @@ class AssignCoordsOperation(ToolProvenanceOperation):
 
     def derivation_entry(self) -> DerivationEntry:
         coord_name_code = repr(self.coord_name)
-        values_code = erlab.interactive.utils._parse_single_arg(self.decoded_values)
+        values = self.decoded_values
+        values_code = erlab.interactive.utils._parse_single_arg(values)
+        if (
+            values.ndim == 1
+            and values.size != 0
+            and np.issubdtype(values.dtype, np.number)
+            and not np.issubdtype(values.dtype, np.complexfloating)
+        ):
+            numeric = values.astype(np.float64, copy=False)
+            if np.all(np.isfinite(numeric)):
+                if values.size == 1:
+                    value_code = erlab.interactive.utils._parse_single_arg(
+                        float(numeric[0])
+                    )
+                    values_code = f"np.linspace({value_code}, {value_code}, 1)"
+                else:
+                    diffs = np.diff(numeric)
+                    step = float(diffs[0])
+                    if np.allclose(diffs, step, rtol=1e-12, atol=1e-12):
+                        rounded = np.rint(numeric)
+                        if np.allclose(numeric, rounded, rtol=0.0, atol=1e-12):
+                            int_step = int(rounded[1] - rounded[0])
+                            if int_step != 0:
+                                start = int(rounded[0])
+                                stop = int(rounded[-1] + int_step)
+                                values_code = f"np.arange({start}, {stop}, {int_step})"
+                            else:
+                                start_code = erlab.interactive.utils._parse_single_arg(
+                                    float(numeric[0])
+                                )
+                                stop_code = erlab.interactive.utils._parse_single_arg(
+                                    float(numeric[-1])
+                                )
+                                values_code = (
+                                    f"np.linspace("
+                                    f"{start_code}, {stop_code}, {values.size})"
+                                )
+                        else:
+                            start_code = erlab.interactive.utils._parse_single_arg(
+                                float(numeric[0])
+                            )
+                            stop_code = erlab.interactive.utils._parse_single_arg(
+                                float(numeric[-1])
+                            )
+                            values_code = (
+                                f"np.linspace({start_code}, {stop_code}, {values.size})"
+                            )
         code = (
-            "derived = erlab.utils.array.sort_coord_order("
-            f"derived.assign_coords({{{coord_name_code}: "
-            f"derived[{coord_name_code}].copy(data={values_code})}}), "
-            "keys=derived.coords.keys(), dims_first=False)"
+            f"derived = derived.assign_coords({{{coord_name_code}: "
+            f"derived[{coord_name_code}].copy(data={values_code})}})"
         )
         label_kwargs = {
             "coord_name": self.coord_name,
