@@ -585,6 +585,28 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     assert prov._simplify_display_code("derived = data\nresult = derived + 1") == (
         "result = data + 1"
     )
+    simplified = prov._simplify_display_code(
+        "derived = data\nscale = 2\nresult = derived + scale"
+    )
+    simplified_namespace = _exec_generated_code(simplified, {"data": 3})
+    assert simplified_namespace["result"] == 5
+    assert "derived" not in simplified_namespace
+    invalidated_namespace = _exec_generated_code(
+        prov._simplify_display_code(
+            "derived = data + 1\ndata = other\nresult = derived"
+        ),
+        {"data": 3, "other": 10},
+    )
+    assert invalidated_namespace["result"] == 4
+    rebased = prov.rebase_default_replay_input(
+        "derived = data\nscale = 2\nresult = derived + scale",
+        "source_data",
+    )
+    rebased_namespace = _exec_generated_code(rebased, {"source_data": 3})
+    assert rebased_namespace["result"] == 5
+    assert "derived" not in rebased_namespace
+    assert prov.uses_default_replay_input("result = data + 1")
+    assert not prov.uses_default_replay_input("result = source_data + 1")
 
     with pytest.raises(ValueError, match="Expected 2 items"):
         prov._ensure_float_tuple([1.0], expected_len=2)

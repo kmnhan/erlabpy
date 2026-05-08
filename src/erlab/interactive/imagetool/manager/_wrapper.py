@@ -84,6 +84,17 @@ class _LoadSourceDetails:
     load_code: str | None
 
 
+_RESERVED_REPLAY_SOURCE_NAMES = {
+    "data",
+    "derived",
+    "result",
+    "target",
+    "model",
+    "_fit_data",
+    "_processed",
+}
+
+
 @dataclass(frozen=True)
 class _MetadataField:
     label: str
@@ -112,7 +123,12 @@ def _load_code_from_file_details(
     file_path: Path,
     load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
     | None,
+    *,
+    assign: str = "data",
+    source_input_dtype: np.dtype[typing.Any] | str | None = None,
 ) -> str | None:
+    if not erlab.interactive.utils._is_kwarg_name(assign):
+        raise ValueError("assign must be a valid Python identifier")
     if load_func is None or load_func[2] != 0:
         return None
 
@@ -157,12 +173,19 @@ def _load_code_from_file_details(
     if kwargs_str:
         call_args.append(kwargs_str)
     imports = list(dict.fromkeys(imports))
+    call_expr = f"{loader_expr}({', '.join(call_args)})"
+    if source_input_dtype is not None and np.dtype(source_input_dtype) not in (
+        np.dtype(np.float32),
+        np.dtype(np.float64),
+    ):
+        call_expr = f'{call_expr}.astype("float64")'
+
     return "\n".join(
         [
             *imports,
             "",
             *setup_lines,
-            f"data = {loader_expr}({', '.join(call_args)})",
+            f"{assign} = {call_expr}",
         ]
     )
 
@@ -502,6 +525,31 @@ class _ManagedWindowNode(QtCore.QObject):
                 kwargs_text=kwargs_text,
                 load_code=_load_code_from_file_details(file_path, load_func),
             )
+        return None
+
+    def load_source_code(self, *, assign: str = "data") -> str | None:
+        if self.imagetool is None:
+            return None
+        file_path = self.slicer_area._file_path
+        if file_path is None:
+            return None
+        return _load_code_from_file_details(
+            file_path,
+            self.slicer_area._load_func,
+            assign=assign,
+            source_input_dtype=self._load_source_input_dtype(),
+        )
+
+    def default_load_source_name(self) -> str | None:
+        if self.imagetool is None:
+            return None
+        file_path = self.slicer_area._file_path
+        if file_path is None:
+            return None
+        name = erlab.interactive.utils.IdentifierValidator().fixup(file_path.stem)
+        return "source_data" if name in _RESERVED_REPLAY_SOURCE_NAMES else name
+
+    def _load_source_input_dtype(self) -> np.dtype[typing.Any] | None:
         return None
 
     @property
@@ -1141,6 +1189,9 @@ class _ImageToolWrapper(_ManagedWindowNode):
     @property
     def source_input_ndim(self) -> int | None:
         return self._source_input_ndim
+
+    def _load_source_input_dtype(self) -> np.dtype[typing.Any] | None:
+        return self._source_input_dtype
 
     def _watched_root_provenance_spec(
         self,

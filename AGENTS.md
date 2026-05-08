@@ -22,6 +22,7 @@ When changing public API behavior, add a `.. versionchanged::` note in the relev
 Use `.. versionadded::` sparingly, for user-facing features or APIs where running the same code on older versions would be confusing or yield ambiguous errors.
 
 When changing docs content or URLs, verify that `skills/arpes-analysis/SKILL.md` still matches current docs/links and update it if needed.
+Write documentation in concrete user-facing terms. Prefer naming the visible object or action ("watched variables", "data loaded from files", "copied code contains...") over abstract implementation phrasing such as "workflows copy code rooted at...". Avoid vague category labels and compressed prose that sound precise but do not say what the user will see.
 
 ## Coding Style & Naming Conventions
 

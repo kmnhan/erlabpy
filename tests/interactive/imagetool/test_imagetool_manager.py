@@ -428,6 +428,23 @@ def _exec_generated_code(
     return locals_ns
 
 
+def _assert_modelfit_code_replays_source(
+    code: str, source_name: str, source: xr.DataArray
+) -> None:
+    namespace = _exec_generated_code(code, {source_name: source.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.Dataset)
+    assert "derived" not in namespace
+
+    expected = source
+    if expected.dtype not in (np.float32, np.float64):
+        expected = expected.astype(np.float64)
+    xr.testing.assert_identical(
+        result["modelfit_data"].rename(expected.name),
+        expected,
+    )
+
+
 def assert_fit_result_dataset_equivalent(
     actual: xr.Dataset, expected: xr.Dataset
 ) -> None:
@@ -466,12 +483,19 @@ def copy_full_code_for_uid(
     monkeypatch,
     manager: ImageToolManager,
     uid: str,
+    *,
+    source_name: str = "data",
 ) -> str:
     copied: list[str] = []
     monkeypatch.setattr(
         erlab.interactive.utils,
         "copy_to_clipboard",
         lambda text: copied.append(text) or text,
+    )
+    monkeypatch.setattr(
+        manager,
+        "_prompt_replay_input_name",
+        lambda _node: source_name,
     )
     manager.tree_view.clearSelection()
     select_child_tool(manager, uid)
@@ -1761,6 +1785,14 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
         '**{"bad-key": 1, "single": True})'
     )
     assert code == expected
+    assigned_code = _load_code_from_file_details(
+        file_path,
+        ("merlin", {"bad-key": 1, "single": True}, 0),
+        assign="source_scan",
+    )
+    assert assigned_code == expected.replace("data = ", "source_scan = ")
+    with pytest.raises(ValueError, match="assign"):
+        _load_code_from_file_details(file_path, ("merlin", {}, 0), assign="bad-name")
 
     extension_code = _load_code_from_file_details(
         file_path,
@@ -3931,10 +3963,11 @@ def test_manager_open_in_new_window_nests_imagetool_children(
             pre_call=_inspect_source_dialog,
         )
         assert copied
-        assert "load_dataarray(" in copied[-1]
-        assert str(file_path) in copied[-1]
-        assert "_parse_input" not in copied[-1]
-        assert "data = " in copied[-1]
+        load_namespace = _exec_generated_code(copied[-1], {})
+        xr.testing.assert_identical(
+            load_namespace["data"],
+            xr.load_dataarray(file_path, engine="h5netcdf"),
+        )
 
         manager.get_imagetool(0).slicer_area.images[0].open_in_new_window()
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
@@ -3976,11 +4009,17 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         assert metadata_derivation_texts(manager)
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: pytest.fail("file-backed replay should not prompt"),
+        )
         action_map(menu)["Copy Full Code"].trigger()
         assert copied
-        namespace = _exec_generated_code(
-            copied[-1], {"data": child_tool.slicer_area.data.copy(deep=True)}
+        assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
+            copied[-1]
         )
+        namespace = _exec_generated_code(copied[-1], {})
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
         xr.testing.assert_identical(result, nested_tool.result)
@@ -4513,10 +4552,18 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             data.qsel.average("x").qsel.average("y").rename(None),
         )
 
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: "source_data",
+        )
         action_map(menu)["Copy Full Code"].trigger()
         full_namespace = _exec_generated_code(
             copied[-1],
-            {"data": data.copy(deep=True)},
+            {"source_data": data.copy(deep=True)},
+        )
+        assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
+            copied[-1]
         )
         full_result = full_namespace["derived"]
         assert isinstance(full_result, xr.DataArray)
@@ -4688,12 +4735,21 @@ def test_manager_divide_by_coord_child_refresh_and_code(
             "copy_to_clipboard",
             lambda text: copied.append(text) or text,
         )
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: "source_data",
+        )
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         action_map(menu)["Copy Full Code"].trigger()
-        assert "derived.mesh_current" in copied[-1]
+        assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
+            copied[-1]
+        )
 
-        namespace = _exec_generated_code(copied[-1], {"data": data.copy(deep=True)})
+        namespace = _exec_generated_code(
+            copied[-1], {"source_data": data.copy(deep=True)}
+        )
         xr.testing.assert_identical(
             namespace["derived"].rename(None), expected.rename(None)
         )
@@ -4859,6 +4915,11 @@ def test_manager_watched_root_provenance_uses_variable_name(
             "copy_to_clipboard",
             lambda text: copied.append(text) or text,
         )
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: pytest.fail("watched roots should not prompt"),
+        )
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
         manager._update_info(uid=node.uid)
@@ -4872,6 +4933,158 @@ def test_manager_watched_root_provenance_uses_variable_name(
         derived = namespace["derived"]
         assert isinstance(derived, xr.DataArray)
         xr.testing.assert_identical(derived, manager.get_imagetool(0).slicer_area.data)
+
+
+def test_manager_non_watched_full_code_prompts_for_source_variable(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_recv([test_data], {})
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        node = manager._imagetool_wrappers[0]
+        node.set_detached_provenance(
+            erlab.interactive.imagetool.provenance.full_data(
+                erlab.interactive.imagetool.provenance.AverageOperation(dims=("alpha",))
+            )
+        )
+
+        copied: list[str] = []
+        prompted: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda prompt_node: prompted.append(prompt_node.uid) or "source_data",
+        )
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info(uid=node.uid)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Full Code"].trigger()
+
+        assert prompted == [node.uid]
+        assert copied
+        assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
+            copied[-1]
+        )
+        namespace = _exec_generated_code(
+            copied[-1], {"source_data": test_data.copy(deep=True)}
+        )
+        xr.testing.assert_identical(
+            namespace["derived"], test_data.qsel.average("alpha")
+        )
+
+
+def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_recv([test_data], {})
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        node = manager._imagetool_wrappers[0]
+        node.set_detached_provenance(
+            erlab.interactive.imagetool.provenance.full_data(
+                erlab.interactive.imagetool.provenance.AverageOperation(dims=("alpha",))
+            )
+        )
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        monkeypatch.setattr(manager, "_prompt_replay_input_name", lambda _node: None)
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info(uid=node.uid)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Full Code"].trigger()
+
+        assert copied == []
+
+
+def test_manager_file_backed_full_code_uses_load_code(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            test_data,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        node = manager._imagetool_wrappers[0]
+        node.set_detached_provenance(
+            erlab.interactive.imagetool.provenance.full_data(
+                erlab.interactive.imagetool.provenance.AverageOperation(dims=("alpha",))
+            )
+        )
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: pytest.fail("file-backed replay should not prompt"),
+        )
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info(uid=node.uid)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Full Code"].trigger()
+
+        assert copied
+        assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
+            copied[-1]
+        )
+        namespace = _exec_generated_code(copied[-1], {})
+        xr.testing.assert_identical(
+            namespace["derived"], test_data.qsel.average("alpha")
+        )
 
 
 def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
@@ -4977,11 +5190,7 @@ def test_manager_watched_root_ftool_copy_code_1d_omits_duplicate_seed_and_noop_s
         child_tool.copy_code_1d()
 
         assert copied
-        assert "derived = my_data" not in copied[-1]
-        assert "derived = data" not in copied[-1]
-        assert "derived = derived.squeeze()" not in copied[-1]
-        assert "target = my_data.astype(np.float64)" in copied[-1]
-        assert "result = target.xlm.modelfit(" in copied[-1]
+        _assert_modelfit_code_replays_source(copied[-1], "my_data", test_data)
 
 
 def test_manager_selecting_unfit_ftool_child_does_not_warn(
@@ -5336,11 +5545,7 @@ def test_manager_watched_1d_root_ftool_copy_code_omits_synthetic_squeeze(
         child_tool.copy_code()
 
         assert copied
-        assert "derived = my_1d" not in copied[-1]
-        assert "derived = data" not in copied[-1]
-        assert ".squeeze()" not in copied[-1]
-        assert "target = my_1d.astype(np.float64)" in copied[-1]
-        assert "result = target.xlm.modelfit(" in copied[-1]
+        _assert_modelfit_code_replays_source(copied[-1], "my_1d", data)
 
 
 def test_manager_watched_update_to_1d_refreshes_copy_code_cleanup(
@@ -5382,11 +5587,7 @@ def test_manager_watched_update_to_1d_refreshes_copy_code_cleanup(
         child_tool.copy_code()
 
         assert copied
-        assert "derived = my_data" not in copied[-1]
-        assert "derived = data" not in copied[-1]
-        assert ".squeeze()" not in copied[-1]
-        assert "target = my_data.astype(np.float64)" in copied[-1]
-        assert "result = target.xlm.modelfit(" in copied[-1]
+        _assert_modelfit_code_replays_source(copied[-1], "my_data", updated)
 
 
 def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
@@ -5429,11 +5630,7 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
         child_tool.copy_code()
 
         assert copied
-        assert "derived = my_1d" not in copied[-1]
-        assert "derived = data" not in copied[-1]
-        assert ".squeeze()" not in copied[-1]
-        assert "target = my_1d.astype(np.float64)" in copied[-1]
-        assert "result = target.xlm.modelfit(" in copied[-1]
+        _assert_modelfit_code_replays_source(copied[-1], "my_1d", data)
 
 
 def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup(
@@ -5482,11 +5679,7 @@ def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup
         child_tool.copy_code()
 
         assert copied
-        assert "derived = my_1d" not in copied[-1]
-        assert "derived = data" not in copied[-1]
-        assert ".squeeze()" not in copied[-1]
-        assert "target = my_1d.astype(np.float64)" in copied[-1]
-        assert "result = target.xlm.modelfit(" in copied[-1]
+        _assert_modelfit_code_replays_source(copied[-1], "my_1d", data)
 
 
 def test_manager_duplicate(
