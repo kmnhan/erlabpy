@@ -263,12 +263,11 @@ def process_fits_dataset(ds: xr.Dataset) -> xr.Dataset:
                 }
                 if motor_axis in ds.coords:
                     readback = ds.coords[motor_axis]
-                    if readback.ndim == 1 and readback.size == scan_length:
-                        new_coords[f"{motor_axis}_readback"] = xr.DataArray(
-                            readback.data,
-                            dims=("time",),
-                            attrs=readback.attrs,
-                        )
+                    new_coords[f"{motor_axis}_readback"] = xr.DataArray(
+                        readback.data,
+                        dims=("time",),
+                        attrs=readback.attrs,
+                    )
                     ds = ds.drop_vars(motor_axis)
 
                 ds = ds.assign_coords(new_coords)
