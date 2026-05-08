@@ -20,7 +20,7 @@ def test_backend_dataarray(datadir) -> None:
 
 
 def test_backend_dataarray_itx(datadir) -> None:
-    wave = xr.load_dataarray(datadir / "wave0.itx").rename(dim_0="W").astype(np.float32)
+    wave = xr.load_dataarray(datadir / "wave0.itx").rename(x="W").astype(np.float32)
     xarray.testing.assert_equal(wave, WAVE0)
 
 
@@ -76,12 +76,12 @@ def test_parse_wave_shape() -> None:
 
 
 def test_load_text_basic(datadir) -> None:
-    wave = load_text(datadir / "wave0.itx", dtype=np.float32).rename(dim_0="W")
+    wave = load_text(datadir / "wave0.itx", dtype=np.float32).rename(x="W")
     xarray.testing.assert_equal(wave, WAVE0)
 
     wave = load_text(
         datadir / "wave0.itx", dtype=np.float32, without_values=True
-    ).rename(dim_0="W")
+    ).rename(x="W")
     xarray.testing.assert_equal(wave, xr.zeros_like(WAVE0))
 
 
@@ -92,11 +92,59 @@ def test_load_text_invalid_file(datadir) -> None:
 
 def test_load_text_multiple_waves(datadir) -> None:
     with pytest.warns(UserWarning, match="Multiple wave definitions found"):
-        wave = load_text(datadir / "multiple_waves.itx", dtype=np.float32).rename(
-            dim_0="W"
-        )
+        wave = load_text(datadir / "multiple_waves.itx", dtype=np.float32).rename(x="W")
 
     xarray.testing.assert_equal(wave, WAVE0)
+
+
+def test_load_text_empty_unit_setscale_and_notes(tmp_path) -> None:
+    path = tmp_path / "note_wave.itx"
+    path.write_text(
+        """IGOR
+WAVES/D/N=(2,3,2) testwave
+BEGIN
+1 2 3
+4 5 6
+7 8 9
+10 11 12
+END
+X SetScale/P x 10,0.5,"", testwave
+X SetScale/P y -1,1,"", testwave
+X SetScale/P z 4,2,"", testwave
+X Note testwave, "Photon Energy = 80.5 eV"
+X Note testwave, "Acquired from 2025-10-30 14:30:28 To 2025-10-30 14:41:39"
+X Note testwave, "Category: sample"
+X Note testwave, "Compact:sample"
+""",
+        encoding="utf-8",
+    )
+
+    wave = load_text(path)
+
+    assert wave.dims == ("x", "y", "z")
+    assert wave.shape == (2, 3, 2)
+    np.testing.assert_allclose(wave["x"], [10.0, 10.5])
+    np.testing.assert_allclose(wave["y"], [-1.0, 0.0, 1.0])
+    np.testing.assert_allclose(wave["z"], [4.0, 6.0])
+    assert wave.attrs["Photon Energy"] == "80.5 eV"
+    assert wave.attrs["Category"] == "sample"
+    assert wave.attrs["Compact"] == "sample"
+    assert not any(key.startswith("Acquired from") for key in wave.attrs)
+    assert wave.attrs["IGORWaveNote"] == (
+        "Photon Energy = 80.5 eV\n"
+        "Acquired from 2025-10-30 14:30:28 To 2025-10-30 14:41:39\n"
+        "Category: sample\n"
+        "Compact:sample"
+    )
+
+    wave_without_values = load_text(path, without_values=True)
+
+    assert wave_without_values.dims == wave.dims
+    assert wave_without_values.shape == wave.shape
+    for dim in wave.dims:
+        np.testing.assert_allclose(wave_without_values[dim], wave[dim])
+    assert wave_without_values.attrs == wave.attrs
+    np.testing.assert_array_equal(wave_without_values.values, np.zeros(wave.shape))
 
 
 @pytest.mark.parametrize(
