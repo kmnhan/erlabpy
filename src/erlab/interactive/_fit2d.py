@@ -1015,7 +1015,7 @@ class Fit2DTool(Fit1DTool):
         if output_id is None:
             tool = self._launch_detached_output_imagetool(
                 data,
-                provenance_spec=None,
+                provenance_spec=self.detached_output_imagetool_provenance(data),
             )
         else:
             tool = self._launch_output_imagetool(data, output_id=output_id)

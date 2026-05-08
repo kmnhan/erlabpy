@@ -789,6 +789,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         self._file_path: pathlib.Path | None = None
         self._load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None
+        self._source_input_dtype: np.dtype[typing.Any] | None = None
         self.current_cursor: int = 0
         self._data: xr.DataArray
         self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer
@@ -1694,6 +1695,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             )
 
         data = darr_list[0]
+        self._source_input_dtype = np.dtype(data.dtype)
         shares_external_values = True
         if hasattr(self, "_data") and data is self._data:
             shares_external_values = False
@@ -1787,6 +1789,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.levels = cached_levels
 
         self.flush_history()
+        parent = self.parent()
+        if (
+            self._file_path is not None
+            and hasattr(parent, "_sync_file_load_provenance")
+            and hasattr(parent, "_slicer_area")
+        ):
+            typing.cast("typing.Any", parent)._sync_file_load_provenance()
         if source_replaced:
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
 
@@ -1827,22 +1836,41 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def reloadable(self) -> bool:
-        """Check if the data can be reloaded from the file.
+        """Check if the displayed data can be reloaded.
 
-        The data can be reloaded if the data was loaded from a file that still exists
-        and the data loader name is stored in the data attributes.
+        Direct file-backed windows reload from their stored loader. Detached
+        file-rooted provenance reloads by replaying its self-contained code.
 
         Returns
         -------
         bool
             `True` if the data can be reloaded, `False` otherwise.
         """
+        return self._direct_reloadable() or self._provenance_reloadable()
+
+    def _direct_reloadable(self) -> bool:
+        """Return whether direct file metadata can reload the current source."""
         return (
             (self._file_path is not None)
             and self._file_path.exists()
             and self._load_func is not None
             and (callable(self._load_func[0]) or self._load_func[0] in erlab.io.loaders)
         )
+
+    def _provenance_reloadable(self) -> bool:
+        """Return whether replay provenance can rebuild the displayed data from file."""
+        provenance_spec = self.provenance_spec
+        uses_default_input = (
+            erlab.interactive.imagetool.provenance.uses_default_replay_input
+        )
+        if (
+            provenance_spec is None
+            or provenance_spec.file_load_source is None
+            or not pathlib.Path(provenance_spec.file_load_source.path).exists()
+        ):
+            return False
+        code = provenance_spec.derivation_code()
+        return bool(code and not uses_default_input(code))
 
     def _fetch_for_reload(self) -> xr.DataArray:
         file_path = self._file_path
@@ -1861,9 +1889,58 @@ class ImageSlicerArea(QtWidgets.QWidget):
         )
         return _parse_input(reloaded)[load_func[2]]
 
+    def _fetch_for_provenance_reload(self) -> xr.DataArray:
+        """Replay file-rooted provenance and return the active displayed data."""
+        provenance_spec = self.provenance_spec
+        if provenance_spec is None or provenance_spec.file_load_source is None:
+            raise RuntimeError("Data cannot be reloaded")
+        file_path = pathlib.Path(provenance_spec.file_load_source.path)
+        if not file_path.exists():
+            raise FileNotFoundError(file_path)
+        code = provenance_spec.derivation_code()
+        uses_default_input = (
+            erlab.interactive.imagetool.provenance.uses_default_replay_input
+        )
+        if code is None or uses_default_input(code):
+            raise RuntimeError("Data cannot be reloaded from provenance")
+
+        namespace: dict[str, typing.Any] = {
+            "__builtins__": {"__import__": __import__, "slice": slice},
+            "np": np,
+            "xr": xr,
+            "erlab": erlab,
+            "era": erlab.analysis,
+        }
+        exec(code, namespace, namespace)  # noqa: S102
+        active_name = provenance_spec.active_name or "derived"
+        if active_name not in namespace:
+            raise RuntimeError(
+                f"Reload provenance did not define active data {active_name!r}"
+            )
+        parsed = _parse_input(
+            typing.cast(
+                "typing.Any",
+                namespace[active_name],
+            )
+        )
+        if len(parsed) != 1:
+            raise RuntimeError("Reload provenance produced multiple data arrays")
+        return parsed[0]
+
+    def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
+        """Return reload data and replacement kwargs for the active reload source."""
+        if self._direct_reloadable():
+            return (
+                self._fetch_for_reload(),
+                {"file_path": self._file_path, "load_func": self._load_func},
+            )
+        if self._provenance_reloadable():
+            return self._fetch_for_provenance_reload(), {}
+        raise RuntimeError("Data cannot be reloaded")
+
     @QtCore.Slot()
     def reload(self) -> None:
-        """Reload the data from the file it was loaded from, using the same loader.
+        """Reload the displayed data from direct file state or file-rooted provenance.
 
         Silently fails if the data cannot be reloaded. If an error occurs while
         reloading the data, a message is shown to the user.
@@ -1874,11 +1951,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.reloadable:  # pragma: no branch
             try:
-                self.replace_source_data(
-                    self._fetch_for_reload(),
-                    file_path=self._file_path,
-                    load_func=self._load_func,
-                )
+                data, kwargs = self._fetch_reload_data()
+                self.replace_source_data(data, **kwargs)
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."

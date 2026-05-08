@@ -70,6 +70,7 @@ __all__ = [
     "CorrectWithEdgeOperation",
     "DerivationEntry",
     "DivideByCoordOperation",
+    "FileLoadSource",
     "IselOperation",
     "MaskWithPolygonOperation",
     "QSelOperation",
@@ -750,6 +751,27 @@ def parse_tool_provenance_operation(
     return operation_type.model_validate(value)
 
 
+class FileLoadSource(pydantic.BaseModel):
+    """Serializable file origin used by replay-only ImageTool provenance."""
+
+    path: str
+    loader_label: str
+    loader_text: str
+    kwargs_text: str
+    load_code: str | None = None
+
+    model_config = pydantic.ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    @pydantic.field_validator("path", mode="before")
+    @classmethod
+    def _validate_path(cls, value: typing.Any) -> str:
+        return str(value)
+
+
 class ToolProvenanceSpec(pydantic.BaseModel):
     """Immutable provenance recipe for rebuilding tool data from a parent ImageTool.
 
@@ -764,6 +786,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     seed_code: str | None = None
     active_name: str | None = None
     operations: tuple[pydantic.SerializeAsAny[ToolProvenanceOperation], ...] = ()
+    file_load_source: FileLoadSource | None = None
 
     model_config = pydantic.ConfigDict(
         frozen=True,
@@ -956,6 +979,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             start_label=entries[0].label,
             seed_code=_DEFAULT_REPLAY_SEED_CODE,
             active_name="derived",
+            file_load_source=self.file_load_source,
             operations=tuple(
                 ScriptCodeOperation(
                     label=entry.label,
@@ -1273,6 +1297,7 @@ def compose_full_provenance(
         start_label=typing.cast("str", parent_spec.start_label),
         seed_code=parent_spec.seed_code,
         active_name=local_spec.active_name or parent_spec.active_name,
+        file_load_source=parent_spec.file_load_source or local_spec.file_load_source,
         operations=(*parent_spec.operations, *local_operations),
     )
 
@@ -1317,6 +1342,7 @@ def script(
     start_label: str,
     seed_code: str | None = None,
     active_name: str | None = None,
+    file_load_source: FileLoadSource | None = None,
 ) -> ToolProvenanceSpec:
     """Build a replay-only provenance spec for generated code."""
     return ToolProvenanceSpec(
@@ -1324,6 +1350,7 @@ def script(
         start_label=start_label,
         seed_code=seed_code,
         active_name=active_name,
+        file_load_source=file_load_source,
     ).append_operations(*operations)
 
 
