@@ -7,6 +7,7 @@ import logging
 import os
 import pathlib
 import platform
+import subprocess
 import sys
 import tempfile
 import threading
@@ -24,6 +25,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ConcatDialog,
@@ -35,6 +37,12 @@ from erlab.interactive.imagetool.manager._dialogs import (
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
 from erlab.interactive.imagetool.manager._logging import get_log_file_path
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
+from erlab.interactive.imagetool.manager._registry import (
+    activate_manager_record,
+    refresh_manager_record,
+    reserve_manager_record,
+    unregister_manager_record,
+)
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -53,6 +61,34 @@ logger = logging.getLogger(__name__)
 
 _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
+
+
+def _launch_new_manager_instance() -> None:
+    command = [sys.executable]
+    if sys.platform == "darwin" and erlab.utils.misc._IS_PACKAGED:
+        for parent in pathlib.Path(sys.executable).resolve().parents:
+            if parent.suffix == ".app":
+                command = ["/usr/bin/open", "-n", str(parent)]
+                break
+    elif not erlab.utils.misc._IS_PACKAGED:
+        command.extend(["-m", "erlab.interactive.imagetool.manager"])
+
+    kwargs: dict[str, typing.Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if sys.platform.startswith("win"):
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+        if flags:
+            kwargs["creationflags"] = flags
+    else:
+        kwargs["start_new_session"] = True
+
+    subprocess.Popen(command, **kwargs)
 
 
 class _WarningEmitter(QtCore.QObject):
@@ -446,32 +482,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._previous_excepthook = sys.excepthook
         sys.excepthook = self._handle_uncaught_exception
 
-        # Setup servers and connect signals
-        self.server: _ManagerServer = _ManagerServer()
-        self.server.sigReceived.connect(self._data_recv)
-        self.server.sigLoadRequested.connect(self._data_load)
-        self.server.sigReplaceRequested.connect(self._data_replace)
+        self._manager_record = reserve_manager_record(host=_manager_server.HOST_IP)
+        self.manager_index = self._manager_record.index
 
-        self.server.sigDataRequested.connect(self._send_imagetool_data)
-        self._sigReplyData.connect(self.server.set_return_value)
-        self.server.sigRemoveIndex.connect(self.remove_imagetool)
-        self.server.sigShowIndex.connect(self.show_imagetool)
-        self.server.sigRemoveUID.connect(self._remove_watched)
-        self.server.sigShowUID.connect(self._show_watched)
-        self.server.sigUnwatchUID.connect(self._data_unwatch)
-        self.server.sigWatchedVarChanged.connect(self._data_watched_update)
-        self.server.start()
+        try:
+            (
+                self.server,
+                self.watcher_server,
+                port,
+                watch_port,
+            ) = self._start_manager_servers()
+            self._manager_record = activate_manager_record(
+                self._manager_record.internal_id,
+                port=port,
+                watch_port=watch_port,
+            )
+        except Exception:
+            unregister_manager_record(self._manager_record.internal_id)
+            raise
 
-        self.watcher_server: _WatcherServer = _WatcherServer()
-        self._sigWatchedDataEdited.connect(self.watcher_server.send_parameters)
-        self.watcher_server.start()
+        self._registry_heartbeat_timer = QtCore.QTimer(self)
+        self._registry_heartbeat_timer.setInterval(3000)
+        self._registry_heartbeat_timer.timeout.connect(
+            lambda: refresh_manager_record(self._manager_record.internal_id)
+        )
+        self._registry_heartbeat_timer.start()
 
         # Shared memory for detecting multiple instances
         # No longer used starting from v3.8.2, but kept for backward compatibility
         self._shm = QtCore.QSharedMemory(_SHM_NAME)
         self._shm.create(1)  # Create segment so that it can be attached to
 
-        self.setWindowTitle("ImageTool Manager")
+        self.setWindowTitle(f"ImageTool Manager #{self.manager_index}")
 
         self.menu_bar: QtWidgets.QMenuBar = typing.cast(
             "QtWidgets.QMenuBar", self.menuBar()
@@ -544,6 +586,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.open_action.triggered.connect(self.open)
         self.open_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.open_action.setToolTip("Open file(s) in ImageTool")
+
+        self.new_manager_action = QtWidgets.QAction("New Manager Instance", self)
+        self.new_manager_action.triggered.connect(self.open_new_manager_instance)
+        self.new_manager_action.setToolTip("Open another ImageTool Manager process")
 
         self.save_action = QtWidgets.QAction("&Save Workspace As...", self)
         self.save_action.setToolTip("Save all windows to a single file")
@@ -655,6 +701,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "QtWidgets.QMenu", self.menu_bar.addMenu("&File")
         )
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.new_manager_action)
         file_menu.addSeparator()
         file_menu.addAction(self.explorer_action)
         file_menu.addSeparator()
@@ -3673,6 +3720,57 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return True
         return super().eventFilter(obj, event)
 
+    def _start_server_pair(
+        self, *, port: int, watch_port: int
+    ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
+        server = _ManagerServer(port=port)
+        server.sigReceived.connect(self._data_recv)
+        server.sigLoadRequested.connect(self._data_load)
+        server.sigReplaceRequested.connect(self._data_replace)
+        server.sigDataRequested.connect(self._send_imagetool_data)
+        self._sigReplyData.connect(server.set_return_value)
+        server.sigRemoveIndex.connect(self.remove_imagetool)
+        server.sigShowIndex.connect(self.show_imagetool)
+        server.sigRemoveUID.connect(self._remove_watched)
+        server.sigShowUID.connect(self._show_watched)
+        server.sigUnwatchUID.connect(self._data_unwatch)
+        server.sigWatchedVarChanged.connect(self._data_watched_update)
+        watcher_server = _WatcherServer(port=watch_port)
+        self._sigWatchedDataEdited.connect(watcher_server.send_parameters)
+        try:
+            server.start()
+            bound_port = server.wait_until_bound()
+            watcher_server.start()
+            bound_watch_port = watcher_server.wait_until_bound()
+        except Exception:
+            with contextlib.suppress(TypeError, RuntimeError):
+                self._sigReplyData.disconnect(server.set_return_value)
+            with contextlib.suppress(TypeError, RuntimeError):
+                self._sigWatchedDataEdited.disconnect(watcher_server.send_parameters)
+            server.stop()
+            watcher_server.stop()
+            server.deleteLater()
+            watcher_server.deleteLater()
+            raise
+        return server, watcher_server, bound_port, bound_watch_port
+
+    def _start_manager_servers(
+        self,
+    ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
+        legacy_ports = (_manager_server.PORT, _manager_server.PORT_WATCH)
+        if self.manager_index == 0 and legacy_ports != (0, 0):
+            try:
+                return self._start_server_pair(
+                    port=legacy_ports[0], watch_port=legacy_ports[1]
+                )
+            except Exception:
+                logger.info(
+                    "ImageTool manager legacy ports are unavailable; "
+                    "using dynamic ports instead."
+                )
+
+        return self._start_server_pair(port=0, watch_port=0)
+
     def _stop_servers(self) -> None:
         """Stop the server thread properly."""
         if self.server.isRunning():  # pragma: no branch
@@ -3689,6 +3787,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
         """Open the settings dialog for the ImageTool manager."""
         dialog = erlab.interactive._options.OptionDialog(self)
         dialog.exec()
+
+    @QtCore.Slot()
+    def open_new_manager_instance(self) -> None:
+        """Open another ImageTool Manager process."""
+        try:
+            _launch_new_manager_instance()
+        except Exception:
+            logger.exception("Failed to open a new ImageTool Manager instance")
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                title="New Manager Instance",
+                text="Could not open another ImageTool Manager instance.",
+            )
 
     @QtCore.Slot()
     def check_for_updates(self) -> None:
@@ -3758,7 +3869,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._tmp_dir.cleanup()
 
         logger.debug("Stopping servers...")
+        self._registry_heartbeat_timer.stop()
         self._stop_servers()
+        unregister_manager_record(self._manager_record.internal_id)
 
         logger.debug("Closing dask client (if any)...")
         self._dask_menu.close_client()

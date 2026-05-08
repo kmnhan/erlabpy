@@ -50,15 +50,15 @@ def patch_manager(monkeypatch):
         "fetch_map": {},
     }
 
-    def watch_data(varname, uid, darr, show=False):
+    def watch_data(varname, uid, darr, show=False, target=None):
         state["watched"][uid] = darr
         state["last_watch_calls"].append((varname, uid, darr, show))
 
-    def unwatch_data(uid, remove=False):
+    def unwatch_data(uid, remove=False, target=None):
         state["watched"].pop(uid, None)
         state["last_unwatch_calls"].append((uid, remove))
 
-    def fetch(uid):
+    def fetch(uid, target=None):
         return state["fetch_map"].get(uid)
 
     # Patch manager attributes on the already-imported module namespace
@@ -69,15 +69,16 @@ def patch_manager(monkeypatch):
     monkeypatch.setattr(manager, "unwatch_data", unwatch_data, raising=False)
     monkeypatch.setattr(manager, "fetch", fetch, raising=False)
     monkeypatch.setattr(manager, "HOST_IP", "127.0.0.1", raising=False)
+    monkeypatch.setattr(
+        watcher_core,
+        "resolve_manager_record",
+        lambda target=None: types.SimpleNamespace(
+            index=0, host="127.0.0.1", watch_port=45556
+        ),
+    )
     # monkeypatch.setattr(manager, "PORT_WATCH", 0, raising=False)
 
     return state
-
-
-def _ensure_fake_thread_attr(watcher: _Watcher):
-    # Ensure shutdown/__del__ won't fail due to missing _watcher_thread
-    if not hasattr(watcher, "_watcher_thread"):
-        watcher._watcher_thread = threading.Thread(target=lambda: None)
 
 
 def test_watch_and_maybe_push_and_delete(fake_shell, patch_manager, monkeypatch):
@@ -86,14 +87,9 @@ def test_watch_and_maybe_push_and_delete(fake_shell, patch_manager, monkeypatch)
     fake_shell.user_ns["a"] = da1
 
     watcher = _Watcher(fake_shell)
-    _ensure_fake_thread_attr(watcher)
 
     # Avoid starting real thread
-    def fake_start_thread():
-        watcher._thread_started = True
-        _ensure_fake_thread_attr(watcher)
-
-    monkeypatch.setattr(watcher, "start_thread", fake_start_thread)
+    monkeypatch.setattr(watcher, "start_thread", lambda: None)
 
     # Initial watch
     watcher.watch("a")
@@ -149,7 +145,6 @@ def test_recv_loop_updated_event_applies_update(fake_shell, patch_manager, monke
     da1 = xr.DataArray(np.array([0.0, 1.0]), dims=("x",))
     fake_shell.user_ns["a"] = da1
     watcher = _Watcher(fake_shell)
-    _ensure_fake_thread_attr(watcher)
 
     # Avoid starting internal thread in watch()
     monkeypatch.setattr(watcher, "start_thread", lambda: None)
@@ -205,7 +200,6 @@ def test_recv_loop_removed_event_removes_watch(fake_shell, patch_manager, monkey
     da1 = xr.DataArray(np.array([5, 6]), dims=("x",))
     fake_shell.user_ns["b"] = da1
     watcher = _Watcher(fake_shell)
-    _ensure_fake_thread_attr(watcher)
     monkeypatch.setattr(watcher, "start_thread", lambda: None)
     watcher.watch("b")
     uid = watcher.watched_vars["b"]["uid"]
@@ -252,16 +246,8 @@ def test_stop_watching_all_with_remove(fake_shell, patch_manager, monkeypatch):
     fake_shell.user_ns.update({"a": da1, "b": da2})
 
     watcher = _Watcher(fake_shell)
-    _ensure_fake_thread_attr(watcher)
     # Avoid starting real thread
-    monkeypatch.setattr(
-        watcher,
-        "start_thread",
-        lambda: (
-            _ensure_fake_thread_attr(watcher),
-            setattr(watcher, "_thread_started", True),
-        ),
-    )
+    monkeypatch.setattr(watcher, "start_thread", lambda: None)
 
     watcher.watch("a")
     watcher.watch("b")
@@ -364,6 +350,11 @@ def test_watch_magic_delegates_to_watch_api(
     assert calls[-1][1]["shell"] is ip_shell
     assert calls[-1][1]["stop"] is False
     assert calls[-1][1]["remove"] is False
+    assert calls[-1][1]["target"] is None
+
+    ip_shell.run_line_magic("watch", "-m 1 darr")
+    assert calls[-1][0] == ("darr",)
+    assert calls[-1][1]["target"] == 1
 
     ip_shell.run_line_magic("watch", "-d darr")
     assert calls[-1][0] == ("darr",)
@@ -406,6 +397,107 @@ def test_watch_magic_lists_currently_watched_variables(
     assert "Currently watched variables" in messages[0][0]
     assert "alpha" in messages[0][0]
     assert "beta" in messages[0][0]
+
+
+def test_manager_magic_delegates_to_manager_target_api(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+    defaults: list[int | None] = []
+
+    class _FakeManagers:
+        def __bool__(self):
+            return True
+
+        def __repr__(self):
+            return (
+                "Index | Default | PID | Endpoint        | Watch Port\n"
+                "------+---------+-----+-----------------+-----------\n"
+                "#0    |         | 11  | localhost:45555 | 45556\n"
+                "#1    | yes     | 22  | localhost:45557 | 45558"
+            )
+
+        def _repr_html_(self):
+            return "<table><tr><td>#0</td></tr><tr><td>#1</td></tr></table>"
+
+    monkeypatch.setattr(watcher_ipy, "managers", _FakeManagers())
+    monkeypatch.setattr(
+        watcher_ipy,
+        "set_default_manager",
+        lambda index: defaults.append(index) or index,
+    )
+    monkeypatch.setattr(
+        watcher_ipy,
+        "get_default_manager",
+        lambda: defaults[-1] if defaults else None,
+    )
+    monkeypatch.setattr(
+        watcher_ipy, "clear_default_manager", lambda: defaults.append(None)
+    )
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append(message),
+    )
+
+    ip_shell.run_line_magic("manager", "list")
+    assert "#0" in messages[-1]
+    assert "#1" in messages[-1]
+
+    ip_shell.run_line_magic("manager", "use 1")
+    assert defaults[-1] == 1
+
+    ip_shell.run_line_magic("manager", "current")
+    assert "#1" in messages[-1]
+
+    ip_shell.run_line_magic("manager", "clear")
+    assert defaults[-1] is None
+
+
+def test_manager_magic_empty_and_invalid_paths(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+
+    class _EmptyManagers:
+        def __bool__(self):
+            return False
+
+    monkeypatch.setattr(watcher_ipy, "managers", _EmptyManagers())
+    monkeypatch.setattr(watcher_ipy, "get_default_manager", lambda: None)
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append(message),
+    )
+
+    ip_shell.run_line_magic("manager", "list")
+    assert messages[-1] == "No ImageTool managers are running."
+
+    ip_shell.run_line_magic("manager", "current")
+    assert messages[-1] == "No default ImageTool manager is set."
+
+    with pytest.raises(ValueError, match="Usage: %manager use"):
+        ip_shell.run_line_magic("manager", "use")
+    with pytest.raises(ValueError, match="Usage: %manager"):
+        ip_shell.run_line_magic("manager", "unknown")
+
+
+def test_watch_magic_no_variables_message(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+
+    monkeypatch.setattr(watcher_ipy, "watched_variables", lambda shell: ())
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append(message),
+    )
+
+    ip_shell.run_line_magic("watch", "")
+
+    assert messages == ["No variables are being watched."]
 
 
 def test_watch_api_fallback_namespace_without_ipython(patch_manager, monkeypatch):
@@ -523,7 +615,9 @@ def test_watch_api_fallback_when_ipython_module_unavailable(patch_manager, monke
         watcher_mod.shutdown(namespace=globals())
 
 
-def test_watcher_type_error_and_push_failure_cleanup(fake_shell, monkeypatch):
+def test_watcher_type_error_and_push_failure_cleanup(
+    fake_shell, monkeypatch, patch_manager
+):
     fake_shell.user_ns["not_da"] = object()
     watcher = _Watcher(fake_shell)
 
@@ -602,7 +696,7 @@ def test_start_polling_and_poll_loop_branches(fake_shell, monkeypatch):
 def test_watcher_del_suppresses_timeout_warnings(fake_shell, caplog):
     watcher = _Watcher(fake_shell)
 
-    watcher._watcher_thread = type(
+    watcher._watcher_threads[0] = type(
         "AliveThread",
         (),
         {"is_alive": lambda self: True, "join": lambda self, timeout=None: None},

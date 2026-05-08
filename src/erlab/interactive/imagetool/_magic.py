@@ -1,7 +1,35 @@
+import argparse
+import shlex
+
 from IPython.core.magic import Magics, line_magic, magics_class
 from IPython.core.magic_arguments import argument, magic_arguments, parse_argstring
 
 import erlab
+
+
+def _normalize_manager_target_args(line: str) -> str:
+    parts = shlex.split(line)
+    normalized: list[str] = []
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        if part in {"-m", "--manager"}:
+            if i + 2 < len(parts) and parts[i + 1].lstrip("+-").isdigit():
+                normalized.extend([part, "--manager-index", parts[i + 1]])
+                i += 2
+                continue
+            normalized.append(part)
+            i += 1
+            continue
+        if part.startswith("--manager="):
+            value = part.split("=", maxsplit=1)[1]
+            if value.lstrip("+-").isdigit():
+                normalized.extend(["--manager", "--manager-index", value])
+                i += 1
+                continue
+        normalized.append(part)
+        i += 1
+    return " ".join(shlex.quote(part) for part in normalized)
 
 
 @magics_class
@@ -19,6 +47,12 @@ class ImageToolMagics(Magics):
         action="store_true",
         default=None,
         help="Use the ImageTool manager.",
+    )
+    @argument(
+        "--manager-index",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     @argument(
         "--centered",
@@ -40,6 +74,7 @@ class ImageToolMagics(Magics):
     )
     @line_magic
     def itool(self, args):
+        args = _normalize_manager_target_args(args)
         args = parse_argstring(self.itool, args)
 
         data = args.data
@@ -55,10 +90,11 @@ class ImageToolMagics(Magics):
             exec(code, self.shell.user_ns, local_ns)  # noqa: S102
             data = local_ns.get("_data_obj")
 
+        manager = args.manager_index if args.manager_index is not None else args.manager
         return erlab.interactive.itool(
             data=data,
             link=args.link,
-            manager=args.manager,
+            manager=manager,
             zero_centered=args.centered,
             cmap=args.cmap,
         )

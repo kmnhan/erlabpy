@@ -9,6 +9,7 @@ import pathlib
 import re
 import socket
 import sys
+import tempfile
 import threading
 import time
 import typing
@@ -39,6 +40,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager as imagetool_manager
+import erlab.interactive.imagetool.manager._registry as imagetool_manager_registry
 import erlab.interactive.imagetool.manager._server as imagetool_manager_server
 from erlab.interactive.utils import _WaitDialog
 from erlab.io.dataloader import LoaderBase
@@ -248,8 +250,22 @@ def manager_context() -> Callable[
         original_port_watch = imagetool_manager.PORT_WATCH
         original_server_port = imagetool_manager_server.PORT
         original_server_port_watch = imagetool_manager_server.PORT_WATCH
+        original_registry_path = imagetool_manager_registry._REGISTRY_PATH
+        original_lock_path = imagetool_manager_registry._LOCK_PATH
+        original_default_manager = imagetool_manager_registry.get_default_manager(
+            validate=False
+        )
 
         port, port_watch = _unused_port_pair()
+        registry_path = (
+            pathlib.Path(tempfile.gettempdir())
+            / f"erlab-test-manager-{os.getpid()}-{time.time_ns()}.json"
+        )
+        imagetool_manager_registry._REGISTRY_PATH = registry_path
+        imagetool_manager_registry._LOCK_PATH = registry_path.with_suffix(
+            registry_path.suffix + ".lock"
+        )
+        imagetool_manager_registry.clear_default_manager()
         imagetool_manager.PORT = port
         imagetool_manager.PORT_WATCH = port_watch
         imagetool_manager_server.PORT = port
@@ -284,6 +300,17 @@ def manager_context() -> Callable[
             imagetool_manager.PORT_WATCH = original_port_watch
             imagetool_manager_server.PORT = original_server_port
             imagetool_manager_server.PORT_WATCH = original_server_port_watch
+            imagetool_manager_registry._REGISTRY_PATH = original_registry_path
+            imagetool_manager_registry._LOCK_PATH = original_lock_path
+            if original_default_manager is None:
+                imagetool_manager_registry.clear_default_manager()
+            else:
+                imagetool_manager_registry._default_manager_index = (
+                    original_default_manager
+                )
+            for path in (registry_path, registry_path.with_suffix(".json.lock")):
+                with contextlib.suppress(OSError):
+                    path.unlink()
 
     return _ctx
 

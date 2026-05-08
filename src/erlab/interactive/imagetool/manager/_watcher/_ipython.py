@@ -5,6 +5,12 @@ from __future__ import annotations
 import contextlib
 import typing
 
+from erlab.interactive.imagetool.manager._server import (
+    clear_default_manager,
+    get_default_manager,
+    managers,
+    set_default_manager,
+)
 from erlab.interactive.imagetool.manager._watcher._core import (
     _display_message,
     _get_or_create_watcher,
@@ -67,6 +73,13 @@ class WatcherMagics(Magics):
     )
     @argument("-x", action="store_true", help="Remove from manager.")
     @argument("-z", action="store_true", help="Stop watching all variables.")
+    @argument(
+        "--manager",
+        "-m",
+        type=int,
+        default=None,
+        help="0-based ImageTool manager index to use.",
+    )
     @argument("darr", nargs="*", help="DataArray variable(s) to be watched.")
     @line_magic
     def watch(self, line) -> None:
@@ -117,6 +130,7 @@ class WatcherMagics(Magics):
             shell=shell,
             stop=args.d or args.x,
             remove=args.x,
+            target=args.manager,
         )
 
         if args.d or args.x:
@@ -133,3 +147,32 @@ class WatcherMagics(Magics):
             )
 
         return
+
+    @line_magic
+    def manager(self, line) -> None:
+        """List and select ImageTool manager targets for this IPython session."""
+        parts = line.strip().split()
+        command = parts[0] if parts else "list"
+
+        match command:
+            case "list":
+                if not managers:
+                    _display_message("No ImageTool managers are running.")
+                    return
+                _display_message(repr(managers), managers._repr_html_())
+            case "use":
+                if len(parts) != 2:
+                    raise ValueError("Usage: %manager use <index>")
+                index = set_default_manager(int(parts[1]))
+                _display_message(f"Using ImageTool manager #{index}.")
+            case "current":
+                current_index = get_default_manager()
+                if current_index is None:
+                    _display_message("No default ImageTool manager is set.")
+                else:
+                    _display_message(f"Default ImageTool manager: #{current_index}")
+            case "clear":
+                clear_default_manager()
+                _display_message("Cleared default ImageTool manager.")
+            case _:
+                raise ValueError("Usage: %manager [list|use <index>|current|clear]")
