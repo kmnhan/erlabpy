@@ -94,10 +94,12 @@ __all__ = [
     "mark_promoted_1d_source",
     "parse_tool_provenance_spec",
     "public_data",
+    "rebase_default_replay_input",
     "require_live_source_spec",
     "script",
     "selection",
     "to_replay_provenance_spec",
+    "uses_default_replay_input",
 ]
 
 import ast
@@ -298,6 +300,14 @@ def _statement_load_count(stmt: ast.stmt, target: str) -> int:
     return count
 
 
+def _statement_store_count(stmt: ast.stmt, target: str) -> int:
+    count = 0
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            count += node.id == target
+    return count
+
+
 class _NameReplacer(ast.NodeTransformer):
     def __init__(self, target: str, replacement: ast.expr) -> None:
         self._target = target
@@ -317,7 +327,7 @@ def _clone_stmt(node: ast.stmt) -> ast.stmt:
     return ast.parse(ast.unparse(node), mode="exec").body[0]
 
 
-def _simplify_display_code(code: str) -> str:
+def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None) -> str:
     try:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
@@ -328,7 +338,7 @@ def _simplify_display_code(code: str) -> str:
         return code
 
     for stmt in body:
-        if not isinstance(stmt, (ast.Assign, ast.Expr)):
+        if not isinstance(stmt, (ast.Assign, ast.Expr, ast.Import, ast.ImportFrom)):
             return code
         if isinstance(stmt, ast.Assign) and (
             len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name)
@@ -345,10 +355,36 @@ def _simplify_display_code(code: str) -> str:
             if not isinstance(target_expr, ast.Name):
                 return code
             target = target_expr.id
-            next_stmt = body[idx + 1]
-            if _statement_load_count(next_stmt, target) != 1:
+            if inline_targets is not None and target not in inline_targets:
                 continue
-            if any(_statement_load_count(later, target) for later in body[idx + 2 :]):
+            later_loads = [
+                later_idx
+                for later_idx, later in enumerate(body[idx + 1 :], start=idx + 1)
+                if _statement_load_count(later, target) > 0
+            ]
+            if len(later_loads) != 1:
+                continue
+
+            next_idx = later_loads[0]
+            next_stmt = body[next_idx]
+            replacement_load_names = {
+                node.id
+                for node in ast.walk(stmt.value)
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+            }
+            if (
+                not isinstance(next_stmt, (ast.Assign, ast.Expr))
+                or _statement_load_count(next_stmt, target) != 1
+                or any(
+                    _statement_store_count(intervening, target)
+                    for intervening in body[idx + 1 : next_idx]
+                )
+                or any(
+                    _statement_store_count(intervening, name)
+                    for intervening in body[idx + 1 : next_idx]
+                    for name in replacement_load_names
+                )
+            ):
                 continue
 
             new_stmt = typing.cast(
@@ -357,7 +393,7 @@ def _simplify_display_code(code: str) -> str:
                     _clone_stmt(next_stmt)
                 ),
             )
-            body[idx + 1] = ast.fix_missing_locations(new_stmt)
+            body[next_idx] = ast.fix_missing_locations(new_stmt)
             del body[idx]
             changed = True
             break
@@ -367,6 +403,47 @@ def _simplify_display_code(code: str) -> str:
     if not changed:
         return code
     return ast.unparse(ast.fix_missing_locations(module))
+
+
+def _code_uses_name(code: str, name: str) -> bool:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == name
+        for node in ast.walk(module)
+    )
+
+
+def rebase_default_replay_input(code: str, input_name: str) -> str:
+    """Replace the generic ``data`` replay input in generated code.
+
+    Manager clipboard actions use this when a concrete source is known, such as a
+    watched variable, a load snippet target, or a user-provided variable name.
+    """
+    if not _code_uses_name(code, "data"):
+        return code
+
+    try:
+        input_expr = ast.parse(input_name, mode="eval").body
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return code
+
+    rebased = typing.cast("ast.Module", _NameReplacer("data", input_expr).visit(module))
+    rebased = ast.fix_missing_locations(rebased)
+    return _simplify_display_code(
+        ast.unparse(rebased),
+        inline_targets={"derived"},
+    )
+
+
+def uses_default_replay_input(code: str) -> bool:
+    """Return whether generated replay code refers to the generic ``data`` input."""
+    return _code_uses_name(code, "data")
 
 
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}

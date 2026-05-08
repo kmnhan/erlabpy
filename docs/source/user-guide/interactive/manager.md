@@ -125,9 +125,11 @@ window created from another row, the panel can show:
 
 Use the steps list to copy exactly what you need. Select one or more steps and copy the
 selected code, or use {guilabel}`Copy Full Code` to copy the whole workflow from the
-data in the ImageTool that started the workflow to the selected ImageTool window. When
-the selected item came from a file, the details dialog can also copy the file path or a
-loading snippet when that information is available.
+data that started the workflow to the selected ImageTool window. For [watched
+variables](working-with-notebooks), copied code contains the watched variable name.
+File-backed workflows also include a snippet that loads the data in the copied code.
+Otherwise, you will be prompted to enter the name of the variable to use as the source
+when you copy code.
 
 (imagetool-manager-round-trip)=
 

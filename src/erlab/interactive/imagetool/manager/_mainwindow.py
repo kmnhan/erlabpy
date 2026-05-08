@@ -837,6 +837,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._recent_directory: str | None = None
         self._recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = {}
         self._metadata_full_code: str | None = None
+        self._metadata_node_uid: str | None = None
         self._metadata_copy_selected_action = QtGui.QAction("Copy Selected Code", self)
         self._metadata_copy_selected_action.triggered.connect(
             self._copy_selected_derivation_code
@@ -1501,6 +1502,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _clear_metadata(self) -> None:
         self._metadata_full_code = None
+        self._metadata_node_uid = None
         with QtCore.QSignalBlocker(self.metadata_derivation_list):
             self.metadata_derivation_list.clear()
         self._set_metadata_fields([])
@@ -1508,6 +1510,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
         self._metadata_full_code = node.derivation_code
+        self._metadata_node_uid = node.uid
         self._set_metadata_fields(node.metadata_fields)
 
         with QtCore.QSignalBlocker(self.metadata_derivation_list):
@@ -1568,6 +1571,51 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _show_load_source_details(self, details: _LoadSourceDetails) -> None:
         _LoadSourceDetailsDialog(details, self).exec()
+
+    def _load_source_for_replay(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[str, str] | None:
+        current = node
+        while True:
+            source_name = current.default_load_source_name()
+            if source_name is not None:
+                load_code = current.load_source_code(assign=source_name)
+                if load_code is not None:
+                    return source_name, load_code
+            if current.parent_uid is None:
+                return None
+            if current.provenance_spec is None:
+                return None
+            current = self._parent_node(current)
+
+    def _prompt_replay_input_name(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        data = node._metadata_data()
+        candidate = None if data is None else data.name
+        if not erlab.interactive.utils._is_kwarg_name(candidate) or candidate in {
+            "data",
+            "derived",
+            "result",
+        }:
+            candidate = "source_data"
+
+        dialog = QtWidgets.QInputDialog(self)
+        dialog.setWindowTitle("Copy Full Code")
+        dialog.setLabelText("Source variable name:")
+        dialog.setTextValue(typing.cast("str", candidate))
+        dialog.setInputMode(QtWidgets.QInputDialog.InputMode.TextInput)
+        line_edit = dialog.findChild(QtWidgets.QLineEdit)
+        if line_edit is not None:
+            line_edit.setValidator(erlab.interactive.utils.IdentifierValidator())
+            line_edit.selectAll()
+
+        if dialog.exec() != int(QtWidgets.QDialog.DialogCode.Accepted):
+            return None
+        source_name = dialog.textValue().strip()
+        if not erlab.interactive.utils._is_kwarg_name(source_name):
+            return None
+        return source_name
 
     def _update_metadata_pane(self) -> None:
         has_details = bool(self._metadata_detail_labels)
@@ -1644,8 +1692,28 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _copy_full_derivation_code(self) -> None:
-        if self._metadata_full_code:
-            erlab.interactive.utils.copy_to_clipboard(self._metadata_full_code)
+        if not self._metadata_full_code:
+            return
+        code = self._metadata_full_code
+        node = (
+            None
+            if self._metadata_node_uid is None
+            else self._all_nodes.get(self._metadata_node_uid)
+        )
+        provenance = erlab.interactive.imagetool.provenance
+        if node is not None and provenance.uses_default_replay_input(code):
+            load_source = self._load_source_for_replay(node)
+            if load_source is None:
+                source_name = self._prompt_replay_input_name(node)
+                if source_name is None:
+                    return
+                code = provenance.rebase_default_replay_input(code, source_name)
+            else:
+                source_name, load_code = load_source
+                rebased_code = provenance.rebase_default_replay_input(code, source_name)
+                code = "\n\n".join(part for part in (load_code, rebased_code) if part)
+        if code:
+            erlab.interactive.utils.copy_to_clipboard(code)
 
     @QtCore.Slot()
     def _update_info(self, *, uid: str | None = None) -> None:
