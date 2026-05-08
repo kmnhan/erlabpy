@@ -333,7 +333,7 @@ def _load_provenance_from_file_details(
         seed_code=seed_code,
         active_name="derived",
         file_load_source=erlab.interactive.imagetool.provenance.FileLoadSource(
-            path=details.path,
+            path=str(details.path),
             loader_label=details.loader_label,
             loader_text=details.loader_text,
             kwargs_text=details.kwargs_text,

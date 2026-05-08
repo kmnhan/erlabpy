@@ -2,6 +2,50 @@
 
 ### ✨ Features
 
+- **imagetool:** add coordinate and attribute editing ([7e67bcc](https://github.com/kmnhan/erlabpy/commit/7e67bccc94c05ca922a7d64b92e7ec3c8dade99a))
+
+  Allows users to add scalar coordinates, add 1D associated coordinates along existing dimensions, and edit DataArray attributes directly from ImageTool. Use `Edit → Edit Coordinates` and `Edit → Edit Attributes` to open the respective dialogs.
+
+- **imagetool:** add dialog for renaming coordinates and dimensions ([0872924](https://github.com/kmnhan/erlabpy/commit/0872924ca9d862478b633e273c049d7f7c2680ea))
+
+  Adds an ImageTool `Edit → Rename...` dialog as an interface to `DataArray.rename`, allowing users to rename coordinates and dimensions in the ImageTool.
+
+- **manager:** prefer scan-number loading in copied code ([272cf06](https://github.com/kmnhan/erlabpy/commit/272cf06acca0c47c1cbccc5564fe89e7ef5ba6f9))
+
+  ImageTool Manager now writes cleaner copied workflow code for data loaded from files. When an ERLab loader can infer and verify the scan number for the opened file, the copied code uses `erlab.io.load(scan, data_dir=...)` instead of embedding the full file path.
+
+- **imagetool:** add scale and offset coordinate editing ([d425029](https://github.com/kmnhan/erlabpy/commit/d425029c743d15bac1be754ec2dcba6da1db2d65))
+
+  ImageTool’s Coordinate Editor can now transform numeric scalar and 1D coordinates with a simple `new = scale * old + offset` operation in a new tab.
+
+- **imagetool:** improve copied code ([8e8bf02](https://github.com/kmnhan/erlabpy/commit/8e8bf02f2a7edc4f9af97d83ab4d7a2dca176e9b))
+
+  Code copied in various workflows in ImageTool Manager now starts from a meaningful source instead of assuming an arbitrary variable named `data`. Watched variables keep using the watched variable name, data loaded from files includes load code when available, and others prompt for the source variable name before copying.
+
+  Also cleans up some of the code so that unnecessary seed aliases like `derived = data` are not included in the copied code.
+
+- **io:** add data loader `pal4a1` for PAL beamline 4A1 (#328) ([4d80751](https://github.com/kmnhan/erlabpy/commit/4d80751806266812c1b1818b9bc599283d6940ca))
+
+  Updates the Igor text parser to preserve empty-unit `SetScale` axes as x/y/z/t and parse `X Note` metadata into attrs to support loading data files from PAL beamline 4A1 at Pohang.
+
+- **imagetool:** add a way to view associated coordinate values (#327) ([5f5fb15](https://github.com/kmnhan/erlabpy/commit/5f5fb1557dd44a395c576a6095d4f5a50e31dc7c))
+
+  ImageTool now lets users inspect plotted associated coordinates values corresponding to the currently active cursor position directly from the cursor value readout. The readout source can now be selected from the value field’s right-click context menu.
+
+  Also, the right-click context menu of profile plots now includes actions to open associated coordinates in a new ImageTool window.
+
+- **manager:** add guided loader extension editors (#325) ([5912d4c](https://github.com/kmnhan/erlabpy/commit/5912d4cc0d5d12f933e1ad69e8cb220b84f79145))
+
+  Add interactive helper dialogs for ImageTool manager loader extensions. The `name_map` and `coordinate_attrs` fields still support raw literal editing, but now include guided editors that inspect the first selected file, show available metadata attributes, clarify loader-provided mappings, and write the resulting literal values back into the existing fields.
+
+- **imagetool:** add divide-by-coordinate data operation (#326) ([c9841be](https://github.com/kmnhan/erlabpy/commit/c9841be948544523194761d70e6f1ec18822e19b))
+
+  Add an ImageTool Edit menu action for dividing data by a selected numeric coordinate, such as mesh current.
+
+- **imagetool:** plot multidimensional associated coordinates (#324) ([a928be6](https://github.com/kmnhan/erlabpy/commit/a928be6bccd0938e5d5bd0c7a102bbbae2ab8b4a))
+
+  ImageTool can now plot numeric non-dimension coordinates with one or more dimensions from `View` → `Plot Associated Coordinates`. Multidimensional associated coordinates are sliced with the active cursor and averaged over binned hidden dimensions, so their profile overlays stay aligned with the displayed data slice. Cursor color mapping also supports multidimensional associated coordinates by sampling the coordinate value at each cursor position.
+
 - **io.plugins.merlin:** add support for loading beamline control system scans (#317) ([43ae4a6](https://github.com/kmnhan/erlabpy/commit/43ae4a6461a301c1a2218a420ebf35b66d6434a8))
 
   Adds a new function `load_bcs` to the MERLIN plugin, which can load beamline control system (BCS) scan data from text files. Currently only tested with DiagOn images, but should be flexible enough to support other image columns and varying/constant numeric columns.
@@ -14,6 +58,22 @@
 
 ### 🐞 Bug Fixes
 
+- **manager:** preserve file information during analysis ([3e34b82](https://github.com/kmnhan/erlabpy/commit/3e34b82b6274c4d800b0852a6a03b3d8f21f8cf4))
+
+  ImageTool now keeps the file information when data loaded from a file is transformed in place, opened in a detached top-level window, or restored through the manager. ImageTool windows detached from the originally loaded parent now retain their full history. The manager metadata panel also shows the originating file when available.
+
+- **imagetool:** fix coordinate edit code generation ([5f19644](https://github.com/kmnhan/erlabpy/commit/5f19644e0c7c7931d5cb2ce358a1cefbe4d10b9f))
+
+- **io.plugins.hers:** correct coordinate handling for ALS BL10 data (#329) ([733eb60](https://github.com/kmnhan/erlabpy/commit/733eb60df99c49dc8984c50114ecc7e7b89ff2b8))
+
+  FITS data from ALS BL10 now use the nominal scan axis from the FITS header for single-motor scans, matching Igor Pro’s loader behavior. This fixes cases where analyzer rotation (`Alpha`, translated to `beta` in `erlab` conventions) loaded with slightly nonuniform measured readback values. The measured values are still retained as `<motor>_readback` coordinates for diagnostics.
+
+  FITS binary table image axes also now interpret `TRPIX` as a one-based reference pixel, so `TRPIX=1` starts exactly at `TRVAL`, matching FITS/Igor semantics. This was previously misinterpreted as zero-based, causing a one-pixel shift in the loaded data.
+
+- **manager:** respect default loader for manager file dialogs (#321) ([d16dbda](https://github.com/kmnhan/erlabpy/commit/d16dbda6288e46f5b0f3aafdf7dd35a74a434fb2))
+
+  ImageTool manager file opening now respects the default data loader setting when choosing the initial loader filter for drag-and-drop, `load_in_manager(..., loader_name=None)`, and `File` -> `Open`.
+
 - **interactive:** make standalone windows close consistently (#320) ([7937bdd](https://github.com/kmnhan/erlabpy/commit/7937bdd75f05d0e7fcc67277c4499890702436f3))
 
   Fixes inconsistent Ctrl+W keyboard shortcut behavior for standalone apps like Periodic Table and Data Explorer.
@@ -21,6 +81,10 @@
 - **imagetool:** make manager row badges consistently interactive (#319) ([f04ec18](https://github.com/kmnhan/erlabpy/commit/f04ec185fb905f0bcf5a1950b4a04cf167c4b11c))
 
   ImageTool manager row badges now all show tooltips and respond to clicks. Dask badges open Dask/chunk controls, link and watched-variable badges expose the relevant row-specific actions with confirmation for destructive changes, tool-type badges focus the child tool, and source-status badges keep opening update controls.
+
+### ⚡️ Performance
+
+- **interactive:** reduce memory usage of colormaps (#322) ([97ee0d3](https://github.com/kmnhan/erlabpy/commit/97ee0d3bd7683f8fef8f02fe3acc51b0d44d2491))
 
 ## v3.21.0 (2026-04-26)
 
