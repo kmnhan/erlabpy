@@ -33,6 +33,7 @@ from erlab.interactive.imagetool.dialogs import (
     EdgeCorrectionDialog,
     GaussianFilterDialog,
     NormalizeDialog,
+    RenameDimsCoordsDialog,
     ROIMaskDialog,
     ROIPathDialog,
     RotationDialog,
@@ -3913,6 +3914,117 @@ def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(win.slicer_area._data.y.values, 2.0 * np.arange(4) + 0.5)
+
+
+def _set_rename_dialog_name(
+    dialog: RenameDimsCoordsDialog, old_name: object, new_name: str
+) -> None:
+    row = dialog._rename_sources.index(old_name)
+    item = dialog.table.item(row, 1)
+    assert item is not None
+    item.setText(new_name)
+
+
+def test_itool_rename_dims_coords(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={
+            "x": [0.0, 1.0],
+            "y": [10.0, 11.0, 12.0],
+            "temp": ("x", [100.0, 101.0]),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: RenameDimsCoordsDialog) -> None:
+        _set_rename_dialog_name(dialog, "x", "kx")
+        _set_rename_dialog_name(dialog, "temp", "temperature")
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._rename_dims_coords, pre_call=_set_dialog_params)
+
+    expected = data.rename({"x": "kx", "temp": "temperature"})
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), expected)
+
+    result = _exec_data_fragment(data, pyperclip.paste())
+    xarray.testing.assert_identical(result, expected)
+
+    win.close()
+
+
+def test_itool_rename_dims_coords_nonuniform_public_dims(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(15).reshape((3, 5)).astype(float),
+        dims=["x", "y"],
+        coords={
+            "x": np.array([0.0, 0.4, 1.0]),
+            "y": np.arange(5),
+            "temperature": ("x", [100.0, 101.0, 102.0]),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+
+    def _set_dialog_params(dialog: RenameDimsCoordsDialog) -> None:
+        assert "x" in dialog._rename_sources
+        assert "x_idx" not in dialog._rename_sources
+        _set_rename_dialog_name(dialog, "x", "kx")
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._rename_dims_coords, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.rename({"x": "kx"})
+    )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    assert ".rename(" in display_code
+    assert "x_idx" not in display_code
+
+    win.close()
+
+
+def test_rename_dims_coords_dialog_accept_validates_inputs(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((2, 3)).astype(float),
+        dims=["x", "y"],
+        coords={"x": [0.0, 1.0], "y": [10.0, 11.0, 12.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = RenameDimsCoordsDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    warnings: list[tuple[str, str]] = []
+
+    def _record_warning(_parent, title, message, *args, **kwargs):
+        warnings.append((title, message))
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+
+    dialog.accept()
+    _set_rename_dialog_name(dialog, "x", " ")
+    dialog.accept()
+    _set_rename_dialog_name(dialog, "x", "y")
+    dialog.accept()
+
+    assert warnings == [
+        ("No Names Changed", "Edit at least one coordinate or dimension name."),
+        ("Empty Name", "Names cannot be empty."),
+        ("Duplicate Names", "Names must be unique after renaming: y."),
+    ]
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
 
 
 def test_itool_swap_dims(qtbot, accept_dialog) -> None:

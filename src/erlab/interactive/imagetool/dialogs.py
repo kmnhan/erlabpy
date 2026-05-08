@@ -1990,6 +1990,141 @@ class SwapDimsDialog(DataTransformDialog):
         return f"{placeholder}.swap_dims({kwargs})"
 
 
+class RenameDimsCoordsDialog(DataTransformDialog):
+    title = "Rename Coordinates and Dimensions"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+        public_dims = tuple(
+            dim.removesuffix("_idx")
+            if isinstance(dim, str) and dim.endswith("_idx")
+            else dim
+            for dim in self.slicer_area.data.dims
+        )
+        if tuple(self._source_data.dims) != public_dims and set(
+            self._source_data.dims
+        ) == set(public_dims):
+            self._source_data = self._source_data.transpose(*public_dims)
+
+        self._rename_sources: list[Hashable] = [*self._source_data.dims]
+        self._rename_sources.extend(
+            name
+            for name in self._source_data.coords
+            if name not in self._source_data.dims
+        )
+
+        self.table = QtWidgets.QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Current", "New Name"])
+        self.table.setRowCount(len(self._rename_sources))
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table.setSortingEnabled(False)
+
+        readonly_flags = (
+            QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEnabled
+        )
+        for row, name in enumerate(self._rename_sources):
+            current_item = QtWidgets.QTableWidgetItem(str(name))
+            current_item.setFlags(readonly_flags)
+            current_item.setData(QtCore.Qt.ItemDataRole.UserRole, name)
+
+            new_item = QtWidgets.QTableWidgetItem(str(name))
+
+            self.table.setItem(row, 0, current_item)
+            self.table.setItem(row, 1, new_item)
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(
+            0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.resizeRowsToContents()
+        self.layout_.addRow(self.table)
+
+    def _new_name_for_row(self, row: int) -> str:
+        item = self.table.item(row, 1)
+        if item is None:
+            return ""
+        return item.text().strip()
+
+    @property
+    def _rename_mapping(self) -> dict[Hashable, Hashable]:
+        mapping: dict[Hashable, Hashable] = {}
+        for row, name in enumerate(self._rename_sources):
+            new_name = self._new_name_for_row(row)
+            if new_name != str(name):
+                mapping[name] = new_name
+        return mapping
+
+    @property
+    def _final_names(self) -> tuple[Hashable, ...]:
+        mapping = self._rename_mapping
+        return tuple(mapping.get(name, name) for name in self._rename_sources)
+
+    def _duplicate_final_names(self) -> list[Hashable]:
+        seen: set[Hashable] = set()
+        duplicates: list[Hashable] = []
+        for name in self._final_names:
+            if name in seen and name not in duplicates:
+                duplicates.append(name)
+            seen.add(name)
+        return duplicates
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        mapping = self._rename_mapping
+        if not mapping:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Names Changed",
+                "Edit at least one coordinate or dimension name.",
+            )
+            return
+
+        empty_names = [str(name) for name, new_name in mapping.items() if not new_name]
+        if empty_names:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Empty Name",
+                "Names cannot be empty.",
+            )
+            return
+
+        duplicates = self._duplicate_final_names()
+        if duplicates:
+            duplicate_text = ", ".join(str(name) for name in duplicates)
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Duplicate Names",
+                f"Names must be unique after renaming: {duplicate_text}.",
+            )
+            return
+
+        super().accept()
+
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.RenameDimsCoordsOperation(
+            mapping=self._rename_mapping
+        )
+
+    def make_code(self) -> str:
+        if not self._rename_mapping:
+            return ""
+
+        placeholder = self.slicer_area.watched_data_name or ""
+        kwargs = erlab.interactive.utils.format_call_kwargs(self._rename_mapping)
+        return f"{placeholder}.rename({kwargs})"
+
+
 class _CoordinateWidget(QtWidgets.QWidget):
     def __init__(self, values: npt.NDArray) -> None:
         super().__init__()
