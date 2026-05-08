@@ -9,9 +9,11 @@ import datetime
 import importlib
 import keyword
 import os
+import pathlib
 import sys
 import typing
 import weakref
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -119,6 +121,92 @@ def _format_chunk_summary(data: xr.DataArray) -> str:
     return "; ".join(parts)
 
 
+_LOAD_KWARGS_NOT_FOR_IDENTIFY = frozenset(
+    {
+        "chunks",
+        "single",
+        "combine",
+        "parallel",
+        "progress",
+        "load_kwargs",
+        "loader_extensions",
+    }
+)
+
+
+def _resolve_identified_path(
+    path: str | os.PathLike[str], data_dir: pathlib.Path
+) -> pathlib.Path:
+    resolved = pathlib.Path(path)
+    if not resolved.is_absolute():
+        resolved = data_dir / resolved
+    return resolved.resolve()
+
+
+def _scan_number_load_call_args(
+    file_path: Path,
+    loader_name: str,
+    kwargs: dict[str, typing.Any],
+) -> list[str] | None:
+    if kwargs.get("single", False) or "data_dir" in kwargs:
+        return None
+    if any(not isinstance(key, str) for key in kwargs):
+        return None
+    if loader_name not in erlab.io.loaders:
+        return None
+
+    loader = erlab.io.loaders[loader_name]
+    try:
+        scan_num, infer_kwargs = loader.infer_index(file_path.stem)
+    except Exception:
+        return None
+
+    if isinstance(scan_num, bool) or not isinstance(scan_num, int | np.integer):
+        return None
+    if infer_kwargs is None:
+        infer_kwargs = {}
+    if not isinstance(infer_kwargs, Mapping):
+        return None
+
+    scan_num = int(scan_num)
+    infer_kwargs = dict(infer_kwargs)
+    if "data_dir" in infer_kwargs or any(
+        not isinstance(key, str) for key in infer_kwargs
+    ):
+        return None
+
+    data_dir = pathlib.Path(file_path.parent)
+    identify_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key not in _LOAD_KWARGS_NOT_FOR_IDENTIFY
+    } | infer_kwargs
+    try:
+        identified = loader.identify(scan_num, data_dir, **identify_kwargs)
+    except Exception:
+        return None
+    if identified is None:
+        return None
+
+    identified_paths = identified[0]
+    target_path = pathlib.Path(file_path).resolve()
+    if not any(
+        _resolve_identified_path(path, data_dir) == target_path
+        for path in identified_paths
+    ):
+        return None
+
+    load_kwargs = kwargs | infer_kwargs
+    call_args = [repr(scan_num), f"data_dir={str(data_dir)!r}"]
+    if load_kwargs:
+        call_args.append(
+            erlab.interactive.utils.format_call_kwargs(
+                typing.cast("dict[typing.Hashable, typing.Any]", load_kwargs)
+            )
+        )
+    return call_args
+
+
 def _load_code_from_file_details(
     file_path: Path,
     load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
@@ -169,9 +257,15 @@ def _load_code_from_file_details(
         if kwargs
         else ""
     )
-    call_args = [repr(str(file_path))]
-    if kwargs_str:
-        call_args.append(kwargs_str)
+    call_args = (
+        _scan_number_load_call_args(file_path, loader_name, kwargs)
+        if loader_name is not None
+        else None
+    )
+    if call_args is None:
+        call_args = [repr(str(file_path))]
+        if kwargs_str:
+            call_args.append(kwargs_str)
     imports = list(dict.fromkeys(imports))
     call_expr = f"{loader_expr}({', '.join(call_args)})"
     if source_input_dtype is not None and np.dtype(source_input_dtype) not in (
