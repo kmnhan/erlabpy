@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pytest
 import xarray as xr
 
@@ -45,3 +46,11 @@ def test_load(expected_dir, args, expected) -> None:
     if ip_session:
         ip_session.clear_instance()
     del start_ipython.already_called
+
+
+def test_single_motor_scan_uses_nominal_axis(data_dir) -> None:
+    loaded = erlab.io.load("20211216_00011.fits")
+
+    np.testing.assert_allclose(loaded.beta, [-6.0, -5.5, -5.0])
+    np.testing.assert_allclose(loaded.Alpha_readback, [-6.0, -5.49, -5.02])
+    assert loaded.Alpha_readback.dims == ("beta",)
