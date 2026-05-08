@@ -134,7 +134,9 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Non-uniform coordinates are converted with a `_idx` suffix for plotting. Their true values are displayed in the cursor readouts.
 
-- Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor` dialog. This is a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values, edit per-point values, or scale and offset a numeric scalar or 1D coordinate with `new = scale * old + offset`.
+- Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor` dialog. This is a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values, edit per-point values, scale and offset a numeric scalar or 1D coordinate with `new = scale * old + offset`, add a scalar coordinate, or add a 1D associated coordinate along an existing dimension.
+
+- Use {guilabel}`Edit → Edit Attributes` to open the {guilabel}`Attribute Editor` dialog. This is a GUI for {meth}`xarray.DataArray.assign_attrs` that lets you change existing attributes or add new typed attributes while leaving untouched attributes in place. Choose {guilabel}`String`, {guilabel}`Int`, {guilabel}`Float`, {guilabel}`Bool`, or {guilabel}`Python literal` when entering values.
 
 - Use {guilabel}`Edit → Rename...` to open the {guilabel}`Rename Coordinates and Dimensions` dialog. This is a GUI for {meth}`xarray.DataArray.rename` that lets you rename coordinates and dimensions.
 
@@ -286,6 +288,7 @@ ImageTool is the GUI counterpart to the core selection and transform APIs: `.sel
 {func}`erlab.analysis.transform.rotate`,
 {func}`erlab.analysis.transform.symmetrize`,
 {meth}`xarray.DataArray.assign_coords`,
+{meth}`xarray.DataArray.assign_attrs`,
 {meth}`xarray.DataArray.rename`,
 {func}`erlab.analysis.interpolate.slice_along_path`, and
 {func}`erlab.analysis.mask.mask_with_polygon`.

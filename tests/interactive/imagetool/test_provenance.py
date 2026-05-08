@@ -396,6 +396,75 @@ def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
     )
 
 
+def test_tool_provenance_assign_scalar_coord_operation() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+    operation = prov.AssignScalarCoordOperation(coord_name="temperature", value=21.5)
+    expected = erlab.utils.array.sort_coord_order(
+        data.assign_coords({"temperature": 21.5}),
+        keys=data.coords.keys(),
+        dims_first=False,
+    )
+
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+
+    code = prov.full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    assert any(call.endswith(".assign_coords") for call in _generated_call_names(code))
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(
+        namespace["derived"], data.assign_coords(temperature=21.5)
+    )
+
+
+def test_tool_provenance_assign_1d_coord_operation() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+    values = np.array(["low", "mid", "high"])
+    operation = prov.AssignCoord1DOperation(
+        coord_name="label",
+        dim="x",
+        values=values,
+    )
+    expected = erlab.utils.array.sort_coord_order(
+        data.assign_coords({"label": ("x", values)}),
+        keys=data.coords.keys(),
+        dims_first=False,
+    )
+
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+
+    code = prov.full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    assert any(call.endswith(".assign_coords") for call in _generated_call_names(code))
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(
+        namespace["derived"], data.assign_coords(label=("x", values))
+    )
+
+
+def test_tool_provenance_assign_attrs_operation() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().assign_attrs(source="old", count=1)
+    attrs = {"source": "new", "flag": True, "meta": {"scan": 1}}
+    operation = prov.AssignAttrsOperation(attrs=attrs)
+    expected = data.assign_attrs(attrs)
+
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+
+    code = prov.full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    assert any(call.endswith(".assign_attrs") for call in _generated_call_names(code))
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
 def _expected_affine_coord(
     data: xr.DataArray, coord_name: str, scale: float, offset: float
 ) -> xr.DataArray:

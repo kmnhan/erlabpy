@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import math
 import re
@@ -329,7 +330,8 @@ class DataTransformDialog(_DataManipulationDialog):
             base_spec,
             local_spec,
         )
-        assert composed is not None
+        if composed is None:
+            raise RuntimeError("Could not compose ImageTool transform provenance.")
         return composed
 
     def _compose_replace_source_spec(
@@ -1294,9 +1296,11 @@ class EdgeCorrectionDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        assert self._edge_fit is not None
+        edge_fit = getattr(self, "_edge_fit", None)
+        if edge_fit is None:
+            raise RuntimeError("Edge correction fit data has not been loaded.")
         return erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation(
-            edge_fit=self._edge_fit,
+            edge_fit=edge_fit,
             shift_coords=self.shift_coord_check.isChecked(),
         )
 
@@ -2040,7 +2044,7 @@ class RenameDimsCoordsDialog(DataTransformDialog):
             self.table.setItem(row, 0, current_item)
             self.table.setItem(row, 1, new_item)
 
-        header = self.table.horizontalHeader()
+        header = typing.cast("QtWidgets.QHeaderView", self.table.horizontalHeader())
         header.setSectionResizeMode(
             0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
         )
@@ -2055,8 +2059,8 @@ class RenameDimsCoordsDialog(DataTransformDialog):
         return item.text().strip()
 
     @property
-    def _rename_mapping(self) -> dict[Hashable, Hashable]:
-        mapping: dict[Hashable, Hashable] = {}
+    def _rename_mapping(self) -> dict[Hashable, str]:
+        mapping: dict[Hashable, str] = {}
         for row, name in enumerate(self._rename_sources):
             new_name = self._new_name_for_row(row)
             if new_name != str(name):
@@ -2088,7 +2092,9 @@ class RenameDimsCoordsDialog(DataTransformDialog):
             )
             return
 
-        empty_names = [str(name) for name, new_name in mapping.items() if not new_name]
+        empty_names = [
+            str(name) for name, new_name in mapping.items() if new_name == ""
+        ]
         if empty_names:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -2113,7 +2119,7 @@ class RenameDimsCoordsDialog(DataTransformDialog):
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
         return erlab.interactive.imagetool.provenance.RenameDimsCoordsOperation(
-            mapping=self._rename_mapping
+            mapping=typing.cast("dict[Hashable, Hashable]", self._rename_mapping)
         )
 
     def make_code(self) -> str:
@@ -2142,7 +2148,6 @@ class _CoordinateWidget(QtWidgets.QWidget):
 
         values_widget = QtWidgets.QWidget()
         values_layout = QtWidgets.QFormLayout(values_widget)
-        values_layout.setContentsMargins(0, 0, 0, 0)
         values_widget.setLayout(values_layout)
 
         self.spin0 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
@@ -2174,7 +2179,6 @@ class _CoordinateWidget(QtWidgets.QWidget):
 
         affine_widget = QtWidgets.QWidget()
         affine_layout = QtWidgets.QFormLayout(affine_widget)
-        affine_layout.setContentsMargins(0, 0, 0, 0)
         affine_widget.setLayout(affine_layout)
 
         self.scale_spin = erlab.interactive.utils.BetterSpinBox(
@@ -2387,10 +2391,11 @@ class AssignCoordsDialog(DataTransformDialog):
     title = "Coordinate Editor"
 
     def setup_widgets(self) -> None:
+        self._mode_tabs = QtWidgets.QTabWidget(self)
+        self.layout_.addRow(self._mode_tabs)
+
         existing_widget = QtWidgets.QWidget(self)
         existing_layout = QtWidgets.QVBoxLayout(existing_widget)
-        existing_layout.setContentsMargins(0, 0, 0, 0)
-        self.layout_.addRow(existing_widget)
 
         existing_coord_names: list[str] = [str(d) for d in self.slicer_area.data.dims]
         existing_coord_names.extend(
@@ -2407,6 +2412,45 @@ class AssignCoordsDialog(DataTransformDialog):
         self.coord_widget = _CoordinateWidget(np.array([0, 1]))
         self._coord_selection_changed()
         existing_layout.addWidget(self.coord_widget)
+        self._mode_tabs.addTab(existing_widget, "Edit Existing")
+
+        add_widget = QtWidgets.QWidget(self)
+        add_layout = QtWidgets.QFormLayout(add_widget)
+        add_widget.setLayout(add_layout)
+
+        self._add_name_edit = QtWidgets.QLineEdit()
+        add_layout.addRow("Name", self._add_name_edit)
+
+        self._add_kind_combo = QtWidgets.QComboBox()
+        self._add_kind_combo.addItems(["Scalar", "1D Along Coordinate"])
+        self._add_kind_combo.currentTextChanged.connect(self._sync_add_widgets)
+        add_layout.addRow("Kind", self._add_kind_combo)
+
+        self._add_ref_combo = QtWidgets.QComboBox()
+        self._populate_add_reference_combo()
+        self._add_ref_combo.currentIndexChanged.connect(self._add_reference_changed)
+        add_layout.addRow("Reference", self._add_ref_combo)
+
+        self._add_value_mode_combo = QtWidgets.QComboBox()
+        self._add_value_mode_combo.addItems(["Numeric Values", "Python Literal"])
+        self._add_value_mode_combo.currentTextChanged.connect(self._sync_add_widgets)
+        add_layout.addRow("Value Mode", self._add_value_mode_combo)
+
+        self._add_value_stack = QtWidgets.QStackedWidget()
+        self._add_coord_widget = _CoordinateWidget(np.array([0.0, 1.0]))
+        self._add_value_stack.addWidget(self._add_coord_widget)
+
+        literal_widget = QtWidgets.QWidget(self)
+        literal_layout = QtWidgets.QFormLayout(literal_widget)
+        literal_widget.setLayout(literal_layout)
+        self._add_literal_edit = QtWidgets.QLineEdit("0.0")
+        literal_layout.addRow("Value", self._add_literal_edit)
+        self._add_value_stack.addWidget(literal_widget)
+        add_layout.addRow(self._add_value_stack)
+
+        self._mode_tabs.addTab(add_widget, "Add Coordinate")
+        self._add_reference_changed()
+        self._sync_add_widgets()
 
     @property
     def current_coord_name(self) -> str:
@@ -2419,9 +2463,140 @@ class AssignCoordsDialog(DataTransformDialog):
             self.slicer_area.data[self.current_coord_name].values
         )
 
+    def _populate_add_reference_combo(self) -> None:
+        self._add_ref_combo.clear()
+        added_dims: set[Hashable] = set()
+        for dim in self.slicer_area.data.dims:
+            if dim in self.slicer_area.data.coords:
+                coord = self.slicer_area.data.coords[dim]
+                if coord.ndim == 1:
+                    self._add_ref_combo.addItem(f"{dim} (dimension)", userData=dim)
+                    added_dims.add(dim)
+        for coord_name, coord in self.slicer_area.data.coords.items():
+            if coord_name in self.slicer_area.data.dims or coord.ndim != 1:
+                continue
+            dim = coord.dims[0]
+            if dim in self.slicer_area.data.dims:
+                self._add_ref_combo.addItem(
+                    f"{coord_name} ({dim})",
+                    userData=dim,
+                )
+                added_dims.add(dim)
+        for dim in self.slicer_area.data.dims:
+            if dim not in added_dims:
+                self._add_ref_combo.addItem(str(dim), userData=dim)
+
+    @QtCore.Slot()
+    @QtCore.Slot(str)
+    def _sync_add_widgets(self, _text: str | None = None) -> None:
+        is_scalar = self._add_kind_combo.currentText() == "Scalar"
+        self._add_ref_combo.setEnabled(not is_scalar)
+        self._add_value_mode_combo.setEnabled(not is_scalar)
+        use_literal = (
+            is_scalar or self._add_value_mode_combo.currentText() == "Python Literal"
+        )
+        self._add_value_stack.setCurrentIndex(1 if use_literal else 0)
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _add_reference_changed(self, _index: int | None = None) -> None:
+        if self._add_ref_combo.count() == 0:
+            return
+        dim = typing.cast(
+            "Hashable",
+            self._add_ref_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+        label = self._add_ref_combo.currentText()
+        coord_name = label.split(" (", 1)[0]
+        if coord_name in self.slicer_area.data.coords:
+            values = self.slicer_area.data.coords[coord_name].values
+        else:
+            values = np.arange(self.slicer_area.data.sizes[dim], dtype=float)
+        self._add_coord_widget.set_old_coord(values)
+
+    def _add_coord_values(self) -> tuple[typing.Any, Hashable | None]:
+        if self._add_kind_combo.currentText() == "Scalar":
+            value = ast.literal_eval(self._add_literal_edit.text().strip())
+            if isinstance(value, (list, tuple, dict)):
+                raise ValueError("Scalar coordinates must use a scalar value.")
+            return value, None
+
+        dim = typing.cast(
+            "Hashable",
+            self._add_ref_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+        if self._add_value_mode_combo.currentText() == "Numeric Values":
+            values = (
+                self._add_coord_widget.affine_coord
+                if self._add_coord_widget.use_affine_transform
+                else self._add_coord_widget.new_coord
+            )
+        else:
+            values = np.asarray(ast.literal_eval(self._add_literal_edit.text().strip()))
+
+        values = np.asarray(values)
+        if values.ndim != 1:
+            raise ValueError("1D coordinates must use a one-dimensional value.")
+        if values.size != self.slicer_area.data.sizes[dim]:
+            raise ValueError(
+                f"Coordinate length {values.size} does not match dimension "
+                f"{dim!r} length {self.slicer_area.data.sizes[dim]}."
+            )
+        return values, dim
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if self._mode_tabs.currentIndex() != 1:
+            super().accept()
+            return
+
+        name = self._add_name_edit.text().strip()
+        if not name:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Empty Name",
+                "Coordinate names cannot be empty.",
+            )
+            return
+
+        if name in self.slicer_area.data.dims or name in self.slicer_area.data.coords:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Duplicate Name",
+                f"A coordinate or dimension named {name!r} already exists.",
+            )
+            return
+
+        try:
+            self._add_coord_values()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Coordinate Value",
+                str(exc),
+            )
+            return
+
+        super().accept()
+
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        if self._mode_tabs.currentIndex() == 1:
+            values, dim = self._add_coord_values()
+            name = self._add_name_edit.text().strip()
+            if dim is None:
+                return (
+                    erlab.interactive.imagetool.provenance.AssignScalarCoordOperation(
+                        coord_name=name,
+                        value=values,
+                    )
+                )
+            return erlab.interactive.imagetool.provenance.AssignCoord1DOperation(
+                coord_name=name,
+                dim=dim,
+                values=values,
+            )
         if self.coord_widget.use_affine_transform:
             return erlab.interactive.imagetool.provenance.AffineCoordOperation(
                 coord_name=self.current_coord_name,
@@ -2431,6 +2606,212 @@ class AssignCoordsDialog(DataTransformDialog):
         return erlab.interactive.imagetool.provenance.AssignCoordsOperation(
             coord_name=self.current_coord_name,
             values=self.coord_widget.new_coord,
+        )
+
+
+_ATTR_TYPE_NAMES: tuple[str, ...] = (
+    "String",
+    "Int",
+    "Float",
+    "Bool",
+    "Python literal",
+)
+
+
+def _attr_display_value(value: typing.Any) -> tuple[str, str]:
+    value = erlab.utils.misc._convert_to_native(value)
+    text = (
+        value
+        if isinstance(value, str)
+        else erlab.interactive.utils._parse_single_arg(value)
+    )
+    if isinstance(value, bool):
+        return "Bool", text
+    if isinstance(value, int):
+        return "Int", text
+    if isinstance(value, float):
+        return "Float", text
+    if isinstance(value, str):
+        return "String", text
+    return "Python literal", text
+
+
+def _parse_attr_value(type_name: str, text: str) -> typing.Any:
+    stripped = text.strip()
+    match type_name:
+        case "String":
+            return text
+        case "Int":
+            return int(stripped)
+        case "Float":
+            return float(stripped)
+        case "Bool":
+            lowered = stripped.casefold()
+            if lowered in {"true", "1", "yes"}:
+                return True
+            if lowered in {"false", "0", "no"}:
+                return False
+            raise ValueError("Bool attributes must be True or False.")
+        case "Python literal":
+            return ast.literal_eval(stripped)
+        case _:
+            raise ValueError(f"Unknown attribute type: {type_name}.")
+
+
+def _attr_values_equal(left: typing.Any, right: typing.Any) -> bool:
+    try:
+        equal = left == right
+    except Exception:
+        return False
+    if isinstance(equal, np.ndarray):
+        return bool(np.all(equal))
+    return bool(equal)
+
+
+class AssignAttrsDialog(DataTransformDialog):
+    title = "Attribute Editor"
+
+    def setup_widgets(self) -> None:
+        self._original_attrs = dict(self.slicer_area.data.attrs)
+        self.table = QtWidgets.QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Name", "Type", "Value"])
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.table.setSortingEnabled(False)
+        self.layout_.addRow(self.table)
+
+        self.add_attr_button = QtWidgets.QPushButton("Add Attribute")
+        self.add_attr_button.clicked.connect(self._add_empty_row)
+        self.layout_.addRow(self.add_attr_button)
+
+        for key, value in self._original_attrs.items():
+            self._add_attr_row(key, value, editable_name=False)
+
+        header = typing.cast("QtWidgets.QHeaderView", self.table.horizontalHeader())
+        header.setSectionResizeMode(
+            0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setSectionResizeMode(
+            1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.table.resizeRowsToContents()
+
+    def _add_attr_row(
+        self,
+        key: Hashable | str,
+        value: typing.Any,
+        *,
+        editable_name: bool,
+    ) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        key_item = QtWidgets.QTableWidgetItem("" if editable_name else str(key))
+        key_item.setData(QtCore.Qt.ItemDataRole.UserRole, key)
+        if not editable_name:
+            key_item.setFlags(
+                QtCore.Qt.ItemFlag.ItemIsSelectable | QtCore.Qt.ItemFlag.ItemIsEnabled
+            )
+        self.table.setItem(row, 0, key_item)
+
+        type_name, value_text = _attr_display_value(value)
+        type_combo = QtWidgets.QComboBox()
+        type_combo.addItems(_ATTR_TYPE_NAMES)
+        type_combo.setCurrentText(type_name)
+        self.table.setCellWidget(row, 1, type_combo)
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(value_text))
+
+    @QtCore.Slot()
+    def _add_empty_row(self) -> None:
+        self._add_attr_row("", "", editable_name=True)
+
+    def _row_key(self, row: int) -> Hashable:
+        item = self.table.item(row, 0)
+        if item is None:
+            return ""
+        original = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if original in self._original_attrs:
+            return typing.cast("Hashable", original)
+        return item.text().strip()
+
+    def _row_type(self, row: int) -> str:
+        combo = typing.cast("QtWidgets.QComboBox", self.table.cellWidget(row, 1))
+        return combo.currentText()
+
+    def _row_text(self, row: int) -> str:
+        item = self.table.item(row, 2)
+        return "" if item is None else item.text()
+
+    def _attrs_from_table(self) -> dict[Hashable, typing.Any]:
+        attrs: dict[Hashable, typing.Any] = {}
+        for row in range(self.table.rowCount()):
+            key = self._row_key(row)
+            if key == "":
+                raise ValueError("Attribute names cannot be empty.")
+            attrs[key] = _parse_attr_value(self._row_type(row), self._row_text(row))
+        return attrs
+
+    @property
+    def _changed_attrs(self) -> dict[Hashable, typing.Any]:
+        attrs = self._attrs_from_table()
+        return {
+            key: value
+            for key, value in attrs.items()
+            if key not in self._original_attrs
+            or not _attr_values_equal(value, self._original_attrs[key])
+        }
+
+    def _duplicate_names(self) -> list[Hashable]:
+        seen: set[Hashable] = set()
+        duplicates: list[Hashable] = []
+        for row in range(self.table.rowCount()):
+            key = self._row_key(row)
+            if key in seen and key not in duplicates:
+                duplicates.append(key)
+            seen.add(key)
+        return duplicates
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        try:
+            self._attrs_from_table()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Attribute Value",
+                str(exc),
+            )
+            return
+
+        duplicates = self._duplicate_names()
+        if duplicates:
+            duplicate_text = ", ".join(str(name) for name in duplicates)
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Duplicate Names",
+                f"Attribute names must be unique: {duplicate_text}.",
+            )
+            return
+
+        if not self._changed_attrs:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Attributes Changed",
+                "Edit at least one attribute or add a new one.",
+            )
+            return
+
+        super().accept()
+
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance.AssignAttrsOperation(
+            attrs=self._changed_attrs
         )
 
 

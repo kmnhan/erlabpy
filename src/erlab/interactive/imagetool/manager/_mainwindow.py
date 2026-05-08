@@ -224,17 +224,21 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
 
         self.button_box = QtWidgets.QDialogButtonBox(self)
         self.button_box.setCenterButtons(False)
-        self.copy_path_button = self.button_box.addButton(
-            "Copy Path", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        self.copy_path_button = typing.cast(
+            "QtWidgets.QAbstractButton",
+            self.button_box.addButton(
+                "Copy Path", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+            ),
         )
-        assert self.copy_path_button is not None
         self.copy_path_button.clicked.connect(
             lambda: erlab.interactive.utils.copy_to_clipboard(self.path_edit.text())
         )
-        self.copy_code_button = self.button_box.addButton(
-            "Copy Load Code", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+        self.copy_code_button = typing.cast(
+            "QtWidgets.QAbstractButton",
+            self.button_box.addButton(
+                "Copy Load Code", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+            ),
         )
-        assert self.copy_code_button is not None
         self.copy_code_button.setEnabled(details.load_code is not None)
         self.copy_code_button.setToolTip(
             "Copy a replayable loading snippet for this source."
@@ -248,10 +252,10 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
                 else None
             )
         )
-        close_button = self.button_box.addButton(
-            QtWidgets.QDialogButtonBox.StandardButton.Close
+        close_button = typing.cast(
+            "QtWidgets.QAbstractButton",
+            self.button_box.addButton(QtWidgets.QDialogButtonBox.StandardButton.Close),
         )
-        assert close_button is not None
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
         self.adjustSize()

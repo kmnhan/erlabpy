@@ -4879,6 +4879,78 @@ def test_manager_affine_coord_child_refreshes_from_formula(
         )
 
 
+def test_manager_assign_attrs_child_refreshes_from_operation(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        attrs={"source": "old"},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+
+        def _nest_attrs(dialog) -> None:
+            assert dialog.launch_mode == "nest"
+            source_row = next(
+                row
+                for row in range(dialog.table.rowCount())
+                if dialog._row_key(row) == "source"
+            )
+            dialog.table.item(source_row, 2).setText("new")
+            dialog._add_empty_row()
+            flag_row = dialog.table.rowCount() - 1
+            dialog.table.item(flag_row, 0).setText("flag")
+            typing.cast(
+                "QtWidgets.QComboBox", dialog.table.cellWidget(flag_row, 1)
+            ).setCurrentText("Bool")
+            dialog.table.item(flag_row, 2).setText("True")
+
+        accept_dialog(parent_tool.mnb._assign_attrs, pre_call=_nest_attrs)
+
+        parent = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_tool = manager.get_imagetool(child_uid)
+
+        operation = erlab.interactive.imagetool.provenance.AssignAttrsOperation(
+            attrs={"source": "new", "flag": True}
+        )
+        expected = operation.apply(data, parent_data=data).rename("scan")
+        xr.testing.assert_identical(child_tool.slicer_area._data, expected)
+
+        assert child_node.source_spec is not None
+        operations = [
+            op for op in child_node.source_spec.operations if op.op == "assign_attrs"
+        ]
+        assert operations == [operation]
+
+        updated = data.assign_attrs(source="updated", count=2)
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node._update_from_parent_source() is True
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            operation.apply(updated, parent_data=updated).rename(None),
+        )
+
+
 def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(
     qtbot,
     monkeypatch,

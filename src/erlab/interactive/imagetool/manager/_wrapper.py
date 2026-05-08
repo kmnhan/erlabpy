@@ -236,7 +236,8 @@ def _load_code_from_file_details(
         setup_lines.append(f"erlab.io.set_loader({loader_name!r})")
         loader_expr = "erlab.io.load"
     else:
-        assert not isinstance(loader, str)
+        if isinstance(loader, str):
+            return None
         callable_loader_expr = _loader_callable_text(loader)
         if callable_loader_expr is None:
             return None
@@ -654,7 +655,8 @@ class _ManagedWindowNode(QtCore.QObject):
         tool_window = self.tool_window
         kind_value = "ImageTool"
         if not self.is_imagetool:
-            assert tool_window is not None
+            if tool_window is None:
+                raise RuntimeError("Managed non-ImageTool node is missing its tool.")
             kind_value = tool_window.tool_name
 
         fields = [

@@ -31,6 +31,7 @@ Prefer importing top-level `erlab` in modules that already use `lazy_loader`, ev
 Follow package import conventions by preferring absolute imports over relative imports.
 Use modern typing syntax as a default rule: use built-in generics (`list[str]`, `dict[str, int]`) and `collections.abc` types (for example `Callable`), and avoid deprecated `typing` aliases (deprecated since Python 3.9).
 Typing rule: do not write `typing.Iterable`, `typing.Iterator`, `typing.Mapping`, `typing.Sequence`, `typing.Callable`, `typing.Dict`, `typing.List`, or `typing.Tuple`. Import abstract collection types from `collections.abc` (inside `if typing.TYPE_CHECKING:` when used only for annotations) and use built-in containers such as `list[str]` and `dict[str, int]`.
+Do not use `assert` in runtime code under `src/`; use explicit `if`/`raise` checks for runtime invariants and `typing.cast` for type narrowing that should not affect runtime behavior.
 
 ## Testing Guidelines
 

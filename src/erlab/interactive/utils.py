@@ -3357,7 +3357,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             data=data,
         )
         if direct_input_name is not None:
-            assert input_provenance is not None
+            if input_provenance is None:
+                raise RuntimeError("Direct replay input requires input provenance.")
             if local_spec is None:
                 return input_provenance
             replay_spec = (
@@ -3365,7 +3366,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                     local_spec
                 )
             )
-            assert replay_spec is not None
+            if replay_spec is None:
+                raise RuntimeError("Could not convert local provenance to replay spec.")
             return replay_spec.model_copy(
                 update={"start_label": typing.cast("str", input_provenance.start_label)}
             )
