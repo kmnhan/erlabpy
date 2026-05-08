@@ -286,6 +286,14 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         ).apply(data),
         data.swap_dims({"x": "x_alt"}),
     )
+    xr.testing.assert_identical(
+        erlab.interactive.imagetool.provenance.full_data(
+            erlab.interactive.imagetool.provenance.RenameDimsCoordsOperation(
+                mapping={"x": "kx", "x_alt": "label"}
+            )
+        ).apply(data),
+        data.rename({"x": "kx", "x_alt": "label"}),
+    )
 
     assigned = erlab.interactive.imagetool.provenance.full_data(
         erlab.interactive.imagetool.provenance.AssignCoordsOperation(
@@ -300,6 +308,34 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         dims_first=False,
     )
     xr.testing.assert_identical(assigned, expected_assigned)
+
+
+def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _string_key_data().assign_coords(
+        {"coord-1": xr.DataArray([100.0, 101.0, 102.0], dims=["k-space"])}
+    )
+    operation = prov.RenameDimsCoordsOperation(
+        mapping={"k-space": "kx", "coord-1": "temperature"}
+    )
+    expected = data.rename({"k-space": "kx", "coord-1": "temperature"})
+
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+
+    entry = operation.derivation_entry()
+    assert entry.copyable is True
+    assert entry.code is not None
+    namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+    spec = prov.full_data(operation).to_replay_spec()
+    code = spec.display_code(parent_data=data)
+    assert code is not None
+    assert ".rename(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
 
 
 @pytest.mark.parametrize(

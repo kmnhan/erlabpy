@@ -70,6 +70,7 @@ __all__ = [
     "IselOperation",
     "MaskWithPolygonOperation",
     "QSelOperation",
+    "RenameDimsCoordsOperation",
     "RenameOperation",
     "RestoreNonuniformDimsOperation",
     "RotateOperation",
@@ -1806,6 +1807,22 @@ class SwapDimsOperation(ToolProvenanceOperation):
         return DerivationEntry(
             f"Swap Dimensions({_format_derivation_value(self.mapping)})",
             "derived = derived.swap_dims("
+            f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})",
+            True,
+        )
+
+
+class RenameDimsCoordsOperation(ToolProvenanceOperation):
+    op: typing.Literal["rename_dims_coords"] = "rename_dims_coords"
+    mapping: ProvenanceHashableMapping = pydantic.Field(default_factory=dict)
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.rename(self.mapping)
+
+    def derivation_entry(self) -> DerivationEntry:
+        return DerivationEntry(
+            f"Rename({_format_derivation_value(self.mapping)})",
+            "derived = derived.rename("
             f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})",
             True,
         )
