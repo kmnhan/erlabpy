@@ -1997,19 +1997,22 @@ class _CoordinateWidget(QtWidgets.QWidget):
         self.set_old_coord(values)
 
     def init_ui(self):
-        container_layout = QtWidgets.QHBoxLayout(self)
+        container_layout = QtWidgets.QVBoxLayout(self)
         container_layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(container_layout)
 
-        left_widget = QtWidgets.QWidget()
-        container_layout.addWidget(left_widget)
-        left_layout = QtWidgets.QFormLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_widget.setLayout(left_layout)
+        self.edit_mode_tabs = QtWidgets.QTabWidget()
+        self.edit_mode_tabs.currentChanged.connect(self._edit_mode_changed)
+        container_layout.addWidget(self.edit_mode_tabs)
+
+        values_widget = QtWidgets.QWidget()
+        values_layout = QtWidgets.QFormLayout(values_widget)
+        values_layout.setContentsMargins(0, 0, 0, 0)
+        values_widget.setLayout(values_layout)
 
         self.spin0 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
         self.spin0.valueChanged.connect(self.update_table)
-        left_layout.addRow("Start", self.spin0)
+        values_layout.addRow("Start", self.spin0)
 
         self.spin1 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
         self.spin1.valueChanged.connect(self.update_table)
@@ -2018,11 +2021,11 @@ class _CoordinateWidget(QtWidgets.QWidget):
         self.mode_combo.addItems(["End", "Delta"])
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.currentTextChanged.connect(self.mode_changed)
-        left_layout.addRow(self.mode_combo, self.spin1)
+        values_layout.addRow(self.mode_combo, self.spin1)
 
         self.reset_btn = QtWidgets.QPushButton("Reset")
         self.reset_btn.clicked.connect(self.reset)
-        left_layout.addRow(self.reset_btn)
+        values_layout.addRow(self.reset_btn)
 
         self.table = QtWidgets.QTableWidget()
         self.table.setColumnCount(1)
@@ -2032,11 +2035,79 @@ class _CoordinateWidget(QtWidgets.QWidget):
         )
         self.table.setSortingEnabled(False)
         self.table.setAlternatingRowColors(True)
-        left_layout.addRow(self.table)
+        values_layout.addRow(self.table)
+
+        affine_widget = QtWidgets.QWidget()
+        affine_layout = QtWidgets.QFormLayout(affine_widget)
+        affine_layout.setContentsMargins(0, 0, 0, 0)
+        affine_widget.setLayout(affine_layout)
+
+        self.scale_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False, trim="0", value=1.0
+        )
+        self.scale_spin.valueChanged.connect(self.update_affine_preview)
+        affine_layout.addRow("Scale", self.scale_spin)
+
+        self.offset_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False, trim="0"
+        )
+        self.offset_spin.valueChanged.connect(self.update_affine_preview)
+        affine_layout.addRow("Offset", self.offset_spin)
+
+        self.affine_table = QtWidgets.QTableWidget()
+        self.affine_table.setColumnCount(2)
+        self.affine_table.setHorizontalHeaderLabels(["Current", "Transformed"])
+        self.affine_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.affine_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.affine_table.setSortingEnabled(False)
+        self.affine_table.setAlternatingRowColors(True)
+        affine_layout.addRow(self.affine_table)
+
+        self.edit_mode_tabs.addTab(values_widget, "Values")
+        self.edit_mode_tabs.addTab(affine_widget, "Scale/Offset")
+
+    @property
+    def use_affine_transform(self) -> bool:
+        """Whether the widget is currently editing by scale and offset."""
+        return self.edit_mode_tabs.currentIndex() == 1
+
+    @property
+    def affine_scale(self) -> float:
+        """Get the scale for affine coordinate editing."""
+        return float(self.scale_spin.value())
+
+    @property
+    def affine_offset(self) -> float:
+        """Get the offset for affine coordinate editing."""
+        return float(self.offset_spin.value())
+
+    @property
+    def affine_coord(self) -> npt.NDArray:
+        """Get the affine-transformed coordinates as a numpy array."""
+        return self.affine_scale * self._old_coord + self.affine_offset
+
+    def _affine_supported(self) -> bool:
+        values = np.asarray(self._old_coord)
+        return (
+            values.ndim <= 1
+            and np.issubdtype(values.dtype, np.number)
+            and not np.issubdtype(values.dtype, np.complexfloating)
+        )
+
+    @QtCore.Slot(int)
+    def _edit_mode_changed(self, _index: int) -> None:
+        if self.use_affine_transform:
+            self.update_affine_preview()
 
     @QtCore.Slot()
     def mode_changed(self) -> None:
         """Handle the change of the mode combo box."""
+        if np.atleast_1d(self._old_coord).size < 2:
+            return
         new_mode = self.mode_combo.currentText()
         self.spin1.blockSignals(True)
         match new_mode:
@@ -2072,36 +2143,51 @@ class _CoordinateWidget(QtWidgets.QWidget):
                     self.spin1.setValue(0.0)
 
         self._set_table_values(np.atleast_1d(self._old_coord))
+        affine_supported = self._affine_supported()
+        affine_index = 1
+        self.edit_mode_tabs.setTabEnabled(affine_index, affine_supported)
+        if not affine_supported and self.edit_mode_tabs.currentIndex() == affine_index:
+            self.edit_mode_tabs.setCurrentIndex(0)
+        with (
+            QtCore.QSignalBlocker(self.scale_spin),
+            QtCore.QSignalBlocker(self.offset_spin),
+        ):
+            self.scale_spin.setValue(1.0)
+            self.offset_spin.setValue(0.0)
+        self.update_affine_preview()
 
     def set_old_coord(self, values: npt.NDArray) -> None:
         """Set the old coordinates to the given values."""
-        self._old_coord = values.copy()
+        self._old_coord = np.asarray(values).copy()
         self.reset()
 
     @property
     def _current_values_end(self) -> npt.NDArray:
         """Get the current values assuming spin1 value is the end."""
-        return np.linspace(self.spin0.value(), self.spin1.value(), len(self._old_coord))
+        return np.linspace(
+            self.spin0.value(), self.spin1.value(), np.atleast_1d(self._old_coord).size
+        ).reshape(np.atleast_1d(self._old_coord).shape)
 
     @property
     def _current_values_delta(self) -> npt.NDArray:
         """Get the current values assuming spin1 value is the step size."""
-        sz: int = len(self._old_coord)
+        sz: int = np.atleast_1d(self._old_coord).size
         return np.linspace(
             self.spin0.value(),
             self.spin0.value() + self.spin1.value() * (sz - 1),
             sz,
-        )
+        ).reshape(np.atleast_1d(self._old_coord).shape)
 
     @property
     def new_coord(self) -> npt.NDArray:
         """Get the edited coordinates as a numpy array."""
         values = self._old_coord.copy()
+        flat_values = values.reshape(-1)
         for i in range(self.table.rowCount()):
             item = self.table.item(i, 0)
             if item is not None and item.text():
                 try:
-                    values[i] = float(item.text())
+                    flat_values[i] = float(item.text())
                 except Exception as e:
                     raise ValueError(f"Invalid value in row {i}: {item.text()}") from e
         return values
@@ -2116,12 +2202,21 @@ class _CoordinateWidget(QtWidgets.QWidget):
                 vals = self._current_values_delta
         self._set_table_values(vals)
 
+    @QtCore.Slot()
+    def update_affine_preview(self) -> None:
+        """Update the preview table for affine coordinate editing."""
+        if not self._affine_supported():
+            self.affine_table.setRowCount(0)
+            return
+        self._set_affine_table_values(self.affine_coord)
+
     def _set_table_values(self, values: npt.NDArray) -> None:
         """Set the table contents to the given numpy array."""
-        self.table.setRowCount(len(values))
+        flat_values = np.ravel(values)
+        self.table.setRowCount(len(flat_values))
         # Make zero-based
-        self.table.setVerticalHeaderLabels([str(i) for i in range(len(values))])
-        for i, val in enumerate(values):
+        self.table.setVerticalHeaderLabels([str(i) for i in range(len(flat_values))])
+        for i, val in enumerate(flat_values):
             item = QtWidgets.QTableWidgetItem(np.format_float_positional(val, trim="0"))
             item.setTextAlignment(
                 QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
@@ -2131,6 +2226,26 @@ class _CoordinateWidget(QtWidgets.QWidget):
         self.setMinimumWidth(
             self.table.horizontalHeader().length() + self.table.verticalHeader().width()
         )
+
+    def _set_affine_table_values(self, values: npt.NDArray) -> None:
+        """Set the affine preview table contents."""
+        old_values = np.ravel(np.atleast_1d(self._old_coord))
+        new_values = np.ravel(np.atleast_1d(values))
+        self.affine_table.setRowCount(len(old_values))
+        self.affine_table.setVerticalHeaderLabels(
+            [str(i) for i in range(len(old_values))]
+        )
+        for row, (old, new) in enumerate(zip(old_values, new_values, strict=True)):
+            for col, val in enumerate((old, new)):
+                item = QtWidgets.QTableWidgetItem(
+                    np.format_float_positional(val, trim="0")
+                )
+                item.setTextAlignment(
+                    QtCore.Qt.AlignmentFlag.AlignLeft
+                    | QtCore.Qt.AlignmentFlag.AlignVCenter
+                )
+                self.affine_table.setItem(row, col, item)
+        self.affine_table.resizeColumnsToContents()
 
 
 class AssignCoordsDialog(DataTransformDialog):
@@ -2172,6 +2287,12 @@ class AssignCoordsDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        if self.coord_widget.use_affine_transform:
+            return erlab.interactive.imagetool.provenance.AffineCoordOperation(
+                coord_name=self.current_coord_name,
+                scale=self.coord_widget.affine_scale,
+                offset=self.coord_widget.affine_offset,
+            )
         return erlab.interactive.imagetool.provenance.AssignCoordsOperation(
             coord_name=self.current_coord_name,
             values=self.coord_widget.new_coord,

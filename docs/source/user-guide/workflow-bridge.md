@@ -55,9 +55,10 @@ code for reproducibility and batch processing.
   - {func}`erlab.analysis.transform.rotate`,
     {func}`erlab.analysis.transform.symmetrize`,
     {func}`erlab.analysis.transform.symmetrize_nfold`
-- - Reassign coordinates
+- - Reassign or scale/offset coordinates
   - {ref}`Coordinate editing dialog <imagetool-data>`
-  - {meth}`xarray.DataArray.assign_coords`
+  - {meth}`xarray.DataArray.assign_coords`, such as
+    `data.assign_coords(y=scale * data.y + offset)`
 - - Swap dimensions
   - {ref}`Coordinate editing dialog <imagetool-data>`
   - {meth}`xarray.DataArray.swap_dims`

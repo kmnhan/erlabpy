@@ -3895,6 +3895,26 @@ def test_itool_assign_coords(qtbot, accept_dialog) -> None:
     np.testing.assert_allclose(win.slicer_area._data.t.values, np.arange(3) + 1.0)
 
 
+def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
+        dialog._coord_combo.setCurrentText("y")
+        dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
+        dialog.coord_widget.scale_spin.setValue(2.0)
+        dialog.coord_widget.offset_spin.setValue(0.5)
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
+    np.testing.assert_allclose(win.slicer_area._data.y.values, 2.0 * np.arange(4) + 0.5)
+
+
 def test_itool_swap_dims(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(24).reshape((2, 3, 4)).astype(float),

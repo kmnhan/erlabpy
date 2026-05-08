@@ -60,6 +60,7 @@ concrete operation models from this module directly.
 from __future__ import annotations
 
 __all__ = [
+    "AffineCoordOperation",
     "AssignCoordsOperation",
     "AverageOperation",
     "CoarsenOperation",
@@ -1806,6 +1807,47 @@ class SwapDimsOperation(ToolProvenanceOperation):
             f"Swap Dimensions({_format_derivation_value(self.mapping)})",
             "derived = derived.swap_dims("
             f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})",
+            True,
+        )
+
+
+class AffineCoordOperation(ToolProvenanceOperation):
+    op: typing.Literal["affine_coord"] = "affine_coord"
+    coord_name: str
+    scale: float
+    offset: float
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        coord = data.coords[self.coord_name]
+        return erlab.utils.array.sort_coord_order(
+            data.assign_coords(
+                {
+                    self.coord_name: coord.copy(
+                        data=self.scale * coord.values + self.offset
+                    )
+                }
+            ),
+            keys=data.coords.keys(),
+            dims_first=False,
+        )
+
+    def derivation_entry(self) -> DerivationEntry:
+        coord_name_code = repr(self.coord_name)
+        scale_code = erlab.interactive.utils._parse_single_arg(float(self.scale))
+        offset_code = erlab.interactive.utils._parse_single_arg(float(self.offset))
+        code = (
+            f"derived = derived.assign_coords({{{coord_name_code}: "
+            f"derived[{coord_name_code}].copy(data={scale_code} * "
+            f"derived[{coord_name_code}].values + {offset_code})}})"
+        )
+        label_kwargs = {
+            "coord_name": self.coord_name,
+            "scale": self.scale,
+            "offset": self.offset,
+        }
+        return DerivationEntry(
+            f"Scale/Offset Coordinate({_format_derivation_value(label_kwargs)})",
+            code,
             True,
         )
 

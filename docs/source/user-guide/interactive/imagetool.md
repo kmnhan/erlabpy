@@ -134,7 +134,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Non-uniform coordinates are converted with a `_idx` suffix for plotting. Their true values are displayed in the cursor readouts.
 
-- Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor` dialog. This is just a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values or per-point overrides.
+- Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor` dialog. This is a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values, edit per-point values, or scale and offset a numeric scalar or 1D coordinate with `new = scale * old + offset`.
 
 - Use {guilabel}`Edit → Swap Dimensions` to open the {guilabel}`Swap Dimensions` dialog. This is an interface for {meth}`xarray.DataArray.swap_dims`.
 

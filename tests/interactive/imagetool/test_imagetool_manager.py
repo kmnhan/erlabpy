@@ -4767,6 +4767,71 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         )
 
 
+def test_manager_affine_coord_child_refreshes_from_formula(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+
+        def _nest_affine(dialog) -> None:
+            assert dialog.launch_mode == "nest"
+            dialog._coord_combo.setCurrentText("y")
+            dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
+            dialog.coord_widget.scale_spin.setValue(2.0)
+            dialog.coord_widget.offset_spin.setValue(0.5)
+
+        accept_dialog(parent_tool.mnb._assign_coords, pre_call=_nest_affine)
+
+        parent = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_tool = manager.get_imagetool(child_uid)
+
+        operation = erlab.interactive.imagetool.provenance.AffineCoordOperation(
+            coord_name="y",
+            scale=2.0,
+            offset=0.5,
+        )
+        expected = operation.apply(data, parent_data=data).rename("scan")
+        xr.testing.assert_identical(child_tool.slicer_area._data, expected)
+
+        assert child_node.source_spec is not None
+        operations = [
+            op for op in child_node.source_spec.operations if op.op == "affine_coord"
+        ]
+        assert len(operations) == 1
+        assert operations[0] == operation
+
+        updated = data.assign_coords(y=np.arange(4, dtype=float) + 10.0)
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node._update_from_parent_source() is True
+        xr.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None),
+            operation.apply(updated, parent_data=updated).rename(None),
+        )
+
+
 def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(
     qtbot,
     monkeypatch,

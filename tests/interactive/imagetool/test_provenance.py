@@ -360,6 +360,73 @@ def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
     )
 
 
+def _expected_affine_coord(
+    data: xr.DataArray, coord_name: str, scale: float, offset: float
+) -> xr.DataArray:
+    coord = data.coords[coord_name]
+    return erlab.utils.array.sort_coord_order(
+        data.assign_coords(
+            {coord_name: coord.copy(data=scale * coord.values + offset)}
+        ),
+        keys=data.coords.keys(),
+        dims_first=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "coord_name", "scale", "offset"),
+    [
+        (_base_data(), "y", 2.0, -1.0),
+        (
+            _base_data().assign_coords(temp=("x", [100.0, 200.0, 300.0])),
+            "temp",
+            0.5,
+            1.0,
+        ),
+        (_base_data().assign_coords(temp=20.0), "temp", 1.5, -2.0),
+        (
+            _base_data().assign_coords({"beam current": ("x", [1.0, 2.0, 4.0])}),
+            "beam current",
+            3.0,
+            0.25,
+        ),
+    ],
+)
+def test_tool_provenance_affine_coord_operation(
+    data: xr.DataArray, coord_name: str, scale: float, offset: float
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    operation = prov.AffineCoordOperation(
+        coord_name=coord_name,
+        scale=scale,
+        offset=offset,
+    )
+
+    expected = _expected_affine_coord(data, coord_name, scale, offset)
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+    xr.testing.assert_identical(parsed.apply(data, parent_data=data), expected)
+
+    code = prov.full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    call_names = _generated_call_names(code)
+    assert any(call.endswith(".assign_coords") for call in call_names)
+    assert "erlab.utils.array.sort_coord_order" not in call_names
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(
+        namespace["derived"],
+        data.assign_coords(
+            {
+                coord_name: data.coords[coord_name].copy(
+                    data=scale * data.coords[coord_name].values + offset
+                )
+            }
+        ),
+    )
+
+
 def test_tool_provenance_divide_by_coord_operation() -> None:
     prov = erlab.interactive.imagetool.provenance
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 2.0, 4.0]))
