@@ -95,7 +95,7 @@ def parse_bintable_column(header, col, nrows):
             val = parse_tfloat(trval)
             delt = parse_tfloat(tdelt)
             for i, d in enumerate(dims[:-1]):
-                start = val[i] - (pix[i]) * delt[i]
+                start = val[i] - (pix[i] - 1.0) * delt[i]
                 coords[d] = np.arange(shape[i]) * delt[i] + start
 
     else:
@@ -103,6 +103,37 @@ def parse_bintable_column(header, col, nrows):
         dims = [header.get(f"TTYPE{col}", f"col_{col}")]
         shape = (nrows,)
     return coords, dims, shape, tunit
+
+
+_SINGLE_MOTOR_SCAN_TYPES = frozenset(
+    {
+        "One Motor",
+        "Beamline",
+        "DAC",
+        "Manual",
+        "Beta_Compensated",
+        "SES",
+        "Line Scan Fine",
+    }
+)
+
+
+def _nominal_single_motor_coord(ds: xr.Dataset, length: int) -> npt.NDArray[np.float64]:
+    n0 = int(ds.attrs.get("N_0_0", length))
+    st0 = float(ds.attrs.get("ST_0_0", 0.0))
+    en0 = float(ds.attrs.get("EN_0_0", st0))
+
+    if n0 <= 1:
+        return np.full(length, st0, dtype=np.float64)
+
+    return st0 + (en0 - st0) / (n0 - 1) * np.arange(length, dtype=np.float64)
+
+
+def _unindexed_scan_dim(ds: xr.Dataset) -> Hashable:
+    for d in next(iter(ds.data_vars.values())).dims:  # pragma: no branch
+        if d not in ds.coords:
+            return d
+    raise ValueError("Could not determine unindexed scan dimension in FITS dataset.")
 
 
 def fits_to_xarray(filename: str | os.PathLike) -> xr.DataTree:
@@ -185,6 +216,11 @@ def process_fits_dataset(ds: xr.Dataset) -> xr.Dataset:
 
     Assumes a format used by beamlines 10.0.1 and 7.0.1 at ALS, and possibly others.
     Roughly corresponds to ``RedimAndScaleData`` in ``LoadFits7.ipf``.
+
+    .. versionchanged:: 3.22.0
+
+       Single-motor scan axes use nominal scan metadata instead of motor readback
+       values, matching the Igor Pro FITS loader behavior.
     """
     # Make all auxiliary coordinates dependent on time
     coords_to_update: list[Hashable] = [
@@ -213,37 +249,28 @@ def process_fits_dataset(ds: xr.Dataset) -> xr.Dataset:
         match scan_type:
             case "None":
                 return ds
-            case (
-                "One Motor"
-                | "Beamline"
-                | "DAC"
-                | "Manual"
-                | "Beta_Compensated"
-                | "SES"
-                | "Line Scan Fine"
-            ):
-                # Get dim name without coordinates
-                for d in next(iter(ds.data_vars.values())).dims:  # pragma: no branch
-                    if d not in ds.coords:
-                        d_name = d
-                        break
+            case _ if scan_type in _SINGLE_MOTOR_SCAN_TYPES:
+                motor_axis = str(ds.attrs.get("NM_0_0", "")).strip()
+                if not motor_axis:
+                    return ds
 
-                # Assign coordinate to scan axis
-                ds = ds.rename({d_name: "time"})
+                ds = ds.rename({_unindexed_scan_dim(ds): "time"})
+                scan_length = ds.sizes["time"]
+                scan_coord = _nominal_single_motor_coord(ds, scan_length)
 
-                motor_axis = ds.attrs.get("NM_0_0", "")
-
-                if motor_axis not in ds.coords:
-                    # If motor axis is not in coords, create it
-                    # This is not accessed in most cases but is added for safety
-                    n0 = int(ds.attrs.get("N_0_0", 0))
-                    st0 = float(ds.attrs.get("ST_0_0", 0))
-                    en0 = float(ds.attrs.get("EN_0_0", 0))
-
-                    ds = ds.assign_coords(
-                        {motor_axis: ("time", np.linspace(st0, en0, n0))}
+                new_coords: dict[str, xr.DataArray] = {
+                    motor_axis: xr.DataArray(scan_coord, dims=("time",))
+                }
+                if motor_axis in ds.coords:
+                    readback = ds.coords[motor_axis]
+                    new_coords[f"{motor_axis}_readback"] = xr.DataArray(
+                        readback.data,
+                        dims=("time",),
+                        attrs=readback.attrs,
                     )
+                    ds = ds.drop_vars(motor_axis)
 
+                ds = ds.assign_coords(new_coords)
                 ds = ds.swap_dims({"time": motor_axis})
 
             case _:
