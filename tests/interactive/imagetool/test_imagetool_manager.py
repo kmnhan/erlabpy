@@ -8875,6 +8875,114 @@ def test_manager_selection_info_single_manager(
         assert info["managers"][0]["is_default"] is True
 
 
+def test_manager_registry_object_repr_and_mapping(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(registry, "_is_tcp_port_open", lambda *_args: True)
+    manager_mod = erlab.interactive.imagetool.manager
+
+    assert not manager_mod.managers
+    assert repr(manager_mod.managers) == "No live ImageTool managers."
+    assert "No live ImageTool managers" in manager_mod.managers._repr_html_()
+
+    records = [
+        registry.activate_manager_record(
+            registry.reserve_manager_record(host="localhost").internal_id,
+            port=45555 + idx * 2,
+            watch_port=45556 + idx * 2,
+        )
+        for idx in range(2)
+    ]
+    manager_mod.set_default_manager(records[1].index)
+
+    handles = tuple(manager_mod.managers)
+    assert len(manager_mod.managers) == 2
+    assert [manager.index for manager in handles] == [0, 1]
+    assert manager_mod.managers.keys() == (0, 1)
+    assert [manager.index for manager in manager_mod.managers.values()] == [0, 1]
+    assert [
+        (index, manager.index) for index, manager in manager_mod.managers.items()
+    ] == [(0, 0), (1, 1)]
+    assert manager_mod.managers[1].is_default is True
+
+    with pytest.raises(KeyError):
+        manager_mod.managers[2]
+    with pytest.raises(TypeError, match="Manager index must be an integer"):
+        manager_mod.managers[True]
+
+    text = repr(manager_mod.managers)
+    assert "Index" in text
+    assert "Default" in text
+    assert "#0" in text
+    assert "#1" in text
+    assert "localhost:45555" in text
+    assert "yes" in text
+    assert "ManagerInfo(" not in text
+    assert "internal_id" not in text
+
+    html = manager_mod.managers._repr_html_()
+    assert "<table" in html
+    assert "#0" in html
+    assert "ManagerInfo(" not in html
+    assert "internal_id" not in html
+    assert repr(manager_mod.managers[0]).startswith("<ImageToolManager #0 ")
+
+
+def test_manager_handle_forwards_to_public_api(
+    monkeypatch, tmp_path, test_data
+) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(registry, "_is_tcp_port_open", lambda *_args: True)
+    record = registry.activate_manager_record(
+        registry.reserve_manager_record(host="localhost").internal_id,
+        port=45555,
+        watch_port=45556,
+    )
+    manager_mod = erlab.interactive.imagetool.manager
+    handle = manager_mod.managers[record.index]
+    calls: list[tuple[str, tuple[typing.Any, ...], dict[str, typing.Any]]] = []
+
+    def record_call(name: str, result: typing.Any):
+        def inner(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+            calls.append((name, args, kwargs))
+            return result
+
+        return inner
+
+    monkeypatch.setattr(manager_mod, "show_in_manager", record_call("show", "shown"))
+    monkeypatch.setattr(manager_mod, "load_in_manager", record_call("load", "loaded"))
+    monkeypatch.setattr(manager_mod, "replace_data", record_call("replace", "done"))
+    monkeypatch.setattr(manager_mod, "fetch", record_call("fetch", test_data))
+    monkeypatch.setattr(manager_mod, "watch", record_call("watch", ("data",)))
+    monkeypatch.setattr(
+        manager_mod, "set_default_manager", record_call("use", record.index)
+    )
+
+    assert handle.show(test_data, link=True) == "shown"
+    assert handle.load(("path.dat",), loader_name="example") == "loaded"
+    assert handle.replace(0, test_data) == "done"
+    xr.testing.assert_identical(handle.fetch(0), test_data)
+    assert handle.watch("data") == ("data",)
+    assert handle.use() == record.index
+
+    assert calls[0][0] == "show"
+    assert calls[0][1][0] is test_data
+    assert calls[0][2] == {"target": record.index, "link": True}
+    assert calls[1] == (
+        "load",
+        (("path.dat",),),
+        {"loader_name": "example", "target": record.index},
+    )
+    assert calls[2][0] == "replace"
+    assert calls[2][1][0] == 0
+    assert calls[2][1][1] is test_data
+    assert calls[2][2] == {"target": record.index}
+    assert calls[3] == ("fetch", (0,), {"target": record.index})
+    assert calls[4] == ("watch", ("data",), {"target": record.index})
+    assert calls[5] == ("use", (record.index,), {})
+
+
 def test_manager_registry_hides_starting_records(monkeypatch, tmp_path) -> None:
     registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)

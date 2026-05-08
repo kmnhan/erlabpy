@@ -405,28 +405,22 @@ def test_manager_magic_delegates_to_manager_target_api(
     messages = []
     defaults: list[int | None] = []
 
-    monkeypatch.setattr(
-        watcher_ipy,
-        "list_managers",
-        lambda: (
-            types.SimpleNamespace(
-                index=0,
-                pid=11,
-                host="localhost",
-                port=45555,
-                watch_port=45556,
-                is_default=False,
-            ),
-            types.SimpleNamespace(
-                index=1,
-                pid=22,
-                host="localhost",
-                port=45557,
-                watch_port=45558,
-                is_default=True,
-            ),
-        ),
-    )
+    class _FakeManagers:
+        def __bool__(self):
+            return True
+
+        def __repr__(self):
+            return (
+                "Index | Default | PID | Endpoint        | Watch Port\n"
+                "------+---------+-----+-----------------+-----------\n"
+                "#0    |         | 11  | localhost:45555 | 45556\n"
+                "#1    | yes     | 22  | localhost:45557 | 45558"
+            )
+
+        def _repr_html_(self):
+            return "<table><tr><td>#0</td></tr><tr><td>#1</td></tr></table>"
+
+    monkeypatch.setattr(watcher_ipy, "managers", _FakeManagers())
     monkeypatch.setattr(
         watcher_ipy,
         "set_default_manager",

@@ -8,7 +8,7 @@ import typing
 from erlab.interactive.imagetool.manager._server import (
     clear_default_manager,
     get_default_manager,
-    list_managers,
+    managers,
     set_default_manager,
 )
 from erlab.interactive.imagetool.manager._watcher._core import (
@@ -156,21 +156,10 @@ class WatcherMagics(Magics):
 
         match command:
             case "list":
-                managers = list_managers()
                 if not managers:
                     _display_message("No ImageTool managers are running.")
                     return
-                lines = ["ImageTool managers:"]
-                html_lines = ["ImageTool managers:<br>"]
-                for info in managers:
-                    marker = " *" if info.is_default else ""
-                    line_text = (
-                        f" #{info.index}{marker} pid={info.pid} "
-                        f"{info.host}:{info.port} watch={info.watch_port}"
-                    )
-                    lines.append(line_text)
-                    html_lines.append(f"<code>{line_text}</code><br>")
-                _display_message("\n".join(lines), "".join(html_lines))
+                _display_message(repr(managers), managers._repr_html_())
             case "use":
                 if len(parts) != 2:
                     raise ValueError("Usage: %manager use <index>")

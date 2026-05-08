@@ -55,7 +55,7 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Search `xlm.modelfit`, `MultiPeakModel`, `FermiEdgeModel`, `gold`, `ftool`,
   `restool`, or `goldtool` for fitting questions.
 - Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,
-  `show_in_manager`, `load_in_manager`, `list_managers`, `set_default_manager`,
+  `show_in_manager`, `load_in_manager`, `managers`, `set_default_manager`,
   `manager_selection_info`, `Result Placement`, `stale`, `automatic updates`,
   `Auto`, `Refit after update`, `code for repeating steps`,
   `ImageTool windows opened from tools`, or

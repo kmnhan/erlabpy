@@ -346,7 +346,8 @@ def set_default_manager(index: int) -> int:
     Parameters
     ----------
     index
-        0-based manager index from :func:`list_managers`.
+        0-based manager index from
+        :data:`erlab.interactive.imagetool.manager.managers`.
 
     Returns
     -------

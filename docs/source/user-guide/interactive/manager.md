@@ -187,11 +187,17 @@ choosing an index.
 When more than one manager is running, either pass the index like `manager=2` or set a
 default for the current Python process or notebook kernel:
 
+```{versionadded} 3.22.0
+`erlab.interactive.imagetool.manager.managers` shows the live managers as a table and
+returns manager handles when indexed.
+```
+
 ```python
 import erlab.interactive.imagetool.manager as itm
 
-itm.list_managers()
-itm.set_default_manager(1)
+itm.managers
+itm.managers[1].use()
+itm.managers[1].show(data)
 data.qshow(manager=True)
 other.qshow(manager=0)
 %itool -m 1 data
@@ -510,7 +516,7 @@ show_in_manager([data_a, data_b], link=True, target=1)
 replace_data(3, new_data, target=1)
 ```
 
-Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>`, {func}`watch <erlab.interactive.imagetool.manager.watch>`, and {func}`manager_selection_info <erlab.interactive.imagetool.manager.manager_selection_info>` give you finer control when building custom acquisition pipelines or editor integrations.
+Additional functions and objects such as {data}`managers <erlab.interactive.imagetool.manager.managers>`, {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>`, {func}`watch <erlab.interactive.imagetool.manager.watch>`, and {func}`manager_selection_info <erlab.interactive.imagetool.manager.manager_selection_info>` give you finer control when building custom acquisition pipelines or editor integrations.
 
 Under the hood these functions communicate with the GUI via ZeroMQ. Manager discovery is stored in a user-scoped live registry, so normal routing is intended for Python processes running in the same user session as the manager. See the API docs for details.
 

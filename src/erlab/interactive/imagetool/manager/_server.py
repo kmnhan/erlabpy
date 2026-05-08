@@ -7,15 +7,17 @@ __all__ = [
     "PORT",
     "PORT_WATCH",
     "ImageToolManagerAmbiguousError",
+    "ImageToolManagerHandle",
     "ImageToolManagerNotFoundError",
+    "ImageToolManagerRegistry",
     "ImageToolManagerTimeoutError",
     "clear_default_manager",
     "fetch",
     "get_default_manager",
     "is_running",
-    "list_managers",
     "load_in_manager",
     "manager_selection_info",
+    "managers",
     "replace_data",
     "set_default_manager",
     "show_in_manager",
@@ -23,7 +25,9 @@ __all__ = [
 ]
 
 
+import dataclasses
 import errno
+import html
 import io
 import logging
 import os
@@ -45,7 +49,6 @@ from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
 from erlab.interactive.imagetool.manager._registry import (
     ImageToolManagerAmbiguousError,
     ImageToolManagerNotFoundError,
-    ManagerInfo,
     _ManagerRecord,
     _normalize_manager_index,
     clear_default_manager,
@@ -59,7 +62,7 @@ from erlab.interactive.imagetool.manager._registry import (
 
 if typing.TYPE_CHECKING:
     import types
-    from collections.abc import Collection, Iterable
+    from collections.abc import Collection, Iterable, Iterator
 
     import numpy.typing as npt
 
@@ -695,19 +698,180 @@ def _direct_manager_for_target(target: int | None):
     return manager
 
 
-def list_managers() -> tuple[ManagerInfo, ...]:
-    """Return live ImageTool managers visible to the current user.
+@dataclasses.dataclass(frozen=True, repr=False)
+class ImageToolManagerHandle:
+    """Handle for a live ImageTool manager.
 
-    Returns
-    -------
-    tuple of ManagerInfo
-        Live managers sorted by their 0-based launch index.
+    Use handles from :data:`managers` to inspect a manager or send data to a
+    specific manager instance.
+
+    .. versionadded:: 3.22.0
     """
-    default_index = get_default_manager(validate=False)
-    return tuple(
-        record.to_public_info(is_default=record.index == default_index)
-        for record in live_manager_records()
-    )
+
+    index: int
+    pid: int
+    host: str
+    port: int
+    watch_port: int
+    started: str
+    version: str
+    is_default: bool = False
+
+    @classmethod
+    def _from_record(
+        cls, record: _ManagerRecord, *, is_default: bool = False
+    ) -> ImageToolManagerHandle:
+        return cls(
+            index=record.index,
+            pid=record.pid,
+            host=record.host,
+            port=record.port,
+            watch_port=record.watch_port,
+            started=record.started,
+            version=record.version,
+            is_default=is_default,
+        )
+
+    @property
+    def endpoint(self) -> str:
+        """Request endpoint used by this manager."""
+        return f"{self.host}:{self.port}"
+
+    def __repr__(self) -> str:
+        default = ", default" if self.is_default else ""
+        return (
+            f"<ImageToolManager #{self.index}{default} {self.endpoint} pid={self.pid}>"
+        )
+
+    def show(self, data: typing.Any, **kwargs: typing.Any) -> Response | None:
+        """Create ImageTool windows in this manager."""
+        return erlab.interactive.imagetool.manager.show_in_manager(
+            data, target=self.index, **kwargs
+        )
+
+    def load(
+        self,
+        paths: Iterable[str | os.PathLike],
+        loader_name: str | None = None,
+        **load_kwargs: typing.Any,
+    ) -> Response | None:
+        """Load files into this manager."""
+        return erlab.interactive.imagetool.manager.load_in_manager(
+            paths, loader_name=loader_name, target=self.index, **load_kwargs
+        )
+
+    def replace(
+        self,
+        index: int | str | Collection[int | str],
+        data: typing.Any,
+    ) -> Response:
+        """Replace ImageTool data in this manager."""
+        return erlab.interactive.imagetool.manager.replace_data(
+            index, data, target=self.index
+        )
+
+    def fetch(self, index: int | str) -> xr.DataArray | None:
+        """Fetch ImageTool data from this manager."""
+        return erlab.interactive.imagetool.manager.fetch(index, target=self.index)
+
+    def watch(self, *varnames: str, **kwargs: typing.Any) -> tuple[str, ...]:
+        """Watch variables in this manager."""
+        return erlab.interactive.imagetool.manager.watch(
+            *varnames, target=self.index, **kwargs
+        )
+
+    def use(self) -> int:
+        """Set this manager as the default for the current Python process."""
+        return erlab.interactive.imagetool.manager.set_default_manager(self.index)
+
+
+class ImageToolManagerRegistry:
+    """Live ImageTool manager registry.
+
+    The registry is a lightweight view over the live manager registry. It refreshes
+    whenever it is displayed, iterated, or indexed.
+
+    .. versionadded:: 3.22.0
+    """
+
+    def _snapshot(self) -> tuple[ImageToolManagerHandle, ...]:
+        default_index = get_default_manager(validate=False)
+        return tuple(
+            ImageToolManagerHandle._from_record(
+                record, is_default=record.index == default_index
+            )
+            for record in live_manager_records()
+        )
+
+    def __iter__(self) -> Iterator[ImageToolManagerHandle]:
+        return iter(self._snapshot())
+
+    def __len__(self) -> int:
+        return len(self._snapshot())
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+    def __getitem__(self, index: int) -> ImageToolManagerHandle:
+        index = _normalize_manager_index(index, label="index")
+        for manager in self._snapshot():
+            if manager.index == index:
+                return manager
+        raise KeyError(index)
+
+    def keys(self) -> tuple[int, ...]:
+        """Return live manager indexes."""
+        return tuple(manager.index for manager in self._snapshot())
+
+    def values(self) -> tuple[ImageToolManagerHandle, ...]:
+        """Return live manager handles."""
+        return self._snapshot()
+
+    def items(self) -> tuple[tuple[int, ImageToolManagerHandle], ...]:
+        """Return ``(index, handle)`` pairs for live managers."""
+        return tuple((manager.index, manager) for manager in self._snapshot())
+
+    def _table_rows(self) -> list[tuple[str, ...]]:
+        rows: list[tuple[str, ...]] = [
+            ("Index", "Default", "PID", "Endpoint", "Watch Port", "Started", "Version")
+        ]
+        rows.extend(
+            (
+                f"#{manager.index}",
+                "yes" if manager.is_default else "",
+                str(manager.pid),
+                manager.endpoint,
+                str(manager.watch_port),
+                manager.started,
+                manager.version,
+            )
+            for manager in self._snapshot()
+        )
+        return rows
+
+    def __repr__(self) -> str:
+        rows = self._table_rows()
+        if len(rows) == 1:
+            return "No live ImageTool managers."
+
+        widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+        formatted_rows = [
+            " | ".join(cell.ljust(widths[i]) for i, cell in enumerate(row))
+            for row in rows
+        ]
+        separator = "-+-".join("-" * width for width in widths)
+        return "\n".join([formatted_rows[0], separator, *formatted_rows[1:]])
+
+    def _repr_html_(self) -> str:
+        rows = self._table_rows()
+        if len(rows) == 1:
+            return "<p>No live ImageTool managers.</p>"
+        escaped_rows = [tuple(html.escape(cell) for cell in row) for row in rows]
+        return erlab.utils.formatting.format_html_table(escaped_rows, header_rows=1)
+
+
+managers: ImageToolManagerRegistry = ImageToolManagerRegistry()
+"""Live ImageTool manager registry."""
 
 
 def is_running(target: int | None = None) -> bool:
