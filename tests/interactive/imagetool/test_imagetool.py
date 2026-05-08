@@ -1499,6 +1499,42 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
         accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
         move_and_compare_values(qtbot, win, [12.0, 7.0, 6.0, 11.0])
 
+        def _replace_average(dialog: AverageDialog) -> None:
+            dialog.dim_checks["x"].setChecked(True)
+            dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+        accept_dialog(win.mnb._average, pre_call=_replace_average)
+
+        assert win.provenance_spec is not None
+        entries = win.provenance_spec.display_entries()
+        assert entries[0].label == "Load data from file 'data.h5'"
+        assert any("Average" in entry.label for entry in entries)
+
+        display_code = win.provenance_spec.display_code()
+        assert display_code is not None
+        assert "data =" not in display_code
+        namespace = _exec_generated_code(display_code, {})
+        derived = namespace["derived"]
+        assert isinstance(derived, xr.DataArray)
+        xarray.testing.assert_identical(
+            derived.rename(None),
+            data.astype(np.float64).qsel.average("x").rename(None),
+        )
+
+        assert win.slicer_area._file_path is None
+        assert win.slicer_area.reloadable
+        updated = data + 100
+        updated.to_netcdf(filename, engine="h5netcdf")
+
+        with qtbot.wait_signal(win.slicer_area.sigDataChanged):
+            win.slicer_area.reload()
+
+        assert win.slicer_area._file_path is None
+        xarray.testing.assert_identical(
+            win.slicer_area._data.rename(None),
+            updated.astype(np.float64).qsel.average("x").rename(None),
+        )
+
     win.close()
 
 

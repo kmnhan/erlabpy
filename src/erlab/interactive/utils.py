@@ -2084,13 +2084,10 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
 
         owner_tool = self._owner_tool_window()
         if owner_tool is not None:
-            manager, parent_uid = owner_tool._managed_output_imagetool_parent()
-            provenance_spec = None
-            if manager is None or parent_uid is None:
-                provenance_spec = owner_tool.detached_output_imagetool_provenance(
-                    da,
-                    source=self,
-                )
+            provenance_spec = owner_tool.detached_output_imagetool_provenance(
+                da,
+                source=self,
+            )
             tool: (
                 erlab.interactive.imagetool.ImageTool
                 | list[erlab.interactive.imagetool.ImageTool]
@@ -3410,9 +3407,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Return replay provenance for an unbound ImageTool opened from this tool.
 
         Override this only when an unbound ImageTool should display different replay
-        lineage from `current_provenance_spec()`. Managed launches discard this
-        lineage because they become independent top-level manager windows, so this
-        hook must stay free of blocking side effects such as warning dialogs.
+        lineage from `current_provenance_spec()`. Standalone and managed detached
+        launches both preserve the returned lineage, so this hook must stay free of
+        blocking side effects such as warning dialogs.
         """
         del data, source
         return self.current_provenance_spec()
@@ -3493,8 +3490,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     ) -> erlab.interactive.imagetool.ImageTool | None:
         """Open a new unbound ImageTool from this tool.
 
-        Managed tools create a fresh independent top-level manager window.
-        Standalone tools create a fresh standalone ImageTool window.
+        Managed tools create a fresh independent top-level manager window with
+        detached replay provenance when the caller provides it. Standalone tools create
+        a fresh standalone ImageTool window.
         """
         return self._open_output_imagetool(
             data,
@@ -3535,7 +3533,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 tool,
                 show=True,
                 activate=True,
-                provenance_spec=None,
+                provenance_spec=provenance_spec,
                 source_spec=None,
                 source_auto_update=False,
                 source_state="fresh",

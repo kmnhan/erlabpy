@@ -19,6 +19,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -62,6 +63,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
         )
+        self._sync_file_load_provenance()
         self.setCentralWidget(self.slicer_area)
 
         self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
@@ -134,6 +136,18 @@ class BaseImageTool(QtWidgets.QMainWindow):
                 provenance_spec
             )
         )
+
+    def _sync_file_load_provenance(self) -> None:
+        """Use file-load details as replay provenance when the current data has them."""
+        file_path = self.slicer_area._file_path
+        if file_path is None:
+            return
+        provenance_spec = _load_provenance_from_file_details(
+            file_path,
+            self.slicer_area._load_func,
+            source_input_dtype=self.slicer_area._source_input_dtype,
+        )
+        self.set_provenance_spec(provenance_spec)
 
     def to_dataset(self) -> xr.Dataset:
         name = self.slicer_area._data.name

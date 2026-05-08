@@ -2031,6 +2031,75 @@ def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_sepa
     assert calls[1]["provenance_spec"] is detached_spec
 
 
+def test_tool_window_managed_detached_output_preserves_provenance(
+    qtbot, manager_context
+) -> None:
+    class _DummyState(pydantic.BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+    prov = erlab.interactive.imagetool.provenance
+    root_data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
+    output_data = xr.DataArray(np.arange(3.0), dims=("x",), name="detached")
+    detached_spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Compute detached dummy output",
+            code="result = data.sum('y')",
+        ),
+        start_label="Start from current dummy input data",
+        active_name="result",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        erlab.interactive.itool(root_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _DummyTool(root_data)
+        child_uid = manager.add_childtool(tool, 0, show=False)
+        assert manager._child_node(child_uid).tool_window is tool
+
+        launched = tool._launch_detached_output_imagetool(
+            output_data,
+            provenance_spec=detached_spec,
+        )
+
+        assert isinstance(launched, erlab.interactive.imagetool.ImageTool)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        node = manager._imagetool_wrappers[1]
+        assert node.parent_uid is None
+        assert node.source_spec is None
+        assert node.output_id is None
+        assert node.provenance_spec == detached_spec
+        xr.testing.assert_identical(
+            manager.get_imagetool(1).slicer_area._data, output_data
+        )
+
+
 def test_tool_window_unbound_launches_open_distinct_windows(qtbot) -> None:
     class _DummyState(pydantic.BaseModel):
         value: int = 0

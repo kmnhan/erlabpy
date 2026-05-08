@@ -38,7 +38,6 @@ from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTree
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
-    _LoadSourceDetails,
     _ManagedWindowNode,
     _MetadataField,
 )
@@ -47,6 +46,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+    from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
@@ -1846,10 +1846,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             bool(imagetool_targets)
             and only_unarchived
             and len(selection_children) == 0
-            and all(
-                self.get_imagetool(s).slicer_area.reloadable
-                for s in selection_unarchived
-            )
+            and all(self._node_for_target(s).reloadable for s in selection_unarchived)
         )
         self.unwatch_action.setVisible(
             bool(imagetool_targets)

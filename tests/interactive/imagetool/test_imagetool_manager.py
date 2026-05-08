@@ -36,6 +36,12 @@ from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._load_source import (
+    _load_code_from_file_details,
+    _load_source_label_and_text,
+    _loader_callable_text,
+    _LoadSourceDetails,
+)
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
     fetch,
@@ -75,10 +81,6 @@ from erlab.interactive.imagetool.manager._server import (
 )
 from erlab.interactive.imagetool.manager._wrapper import (
     _format_chunk_summary,
-    _load_code_from_file_details,
-    _load_source_label_and_text,
-    _loader_callable_text,
-    _LoadSourceDetails,
     _preview_from_imagetool,
 )
 from erlab.interactive.ptable import PeriodicTableWindow
@@ -2842,7 +2844,8 @@ def test_manager_ximageitem_open_itool_creates_independent_top_level_window(
         assert output_node.parent_uid is None
         assert output_node.output_id is None
         assert output_node.source_spec is None
-        assert output_node.provenance_spec is None
+        assert output_node.provenance_spec is not None
+        assert output_node.provenance_spec.display_code() is not None
         xr.testing.assert_identical(fetch(1), child.main_image.data_array.T)
 
         monkeypatch.setattr(
@@ -2862,7 +2865,8 @@ def test_manager_ximageitem_open_itool_creates_independent_top_level_window(
         assert second_output_node.parent_uid is None
         assert second_output_node.output_id is None
         assert second_output_node.source_spec is None
-        assert second_output_node.provenance_spec is None
+        assert second_output_node.provenance_spec is not None
+        assert second_output_node.provenance_spec.display_code() is not None
         xr.testing.assert_identical(fetch(2), updated.T)
 
 
@@ -2908,12 +2912,14 @@ def test_manager_workspace_roundtrip_independent_unbound_imagetool(
             for index, wrapper in manager._imagetool_wrappers.items()
             if wrapper.parent_uid is None
             and wrapper.source_spec is None
-            and wrapper.provenance_spec is None
+            and wrapper.provenance_spec is not None
             and wrapper.output_id is None
             and wrapper._childtool_indices == []
             and fetch(index).identical(expected)
         ]
         assert len(matching_roots) == 1
+        assert matching_roots[0].provenance_spec is not None
+        assert matching_roots[0].provenance_spec.display_code() is not None
 
 
 def test_manager_metadata_uses_streamlined_child_derivation(
@@ -3913,6 +3919,7 @@ def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_window
         assert first_output_node.output_id is None
         assert first_output_node.source_spec is None
         assert first_output_node.provenance_spec is None
+        assert not first_output_node.reloadable
         xr.testing.assert_identical(fetch(1), initial)
         monkeypatch.setattr(
             child,
@@ -3929,6 +3936,7 @@ def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_window
         assert second_output_node.output_id is None
         assert second_output_node.source_spec is None
         assert second_output_node.provenance_spec is None
+        assert not second_output_node.reloadable
         xr.testing.assert_identical(fetch(2), updated)
 
 
@@ -3976,8 +3984,10 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         assert details["File"] == str(file_path)
         assert "Chunks" not in details
         assert "Added" in details
-        assert metadata_derivation_texts(manager) == []
-        assert manager._build_metadata_derivation_menu() is None
+        assert metadata_derivation_texts(manager) == [
+            "Load data from file 'scan_with_a_long_name.h5'"
+        ]
+        assert manager._build_metadata_derivation_menu() is not None
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -4392,6 +4402,164 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
             "Start from current parent ImageTool data",
             'Average(dims=("x",))',
         ]
+
+
+def test_manager_file_backed_replace_current_keeps_file_provenance(
+    qtbot,
+    monkeypatch,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            test_data,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        root = manager._imagetool_wrappers[0]
+        root_tool = manager.get_imagetool(0)
+        assert root.provenance_spec is not None
+        assert root.provenance_spec.display_entries()[0].label == (
+            "Load data from file 'scan.h5'"
+        )
+
+        def _replace_average(dialog) -> None:
+            dialog.dim_checks["alpha"].setChecked(True)
+            set_transform_launch_mode(dialog, "replace")
+
+        accept_dialog(root_tool.mnb._average, pre_call=_replace_average)
+
+        assert root.provenance_spec is not None
+        entries = root.provenance_spec.display_entries()
+        assert entries[0].label == "Load data from file 'scan.h5'"
+        assert any("Average" in entry.label for entry in entries)
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info()
+        assert metadata_derivation_texts(manager)[0] == "Load data from file 'scan.h5'"
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: pytest.fail("file-backed replay should not prompt"),
+        )
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        action_map(menu)["Copy Full Code"].trigger()
+        assert copied
+        assert "scan.h5" in copied[-1]
+
+        namespace = _exec_generated_code(copied[-1], {})
+        derived = namespace["derived"]
+        assert isinstance(derived, xr.DataArray)
+        xr.testing.assert_identical(
+            derived.rename(None),
+            xr.load_dataarray(file_path, engine="h5netcdf")
+            .astype(np.float64)
+            .qsel.average("alpha")
+            .rename(None),
+        )
+
+
+def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
+    qtbot,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            test_data,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        root_tool = manager.get_imagetool(0)
+
+        def _detach_average(dialog) -> None:
+            dialog.dim_checks["alpha"].setChecked(True)
+            set_transform_launch_mode(dialog, "detach")
+
+        accept_dialog(root_tool.mnb._average, pre_call=_detach_average)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        tree = manager._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        detached = manager._imagetool_wrappers[1]
+        detached_tool = manager.get_imagetool(1)
+        assert detached.parent_uid is None
+        assert detached.output_id is None
+        assert detached.source_spec is None
+        assert detached.provenance_spec is not None
+        assert detached.provenance_spec.file_load_source is not None
+        assert detached.reloadable
+        assert detached_tool.slicer_area._file_path is None
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [1])
+        manager._update_actions()
+        manager._update_info()
+        assert metadata_detail_map(manager)["File"] == str(file_path)
+        assert metadata_derivation_texts(manager)[0] == "Load data from file 'scan.h5'"
+        assert manager.reload_action.isVisible()
+
+        updated = test_data + 100
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        with qtbot.wait_signal(detached_tool.slicer_area.sigDataChanged):
+            manager.reload_selected()
+
+        assert detached.parent_uid is None
+        assert detached.output_id is None
+        assert detached.source_spec is None
+        assert detached.provenance_spec is not None
+        assert detached_tool.slicer_area._file_path is None
+        xr.testing.assert_identical(
+            fetch(1).rename(None),
+            updated.astype(np.float64).qsel.average("alpha").rename(None),
+        )
+
+        file_path.unlink()
+        manager._update_actions()
+        assert not detached.reloadable
+        assert not manager.reload_action.isVisible()
 
 
 def test_manager_nonuniform_transform_children_refresh_from_public_data(
