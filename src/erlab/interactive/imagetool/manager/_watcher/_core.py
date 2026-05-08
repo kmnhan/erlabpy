@@ -16,6 +16,7 @@ import xarray as xr
 import zmq
 
 import erlab
+from erlab.interactive.imagetool.manager._registry import resolve_manager_record
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ class _Watcher:
     def __init__(self, shell: _ShellProtocol) -> None:
         self._shell: _ShellProtocol = shell
 
-        self.watched_vars: dict[str, dict[str, str]] = {}  # varname -> state
+        self.watched_vars: dict[str, dict[str, typing.Any]] = {}  # varname -> state
         self._rate_limit_s: float = 0.15
         self._last_send: float = 0.0
         self._lock: threading.RLock = threading.RLock()
@@ -106,15 +107,14 @@ class _Watcher:
 
         # Flags for thread receiving updates from GUI
         self._stop = threading.Event()
-        self._thread_started: bool = False
-        self._watcher_thread: threading.Thread | None = None
+        self._watcher_threads: dict[int | None, threading.Thread] = {}
 
         # Polling thread for environments without post_run_cell hook
         self._poll_stop = threading.Event()
         self._poll_interval_s: float = 0.25
         self._poll_thread: threading.Thread | None = None
 
-    def watch(self, varname: str) -> None:
+    def watch(self, varname: str, *, target: int | None = None) -> None:
         """Watch a DataArray variable and show in ImageTool manager."""
         ns = self._shell.user_ns
         if varname not in ns:
@@ -123,6 +123,7 @@ class _Watcher:
         if not isinstance(obj, xr.DataArray):
             raise TypeError(f"{varname!r} is not an xarray.DataArray")
 
+        manager_record = resolve_manager_record(target)
         show: bool = False
 
         with self._lock:
@@ -136,7 +137,13 @@ class _Watcher:
         fingerprint = erlab.utils.hashing.fingerprint_dataarray(obj)
         with self._lock:
             # Store fingerprint to detect changes and assign a unique ID
-            self.watched_vars[varname] = {"fingerprint": fingerprint, "uid": uid}
+            self.watched_vars[varname] = {
+                "fingerprint": fingerprint,
+                "uid": uid,
+                "target": manager_record.index,
+                "watch_host": manager_record.host,
+                "watch_port": manager_record.watch_port,
+            }
             self._last_send = time.time()
 
         try:
@@ -146,15 +153,14 @@ class _Watcher:
                 self.watched_vars.pop(varname, None)
             raise
 
-        if not self._thread_started:
-            self.start_thread()
+        self.start_thread()
 
     def stop_watching(self, varname: str, remove: bool = False) -> None:
         with self._lock:
             state = self.watched_vars.pop(varname, None)
         if state:  # pragma: no branch
             erlab.interactive.imagetool.manager._unwatch_data(
-                state["uid"], remove=remove
+                state["uid"], remove=remove, target=state.get("target")
             )
 
     def stop_watching_all(self, remove: bool = False) -> None:
@@ -206,17 +212,36 @@ class _Watcher:
             if not state:
                 return
             uid = state["uid"]
-        erlab.interactive.imagetool.manager._watch_data(varname, uid, darr, show=show)
+            target = state.get("target")
+        erlab.interactive.imagetool.manager._watch_data(
+            varname, uid, darr, show=show, target=target
+        )
 
     def start_thread(self) -> None:
+        targets: dict[int | None, tuple[str, int]] = {}
         with self._lock:
-            if self._watcher_thread is not None and self._watcher_thread.is_alive():
-                self._thread_started = True
-                return
+            for state in self.watched_vars.values():
+                index = typing.cast("int | None", state.get("target"))
+                host = str(
+                    state.get("watch_host", erlab.interactive.imagetool.manager.HOST_IP)
+                )
+                port = int(
+                    state.get(
+                        "watch_port", erlab.interactive.imagetool.manager.PORT_WATCH
+                    )
+                )
+                targets[index] = (host, port)
 
-            self._thread_started = True
-            self._watcher_thread = threading.Thread(target=self._recv_loop, daemon=True)
-            self._watcher_thread.start()
+            self._stop.clear()
+            for index, (host, port) in targets.items():
+                thread = self._watcher_threads.get(index)
+                if thread is not None and thread.is_alive():
+                    continue
+                thread = threading.Thread(
+                    target=self._recv_loop, args=(index, host, port), daemon=True
+                )
+                self._watcher_threads[index] = thread
+                thread.start()
 
     def start_polling(self, interval_s: float = 0.25) -> None:
         if interval_s <= 0:
@@ -236,7 +261,12 @@ class _Watcher:
             except Exception:  # pragma: no cover - background thread safeguard
                 logger.exception("Error in watcher poll loop")
 
-    def _recv_loop(self) -> None:
+    def _recv_loop(
+        self,
+        target: int | None = None,
+        host: str | None = None,
+        watch_port: int | None = None,
+    ) -> None:
         self._stop.clear()
         context = zmq.Context.instance()
         sock: zmq.Socket = context.socket(zmq.SUB)
@@ -245,10 +275,11 @@ class _Watcher:
         sock.setsockopt(zmq.SUBSCRIBE, b"")  # Subscribe to all messages
         try:
             logger.debug("Starting watcher recv loop...")
-            sock.connect(
-                f"tcp://{erlab.interactive.imagetool.manager.HOST_IP}:"
-                f"{erlab.interactive.imagetool.manager.PORT_WATCH}"
-            )
+            if host is None:
+                host = erlab.interactive.imagetool.manager.HOST_IP
+            if watch_port is None:
+                watch_port = erlab.interactive.imagetool.manager.PORT_WATCH
+            sock.connect(f"tcp://{host}:{watch_port}")
             logger.debug("Watcher connected to server.")
 
             while not self._stop.is_set():
@@ -266,6 +297,13 @@ class _Watcher:
                 with self._lock:
                     if varname not in self.watched_vars:
                         continue  # Not watching
+                    watched_target = self.watched_vars[varname].get("target")
+                    if (
+                        target is not None
+                        and watched_target is not None
+                        and watched_target != target
+                    ):
+                        continue
                 match event:
                     case "updated":
                         # Schedule update on kernel thread
@@ -274,11 +312,11 @@ class _Watcher:
                         ):  # pragma: no branch
                             logger.debug("Scheduling update on kernel io_loop")
                             self._shell.kernel.io_loop.add_callback(
-                                self._apply_update_now, varname, uid
+                                self._apply_update_now, varname, uid, target
                             )
                         else:
                             logger.debug("Applying update directly")
-                            self._apply_update_now(varname, uid)
+                            self._apply_update_now(varname, uid, target)
                     case "removed":  # pragma: no branch
                         with self._lock:
                             self.watched_vars.pop(varname, None)
@@ -289,8 +327,15 @@ class _Watcher:
             logger.debug("Watcher recv loop exiting")
             sock.close()
 
-    def _apply_update_now(self, varname: str, uid: str) -> None:
-        darr = erlab.interactive.imagetool.manager.fetch(uid)
+    def _apply_update_now(
+        self, varname: str, uid: str, target: int | None = None
+    ) -> None:
+        if target is None:
+            with self._lock:
+                state = self.watched_vars.get(varname)
+                if state is not None:
+                    target = typing.cast("int | None", state.get("target"))
+        darr = erlab.interactive.imagetool.manager.fetch(uid, target=target)
         if darr is None:  # Data not found, ignore
             return
 
@@ -316,15 +361,16 @@ class _Watcher:
         self._stop.set()
         self._poll_stop.set()
 
-        if self._watcher_thread is not None and self._watcher_thread.is_alive():
-            self._watcher_thread.join(timeout=2.0)
-            if emit_timeout_warnings and self._watcher_thread.is_alive():
-                logger.warning("Watcher thread did not stop within timeout")
+        for thread in self._watcher_threads.values():
+            if thread.is_alive():
+                thread.join(timeout=2.0)
+                if emit_timeout_warnings and thread.is_alive():
+                    logger.warning("Watcher thread did not stop within timeout")
         if self._poll_thread is not None and self._poll_thread.is_alive():
             self._poll_thread.join(timeout=2.0)
             if emit_timeout_warnings and self._poll_thread.is_alive():
                 logger.warning("Watcher poll thread did not stop within timeout")
-        self._thread_started = False
+        self._watcher_threads.clear()
 
     def shutdown(self) -> None:
         self._shutdown(emit_timeout_warnings=True)
@@ -515,6 +561,7 @@ def watch(
     stop: bool = False,
     remove: bool = False,
     stop_all: bool = False,
+    target: int | None = None,
     poll_interval_s: float = 0.25,
 ) -> tuple[str, ...]:
     """Watch namespace variables and synchronize them with ImageTool manager.
@@ -556,6 +603,10 @@ def watch(
         If ``True``, remove watched variables from manager while stopping.
     stop_all
         If ``True``, stop watching all variables in the namespace.
+    target
+        Optional 0-based ImageTool manager index to watch into. If omitted, the
+        current process default is used. If no default is set, the only live manager is
+        used. If multiple managers are live, an ambiguity error is raised.
     poll_interval_s
         Polling interval in seconds for fallback polling when post-run hooks are
         unavailable (for example, non-IPython environments). Must be greater than 0.
@@ -581,7 +632,7 @@ def watch(
             watcher.stop_watching(varname, remove=remove)
     else:
         for varname in varnames:
-            watcher.watch(varname)
+            watcher.watch(varname, target=target)
 
         if not _register_post_run_cell_callback(shell_obj, watcher, key):
             watcher.start_polling(poll_interval_s)

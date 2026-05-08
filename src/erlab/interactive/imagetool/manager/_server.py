@@ -6,23 +6,29 @@ __all__ = [
     "HOST_IP",
     "PORT",
     "PORT_WATCH",
+    "ImageToolManagerAmbiguousError",
+    "ImageToolManagerNotFoundError",
     "ImageToolManagerTimeoutError",
+    "clear_default_manager",
     "fetch",
+    "get_default_manager",
     "is_running",
+    "list_managers",
     "load_in_manager",
+    "manager_selection_info",
     "replace_data",
+    "set_default_manager",
     "show_in_manager",
+    "use_manager",
 ]
 
 
 import errno
-import functools
 import io
 import logging
 import os
 import pathlib
 import pickle
-import socket
 import threading
 import typing
 import warnings
@@ -36,10 +42,24 @@ from qtpy import QtCore
 
 import erlab
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME
+from erlab.interactive.imagetool.manager._registry import (
+    ImageToolManagerAmbiguousError,
+    ImageToolManagerNotFoundError,
+    ManagerInfo,
+    _ManagerRecord,
+    _normalize_manager_index,
+    clear_default_manager,
+    get_default_manager,
+    live_manager_records,
+    manager_selection_info,
+    resolve_manager_record,
+    set_default_manager,
+    use_manager,
+)
 
 if typing.TYPE_CHECKING:
     import types
-    from collections.abc import Callable, Collection, Iterable
+    from collections.abc import Collection, Iterable
 
     import numpy.typing as npt
 
@@ -348,7 +368,12 @@ class ImageToolManagerTimeoutError(TimeoutError):
         )
 
 
-def _query_zmq(payload: PacketVariant) -> Response:
+def _query_zmq(
+    payload: PacketVariant,
+    *,
+    target: int | None = None,
+    record: _ManagerRecord | None = None,
+) -> Response:
     """Client side function to send a packet to the server and receive a response.
 
     Parameters
@@ -358,6 +383,8 @@ def _query_zmq(payload: PacketVariant) -> Response:
         models.
 
     """
+    record = resolve_manager_record(target) if record is None else record
+
     ctx = zmq.Context.instance()
 
     sock: zmq.Socket = ctx.socket(zmq.REQ)
@@ -367,7 +394,7 @@ def _query_zmq(payload: PacketVariant) -> Response:
     poller.register(sock, zmq.POLLIN)
     try:
         logger.debug("Connecting to server...")
-        sock.connect(f"tcp://{HOST_IP}:{PORT}")
+        sock.connect(f"tcp://{record.host}:{record.port}")
     except Exception:
         logger.exception("Failed to connect to server")
     else:
@@ -395,13 +422,26 @@ _UNSET = object()
 
 
 class _WatcherServer(QtCore.QThread):
-    def __init__(self) -> None:
+    def __init__(self, port: int | None = None) -> None:
         super().__init__()
         self.stopped = threading.Event()
+        self.port = PORT_WATCH if port is None else port
+        self._bound_event = threading.Event()
+        self._bound_port: int | None = None
+        self._bind_error: Exception | None = None
 
         self._ret_val: typing.Any = _UNSET
         self._mutex = QtCore.QMutex()
         self._cv = QtCore.QWaitCondition()
+
+    def wait_until_bound(self, timeout_ms: int = 5000) -> int:
+        if not self._bound_event.wait(timeout_ms / 1000):
+            raise TimeoutError("Timed out waiting for watcher server to bind")
+        if self._bind_error is not None:
+            raise RuntimeError("Watcher server failed to bind") from self._bind_error
+        if self._bound_port is None:  # pragma: no cover - defensive
+            raise RuntimeError("Watcher server did not report a bound port")
+        return self._bound_port
 
     @QtCore.Slot(str, str, str)
     def send_parameters(
@@ -429,8 +469,19 @@ class _WatcherServer(QtCore.QThread):
         sock.setsockopt(zmq.LINGER, 0)
 
         try:
-            sock.bind(f"tcp://*:{PORT_WATCH}")
-            logger.debug("Watcher server is listening...")
+            try:
+                if self.port == 0:
+                    self.port = int(sock.bind_to_random_port("tcp://*"))
+                else:
+                    sock.bind(f"tcp://*:{self.port}")
+            except Exception as exc:
+                self._bind_error = exc
+                self._bound_event.set()
+                logger.debug("Watcher server failed to bind", exc_info=True)
+                return
+            self._bound_port = self.port
+            self._bound_event.set()
+            logger.debug("Watcher server is listening on port %s...", self.port)
 
             while not self.stopped.is_set():
                 with QtCore.QMutexLocker(self._mutex):
@@ -451,7 +502,10 @@ class _WatcherServer(QtCore.QThread):
                 )
                 sock.send_json({"varname": varname, "uid": uid, "event": event})
 
-        except Exception:
+        except Exception as exc:
+            if not self._bound_event.is_set():
+                self._bind_error = exc
+                self._bound_event.set()
             logger.exception("Watcher server encountered an error")
         finally:
             sock.close()
@@ -471,13 +525,26 @@ class _ManagerServer(QtCore.QThread):
     sigShowUID = QtCore.Signal(str)
     sigUnwatchUID = QtCore.Signal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, port: int | None = None) -> None:
         super().__init__()
         self.stopped = threading.Event()
+        self.port = PORT if port is None else port
+        self._bound_event = threading.Event()
+        self._bound_port: int | None = None
+        self._bind_error: Exception | None = None
 
         self._ret_val: typing.Any = _UNSET
         self._mutex = QtCore.QMutex()
         self._cv = QtCore.QWaitCondition()
+
+    def wait_until_bound(self, timeout_ms: int = 5000) -> int:
+        if not self._bound_event.wait(timeout_ms / 1000):
+            raise TimeoutError("Timed out waiting for manager server to bind")
+        if self._bind_error is not None:
+            raise RuntimeError("Manager server failed to bind") from self._bind_error
+        if self._bound_port is None:  # pragma: no cover - defensive
+            raise RuntimeError("Manager server did not report a bound port")
+        return self._bound_port
 
     @QtCore.Slot(object)
     def set_return_value(self, value: typing.Any) -> None:
@@ -504,8 +571,19 @@ class _ManagerServer(QtCore.QThread):
         sock.setsockopt(zmq.RCVTIMEO, 100)
 
         try:
-            sock.bind(f"tcp://*:{PORT}")
-            logger.debug("Server is listening...")
+            try:
+                if self.port == 0:
+                    self.port = int(sock.bind_to_random_port("tcp://*"))
+                else:
+                    sock.bind(f"tcp://*:{self.port}")
+            except Exception as exc:
+                self._bind_error = exc
+                self._bound_event.set()
+                logger.debug("Server failed to bind", exc_info=True)
+                return
+            self._bound_port = self.port
+            self._bound_event.set()
+            logger.debug("Server is listening on port %s...", self.port)
 
             while not self.stopped.is_set():
                 try:
@@ -592,52 +670,80 @@ class _ManagerServer(QtCore.QThread):
                             case "unwatch-uid":
                                 self.sigUnwatchUID.emit(str(payload.command_arg))
 
-        except Exception:
+        except Exception as exc:
+            if not self._bound_event.is_set():
+                self._bind_error = exc
+                self._bound_event.set()
             logger.exception("Server encountered an error")
         finally:
             sock.close()
             logger.debug("Socket closed")
 
 
-def _is_tcp_port_open(host: str, port: int, timeout: float = 0.1) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+def _direct_manager_for_target(target: int | None):
+    if target is not None:
+        target = _normalize_manager_index(target, label="target")
+    manager = erlab.interactive.imagetool.manager._manager_instance
+    if manager is None or erlab.interactive.imagetool.manager._always_use_socket:
+        return None
+    local_index = getattr(manager, "manager_index", None)
+    if target is not None:
+        return manager if local_index == target else None
+    default_index = get_default_manager(validate=False)
+    if default_index is not None and default_index != local_index:
+        return None
+    return manager
 
 
-def is_running() -> bool:
+def list_managers() -> tuple[ManagerInfo, ...]:
+    """Return live ImageTool managers visible to the current user.
+
+    Returns
+    -------
+    tuple of ManagerInfo
+        Live managers sorted by their 0-based launch index.
+    """
+    default_index = get_default_manager(validate=False)
+    return tuple(
+        record.to_public_info(is_default=record.index == default_index)
+        for record in live_manager_records()
+    )
+
+
+def is_running(target: int | None = None) -> bool:
     """Check whether an instance of ImageToolManager is active.
+
+    Parameters
+    ----------
+    target
+        Optional 0-based manager index to check. If omitted, return ``True`` when
+        any manager is live.
 
     Returns
     -------
     bool
         True if an instance of ImageToolManager is running, False otherwise.
     """
-    if erlab.interactive.imagetool.manager._manager_instance is not None:
+    if target is not None:
+        target = _normalize_manager_index(target, label="target")
+    manager = erlab.interactive.imagetool.manager._manager_instance
+    local_index = (
+        getattr(manager, "manager_index", None) if manager is not None else None
+    )
+    if local_index is not None and (target is None or local_index == target):
         return True
-    return _is_tcp_port_open(HOST_IP, PORT)
+    records = live_manager_records()
+    if target is not None:
+        return any(record.index == target for record in records)
+    return bool(records)
 
 
-def _manager_running(func: Callable) -> Callable:
-    """Decorate a function to ensure that the ImageToolManager is running."""
-
-    @functools.wraps(func)
-    def _wrapper(*args, **kwargs):
-        if not erlab.interactive.imagetool.manager.is_running():
-            raise RuntimeError(
-                "ImageTool manager is not running. Please start the ImageTool manager "
-                "application before using this function."
-            )
-        return func(*args, **kwargs)
-
-    return _wrapper
-
-
-@_manager_running
 def load_in_manager(
-    paths: Iterable[str | os.PathLike], loader_name: str | None = None, **load_kwargs
+    paths: Iterable[str | os.PathLike],
+    loader_name: str | None = None,
+    *,
+    target: int | None = None,
+    **load_kwargs,
 ) -> Response | None:
     """Load and display data in the ImageToolManager.
 
@@ -648,8 +754,19 @@ def load_in_manager(
     loader_name
         Name of the loader to use to load the data. The loader must be registered in
         :attr:`erlab.io.loaders`.
+    target
+        Optional 0-based manager index. If omitted, the current process default is
+        used. If no default is set, the only live manager is used. If multiple
+        managers are live, an ambiguity error is raised.
     **load_kwargs
         Additional keyword arguments passed onto the load method of the loader.
+
+    Returns
+    -------
+    Response or None
+        Manager response for socket calls. Returns ``None`` when the manager is in
+        the same Python process and the data is passed directly.
+
     """
     path_list: list[str] = []
     for p in paths:
@@ -665,27 +782,24 @@ def load_in_manager(
             loader_name
         ].name  # Trigger exception if loader_name is not registered
 
-    if (
-        erlab.interactive.imagetool.manager._manager_instance is not None
-        and not erlab.interactive.imagetool.manager._always_use_socket
-    ):
+    direct_manager = _direct_manager_for_target(target)
+    if direct_manager is not None:
         # If the manager is running in the same process, directly pass the data
-        erlab.interactive.imagetool.manager._manager_instance._data_load(
-            path_list, loader, load_kwargs
-        )
+        direct_manager._data_load(path_list, loader, load_kwargs)
         return None
 
+    record = resolve_manager_record(target)
     return _query_zmq(
         OpenFilesPacket(
             packet_type="open",
             filename_list=path_list,
             loader_name=loader,
             arguments=load_kwargs,
-        )
+        ),
+        record=record,
     )
 
 
-@_manager_running
 def show_in_manager(
     data: Collection[xr.DataArray | npt.NDArray]
     | xr.DataArray
@@ -693,6 +807,7 @@ def show_in_manager(
     | xr.Dataset
     | xr.DataTree
     | None,
+    target: int | None = None,
     **kwargs,
 ) -> Response | None:
     """Create and display ImageTool windows in the ImageToolManager.
@@ -702,6 +817,10 @@ def show_in_manager(
     data
         The data to be displayed in the ImageTool window. See :func:`itool
         <erlab.interactive.imagetool.itool>` for more information.
+    target
+        Optional 0-based manager index. If omitted, the current process default is
+        used. If no default is set, the only live manager is used. If multiple
+        managers are live, an ambiguity error is raised.
     link
         Whether to enable linking between multiple ImageTool windows, by default
         `False`.
@@ -711,6 +830,12 @@ def show_in_manager(
     **kwargs
         Keyword arguments passed onto :class:`ImageTool
         <erlab.interactive.imagetool.ImageTool>`.
+
+    Returns
+    -------
+    Response or None
+        Manager response for socket calls. Returns ``None`` when the manager is in
+        the same Python process and the data is passed directly.
 
     """
     logger.debug("Parsing input data into DataArrays")
@@ -723,22 +848,19 @@ def show_in_manager(
     else:
         input_data = erlab.interactive.imagetool.viewer._parse_input(data)
 
-    if (
-        erlab.interactive.imagetool.manager._manager_instance is not None
-        and not erlab.interactive.imagetool.manager._always_use_socket
-    ):
+    direct_manager = _direct_manager_for_target(target)
+    if direct_manager is not None:
         # If the manager is running in the same process, directly pass the data
-        erlab.interactive.imagetool.manager._manager_instance._data_recv(
-            input_data, kwargs
-        )
+        direct_manager._data_recv(input_data, kwargs)
         return None
 
+    record = resolve_manager_record(target)
     return _query_zmq(
-        AddDataPacket(packet_type="add", data_list=input_data, arguments=kwargs)
+        AddDataPacket(packet_type="add", data_list=input_data, arguments=kwargs),
+        record=record,
     )
 
 
-@_manager_running
 def replace_data(
     index: int | str | Collection[int | str],
     data: Collection[xr.DataArray | npt.NDArray]
@@ -746,6 +868,8 @@ def replace_data(
     | npt.NDArray
     | xr.Dataset
     | xr.DataTree,
+    *,
+    target: int | None = None,
 ) -> Response:
     """Replace data in existing ImageTool windows.
 
@@ -761,6 +885,19 @@ def replace_data(
     data
         Data to replace the existing data in the ImageTool windows. See :func:`itool
         <erlab.interactive.imagetool.itool>` for more information.
+    target
+        Optional 0-based manager index. If omitted, the current process default is
+        used. If no default is set, the only live manager is used. If multiple
+        managers are live, an ambiguity error is raised.
+
+    Returns
+    -------
+    Response
+        Manager response.
+
+    .. versionchanged:: 3.22.0
+
+       Added the ``target`` argument for selecting a manager by index.
     """
     data_list = erlab.interactive.imagetool.viewer._parse_input(data)
 
@@ -773,15 +910,28 @@ def replace_data(
             f"and provided indices ({len(index)})"
         )
 
+    direct_manager = _direct_manager_for_target(target)
+    if direct_manager is not None:
+        direct_manager._data_replace(data_list, list(index))
+        return Response(status="ok")
+
+    record = resolve_manager_record(target)
     return _query_zmq(
         ReplacePacket(
             packet_type="replace", data_list=data_list, replace_idxs=list(index)
-        )
+        ),
+        record=record,
     )
 
 
-@_manager_running
-def _watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -> None:
+def _watch_data(
+    varname: str,
+    uid: str,
+    data: xr.DataArray,
+    show: bool = False,
+    *,
+    target: int | None = None,
+) -> None:
     """Add or update a watched variable in the ImageToolManager.
 
     Parameters
@@ -796,18 +946,28 @@ def _watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) 
         If `True`, bring the corresponding ImageTool window to the front. Default is
         `False`. If this is a new variable being watched, a new ImageTool window will be
         created and shown regardless of this parameter.
+    target
+        Optional 0-based manager index. If omitted, the current process default is
+        used. If no default is set, the only live manager is used. If multiple
+        managers are live, an ambiguity error is raised.
     """
+    record = resolve_manager_record(target)
     _query_zmq(
-        WatchPacket(packet_type="watch", watched_info=(varname, uid), watched_data=data)
+        WatchPacket(
+            packet_type="watch", watched_info=(varname, uid), watched_data=data
+        ),
+        record=record,
     )
     if show:
         _query_zmq(
-            CommandPacket(packet_type="command", command="show-uid", command_arg=uid)
+            CommandPacket(packet_type="command", command="show-uid", command_arg=uid),
+            record=record,
         )
 
 
-@_manager_running
-def _unwatch_data(uid: str, remove: bool = False) -> Response:
+def _unwatch_data(
+    uid: str, remove: bool = False, *, target: int | None = None
+) -> Response:
     """Cancel watching a variable in the ImageToolManager.
 
     Parameters
@@ -817,13 +977,20 @@ def _unwatch_data(uid: str, remove: bool = False) -> Response:
     remove
         Whether to remove the corresponding ImageTool window when unwatching. Default is
         `False`.
+    target
+        Optional 0-based manager index. If omitted, the current process default is
+        used. If no default is set, the only live manager is used. If multiple
+        managers are live, an ambiguity error is raised.
     """
+    record = resolve_manager_record(target)
     if remove:
         return _query_zmq(
-            CommandPacket(packet_type="command", command="remove-uid", command_arg=uid)
+            CommandPacket(packet_type="command", command="remove-uid", command_arg=uid),
+            record=record,
         )
     return _query_zmq(
-        CommandPacket(packet_type="command", command="unwatch-uid", command_arg=uid)
+        CommandPacket(packet_type="command", command="unwatch-uid", command_arg=uid),
+        record=record,
     )
 
 
@@ -858,7 +1025,7 @@ def unwatch_data(uid: str, remove: bool = False) -> Response:
     return _unwatch_data(uid, remove=remove)
 
 
-def _remove_idx(index: int) -> Response:
+def _remove_idx(index: int, *, target: int | None = None) -> Response:
     """Remove the ImageTool window at the given index.
 
     Parameters
@@ -867,11 +1034,12 @@ def _remove_idx(index: int) -> Response:
         Index of the ImageTool window to close.
     """
     return _query_zmq(
-        CommandPacket(packet_type="command", command="remove-idx", command_arg=index)
+        CommandPacket(packet_type="command", command="remove-idx", command_arg=index),
+        target=target,
     )
 
 
-def _show_idx(index: int) -> Response:
+def _show_idx(index: int, *, target: int | None = None) -> Response:
     """Show the ImageTool window at the given index.
 
     Parameters
@@ -880,12 +1048,12 @@ def _show_idx(index: int) -> Response:
         Index of the ImageTool window to show.
     """
     return _query_zmq(
-        CommandPacket(packet_type="command", command="show-idx", command_arg=index)
+        CommandPacket(packet_type="command", command="show-idx", command_arg=index),
+        target=target,
     )
 
 
-@_manager_running
-def fetch(index: int | str) -> xr.DataArray | None:
+def fetch(index: int | str, *, target: int | None = None) -> xr.DataArray | None:
     """Get data from the ImageTool window at the given index.
 
     Parameters
@@ -893,22 +1061,26 @@ def fetch(index: int | str) -> xr.DataArray | None:
     index
         Index of the ImageTool window to get data from, or the unique identifier (UID)
         of a watched variable (used internally).
+    target
+        Optional 0-based manager index. If omitted, the current process default is
+        used. If no default is set, the only live manager is used. If multiple
+        managers are live, an ambiguity error is raised.
 
     Returns
     -------
     xr.DataArray or None
         The data in the ImageTool window at the given index, or `None` if the index is
         invalid or the data cannot be retrieved.
+
+    .. versionchanged:: 3.22.0
+
+       Added the ``target`` argument for selecting a manager by index.
     """
-    if (
-        erlab.interactive.imagetool.manager._manager_instance is not None
-        and not erlab.interactive.imagetool.manager._always_use_socket
-    ):
-        return (
-            erlab.interactive.imagetool.manager._manager_instance._get_imagetool_data(
-                index
-            )
-        )
+    direct_manager = _direct_manager_for_target(target)
+    if direct_manager is not None:
+        return direct_manager._get_imagetool_data(index)
+    record = resolve_manager_record(target)
     return _query_zmq(
-        CommandPacket(packet_type="command", command="get-data", command_arg=index)
+        CommandPacket(packet_type="command", command="get-data", command_arg=index),
+        record=record,
     ).data

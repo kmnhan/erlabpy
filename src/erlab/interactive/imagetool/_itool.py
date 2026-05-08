@@ -1,5 +1,6 @@
 __all__ = ["itool"]
 
+import operator
 from collections.abc import Collection
 
 import numpy.typing as npt
@@ -18,7 +19,7 @@ def itool(
     *,
     link: bool = False,
     link_colors: bool = True,
-    manager: bool | None = None,
+    manager: bool | int | None = None,
     replace: Collection[int] | int | None = None,
     execute: bool | None = None,
     **kwargs,
@@ -66,27 +67,33 @@ def itool(
         default `True`. This argument has no effect if `link` is set to `False`.
     manager
         Whether to open the ImageTool window(s) using the :class:`ImageToolManager
-        <erlab.interactive.imagetool.manager.ImageToolManager>` if it is running. If not
-        provided, the manager will only be used if it is in the same process as the
-        caller.
+        <erlab.interactive.imagetool.manager.ImageToolManager>` if it is running. An
+        integer targets a specific 0-based manager index. If ``True``, the current
+        process default manager is used, or the only live manager if no default is set.
+        If multiple managers are live and no default has been selected, an error is
+        raised. If not provided, the manager will only be used if it is in the same
+        process as the caller.
 
         .. versionchanged:: 3.4.0
 
             Argument renamed from ``use_manager`` to ``manager``.
+
+        .. versionchanged:: 3.22.0
+
+            Integer manager indexes select a specific ImageTool Manager instance.
     replace
         When using the manager, this argument specifies which existing ImageTool windows
         should be replaced with the new data. If the manager is not used, this argument
         is ignored. ``replace`` can be set to:
 
-        - `None` (default): no existing windows are replaced. New windows are
-          created for the new data.
-        - A single integer: this can be a valid existing index (replace that
-          window), one greater than the current largest index (create a new
-          window), or a negative index from the end (for example, ``-1`` means
-          the largest existing index).
-        - A list of integers: each integer is interpreted as described above.
-          The list length must match the number of windows ``data`` is expected
-          to create.
+        - `None` (default): no existing windows are replaced. New windows are created
+          for the new data.
+        - A single integer: this can be a valid existing index (replace that window),
+          one greater than the current largest index (create a new window), or a
+          negative index from the end (for example, ``-1`` means the largest existing
+          index).
+        - A list of integers: each integer is interpreted as described above. The list
+          length must match the number of windows ``data`` is expected to create.
 
         If this argument is used, the ``link``, ``link_colors``, and ``kwargs``
         arguments are ignored, since no new windows are created.
@@ -131,25 +138,42 @@ def itool(
             category=FutureWarning,
         )
 
+    manager_target: int | None = None
+    if manager is not None and not isinstance(manager, bool):
+        try:
+            manager_target = operator.index(manager)
+        except TypeError:
+            manager_target = None
+    use_manager = manager is True or manager_target is not None
+
     if (
         manager is None
         and erlab.interactive.imagetool.manager._manager_instance is not None
         and erlab.interactive.imagetool.manager.is_running()
     ):
         # Called from the same process as the manager, using the manager by default
-        manager = True
+        use_manager = True
 
-    if manager and not erlab.interactive.imagetool.manager.is_running():
+    if use_manager and not erlab.interactive.imagetool.manager.is_running(
+        target=manager_target
+    ):
         erlab.utils.misc.emit_user_level_warning(
             "The manager is not running. Opening the ImageTool window(s) directly."
         )
+        use_manager = False
 
-    if manager:
+    if use_manager:
         if replace is not None:
-            erlab.interactive.imagetool.manager.replace_data(index=replace, data=data)
+            erlab.interactive.imagetool.manager.replace_data(
+                index=replace, data=data, target=manager_target
+            )
         else:
             erlab.interactive.imagetool.manager.show_in_manager(
-                data, link=link, link_colors=link_colors, **kwargs
+                data,
+                link=link,
+                link_colors=link_colors,
+                target=manager_target,
+                **kwargs,
             )
         return None
 

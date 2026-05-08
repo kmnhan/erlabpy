@@ -18,9 +18,10 @@ This module provides a GUI application for managing multiple ImageTool windows. 
 application can be started by running the script `itool-manager` from the command line
 in the environment where the package is installed.
 
-Python scripts communicate with the manager using a ZeroMQ connection with the default
-port number 45555. The port number can be changed by setting the environment variable
-``ITOOL_MANAGER_PORT``.
+Python scripts communicate with managers using ZeroMQ connections. The first manager
+uses the default request port 45555 and watch port 45556 when those ports are free;
+additional managers use dynamically assigned ports and can be selected by 0-based
+manager index.
 
 """
 
@@ -31,15 +32,23 @@ __all__ = [
     "PORT",
     "PORT_WATCH",
     "ImageToolManager",
+    "ImageToolManagerAmbiguousError",
+    "ImageToolManagerNotFoundError",
+    "clear_default_manager",
     "fetch",
+    "get_default_manager",
     "get_log_file_path",
     "is_running",
+    "list_managers",
     "load_in_manager",
     "main",
+    "manager_selection_info",
     "maybe_push",
     "replace_data",
+    "set_default_manager",
     "show_in_manager",
     "shutdown",
+    "use_manager",
     "watch",
     "watched_variables",
 ]
@@ -65,13 +74,21 @@ from erlab.interactive.imagetool.manager._server import (
     HOST_IP,
     PORT,
     PORT_WATCH,
+    ImageToolManagerAmbiguousError,
+    ImageToolManagerNotFoundError,
     _unwatch_data,
     _watch_data,
+    clear_default_manager,
     fetch,
+    get_default_manager,
     is_running,
+    list_managers,
     load_in_manager,
+    manager_selection_info,
     replace_data,
+    set_default_manager,
     show_in_manager,
+    use_manager,
 )
 from erlab.interactive.imagetool.manager._watcher import (
     maybe_push,
@@ -79,7 +96,6 @@ from erlab.interactive.imagetool.manager._watcher import (
     watch,
     watched_variables,
 )
-from erlab.interactive.utils import MessageDialog
 
 logger = logging.getLogger(__name__)
 
@@ -176,10 +192,6 @@ def main(execute: bool = True) -> None:
     # Files passed as command-line arguments
     # Also handles opening files on Windows
 
-    if file_args and is_running():  # pragma: no cover
-        load_in_manager(file_args)
-        return
-
     qapp = typing.cast(
         "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
     )
@@ -200,68 +212,35 @@ def main(execute: bool = True) -> None:
         qapp.setApplicationDisplayName("ImageTool Manager")
         qapp.setApplicationVersion(erlab.__version__)
 
-    while is_running():  # pragma: no branch
-        if (
-            sys.platform == "darwin" and erlab.utils.misc._IS_PACKAGED
-        ):  # pragma: no cover
-            # If another instance is detected and a file event is queued, sends files to
-            # that instance (macOS packaged app only)
+    configure_logging()
 
-            # Populate _pending_files if FileOpenEvent(s) occurred
-            qapp.processEvents()
+    _manager_instance = ImageToolManager()
+    _manager_instance.show()
+    _manager_instance.activateWindow()
 
-            if isinstance(qapp, _ManagerApp) and qapp._pending_files:
-                load_in_manager(qapp._pending_files)
-                return
+    if isinstance(qapp, _ManagerApp):  # pragma: no cover
+        pending = qapp._pending_files.copy()
+        if pending:
+            _manager_instance._handle_dropped_files(pending)
+            qapp._pending_files.clear()
 
-        dialog = MessageDialog(
-            parent=None,
-            title="",
-            text="An instance of ImageToolManager is already running.",
-            informative_text="Retry after closing the existing instance.",
-            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
-            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
-        )
-        if os.environ.get("PYTEST_VERSION"):  # pragma: no cover
-            # Automatically confirm on test fail to avoid blocking
-            timer = QtCore.QTimer(dialog)
-            timer.setSingleShot(True)
-            timer.timeout.connect(lambda dlg=dialog: dlg.reject())
-            timer.start(5000)
+    if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+        # Handle cleanup after a successful application update
+        updater_settings = _get_updater_settings()
+        new_version = str(erlab.__version__)
+        old_version = updater_settings.value("version_before_update", "")
+        if old_version != new_version:
+            _manager_instance.updated(old_version, new_version)
+            _cleanup_update_tmp_dirs(updater_settings)
+            updater_settings.setValue("version_before_update", new_version)
+            updater_settings.sync()
 
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            break
-    else:
-        configure_logging()
+        # Suppress warnings on console initialization
+        os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
 
-        _manager_instance = ImageToolManager()
-        _manager_instance.show()
-        _manager_instance.activateWindow()
-
-        if isinstance(qapp, _ManagerApp):  # pragma: no cover
-            pending = qapp._pending_files.copy()
-            if pending:
-                _manager_instance._handle_dropped_files(pending)
-                qapp._pending_files.clear()
-
-        if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
-            # Handle cleanup after a successful application update
-            updater_settings = _get_updater_settings()
-            new_version = str(erlab.__version__)
-            old_version = updater_settings.value("version_before_update", "")
-            if old_version != new_version:
-                _manager_instance.updated(old_version, new_version)
-                _cleanup_update_tmp_dirs(updater_settings)
-                updater_settings.setValue("version_before_update", new_version)
-                updater_settings.sync()
-
-            # Suppress warnings on console initialization
-            os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
-
-        if execute:
-            qapp.exec()
-            _manager_instance = None
+    if execute:
+        qapp.exec()
+        _manager_instance = None
 
 
 def _get_recent_directory() -> str:

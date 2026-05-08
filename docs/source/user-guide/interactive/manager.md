@@ -107,6 +107,14 @@ When automatic updates are enabled and the row is up to date, the tree keeps sho
 {guilabel}`Auto` badge so you can turn automatic updates off again. You can also
 right-click a child row and choose {guilabel}`Automatic Updates...`.
 
+:::{note}
+Planned improvement: when a stale child ImageTool was opened from a tool with
+detached file-backed provenance, {guilabel}`Reload Data` currently replays the child
+window's saved steps. A future release will add a way to rebuild that child from the
+parent tool's newest detached steps, so parent-side changes can be adopted without
+recreating the child window.
+:::
+
 Fitting tools can also take part in this flow. {guilabel}`ftool`, {guilabel}`goldtool`,
 and {guilabel}`restool` include {guilabel}`Refit after update`; when it is enabled,
 the tool reruns the same fit after compatible data from the ImageTool that opened it is
@@ -155,11 +163,47 @@ See {ref}`workflow-bridge-operations` for the maintained crosswalk.
 
 :::{note}
 
-- Only one manager can run per machine.
-
 - Opening an ImageTool window for the very first time after installing may take a couple of minutes as caches are built. Subsequent launches will be much faster.
 
 :::
+
+(imagetool-manager-multiple-instances)=
+
+## Multiple Manager Instances
+
+Multiple ImageTool Manager windows can run at the same time. The first live manager is
+manager `#0`, and later managers receive 0-based indexes in the order they start.
+
+To start a new manager instance, choose {guilabel}`File → New Manager Instance` from an
+existing manager window.
+
+Indexes are not reused while a higher-index manager is live or starting. If managers
+`#0`, `#1`, and `#2` are running, then `#1` closes, the next manager starts as `#3`.
+After all managers close or become stale, the next manager starts again as `#0`.
+
+When one manager is running, notebook and script calls can use `manager=True` without
+choosing an index.
+
+When more than one manager is running, either pass the index like `manager=2` or set a
+default for the current Python process or notebook kernel:
+
+```python
+import erlab.interactive.imagetool.manager as itm
+
+itm.list_managers()
+itm.set_default_manager(1)
+data.qshow(manager=True)
+other.qshow(manager=0)
+%itool -m 1 data
+%watch -m 1 data
+```
+
+The default is stored in the current session. The same actions are also available as
+IPython magics `%manager list`, `%manager use 1`, `%manager current`, and `%manager
+clear`.
+
+If more than one manager is running and no default has been selected, calls that use
+`manager=True` raise an error instead of guessing.
 
 (imagetool-manager-open)=
 
@@ -167,10 +211,11 @@ See {ref}`workflow-bridge-operations` for the maintained crosswalk.
 
 Once the manager is running, you can open ImageTools in several ways:
 
-- {meth}`xarray.DataArray.qshow` or {func}`erlab.interactive.imagetool.itool` with `manager=True` sends windows directly to the manager:
+- {meth}`xarray.DataArray.qshow` or {func}`erlab.interactive.imagetool.itool` with `manager=True` sends windows to the only live manager or to the default manager for the current Python process. Pass an integer to target a specific manager index:
 
   ```python
   data.qshow(manager=True)
+  data.qshow(manager=1)
   eri.itool([d1, d2], manager=True, replace=[1, 2])
   ```
 
@@ -180,6 +225,7 @@ Once the manager is running, you can open ImageTools in several ways:
 
   ```python
   %itool -m darr
+  %itool -m 1 darr
   ```
 
 - The {guilabel}`File → Move to Manager` ({kbd}`Ctrl+Shift+M`) action from an ImageTool window opened outside the manager. This action moves the active ImageTool to the manager.
@@ -202,7 +248,7 @@ Once the manager is running, you can open ImageTools in several ways:
   Use the loader options button next to the loader selector to apply the same
   `loader_extensions=` settings when opening selected files.
 
-- Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. See {ref}`working-with-notebooks`.
+- Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. Use `%watch -m 1 darr` to watch into manager `#1`. See {ref}`working-with-notebooks`.
 
 - For custom integration with other workflows, scripts can call {func}`erlab.interactive.imagetool.manager.show_in_manager` or {func}`~erlab.interactive.imagetool.manager.load_in_manager` directly (see {ref}`imagetool-manager-automation`).
 
@@ -393,7 +439,7 @@ watch("my_data", stop=True)
 watch(stop_all=True)
 ```
 
-In non-IPython environments, watcher updates falls back to polling, which periodically checks for changes in the watched variables. You can adjust the frequency with `poll_interval_s` if needed:
+In non-IPython environments, watcher updates fall back to polling, which periodically checks for changes in the watched variables. You can adjust the frequency with `poll_interval_s` if needed:
 
 ```python
 watch("my_data", poll_interval_s=0.5)
@@ -445,7 +491,7 @@ If you are using VS Code (or other editor that supports VS Code extensions), the
 If you wish to integrate the manager into custom workflows, you can programmatically load data and control ImageTool windows in the manager. Use the public functions exported from {mod}`erlab.interactive.imagetool.manager`:
 
 ```python
-from erlab.interactive.imagetool.manager import load_in_manager, show_in_manager
+from erlab.interactive.imagetool.manager import load_in_manager, replace_data, show_in_manager
 
 # Open raw files and let the manager choose the loader interactively
 load_in_manager(["scan1.pxt", "scan2.pxt"])
@@ -458,15 +504,15 @@ load_in_manager(
 )
 
 # Open two ImageTools and link their cursors
-show_in_manager([data_a, data_b], link=True)
+show_in_manager([data_a, data_b], link=True, target=1)
 
 # Replace the dataset at index 3 with a new result
-show_in_manager(new_data, replace=3)
+replace_data(3, new_data, target=1)
 ```
 
-Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>` and {func}`watch <erlab.interactive.imagetool.manager.watch>` give you finer control when building custom acquisition pipelines.
+Additional functions such as {func}`replace_data <erlab.interactive.imagetool.manager.replace_data>`, {func}`watch <erlab.interactive.imagetool.manager.watch>`, and {func}`manager_selection_info <erlab.interactive.imagetool.manager.manager_selection_info>` give you finer control when building custom acquisition pipelines or editor integrations.
 
-Under the hood these functions communicate with the GUI via ZeroMQ, so they can be called from any Python process that can reach the manager (even on a different machine). See the API docs for details.
+Under the hood these functions communicate with the GUI via ZeroMQ. Manager discovery is stored in a user-scoped live registry, so normal routing is intended for Python processes running in the same user session as the manager. See the API docs for details.
 
 (imagetool-manager-standalone)=
 
@@ -489,6 +535,14 @@ Download the latest release from the [project’s releases page](https://github.
 2. Extract it to obtain `ImageTool Manager.app`.
 
 3. Move the app into `/Applications` (or any folder you prefer) and launch it like any other macOS application.
+
+### Linux and source-built bundles
+
+Official standalone release bundles are currently only provided for Windows and macOS.
+Linux users can build from source (see {ref}`build-from-source`), and the resulting app
+can be launched directly from the build folder. For a more integrated experience, you
+can create a desktop entry or alias that points to the built executable. If you want
+supported builds for Linux, please submit an issue to let us know!
 
 ### Updating the application
 

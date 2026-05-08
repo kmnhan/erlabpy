@@ -9,6 +9,7 @@ import json
 import logging
 import pathlib
 import pickle
+import subprocess
 import sys
 import tempfile
 import time
@@ -29,6 +30,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._registry as manager_registry
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
@@ -44,6 +46,7 @@ from erlab.interactive.imagetool._load_source import (
     _resolve_identified_path,
     _scan_number_load_call_args,
 )
+from erlab.interactive.imagetool._magic import _normalize_manager_target_args
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
     fetch,
@@ -148,6 +151,20 @@ def click_tree_view_pos(
 def assert_nonempty_tooltip(text: str | None) -> None:
     assert isinstance(text, str)
     assert text.strip()
+
+
+def _use_isolated_manager_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+):
+    registry_path = tmp_path / "managers.json"
+    monkeypatch.setattr(manager_registry, "_REGISTRY_PATH", registry_path)
+    monkeypatch.setattr(
+        manager_registry,
+        "_LOCK_PATH",
+        registry_path.with_suffix(registry_path.suffix + ".lock"),
+    )
+    manager_registry.clear_default_manager()
+    return manager_registry
 
 
 def child_status_badge(
@@ -8835,6 +8852,249 @@ def test_manager_context_starts_cleanly_back_to_back(
     )
 
 
+def test_manager_selection_info_single_manager(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    manager_mod = erlab.interactive.imagetool.manager
+    with manager_context() as manager:
+        info = manager_mod.manager_selection_info()
+
+        assert info["reason"] == "single"
+        assert info["resolved_index"] == manager.manager_index
+        assert info["needs_selection"] is False
+        assert info["default_index"] is None
+        assert info["managers"][0]["index"] == manager.manager_index
+
+        manager_mod.set_default_manager(manager.manager_index)
+        info = manager_mod.manager_selection_info()
+
+        assert info["reason"] == "default"
+        assert info["default_index"] == manager.manager_index
+        assert info["managers"][0]["is_default"] is True
+
+
+def test_manager_registry_hides_starting_records(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(registry, "_is_tcp_port_open", lambda *_args: True)
+
+    record = registry.reserve_manager_record(host="localhost")
+
+    assert record.state == "starting"
+    assert registry.live_manager_records() == ()
+    assert registry.manager_selection_info()["reason"] == "none"
+
+    ready_record = registry.activate_manager_record(
+        record.internal_id, port=45555, watch_port=45556
+    )
+
+    assert ready_record.state == "ready"
+    assert [item.index for item in registry.live_manager_records()] == [record.index]
+    assert registry.manager_selection_info()["reason"] == "single"
+
+
+def test_manager_registry_does_not_reuse_holes(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(registry, "_is_tcp_port_open", lambda *_args: True)
+
+    records = [
+        registry.activate_manager_record(
+            registry.reserve_manager_record(host="localhost").internal_id,
+            port=45555 + idx * 2,
+            watch_port=45556 + idx * 2,
+        )
+        for idx in range(3)
+    ]
+
+    registry.unregister_manager_record(records[1].internal_id)
+    new_record = registry.reserve_manager_record(host="localhost")
+
+    assert [record.index for record in records] == [0, 1, 2]
+    assert new_record.index == 3
+
+    for record in (*records[::2], new_record):
+        registry.unregister_manager_record(record.internal_id)
+
+    assert registry.reserve_manager_record(host="localhost").index == 0
+
+
+def test_manager_registry_removes_stale_starting_records(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    monkeypatch.setattr(registry, "_pid_exists", lambda _pid: True)
+    current_time = 1000.0
+    monkeypatch.setattr(registry.time, "time", lambda: current_time)
+
+    registry.reserve_manager_record(host="localhost")
+    current_time += registry._STARTUP_GRACE_S + 1.0
+
+    assert registry.live_manager_records() == ()
+    with registry._registry_lock():
+        assert registry._read_records_unlocked() == []
+
+
+def test_manager_registry_write_failure_preserves_existing_file(
+    monkeypatch, tmp_path
+) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    registry._REGISTRY_PATH.write_text("[]\n", encoding="utf-8")
+    cancelled: list[bool] = []
+
+    class _FailingSaveFile:
+        def __init__(self, _path: str) -> None:
+            return None
+
+        def open(self, _mode) -> bool:
+            return True
+
+        def write(self, payload: bytes) -> int:
+            return len(payload) - 1
+
+        def cancelWriting(self) -> None:
+            cancelled.append(True)
+
+        def errorString(self) -> str:
+            return "partial write"
+
+    monkeypatch.setattr(registry.QtCore, "QSaveFile", _FailingSaveFile)
+
+    with pytest.raises(registry.ImageToolManagerRegistryError, match="partial write"):
+        registry._write_records_unlocked([])
+
+    assert cancelled == [True]
+    assert registry._REGISTRY_PATH.read_text(encoding="utf-8") == "[]\n"
+
+
+def test_manager_registry_lock_assigns_unique_concurrent_indexes(tmp_path) -> None:
+    registry_path = tmp_path / "concurrent-managers.json"
+    worker_code = """
+import pathlib
+import sys
+import time
+
+import erlab.interactive.imagetool.manager._registry as registry
+
+registry._REGISTRY_PATH = pathlib.Path(sys.argv[1])
+registry._LOCK_PATH = registry._REGISTRY_PATH.with_suffix(
+    registry._REGISTRY_PATH.suffix + ".lock"
+)
+record = registry.reserve_manager_record(host="localhost")
+print(record.index, flush=True)
+time.sleep(1.0)
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", worker_code, str(registry_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(3)
+    ]
+
+    outputs = [process.communicate(timeout=15) for process in processes]
+    indexes = sorted(int(stdout.strip()) for stdout, _stderr in outputs)
+
+    assert indexes == [0, 1, 2]
+    for process, (_stdout, stderr) in zip(processes, outputs, strict=True):
+        assert process.returncode == 0, stderr
+
+
+def test_itool_magic_manager_target_normalization() -> None:
+    assert _normalize_manager_target_args("-m data") == "-m data"
+    assert _normalize_manager_target_args("-m 1 data") == "-m --manager-index 1 data"
+    assert (
+        _normalize_manager_target_args("--manager=2 data")
+        == "--manager --manager-index 2 data"
+    )
+
+
+def test_itool_manager_accepts_index_like_values(monkeypatch, test_data) -> None:
+    calls: list[dict[str, typing.Any]] = []
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "is_running",
+        lambda target=None: True,
+    )
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "show_in_manager",
+        lambda _data, **kwargs: calls.append(kwargs),
+    )
+
+    itool(test_data, manager=np.int64(2))
+    itool(test_data, manager=True)
+
+    assert calls[0]["target"] == 2
+    assert calls[1]["target"] is None
+
+
+def test_manager_target_validation_rejects_bool(monkeypatch, tmp_path) -> None:
+    _use_isolated_manager_registry(monkeypatch, tmp_path)
+
+    assert erlab.interactive.imagetool.manager.is_running(np.int64(0)) is False
+    with pytest.raises(TypeError, match="Manager target must be an integer"):
+        erlab.interactive.imagetool.manager.is_running(True)
+
+
+def test_multi_manager_integer_targets(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    manager_mod = erlab.interactive.imagetool.manager
+    with manager_context() as manager0:
+        manager1 = ImageToolManager()
+        qtbot.addWidget(manager1, before_close_func=lambda w: w.remove_all_tools())
+        try:
+            qtbot.wait_until(
+                lambda: (
+                    manager0.server.isRunning()
+                    and manager0.watcher_server.isRunning()
+                    and manager1.server.isRunning()
+                    and manager1.watcher_server.isRunning()
+                ),
+                timeout=5000,
+            )
+
+            info = manager_mod.manager_selection_info()
+            assert info["reason"] == "multiple"
+            assert info["needs_selection"] is True
+            assert [item["index"] for item in info["managers"]] == [
+                manager0.manager_index,
+                manager1.manager_index,
+            ]
+
+            test_data.qshow(manager=manager0.manager_index)
+            qtbot.wait_until(lambda: manager0.ntools == 1, timeout=5000)
+            assert manager1.ntools == 0
+
+            (test_data + 1).qshow(manager=manager1.manager_index)
+            qtbot.wait_until(lambda: manager1.ntools == 1, timeout=5000)
+            assert manager0.ntools == 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(fetch, 0, target=manager1.manager_index)
+                qtbot.waitUntil(lambda: fut.done(), timeout=10000)
+                fetched = fut.result()
+            xr.testing.assert_identical(fetched, test_data + 1)
+        finally:
+            manager1.remove_all_tools()
+            manager1.close()
+            qtbot.wait_until(
+                lambda: (
+                    not manager1.server.isRunning()
+                    and not manager1.watcher_server.isRunning()
+                ),
+                timeout=5000,
+            )
+            manager1.deleteLater()
+
+
 def test_watcher_server_run_stops_cleanly_without_pending_payload(monkeypatch) -> None:
     class _DummySocket:
         def __init__(self) -> None:
@@ -9182,10 +9442,18 @@ def test_manager_updated_opens_links(
 
 
 def test_manager_standalone_app_menus(
+    monkeypatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    launched: list[bool] = []
+    monkeypatch.setattr(
+        manager_mainwindow,
+        "_launch_new_manager_instance",
+        lambda: launched.append(True),
+    )
+
     with manager_context() as manager:
         menu_actions = {
             action.text().replace("&", ""): action
@@ -9195,9 +9463,14 @@ def test_manager_standalone_app_menus(
 
         assert "File" in menu_actions
         assert "Apps" in menu_actions
-        assert "Data Explorer" in action_map(
+        file_actions = action_map(
             typing.cast("QtWidgets.QMenu", menu_actions["File"].menu())
         )
+        assert "Data Explorer" in file_actions
+        assert "New Manager Instance" in file_actions
+        assert file_actions["New Manager Instance"].shortcut().isEmpty()
+        file_actions["New Manager Instance"].trigger()
+        assert launched == [True]
 
         apps_actions = action_map(
             typing.cast("QtWidgets.QMenu", menu_actions["Apps"].menu())
@@ -9209,6 +9482,68 @@ def test_manager_standalone_app_menus(
             .toString(QtGui.QKeySequence.SequenceFormat.PortableText)
             == "Ctrl+Shift+P"
         )
+
+
+def test_launch_new_manager_instance_uses_detached_source_process(monkeypatch) -> None:
+    calls: list[tuple[list[str], dict[str, typing.Any]]] = []
+
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", "linux")
+    monkeypatch.setattr(manager_mainwindow.sys, "executable", "/env/bin/python")
+    monkeypatch.setattr(
+        manager_mainwindow.subprocess,
+        "Popen",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    manager_mainwindow._launch_new_manager_instance()
+
+    assert calls == [
+        (
+            ["/env/bin/python", "-m", "erlab.interactive.imagetool.manager"],
+            {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "close_fds": True,
+                "start_new_session": True,
+            },
+        )
+    ]
+
+
+def test_launch_new_manager_instance_uses_macos_app_bundle(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[tuple[list[str], dict[str, typing.Any]]] = []
+    app_bundle = tmp_path / "ImageTool Manager.app"
+    executable = app_bundle / "Contents" / "MacOS" / "ImageTool Manager"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", "darwin")
+    monkeypatch.setattr(manager_mainwindow.sys, "executable", str(executable))
+    monkeypatch.setattr(
+        manager_mainwindow.subprocess,
+        "Popen",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    manager_mainwindow._launch_new_manager_instance()
+
+    assert calls == [
+        (
+            ["/usr/bin/open", "-n", str(app_bundle.resolve())],
+            {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "close_fds": True,
+                "start_new_session": True,
+            },
+        )
+    ]
 
 
 def test_manager_explorer_launcher_reuses_instance_and_opens_directory_tabs(
