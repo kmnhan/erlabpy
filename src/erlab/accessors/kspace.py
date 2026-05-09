@@ -901,8 +901,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
     def _interactive_compatible(self) -> bool:
         """Check if the data is compatible with the interactive tool."""
         if self._obj.ndim == 2:
-            # alpha-beta 2D scan
-            return set(self._obj.dims) == {"alpha", "beta"}
+            # alpha-beta 2D scan or alpha-energy cut with a fixed beta coordinate
+            if set(self._obj.dims) == {"alpha", "beta"}:
+                return True
+            return (
+                set(self._obj.dims) == {"alpha", "eV"}
+                and "beta" in self._obj.coords
+                and self._obj["beta"].size == 1
+            )
 
         if self._obj.ndim == 3:
             # any 3D scan that has alpha & eV
@@ -1383,8 +1389,14 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         - 2D data with `alpha` and `beta` dimensions (constant energy surfaces)
 
+        - 2D data with `alpha` and `eV` dimensions, and a fixed `beta` coordinate
+          (angle-energy cuts)
+
         - 3D data with dimensions including `alpha` and `eV` (including maps and
           hv-dependent cuts)
+
+        .. versionchanged:: 3.22.0
+            Added support for 2D angle-energy cuts with `alpha` and `eV` dimensions.
 
         """
         if not self._interactive_compatible:

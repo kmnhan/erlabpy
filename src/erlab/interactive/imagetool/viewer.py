@@ -2557,10 +2557,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
             str(dim): float(value)
             for dim, value in zip(self.data.dims, self.current_values, strict=True)
         }
-        if "alpha" in dim_values and "beta" in dim_values:
+        beta_value = dim_values.get("beta")
+        if beta_value is None and "beta" in self.data.coords:
+            beta_coord = self.data["beta"]
+            if beta_coord.size == 1:
+                beta_value = float(beta_coord.values)
+        if "alpha" in dim_values and beta_value is not None:
             initial_normal_emission: tuple[float, float] | None = (
                 dim_values["alpha"],
-                dim_values["beta"],
+                beta_value,
             )
             initial_delta: float | None = None
             guideline_dims = tuple(

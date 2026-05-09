@@ -106,10 +106,23 @@ def _solve_normal_emission_angles(
 
 def test_ktool_compatible(anglemap) -> None:
     cut = anglemap.qsel(beta=-8.3)
+    const_energy = anglemap.qsel(eV=-0.1)
+    cut_without_beta = cut.drop_vars("beta")
+    cut_with_beta_coord = cut_without_beta.assign_coords(
+        beta=("alpha", np.linspace(-1.0, 1.0, cut.sizes["alpha"]))
+    )
     data_4d = anglemap.expand_dims("x", 2)
     data_3d_without_alpha = data_4d.qsel(alpha=-8.3)
 
-    for data in (cut, data_4d, data_3d_without_alpha):
+    assert cut.kspace._interactive_compatible
+    assert const_energy.kspace._interactive_compatible
+
+    for data in (
+        cut_without_beta,
+        cut_with_beta_coord,
+        data_4d,
+        data_3d_without_alpha,
+    ):
         with pytest.raises(
             ValueError, match=r"Data is not compatible with the interactive tool."
         ):
@@ -208,6 +221,62 @@ def test_ktool(qtbot, anglemap, wf, kind, assignment) -> None:
 
         assert win.tool_status == win_restored.tool_status
         assert str(win_restored.info_text) == str(win.info_text)
+
+
+def test_ktool_angle_energy_cut(qtbot, anglemap) -> None:
+    cut = (
+        anglemap.isel(alpha=slice(0, 4), eV=slice(0, 5)).qsel(beta=-8.3).copy(deep=True)
+    )
+    win = cut.kspace.interactive(data_name="cut", execute=False)
+    qtbot.addWidget(win)
+
+    assert isinstance(win, KspaceTool)
+    assert win.energy_group.isEnabled() is False
+    assert win.bz_group.isEnabled() is False
+    assert win.bz_group.isChecked() is False
+    assert win.preview_symmetry_group.isEnabled() is False
+    assert win.preview_symmetry_group.isChecked() is False
+
+    assert win.images[0].data_array is not None
+    assert win.images[0].data_array.dims == ("eV", "alpha")
+    assert win.images[1].data_array is not None
+    assert win.images[1].data_array.dims == ("eV", cut.kspace.slit_axis)
+
+    expected = win._converted_output()
+
+    win.show_converted()
+    win._itool.show()
+    xr.testing.assert_identical(win._itool.slicer_area.data, expected)
+    win._itool.close()
+
+    code = win.copy_code()
+    namespace = {"cut": cut.copy(deep=True)}
+    exec(code, {"__builtins__": {}}, namespace)  # noqa: S102
+    xr.testing.assert_identical(namespace["cut_kconv"], expected)
+
+    updated = cut.copy(deep=True)
+    updated.data = np.asarray(updated.data) + 1.0
+    win.update_data(updated)
+    assert win.energy_group.isEnabled() is False
+    assert win.bz_group.isEnabled() is False
+    assert win.images[1].data_array is not None
+    assert win.images[1].data_array.dims == ("eV", cut.kspace.slit_axis)
+
+
+@pytest.mark.parametrize(
+    ("has_hv", "preview_data", "expected"),
+    [
+        (False, xr.DataArray(np.zeros((2, 3)), dims=("ky", "kx")), True),
+        (False, xr.DataArray(np.zeros((2, 3)), dims=("eV", "kx")), False),
+        (True, xr.DataArray(np.zeros((2, 3)), dims=("kz", "kx")), True),
+        (True, xr.DataArray(np.zeros((2, 3)), dims=("ky", "kx")), False),
+        (False, xr.DataArray(np.zeros((2, 3, 4)), dims=("eV", "ky", "kx")), False),
+    ],
+)
+def test_ktool_preview_supports_bz(has_hv, preview_data, expected) -> None:
+    stub = SimpleNamespace(data=SimpleNamespace(kspace=SimpleNamespace(_has_hv=has_hv)))
+
+    assert KspaceTool._preview_supports_bz(stub, preview_data) is expected
 
 
 @pytest.mark.parametrize(
@@ -896,6 +965,7 @@ def test_get_bz_lines_uses_legacy_hv_path_for_scalar_other_axis(monkeypatch) -> 
         rot_spin=SimpleNamespace(value=lambda: 15.0),
         data=SimpleNamespace(kspace=SimpleNamespace(_has_hv=True)),
     )
+    stub._preview_supports_bz = lambda data: KspaceTool._preview_supports_bz(stub, data)
 
     lines, vertices, midpoints = KspaceTool.get_bz_lines(stub)
 
@@ -939,15 +1009,18 @@ def test_ktool_update_data_preserves_state(qtbot, anglemap) -> None:
 def test_ktool_update_data_with_single_energy_disables_energy_group(
     qtbot, anglemap
 ) -> None:
+    initial = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(0, 5)).copy(
+        deep=True
+    )
     data = anglemap.isel(alpha=slice(0, 3), beta=slice(0, 3), eV=slice(1, 2)).copy(
         deep=True
     )
-    win = ktool(data, execute=False)
+    win = ktool(initial, execute=False)
     qtbot.addWidget(win)
 
+    win.update_data(data)
     fixed_energy = float(data.eV.values[0])
     assert win.energy_group.isEnabled() is False
-    assert win.center_spin.value() == pytest.approx(fixed_energy, abs=1e-3)
     assert win.center_spin.minimum() == pytest.approx(fixed_energy - 0.1, abs=1e-3)
     assert win.center_spin.maximum() == pytest.approx(fixed_energy + 0.1, abs=1e-3)
 
@@ -985,6 +1058,19 @@ def test_ktool_update_data_reconnects_energy_controls_after_single_energy(
     qtbot.wait_until(lambda: len(update_calls) > 0, timeout=5000)
 
 
+def test_ktool_update_data_rejects_noninteractive_replacement_for_cut(
+    qtbot, anglemap
+) -> None:
+    data = (
+        anglemap.isel(alpha=slice(0, 3), eV=slice(0, 5)).qsel(beta=-8.3).copy(deep=True)
+    )
+    win = ktool(data, execute=False)
+    qtbot.addWidget(win)
+
+    with pytest.raises(ValueError, match="not compatible with the interactive tool"):
+        win.update_data(data.isel(eV=0))
+
+
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
@@ -1008,6 +1094,7 @@ def test_ktool_validate_update_data_rejects_incompatible_metadata(
     qtbot.addWidget(win)
 
     fake_kspace = SimpleNamespace(
+        _interactive_compatible=True,
         _valid_offset_keys=tuple(win.data.kspace._valid_offset_keys),
         momentum_axes=tuple(win.data.kspace.momentum_axes),
         configuration=int(win.data.kspace.configuration),

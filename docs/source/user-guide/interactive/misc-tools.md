@@ -23,7 +23,9 @@ Here are some of the miscellaneous interactive tools provided:
 
 ## ktool
 
-Interactive conversion from angles to momentum space.
+Interactive conversion from angles to momentum space. `ktool` supports constant-energy
+`alpha`/`beta` maps, angle-energy `alpha`/`eV` cuts with a fixed `beta` coordinate,
+and 3D angle volumes.
 
 There are four ways to start `ktool`.
 
@@ -73,7 +75,9 @@ The GUI is divided into two tabs.
 
 :::
 
-The first tab is for setting momentum conversion parameters. The image is updated in real time as you change the parameters.
+The first tab is for setting momentum conversion parameters. The image is updated in
+real time as you change the parameters. For angle-energy cuts, the preview keeps the
+full energy axis and displays the converted `k`/`eV` cut.
 
 Clicking {guilabel}`Copy code` will copy the code for conversion to the clipboard.
 
@@ -97,7 +101,10 @@ outside the manager, it opens as a normal standalone ImageTool window.
 
 :::
 
-The second tab provides visualization options. You can overlay Brillouin zones and high symmetry points on the result, adjust colors, and optionally preview n-fold symmetrized constant energy contours for maps.
+The second tab provides visualization options. You can overlay Brillouin zones and
+high symmetry points on momentum-momentum or momentum-`kz` previews, adjust colors,
+and optionally preview n-fold symmetrized constant energy contours for maps.
+Brillouin-zone and symmetry previews are disabled for angle-energy cuts.
 
 :::{note}
 

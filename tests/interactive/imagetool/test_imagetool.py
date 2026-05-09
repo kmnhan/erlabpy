@@ -2551,6 +2551,59 @@ def test_itool_open_in_ktool_uses_active_cursor_seed(qtbot, monkeypatch) -> None
     win.close()
 
 
+def test_itool_open_in_ktool_uses_scalar_beta_for_angle_energy_cut(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["3D"].isel(beta=3).copy(), execute=False)
+    qtbot.addWidget(win)
+
+    captured: dict[str, object] = {}
+    tool = QtWidgets.QWidget()
+
+    def fake_ktool(data, **kwargs):
+        captured["data"] = data
+        captured["kwargs"] = kwargs
+        return tool
+
+    monkeypatch.setattr(erlab.interactive, "ktool", fake_ktool)
+
+    assert win.slicer_area.ktool_act.isEnabled()
+    win.slicer_area.set_value(0, 2.0)
+    win.slicer_area.open_in_ktool()
+
+    assert captured["data"] is win.slicer_area.data
+    assert captured["kwargs"]["initial_normal_emission"] == (2.0, 3.0)
+    assert captured["kwargs"]["initial_delta"] is None
+
+    win.close()
+
+
+def test_itool_open_in_ktool_ignores_nonscalar_beta_coord(qtbot, monkeypatch) -> None:
+    data = _TEST_DATA["3D"].isel(beta=0).drop_vars("beta").copy()
+    data = data.assign_coords(beta=("alpha", np.arange(data.sizes["alpha"])))
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    captured: dict[str, object] = {}
+    tool = QtWidgets.QWidget()
+
+    def fake_ktool(data, **kwargs):
+        captured["data"] = data
+        captured["kwargs"] = kwargs
+        return tool
+
+    monkeypatch.setattr(erlab.interactive, "ktool", fake_ktool)
+
+    win.slicer_area.set_value(0, 2.0)
+    win.slicer_area.open_in_ktool()
+
+    assert captured["data"] is win.slicer_area.data
+    assert captured["kwargs"]["initial_normal_emission"] is None
+    assert captured["kwargs"]["initial_delta"] is None
+
+    win.close()
+
+
 def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -> None:
     win = itool(_TEST_DATA["3D"].copy(), execute=False)
     qtbot.addWidget(win)
