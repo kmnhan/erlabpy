@@ -98,11 +98,15 @@ def test_options_get_set():
 
     # Check initial values
     assert options["colors/cmap/name"] == AppOptions().colors.cmap.name
+    assert options["io/workspace/compress"] is True
 
     # Set a new value
     options["colors/cmap/name"] = "viridis"
+    options["io/workspace/compress"] = False
 
     # Check if the value was set correctly
     assert options["colors/cmap/name"] == "viridis"
+    assert options["io/workspace/compress"] is False
+    assert not options.model.io.workspace.compress
 
     options.restore()  # Reset settings after test

@@ -279,21 +279,27 @@ def manager_context() -> Callable[
         finally:
             manager = imagetool_manager._manager_instance
             if manager is not None:
-                QtWidgets.QApplication.sendPostedEvents(None, 0)
-                QtWidgets.QApplication.processEvents()
-                manager.remove_all_tools()
-                manager.close()
-                deadline = time.perf_counter() + 5.0
-                while (
-                    manager.server.isRunning() or manager.watcher_server.isRunning()
-                ) and time.perf_counter() < deadline:
+                manager._workspace_loading_depth += 1
+                try:
                     QtWidgets.QApplication.sendPostedEvents(None, 0)
                     QtWidgets.QApplication.processEvents()
-                    time.sleep(0.01)
-                manager.deleteLater()
-                for _ in range(3):
-                    QtWidgets.QApplication.sendPostedEvents(None, 0)
-                    QtWidgets.QApplication.processEvents()
+                    manager.remove_all_tools()
+                    manager._mark_workspace_clean()
+                    manager.close()
+                    deadline = time.perf_counter() + 5.0
+                    while (
+                        manager.server.isRunning() or manager.watcher_server.isRunning()
+                    ) and time.perf_counter() < deadline:
+                        QtWidgets.QApplication.sendPostedEvents(None, 0)
+                        QtWidgets.QApplication.processEvents()
+                        time.sleep(0.01)
+                    manager.deleteLater()
+                    for _ in range(3):
+                        QtWidgets.QApplication.sendPostedEvents(None, 0)
+                        QtWidgets.QApplication.processEvents()
+                finally:
+                    manager._workspace_loading_depth -= 1
+                    manager._mark_workspace_clean()
             imagetool_manager._manager_instance = None
             imagetool_manager._always_use_socket = False
             imagetool_manager.PORT = original_port

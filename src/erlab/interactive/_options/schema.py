@@ -52,7 +52,13 @@ from pydantic import BaseModel, Field, field_validator
 
 import erlab
 
-__all__ = ["AppOptions", "ColorMapOptions", "ColorOptions", "IOOptions"]
+__all__ = [
+    "AppOptions",
+    "ColorMapOptions",
+    "ColorOptions",
+    "IOOptions",
+    "WorkspaceOptions",
+]
 
 
 def _unique_seq(seq: list[str]) -> list[str]:
@@ -163,6 +169,19 @@ class DaskOptions(BaseModel):
     )
 
 
+class WorkspaceOptions(BaseModel):
+    """ImageTool Manager workspace file options."""
+
+    compress: bool = Field(
+        default=True,
+        title="Compress workspace files",
+        description=(
+            "Compress large numeric data arrays when saving ImageTool Manager "
+            "workspace files."
+        ),
+    )
+
+
 class IOOptions(BaseModel):
     """Top-level grouping of I/O-related options."""
 
@@ -177,6 +196,10 @@ class IOOptions(BaseModel):
     )
 
     dask: DaskOptions = Field(default_factory=DaskOptions, title="Dask")
+    workspace: WorkspaceOptions = Field(
+        default_factory=WorkspaceOptions,
+        title="Workspace",
+    )
 
     @field_validator("default_loader", mode="before")
     @classmethod

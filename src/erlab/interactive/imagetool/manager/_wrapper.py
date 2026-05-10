@@ -28,6 +28,8 @@ from erlab.interactive.imagetool._load_source import (
 from erlab.interactive.imagetool._mainwindow import ImageTool
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
@@ -208,9 +210,10 @@ class _ManagedWindowNode(QtCore.QObject):
         elif self.tool_window is not None:
             old = self.tool_window
             with contextlib.suppress(TypeError, RuntimeError):
-                old.sigInfoChanged.disconnect(self._refresh_node_info)
+                old.sigInfoChanged.disconnect(self._handle_tool_info_changed)
             with contextlib.suppress(TypeError, RuntimeError):
                 old.sigDataChanged.disconnect(self._handle_tool_data_changed)
+            old.removeEventFilter(self)
             old._set_managed_source_update_dialog(None)
             old.set_source_parent_fetcher(None)
             old.set_input_provenance_parent_fetcher(None)
@@ -228,10 +231,15 @@ class _ManagedWindowNode(QtCore.QObject):
             self._window_kind = "imagetool"
             self._imagetool = value
             self._tool_window = None
+            self.manager._install_workspace_save_shortcut(value)
             if self._provenance_spec is not None or self._source_spec is not None:
                 value.set_provenance_spec(self._provenance_spec or self._source_spec)
             value.installEventFilter(self)
             value.sigTitleChanged.connect(self.update_title)
+            value.slicer_area.sigHistoryChanged.connect(
+                self._handle_imagetool_state_changed
+            )
+            value.slicer_area.sigDataEdited.connect(self._handle_imagetool_data_edited)
             value.slicer_area.sigSourceDataReplaced.connect(
                 self._handle_source_data_replaced
             )
@@ -242,7 +250,9 @@ class _ManagedWindowNode(QtCore.QObject):
         self._window_kind = "tool"
         self._tool_window = tool
         self._imagetool = None
-        tool.sigInfoChanged.connect(self._refresh_node_info)
+        self.manager._install_workspace_save_shortcut(tool)
+        tool.installEventFilter(self)
+        tool.sigInfoChanged.connect(self._handle_tool_info_changed)
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
         tool.destroyed.connect(self._handle_tool_window_destroyed)
         tool._set_managed_source_update_dialog(self.show_source_update_dialog)
@@ -266,6 +276,12 @@ class _ManagedWindowNode(QtCore.QObject):
         old.removeEventFilter(self)
         with contextlib.suppress(TypeError, RuntimeError):
             old.sigTitleChanged.disconnect(self.update_title)
+        with contextlib.suppress(TypeError, RuntimeError):
+            old.slicer_area.sigHistoryChanged.disconnect(
+                self._handle_imagetool_state_changed
+            )
+        with contextlib.suppress(TypeError, RuntimeError):
+            old.slicer_area.sigDataEdited.disconnect(self._handle_imagetool_data_edited)
         with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigSourceDataReplaced.disconnect(
                 self._handle_source_data_replaced
@@ -318,6 +334,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
             self.manager.tree_view.refresh(self.uid)
+            self.manager._mark_node_state_dirty(self.uid)
             return
         if name == self._name and self.imagetool is not None:
             return
@@ -325,6 +342,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.imagetool is not None:
             self.imagetool.setWindowTitle(self.label_text)
         self.manager.tree_view.refresh(self.uid)
+        self.manager._mark_node_state_dirty(self.uid)
 
     @property
     def label_text(self) -> str:
@@ -601,6 +619,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 )
             )
         self._set_source_state(state if self._source_spec is not None else "fresh")
+        self.manager._mark_node_state_dirty(self.uid)
 
     def set_output_binding(
         self,
@@ -630,6 +649,7 @@ class _ManagedWindowNode(QtCore.QObject):
         if provenance_spec is not None:
             self.set_displayed_provenance(provenance_spec)
         self._set_source_state(state)
+        self.manager._mark_node_state_dirty(self.uid)
 
     def set_detached_provenance(
         self,
@@ -648,6 +668,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._output_id = None
         self.set_displayed_provenance(provenance_spec)
         self._set_source_state("fresh")
+        self.manager._mark_node_state_dirty(self.uid)
 
     def _resolved_output_payload(
         self,
@@ -670,7 +691,7 @@ class _ManagedWindowNode(QtCore.QObject):
         return data, tool_window.output_imagetool_provenance(self._output_id, data)
 
     @contextlib.contextmanager
-    def _suspend_descendant_propagation(self) -> typing.Iterator[None]:
+    def _suspend_descendant_propagation(self) -> Iterator[None]:
         previous = self._suspend_descendant_signal_propagation
         self._suspend_descendant_signal_propagation = True
         try:
@@ -691,6 +712,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self.slicer_area.replace_source_data(data)
         self.set_displayed_provenance(provenance_spec)
         self._set_source_state(state)
+        self.manager._mark_node_data_dirty(self.uid)
         if propagate_descendants:
             if state == "fresh":
                 self.manager._propagate_source_change_from_uid(self.uid)
@@ -698,6 +720,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.manager._mark_descendants_source_state(self.uid, state)
 
     def _handle_tool_data_changed(self) -> None:
+        self.manager._mark_node_data_dirty(self.uid)
         if self._suspend_descendant_signal_propagation:
             return
         tool_window = self.tool_window
@@ -717,11 +740,13 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_auto_update = bool(value)
         self.manager.tree_view.refresh(self.uid)
         self.manager._update_info(uid=self.uid)
+        self.manager._mark_node_state_dirty(self.uid)
 
     def _set_source_state(self, state: _source_state_type) -> None:
         self._source_state = state
         self.manager.tree_view.refresh(self.uid)
         self.manager._update_info(uid=self.uid)
+        self.manager._mark_node_state_dirty(self.uid)
 
     def current_source_data(self) -> xr.DataArray:
         if self.imagetool is not None:
@@ -736,21 +761,33 @@ class _ManagedWindowNode(QtCore.QObject):
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
-        if (
-            obj == self.imagetool
-            and event is not None
-            and event.type()
-            in (
-                QtCore.QEvent.Type.Show,
-                QtCore.QEvent.Type.Hide,
-                QtCore.QEvent.Type.WindowStateChange,
-            )
-        ):
-            if event.type() == QtCore.QEvent.Type.Show:
+        event_type = None if event is None else event.type()
+        tracked_event_types = (
+            QtCore.QEvent.Type.Show,
+            QtCore.QEvent.Type.Hide,
+            QtCore.QEvent.Type.Move,
+            QtCore.QEvent.Type.Resize,
+            QtCore.QEvent.Type.WindowStateChange,
+        )
+        if obj == self.window and event_type in tracked_event_types:
+            if self.imagetool is not None and event_type == QtCore.QEvent.Type.Show:
                 erlab.interactive.utils.single_shot(
                     self.slicer_area, 0, self.slicer_area._update_if_delayed
                 )
-            erlab.interactive.utils.single_shot(self, 0, self.visibility_changed)
+            mark_dirty = (
+                self.manager._workspace_loading_depth == 0
+                and self.manager._workspace_saving_depth == 0
+                and not self.manager._suppress_workspace_visibility_dirty
+            )
+
+            def _mark_visibility_changed() -> None:
+                self.visibility_changed(mark_dirty=mark_dirty)
+
+            erlab.interactive.utils.single_shot(
+                self,
+                0,
+                _mark_visibility_changed,
+            )
         return super().eventFilter(obj, event)
 
     @QtCore.Slot()
@@ -759,13 +796,16 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.imagetool is not None:
             if title is None:
                 title = self.imagetool.windowTitle()
+            title = title.replace("[*]", "")
             self.name = title
 
     @QtCore.Slot()
-    def visibility_changed(self) -> None:
+    def visibility_changed(self, *, mark_dirty: bool = True) -> None:
         window = self.window
         if isinstance(window, QtWidgets.QWidget):
             self._recent_geometry = window.geometry()
+            if mark_dirty:
+                self.manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
     def show(self) -> None:
@@ -815,6 +855,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self._box_ratio_archived, self._pixmap_archived = self._preview_image
         self.dispose()
         self.manager._mark_descendants_source_unavailable(self.uid)
+        self.manager._mark_workspace_structure_dirty("Archived window")
 
     @QtCore.Slot()
     def unarchive(self) -> None:
@@ -830,6 +871,10 @@ class _ManagedWindowNode(QtCore.QObject):
         self._box_ratio_archived = float("NaN")
         self._pixmap_archived = QtGui.QPixmap()
         self.manager._sigReloadLinkers.emit()
+        self.manager._install_workspace_save_shortcut(
+            typing.cast("QtWidgets.QWidget", self.window)
+        )
+        self.manager._mark_workspace_structure_dirty("Unarchived window")
         if self.has_source_binding and self.source_state != "fresh":
             if self.source_auto_update:
                 self._update_from_parent_source()
@@ -847,6 +892,19 @@ class _ManagedWindowNode(QtCore.QObject):
     def _refresh_node_info(self) -> None:
         self.manager._update_info(uid=self.uid)
         self.manager.tree_view.refresh(self.uid)
+
+    @QtCore.Slot()
+    def _handle_tool_info_changed(self) -> None:
+        self.manager._mark_node_state_dirty(self.uid)
+        self._refresh_node_info()
+
+    @QtCore.Slot()
+    def _handle_imagetool_state_changed(self) -> None:
+        self.manager._mark_node_state_dirty(self.uid)
+
+    @QtCore.Slot()
+    def _handle_imagetool_data_edited(self) -> None:
+        self.manager._mark_node_data_dirty(self.uid)
 
     def _update_from_parent_source(self) -> bool:
         if self.tool_window is not None:
@@ -982,6 +1040,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot(object)
     def _handle_source_data_replaced(self, parent_data: object) -> None:
+        self.manager._mark_node_data_dirty(self.uid)
         if self._suspend_descendant_signal_propagation:
             return
         if not isinstance(parent_data, xr.DataArray):
@@ -1045,10 +1104,12 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def set_source_input_ndim(self, ndim: int | None) -> None:
         """Track the latest dimensionality of the root source before UI promotion."""
         self._source_input_ndim = ndim
+        self.manager._mark_node_state_dirty(self.uid)
 
     def set_source_input_dtype(self, dtype: np.dtype[typing.Any] | str | None) -> None:
         """Track the latest dtype of the root source before UI promotion."""
         self._source_input_dtype = np.dtype(dtype) if dtype is not None else None
+        self.manager._mark_node_state_dirty(self.uid)
 
     @property
     def source_input_ndim(self) -> int | None:
@@ -1114,6 +1175,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             self._watched_varname = None
             self._watched_uid = None
             self.manager.tree_view.refresh(self.index)
+            self.manager._mark_node_state_dirty(self.uid)
 
     @QtCore.Slot()
     def _trigger_watched_update(self) -> None:

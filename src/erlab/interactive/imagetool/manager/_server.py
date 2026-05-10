@@ -25,7 +25,6 @@ __all__ = [
 ]
 
 
-import dataclasses
 import errno
 import html
 import io
@@ -698,15 +697,8 @@ def _direct_manager_for_target(target: int | None):
     return manager
 
 
-@dataclasses.dataclass(frozen=True, repr=False)
 class ImageToolManagerHandle:
-    """Handle for a live ImageTool manager.
-
-    Use handles from :data:`managers` to inspect a manager or send data to a
-    specific manager instance.
-
-    .. versionadded:: 3.22.0
-    """
+    """Handle for a live ImageTool manager."""
 
     index: int
     pid: int
@@ -715,7 +707,31 @@ class ImageToolManagerHandle:
     watch_port: int
     started: str
     version: str
-    is_default: bool = False
+    workspace_path: str | None
+    is_default: bool
+
+    def __init__(
+        self,
+        *,
+        index: int,
+        pid: int,
+        host: str,
+        port: int,
+        watch_port: int,
+        started: str,
+        version: str,
+        workspace_path: str | None = None,
+        is_default: bool = False,
+    ) -> None:
+        self.index = index
+        self.pid = pid
+        self.host = host
+        self.port = port
+        self.watch_port = watch_port
+        self.started = started
+        self.version = version
+        self.workspace_path = workspace_path
+        self.is_default = is_default
 
     @classmethod
     def _from_record(
@@ -729,6 +745,7 @@ class ImageToolManagerHandle:
             watch_port=record.watch_port,
             started=record.started,
             version=record.version,
+            workspace_path=record.workspace_path,
             is_default=is_default,
         )
 
@@ -739,8 +756,12 @@ class ImageToolManagerHandle:
 
     def __repr__(self) -> str:
         default = ", default" if self.is_default else ""
+        workspace = (
+            "" if self.workspace_path is None else f" workspace={self.workspace_path!r}"
+        )
         return (
-            f"<ImageToolManager #{self.index}{default} {self.endpoint} pid={self.pid}>"
+            f"<ImageToolManager #{self.index}{default} {self.endpoint} "
+            f"pid={self.pid}{workspace}>"
         )
 
     def show(self, data: typing.Any, **kwargs: typing.Any) -> Response | None:
@@ -833,12 +854,22 @@ class ImageToolManagerRegistry:
 
     def _table_rows(self) -> list[tuple[str, ...]]:
         rows: list[tuple[str, ...]] = [
-            ("Index", "Default", "PID", "Endpoint", "Watch Port", "Started", "Version")
+            (
+                "Index",
+                "Default",
+                "Workspace",
+                "PID",
+                "Endpoint",
+                "Watch Port",
+                "Started",
+                "Version",
+            )
         ]
         rows.extend(
             (
                 f"#{manager.index}",
                 "yes" if manager.is_default else "",
+                manager.workspace_path or "",
                 str(manager.pid),
                 manager.endpoint,
                 str(manager.watch_port),

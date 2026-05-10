@@ -128,6 +128,9 @@ To prevent conda from switching back to the default libraries upon updating, see
 
 ### Installing with ``pip``
 
+If you don't wish to use conda and prefer to use pip, you can install ERLabPy in a
+virtual environment. Here are the steps:
+
 1. [Install Python](https://www.python.org/downloads/).
 
 2. Create and activate a virtual environment with ``venv``.

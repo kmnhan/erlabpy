@@ -50,6 +50,7 @@ dependencies = [
     "xarray-lmfit>=0.5.4",
     "pygments>=2.11.0",
     "xraydb>=4.5.8",
+    "hdf5plugin>=6.0.0",
 ]
 
 

@@ -10,7 +10,7 @@ import threading
 import time
 import traceback
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import numpy as np
 import pydantic
@@ -582,7 +582,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         return "On" if value else "Off"
 
     @staticmethod
-    def _summary_section(title: str, rows: typing.Iterable[tuple[str, str]]) -> str:
+    def _summary_section(title: str, rows: Iterable[tuple[str, str]]) -> str:
         from erlab.utils.formatting import format_html_accent, format_html_table
 
         normalized_rows = list(rows)

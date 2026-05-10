@@ -56,8 +56,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `restool`, or `goldtool` for fitting questions.
 - Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,
   `show_in_manager`, `load_in_manager`, `managers`, `set_default_manager`,
-  `manager_selection_info`, `Result Placement`, `stale`, `automatic updates`,
-  `Auto`, `Refit after update`, `code for repeating steps`,
+  `manager_selection_info`, `workspace_path`, `Save Workspace`,
+  `Open Workspace`, `Import From Workspace`, `Result Placement`, `stale`,
+  `automatic updates`, `Auto`, `Refit after update`, `code for repeating steps`,
   `ImageTool windows opened from tools`, or
   `workflow-bridge` for notebook and interactive-workflow questions.
 - Search `interactive-tool-authoring`, `ToolWindow`, `tool_status`,

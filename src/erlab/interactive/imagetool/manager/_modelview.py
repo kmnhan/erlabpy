@@ -676,6 +676,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         """
         if not index.isValid():
             return None
+        if option.rect.isEmpty():
+            return None
 
         node = index.internalPointer()
         if isinstance(node, _ImageToolWrapper):
@@ -1409,7 +1411,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             logger.debug("dropMimeData: invalid moves")
             return False
 
-        return self._apply_moves(parent_id, moves, parent_index, parent_index)
+        moved = self._apply_moves(parent_id, moves, parent_index, parent_index)
+        if moved:
+            self.manager._mark_workspace_structure_dirty("Reordered windows")
+        return moved
 
 
 class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
