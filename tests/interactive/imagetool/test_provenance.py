@@ -83,6 +83,38 @@ def _string_key_data() -> xr.DataArray:
     )
 
 
+def _file_replay_source(
+    path: typing.Any = "scan.h5",
+    *,
+    replay_call: typing.Any = None,
+) -> typing.Any:
+    prov = erlab.interactive.imagetool.provenance
+    if replay_call is None:
+        replay_call = prov.FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            kwargs={},
+            selected_index=0,
+        )
+    return prov.FileLoadSource(
+        path=path,
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text="(none)",
+        replay_call=replay_call,
+        load_code=None,
+    )
+
+
+def _file_provenance_spec(path: typing.Any = "scan.h5") -> typing.Any:
+    prov = erlab.interactive.imagetool.provenance
+    return prov.file_load(
+        start_label="Load data from file 'scan.h5'",
+        seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        file_load_source=_file_replay_source(path),
+    )
+
+
 def test_tool_provenance_codec_and_combinators() -> None:
     prov = erlab.interactive.imagetool.provenance
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
@@ -1375,6 +1407,337 @@ def test_file_load_source_replay_call_round_trips() -> None:
     assert parsed_erlab == erlab_source
     assert parsed_erlab.replay_call.kind == "erlab_loader"
     assert parsed_erlab.replay_call.target == "example"
+
+
+def test_file_provenance_validation_rejects_invalid_payloads() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    replay_stage = prov.ReplayStage(source_kind="full_data")
+    file_source = _file_replay_source()
+
+    with pytest.raises(ValidationError, match="selected_index"):
+        prov.FileReplayCall(
+            kind="callable", target="xarray.load_dataarray", selected_index=-1
+        )
+    with pytest.raises(ValidationError, match="target"):
+        prov.FileReplayCall(kind="callable", target="", selected_index=0)
+
+    bad_kwargs_call = prov.FileReplayCall.model_construct(
+        kind="callable",
+        target="xarray.load_dataarray",
+        kwargs={1: "bad"},
+        selected_index=0,
+    )
+    with pytest.raises(TypeError, match="string keys"):
+        bad_kwargs_call._validate_replay_call()
+
+    assert prov.ReplayStage(source_kind="full_data", operations=None).operations == ()
+    with pytest.raises(TypeError, match="replay stage operations"):
+        prov.ReplayStage(source_kind="full_data", operations=1)
+    with pytest.raises(TypeError, match="script-only operations"):
+        prov.ReplayStage(
+            source_kind="full_data",
+            operations=[
+                prov.ScriptCodeOperation(label="Generated", code="derived = derived")
+            ],
+        )
+    with pytest.raises(TypeError, match="source must not be None"):
+        prov.ReplayStage.from_source_spec(typing.cast("typing.Any", None))
+
+    assert (
+        prov.ToolProvenanceSpec(kind="full_data", replay_stages=None).replay_stages
+        == ()
+    )
+    with pytest.raises(TypeError, match="Serialized replay stages"):
+        prov.ToolProvenanceSpec(kind="full_data", replay_stages=1)
+    with pytest.raises(ValidationError, match="cannot define replay stages"):
+        prov.ToolProvenanceSpec(
+            kind="script",
+            start_label="Start",
+            active_name="derived",
+            replay_stages=[replay_stage],
+        )
+
+    with pytest.raises(ValidationError, match="must define `start_label`"):
+        prov.ToolProvenanceSpec(
+            kind="file",
+            seed_code="derived = data",
+            active_name="derived",
+            file_load_source=file_source,
+        )
+    with pytest.raises(ValidationError, match="must define `seed_code`"):
+        prov.ToolProvenanceSpec(
+            kind="file",
+            start_label="Load",
+            active_name="derived",
+            file_load_source=file_source,
+        )
+    with pytest.raises(ValidationError, match="must define `active_name`"):
+        prov.ToolProvenanceSpec(
+            kind="file",
+            start_label="Load",
+            seed_code="derived = data",
+            file_load_source=file_source,
+        )
+    with pytest.raises(ValidationError, match="must define `file_load_source`"):
+        prov.ToolProvenanceSpec(
+            kind="file",
+            start_label="Load",
+            seed_code="derived = data",
+            active_name="derived",
+        )
+    with pytest.raises(ValidationError, match="must define `replay_call`"):
+        prov.ToolProvenanceSpec(
+            kind="file",
+            start_label="Load",
+            seed_code="derived = data",
+            active_name="derived",
+            file_load_source=file_source.model_copy(update={"replay_call": None}),
+        )
+    with pytest.raises(ValidationError, match="cannot define operations"):
+        prov.ToolProvenanceSpec(
+            kind="file",
+            start_label="Load",
+            seed_code="derived = data",
+            active_name="derived",
+            file_load_source=file_source,
+            operations=[prov.AverageOperation(dims=("x",))],
+        )
+    with pytest.raises(TypeError, match="Replay stages can only"):
+        prov.full_data().append_replay_stage(prov.full_data())
+
+
+def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    spec = (
+        _file_provenance_spec()
+        .append_replay_stage(prov.full_data(prov.SelOperation(kwargs={"missing": 0})))
+        .append_replay_stage(prov.full_data(prov.SqueezeOperation()))
+    )
+
+    assert [entry.label for entry in spec.derivation_entries()] == [
+        "Load data from file 'scan.h5'",
+        "sel(missing=0)",
+        "squeeze()",
+    ]
+    entries = spec.display_entries(parent_data=_base_data())
+    assert [entry.label for entry in entries] == [
+        "Load data from file 'scan.h5'",
+        "sel(missing=0)",
+        "squeeze()",
+    ]
+    code = spec.display_code(parent_data=_base_data())
+    assert code is not None
+    assert ".sel(missing=0)" in code
+    assert ".squeeze()" in code
+
+
+def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    file_spec = _file_provenance_spec()
+
+    assert prov.replay_input_name(None) is None
+    assert (
+        prov.script(start_label="Start", active_name="derived").derivation_code()
+        is None
+    )
+    assert (
+        prov.script(
+            start_label="Start",
+            seed_code="derived = data",
+            active_name="derived",
+        ).display_code()
+        is None
+    )
+    assert prov.compose_full_provenance(None, None) is None
+    local_replay = prov.compose_full_provenance(
+        None, prov.full_data(prov.AverageOperation(dims=("x",)))
+    )
+    assert local_replay is not None
+    assert local_replay.kind == "script"
+
+    assert prov.compose_full_provenance(file_spec, prov.full_data()) == file_spec
+    assert prov._as_script_replay_spec(prov.full_data()).kind == "script"
+
+    script_local = prov.script(
+        prov.ScriptCodeOperation(label="Offset", code="result = derived + 1"),
+        start_label="Run generated code",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    file_with_script = prov.compose_full_provenance(file_spec, script_local)
+    assert file_with_script is not None
+    assert file_with_script.kind == "script"
+    assert file_with_script.file_load_source == file_spec.file_load_source
+    assert file_with_script.derivation_code() == (
+        "import xarray\n\n"
+        "derived = xarray.load_dataarray('scan.h5')\n"
+        "result = derived + 1"
+    )
+
+    watched_parent = prov.script(
+        start_label="Start from watched variable 'watched_data'",
+        seed_code="derived = watched_data",
+        active_name="derived",
+    )
+    default_seed_local = prov.script(
+        prov.ScriptCodeOperation(label="Mean", code="result = derived.mean()"),
+        start_label="Use current parent output",
+        seed_code="derived = data",
+        active_name="result",
+    )
+    watched_composed = prov.compose_full_provenance(watched_parent, default_seed_local)
+    assert watched_composed is not None
+    assert watched_composed.derivation_code() == (
+        "derived = watched_data\nderived = watched_data\nresult = derived.mean()"
+    )
+
+    result_parent = prov.script(
+        prov.ScriptCodeOperation(
+            label="Compute intermediate result",
+            code="result = data + 1",
+        ),
+        start_label="Start",
+        active_name="result",
+    )
+    no_seed_local = prov.script(
+        prov.ScriptCodeOperation(label="Mean", code="result = derived.mean()"),
+        start_label="Use parent result",
+        active_name="derived",
+    )
+    result_composed = prov.compose_full_provenance(result_parent, no_seed_local)
+    assert result_composed is not None
+    assert result_composed.derivation_code() == (
+        "result = data + 1\nderived = result\nresult = derived.mean()"
+    )
+
+    promoted = prov.mark_promoted_1d_source(_base_data().copy(deep=False))
+    assert (
+        prov.compose_display_provenance(
+            watched_parent,
+            prov.selection(prov.IselOperation(), prov.SortCoordOrderOperation()),
+            parent_data=promoted,
+        )
+        is not None
+    )
+    assert prov.compose_display_provenance(
+        watched_parent, None
+    ) == prov.to_replay_provenance_spec(watched_parent)
+
+
+def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    image = xr.DataArray(
+        np.arange(6).reshape((2, 3)),
+        dims=("row", "col"),
+        name="image",
+    )
+    line = xr.DataArray(np.arange(3), dims=("energy",), name="line")
+    five_dim = xr.DataArray(
+        np.zeros((1, 2, 3, 1, 4)),
+        dims=("a", "b", "c", "d", "e"),
+        name="five_dim",
+    )
+
+    parsed_array = prov._parse_replay_input(np.arange(6).reshape((2, 3)))
+    assert len(parsed_array) == 1
+    assert isinstance(parsed_array[0], xr.DataArray)
+
+    dataset = xr.Dataset(
+        {
+            "line": line,
+            "image": image,
+            "five_dim": five_dim,
+            "scalar": xr.DataArray(1.0),
+        }
+    )
+    assert [darr.name for darr in prov._parse_replay_input(dataset)] == [
+        "line",
+        "image",
+        "five_dim",
+    ]
+
+    tree = xr.DataTree.from_dict({"leaf": xr.Dataset({"image": image})})
+    assert [darr.name for darr in prov._parse_replay_input(tree)] == ["image"]
+
+    with pytest.raises(ValueError, match="No valid data"):
+        prov._parse_replay_input([])
+    with pytest.raises(ValueError, match="No valid data"):
+        prov._parse_replay_input(xr.Dataset({"scalar": xr.DataArray(1.0)}))
+    with pytest.raises(TypeError, match="Unsupported input type list"):
+        prov._parse_replay_input([object()])
+
+    assert (
+        prov._resolve_importable_callable("xarray.load_dataarray") is xr.load_dataarray
+    )
+    with pytest.raises(ValueError, match="must be dotted"):
+        prov._resolve_importable_callable("load")
+    with pytest.raises(ModuleNotFoundError):
+        prov._resolve_importable_callable("missing_erlab_replay_loader.load")
+    with pytest.raises(AttributeError):
+        prov._resolve_importable_callable("xarray.missing_loader.load")
+    with pytest.raises(TypeError, match="not callable"):
+        prov._resolve_importable_callable("math.pi")
+
+    broken_module = tmp_path / "broken_loader.py"
+    broken_module.write_text(
+        "import missing_erlab_replay_dependency\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(ModuleNotFoundError, match="missing_erlab_replay_dependency"):
+        prov._resolve_importable_callable("broken_loader.load")
+
+    source_file = tmp_path / "source.h5"
+    image.to_netcdf(source_file, engine="h5netcdf")
+    with pytest.raises(IndexError, match="out of range"):
+        prov._load_file_source_data(
+            _file_replay_source(
+                source_file,
+                replay_call=prov.FileReplayCall(
+                    kind="callable",
+                    target="xarray.load_dataarray",
+                    kwargs={"engine": "h5netcdf"},
+                    selected_index=1,
+                ),
+            )
+        )
+    with pytest.raises(ValueError, match="replay metadata"):
+        prov._load_file_source_data(
+            prov.FileLoadSource(
+                path=source_file,
+                loader_label="Load Function",
+                loader_text="xarray.load_dataarray",
+                kwargs_text="(none)",
+            )
+        )
+    with pytest.raises(TypeError, match="Expected structured file provenance"):
+        prov.replay_file_provenance(prov.full_data())
+    with pytest.raises(TypeError, match="Expected structured file provenance"):
+        prov.replay_file_provenance(typing.cast("typing.Any", None))
+
+
+def test_file_replay_uses_erlab_loader(example_loader, example_data_dir) -> None:
+    del example_loader
+    prov = erlab.interactive.imagetool.provenance
+    file_path = example_data_dir / "data_002.h5"
+    spec = prov.file_load(
+        start_label="Load data from file 'data_002.h5'",
+        seed_code="import erlab\n\nderived = erlab.io.load(2)",
+        file_load_source=_file_replay_source(
+            file_path,
+            replay_call=prov.FileReplayCall(
+                kind="erlab_loader",
+                target="example",
+                kwargs={},
+                selected_index=0,
+            ),
+        ),
+    )
+
+    xr.testing.assert_identical(
+        prov.replay_file_provenance(spec),
+        erlab.io.loaders["example"].load(file_path),
+    )
 
 
 def test_file_provenance_composes_structured_stages_and_replays_modified_source(

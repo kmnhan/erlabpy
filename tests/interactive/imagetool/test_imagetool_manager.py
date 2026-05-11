@@ -46,6 +46,7 @@ from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool._load_source import (
     _load_code_from_file_details,
+    _load_provenance_from_file_details,
     _load_source_label_and_text,
     _loader_callable_text,
     _LoadSourceDetails,
@@ -2781,6 +2782,16 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
     _missing_attr_loader.__qualname__ = "missing_loader"
 
     assert _load_code_from_file_details(file_path, None) is None
+    assert _load_provenance_from_file_details(file_path, None) is None
+    provenance = _load_provenance_from_file_details(
+        file_path,
+        (xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+    )
+    assert provenance is not None
+    assert provenance.kind == "file"
+    assert provenance.file_load_source is not None
+    assert provenance.file_load_source.replay_call is not None
+    assert provenance.file_load_source.replay_call.target == "xarray.load_dataarray"
     selected_code = _load_code_from_file_details(file_path, ("example", {}, 1))
     assert selected_code == (
         "import erlab\n\n"
@@ -2789,6 +2800,7 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
         f"erlab.io.load({str(file_path)!r}))[1]"
     )
     assert _load_code_from_file_details(file_path, (_local_loader, {}, 0)) is None
+    assert _load_provenance_from_file_details(file_path, (_local_loader, {}, 0)) is None
     assert _loader_callable_text(_local_loader) is None
     assert _load_source_label_and_text(None) == ("Loader", "(unavailable)")
     assert _load_source_label_and_text(("example", {}, 0)) == ("Loader", "example")
