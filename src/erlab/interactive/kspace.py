@@ -701,7 +701,11 @@ class KspaceTool(KspaceToolGUI):
         )
         self._energy_controls_connected: bool = False
 
-        if self.data.kspace._has_eV and self.data.eV.size > 1:
+        if (
+            self.data.kspace._has_eV
+            and self.data.eV.size > 1
+            and not self._shows_full_energy_cut()
+        ):
             self._update_energy_controls()
             self.width_spin.setRange(1, len(self.data.eV))
             self._ensure_energy_control_connections()
@@ -850,7 +854,7 @@ class KspaceTool(KspaceToolGUI):
         self.copy_btn.clicked.connect(self.copy_code)
         self.update()
 
-        if avec is not None:
+        if avec is not None and self.bz_group.isEnabled():
             self.bz_group.setChecked(True)
 
     def _ensure_energy_control_connections(self) -> None:
@@ -872,7 +876,11 @@ class KspaceTool(KspaceToolGUI):
             f"({self.data.kspace.configuration.name})"
         )
 
-        if self.data.kspace._has_eV and self.data.eV.size > 1:
+        if (
+            self.data.kspace._has_eV
+            and self.data.eV.size > 1
+            and not self._shows_full_energy_cut()
+        ):
             self.energy_group.setDisabled(False)
             self._update_energy_controls()
             self.width_spin.setRange(1, len(self.data.eV))
@@ -894,6 +902,10 @@ class KspaceTool(KspaceToolGUI):
         current_configuration = int(self.data.kspace.configuration)
         current_has_hv = self.data.kspace._has_hv
 
+        if not data.kspace._interactive_compatible:
+            raise ValueError(
+                "Updated data is not compatible with the interactive tool."
+            )
         if tuple(data.kspace._valid_offset_keys) != current_offset_keys:
             raise ValueError("Updated data has incompatible offset coordinates.")
         if tuple(data.kspace.momentum_axes) != current_momentum_axes:
@@ -1165,10 +1177,15 @@ class KspaceTool(KspaceToolGUI):
         self._sync_normal_emission_spins()
         self.queue_update()
 
+    def _shows_full_energy_cut(self) -> bool:
+        return self.data.ndim == 2 and set(self.data.dims) == {"alpha", "eV"}
+
     def _angle_data(self) -> xr.DataArray:
         if self.data.kspace._has_eV:
             binding_energy = self._binding_energy()
             data_binding = self.data.copy(deep=False).assign_coords(eV=binding_energy)
+            if self._shows_full_energy_cut():
+                return data_binding
 
             center, width = self.center_spin.value(), self.width_spin.value()
             arr = binding_energy
@@ -1216,11 +1233,26 @@ class KspaceTool(KspaceToolGUI):
     def _preview_supports_symmetry(preview_data: xr.DataArray) -> bool:
         return preview_data.ndim == 2 and set(preview_data.dims) == {"kx", "ky"}
 
+    def _preview_supports_bz(self, preview_data: xr.DataArray) -> bool:
+        if preview_data.ndim != 2:
+            return False
+        if self.data.kspace._has_hv:
+            return "kz" in preview_data.dims and (
+                "kx" in preview_data.dims or "ky" in preview_data.dims
+            )
+        return set(preview_data.dims) == {"kx", "ky"}
+
     def _set_preview_symmetry_available(self, available: bool) -> None:
         if not available:
             with QtCore.QSignalBlocker(self.preview_symmetry_group):
                 self.preview_symmetry_group.setChecked(False)
         self.preview_symmetry_group.setEnabled(available)
+
+    def _set_bz_available(self, available: bool) -> None:
+        if not available:
+            with QtCore.QSignalBlocker(self.bz_group):
+                self.bz_group.setChecked(False)
+        self.bz_group.setEnabled(available)
 
     def _symmetrized_preview(self, preview_data: xr.DataArray) -> xr.DataArray:
         preview_data = preview_data.transpose("ky", "kx")
@@ -1259,10 +1291,12 @@ class KspaceTool(KspaceToolGUI):
         self._set_preview_symmetry_available(preview_symmetry_available)
         if preview_symmetry_available and self.preview_symmetry_group.isChecked():
             k_preview = self._symmetrized_preview(k_preview)
+        bz_available = self._preview_supports_bz(k_preview)
+        self._set_bz_available(bz_available)
         self.images[0].setDataArray(ang.T)
         self.images[1].setDataArray(k_preview)
         self._notify_data_changed()
-        if self.bz_group.isChecked():
+        if bz_available and self.bz_group.isChecked():
             self.update_bz()
 
     @staticmethod
@@ -1354,7 +1388,7 @@ class KspaceTool(KspaceToolGUI):
         )
         bvec = erlab.lattice.to_reciprocal(avec_primitive)
         converted_slice: xr.DataArray | None = self.images[1].data_array
-        if converted_slice is None:
+        if converted_slice is None or not self._preview_supports_bz(converted_slice):
             return [], np.zeros((0, 2)), np.zeros((0, 2))
 
         cache_token = self._bz_cache_token(converted_slice)
@@ -1443,8 +1477,9 @@ def ktool(
     ----------
     data
         Data to convert. Currently supports constant energy slices (2D data with alpha
-        and beta dimensions) and all 3D data that has eV and alpha dimensions, including
-        maps and photon energy dependent data.
+        and beta dimensions), 2D angle-energy cuts with alpha and eV dimensions and a
+        fixed beta coordinate, and all 3D data that has eV and alpha dimensions,
+        including maps and photon energy dependent data.
     avec : array-like, optional
         Real-space lattice vectors as a 2x2 or 3x3 numpy array. If provided, the
         Brillouin zone boundary overlay will be calculated based on these vectors. If
@@ -1468,6 +1503,9 @@ def ktool(
         seed the normal emission controls and derived angle offsets.
     initial_delta
         Optional delta value to apply alongside ``initial_normal_emission``.
+
+    .. versionchanged:: 3.22.0
+        Added support for 2D angle-energy cuts with ``alpha`` and ``eV`` dimensions.
 
     """
     if data_name is None:
