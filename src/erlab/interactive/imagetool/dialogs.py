@@ -325,10 +325,9 @@ class DataTransformDialog(_DataManipulationDialog):
                 return live_parent.append_replacement_operations(
                     *operations
                 ).append_final_rename(new_name)
-        local_spec = source_spec.to_replay_spec().model_copy(update={"seed_code": None})
         composed = erlab.interactive.imagetool.provenance.compose_full_provenance(
             base_spec,
-            local_spec,
+            source_spec,
         )
         if composed is None:
             raise RuntimeError("Could not compose ImageTool transform provenance.")

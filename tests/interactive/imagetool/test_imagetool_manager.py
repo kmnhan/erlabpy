@@ -444,7 +444,6 @@ def _exec_generated_code(
     exec(  # noqa: S102
         code,
         {
-            "__builtins__": {"slice": slice, "__import__": __import__},
             "np": np,
             "xr": xr,
             "erlab": erlab,
@@ -2782,7 +2781,13 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
     _missing_attr_loader.__qualname__ = "missing_loader"
 
     assert _load_code_from_file_details(file_path, None) is None
-    assert _load_code_from_file_details(file_path, ("example", {}, 1)) is None
+    selected_code = _load_code_from_file_details(file_path, ("example", {}, 1))
+    assert selected_code == (
+        "import erlab\n\n"
+        "erlab.io.set_loader('example')\n"
+        "data = erlab.interactive.imagetool.viewer._parse_input("
+        f"erlab.io.load({str(file_path)!r}))[1]"
+    )
     assert _load_code_from_file_details(file_path, (_local_loader, {}, 0)) is None
     assert _loader_callable_text(_local_loader) is None
     assert _load_source_label_and_text(None) == ("Loader", "(unavailable)")
@@ -4536,6 +4541,13 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         accept_dialog(root_tool.mnb._average, pre_call=_replace_average)
 
         assert root.provenance_spec is not None
+        assert root.provenance_spec.kind == "file"
+        assert len(root.provenance_spec.replay_stages) == 1
+        assert root.provenance_spec.replay_stages[0].source_kind == "full_data"
+        assert [op.op for op in root.provenance_spec.replay_stages[0].operations] == [
+            "average",
+            "rename",
+        ]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
         assert any("Average" in entry.label for entry in entries)
@@ -4608,6 +4620,22 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
         tree = manager._to_datatree()
+        provenance_payload = json.loads(
+            tree["1/imagetool"].attrs["manager_node_provenance_spec"]
+        )
+        assert provenance_payload["schema_version"] == 2
+        assert provenance_payload["kind"] == "file"
+        assert provenance_payload["operations"] == []
+        assert len(provenance_payload["replay_stages"]) == 1
+        assert provenance_payload["replay_stages"][0]["source_kind"] == "full_data"
+        assert [
+            operation["op"]
+            for operation in provenance_payload["replay_stages"][0]["operations"]
+        ] == ["average", "rename"]
+        assert (
+            provenance_payload["file_load_source"]["replay_call"]["target"]
+            == "xarray.load_dataarray"
+        )
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -4653,6 +4681,83 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         manager._update_actions()
         assert not detached.reloadable
         assert not manager.reload_action.isVisible()
+
+
+def test_manager_workspace_loads_legacy_321_provenance_payload(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    test_data.to_netcdf(file_path, engine="h5netcdf")
+    legacy_payload = {
+        "schema_version": 1,
+        "kind": "script",
+        "start_label": "Load data from file 'scan.h5'",
+        "seed_code": (
+            "import xarray\n\n"
+            f"derived = xarray.load_dataarray({str(file_path)!r}, "
+            'engine="h5netcdf").astype("float64")'
+        ),
+        "active_name": "derived",
+        "file_load_source": {
+            "path": str(file_path),
+            "loader_label": "Load Function",
+            "loader_text": "xarray.load_dataarray",
+            "kwargs_text": 'engine="h5netcdf"',
+            "load_code": (
+                "import xarray\n\n"
+                f"data = xarray.load_dataarray({str(file_path)!r}, "
+                'engine="h5netcdf").astype("float64")'
+            ),
+        },
+        "operations": [
+            {
+                "op": "script_code",
+                "label": 'Average(dims=("alpha",))',
+                "code": 'derived = derived.qsel.average("alpha")',
+                "copyable": True,
+            }
+        ],
+    }
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tree = manager._to_datatree()
+        tree["0/imagetool"].attrs["manager_node_provenance_spec"] = json.dumps(
+            legacy_payload
+        )
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        loaded = manager._imagetool_wrappers[0]
+        assert loaded.provenance_spec is not None
+        assert loaded.provenance_spec.schema_version == 2
+        assert loaded.provenance_spec.kind == "script"
+        assert loaded.provenance_spec.file_load_source is not None
+        assert loaded.provenance_spec.file_load_source.replay_call is None
+        assert not loaded.reloadable
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info()
+        assert metadata_detail_map(manager)["File"] == str(file_path)
+        assert metadata_derivation_texts(manager) == [
+            "Load data from file 'scan.h5'",
+            'Average(dims=("alpha",))',
+        ]
 
 
 def test_manager_prompt_replay_input_name_accept_cancel_and_invalid(

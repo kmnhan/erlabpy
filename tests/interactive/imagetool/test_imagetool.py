@@ -102,7 +102,6 @@ def _exec_generated_code(
     exec(  # noqa: S102
         code,
         {
-            "__builtins__": {"slice": slice, "__import__": __import__},
             "np": np,
             "xr": xr,
             "erlab": erlab,
@@ -1476,7 +1475,7 @@ def test_parse_data() -> None:
         erlab.interactive.imagetool.viewer._parse_input("string")
 
 
-def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
+def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
         dims=["x", "y"],
@@ -1527,6 +1526,15 @@ def test_itool_load(qtbot, move_and_compare_values, accept_dialog) -> None:
         updated = data + 100
         updated.to_netcdf(filename, engine="h5netcdf")
 
+        def _fail_derivation_code(self) -> str | None:
+            raise AssertionError("provenance reload must not execute generated code")
+
+        monkeypatch.setattr(
+            type(win.provenance_spec),
+            "derivation_code",
+            _fail_derivation_code,
+        )
+
         with qtbot.wait_signal(win.slicer_area.sigDataChanged):
             win.slicer_area.reload()
 
@@ -1554,17 +1562,22 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
         return prov.FileLoadSource(
             path=path,
             loader_label="Loader",
-            loader_text="xarray",
+            loader_text="xarray.load_dataarray",
             kwargs_text="(none)",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                kwargs={},
+                selected_index=0,
+            ),
             load_code=None,
         )
 
     missing_file = tmp_path / "missing.h5"
     win.set_provenance_spec(
-        prov.script(
+        prov.file_load(
             start_label="Load missing file",
             seed_code="derived = xr.DataArray([1.0])",
-            active_name="derived",
             file_load_source=_file_source(missing_file),
         )
     )
@@ -1573,7 +1586,10 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
         win.slicer_area._fetch_for_provenance_reload()
 
     source_file = tmp_path / "source.h5"
-    source_file.touch()
+    xr.DataArray(np.arange(3.0), dims=("x",)).to_netcdf(
+        source_file,
+        engine="h5netcdf",
+    )
     win.set_provenance_spec(
         prov.script(
             start_label="Needs external data",
@@ -1587,27 +1603,42 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
         win.slicer_area._fetch_for_provenance_reload()
 
     win.set_provenance_spec(
-        prov.script(
-            start_label="Wrong active name",
-            seed_code="other = xr.DataArray([1.0])",
-            active_name="derived",
-            file_load_source=_file_source(source_file),
-        )
+        prov.file_load(
+            start_label="Bad selected index",
+            seed_code="derived = xr.load_dataarray(source_file)",
+            file_load_source=_file_source(source_file).model_copy(
+                update={
+                    "replay_call": prov.FileReplayCall(
+                        kind="callable",
+                        target="xarray.load_dataarray",
+                        kwargs={},
+                        selected_index=1,
+                    )
+                }
+            ),
+        ).append_replay_stage(prov.full_data())
     )
     assert win.slicer_area.reloadable
-    with pytest.raises(RuntimeError, match="active data"):
+    with pytest.raises(IndexError, match="out of range"):
         win.slicer_area._fetch_for_provenance_reload()
 
-    win.set_provenance_spec(
-        prov.script(
-            start_label="Multiple outputs",
-            seed_code=("derived = [xr.DataArray([1.0]), xr.DataArray([2.0])]"),
-            active_name="derived",
+    with pytest.raises(TypeError, match="script-only operations"):
+        prov.file_load(
+            start_label="Bad replay operation",
+            seed_code="derived = xr.load_dataarray(source_file)",
             file_load_source=_file_source(source_file),
+            replay_stages=[
+                prov.ReplayStage(
+                    source_kind="full_data",
+                    operations=[
+                        prov.ScriptCodeOperation(
+                            label="Generated code",
+                            code="derived = derived + 1",
+                        )
+                    ],
+                )
+            ],
         )
-    )
-    with pytest.raises(RuntimeError, match="multiple data arrays"):
-        win.slicer_area._fetch_for_provenance_reload()
 
     win.set_provenance_spec(None)
     with pytest.raises(RuntimeError, match="cannot be reloaded"):
