@@ -39,6 +39,13 @@ _RESERVED_REPLAY_SOURCE_NAMES = {
     "_processed",
 }
 
+_LoadFunc: typing.TypeAlias = tuple[
+    Callable[..., typing.Any] | str,
+    dict[str, typing.Any],
+    int,
+]
+_LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
+
 
 @dataclass(frozen=True)
 class _LoadSourceDetails:
@@ -53,6 +60,102 @@ class _LoadSourceDetails:
     loader_text: str
     kwargs_text: str
     load_code: str | None
+
+
+@dataclass(frozen=True)
+class _ResolvedLoadFunc:
+    """Normalized file loader metadata shared by UI, code, and replay paths.
+
+    This is intentionally an internal value object. It records the result of resolving
+    ``load_func`` once so callers do not independently rediscover the loader kind,
+    display text, import/setup code, selected parsed array, and dtype cast behavior.
+    """
+
+    kind: _LoadKind
+    target: str
+    loader_label: str
+    loader_text: str
+    loader_expr: str
+    imports: tuple[str, ...]
+    setup_lines: tuple[str, ...]
+    loader_name: str | None
+    kwargs: dict[str, typing.Any]
+    selected_index: int
+    cast_float64: bool
+
+    @property
+    def kwargs_text(self) -> str:
+        """Return human-readable kwargs text for the file-source details dialog."""
+        if not self.kwargs:
+            return "(none)"
+        return erlab.interactive.utils.format_kwargs(
+            typing.cast("dict[typing.Hashable, typing.Any]", self.kwargs)
+        )
+
+    def replay_call(self) -> erlab.interactive.imagetool.provenance.FileReplayCall:
+        """Return the serialized loader call used by structured file replay."""
+        return erlab.interactive.imagetool.provenance.FileReplayCall(
+            kind=self.kind,
+            target=self.target,
+            kwargs=self.kwargs,
+            selected_index=self.selected_index,
+            cast_float64=self.cast_float64,
+        )
+
+    def load_code(self, file_path: Path, *, assign: str) -> str:
+        """Return user-facing Python that reloads the same selected file data."""
+        imports = list(self.imports)
+        call_args = self._call_args(file_path)
+        call_expr = f"{self.loader_expr}({', '.join(call_args)})"
+        if self.selected_index != 0:
+            imports.append("import erlab")
+            call_expr = (
+                "erlab.interactive.imagetool.viewer._parse_input("
+                f"{call_expr})[{self.selected_index}]"
+            )
+        if self.cast_float64:
+            call_expr = f'{call_expr}.astype("float64")'
+
+        return "\n".join(
+            [
+                *list(dict.fromkeys(imports)),
+                "",
+                *self.setup_lines,
+                f"{assign} = {call_expr}",
+            ]
+        )
+
+    def _call_args(self, file_path: Path) -> list[str]:
+        """Return loader call arguments, using compact scan-number syntax when safe."""
+        kwargs_str = _format_call_kwargs(self.kwargs)
+        scan_call_args = (
+            _scan_number_load_call_args(file_path, self.loader_name, self.kwargs)
+            if self.loader_name is not None
+            else None
+        )
+        if scan_call_args is not None:
+            return scan_call_args
+        call_args = [repr(str(file_path))]
+        if kwargs_str:
+            call_args.append(kwargs_str)
+        return call_args
+
+
+def _format_call_kwargs(kwargs: dict[str, typing.Any]) -> str:
+    return (
+        erlab.interactive.utils.format_call_kwargs(
+            typing.cast("dict[typing.Hashable, typing.Any]", kwargs)
+        )
+        if kwargs
+        else ""
+    )
+
+
+def _needs_float64_cast(source_input_dtype: np.dtype[typing.Any] | str | None) -> bool:
+    return source_input_dtype is not None and np.dtype(source_input_dtype) not in (
+        np.dtype(np.float32),
+        np.dtype(np.float64),
+    )
 
 
 def _resolve_identified_path(
@@ -135,103 +238,6 @@ def _scan_number_load_call_args(
     return call_args
 
 
-def _load_code_from_file_details(
-    file_path: Path,
-    load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
-    | None,
-    *,
-    assign: str = "data",
-    source_input_dtype: np.dtype[typing.Any] | str | None = None,
-) -> str | None:
-    """Generate replay code for loading one ImageTool data source from a file."""
-    if not erlab.interactive.utils._is_kwarg_name(assign):
-        raise ValueError("assign must be a valid Python identifier")
-    if load_func is None or load_func[2] != 0:
-        return None
-
-    imports: list[str] = []
-    setup_lines: list[str] = []
-    loader = load_func[0]
-    loader_name = None
-    if isinstance(loader, str):
-        loader_name = loader
-    else:
-        func_instance = getattr(loader, "__self__", None)
-        if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
-            loader_name = func_instance.name
-
-    if loader_name is not None:
-        imports.append("import erlab")
-        setup_lines.append(f"erlab.io.set_loader({loader_name!r})")
-        loader_expr = "erlab.io.load"
-    else:
-        if isinstance(loader, str):
-            return None
-        callable_loader_expr = _loader_callable_text(loader)
-        if callable_loader_expr is None:
-            return None
-        loader_expr = callable_loader_expr
-        loader_module = getattr(loader, "__module__", None)
-        if isinstance(loader_module, str) and callable_loader_expr.startswith(
-            f"{loader_module}."
-        ):
-            imports.insert(0, f"import {loader_module}")
-        else:
-            imports.insert(0, f"import {callable_loader_expr.split('.', 1)[0]}")
-
-    kwargs = load_func[1]
-    kwargs_str = (
-        erlab.interactive.utils.format_call_kwargs(
-            typing.cast("dict[typing.Hashable, typing.Any]", kwargs)
-        )
-        if kwargs
-        else ""
-    )
-    call_args = (
-        _scan_number_load_call_args(file_path, loader_name, kwargs)
-        if loader_name is not None
-        else None
-    )
-    if call_args is None:
-        call_args = [repr(str(file_path))]
-        if kwargs_str:
-            call_args.append(kwargs_str)
-    imports = list(dict.fromkeys(imports))
-    call_expr = f"{loader_expr}({', '.join(call_args)})"
-    if source_input_dtype is not None and np.dtype(source_input_dtype) not in (
-        np.dtype(np.float32),
-        np.dtype(np.float64),
-    ):
-        call_expr = f'{call_expr}.astype("float64")'
-
-    return "\n".join(
-        [
-            *imports,
-            "",
-            *setup_lines,
-            f"{assign} = {call_expr}",
-        ]
-    )
-
-
-def _load_source_label_and_text(
-    load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
-    | None,
-) -> tuple[str, str]:
-    """Return a user-facing loader label and value for metadata display."""
-    if load_func is None:
-        return "Loader", "(unavailable)"
-
-    loader = load_func[0]
-    if isinstance(loader, str):
-        return "Loader", loader
-
-    loader_text = _loader_callable_text(loader)
-    if loader_text is None:
-        return "Load Function", repr(loader)
-    return "Load Function", loader_text
-
-
 def _loader_callable_text(loader: Callable[..., typing.Any]) -> str | None:
     """Return importable text for a loader callable when it has a stable path."""
     module = getattr(loader, "__module__", None)
@@ -257,15 +263,128 @@ def _loader_callable_text(loader: Callable[..., typing.Any]) -> str | None:
     return f"{module}.{qualname}"
 
 
-def _load_source_details_from_file(
-    file_path: Path,
-    load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
-    | None,
+def _import_for_callable(loader: Callable[..., typing.Any], target: str) -> str:
+    module = getattr(loader, "__module__", None)
+    if isinstance(module, str) and target.startswith(f"{module}."):
+        return f"import {module}"
+    return f"import {target.split('.', maxsplit=1)[0]}"
+
+
+def _resolve_load_func(
+    load_func: _LoadFunc | None,
     *,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
+) -> _ResolvedLoadFunc | None:
+    if load_func is None:
+        return None
+
+    loader, kwargs, selected_index = load_func
+    cast_float64 = _needs_float64_cast(source_input_dtype)
+    if isinstance(loader, str):
+        return _ResolvedLoadFunc(
+            kind="erlab_loader",
+            target=loader,
+            loader_label="Loader",
+            loader_text=loader,
+            loader_expr="erlab.io.load",
+            imports=("import erlab",),
+            setup_lines=(f"erlab.io.set_loader({loader!r})",),
+            loader_name=loader,
+            kwargs=kwargs,
+            selected_index=selected_index,
+            cast_float64=cast_float64,
+        )
+
+    func_instance = getattr(loader, "__self__", None)
+    if isinstance(func_instance, erlab.io.dataloader.LoaderBase):
+        loader_name = func_instance.name
+        return _ResolvedLoadFunc(
+            kind="erlab_loader",
+            target=loader_name,
+            loader_label="Loader",
+            loader_text=loader_name,
+            loader_expr="erlab.io.load",
+            imports=("import erlab",),
+            setup_lines=(f"erlab.io.set_loader({loader_name!r})",),
+            loader_name=loader_name,
+            kwargs=kwargs,
+            selected_index=selected_index,
+            cast_float64=cast_float64,
+        )
+
+    target = _loader_callable_text(loader)
+    if target is None:
+        return None
+    return _ResolvedLoadFunc(
+        kind="callable",
+        target=target,
+        loader_label="Load Function",
+        loader_text=target,
+        loader_expr=target,
+        imports=(_import_for_callable(loader, target),),
+        setup_lines=(),
+        loader_name=None,
+        kwargs=kwargs,
+        selected_index=selected_index,
+        cast_float64=cast_float64,
+    )
+
+
+def _load_code_from_file_details(
+    file_path: Path,
+    load_func: _LoadFunc | None,
+    *,
+    assign: str = "data",
+    source_input_dtype: np.dtype[typing.Any] | str | None = None,
+) -> str | None:
+    """Generate replay code for loading one ImageTool data source from a file."""
+    if not erlab.interactive.utils._is_kwarg_name(assign):
+        raise ValueError("assign must be a valid Python identifier")
+    resolved = _resolve_load_func(
+        load_func,
+        source_input_dtype=source_input_dtype,
+    )
+    if resolved is None:
+        return None
+    return resolved.load_code(file_path, assign=assign)
+
+
+def _fallback_load_source_label_and_text(
+    load_func: _LoadFunc | None,
+) -> tuple[str, str]:
+    if load_func is None:
+        return "Loader", "(unavailable)"
+    loader = load_func[0]
+    if isinstance(loader, str):
+        return "Loader", loader
+    return "Load Function", repr(loader)
+
+
+def _load_source_label_and_text(
+    load_func: _LoadFunc | None,
+) -> tuple[str, str]:
+    """Return a user-facing loader label and value for metadata display."""
+    resolved = _resolve_load_func(load_func)
+    if resolved is not None:
+        return resolved.loader_label, resolved.loader_text
+    return _fallback_load_source_label_and_text(load_func)
+
+
+def _load_source_details(
+    file_path: Path,
+    load_func: _LoadFunc | None,
+    resolved: _ResolvedLoadFunc | None,
 ) -> _LoadSourceDetails:
-    """Build manager metadata details from ImageTool file-load state."""
-    loader_label, loader_text = _load_source_label_and_text(load_func)
+    if resolved is not None:
+        return _LoadSourceDetails(
+            path=file_path,
+            loader_label=resolved.loader_label,
+            loader_text=resolved.loader_text,
+            kwargs_text=resolved.kwargs_text,
+            load_code=resolved.load_code(file_path, assign="data"),
+        )
+
+    loader_label, loader_text = _fallback_load_source_label_and_text(load_func)
     kwargs_text = "(unavailable)"
     if load_func is not None:
         kwargs_text = (
@@ -280,12 +399,22 @@ def _load_source_details_from_file(
         loader_label=loader_label,
         loader_text=loader_text,
         kwargs_text=kwargs_text,
-        load_code=_load_code_from_file_details(
-            file_path,
-            load_func,
-            source_input_dtype=source_input_dtype,
-        ),
+        load_code=None,
     )
+
+
+def _load_source_details_from_file(
+    file_path: Path,
+    load_func: _LoadFunc | None,
+    *,
+    source_input_dtype: np.dtype[typing.Any] | str | None = None,
+) -> _LoadSourceDetails:
+    """Build manager metadata details from ImageTool file-load state."""
+    resolved = _resolve_load_func(
+        load_func,
+        source_input_dtype=source_input_dtype,
+    )
+    return _load_source_details(file_path, load_func, resolved)
 
 
 def _load_source_details_from_provenance(
@@ -309,34 +438,27 @@ def _default_load_source_name(file_path: Path) -> str:
 
 def _load_provenance_from_file_details(
     file_path: Path,
-    load_func: tuple[Callable[..., typing.Any] | str, dict[str, typing.Any], int]
-    | None,
+    load_func: _LoadFunc | None,
     *,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
 ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
     """Build replay provenance whose seed reloads the current data from disk."""
-    details = _load_source_details_from_file(
-        file_path,
+    resolved = _resolve_load_func(
         load_func,
         source_input_dtype=source_input_dtype,
     )
-    seed_code = _load_code_from_file_details(
-        file_path,
-        load_func,
-        assign="derived",
-        source_input_dtype=source_input_dtype,
-    )
-    if seed_code is None:
+    if resolved is None:
         return None
-    return erlab.interactive.imagetool.provenance.script(
+    details = _load_source_details(file_path, load_func, resolved)
+    return erlab.interactive.imagetool.provenance.file_load(
         start_label=f"Load data from file {file_path.name!r}",
-        seed_code=seed_code,
-        active_name="derived",
+        seed_code=resolved.load_code(file_path, assign="derived"),
         file_load_source=erlab.interactive.imagetool.provenance.FileLoadSource(
             path=str(details.path),
             loader_label=details.loader_label,
             loader_text=details.loader_text,
             kwargs_text=details.kwargs_text,
+            replay_call=resolved.replay_call(),
             load_code=details.load_code,
         ),
     )

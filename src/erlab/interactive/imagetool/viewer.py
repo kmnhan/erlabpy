@@ -1860,17 +1860,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _provenance_reloadable(self) -> bool:
         """Return whether replay provenance can rebuild the displayed data from file."""
         provenance_spec = self.provenance_spec
-        uses_default_input = (
-            erlab.interactive.imagetool.provenance.uses_default_replay_input
-        )
-        if (
+        return not (
             provenance_spec is None
+            or provenance_spec.kind != "file"
             or provenance_spec.file_load_source is None
             or not pathlib.Path(provenance_spec.file_load_source.path).exists()
-        ):
-            return False
-        code = provenance_spec.derivation_code()
-        return bool(code and not uses_default_input(code))
+        )
 
     def _fetch_for_reload(self) -> xr.DataArray:
         file_path = self._file_path
@@ -1892,40 +1887,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _fetch_for_provenance_reload(self) -> xr.DataArray:
         """Replay file-rooted provenance and return the active displayed data."""
         provenance_spec = self.provenance_spec
-        if provenance_spec is None or provenance_spec.file_load_source is None:
-            raise RuntimeError("Data cannot be reloaded")
+        if (
+            provenance_spec is None
+            or provenance_spec.kind != "file"
+            or provenance_spec.file_load_source is None
+        ):
+            raise RuntimeError("Data cannot be reloaded from provenance")
         file_path = pathlib.Path(provenance_spec.file_load_source.path)
         if not file_path.exists():
             raise FileNotFoundError(file_path)
-        code = provenance_spec.derivation_code()
-        uses_default_input = (
-            erlab.interactive.imagetool.provenance.uses_default_replay_input
+        return erlab.interactive.imagetool.provenance.replay_file_provenance(
+            provenance_spec
         )
-        if code is None or uses_default_input(code):
-            raise RuntimeError("Data cannot be reloaded from provenance")
-
-        namespace: dict[str, typing.Any] = {
-            "__builtins__": {"__import__": __import__, "slice": slice},
-            "np": np,
-            "xr": xr,
-            "erlab": erlab,
-            "era": erlab.analysis,
-        }
-        exec(code, namespace, namespace)  # noqa: S102
-        active_name = provenance_spec.active_name or "derived"
-        if active_name not in namespace:
-            raise RuntimeError(
-                f"Reload provenance did not define active data {active_name!r}"
-            )
-        parsed = _parse_input(
-            typing.cast(
-                "typing.Any",
-                namespace[active_name],
-            )
-        )
-        if len(parsed) != 1:
-            raise RuntimeError("Reload provenance produced multiple data arrays")
-        return parsed[0]
 
     def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
         """Return reload data and replacement kwargs for the active reload source."""

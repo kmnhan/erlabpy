@@ -17,7 +17,6 @@ def _exec_generated_code(
     exec(  # noqa: S102
         code,
         {
-            "__builtins__": {"slice": slice, "__import__": __import__},
             "np": np,
             "xr": xr,
             "erlab": erlab,
@@ -130,9 +129,10 @@ def test_tool_provenance_codec_and_combinators() -> None:
         )
 
 
-def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> None:
+def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None:
     prov = erlab.interactive.imagetool.provenance
     payload = {
+        "schema_version": 1,
         "kind": "full_data",
         "operations": [
             {"op": "average", "dims": {prov._TUPLE_MARKER: ["x"]}},
@@ -143,7 +143,7 @@ def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> N
     spec = prov.parse_tool_provenance_spec(payload)
 
     assert spec is not None
-    assert spec.schema_version == 1
+    assert spec.schema_version == 2
     assert [op.op for op in spec.operations] == ["average", "rename"]
     assert [entry.label for entry in spec.derivation_entries()] == [
         "Start from current parent ImageTool data",
@@ -154,7 +154,7 @@ def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> N
     )
 
     dumped = spec.model_dump(mode="json")
-    assert dumped["schema_version"] == 1
+    assert dumped["schema_version"] == 2
     assert "active_name" in dumped
     assert dumped["active_name"] is None
     assert dumped["operations"][0]["op"] == "average"
@@ -198,6 +198,46 @@ def test_tool_provenance_parse_final_payload_and_reject_unreleased_legacy() -> N
         prov.parse_tool_provenance_spec(
             {"kind": "full_data", "operations": {"op": "average", "dims": ["x"]}}
         )
+
+
+def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    payload = {
+        "schema_version": 1,
+        "kind": "script",
+        "start_label": "Load data from file 'scan.h5'",
+        "seed_code": "import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        "active_name": "derived",
+        "file_load_source": {
+            "path": "scan.h5",
+            "loader_label": "Load Function",
+            "loader_text": "xarray.load_dataarray",
+            "kwargs_text": "(none)",
+            "load_code": "import xarray\n\ndata = xarray.load_dataarray('scan.h5')",
+        },
+        "operations": [
+            {
+                "op": "script_code",
+                "label": 'Average(dims=("x",))',
+                "code": 'derived = derived.qsel.average("x")',
+                "copyable": True,
+            }
+        ],
+    }
+
+    spec = prov.parse_tool_provenance_spec(payload)
+
+    assert spec is not None
+    assert spec.schema_version == 2
+    assert spec.kind == "script"
+    assert spec.file_load_source is not None
+    assert spec.file_load_source.path == "scan.h5"
+    assert spec.file_load_source.replay_call is None
+    assert spec.derivation_code() == (
+        "import xarray\n\n"
+        "derived = xarray.load_dataarray('scan.h5')\n"
+        'derived = derived.qsel.average("x")'
+    )
 
 
 def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
@@ -895,9 +935,9 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     assert prov.ToolProvenanceSpec(kind="full_data", operations=None).operations == ()
     with pytest.raises(ValidationError, match="must define `start_label`"):
         prov.ToolProvenanceSpec(kind="script", active_name="derived")
-    with pytest.raises(ValidationError, match="Only script provenance specs"):
+    with pytest.raises(ValidationError, match="Only script or file provenance specs"):
         prov.ToolProvenanceSpec(kind="full_data", start_label="bad")
-    with pytest.raises(TypeError, match="Script provenance uses"):
+    with pytest.raises(TypeError, match="Script and file provenance use"):
         prov.script(start_label="Start", active_name="derived")._display_operations()
 
 
@@ -1286,6 +1326,138 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
     xr.testing.assert_identical(derived, (data + 1).qsel.average("x"))
+
+
+def test_file_load_source_replay_call_round_trips() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    xarray_source = prov.FileLoadSource(
+        path="scan.h5",
+        loader_label="Load Function",
+        loader_text="xarray.load_dataarray",
+        kwargs_text='engine="h5netcdf"',
+        replay_call=prov.FileReplayCall(
+            kind="callable",
+            target="xarray.load_dataarray",
+            kwargs={"engine": "h5netcdf"},
+            selected_index=0,
+            cast_float64=True,
+        ),
+        load_code='import xarray\n\ndata = xarray.load_dataarray("/tmp/scan.h5")',
+    )
+    parsed_xarray = prov.FileLoadSource.model_validate(
+        xarray_source.model_dump(mode="json")
+    )
+    assert parsed_xarray == xarray_source
+    assert parsed_xarray.replay_call.kind == "callable"
+    assert parsed_xarray.replay_call.target == "xarray.load_dataarray"
+    assert parsed_xarray.replay_call.kwargs == {"engine": "h5netcdf"}
+    assert parsed_xarray.replay_call.cast_float64 is True
+
+    erlab_source = prov.FileLoadSource(
+        path="data_002.h5",
+        loader_label="Loader",
+        loader_text="example",
+        kwargs_text="(none)",
+        replay_call=prov.FileReplayCall(
+            kind="erlab_loader",
+            target="example",
+            kwargs={},
+            selected_index=0,
+        ),
+        load_code=(
+            "import erlab\n\nerlab.io.set_loader('example')\ndata = erlab.io.load(2)"
+        ),
+    )
+    parsed_erlab = prov.FileLoadSource.model_validate(
+        erlab_source.model_dump(mode="json")
+    )
+    assert parsed_erlab == erlab_source
+    assert parsed_erlab.replay_call.kind == "erlab_loader"
+    assert parsed_erlab.replay_call.target == "example"
+
+
+def test_file_provenance_composes_structured_stages_and_replays_modified_source(
+    tmp_path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "source.h5"
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="scan",
+    )
+    data.to_netcdf(path, engine="h5netcdf")
+
+    file_spec = prov.file_load(
+        start_label=f"Load data from file {path.name!r}",
+        seed_code=(
+            "import xarray\n\n"
+            f"derived = xarray.load_dataarray({str(path)!r}, "
+            'engine="h5netcdf").astype("float64")'
+        ),
+        file_load_source=prov.FileLoadSource(
+            path=path,
+            loader_label="Load Function",
+            loader_text="xarray.load_dataarray",
+            kwargs_text='engine="h5netcdf"',
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                kwargs={"engine": "h5netcdf"},
+                selected_index=0,
+                cast_float64=True,
+            ),
+            load_code=(
+                "import xarray\n\n"
+                f"data = xarray.load_dataarray({str(path)!r}, "
+                'engine="h5netcdf").astype("float64")'
+            ),
+        ),
+    )
+    first_stage = prov.full_data(
+        prov.AverageOperation(dims=("x",)),
+        prov.RenameOperation(name="avg"),
+    )
+    second_stage = prov.selection(
+        prov.IselOperation(kwargs={"y": slice(0, 2)}),
+        prov.RenameDimsCoordsOperation(mapping={"y": "energy"}),
+        prov.AssignCoordsOperation(
+            coord_name="energy",
+            values=np.array([10.0, 20.0]),
+        ),
+    )
+
+    composed = prov.compose_full_provenance(file_spec, first_stage)
+    composed = prov.compose_full_provenance(composed, second_stage)
+
+    assert composed is not None
+    assert composed.kind == "file"
+    assert [stage.source_kind for stage in composed.replay_stages] == [
+        "full_data",
+        "selection",
+    ]
+    assert all(
+        not isinstance(operation, prov.ScriptCodeOperation)
+        for stage in composed.replay_stages
+        for operation in stage.operations
+    )
+    assert composed.display_entries()[0].label == "Load data from file 'source.h5'"
+    assert any("Average" in entry.label for entry in composed.display_entries())
+
+    code = composed.display_code()
+    assert code is not None
+    assert "import xarray" in code
+    assert "xarray.load_dataarray" in code
+    assert "data =" not in code
+    namespace = _exec_generated_code(code, {})
+    assert isinstance(namespace["derived"], xr.DataArray)
+
+    updated = data + 100
+    updated.to_netcdf(path, engine="h5netcdf")
+    live_expected = second_stage.apply(first_stage.apply(updated.astype(np.float64)))
+    xr.testing.assert_identical(prov.replay_file_provenance(composed), live_expected)
 
 
 def test_tool_provenance_compose_display_provenance_streamlines_live_source() -> None:
