@@ -72,6 +72,7 @@ __all__ = [
     "DivideByCoordOperation",
     "FileLoadSource",
     "FileReplayCall",
+    "InterpolationOperation",
     "IselOperation",
     "MaskWithPolygonOperation",
     "QSelOperation",
@@ -1942,6 +1943,70 @@ class AverageOperation(ToolProvenanceOperation):
         )
 
 
+class InterpolationOperation(ToolProvenanceOperation):
+    op: typing.Literal["interpolate"] = "interpolate"
+    dim: ProvenanceHashable
+    values: typing.Any
+    method: typing.Literal["linear", "nearest"] = "linear"
+
+    @pydantic.field_validator("values", mode="before")
+    @classmethod
+    def _validate_values(cls, value: typing.Any) -> typing.Any:
+        encoded = cls._validate_encoded_field(
+            value,
+            error="interpolation values must be array-like",
+            predicate=lambda encoded_value: (
+                isinstance(encoded_value, list)
+                or (
+                    isinstance(encoded_value, Mapping)
+                    and _TUPLE_MARKER in encoded_value
+                )
+            ),
+        )
+        values = np.asarray(cls._decode_stored_field(encoded))
+        if values.ndim != 1:
+            raise ValueError("interpolation values must be one-dimensional.")
+        if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
+            values.dtype, np.complexfloating
+        ):
+            raise TypeError("interpolation values must be real numeric values.")
+        if not np.all(np.isfinite(values.astype(np.float64, copy=False))):
+            raise ValueError("interpolation values must be finite.")
+        return encoded
+
+    @property
+    def decoded_values(self) -> np.ndarray:
+        return np.asarray(self._decode_stored_field(self.values))
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return data.interp({self.dim: self.decoded_values}, method=self.method)
+
+    def code(self, data_name: str, *, assign: str | None = None) -> str:
+        dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
+        values_code = erlab.interactive.utils.format_1d_numeric_array_code(
+            self.decoded_values
+        )
+        method_code = erlab.interactive.utils._parse_single_arg(self.method)
+        code = (
+            f"{data_name}.interp({{{dim_code}: {values_code}}}, method={method_code})"
+        )
+        if assign is not None:
+            return f"{assign} = {code}"
+        return code
+
+    def derivation_entry(self) -> DerivationEntry:
+        label_kwargs = {
+            "dim": self.dim,
+            "values": self.values,
+            "method": self.method,
+        }
+        return DerivationEntry(
+            f"Interpolate({_format_derivation_value(label_kwargs)})",
+            self.code("derived", assign="derived"),
+            True,
+        )
+
+
 class DivideByCoordOperation(ToolProvenanceOperation):
     op: typing.Literal["divide_by_coord"] = "divide_by_coord"
     coord_name: ProvenanceHashable
@@ -2284,52 +2349,7 @@ class AssignCoordsOperation(ToolProvenanceOperation):
     def derivation_entry(self) -> DerivationEntry:
         coord_name_code = repr(self.coord_name)
         values = self.decoded_values
-        values_code = erlab.interactive.utils._parse_single_arg(values)
-        if (
-            values.ndim == 1
-            and values.size != 0
-            and np.issubdtype(values.dtype, np.number)
-            and not np.issubdtype(values.dtype, np.complexfloating)
-        ):
-            numeric = values.astype(np.float64, copy=False)
-            if np.all(np.isfinite(numeric)):
-                if values.size == 1:
-                    value_code = erlab.interactive.utils._parse_single_arg(
-                        float(numeric[0])
-                    )
-                    values_code = f"np.linspace({value_code}, {value_code}, 1)"
-                else:
-                    diffs = np.diff(numeric)
-                    step = float(diffs[0])
-                    if np.allclose(diffs, step, rtol=1e-12, atol=1e-12):
-                        rounded = np.rint(numeric)
-                        if np.allclose(numeric, rounded, rtol=0.0, atol=1e-12):
-                            int_step = int(rounded[1] - rounded[0])
-                            if int_step != 0:
-                                start = int(rounded[0])
-                                stop = int(rounded[-1] + int_step)
-                                values_code = f"np.arange({start}, {stop}, {int_step})"
-                            else:
-                                start_code = erlab.interactive.utils._parse_single_arg(
-                                    float(numeric[0])
-                                )
-                                stop_code = erlab.interactive.utils._parse_single_arg(
-                                    float(numeric[-1])
-                                )
-                                values_code = (
-                                    f"np.linspace("
-                                    f"{start_code}, {stop_code}, {values.size})"
-                                )
-                        else:
-                            start_code = erlab.interactive.utils._parse_single_arg(
-                                float(numeric[0])
-                            )
-                            stop_code = erlab.interactive.utils._parse_single_arg(
-                                float(numeric[-1])
-                            )
-                            values_code = (
-                                f"np.linspace({start_code}, {stop_code}, {values.size})"
-                            )
+        values_code = erlab.interactive.utils.format_1d_numeric_array_code(values)
         code = (
             f"derived = derived.assign_coords({{{coord_name_code}: "
             f"derived[{coord_name_code}].copy(data={values_code})}})"

@@ -15,6 +15,10 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool._dialog_widgets import (
+    CoordinateEditorWidget,
+    CoordinateGridWidget,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable
@@ -739,6 +743,165 @@ class AverageDialog(DataTransformDialog):
             else erlab.interactive.utils._parse_single_arg(self._target_dims)
         )
         return f"{placeholder}.qsel.average({arg})"
+
+
+class InterpolationDialog(DataTransformDialog):
+    title = "Interpolate"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+
+        self.dim_combo = QtWidgets.QComboBox()
+        for dim in self._source_data.dims:
+            self.dim_combo.addItem(str(dim), userData=dim)
+        self.dim_combo.currentIndexChanged.connect(self._dimension_changed)
+        self.layout_.addRow("Dimension", self.dim_combo)
+
+        self.coord_widget = CoordinateGridWidget(
+            np.array([0.0, 1.0]),
+            editable_count=True,
+            preserve_shape=False,
+            require_complete=True,
+            numeric_reference=True,
+            disable_singleton_controls=False,
+            reset_table_to_reference=False,
+            update_table_on_mode_changed=True,
+        )
+        self.layout_.addRow("Target Coordinates", self.coord_widget)
+
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.addItems(["linear", "nearest"])
+        self.layout_.addRow("Method", self.method_combo)
+
+        self._dimension_changed()
+
+    @property
+    def _selected_dim(self) -> Hashable | None:
+        if self.dim_combo.currentIndex() < 0:
+            return None
+        return typing.cast(
+            "Hashable",
+            self.dim_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def suffix(self) -> str:
+        dim = self._selected_dim
+        suffix = "" if dim is None else str(dim)
+        suffix = re.sub(r"[^0-9A-Za-z_]+", "_", suffix).strip("_")
+        if not suffix:
+            suffix = "coord"
+        elif suffix[0].isdigit():
+            suffix = f"coord_{suffix}"
+        return f"_interp_{suffix}"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def _source_coord_values(self, dim: Hashable) -> npt.NDArray:
+        if dim not in self._source_data.coords:
+            return np.arange(self._source_data.sizes[dim], dtype=np.float64)
+        return np.asarray(self._source_data.coords[dim].values)
+
+    def _source_coord_error(self, dim: Hashable) -> str | None:
+        coord = self._source_coord_values(dim)
+        if coord.ndim != 1:
+            return "The selected dimension coordinate must be one-dimensional."
+        if not np.issubdtype(coord.dtype, np.number) or np.issubdtype(
+            coord.dtype, np.complexfloating
+        ):
+            return "The selected dimension coordinate must contain real numbers."
+        numeric = coord.astype(np.float64, copy=False)
+        if not np.all(np.isfinite(numeric)):
+            return "The selected dimension coordinate must be finite."
+        if np.unique(numeric).size != numeric.size:
+            return "The selected dimension coordinate values must be unique."
+        return None
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _dimension_changed(self, _index: int | None = None) -> None:
+        dim = self._selected_dim
+        if dim is None:
+            return
+        coord = self._source_coord_values(dim)
+        if (
+            coord.ndim != 1
+            or not np.issubdtype(coord.dtype, np.number)
+            or np.issubdtype(coord.dtype, np.complexfloating)
+        ):
+            coord = np.arange(self._source_data.sizes[dim], dtype=np.float64)
+        self.coord_widget.set_reference_coord(coord)
+
+    def _target_values(self) -> npt.NDArray:
+        values = np.asarray(self.coord_widget.new_coord, dtype=np.float64)
+        if values.ndim != 1:
+            raise ValueError("Target coordinates must be one-dimensional.")
+        if not np.all(np.isfinite(values)):
+            raise ValueError("Target coordinates must be finite.")
+        return values
+
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.InterpolationOperation:
+        dim = self._selected_dim
+        if dim is None:
+            raise ValueError("No dimension selected")
+        return erlab.interactive.imagetool.provenance.InterpolationOperation(
+            dim=dim,
+            values=self._target_values(),
+            method=typing.cast(
+                "typing.Literal['linear', 'nearest']",
+                self.method_combo.currentText(),
+            ),
+        )
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        dim = self._selected_dim
+        if dim is None:
+            QtWidgets.QMessageBox.warning(
+                self, "No Dimension Selected", "Choose a dimension to interpolate."
+            )
+            return
+
+        source_error = self._source_coord_error(dim)
+        if source_error is not None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Source Coordinate",
+                source_error,
+            )
+            return
+
+        try:
+            self._target_values()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Target Coordinates",
+                str(exc),
+            )
+            return
+
+        super().accept()
+
+    def make_code(self) -> str:
+        dim = self._selected_dim
+        if dim is None or self._source_coord_error(dim) is not None:
+            return ""
+        try:
+            operation = self.source_transform_operation()
+        except Exception:
+            return ""
+        placeholder = self.slicer_area.watched_data_name or ""
+        return operation.code(placeholder)
 
 
 class CoarsenDialog(DataTransformDialog):
@@ -2130,262 +2293,6 @@ class RenameDimsCoordsDialog(DataTransformDialog):
         return f"{placeholder}.rename({kwargs})"
 
 
-class _CoordinateWidget(QtWidgets.QWidget):
-    def __init__(self, values: npt.NDArray) -> None:
-        super().__init__()
-        self.init_ui()
-        self.set_old_coord(values)
-
-    def init_ui(self):
-        container_layout = QtWidgets.QVBoxLayout(self)
-        container_layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(container_layout)
-
-        self.edit_mode_tabs = QtWidgets.QTabWidget()
-        self.edit_mode_tabs.currentChanged.connect(self._edit_mode_changed)
-        container_layout.addWidget(self.edit_mode_tabs)
-
-        values_widget = QtWidgets.QWidget()
-        values_layout = QtWidgets.QFormLayout(values_widget)
-        values_widget.setLayout(values_layout)
-
-        self.spin0 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
-        self.spin0.valueChanged.connect(self.update_table)
-        values_layout.addRow("Start", self.spin0)
-
-        self.spin1 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
-        self.spin1.valueChanged.connect(self.update_table)
-
-        self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(["End", "Delta"])
-        self.mode_combo.setCurrentIndex(0)
-        self.mode_combo.currentTextChanged.connect(self.mode_changed)
-        values_layout.addRow(self.mode_combo, self.spin1)
-
-        self.reset_btn = QtWidgets.QPushButton("Reset")
-        self.reset_btn.clicked.connect(self.reset)
-        values_layout.addRow(self.reset_btn)
-
-        self.table = QtWidgets.QTableWidget()
-        self.table.setColumnCount(1)
-        self.table.horizontalHeader().setVisible(False)
-        self.table.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self.table.setSortingEnabled(False)
-        self.table.setAlternatingRowColors(True)
-        values_layout.addRow(self.table)
-
-        affine_widget = QtWidgets.QWidget()
-        affine_layout = QtWidgets.QFormLayout(affine_widget)
-        affine_widget.setLayout(affine_layout)
-
-        self.scale_spin = erlab.interactive.utils.BetterSpinBox(
-            compact=False, trim="0", value=1.0
-        )
-        self.scale_spin.valueChanged.connect(self.update_affine_preview)
-        affine_layout.addRow("Scale", self.scale_spin)
-
-        self.offset_spin = erlab.interactive.utils.BetterSpinBox(
-            compact=False, trim="0"
-        )
-        self.offset_spin.valueChanged.connect(self.update_affine_preview)
-        affine_layout.addRow("Offset", self.offset_spin)
-
-        self.affine_table = QtWidgets.QTableWidget()
-        self.affine_table.setColumnCount(2)
-        self.affine_table.setHorizontalHeaderLabels(["Current", "Transformed"])
-        self.affine_table.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self.affine_table.setEditTriggers(
-            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
-        )
-        self.affine_table.setSortingEnabled(False)
-        self.affine_table.setAlternatingRowColors(True)
-        affine_layout.addRow(self.affine_table)
-
-        self.edit_mode_tabs.addTab(values_widget, "Values")
-        self.edit_mode_tabs.addTab(affine_widget, "Scale/Offset")
-
-    @property
-    def use_affine_transform(self) -> bool:
-        """Whether the widget is currently editing by scale and offset."""
-        return self.edit_mode_tabs.currentIndex() == 1
-
-    @property
-    def affine_scale(self) -> float:
-        """Get the scale for affine coordinate editing."""
-        return float(self.scale_spin.value())
-
-    @property
-    def affine_offset(self) -> float:
-        """Get the offset for affine coordinate editing."""
-        return float(self.offset_spin.value())
-
-    @property
-    def affine_coord(self) -> npt.NDArray:
-        """Get the affine-transformed coordinates as a numpy array."""
-        return self.affine_scale * self._old_coord + self.affine_offset
-
-    def _affine_supported(self) -> bool:
-        values = np.asarray(self._old_coord)
-        return (
-            values.ndim <= 1
-            and np.issubdtype(values.dtype, np.number)
-            and not np.issubdtype(values.dtype, np.complexfloating)
-        )
-
-    @QtCore.Slot(int)
-    def _edit_mode_changed(self, _index: int) -> None:
-        if self.use_affine_transform:
-            self.update_affine_preview()
-
-    @QtCore.Slot()
-    def mode_changed(self) -> None:
-        """Handle the change of the mode combo box."""
-        if np.atleast_1d(self._old_coord).size < 2:
-            return
-        new_mode = self.mode_combo.currentText()
-        self.spin1.blockSignals(True)
-        match new_mode:
-            case "End":
-                self.spin1.setValue(self._current_values_delta[-1])
-            case "Delta":
-                arr = self._current_values_end
-                self.spin1.setValue(arr[1] - arr[0])
-        self.spin1.blockSignals(False)
-
-    @QtCore.Slot()
-    def reset(self) -> None:
-        """Reset the spin boxes to the original values."""
-        is_scalar: bool = np.atleast_1d(self._old_coord).size == 1
-        self.spin0.setDisabled(is_scalar)
-        self.spin1.setDisabled(is_scalar)
-        self.mode_combo.setDisabled(is_scalar)
-
-        if not is_scalar:
-            with QtCore.QSignalBlocker(self.spin0), QtCore.QSignalBlocker(self.spin1):
-                decimals = erlab.utils.array.unique_decimals(self._old_coord)
-                self.spin0.setDecimals(decimals)
-                self.spin1.setDecimals(decimals)
-
-                if erlab.utils.array.is_uniform_spaced(self._old_coord):
-                    self.spin0.setValue(float(self._old_coord[0]))
-                    if self.mode_combo.currentText() == "End":
-                        self.spin1.setValue(float(self._old_coord[-1]))
-                    else:
-                        self.spin1.setValue(self._old_coord[1] - self._old_coord[0])
-                else:
-                    self.spin0.setValue(0.0)
-                    self.spin1.setValue(0.0)
-
-        self._set_table_values(np.atleast_1d(self._old_coord))
-        affine_supported = self._affine_supported()
-        affine_index = 1
-        self.edit_mode_tabs.setTabEnabled(affine_index, affine_supported)
-        if not affine_supported and self.edit_mode_tabs.currentIndex() == affine_index:
-            self.edit_mode_tabs.setCurrentIndex(0)
-        with (
-            QtCore.QSignalBlocker(self.scale_spin),
-            QtCore.QSignalBlocker(self.offset_spin),
-        ):
-            self.scale_spin.setValue(1.0)
-            self.offset_spin.setValue(0.0)
-        self.update_affine_preview()
-
-    def set_old_coord(self, values: npt.NDArray) -> None:
-        """Set the old coordinates to the given values."""
-        self._old_coord = np.asarray(values).copy()
-        self.reset()
-
-    @property
-    def _current_values_end(self) -> npt.NDArray:
-        """Get the current values assuming spin1 value is the end."""
-        return np.linspace(
-            self.spin0.value(), self.spin1.value(), np.atleast_1d(self._old_coord).size
-        ).reshape(np.atleast_1d(self._old_coord).shape)
-
-    @property
-    def _current_values_delta(self) -> npt.NDArray:
-        """Get the current values assuming spin1 value is the step size."""
-        sz: int = np.atleast_1d(self._old_coord).size
-        return np.linspace(
-            self.spin0.value(),
-            self.spin0.value() + self.spin1.value() * (sz - 1),
-            sz,
-        ).reshape(np.atleast_1d(self._old_coord).shape)
-
-    @property
-    def new_coord(self) -> npt.NDArray:
-        """Get the edited coordinates as a numpy array."""
-        values = self._old_coord.copy()
-        flat_values = values.reshape(-1)
-        for i in range(self.table.rowCount()):
-            item = self.table.item(i, 0)
-            if item is not None and item.text():
-                try:
-                    flat_values[i] = float(item.text())
-                except Exception as e:
-                    raise ValueError(f"Invalid value in row {i}: {item.text()}") from e
-        return values
-
-    @QtCore.Slot()
-    def update_table(self) -> None:
-        """Update the table with the current values from the spin boxes."""
-        match self.mode_combo.currentText():
-            case "End":
-                vals = self._current_values_end
-            case _:
-                vals = self._current_values_delta
-        self._set_table_values(vals)
-
-    @QtCore.Slot()
-    def update_affine_preview(self) -> None:
-        """Update the preview table for affine coordinate editing."""
-        if not self._affine_supported():
-            self.affine_table.setRowCount(0)
-            return
-        self._set_affine_table_values(self.affine_coord)
-
-    def _set_table_values(self, values: npt.NDArray) -> None:
-        """Set the table contents to the given numpy array."""
-        flat_values = np.ravel(values)
-        self.table.setRowCount(len(flat_values))
-        # Make zero-based
-        self.table.setVerticalHeaderLabels([str(i) for i in range(len(flat_values))])
-        for i, val in enumerate(flat_values):
-            item = QtWidgets.QTableWidgetItem(np.format_float_positional(val, trim="0"))
-            item.setTextAlignment(
-                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
-            )
-            self.table.setItem(i, 0, item)
-        self.table.resizeColumnsToContents()
-        self.setMinimumWidth(
-            self.table.horizontalHeader().length() + self.table.verticalHeader().width()
-        )
-
-    def _set_affine_table_values(self, values: npt.NDArray) -> None:
-        """Set the affine preview table contents."""
-        old_values = np.ravel(np.atleast_1d(self._old_coord))
-        new_values = np.ravel(np.atleast_1d(values))
-        self.affine_table.setRowCount(len(old_values))
-        self.affine_table.setVerticalHeaderLabels(
-            [str(i) for i in range(len(old_values))]
-        )
-        for row, (old, new) in enumerate(zip(old_values, new_values, strict=True)):
-            for col, val in enumerate((old, new)):
-                item = QtWidgets.QTableWidgetItem(
-                    np.format_float_positional(val, trim="0")
-                )
-                item.setTextAlignment(
-                    QtCore.Qt.AlignmentFlag.AlignLeft
-                    | QtCore.Qt.AlignmentFlag.AlignVCenter
-                )
-                self.affine_table.setItem(row, col, item)
-        self.affine_table.resizeColumnsToContents()
-
-
 class AssignCoordsDialog(DataTransformDialog):
     title = "Coordinate Editor"
 
@@ -2408,7 +2315,7 @@ class AssignCoordsDialog(DataTransformDialog):
 
         self._coord_combo.currentTextChanged.connect(self._coord_selection_changed)
 
-        self.coord_widget = _CoordinateWidget(np.array([0, 1]))
+        self.coord_widget = CoordinateEditorWidget(np.array([0, 1]))
         self._coord_selection_changed()
         existing_layout.addWidget(self.coord_widget)
         self._mode_tabs.addTab(existing_widget, "Edit Existing")
@@ -2436,7 +2343,7 @@ class AssignCoordsDialog(DataTransformDialog):
         add_layout.addRow("Value Mode", self._add_value_mode_combo)
 
         self._add_value_stack = QtWidgets.QStackedWidget()
-        self._add_coord_widget = _CoordinateWidget(np.array([0.0, 1.0]))
+        self._add_coord_widget = CoordinateEditorWidget(np.array([0.0, 1.0]))
         self._add_value_stack.addWidget(self._add_coord_widget)
 
         literal_widget = QtWidgets.QWidget(self)

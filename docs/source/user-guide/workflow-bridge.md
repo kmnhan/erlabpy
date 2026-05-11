@@ -39,6 +39,9 @@ code for reproducibility and batch processing.
 - - Average over dimensions
   - {ref}`Averaging dialog <imagetool-editing>`
   - {meth}`xarray.DataArray.qsel.average`
+- - Interpolate along a dimension
+  - {ref}`Interpolation dialog <imagetool-editing>`
+  - {meth}`xarray.DataArray.interp`
 - - Coarsen data
   - {ref}`Coarsen dialog <imagetool-editing>`
   - {meth}`xarray.DataArray.coarsen` followed by a reducer such as `.mean()` or

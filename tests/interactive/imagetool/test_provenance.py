@@ -410,6 +410,40 @@ def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
     xr.testing.assert_identical(namespace["derived"], expected)
 
 
+def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(6).reshape((3, 2)).astype(float),
+        dims=("k-space", "y"),
+        coords={"k-space": [0.0, 1.0, 2.0], "y": [10.0, 20.0]},
+        name="data",
+    )
+    values = np.linspace(0.0, 2.0, 5)
+    operation = prov.InterpolationOperation(
+        dim="k-space", values=values, method="linear"
+    )
+    expected = data.interp({"k-space": values}, method="linear")
+
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+    xr.testing.assert_identical(parsed.apply(data, parent_data=data), expected)
+
+    entry = operation.derivation_entry()
+    assert entry.copyable is True
+    assert entry.code is not None
+    assert "Interpolate" in entry.label
+    assert '.interp({"k-space": np.linspace' in entry.code
+    namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+    code = prov.full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    assert any(call.endswith(".interp") for call in _generated_call_names(code))
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
 @pytest.mark.parametrize(
     ("values", "expected_call"),
     [

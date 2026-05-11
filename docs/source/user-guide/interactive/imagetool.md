@@ -9,7 +9,7 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 - Responsive slicing of multidimensional (up to 4D) {class}`DataArray <xarray.DataArray>` objects, including Dask-backed data.
 - Unlimited number of cursors with independent binning and code export for each line cut.
 - Rich colormap controls with power law scaling, symmetric scaling about a center, and live color range adjustment.
-- Built-in menus for rotation, symmetrization, averaging, cropping, coordinate reassignment, Fermi edge correction, and other common operations.
+- Built-in menus for rotation, symmetrization, averaging, interpolation, cropping, coordinate reassignment, Fermi edge correction, and other common operations.
 - Tight integration with tools such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, and other tools listed in {ref}`interactive-misc-tools`, all accessible from ImageTool’s menus and context menus.
 - Seamless integration with {ref}`ImageTool manager <imagetool-manager>` when you need
   to organize top-level ImageTool rows, tools opened from those ImageTools, ImageTool
@@ -235,6 +235,7 @@ for reproducibility.
 
 - {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the angle and center from the guideline.
 - {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
+- {guilabel}`Edit → Interpolate...` opens the {guilabel}`Interpolate` dialog. Choose one dimension, enter the target coordinate values, and interpolate with {meth}`xarray.DataArray.interp` using `linear` or `nearest`.
 - {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`, `sum`, or `median`.
 - {guilabel}`Edit → Thin` opens the {guilabel}`Thin Data` dialog which uses {meth}`xarray.DataArray.thin`.
 - {guilabel}`Edit → Symmetrize → Mirror...` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
