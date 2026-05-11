@@ -1003,9 +1003,11 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
         manager: ImageToolManager,
         tree: xarray.DataTree,
         mode: typing.Literal["save", "load"],
+        root_keys: Iterable[str] | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
+        self._root_keys = None if root_keys is None else tuple(root_keys)
 
         self._saving: bool = mode == "save"
 
@@ -1177,7 +1179,11 @@ class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
         if root is not None and manager is not None:  # pragma: no branch
             start = int(manager.next_idx)
             n_items = 0
-            for key, node in tree.items():
+            keys = tree if self._root_keys is None else self._root_keys
+            for key in keys:
+                if key not in tree:
+                    continue
+                node = tree[key]
                 if not isinstance(node, xr.DataTree):
                     continue
                 name = str(key) if self._saving else str(start + n_items)

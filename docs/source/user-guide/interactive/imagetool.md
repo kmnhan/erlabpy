@@ -8,7 +8,7 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 
 - Responsive slicing of multidimensional (up to 4D) {class}`DataArray <xarray.DataArray>` objects, including Dask-backed data.
 - Unlimited number of cursors with independent binning and code export for each line cut.
-- Rich colormap controls with power law scaling, midpoint-aware scaling, and live color range adjustment.
+- Rich colormap controls with power law scaling, symmetric scaling about a center, and live color range adjustment.
 - Built-in menus for rotation, symmetrization, averaging, cropping, coordinate reassignment, Fermi edge correction, and other common operations.
 - Tight integration with tools such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, and other tools listed in {ref}`interactive-misc-tools`, all accessible from ImageTool’s menus and context menus.
 - Seamless integration with {ref}`ImageTool manager <imagetool-manager>` when you need
@@ -278,23 +278,6 @@ Two additional context-menu actions appear upon right-clicking on a ROI:
   You can choose whether to invert the mask and whether to trim the resulting data.
 
 Note that both procedures work on the entire data volume, not just the visible slice.
-
-(imagetool-python-equivalent)=
-
-## Python equivalent
-
-ImageTool is the GUI counterpart to the core selection and transform APIs: `.sel(...)`,
-`.isel(...)`, {meth}`xarray.DataArray.qsel.average`,
-{func}`erlab.analysis.transform.rotate`,
-{func}`erlab.analysis.transform.symmetrize`,
-{meth}`xarray.DataArray.assign_coords`,
-{meth}`xarray.DataArray.assign_attrs`,
-{meth}`xarray.DataArray.rename`,
-{func}`erlab.analysis.interpolate.slice_along_path`, and
-{func}`erlab.analysis.mask.mask_with_polygon`.
-
-Use the tool to discover parameters quickly, then keep the exact public API call in
-Python. See {ref}`workflow-bridge-operations` for the maintained crosswalk.
 
 (imagetool-export)=
 

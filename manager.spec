@@ -31,7 +31,7 @@ manager_dir = (
 
 datas = []
 binaries = []
-hiddenimports = ["PyQt6", "dask", "distributed"]
+hiddenimports = ["PyQt6", "dask", "distributed", "hdf5plugin"]
 
 
 def find_libomp_dylib():

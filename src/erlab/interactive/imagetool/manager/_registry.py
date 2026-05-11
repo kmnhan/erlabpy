@@ -47,20 +47,6 @@ class ImageToolManagerRegistryError(RuntimeError):
 
 
 @dataclasses.dataclass(frozen=True)
-class ManagerInfo:
-    """Public information about a live ImageTool manager."""
-
-    index: int
-    pid: int
-    host: str
-    port: int
-    watch_port: int
-    started: str
-    version: str
-    is_default: bool = False
-
-
-@dataclasses.dataclass(frozen=True)
 class _ManagerRecord:
     internal_id: str
     index: int
@@ -72,6 +58,7 @@ class _ManagerRecord:
     version: str
     heartbeat: float
     state: typing.Literal["starting", "ready"] = _READY_STATE
+    workspace_path: str | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, typing.Any]) -> _ManagerRecord | None:
@@ -90,21 +77,27 @@ class _ManagerRecord:
                 version=str(value["version"]),
                 heartbeat=float(value["heartbeat"]),
                 state=typing.cast("typing.Literal['starting', 'ready']", state),
+                workspace_path=(
+                    None
+                    if value.get("workspace_path") is None
+                    else str(value["workspace_path"])
+                ),
             )
         except (KeyError, TypeError, ValueError):
             return None
 
-    def to_public_info(self, *, is_default: bool = False) -> ManagerInfo:
-        return ManagerInfo(
-            index=self.index,
-            pid=self.pid,
-            host=self.host,
-            port=self.port,
-            watch_port=self.watch_port,
-            started=self.started,
-            version=self.version,
-            is_default=is_default,
-        )
+    def to_public_dict(self, *, is_default: bool = False) -> dict[str, object]:
+        return {
+            "index": self.index,
+            "pid": self.pid,
+            "host": self.host,
+            "port": self.port,
+            "watch_port": self.watch_port,
+            "started": self.started,
+            "version": self.version,
+            "workspace_path": self.workspace_path,
+            "is_default": is_default,
+        }
 
 
 def _default_registry_path() -> pathlib.Path:
@@ -313,7 +306,14 @@ def activate_manager_record(
         return activated
 
 
-def refresh_manager_record(internal_id: str) -> None:
+_WORKSPACE_PATH_UNCHANGED = object()
+
+
+def refresh_manager_record(
+    internal_id: str,
+    *,
+    workspace_path: str | None | object = _WORKSPACE_PATH_UNCHANGED,
+) -> None:
     """Refresh a manager heartbeat."""
     with _registry_lock():
         records = _active_records_unlocked()
@@ -321,7 +321,10 @@ def refresh_manager_record(internal_id: str) -> None:
         changed = False
         for record in records:
             if record.internal_id == internal_id:
-                refreshed.append(dataclasses.replace(record, heartbeat=time.time()))
+                kwargs: dict[str, typing.Any] = {"heartbeat": time.time()}
+                if workspace_path is not _WORKSPACE_PATH_UNCHANGED:
+                    kwargs["workspace_path"] = typing.cast("str | None", workspace_path)
+                refreshed.append(dataclasses.replace(record, **kwargs))
                 changed = True
             else:
                 refreshed.append(record)
@@ -466,9 +469,7 @@ def manager_selection_info() -> dict[str, object]:
 
     return {
         "managers": [
-            dataclasses.asdict(
-                record.to_public_info(is_default=record.index == default_index)
-            )
+            record.to_public_dict(is_default=record.index == default_index)
             for record in records
         ],
         "default_index": default_index,

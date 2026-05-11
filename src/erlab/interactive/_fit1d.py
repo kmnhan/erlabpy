@@ -23,7 +23,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab.interactive.utils
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Mapping
+    from collections.abc import Callable, Hashable, Iterable, Mapping
 
     import lmfit
     import varname
@@ -917,9 +917,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         ]
 
     @staticmethod
-    def _summary_section(
-        title: str, rows: collections.abc.Iterable[tuple[str, str]]
-    ) -> str:
+    def _summary_section(title: str, rows: Iterable[tuple[str, str]]) -> str:
         from erlab.utils.formatting import format_html_accent, format_html_table
 
         normalized_rows = list(rows)
@@ -2600,7 +2598,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
     def _legend_has_name(self, name: str) -> bool:
         return any(item[1].text == name for item in self.legend.items)
 
-    def _remove_component_legend(self, names: typing.Iterable[str]) -> None:
+    def _remove_component_legend(self, names: Iterable[str]) -> None:
         for name in names:
             if self._legend_has_name(name):
                 self.legend.removeItem(name)

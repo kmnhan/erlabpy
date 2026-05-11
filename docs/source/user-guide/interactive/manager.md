@@ -32,29 +32,35 @@ changed, and it can show code that repeats the selected steps in a notebook or s
 ## Why use the manager?
 
 - Launch and watch many ImageTool windows simultaneously without interrupting your notebook or script.
-- Keep top-level ImageTool rows, tools opened from them, and ImageTool windows made
-  from those tools in a single tree.
+- Keep nested ImageTool windows organized in a tree that shows their relationships and provenance.
 - Update tools and ImageTool windows when the ImageTool or tool that created them changes.
 - Link multiple ImageTools, duplicate them, or update their data in place in case of real-time data acquisition.
-- Save and reopen complete workspaces, including tools and ImageTool windows opened from other rows, colormaps, cursor positions, window geometry, and ROIs.
-- Archive rarely used windows to disk so they can be restored later without consuming RAM.
-- Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, copy code that repeats GUI steps, and perform quick analyses through a built-in IPython console.
+- Save multiple windows and full hierarchies to a file, share them with collaborators, and reload them later to pick up right where you left off.
+- Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, copy code that repeats GUI steps, and perform quick analyses in the GUI through a built-in IPython console.
 - Drag-and-drop files to open them quickly, or use the integrated data explorer to browse preview data.
+
+(imagetool-manager-archive-workspace)=
+
+## Saving and loading
+
+Windows in an ImageTool Manager instance can be saved to a workspace file (`.itws`),
+similar to how Igor Pro experiment files work. Pressing {kbd}`Ctrl+S` in any child
+window saves the entire manager workspace, including all windows and their state.
+
+{guilabel}`File → Import From Workspace…` lets you choose windows from another workspace
+to import into the current manager.
+
+Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…`
+or by dragging the `.itws` file back into the manager to recreate your windows
+exactly as they were. Share the file with collaborators and they will see the
+identical layout.
 
 (imagetool-manager-nested-results)=
 
-## Results kept with the window that made them
+## Nested windows
 
-The manager tree is not just a flat list of ImageTool windows. It can show the
-relationship between top-level ImageTool rows, the tools opened from those ImageTools,
-and the ImageTool windows those tools create.
-
-Earlier versions always placed ImageTool windows at the top level. For example, if you
-opened an ImageTool window from another ImageTool, the new window appeared beside the
-one that made it. That made it hard to tell which window came from which data.
-
-Now, when you are working in the manager, a new ImageTool window can appear as a child
-row under the tool or ImageTool that created it. A typical session looks like this:
+When you are working in the manager, a new ImageTool window can appear as a child row
+under the tool or ImageTool that created it. A typical session looks like this:
 
 1. Open data in the manager, or watch a notebook variable, so it appears as an ImageTool row.
 2. Launch {guilabel}`dtool`, {guilabel}`ktool`, or another tool from that ImageTool.
@@ -62,30 +68,24 @@ row under the tool or ImageTool that created it. A typical session looks like th
 4. The new ImageTool window appears under the tool or ImageTool that made it instead of as an unrelated
    top-level window.
 
-That new ImageTool row remembers the selection or operation that made it. When the
-ImageTool or tool that created it changes, the manager can mark it as out of date,
-update it, and show the steps and code in the side panel.
+That new ImageTool row remembers all of the information required to reproduce itself
+from the raw data. When its parent node updates, the manager can automatically mark it
+as out of date, update it, and show the steps and code in the side panel.
 
 (imagetool-manager-result-placement)=
 
 ## Choosing where new data opens
 
-ImageTool transform dialogs use {guilabel}`Result Placement` to decide what happens to
-the transformed data:
+Many ImageTool transform dialogs accessible from menu actions use {guilabel}`Result
+Placement` to decide what happens to the transformed data:
 
 - {guilabel}`Open Child Window` creates a new ImageTool row as a child of the current ImageTool.
-  This is the default for ImageTool windows that are already in the manager.
-- {guilabel}`Open Top-Level Window` creates a separate top-level ImageTool. Choose this
-  when you want the older detached-window behavior.
+- {guilabel}`Open Top-Level Window` creates a separate top-level ImageTool.
 - {guilabel}`Replace Current` overwrites the active ImageTool with the transformed data.
-
-Outside the manager, transform dialogs still open normal standalone ImageTool windows.
-Inside the manager, prefer {guilabel}`Open Child Window` when the result should stay as
-part of the window that made it and be saved with the rest of the manager tree.
 
 (imagetool-manager-refresh)=
 
-## Updating rows when the window that made them changes
+## Automatic updates
 
 When data changes in an ImageTool or tool, the tools and ImageTool windows it created
 may no longer match it. The manager shows this with badges:
@@ -97,15 +97,11 @@ may no longer match it. The manager shows this with badges:
   changed too much.
 - {guilabel}`Auto` means the row is up to date and automatic updates are enabled.
 
-Click the badge in the tree, or the update banner inside the tool window, to review the
+Click the badge in the tree or the update banner inside the tool window to review the
 update. The {guilabel}`Automatic Updates` dialog lets you apply a one-time update with
 {guilabel}`Update Now`, or turn automatic updates on or off and save that preference with
 {guilabel}`Save`. Saving only changes the automatic-update preference; it does not
-refresh a stale row.
-
-When automatic updates are enabled and the row is up to date, the tree keeps showing the
-{guilabel}`Auto` badge so you can turn automatic updates off again. You can also
-right-click a child row and choose {guilabel}`Automatic Updates...`.
+refresh the current window immediately.
 
 :::{note}
 Planned improvement: when a stale child ImageTool was opened from a tool with
@@ -122,7 +118,7 @@ updated.
 
 (imagetool-manager-replay-code)=
 
-## Details and code for repeating steps
+## Operation history
 
 Selecting a row fills the side panel with details about that item. For an ImageTool
 window created from another row, the panel can show:
@@ -138,18 +134,6 @@ variables](working-with-notebooks), copied code contains the watched variable na
 File-backed workflows also include a snippet that loads the data in the copied code.
 Otherwise, you will be prompted to enter the name of the variable to use as the source
 when you copy code.
-
-(imagetool-manager-round-trip)=
-
-## Round-trip
-
-The manager is the live bridge between the GUI and notebook state. Enter from
-`data.qshow(manager=True)`, `eri.itool(..., manager=True)`, or
-{func}`erlab.interactive.imagetool.manager.show_in_manager`; synchronize with `%watch` or
-{func}`erlab.interactive.imagetool.manager.watch`; and pull a safe copy back into Python
-with {func}`fetch <erlab.interactive.imagetool.manager.fetch>`.
-
-See {ref}`workflow-bridge-operations` for the maintained crosswalk.
 
 (imagetool-manager-start)=
 
@@ -169,7 +153,7 @@ See {ref}`workflow-bridge-operations` for the maintained crosswalk.
 
 (imagetool-manager-multiple-instances)=
 
-## Multiple Manager Instances
+## Multiple manager instances
 
 Multiple ImageTool Manager windows can run at the same time. The first live manager is
 manager `#0`, and later managers receive 0-based indexes in the order they start.
@@ -186,11 +170,6 @@ choosing an index.
 
 When more than one manager is running, either pass the index like `manager=2` or set a
 default for the current Python process or notebook kernel:
-
-```{versionadded} 3.22.0
-`erlab.interactive.imagetool.manager.managers` shows the live managers as a table and
-returns manager handles when indexed.
-```
 
 ```python
 import erlab.interactive.imagetool.manager as itm
@@ -256,6 +235,10 @@ Once the manager is running, you can open ImageTools in several ways:
 
 - Watch notebook variables with the `%watch` magic to create windows that stay synchronized with your data structures. Use `%watch -m 1 darr` to watch into manager `#1`. See {ref}`working-with-notebooks`.
 
+  :::{tip}
+  This is the recommended way when you are working in notebooks, because it keeps your workflow connected to your code and automatically synchronizes changes in both directions.
+  :::
+
 - For custom integration with other workflows, scripts can call {func}`erlab.interactive.imagetool.manager.show_in_manager` or {func}`~erlab.interactive.imagetool.manager.load_in_manager` directly (see {ref}`imagetool-manager-automation`).
 
 When you open multiple DataArrays at once, the manager adds each window to the list without automatically showing them. To bring a window to the front, double-click its entry or select it and press {guilabel}`Show`.
@@ -296,26 +279,6 @@ chunked Dask arrays show the dask icon, watched variables display their notebook
 and rows opened from another row can show the {guilabel}`Stale`,
 {guilabel}`Unavailable`, or {guilabel}`Auto` badges described in
 {ref}`imagetool-manager-refresh`.
-
-(imagetool-manager-archive-workspace)=
-
-## Workspaces
-
-Choose {guilabel}`File → Save Workspace As…` to save multiple open windows to a single `.itws` file. Workspaces store not only the data, but also the ImageTool settings such as cursor locations, colormaps, window geometry, and ROIs.
-
-When supported, workspaces also store tools opened from ImageTool rows, ImageTool
-windows opened from tools or other ImageTools, fit results, the information needed to
-update rows after data changes, and the steps shown in the side panel. This lets a
-reopened workspace keep the same tree instead of moving those windows to unrelated
-top-level entries.
-
-Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…` or by dragging the `.itws` file back into the manager to recreate your windows exactly as they were. Share the file with collaborators and they will see the identical layout.
-
-:::{note}
-Older workspace files still load. Workspaces saved with tools and ImageTool windows
-opened from other rows need this release or later to preserve the full tree and update
-status.
-:::
 
 ## Data Explorer and Console
 

@@ -1462,6 +1462,15 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
 
+        def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
+            return
+
+        def _mark_node_state_dirty(self, _uid: str) -> None:
+            return
+
+        def _mark_node_data_dirty(self, _uid: str) -> None:
+            return
+
     manager = _FakeManager()
     qtbot.addWidget(manager)
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
@@ -1639,6 +1648,15 @@ def test_managed_tool_window_node_detached_update_branches(
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
 
+        def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
+            return
+
+        def _mark_node_state_dirty(self, _uid: str) -> None:
+            return
+
+        def _mark_node_data_dirty(self, _uid: str) -> None:
+            return
+
     parent_tool = _OutputTool(parent_data)
     qtbot.addWidget(parent_tool)
     manager = _FakeManager(parent_tool)
@@ -1800,6 +1818,12 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def name_of_imagetool(self, index: int) -> str:
             return f"name {index}"
+
+        def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
+            return
+
+        def _mark_node_state_dirty(self, _uid: str) -> None:
+            return
 
     manager = _FakeManager()
     qtbot.addWidget(manager)
