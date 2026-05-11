@@ -2106,7 +2106,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 item.setData(_METADATA_DERIVATION_COPYABLE_ROLE, entry.copyable)
                 if not entry.copyable:
                     item.setForeground(
-                        self.palette().color(QtGui.QPalette.ColorRole.Mid)
+                        self.metadata_derivation_list.palette().color(
+                            QtGui.QPalette.ColorGroup.Disabled,
+                            QtGui.QPalette.ColorRole.Text,
+                        )
                     )
                     if entry.code is None and not entry.label.startswith("Start from "):
                         item.setToolTip("Replay code is unavailable for this step.")
@@ -2125,14 +2128,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         for row, field in enumerate(fields):
             key_label = QtWidgets.QLabel(field.label, self.metadata_details_widget)
-            key_label.setStyleSheet("color: palette(mid);")
+            key_label.setForegroundRole(QtGui.QPalette.ColorRole.Text)
+            key_label.setEnabled(False)
             value_label: QtWidgets.QLabel
             if field.details is not None:
                 value_label = _ElidedInteractiveLabel(
                     field.value,
                     self.metadata_details_widget,
                 )
-                value_label.setStyleSheet("color: palette(link);")
+                value_label.setForegroundRole(QtGui.QPalette.ColorRole.Link)
                 value_label.set_full_text(field.value)
                 value_label.clicked.connect(
                     lambda d=field.details: self._show_load_source_details(d)
