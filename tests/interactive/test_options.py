@@ -99,14 +99,22 @@ def test_options_get_set():
     # Check initial values
     assert options["colors/cmap/name"] == AppOptions().colors.cmap.name
     assert options["io/workspace/compress"] is True
+    assert options["io/workspace/use_incremental"] is True
+    assert options["io/workspace/incremental_save_on_remote"] is False
 
     # Set a new value
     options["colors/cmap/name"] = "viridis"
     options["io/workspace/compress"] = False
+    options["io/workspace/use_incremental"] = False
+    options["io/workspace/incremental_save_on_remote"] = True
 
     # Check if the value was set correctly
     assert options["colors/cmap/name"] == "viridis"
     assert options["io/workspace/compress"] is False
+    assert options["io/workspace/use_incremental"] is False
+    assert options["io/workspace/incremental_save_on_remote"] is True
     assert not options.model.io.workspace.compress
+    assert not options.model.io.workspace.use_incremental
+    assert options.model.io.workspace.incremental_save_on_remote
 
     options.restore()  # Reset settings after test

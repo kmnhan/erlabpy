@@ -180,6 +180,23 @@ class WorkspaceOptions(BaseModel):
             "workspace files."
         ),
     )
+    use_incremental: bool = Field(
+        default=True,
+        title="Use incremental saves",
+        description=(
+            "Use fast incremental saves for ImageTool Manager workspace files "
+            "for small changes."
+        ),
+    )
+    incremental_save_on_remote: bool = Field(
+        default=False,
+        title="Incremental save on remote",
+        description=(
+            "Allow incremental workspace saves on network drives and common "
+            "cloud-sync paths. When disabled, ImageTool Manager uses full saves "
+            "for these paths."
+        ),
+    )
 
 
 class IOOptions(BaseModel):

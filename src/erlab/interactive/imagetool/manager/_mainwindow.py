@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import errno
 import gc
 import json
 import logging
@@ -13,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import traceback
 import typing
 import uuid
@@ -29,6 +27,7 @@ import erlab
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _server as _manager_server
+from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
@@ -384,112 +383,20 @@ class _ApplicationQuitFilter(QtCore.QObject):
         return False
 
 
-class _WorkspaceSaveWorkerSignals(QtCore.QObject):
-    finished = QtCore.Signal(bool, float, str)
-
-
-class _WorkspaceSaveResultReceiver(QtCore.QObject):
-    def __init__(
-        self,
-        loop: QtCore.QEventLoop,
-        result: dict[str, typing.Any],
-        parent: QtCore.QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._loop = loop
-        self._result = result
-
-    @QtCore.Slot(bool, float, str)
-    def finish(self, ok: bool, elapsed: float, error_text: str) -> None:
-        self._result["ok"] = ok
-        self._result["elapsed"] = elapsed
-        self._result["error"] = error_text
-        self._loop.quit()
-
-
-class _WorkspaceSaveWorker(QtCore.QRunnable):
-    def __init__(
-        self,
-        fname: str | os.PathLike[str],
-        snapshot: _WorkspaceSaveSnapshot,
-    ) -> None:
-        super().__init__()
-        self.signals = _WorkspaceSaveWorkerSignals()
-        self._fname = fname
-        self._snapshot = snapshot
-
-    def run(self) -> None:
-        start_time = time.perf_counter()
-        error_text = ""
-        ok = False
-        try:
-            if self._snapshot.full_tree is None:
-                _write_workspace_delta_file(
-                    self._fname,
-                    self._snapshot.rewrite_groups,
-                    self._snapshot.attr_updates,
-                    self._snapshot.root_attrs,
-                )
-            else:
-                _write_full_workspace_tree_file(
-                    self._fname,
-                    self._snapshot.full_tree,
-                    self._snapshot.root_attrs,
-                )
-            ok = True
-        except Exception:
-            error_text = traceback.format_exc()
-        finally:
-            with contextlib.suppress(Exception):
-                self._snapshot.close()
-        self.signals.finished.emit(ok, time.perf_counter() - start_time, error_text)
-
-
-@dataclass(frozen=True)
-class _WorkspaceDirtyEvent:
-    generation: int
-    uid: str | None = None
-    data: bool = False
-    state: bool = False
-    added: bool = False
-    removed: str | None = None
-    structure: str | None = None
-
-
 @dataclass
-class _WorkspaceRewriteGroup:
-    group_path: str
-    constructor: dict[str, xr.Dataset]
+class _WorkspaceDocumentAccess:
+    path: pathlib.Path
+    _lock: QtCore.QLockFile | None = None
 
-    def close(self) -> None:
-        pass
+    def take_lock(self) -> QtCore.QLockFile | None:
+        lock = self._lock
+        self._lock = None
+        return lock
 
-
-@dataclass
-class _WorkspaceAttrUpdate:
-    payload_path: str
-    attrs: dict[str, typing.Any]
-    fallback: _WorkspaceRewriteGroup
-
-    def close(self) -> None:
-        pass
-
-
-@dataclass
-class _WorkspaceSaveSnapshot:
-    generation: int
-    root_attrs: dict[str, typing.Any]
-    full_tree: xr.DataTree | None = None
-    rewrite_groups: tuple[_WorkspaceRewriteGroup, ...] = ()
-    attr_updates: tuple[_WorkspaceAttrUpdate, ...] = ()
-
-    def close(self) -> None:
-        if self.full_tree is not None:
-            self.full_tree.close()
-        for rewrite_group in self.rewrite_groups:
-            rewrite_group.close()
-        for attr_update in self.attr_updates:
-            attr_update.close()
+    def release(self) -> None:
+        if self._lock is not None:
+            self._lock.unlock()
+            self._lock = None
 
 
 _SHM_NAME: str = "__enforce_single_itoolmanager"
@@ -527,268 +434,72 @@ _WATCHED_VAR_COLORS: tuple[QtGui.QColor, ...] = (
 )
 """Colors for watched variables from different kernels."""
 
-_WORKSPACE_SCHEMA_VERSION = 4
-_WORKSPACE_LEGACY_SCHEMA_VERSION = 3
 _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME = "managerWorkspaceSaveShortcut"
-_WORKSPACE_MANIFEST_ATTR = "imagetool_workspace_manifest"
-_WORKSPACE_PENDING_GROUP_PREFIX = "__itws_pending_"
-_WORKSPACE_BACKUP_GROUP_PREFIX = "__itws_backup_"
-_WORKSPACE_INTERNAL_GROUP_PREFIXES = (
-    _WORKSPACE_PENDING_GROUP_PREFIX,
-    _WORKSPACE_BACKUP_GROUP_PREFIX,
-)
 _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS = 0.5
-_WORKSPACE_LOCK_ERROR_MARKERS = (
-    "unable to lock file",
-    "resource temporarily unavailable",
-    "file is already open",
-)
 
 
-@contextlib.contextmanager
-def _open_workspace_h5_file_for_update(
+def _workspace_lock_owner_text(
+    lock_info: _manager_workspace._WorkspaceDocumentLockInfo,
+) -> str:
+    parts: list[str] = []
+    if lock_info.owner:
+        parts.append(lock_info.owner)
+    if lock_info.hostname:
+        parts.append(f"on {lock_info.hostname}")
+    if lock_info.appname and lock_info.pid is not None:
+        parts.append(f"using {lock_info.appname} (process {lock_info.pid})")
+    elif lock_info.appname:
+        parts.append(f"using {lock_info.appname}")
+    elif lock_info.pid is not None:
+        parts.append(f"using process {lock_info.pid}")
+    return " ".join(parts)
+
+
+def _workspace_lock_details_text(
     fname: str | os.PathLike[str],
-) -> Iterator[typing.Any]:
-    import h5py
-
-    with _manager_xarray._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
-        yield h5_file
-
-
-def _iter_exception_chain(exc: BaseException) -> Iterator[BaseException]:
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        yield current
-        current = current.__cause__ or current.__context__
-
-
-def _is_workspace_file_lock_error(exc: BaseException) -> bool:
-    lock_errnos = {errno.EACCES, errno.EAGAIN}
-    if hasattr(errno, "EWOULDBLOCK"):
-        lock_errnos.add(errno.EWOULDBLOCK)
-
-    for err in _iter_exception_chain(exc):
-        if isinstance(err, BlockingIOError):
-            return True
-        message = str(err).lower()
-        if not any(marker in message for marker in _WORKSPACE_LOCK_ERROR_MARKERS):
-            continue
-        err_no = getattr(err, "errno", None)
-        if err_no in lock_errnos or "unable to lock file" in message:
-            return True
-        if "file is already open" in message:
-            return True
-    return False
+    lock_info: _manager_workspace._WorkspaceDocumentLockInfo,
+) -> str:
+    details = [
+        f"Workspace: {pathlib.Path(fname)}",
+        f"Temporary workspace ownership marker: {lock_info.path}",
+    ]
+    if lock_info.owner:
+        details.append(f"User: {lock_info.owner}")
+    if lock_info.hostname:
+        details.append(f"Computer: {lock_info.hostname}")
+    if lock_info.appname:
+        details.append(f"Application: {lock_info.appname}")
+    if lock_info.pid is not None:
+        details.append(f"Process ID: {lock_info.pid}")
+    exc = sys.exception()
+    if exc is not None:
+        details.extend(("", str(exc)))
+    return "\n".join(details)
 
 
 def _show_workspace_file_lock_error(
     parent: QtWidgets.QWidget,
     fname: str | os.PathLike[str],
 ) -> None:
-    exc = sys.exception()
-    details = "" if exc is None else str(exc)
+    lock_info = _manager_workspace._workspace_document_lock_info(fname)
+    owner_text = _workspace_lock_owner_text(lock_info)
+    if owner_text:
+        informative_text = (
+            f"{pathlib.Path(fname).name} is being used by {owner_text}. "
+            "Close it there, then try again."
+        )
+    else:
+        informative_text = (
+            f"Close the other ImageTool Manager that has "
+            f"{pathlib.Path(fname).name} open, then try again."
+        )
     erlab.interactive.utils.MessageDialog.critical(
         parent,
         "Workspace Already Open",
-        "This workspace file is already open or locked.",
-        (
-            f"Close the other manager instance or program using "
-            f"{pathlib.Path(fname).name}, then try again."
-        ),
-        detailed_text=details,
+        "This workspace is already open somewhere else.",
+        informative_text,
+        detailed_text=_workspace_lock_details_text(fname, lock_info),
     )
-
-
-def _write_root_attrs_to_open_workspace_file(
-    h5_file,
-    attrs: Mapping[str, typing.Any],
-) -> None:
-    _cleanup_stale_workspace_groups(h5_file)
-    for key, value in attrs.items():
-        h5_file.attrs[key] = value
-
-
-def _write_workspace_root_attrs_to_file(
-    fname: str | os.PathLike[str],
-    attrs: Mapping[str, typing.Any],
-) -> None:
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        _write_root_attrs_to_open_workspace_file(h5_file, attrs)
-
-
-def _cleanup_stale_workspace_groups(h5_file) -> None:
-    for name in list(h5_file):
-        if name.startswith(_WORKSPACE_INTERNAL_GROUP_PREFIXES):
-            del h5_file[name]
-
-
-def _write_workspace_constructor_groups_to_pending(
-    fname: str | os.PathLike[str],
-    constructor: Mapping[str, xr.Dataset],
-    group_path: str,
-    pending_path: str,
-) -> None:
-    target_group_path = group_path.strip("/")
-    for constructor_group_path, ds in sorted(
-        constructor.items(), key=lambda item: item[0].count("/")
-    ):
-        source_group_path = constructor_group_path.strip("/")
-        if source_group_path != target_group_path and not source_group_path.startswith(
-            f"{target_group_path}/"
-        ):
-            continue
-        relative_path = source_group_path.removeprefix(target_group_path).strip("/")
-        pending_group_path = (
-            pending_path if not relative_path else f"{pending_path}/{relative_path}"
-        )
-        with _manager_xarray._workspace_file_lock(fname):
-            ds.to_netcdf(
-                fname,
-                mode="a",
-                engine="h5netcdf",
-                group=f"/{pending_group_path}",
-                invalid_netcdf=True,
-                encoding=_manager_xarray.workspace_dataset_encoding(ds),
-            )
-
-
-def _write_workspace_node_attrs_to_file(
-    fname: str | os.PathLike[str],
-    payload_path: str,
-    attrs: Mapping[str, typing.Any],
-) -> bool:
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        group_path = payload_path.strip("/")
-        if group_path not in h5_file:
-            return False
-        group = h5_file[group_path]
-        for key in list(group.attrs):
-            del group.attrs[key]
-        for key, value in attrs.items():
-            group.attrs[key] = value
-    return True
-
-
-def _write_workspace_attrs_to_file(
-    fname: str | os.PathLike[str],
-    attr_updates: Iterable[_WorkspaceAttrUpdate],
-    root_attrs: Mapping[str, typing.Any],
-) -> list[_WorkspaceAttrUpdate]:
-    missing: list[_WorkspaceAttrUpdate] = []
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        for attr_update in attr_updates:
-            group_path = attr_update.payload_path.strip("/")
-            if group_path not in h5_file:
-                missing.append(attr_update)
-                continue
-            group = h5_file[group_path]
-            for key in list(group.attrs):
-                del group.attrs[key]
-            for key, value in attr_update.attrs.items():
-                group.attrs[key] = value
-        _write_root_attrs_to_open_workspace_file(h5_file, root_attrs)
-    return missing
-
-
-def _replace_workspace_group_from_constructor(
-    fname: str | os.PathLike[str],
-    constructor: Mapping[str, xr.Dataset],
-    group_path: str,
-) -> None:
-    group_path = group_path.strip("/")
-    pending_path = f"{_WORKSPACE_PENDING_GROUP_PREFIX}{uuid.uuid4().hex}"
-    backup_path = f"{_WORKSPACE_BACKUP_GROUP_PREFIX}{uuid.uuid4().hex}"
-
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        _cleanup_stale_workspace_groups(h5_file)
-
-    try:
-        _write_workspace_constructor_groups_to_pending(
-            fname, constructor, group_path, pending_path
-        )
-    except Exception:
-        with _open_workspace_h5_file_for_update(fname) as h5_file:
-            if pending_path in h5_file:
-                del h5_file[pending_path]
-        raise
-
-    with _open_workspace_h5_file_for_update(fname) as h5_file:
-        if pending_path not in h5_file:
-            raise KeyError(f"Workspace group {group_path!r} was not written")
-        parts = [part for part in group_path.split("/") if part]
-        if not parts:
-            raise ValueError("Workspace group path cannot be empty")
-        parent = h5_file
-        for part in parts[:-1]:
-            parent = parent.require_group(part)
-        leaf = parts[-1]
-        old_exists = leaf in parent
-        if old_exists:
-            h5_file.move(group_path, backup_path)
-
-        try:
-            h5_file.move(pending_path, group_path)
-        except Exception:
-            with contextlib.suppress(Exception):
-                if group_path in h5_file:
-                    del h5_file[group_path]
-            if old_exists and backup_path in h5_file:
-                h5_file.move(backup_path, group_path)
-            raise
-        finally:
-            with contextlib.suppress(Exception):
-                if pending_path in h5_file:
-                    del h5_file[pending_path]
-            with contextlib.suppress(Exception):
-                if backup_path in h5_file:
-                    del h5_file[backup_path]
-
-
-def _rewrite_workspace_group_from_constructor(
-    fname: str | os.PathLike[str],
-    rewrite_group: _WorkspaceRewriteGroup,
-) -> None:
-    _replace_workspace_group_from_constructor(
-        fname, rewrite_group.constructor, rewrite_group.group_path
-    )
-
-
-def _write_workspace_delta_file(
-    fname: str | os.PathLike[str],
-    rewrite_groups: Iterable[_WorkspaceRewriteGroup],
-    attr_updates: Iterable[_WorkspaceAttrUpdate],
-    root_attrs: Mapping[str, typing.Any],
-) -> None:
-    for rewrite_group in rewrite_groups:
-        _rewrite_workspace_group_from_constructor(fname, rewrite_group)
-    missing_attr_updates = _write_workspace_attrs_to_file(
-        fname, attr_updates, root_attrs
-    )
-    for attr_update in missing_attr_updates:
-        _rewrite_workspace_group_from_constructor(fname, attr_update.fallback)
-
-
-def _write_full_workspace_tree_file(
-    fname: str | os.PathLike[str],
-    tree: xr.DataTree,
-    root_attrs: Mapping[str, typing.Any],
-) -> None:
-    fname = str(fname)
-    tmp_fname = f"{fname}.tmp-{uuid.uuid4().hex}"
-    try:
-        tree.to_netcdf(
-            tmp_fname,
-            engine="h5netcdf",
-            invalid_netcdf=True,
-            encoding=_manager_xarray.workspace_datatree_encoding(tree),
-        )
-        _write_workspace_root_attrs_to_file(tmp_fname, root_attrs)
-        os.replace(tmp_fname, fname)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(tmp_fname)
 
 
 def _strip_workspace_modified_placeholder(title: object) -> str:
@@ -942,8 +653,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._workspace_structure_reasons: list[str] = []
         self._workspace_needs_full_save: bool = False
         self._workspace_dirty_generation: int = 0
-        self._workspace_dirty_events: list[_WorkspaceDirtyEvent] = []
+        self._workspace_dirty_events: list[_manager_workspace._WorkspaceDirtyEvent] = []
         self._workspace_save_in_progress: bool = False
+        self._workspace_delta_save_count: int = 0
+        self._workspace_schema_version: int = (
+            _manager_workspace._current_workspace_schema_version()
+        )
+        self._workspace_lock: QtCore.QLockFile | None = None
         self._application_quit_requested: bool = False
         self._update_workspace_window_title()
 
@@ -1036,6 +752,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "Save this workspace to a new file and use that file for future saves"
         )
         self.save_as_action.triggered.connect(self.save_as)
+
+        self.compact_workspace_action = QtWidgets.QAction("Compact Workspace", self)
+        self.compact_workspace_action.setToolTip(
+            "Rewrite this workspace file to remove unused space"
+        )
+        self.compact_workspace_action.triggered.connect(self.compact_workspace)
 
         self.load_action = QtWidgets.QAction("&Open Workspace...", self)
         self.load_action.setToolTip("Replace this workspace with a workspace file")
@@ -1158,6 +880,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
+        file_menu.addAction(self.compact_workspace_action)
         file_menu.addAction(self.import_workspace_action)
         file_menu.addSeparator()
         file_menu.addAction(self.store_action)
@@ -1413,12 +1136,62 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.setWindowModified(self.is_workspace_modified)
 
-    def _set_workspace_path(self, fname: str | os.PathLike[str] | None) -> None:
-        self._workspace_path = None if fname is None else pathlib.Path(fname).resolve()
+    def _release_workspace_lock(self) -> None:
+        if self._workspace_lock is None:
+            return
+        self._workspace_lock.unlock()
+        self._workspace_lock = None
+
+    def _workspace_document_access(
+        self, fname: str | os.PathLike[str]
+    ) -> _WorkspaceDocumentAccess:
+        workspace_path = pathlib.Path(fname).resolve()
+        workspace_lock = None
+        if workspace_path != self._workspace_path:
+            workspace_lock = _manager_workspace._acquire_workspace_document_lock(
+                workspace_path
+            )
+        return _WorkspaceDocumentAccess(workspace_path, workspace_lock)
+
+    @contextlib.contextmanager
+    def _workspace_document_access_context(
+        self, fname: str | os.PathLike[str]
+    ) -> typing.Iterator[_WorkspaceDocumentAccess]:
+        access = self._workspace_document_access(fname)
+        try:
+            yield access
+        finally:
+            access.release()
+
+    def _set_workspace_path(
+        self,
+        fname: str | os.PathLike[str] | None,
+        *,
+        workspace_lock: QtCore.QLockFile | None = None,
+    ) -> None:
+        workspace_path = None if fname is None else pathlib.Path(fname).resolve()
+        if workspace_path == self._workspace_path:
+            if workspace_lock is not None:
+                workspace_lock.unlock()
+            self._update_workspace_window_title()
+            self._refresh_manager_record()
+            return
+
+        if workspace_path is not None and workspace_lock is None:
+            raise RuntimeError(
+                "Changing the workspace path requires a pre-acquired document lock"
+            )
+        self._release_workspace_lock()
+        self._workspace_lock = workspace_lock
+        self._workspace_path = workspace_path
         if self._workspace_path is not None:
             self._recent_directory = str(self._workspace_path.parent)
         self._update_workspace_window_title()
         self._refresh_manager_record()
+
+    def _adopt_workspace_path(self, fname: str | os.PathLike[str]) -> None:
+        with self._workspace_document_access_context(fname) as access:
+            self._set_workspace_path(access.path, workspace_lock=access.take_lock())
 
     @property
     def _suppress_workspace_visibility_dirty(self) -> bool:
@@ -1519,7 +1292,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             window.setWindowTitle(title)
         window.setWindowModified(modified)
 
-    def _apply_workspace_dirty_event(self, event: _WorkspaceDirtyEvent) -> bool:
+    def _apply_workspace_dirty_event(
+        self, event: _manager_workspace._WorkspaceDirtyEvent
+    ) -> bool:
         dirty_changed = False
         if event.uid is not None:
             if event.added:
@@ -1553,7 +1328,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> None:
         if self._workspace_loading_depth > 0 or self._workspace_saving_depth > 0:
             return
-        event = _WorkspaceDirtyEvent(
+        event = _manager_workspace._WorkspaceDirtyEvent(
             generation=self._workspace_dirty_generation + 1,
             uid=uid,
             data=data,
@@ -1592,7 +1367,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._update_workspace_window_title()
 
     def _restore_workspace_dirty_events(
-        self, events: Iterable[_WorkspaceDirtyEvent]
+        self, events: Iterable[_manager_workspace._WorkspaceDirtyEvent]
     ) -> None:
         retained_events = list(events)
         self._mark_workspace_clean()
@@ -1627,6 +1402,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "structure_reasons": tuple(self._workspace_structure_reasons),
             "dirty_generation": self._workspace_dirty_generation,
             "dirty_events": tuple(self._workspace_dirty_events),
+            "delta_save_count": self._workspace_delta_save_count,
+            "schema_version": self._workspace_schema_version,
         }
 
     def _restore_workspace_state_snapshot(
@@ -1643,6 +1420,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._workspace_structure_reasons = list(snapshot["structure_reasons"])
         self._workspace_dirty_generation = snapshot["dirty_generation"]
         self._workspace_dirty_events = list(snapshot["dirty_events"])
+        self._workspace_delta_save_count = snapshot["delta_save_count"]
+        self._workspace_schema_version = snapshot["schema_version"]
         if self._workspace_path is not None:
             self._recent_directory = str(self._workspace_path.parent)
         dirty_uids = (
@@ -3397,9 +3176,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if close:
                 self.remove_imagetool(index)
         tree = xr.DataTree.from_dict(constructor)
-        tree.attrs["imagetool_workspace_schema_version"] = (
-            _WORKSPACE_LEGACY_SCHEMA_VERSION
-        )
+        _manager_workspace._set_legacy_workspace_schema(tree.attrs)
         return tree
 
     def _load_workspace_node(
@@ -3547,27 +3324,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
         return target
 
-    def _workspace_root_keys(
-        self, tree: xr.DataTree, manifest: dict[str, typing.Any] | None
-    ) -> list[str]:
-        root_keys: list[str] = []
-        if manifest is not None:
-            raw_root_order = manifest.get("root_order", ())
-            if isinstance(raw_root_order, list):
-                root_keys.extend(
-                    str(item)
-                    for item in raw_root_order
-                    if str(item) not in root_keys
-                    and not str(item).startswith(_WORKSPACE_INTERNAL_GROUP_PREFIXES)
-                )
-        root_keys.extend(
-            str(key)
-            for key in tree
-            if str(key) not in root_keys
-            and not str(key).startswith(_WORKSPACE_INTERNAL_GROUP_PREFIXES)
-        )
-        return root_keys
-
     def _load_workspace_roots(
         self,
         tree: xr.DataTree,
@@ -3614,9 +3370,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if not self._is_datatree_workspace(tree):
                 raise ValueError("Not a valid workspace file")
 
-            schema_version = int(
-                tree.attrs.get("imagetool_workspace_schema_version", 1)
+            metadata = _manager_workspace._workspace_file_metadata_from_attrs(
+                tree.attrs
             )
+            schema_version = metadata.schema_version
             match schema_version:
                 case 1:
                     tree = self._parse_datatree_compat_v1(tree)
@@ -3631,18 +3388,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         f"Unsupported workspace schema version {schema_version}, "
                         "file may be from a newer version of erlab"
                     )
-            manifest: dict[str, typing.Any] | None = None
-            if schema_version >= _WORKSPACE_SCHEMA_VERSION:
-                raw_manifest = tree.attrs.get(_WORKSPACE_MANIFEST_ATTR)
-                if isinstance(raw_manifest, bytes):
-                    raw_manifest = raw_manifest.decode()
-                if isinstance(raw_manifest, str):
-                    with contextlib.suppress(json.JSONDecodeError):
-                        manifest_payload = json.loads(raw_manifest)
-                        if isinstance(manifest_payload, dict):
-                            manifest = manifest_payload
+            manifest = metadata.manifest
 
-            root_keys = self._workspace_root_keys(tree, manifest)
+            root_keys = _manager_workspace._workspace_root_keys(tree, manifest)
 
             dialog: _ChooseFromDataTreeDialog | None = None
             if select:
@@ -3795,73 +3543,26 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return child
         return None
 
-    def _workspace_root_attrs_payload(self) -> dict[str, typing.Any]:
-        return {
-            "imagetool_workspace_schema_version": _WORKSPACE_SCHEMA_VERSION,
-            _WORKSPACE_MANIFEST_ATTR: json.dumps(
-                {
-                    "schema_version": _WORKSPACE_SCHEMA_VERSION,
-                    "erlab_version": str(erlab.__version__),
-                    "root_order": list(self._workspace_root_indices()),
-                    "nodes": self._workspace_node_manifest_entries(),
-                }
-            ),
-            "erlab_version": str(erlab.__version__),
-        }
-
-    def _write_workspace_root_attrs(self, fname: str | os.PathLike[str]) -> None:
-        _write_workspace_root_attrs_to_file(fname, self._workspace_root_attrs_payload())
+    def _workspace_root_attrs_payload(
+        self, *, delta_save_count: int | None = None
+    ) -> dict[str, typing.Any]:
+        if delta_save_count is None:
+            delta_save_count = self._workspace_delta_save_count
+        return _manager_workspace._workspace_root_attrs_payload(
+            root_order=self._workspace_root_indices(),
+            nodes=self._workspace_node_manifest_entries(),
+            delta_save_count=delta_save_count,
+            erlab_version=str(erlab.__version__),
+        )
 
     def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
         tree: xr.DataTree = self._to_datatree()
         try:
-            _write_full_workspace_tree_file(
-                fname, tree, self._workspace_root_attrs_payload()
+            _manager_workspace._write_full_workspace_tree_file(
+                fname, tree, self._workspace_root_attrs_payload(delta_save_count=0)
             )
         finally:
             tree.close()
-
-    @staticmethod
-    def _cleanup_stale_workspace_groups(h5_file) -> None:
-        _cleanup_stale_workspace_groups(h5_file)
-
-    def _replace_workspace_group_from_constructor(
-        self,
-        fname: str | os.PathLike[str],
-        constructor: dict[str, xr.Dataset],
-        group_path: str,
-    ) -> None:
-        _replace_workspace_group_from_constructor(fname, constructor, group_path)
-
-    def _rewrite_workspace_node_subtree(
-        self, fname: str | os.PathLike[str], uid: str
-    ) -> None:
-        fname = str(fname)
-        constructor: dict[str, xr.Dataset] = {}
-        node = self._all_nodes[uid]
-        node_path = self._workspace_node_path(uid)
-        self._serialize_workspace_node(
-            constructor, node, node_path, include_children=True
-        )
-        self._replace_workspace_group_from_constructor(fname, constructor, node_path)
-
-    def _update_workspace_node_attrs(
-        self, fname: str | os.PathLike[str], uid: str
-    ) -> bool:
-        constructor: dict[str, xr.Dataset] = {}
-        node = self._all_nodes[uid]
-        self._serialize_workspace_node(
-            constructor,
-            node,
-            self._workspace_node_path(uid),
-            include_children=False,
-        )
-        payload_path = self._workspace_payload_path(uid)
-        ds = constructor.get(payload_path)
-        if ds is None:
-            return False
-
-        return _write_workspace_node_attrs_to_file(fname, payload_path, ds.attrs)
 
     def _workspace_highest_dirty_data_roots(self) -> list[str]:
         dirty_existing = [
@@ -3885,40 +3586,52 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return roots
 
     def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
-        rewrite_roots = self._workspace_highest_dirty_data_roots()
-        rewritten_uids: set[str] = set()
-        for uid in rewrite_roots:
-            self._rewrite_workspace_node_subtree(fname, uid)
-            rewritten_uids.add(uid)
-            rewritten_uids.update(self._iter_descendant_uids(uid))
-
-        for uid in sorted(self._workspace_dirty_state - rewritten_uids):
-            if uid not in self._all_nodes:
-                continue
-            if not self._update_workspace_node_attrs(fname, uid):
-                self._rewrite_workspace_node_subtree(fname, uid)
-
-        self._write_workspace_root_attrs(fname)
+        delta_save_count = self._workspace_delta_save_count + 1
+        snapshot = self._workspace_delta_save_snapshot(
+            self._workspace_dirty_generation,
+            self._workspace_root_attrs_payload(delta_save_count=delta_save_count),
+            delta_save_count,
+        )
+        try:
+            _manager_workspace._write_workspace_transaction_file(
+                fname,
+                snapshot.rewrite_groups,
+                snapshot.attr_updates,
+                snapshot.root_attrs,
+            )
+        finally:
+            snapshot.close()
 
     def _save_workspace_document(
         self,
         fname: str | os.PathLike[str],
         *,
         force_full: bool = False,
+        document_access: _WorkspaceDocumentAccess | None = None,
     ) -> None:
+        if document_access is None:
+            with self._workspace_document_access_context(fname) as access:
+                self._save_workspace_document(
+                    access.path,
+                    force_full=force_full,
+                    document_access=access,
+                )
+            return
+
+        fname = document_access.path
         self._workspace_saving_depth += 1
         try:
-            if (
-                force_full
-                or self._workspace_needs_full_save
-                or not pathlib.Path(fname).exists()
-                or self._workspace_structure_modified
-                or bool(self._workspace_dirty_added)
-                or bool(self._workspace_dirty_removed)
-            ):
+            _manager_workspace._recover_workspace_transactions(fname)
+            requires_full_save = force_full or self._workspace_requires_full_save(fname)
+            if requires_full_save:
                 self._write_full_workspace_file(fname)
+                self._workspace_delta_save_count = 0
+                self._workspace_schema_version = (
+                    _manager_workspace._current_workspace_schema_version()
+                )
             else:
                 self._save_workspace_delta(fname)
+                self._workspace_delta_save_count += 1
         finally:
             self._workspace_saving_depth -= 1
         self._workspace_needs_full_save = False
@@ -3991,7 +3704,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         fname: str | os.PathLike[str],
         *,
         native: bool = True,
-    ) -> str | None:
+        existing_access: _WorkspaceDocumentAccess | None = None,
+    ) -> tuple[str, QtCore.QLockFile | None] | None:
         self._show_legacy_workspace_upgrade_message(fname)
         converted_fname = self._workspace_save_dialog(
             native=native,
@@ -4000,9 +3714,24 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         if converted_fname is None:
             return None
-        with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
-            self._save_workspace_document(converted_fname, force_full=True)
-        return converted_fname
+        converted_path = pathlib.Path(converted_fname).resolve()
+        if existing_access is not None and converted_path == existing_access.path:
+            with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
+                self._save_workspace_document(
+                    existing_access.path,
+                    force_full=True,
+                    document_access=existing_access,
+                )
+            return str(existing_access.path), existing_access.take_lock()
+
+        with self._workspace_document_access_context(converted_fname) as access:
+            with erlab.interactive.utils.wait_dialog(self, "Saving workspace..."):
+                self._save_workspace_document(
+                    access.path,
+                    force_full=True,
+                    document_access=access,
+                )
+            return str(access.path), access.take_lock()
 
     def _associate_loaded_workspace_file(
         self,
@@ -4010,42 +3739,37 @@ class ImageToolManager(QtWidgets.QMainWindow):
         schema_version: int,
         *,
         native: bool = True,
+        delta_save_count: int = 0,
+        workspace_access: _WorkspaceDocumentAccess | None = None,
     ) -> None:
         associated_fname = fname
-        if schema_version < _WORKSPACE_LEGACY_SCHEMA_VERSION:
-            converted_fname = self._save_legacy_workspace_as_v4(fname, native=native)
-            if converted_fname is None:
+        associated_lock: QtCore.QLockFile | None = None
+        if _manager_workspace._workspace_schema_requires_conversion(schema_version):
+            converted = self._save_legacy_workspace_as_v4(
+                fname, native=native, existing_access=workspace_access
+            )
+            if converted is None:
                 self._set_workspace_path(None)
                 self._workspace_needs_full_save = True
                 self._mark_workspace_structure_dirty(
                     "Legacy workspace needs conversion"
                 )
                 return
-            associated_fname = converted_fname
+            associated_fname, associated_lock = converted
+            delta_save_count = 0
+            schema_version = _manager_workspace._current_workspace_schema_version()
+        elif workspace_access is not None:
+            associated_lock = workspace_access.take_lock()
 
-        self._set_workspace_path(associated_fname)
+        self._set_workspace_path(associated_fname, workspace_lock=associated_lock)
+        self._workspace_delta_save_count = delta_save_count
+        self._workspace_schema_version = schema_version
         self._workspace_needs_full_save = (
-            schema_version < _WORKSPACE_SCHEMA_VERSION
-            and schema_version >= _WORKSPACE_LEGACY_SCHEMA_VERSION
+            _manager_workspace._workspace_schema_requires_full_save(schema_version)
         )
         self._rebind_workspace_backed_imagetools(associated_fname)
         self._drain_workspace_deferred_events()
         self._mark_workspace_clean()
-
-    @staticmethod
-    def _imagetool_data_needs_workspace_rebind(data: xr.DataArray) -> bool:
-        if data.chunks is not None:
-            return True
-        if (
-            _manager_xarray._normalized_file_path(data.encoding.get("source"))
-            is not None
-        ):
-            return True
-        return any(
-            _manager_xarray._normalized_file_path(variable.encoding.get("source"))
-            is not None
-            for variable in data.coords.variables.values()
-        )
 
     def _workspace_rebind_data_for_uid(
         self,
@@ -4078,7 +3802,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 _ManagedWindowNode,
                 typing.Any,
                 str,
-                str | None,
+                bool,
             ]
         ] = []
         nodes = (
@@ -4091,51 +3815,53 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if tool is None:
                 continue
             slicer_area = tool.slicer_area
-            current_data = slicer_area._data
-            if not self._imagetool_data_needs_workspace_rebind(current_data):
-                continue
             pending.append(
                 (
                     node,
                     copy.deepcopy(slicer_area.state),
                     node.name,
-                    "auto" if current_data.chunks is not None else None,
+                    slicer_area._data.chunks is None,
                 )
             )
         if not pending:
             return
         with self._workspace_load_context():
-            for node, state, name, chunks in pending:
+            for node, state, name, auto_compute in pending:
                 tool = node.imagetool
                 if tool is None:
                     continue
                 slicer_area = tool.slicer_area
                 data = self._workspace_rebind_data_for_uid(
-                    fname, node.uid, chunks=chunks
+                    fname, node.uid, chunks="auto"
                 )
-                slicer_area.set_data(data, auto_compute=False)
+                slicer_area.set_data(data, auto_compute=auto_compute)
                 slicer_area.state = state
                 node.name = name
 
     def _workspace_requires_full_save(self, fname: str | os.PathLike[str]) -> bool:
-        return (
-            self._workspace_needs_full_save
-            or not pathlib.Path(fname).exists()
-            or self._workspace_structure_modified
-            or bool(self._workspace_dirty_added)
-            or bool(self._workspace_dirty_removed)
+        return _manager_workspace._workspace_requires_full_save(
+            fname,
+            needs_full_save=self._workspace_needs_full_save,
+            schema_version=self._workspace_schema_version,
+            structure_modified=self._workspace_structure_modified,
+            has_dirty_added=bool(self._workspace_dirty_added),
+            has_dirty_removed=bool(self._workspace_dirty_removed),
         )
 
-    def _workspace_rewrite_group_snapshot(self, uid: str) -> _WorkspaceRewriteGroup:
+    def _workspace_rewrite_group_snapshot(
+        self, uid: str
+    ) -> _manager_workspace._WorkspaceRewriteGroup:
         constructor: dict[str, xr.Dataset] = {}
         node = self._all_nodes[uid]
         node_path = self._workspace_node_path(uid)
         self._serialize_workspace_node(
             constructor, node, node_path, include_children=True
         )
-        return _WorkspaceRewriteGroup(node_path, constructor)
+        return _manager_workspace._WorkspaceRewriteGroup(node_path, constructor)
 
-    def _workspace_attr_update_snapshot(self, uid: str) -> _WorkspaceAttrUpdate | None:
+    def _workspace_attr_update_snapshot(
+        self, uid: str
+    ) -> _manager_workspace._WorkspaceAttrUpdate | None:
         constructor: dict[str, xr.Dataset] = {}
         node = self._all_nodes[uid]
         node_path = self._workspace_node_path(uid)
@@ -4146,23 +3872,26 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ds = constructor.get(payload_path)
         if ds is None:
             return None
-        return _WorkspaceAttrUpdate(
+        return _manager_workspace._WorkspaceAttrUpdate(
             payload_path=payload_path,
             attrs=dict(ds.attrs),
-            fallback=_WorkspaceRewriteGroup(node_path, constructor),
+            fallback=_manager_workspace._WorkspaceRewriteGroup(node_path, constructor),
         )
 
     def _workspace_delta_save_snapshot(
-        self, generation: int, root_attrs: dict[str, typing.Any]
-    ) -> _WorkspaceSaveSnapshot:
-        rewrite_groups: list[_WorkspaceRewriteGroup] = []
+        self,
+        generation: int,
+        root_attrs: dict[str, typing.Any],
+        delta_save_count: int,
+    ) -> _manager_workspace._WorkspaceSaveSnapshot:
+        rewrite_groups: list[_manager_workspace._WorkspaceRewriteGroup] = []
         rewritten_uids: set[str] = set()
         for uid in self._workspace_highest_dirty_data_roots():
             rewrite_groups.append(self._workspace_rewrite_group_snapshot(uid))
             rewritten_uids.add(uid)
             rewritten_uids.update(self._iter_descendant_uids(uid))
 
-        attr_updates: list[_WorkspaceAttrUpdate] = []
+        attr_updates: list[_manager_workspace._WorkspaceAttrUpdate] = []
         for uid in sorted(self._workspace_dirty_state - rewritten_uids):
             if uid not in self._all_nodes:
                 continue
@@ -4170,28 +3899,36 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if update is not None:
                 attr_updates.append(update)
 
-        return _WorkspaceSaveSnapshot(
+        return _manager_workspace._WorkspaceSaveSnapshot(
             generation=generation,
             root_attrs=root_attrs,
+            delta_save_count=delta_save_count,
             rewrite_groups=tuple(rewrite_groups),
             attr_updates=tuple(attr_updates),
         )
 
     def _workspace_save_snapshot(
         self, fname: str | os.PathLike[str]
-    ) -> _WorkspaceSaveSnapshot:
+    ) -> _manager_workspace._WorkspaceSaveSnapshot:
         self._drain_workspace_deferred_events()
         generation = self._workspace_dirty_generation
         self._workspace_saving_depth += 1
         try:
-            root_attrs = self._workspace_root_attrs_payload()
             if self._workspace_requires_full_save(fname):
-                return _WorkspaceSaveSnapshot(
+                root_attrs = self._workspace_root_attrs_payload(delta_save_count=0)
+                return _manager_workspace._WorkspaceSaveSnapshot(
                     generation=generation,
                     root_attrs=root_attrs,
+                    delta_save_count=0,
                     full_tree=self._to_datatree(),
                 )
-            return self._workspace_delta_save_snapshot(generation, root_attrs)
+            delta_save_count = self._workspace_delta_save_count + 1
+            root_attrs = self._workspace_root_attrs_payload(
+                delta_save_count=delta_save_count
+            )
+            return self._workspace_delta_save_snapshot(
+                generation, root_attrs, delta_save_count
+            )
         finally:
             self._workspace_saving_depth -= 1
 
@@ -4209,28 +3946,36 @@ class ImageToolManager(QtWidgets.QMainWindow):
         dialog.show()
         return dialog
 
-    def _set_workspace_save_actions_enabled(self, enabled: bool) -> tuple[bool, bool]:
-        previous = (self.save_action.isEnabled(), self.save_as_action.isEnabled())
+    def _set_workspace_save_actions_enabled(
+        self, enabled: bool
+    ) -> tuple[bool, bool, bool]:
+        previous = (
+            self.save_action.isEnabled(),
+            self.save_as_action.isEnabled(),
+            self.compact_workspace_action.isEnabled(),
+        )
         self.save_action.setEnabled(enabled and previous[0])
         self.save_as_action.setEnabled(enabled and previous[1])
+        self.compact_workspace_action.setEnabled(enabled and previous[2])
         return previous
 
     def _restore_workspace_save_actions_enabled(
-        self, previous: tuple[bool, bool]
+        self, previous: tuple[bool, bool, bool]
     ) -> None:
         self.save_action.setEnabled(previous[0])
         self.save_as_action.setEnabled(previous[1])
+        self.compact_workspace_action.setEnabled(previous[2])
 
     def _run_workspace_save_worker(
         self,
         fname: str | os.PathLike[str],
-        snapshot: _WorkspaceSaveSnapshot,
+        snapshot: _manager_workspace._WorkspaceSaveSnapshot,
         origin: QtWidgets.QWidget | None,
     ) -> tuple[bool, float, str]:
         loop = QtCore.QEventLoop(self)
         result: dict[str, typing.Any] = {"ok": False, "elapsed": 0.0, "error": ""}
-        receiver = _WorkspaceSaveResultReceiver(loop, result, self)
-        worker = _WorkspaceSaveWorker(fname, snapshot)
+        receiver = _manager_workspace._WorkspaceSaveResultReceiver(loop, result, self)
+        worker = _manager_workspace._WorkspaceSaveWorker(fname, snapshot)
         wait_dialog: QtWidgets.QDialog | None = None
         wait_timer = QtCore.QTimer(self)
         wait_timer.setSingleShot(True)
@@ -4309,6 +4054,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return False
 
         self._workspace_needs_full_save = False
+        self._workspace_delta_save_count = snapshot.delta_save_count
+        if snapshot.full_tree is not None:
+            self._workspace_schema_version = (
+                _manager_workspace._current_workspace_schema_version()
+            )
+            self._rebind_workspace_backed_imagetools(self._workspace_path)
         self._drain_workspace_deferred_events()
         post_save_events = tuple(
             event
@@ -4338,12 +4089,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return False
         try:
             dialog_parent = origin or self
-            with erlab.interactive.utils.wait_dialog(
-                dialog_parent, "Saving workspace..."
-            ):
-                self._save_workspace_document(fname, force_full=True)
-                self._rebind_workspace_backed_imagetools(fname)
-            self._set_workspace_path(fname)
+            with self._workspace_document_access_context(fname) as access:
+                with erlab.interactive.utils.wait_dialog(
+                    dialog_parent, "Saving workspace..."
+                ):
+                    self._save_workspace_document(
+                        access.path,
+                        force_full=True,
+                        document_access=access,
+                    )
+                    self._rebind_workspace_backed_imagetools(access.path)
+                self._set_workspace_path(access.path, workspace_lock=access.take_lock())
             self._workspace_needs_full_save = False
             self._drain_workspace_deferred_events()
             self._mark_workspace_clean()
@@ -4353,6 +4109,54 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 "An error occurred while saving the workspace file.",
             )
             return False
+        self._restore_focus_after_workspace_save(origin)
+        return True
+
+    def _compact_workspace_before_shutdown(self) -> None:
+        if (
+            self._workspace_path is None
+            or self._workspace_delta_save_count <= 0
+            or self.is_workspace_modified
+            or self._workspace_save_in_progress
+            or self._workspace_loading_depth > 0
+        ):
+            return
+        try:
+            logger.debug("Compacting workspace before shutdown...")
+            self._save_workspace_document(self._workspace_path, force_full=True)
+            self._workspace_delta_save_count = 0
+        except Exception:
+            logger.exception(
+                "Failed to compact workspace before shutdown",
+                extra={"suppress_ui_alert": True},
+            )
+
+    @QtCore.Slot()
+    def compact_workspace(self) -> bool:
+        """Rewrite the current workspace file to remove unused space."""
+        if self._workspace_path is None:
+            return self.save_as()
+        if self._workspace_save_in_progress:
+            self._status_bar.showMessage("Workspace save already in progress", 3000)
+            return False
+
+        origin = self._active_managed_window()
+        try:
+            with erlab.interactive.utils.wait_dialog(
+                origin or self, "Compacting workspace..."
+            ):
+                self._save_workspace_document(self._workspace_path, force_full=True)
+                self._rebind_workspace_backed_imagetools(self._workspace_path)
+            self._workspace_delta_save_count = 0
+            self._status_bar.showMessage("Workspace compacted", 5000)
+        except Exception:
+            self._show_operation_error(
+                "Error while compacting workspace",
+                "An error occurred while compacting the workspace file.",
+            )
+            self._restore_focus_after_workspace_save(origin)
+            return False
+
         self._restore_focus_after_workspace_save(origin)
         return True
 
@@ -4415,17 +4219,27 @@ class ImageToolManager(QtWidgets.QMainWindow):
         select: bool,
         native: bool = True,
     ) -> bool:
-        tree = _manager_xarray.open_workspace_datatree(fname, chunks="auto")
-        schema_version = int(tree.attrs.get("imagetool_workspace_schema_version", 1))
-        loaded = self._from_datatree(
-            tree,
-            replace=replace,
-            mark_dirty=mark_dirty,
-            select=select,
-        )
-        if loaded and associate:
-            self._associate_loaded_workspace_file(fname, schema_version, native=native)
-        return loaded
+        with self._workspace_document_access_context(fname) as access:
+            _manager_workspace._recover_workspace_transactions(access.path)
+            tree = _manager_xarray.open_workspace_datatree(access.path, chunks="auto")
+            metadata = _manager_workspace._workspace_file_metadata_from_attrs(
+                tree.attrs
+            )
+            loaded = self._from_datatree(
+                tree,
+                replace=replace,
+                mark_dirty=mark_dirty,
+                select=select,
+            )
+            if loaded and associate:
+                self._associate_loaded_workspace_file(
+                    access.path,
+                    metadata.schema_version,
+                    native=native,
+                    delta_save_count=metadata.delta_save_count,
+                    workspace_access=access,
+                )
+            return loaded
 
     @QtCore.Slot()
     def load(self, *, native: bool = True) -> bool:
@@ -4460,7 +4274,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 native=native,
             )
         except Exception as exc:
-            if _is_workspace_file_lock_error(exc):
+            if _manager_workspace._is_workspace_file_lock_error(exc):
                 logger.info(
                     "Workspace file is already open or locked: %s",
                     fname,
@@ -4506,7 +4320,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 select=True,
             )
         except Exception as exc:
-            if _is_workspace_file_lock_error(exc):
+            if _manager_workspace._is_workspace_file_lock_error(exc):
                 logger.info(
                     "Workspace file is already open or locked: %s",
                     fname,
@@ -4945,13 +4759,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         n_files: int = len(queued)
         loaded: list[pathlib.Path] = []
         failed: list[pathlib.Path] = []
+        metadata_from_attrs = _manager_workspace._workspace_file_metadata_from_attrs
 
         if try_workspace:
             for p in list(queued):
                 try:
                     dt = _manager_xarray.open_workspace_datatree(p, chunks="auto")
                 except Exception as exc:
-                    if _is_workspace_file_lock_error(exc):
+                    if _manager_workspace._is_workspace_file_lock_error(exc):
                         logger.info(
                             "Workspace file is already open or locked: %s",
                             p,
@@ -4963,31 +4778,59 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         logger.debug("Failed to open %s as datatree workspace", p)
                 else:
                     if self._is_datatree_workspace(dt):
+                        dt.close()
                         try:
-                            schema_version = int(
-                                dt.attrs.get("imagetool_workspace_schema_version", 1)
-                            )
-                            if not self._confirm_save_dirty_workspace(
-                                "Opening a workspace replaces the windows currently "
-                                "in this manager."
-                            ):
-                                dt.close()
-                                return
-                            loaded_workspace = self._from_datatree(
-                                dt, replace=True, mark_dirty=False, select=False
-                            )
-                            if loaded_workspace:
-                                self._associate_loaded_workspace_file(p, schema_version)
-                        except Exception:
-                            logger.exception(
-                                "Error while loading workspace",
-                                extra={"suppress_ui_alert": True},
-                            )
-                            erlab.interactive.utils.MessageDialog.critical(
-                                self,
-                                "Error",
-                                "An error occurred while loading the workspace file.",
-                            )
+                            with self._workspace_document_access_context(p) as access:
+                                _manager_workspace._recover_workspace_transactions(
+                                    access.path
+                                )
+                                workspace_dt = _manager_xarray.open_workspace_datatree(
+                                    access.path, chunks="auto"
+                                )
+                                workspace_dt_owned = True
+                                try:
+                                    metadata = metadata_from_attrs(workspace_dt.attrs)
+                                    if not self._confirm_save_dirty_workspace(
+                                        "Opening a workspace replaces the windows "
+                                        "currently in this manager."
+                                    ):
+                                        return
+                                    loaded_workspace = self._from_datatree(
+                                        workspace_dt,
+                                        replace=True,
+                                        mark_dirty=False,
+                                        select=False,
+                                    )
+                                    workspace_dt_owned = False
+                                    if loaded_workspace:
+                                        self._associate_loaded_workspace_file(
+                                            access.path,
+                                            metadata.schema_version,
+                                            delta_save_count=metadata.delta_save_count,
+                                            workspace_access=access,
+                                        )
+                                finally:
+                                    if workspace_dt_owned:
+                                        workspace_dt.close()
+                        except Exception as exc:
+                            if _manager_workspace._is_workspace_file_lock_error(exc):
+                                logger.info(
+                                    "Workspace file is already open or locked: %s",
+                                    p,
+                                    extra={"suppress_ui_alert": True},
+                                )
+                                _show_workspace_file_lock_error(self, p)
+                            else:
+                                logger.exception(
+                                    "Error while loading workspace",
+                                    extra={"suppress_ui_alert": True},
+                                )
+                                erlab.interactive.utils.MessageDialog.critical(
+                                    self,
+                                    "Error",
+                                    "An error occurred while loading the workspace "
+                                    "file.",
+                                )
                         finally:
                             queued.remove(p)
                             loaded.append(p)
@@ -5463,6 +5306,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 for handler in list(self._file_handlers):
                     handler.wait()
 
+        self._compact_workspace_before_shutdown()
+
         logger.debug("Removing all ImageTool windows...")
         with self._workspace_load_context():
             self.remove_all_tools()
@@ -5499,6 +5344,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         logger.debug("Cleaning up temporary directory...")
         self._tmp_dir.cleanup()
+
+        logger.debug("Releasing workspace lock...")
+        self._release_workspace_lock()
 
         logger.debug("Stopping servers...")
         self._registry_heartbeat_timer.stop()
