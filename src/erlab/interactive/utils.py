@@ -76,6 +76,7 @@ __all__ = [
     "ToolWindow",
     "copy_to_clipboard",
     "file_loaders",
+    "format_1d_numeric_array_code",
     "format_call_kwargs",
     "format_kwargs",
     "generate_code",
@@ -947,6 +948,50 @@ def _parse_single_arg(arg: typing.Any) -> str:
         arg = f"np.array({arg})"
 
     return str(arg)
+
+
+def format_1d_numeric_array_code(values: npt.ArrayLike) -> str:
+    """Format one-dimensional numeric values as compact executable Python code.
+
+    This is intended for generated snippets where readability matters but exact values
+    must still round-trip when executed. Uniform integer-like grids are written as
+    ``np.arange(...)``, uniform floating-point grids as ``np.linspace(...)``, and
+    other inputs fall back to the general array formatter used by
+    :func:`_parse_single_arg`.
+    """
+    values = np.asarray(values)
+    values_code = _parse_single_arg(values)
+    if values.ndim != 1 or values.size == 0:
+        return values_code
+    if not np.issubdtype(values.dtype, np.number) or np.issubdtype(
+        values.dtype, np.complexfloating
+    ):
+        return values_code
+
+    numeric = values.astype(np.float64, copy=False)
+    if not np.all(np.isfinite(numeric)):
+        return values_code
+
+    if numeric.size == 1:
+        value_code = _parse_single_arg(float(numeric[0]))
+        return f"np.linspace({value_code}, {value_code}, 1)"
+
+    diffs = np.diff(numeric)
+    step = float(diffs[0])
+    if not np.allclose(diffs, step, rtol=1e-12, atol=1e-12):
+        return values_code
+
+    rounded = np.rint(numeric)
+    if np.allclose(numeric, rounded, rtol=0.0, atol=1e-12):
+        int_step = int(rounded[1] - rounded[0])
+        if int_step != 0:
+            start = int(rounded[0])
+            stop = int(rounded[-1] + int_step)
+            return f"np.arange({start}, {stop}, {int_step})"
+
+    start_code = _parse_single_arg(float(numeric[0]))
+    stop_code = _parse_single_arg(float(numeric[-1]))
+    return f"np.linspace({start_code}, {stop_code}, {numeric.size})"
 
 
 # @functools.cache

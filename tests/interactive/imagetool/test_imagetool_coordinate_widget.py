@@ -1,10 +1,13 @@
 import numpy as np
 import pytest
 
-from erlab.interactive.imagetool.dialogs import _CoordinateWidget
+from erlab.interactive.imagetool._dialog_widgets import (
+    CoordinateEditorWidget,
+    CoordinateGridWidget,
+)
 
 
-def _affine_preview_values(widget: _CoordinateWidget) -> np.ndarray:
+def _affine_preview_values(widget: CoordinateEditorWidget) -> np.ndarray:
     return np.array(
         [
             float(widget.affine_table.item(row, 1).text())
@@ -15,7 +18,7 @@ def _affine_preview_values(widget: _CoordinateWidget) -> np.ndarray:
 
 def test_coordinate_widget_initialization(qtbot):
     arr = np.linspace(0, 10, 6)
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     assert widget.spin0.value() == 0
     assert widget.spin1.value() == 10
@@ -25,7 +28,7 @@ def test_coordinate_widget_initialization(qtbot):
 
 def test_coordinate_widget_mode_switch(qtbot):
     arr = np.linspace(1, 5, 5)
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     # Switch to Delta mode
     widget.mode_combo.setCurrentText("Delta")
@@ -37,7 +40,7 @@ def test_coordinate_widget_mode_switch(qtbot):
 
 def test_coordinate_widget_update_table(qtbot):
     arr = np.linspace(2, 4, 3)
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     widget.spin0.setValue(10)
     widget.spin1.setValue(20)
@@ -51,7 +54,7 @@ def test_coordinate_widget_update_table(qtbot):
 
 def test_coordinate_widget_reset(qtbot):
     arr = np.linspace(0, 2, 3)
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     widget.spin0.setValue(5)
     widget.spin1.setValue(7)
@@ -62,7 +65,7 @@ def test_coordinate_widget_reset(qtbot):
 
 def test_coordinate_widget_set_old_coord(qtbot):
     arr = np.array([1, 2, 3, 4])
-    widget = _CoordinateWidget(np.zeros(4))
+    widget = CoordinateEditorWidget(np.zeros(4))
     qtbot.addWidget(widget)
     widget.set_old_coord(arr)
     assert np.allclose(widget._old_coord, arr)
@@ -71,7 +74,7 @@ def test_coordinate_widget_set_old_coord(qtbot):
 
 def test_coordinate_widget_new_coord_edit(qtbot):
     arr = np.arange(3)
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     # Edit table values
     widget.table.item(0, 0).setText("10")
@@ -83,7 +86,7 @@ def test_coordinate_widget_new_coord_edit(qtbot):
 
 def test_coordinate_widget_affine_identity(qtbot):
     arr = np.linspace(0, 10, 6)
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     widget.edit_mode_tabs.setCurrentIndex(1)
     assert widget.use_affine_transform
@@ -95,7 +98,7 @@ def test_coordinate_widget_affine_identity(qtbot):
 
 def test_coordinate_widget_affine_scale_offset(qtbot):
     arr = np.array([1.0, 2.0, 4.0])
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     widget.edit_mode_tabs.setCurrentIndex(1)
     widget.scale_spin.setValue(2.0)
@@ -107,7 +110,7 @@ def test_coordinate_widget_affine_scale_offset(qtbot):
 
 def test_coordinate_widget_affine_offset_only(qtbot):
     arr = np.array([1.0, 2.0, 4.0])
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     widget.edit_mode_tabs.setCurrentIndex(1)
     widget.offset_spin.setValue(3.0)
@@ -116,7 +119,7 @@ def test_coordinate_widget_affine_offset_only(qtbot):
 
 def test_coordinate_widget_affine_reset(qtbot):
     arr = np.array([1.0, 2.0, 4.0])
-    widget = _CoordinateWidget(arr)
+    widget = CoordinateEditorWidget(arr)
     qtbot.addWidget(widget)
     widget.edit_mode_tabs.setCurrentIndex(1)
     widget.scale_spin.setValue(3.0)
@@ -129,10 +132,49 @@ def test_coordinate_widget_affine_reset(qtbot):
 
 
 def test_coordinate_widget_affine_scalar(qtbot):
-    widget = _CoordinateWidget(np.asarray(2.0))
+    widget = CoordinateEditorWidget(np.asarray(2.0))
     qtbot.addWidget(widget)
     widget.edit_mode_tabs.setCurrentIndex(1)
     widget.scale_spin.setValue(4.0)
     widget.offset_spin.setValue(1.0)
     assert widget.use_affine_transform
     assert np.allclose(np.atleast_1d(widget.affine_coord), [9.0])
+
+
+def test_coordinate_grid_widget_variable_count(qtbot):
+    widget = CoordinateGridWidget(
+        np.array([0.0, 2.0]),
+        editable_count=True,
+        preserve_shape=False,
+        require_complete=True,
+        numeric_reference=True,
+        disable_singleton_controls=False,
+        reset_table_to_reference=False,
+        update_table_on_mode_changed=True,
+    )
+    qtbot.addWidget(widget)
+
+    widget.count_spin.setValue(5)
+    assert widget.table.rowCount() == 5
+    assert np.allclose(widget.new_coord, np.linspace(0.0, 2.0, 5))
+
+    widget.mode_combo.setCurrentText("Delta")
+    widget.spin0.setValue(1.0)
+    widget.spin1.setValue(0.5)
+    widget.count_spin.setValue(4)
+    assert np.allclose(widget.new_coord, [1.0, 1.5, 2.0, 2.5])
+
+
+def test_coordinate_grid_widget_requires_complete_values(qtbot):
+    widget = CoordinateGridWidget(
+        np.array([0.0, 1.0]),
+        editable_count=True,
+        preserve_shape=False,
+        require_complete=True,
+        numeric_reference=True,
+    )
+    qtbot.addWidget(widget)
+
+    widget.table.item(0, 0).setText("")
+    with pytest.raises(ValueError, match="Missing value in row 0"):
+        _ = widget.new_coord
