@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import enum
+import errno
 import gc
 import io
 import json
@@ -6718,6 +6719,151 @@ def test_workspace_datatree_encoding_uses_group_paths() -> None:
     assert set(encoding["/0/imagetool"]) == {"data"}
 
 
+def test_workspace_datatree_encoding_can_be_disabled() -> None:
+    tree = xr.DataTree.from_dict(
+        {
+            "0/imagetool": xr.Dataset(
+                {
+                    "data": (
+                        ("x", "y"),
+                        np.arange(512 * 512, dtype=np.float64).reshape(512, 512),
+                    )
+                }
+            )
+        }
+    )
+    try:
+        assert manager_xarray.workspace_datatree_encoding(tree, compress=False) == {}
+    finally:
+        tree.close()
+
+
+def test_workspace_xarray_path_helpers_cover_fallbacks(monkeypatch, tmp_path) -> None:
+    class _BadPath(os.PathLike):
+        def __fspath__(self) -> str:
+            raise TypeError
+
+    assert manager_xarray._normalized_file_path(object()) is None
+    assert manager_xarray._normalized_file_path(_BadPath()) is None
+    assert manager_xarray._normalized_file_path("") is None
+
+    def _raise_oserror(_path: pathlib.Path) -> pathlib.Path:
+        raise OSError("resolve failed")
+
+    monkeypatch.setattr(pathlib.Path, "resolve", _raise_oserror)
+    assert manager_xarray._normalized_file_path(tmp_path / "workspace.itws") == str(
+        tmp_path / "workspace.itws"
+    )
+
+    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
+    lock = manager_xarray._workspace_file_lock("fallback.itws")
+    assert lock is manager_xarray._workspace_file_lock("fallback.itws")
+
+    def _raise_stat_oserror(_path: str):
+        raise OSError
+
+    monkeypatch.setattr(manager_xarray.os, "stat", _raise_stat_oserror)
+    assert manager_xarray._workspace_file_identity("missing.itws") == (
+        "missing.itws",
+        0,
+        0,
+        0,
+    )
+
+
+def test_workspace_file_manager_uses_fsdecode_fallback(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_init(self, opener, *args, **kwargs):
+        captured["opener"] = opener
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        self._key = "fake-key"
+        self._ref_counter = types.SimpleNamespace(decrement=lambda _key: None)
+        self._cache = {}
+
+    monkeypatch.setattr(
+        manager_xarray, "ensure_workspace_hdf5_filters_registered", lambda: None
+    )
+    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
+    monkeypatch.setattr(
+        manager_xarray, "_workspace_file_identity", lambda path: (path, 0, 0, 0)
+    )
+    monkeypatch.setattr(manager_xarray.CachingFileManager, "__init__", _fake_init)
+
+    file_manager = manager_xarray.WorkspaceFileManager("fallback.itws")
+
+    assert file_manager.workspace_path == "fallback.itws"
+    assert captured["args"][0] == "fallback.itws"
+
+
+def test_open_workspace_dataset_uses_fsdecode_fallback(monkeypatch) -> None:
+    calls: list[tuple[object, str, str | None]] = []
+
+    class _FakeFileManager:
+        def __init__(self, path: str) -> None:
+            self.workspace_path = path
+
+    def _fake_open(file_manager, group: str, *, chunks: str | None):
+        calls.append((file_manager, group, chunks))
+        return "dataset"
+
+    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
+    monkeypatch.setattr(manager_xarray, "WorkspaceFileManager", _FakeFileManager)
+    monkeypatch.setattr(
+        manager_xarray, "_open_workspace_dataset_from_manager", _fake_open
+    )
+
+    assert (
+        manager_xarray.open_workspace_dataset("fallback.itws", "/0", chunks=None)
+        == "dataset"
+    )
+    file_manager, group, chunks = calls[0]
+    assert isinstance(file_manager, _FakeFileManager)
+    assert file_manager.workspace_path == "fallback.itws"
+    assert group == "/0"
+    assert chunks is None
+
+
+def test_open_workspace_datatree_closes_partial_groups_on_error(monkeypatch) -> None:
+    closed: list[str] = []
+
+    class _FakeDataset:
+        def __init__(self, group_path: str) -> None:
+            self.group_path = group_path
+
+        def close(self) -> None:
+            closed.append(self.group_path)
+
+    class _FakeFileManager:
+        workspace_path = "fallback.itws"
+
+        def __init__(self, _path: str) -> None:
+            pass
+
+        def acquire_context(self):
+            return contextlib.nullcontext(object())
+
+    def _fake_open(_file_manager, group_path: str, *, chunks: str | None):
+        if group_path == "/broken":
+            raise RuntimeError("broken group")
+        return _FakeDataset(group_path)
+
+    monkeypatch.setattr(manager_xarray, "_normalized_file_path", lambda _path: None)
+    monkeypatch.setattr(manager_xarray, "WorkspaceFileManager", _FakeFileManager)
+    monkeypatch.setattr(
+        manager_xarray, "_iter_h5netcdf_group_paths", lambda _h5_file: ("/", "/broken")
+    )
+    monkeypatch.setattr(
+        manager_xarray, "_open_workspace_dataset_from_manager", _fake_open
+    )
+
+    with pytest.raises(RuntimeError, match="broken group"):
+        manager_xarray.open_workspace_datatree("fallback.itws", chunks="auto")
+
+    assert closed == ["/"]
+
+
 def test_write_full_workspace_tree_file_compresses_payload_not_coords(
     tmp_path,
 ) -> None:
@@ -7128,6 +7274,180 @@ def test_workspace_lock_error_message_names_owner(monkeypatch, tmp_path) -> None
     assert lock_info.path in detailed_text
 
 
+def test_workspace_lock_text_variants(tmp_path) -> None:
+    app_only = manager_workspace._WorkspaceDocumentLockInfo(
+        path="marker",
+        owner="user",
+        hostname="",
+        appname="ImageTool",
+        pid=None,
+    )
+    pid_only = manager_workspace._WorkspaceDocumentLockInfo(
+        path="marker",
+        owner="",
+        hostname="",
+        appname="",
+        pid=123,
+    )
+    full_info = manager_workspace._WorkspaceDocumentLockInfo(
+        path="marker",
+        owner="user",
+        hostname="workstation",
+        appname="ImageTool",
+        pid=123,
+    )
+
+    assert manager_mainwindow._workspace_lock_owner_text(app_only) == (
+        "user using ImageTool"
+    )
+    assert manager_mainwindow._workspace_lock_owner_text(pid_only) == (
+        "using process 123"
+    )
+    assert manager_mainwindow._workspace_lock_owner_text(full_info) == (
+        "user on workstation using ImageTool (process 123)"
+    )
+
+    def _raise_owner_details_failed() -> None:
+        raise RuntimeError("owner details failed")
+
+    def _details_from_active_exception() -> str:
+        try:
+            _raise_owner_details_failed()
+        except RuntimeError:
+            return manager_mainwindow._workspace_lock_details_text(
+                tmp_path / "workspace.itws", full_info
+            )
+
+    details = _details_from_active_exception()
+
+    assert "owner details failed" in details
+    assert "Temporary workspace ownership marker: marker" in details
+
+
+def test_workspace_window_title_placeholder_non_macos(monkeypatch) -> None:
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", "linux")
+
+    assert manager_mainwindow._strip_workspace_modified_placeholder("Name[*]") == "Name"
+    assert manager_mainwindow._window_title_with_modified_placeholder("Name[*]") == (
+        "Name[*]"
+    )
+
+
+def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> None:
+    fname = tmp_path / "busy-message.itws"
+    calls: list[dict[str, object]] = []
+    lock_info = manager_workspace._WorkspaceDocumentLockInfo(
+        path=str(tmp_path / ".busy-message.itws.lock"),
+        owner="",
+        hostname="",
+        appname="",
+        pid=None,
+    )
+
+    def _critical(*args, **kwargs) -> int:
+        calls.append({"args": args, "kwargs": kwargs})
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_document_lock_info", lambda _fname: lock_info
+    )
+    monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
+
+    manager_mainwindow._show_workspace_file_lock_error(None, fname)
+
+    args = calls[0]["args"]
+    assert isinstance(args, tuple)
+    informative_text = args[3]
+    assert isinstance(informative_text, str)
+    assert informative_text == (
+        "Close the other ImageTool Manager that has busy-message.itws open, "
+        "then try again."
+    )
+
+
+def test_application_quit_filter_routes_quit_events(qtbot) -> None:
+    manager = QtWidgets.QWidget()
+    qtbot.addWidget(manager)
+    calls: list[str] = []
+
+    def _handle_application_quit_request() -> bool:
+        calls.append("quit")
+        return True
+
+    manager._handle_application_quit_request = _handle_application_quit_request
+    event_filter = manager_mainwindow._ApplicationQuitFilter(
+        typing.cast("ImageToolManager", manager)
+    )
+
+    assert not event_filter.eventFilter(None, None)
+    assert event_filter.eventFilter(None, QtCore.QEvent(QtCore.QEvent.Type.Quit))
+
+    class _QuitKeyEvent(QtGui.QKeyEvent):
+        def matches(self, key: QtGui.QKeySequence.StandardKey) -> bool:
+            return key == QtGui.QKeySequence.StandardKey.Quit
+
+    quit_event = _QuitKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_Q,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert event_filter.eventFilter(None, quit_event)
+    assert quit_event.isAccepted()
+    assert calls == ["quit", "quit"]
+
+
+def test_workspace_document_access_releases_lock(tmp_path) -> None:
+    class _FakeLock:
+        def __init__(self) -> None:
+            self.unlock_count = 0
+
+        def unlock(self) -> None:
+            self.unlock_count += 1
+
+    lock = _FakeLock()
+    access = manager_mainwindow._WorkspaceDocumentAccess(
+        tmp_path / "workspace.itws", lock
+    )
+
+    assert access.take_lock() is lock
+    access.release()
+    assert lock.unlock_count == 0
+
+    access = manager_mainwindow._WorkspaceDocumentAccess(
+        tmp_path / "workspace.itws", lock
+    )
+    access.release()
+    access.release()
+    assert lock.unlock_count == 1
+
+
+def test_choose_from_datatree_dialog_root_keys_skip_missing(qtbot) -> None:
+    manager = QtWidgets.QWidget()
+    manager.next_idx = 7
+    qtbot.addWidget(manager)
+    tree = xr.DataTree.from_dict(
+        {
+            "0/imagetool": xr.Dataset(
+                attrs={"itool_title": "Loaded"},
+            )
+        }
+    )
+    try:
+        dialog = _ChooseFromDataTreeDialog(
+            typing.cast("ImageToolManager", manager),
+            tree,
+            mode="load",
+            root_keys=("missing", "0"),
+        )
+        qtbot.addWidget(dialog)
+
+        assert dialog._tree_widget.topLevelItemCount() == 1
+        assert dialog._tree_widget.topLevelItem(0).text(0) == "7: Loaded"
+    finally:
+        tree.close()
+
+
 def test_manager_workspace_save_as_locked_target_does_not_write(
     monkeypatch,
     tmp_path,
@@ -7198,6 +7518,324 @@ def test_manager_workspace_load_locks_before_recovery(
     assert recovery_calls == []
 
 
+def test_manager_workspace_path_lock_contract(
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _FakeLock:
+        def __init__(self) -> None:
+            self.unlock_count = 0
+
+        def unlock(self) -> None:
+            self.unlock_count += 1
+
+    with manager_context() as manager:
+        current = (tmp_path / "current.itws").resolve()
+        manager._workspace_path = current
+        lock = _FakeLock()
+
+        manager._set_workspace_path(current, workspace_lock=lock)
+
+        assert lock.unlock_count == 1
+        with pytest.raises(RuntimeError, match="pre-acquired document lock"):
+            manager._set_workspace_path(tmp_path / "other.itws")
+
+
+def test_manager_application_quit_request_resets_when_close_fails(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        original_close = manager.close
+        monkeypatch.setattr(manager, "close", lambda: False)
+
+        assert manager._handle_application_quit_request()
+        assert not manager._application_quit_requested
+
+        monkeypatch.setattr(manager, "close", lambda: True)
+        assert manager._handle_application_quit_request()
+        assert manager._application_quit_requested
+        manager._application_quit_requested = False
+        monkeypatch.setattr(manager, "close", original_close)
+
+
+def test_manager_active_window_and_focus_restore_guards(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        active = QtWidgets.QWidget()
+        origin = QtWidgets.QWidget()
+        other = QtWidgets.QWidget()
+        qtbot.addWidget(active)
+        qtbot.addWidget(origin)
+        qtbot.addWidget(other)
+        origin.show()
+        other.show()
+
+        monkeypatch.setattr(
+            QtWidgets.QApplication, "activeWindow", staticmethod(lambda: active)
+        )
+        monkeypatch.setattr(manager, "_node_uid_from_window", lambda _window: "uid")
+        monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda _obj: False)
+        assert manager._active_managed_window() is None
+
+        monkeypatch.setattr(
+            QtWidgets.QApplication, "activeWindow", staticmethod(lambda: other)
+        )
+        monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda _obj: True)
+        manager._restore_focus_after_workspace_save(origin)
+
+
+def test_manager_compact_workspace_edge_paths(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        monkeypatch.setattr(manager, "save_as", lambda: True)
+        assert manager.compact_workspace()
+
+        manager._workspace_path = tmp_path / "workspace.itws"
+        manager._workspace_save_in_progress = True
+        assert not manager.compact_workspace()
+        manager._workspace_save_in_progress = False
+
+        operation_errors: list[tuple[typing.Any, ...]] = []
+        focus_restores: list[QtWidgets.QWidget | None] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *args, **kwargs: contextlib.nullcontext(),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_save_workspace_document",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("compact failed")
+            ),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda *args: operation_errors.append(args),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_restore_focus_after_workspace_save",
+            lambda origin: focus_restores.append(origin),
+        )
+
+        assert not manager.compact_workspace()
+        assert operation_errors == [
+            (
+                "Error while compacting workspace",
+                "An error occurred while compacting the workspace file.",
+            )
+        ]
+        assert focus_restores == [None]
+
+
+def test_manager_shutdown_compaction_logs_failure(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._workspace_path = tmp_path / "workspace.itws"
+        manager._workspace_delta_save_count = 1
+        monkeypatch.setattr(
+            manager,
+            "_save_workspace_document",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("compact failed")
+            ),
+        )
+
+        manager._compact_workspace_before_shutdown()
+
+
+def test_manager_workspace_save_dialog_paths(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[tuple[str, object]] = []
+    original_file_dialog = QtWidgets.QFileDialog
+
+    class _FakeFileDialog:
+        AcceptMode = original_file_dialog.AcceptMode
+        FileMode = original_file_dialog.FileMode
+        Option = original_file_dialog.Option
+        exec_result = 0
+
+        def __init__(self, _parent, caption: str) -> None:
+            calls.append(("caption", caption))
+
+        def setAcceptMode(self, mode) -> None:
+            calls.append(("accept", mode))
+
+        def setFileMode(self, mode) -> None:
+            calls.append(("file_mode", mode))
+
+        def setNameFilter(self, name_filter: str) -> None:
+            calls.append(("filter", name_filter))
+
+        def setDefaultSuffix(self, suffix: str) -> None:
+            calls.append(("suffix", suffix))
+
+        def selectFile(self, fname: str) -> None:
+            calls.append(("select", fname))
+
+        def setDirectory(self, directory: str) -> None:
+            calls.append(("directory", directory))
+
+        def setOption(self, option) -> None:
+            calls.append(("option", option))
+
+        def exec(self) -> int:
+            return self.exec_result
+
+        def selectedFiles(self) -> list[str]:
+            return [str(tmp_path / "selected.itws")]
+
+    monkeypatch.setattr(QtWidgets, "QFileDialog", _FakeFileDialog)
+    with manager_context() as manager:
+        assert (
+            manager._workspace_save_dialog(
+                native=False, selected_file=tmp_path / "explicit.itws"
+            )
+            is None
+        )
+        assert ("select", str(tmp_path / "explicit.itws")) in calls
+
+        _FakeFileDialog.exec_result = 1
+        manager._workspace_path = tmp_path / "bound.itws"
+        assert manager._workspace_save_dialog(native=True) == str(
+            tmp_path / "selected.itws"
+        )
+        assert ("select", str(tmp_path / "bound.itws")) in calls
+
+        manager._workspace_path = None
+        manager._recent_directory = str(tmp_path)
+        assert manager._workspace_save_dialog(native=True) == str(
+            tmp_path / "selected.itws"
+        )
+        assert ("directory", str(tmp_path)) in calls
+
+
+def test_manager_confirm_save_dirty_workspace_save_branch(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._workspace_structure_modified = True
+        monkeypatch.setattr(manager, "save", lambda: True)
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "exec",
+            lambda _msg_box: QtWidgets.QMessageBox.StandardButton.Save,
+        )
+
+        assert manager._confirm_save_dirty_workspace("Save before continuing.")
+
+
+def test_manager_legacy_workspace_save_helpers(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "exec",
+            lambda _msg_box: QtWidgets.QMessageBox.StandardButton.Ok,
+        )
+        manager._show_legacy_workspace_upgrade_message(tmp_path / "legacy.itws")
+
+        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: None)
+        assert manager._save_legacy_workspace_as_v4(tmp_path / "legacy.itws") is None
+
+        dirty_reasons: list[str] = []
+        monkeypatch.setattr(
+            manager,
+            "_save_legacy_workspace_as_v4",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            manager, "_mark_workspace_structure_dirty", dirty_reasons.append
+        )
+        manager._associate_loaded_workspace_file(
+            tmp_path / "legacy.itws",
+            manager_workspace._WORKSPACE_LEGACY_SCHEMA_VERSION - 1,
+        )
+
+        assert manager._workspace_path is None
+        assert manager._workspace_needs_full_save
+        assert dirty_reasons == ["Legacy workspace needs conversion"]
+
+
+def test_manager_save_and_wait_dialog_error_paths(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+
+    def _critical(*args, **kwargs) -> int:
+        critical_calls.append(args)
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
+    with manager_context() as manager:
+        wait_dialog = manager._open_workspace_save_wait_dialog(manager)
+        qtbot.addWidget(wait_dialog)
+        wait_dialog.close()
+
+        manager._show_workspace_save_worker_error("Traceback text")
+        assert critical_calls[-1][2] == (
+            "An error occurred while saving the workspace file."
+        )
+
+        manager._workspace_path = tmp_path / "workspace.itws"
+        manager._workspace_save_in_progress = True
+        assert not manager.save()
+
+        manager._workspace_save_in_progress = False
+        monkeypatch.setattr(
+            manager,
+            "_workspace_save_snapshot",
+            lambda _path: (_ for _ in ()).throw(RuntimeError("snapshot failed")),
+        )
+        monkeypatch.setattr(
+            manager, "_restore_focus_after_workspace_save", lambda _origin: None
+        )
+        assert not manager.save()
+
+        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: None)
+        assert not manager.save_as()
+
+
 def test_open_multiple_files_workspace_locks_before_recovery(
     monkeypatch,
     tmp_path,
@@ -7255,6 +7893,258 @@ def test_workspace_high_risk_path_detection() -> None:
     assert manager_workspace._workspace_path_is_high_risk(
         pathlib.Path("//server/share/workspace.itws")
     )
+
+
+def test_workspace_lock_error_detection_message_variants() -> None:
+    transient = OSError(errno.EACCES, "resource temporarily unavailable")
+    assert manager_workspace._is_workspace_file_lock_error(transient)
+    assert manager_workspace._is_workspace_file_lock_error(
+        RuntimeError("file is already open by another process")
+    )
+    assert manager_workspace._is_workspace_file_lock_error(
+        RuntimeError("unable to lock file")
+    )
+    assert not manager_workspace._is_workspace_file_lock_error(
+        OSError(errno.EINVAL, "resource temporarily unavailable")
+    )
+
+
+def test_hide_workspace_lock_file_windows_paths(monkeypatch) -> None:
+    import ctypes
+
+    calls: list[tuple[str, int]] = []
+
+    class _Kernel32:
+        @staticmethod
+        def SetFileAttributesW(path: str, attrs: int) -> None:
+            calls.append((path, attrs))
+
+    monkeypatch.setattr(manager_workspace.sys, "platform", "win32")
+    monkeypatch.setattr(manager_workspace.os, "name", "nt")
+    monkeypatch.setattr(ctypes, "windll", None, raising=False)
+    manager_workspace._hide_workspace_lock_file("missing-windll.itws.lock")
+    assert calls == []
+
+    monkeypatch.setattr(
+        ctypes, "windll", types.SimpleNamespace(kernel32=_Kernel32()), raising=False
+    )
+    manager_workspace._hide_workspace_lock_file("hidden.itws.lock")
+    assert calls == [("hidden.itws.lock", 0x2)]
+
+
+def test_workspace_document_lock_info_without_lock(tmp_path) -> None:
+    info = manager_workspace._workspace_document_lock_info(tmp_path / "free.itws")
+
+    assert info.pid is None
+    assert info.hostname == ""
+    assert info.appname == ""
+
+
+def test_workspace_metadata_helpers_cover_invalid_payloads() -> None:
+    manifest_attrs = manager_workspace._workspace_root_attrs_payload(
+        root_order=["1"],
+        nodes=[{"path": "1"}],
+        delta_save_count=2,
+        erlab_version="test",
+    )
+    raw_manifest = manifest_attrs[manager_workspace._WORKSPACE_MANIFEST_ATTR]
+
+    assert (
+        manager_workspace._workspace_manifest_from_attrs(
+            {manager_workspace._WORKSPACE_MANIFEST_ATTR: raw_manifest.encode()}
+        )["delta_save_count"]
+        == 2
+    )
+    assert (
+        manager_workspace._workspace_manifest_from_attrs(
+            {manager_workspace._WORKSPACE_MANIFEST_ATTR: "{not-json"}
+        )
+        == {}
+    )
+    assert (
+        manager_workspace._workspace_delta_save_count_from_attrs(
+            {
+                manager_workspace._WORKSPACE_MANIFEST_ATTR: (
+                    '{"delta_save_count": "not-an-int"}'
+                )
+            }
+        )
+        == 0
+    )
+
+
+def test_workspace_path_risk_detection_fallbacks(monkeypatch, tmp_path) -> None:
+    def _raise_oserror(_path: pathlib.Path) -> pathlib.Path:
+        raise OSError("resolve failed")
+
+    monkeypatch.setattr(pathlib.Path, "resolve", _raise_oserror)
+    assert manager_workspace._workspace_path_is_likely_cloud_path(
+        tmp_path / "Dropbox" / "workspace.itws"
+    )
+    assert manager_workspace._workspace_path_is_likely_network_path(
+        pathlib.Path("/net/server/workspace.itws")
+    )
+
+    monkeypatch.setattr(manager_workspace.sys, "platform", "darwin")
+    assert manager_workspace._workspace_path_is_likely_network_path(
+        pathlib.Path("/Volumes/share/workspace.itws")
+    )
+
+
+def test_workspace_requires_full_save_reasons(tmp_path) -> None:
+    options = erlab.interactive.options
+    old_incremental = options["io/workspace/use_incremental"]
+    old_remote = options["io/workspace/incremental_save_on_remote"]
+    existing = tmp_path / "existing.itws"
+    existing.touch()
+    try:
+        options["io/workspace/use_incremental"] = False
+        assert manager_workspace._workspace_requires_full_save(
+            existing,
+            needs_full_save=False,
+            schema_version=manager_workspace._current_workspace_schema_version(),
+            structure_modified=False,
+            has_dirty_added=False,
+            has_dirty_removed=False,
+        )
+
+        options["io/workspace/use_incremental"] = True
+        options["io/workspace/incremental_save_on_remote"] = True
+        assert manager_workspace._workspace_requires_full_save(
+            tmp_path / "missing.itws",
+            needs_full_save=False,
+            schema_version=manager_workspace._current_workspace_schema_version(),
+            structure_modified=False,
+            has_dirty_added=False,
+            has_dirty_removed=False,
+        )
+        for kwargs in (
+            {"needs_full_save": True},
+            {
+                "schema_version": (
+                    manager_workspace._current_workspace_schema_version() - 1
+                )
+            },
+            {"structure_modified": True},
+            {"has_dirty_added": True},
+            {"has_dirty_removed": True},
+        ):
+            call_kwargs = {
+                "needs_full_save": False,
+                "schema_version": manager_workspace._current_workspace_schema_version(),
+                "structure_modified": False,
+                "has_dirty_added": False,
+                "has_dirty_removed": False,
+            }
+            call_kwargs.update(kwargs)
+            assert manager_workspace._workspace_requires_full_save(
+                existing, **call_kwargs
+            )
+    finally:
+        options["io/workspace/use_incremental"] = old_incremental
+        options["io/workspace/incremental_save_on_remote"] = old_remote
+
+
+def test_workspace_h5_transaction_helper_edge_cases(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "transaction-helpers.itws"
+    with h5py.File(fname, "w") as h5_file:
+        h5_file.attrs["imagetool_workspace_schema_version"] = (
+            manager_workspace._current_workspace_schema_version()
+        )
+        assert manager_workspace._workspace_txn_attr_target(h5_file, "/missing") is None
+
+        txn = h5_file.create_group(
+            f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
+        )
+        txn_name = txn.name.strip("/")
+        manager_workspace._restore_workspace_attr_backups(h5_file, txn)
+
+        txn.attrs["operations"] = b'{"group_replacements": []}'
+        assert manager_workspace._workspace_transaction_operations(txn) == {
+            "group_replacements": []
+        }
+        txn.attrs["operations"] = "{not-json"
+        assert manager_workspace._workspace_transaction_operations(txn) == {}
+
+        txn.attrs["pending_root"] = b"__itws_pending_x"
+        txn.attrs["backup_root"] = b"__itws_backup_x"
+        assert manager_workspace._workspace_transaction_roots(txn) == (
+            "__itws_pending_x",
+            "__itws_backup_x",
+        )
+
+        manager_workspace._rollback_workspace_group_operations(
+            h5_file, {"group_replacements": "not-a-list"}
+        )
+        manager_workspace._rollback_workspace_group_operations(
+            h5_file,
+            {"group_replacements": [None, {"group_path": 1, "backup_path": "x"}]},
+        )
+
+        target = h5_file.create_group("target")
+        target.attrs["value"] = "old"
+        txn.attrs["status"] = b"committing"
+        txn.attrs["operations"] = json.dumps(
+            {
+                "group_replacements": [
+                    {
+                        "group_path": "target",
+                        "backup_path": "missing-backup",
+                        "old_exists": False,
+                    }
+                ]
+            }
+        )
+        pending = h5_file.create_group("__itws_pending_x")
+        pending.attrs["unused"] = True
+        backup = h5_file.create_group("__itws_backup_x")
+        backup.attrs["unused"] = True
+
+        manager_workspace._recover_open_workspace_transaction(h5_file, txn.name)
+
+        assert "target" not in h5_file
+        assert "__itws_pending_x" not in h5_file
+        assert "__itws_backup_x" not in h5_file
+        assert txn_name not in h5_file
+
+
+def test_recover_workspace_transactions_ignores_non_workspace_file(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "plain.h5"
+    with h5py.File(fname, "w") as h5_file:
+        h5_file.create_group(
+            f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}x"
+        )
+
+    manager_workspace._recover_workspace_transactions(fname)
+
+    with h5py.File(fname, "r") as h5_file:
+        assert f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}x" in h5_file
+
+
+def test_validate_workspace_h5_file_rejects_non_workspace(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "invalid.h5"
+    with h5py.File(fname, "w"):
+        pass
+
+    with pytest.raises(ValueError, match="not valid"):
+        manager_workspace._validate_workspace_h5_file(fname)
+
+
+def test_fsync_parent_directory_skips_non_posix(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(manager_workspace.os, "name", "nt")
+    monkeypatch.setattr(
+        manager_workspace.os,
+        "open",
+        lambda *args, **kwargs: pytest.fail("non-posix platforms should not fsync"),
+    )
+
+    manager_workspace._fsync_parent_directory(tmp_path / "workspace.itws")
 
 
 def test_manager_workspace_v4_save_open_replaces_and_binds_path(
