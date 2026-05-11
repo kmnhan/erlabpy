@@ -445,7 +445,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
 
     with pytest.raises(
         ValidationError,
-        match="full_data', 'public_data', 'selection' or 'script",
+        match="full_data', 'public_data', 'selection', 'script' or 'file",
     ):
         erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
             {"kind": "invalid"}
