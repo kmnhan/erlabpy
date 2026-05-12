@@ -5538,7 +5538,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
             watched_var=("data", "watch:stable-data"),
             watched_metadata={
                 "workspace_link_id": manager._workspace_link_id,
-                "source_label": None,
+                "source_label": "notebook-a",
                 "connected": True,
             },
         )
@@ -5553,6 +5553,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert attrs["manager_node_watched_varname"] == "data"
         assert attrs["manager_node_watched_uid"] == "watch:stable-data"
         assert attrs["manager_node_watched_workspace_link_id"] == workspace_link_id
+        assert attrs["manager_node_watched_source_label"] == "notebook-a"
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -5566,10 +5567,41 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert wrapper._watched_varname == "data"
         assert wrapper._watched_uid == "watch:stable-data"
         assert wrapper._watched_workspace_link_id == workspace_link_id
+        assert wrapper._watched_source_label == "notebook-a"
         assert wrapper._watched_connected is False
+
+        with qtbot.wait_signal(manager._sigReplyData) as blocker:
+            manager._send_watch_info()
+        assert blocker.args[0]["workspace_link_id"] == "different-workspace-link"
+        assert blocker.args[0]["watched"][0]["workspace_link_id"] == workspace_link_id
+        assert blocker.args[0]["watched"][0]["source_label"] == "notebook-a"
 
         manager._from_datatree(tree, replace=True, select=False)
         assert manager._workspace_link_id == workspace_link_id
+
+
+def test_manager_workspace_watched_attrs_skip_missing_workspace_link(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            watched_var=("data", "watch:stable-data"),
+            watched_workspace_link_id=None,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        attrs = manager._to_datatree()["0/imagetool"].attrs
+        assert attrs["manager_node_watched_varname"] == "data"
+        assert attrs["manager_node_watched_uid"] == "watch:stable-data"
+        assert "manager_node_watched_workspace_link_id" not in attrs
 
 
 def test_manager_watched_root_provenance_uses_variable_name(
@@ -11457,7 +11489,7 @@ def test_manager_hover_tooltip(
         assert manager.get_imagetool(2).slicer_area.is_linked
 
         wrapper = manager._imagetool_wrappers[0]
-        wrapper.set_watched_binding("sample", "sample kernel", connected=True)
+        wrapper.set_watched_binding("sample", "sample kernel", connected=False)
         option = QtWidgets.QStyleOptionViewItem()
         delegate.initStyleOption(option, index)
         option.rect = view.visualRect(index)
@@ -11476,6 +11508,13 @@ def test_manager_hover_tooltip(
         click_tree_view_pos(view, watched_rect.center())
         assert view._badge_menu is not None
         refresh_action, stop_action = view._badge_menu.actions()
+        assert not refresh_action.isEnabled()
+
+        wrapper.set_watched_binding("sample", "sample kernel", connected=True)
+        click_tree_view_pos(view, watched_rect.center())
+        assert view._badge_menu is not None
+        refresh_action, stop_action = view._badge_menu.actions()
+        assert refresh_action.isEnabled()
         with qtbot.wait_signal(manager._sigWatchedDataEdited) as blocker:
             refresh_action.trigger()
         assert blocker.args == ["sample", "sample kernel", "updated"]
@@ -11496,6 +11535,7 @@ def test_manager_hover_tooltip(
             stop_action.trigger()
         assert blocker.args == ["sample", "sample kernel", "removed"]
         assert not wrapper.watched
+        assert wrapper.watched_metadata() == {}
 
         # Hover outside icons
         text = None
@@ -12890,6 +12930,163 @@ def test_manager_server_bind_failures_close_socket(monkeypatch) -> None:
     assert manager_socket.closed
 
 
+def test_manager_server_wait_for_return_value_stops_cleanly() -> None:
+    manager = manager_server._ManagerServer()
+    manager.stopped.set()
+
+    assert manager._wait_for_return_value() is manager_server._UNSET
+
+
+def test_manager_server_run_returns_watch_info(monkeypatch) -> None:
+    sent: list[dict[str, typing.Any]] = []
+
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.closed = False
+            self.bound: list[str] = []
+
+        def setsockopt(self, *args) -> None:
+            return None
+
+        def bind(self, address: str) -> None:
+            self.bound.append(address)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _DummySocket) -> None:
+            self._socket = socket
+
+        def socket(self, *_args) -> _DummySocket:
+            return self._socket
+
+    socket = _DummySocket()
+    manager = manager_server._ManagerServer(port=45555)
+    watch_info = {"workspace_link_id": "workspace-1", "watched": []}
+
+    monkeypatch.setattr(
+        zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_recv_multipart",
+        lambda _socket: {"packet_type": "command", "command": "watch-info"},
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_send_multipart",
+        lambda _socket, payload, **_kwargs: sent.append(payload),
+    )
+    manager.sigWatchInfoRequested.connect(
+        lambda: (manager.set_return_value(watch_info), manager.stopped.set())
+    )
+
+    manager.run()
+
+    assert sent == [{"status": "ok", "watch_info": watch_info}]
+    assert socket.bound == ["tcp://*:45555"]
+    assert socket.closed
+
+
+def test_manager_server_run_errors_when_data_request_stops(monkeypatch) -> None:
+    sent: list[dict[str, typing.Any]] = []
+
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def setsockopt(self, *args) -> None:
+            return None
+
+        def bind(self, _address: str) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _DummySocket) -> None:
+            self._socket = socket
+
+        def socket(self, *_args) -> _DummySocket:
+            return self._socket
+
+    socket = _DummySocket()
+    manager = manager_server._ManagerServer(port=45555)
+
+    monkeypatch.setattr(
+        zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_recv_multipart",
+        lambda _socket: {
+            "packet_type": "command",
+            "command": "get-data",
+            "command_arg": 0,
+        },
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_send_multipart",
+        lambda _socket, payload, **_kwargs: sent.append(payload),
+    )
+    manager.sigDataRequested.connect(lambda _arg: manager.stopped.set())
+
+    manager.run()
+
+    assert sent == [{"status": "error"}]
+    assert socket.closed
+
+
+def test_manager_server_run_errors_when_watch_info_request_stops(monkeypatch) -> None:
+    sent: list[dict[str, typing.Any]] = []
+
+    class _DummySocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def setsockopt(self, *args) -> None:
+            return None
+
+        def bind(self, _address: str) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _DummyContext:
+        def __init__(self, socket: _DummySocket) -> None:
+            self._socket = socket
+
+        def socket(self, *_args) -> _DummySocket:
+            return self._socket
+
+    socket = _DummySocket()
+    manager = manager_server._ManagerServer(port=45555)
+
+    monkeypatch.setattr(
+        zmq.Context, "instance", staticmethod(lambda: _DummyContext(socket))
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_recv_multipart",
+        lambda _socket: {"packet_type": "command", "command": "watch-info"},
+    )
+    monkeypatch.setattr(
+        manager_server,
+        "_send_multipart",
+        lambda _socket, payload, **_kwargs: sent.append(payload),
+    )
+    manager.sigWatchInfoRequested.connect(lambda: manager.stopped.set())
+
+    manager.run()
+
+    assert sent == [{"status": "error"}]
+    assert socket.closed
+
+
 def test_manager_server_client_helpers_target_socket_branches(
     monkeypatch, tmp_path, test_data
 ) -> None:
@@ -12910,13 +13107,17 @@ def test_manager_server_client_helpers_target_socket_branches(
     monkeypatch.setattr(
         manager_server, "resolve_manager_record", lambda target=None: record
     )
-    monkeypatch.setattr(
-        manager_server,
-        "_query_zmq",
-        lambda payload, **kwargs: (
-            calls.append((payload, kwargs)) or Response(status="ok", data=test_data)
-        ),
-    )
+
+    def _query_zmq(payload, **kwargs):
+        calls.append((payload, kwargs))
+        if (
+            isinstance(payload, manager_server.CommandPacket)
+            and payload.command == "watch-info"
+        ):
+            return Response(status="ok", watch_info={"watched": []})
+        return Response(status="ok", data=test_data)
+
+    monkeypatch.setattr(manager_server, "_query_zmq", _query_zmq)
 
     path = tmp_path / "data.dat"
     path.write_text("data", encoding="utf-8")
@@ -12927,6 +13128,7 @@ def test_manager_server_client_helpers_target_socket_branches(
     assert manager_server._unwatch_data("uid", target=2).status == "ok"
     assert manager_server._unwatch_data("uid", remove=True, target=2).status == "ok"
     xr.testing.assert_identical(manager_server.fetch("uid", target=2), test_data)
+    assert manager_server.watch_info(target=2) == {"watched": []}
     with pytest.warns(DeprecationWarning, match="watch_data"):
         manager_server.watch_data("data", "uid", test_data)
     with pytest.warns(DeprecationWarning, match="unwatch_data"):
@@ -12947,10 +13149,31 @@ def test_manager_server_client_helpers_target_socket_branches(
         "command",
         "command",
         "command",
+        "command",
         "watch",
         "command",
     ]
     assert all(kwargs["record"] == record for _payload, kwargs in calls)
+
+
+def test_manager_handle_watch_info_delegates_to_target(monkeypatch) -> None:
+    handle = manager_server.ImageToolManagerHandle(
+        index=7,
+        pid=123,
+        host="localhost",
+        port=45555,
+        watch_port=45556,
+        started="2026-05-08T10:00:00",
+        version="3.22.0",
+    )
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "watch_info",
+        lambda *, target=None: {"target": target},
+    )
+
+    assert handle.watch_info() == {"target": 7}
 
 
 def test_manager_progressbar_alert(
