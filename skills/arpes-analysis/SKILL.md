@@ -57,7 +57,8 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,
   `show_in_manager`, `load_in_manager`, `managers`, `set_default_manager`,
   `manager_selection_info`, `workspace_path`, `Save Workspace`,
-  `Open Workspace`, `Import From Workspace`, `Result Placement`, `stale`,
+  `Open Workspace`, `Import From Workspace`, `%watch --restore`,
+  `Reconnect Watched Variables`, `.itws`, `Result Placement`, `stale`,
   `automatic updates`, `Auto`, `Refit after update`, `code for repeating steps`,
   `ImageTool windows opened from tools`, or
   `workflow-bridge` for notebook and interactive-workflow questions.
@@ -92,9 +93,12 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Prefer the manager workflow when the user needs a tree that shows top-level ImageTool
   rows, tools opened from those ImageTools, and ImageTool windows made by those tools;
   rows that update after data changes; code that repeats GUI steps; multiple windows;
-  notebook synchronization; or reusable workspaces.
+  notebook synchronization; reusable workspaces; or shared `.ipynb` and `.itws`
+  files.
 - Mention `%watch` or `erlab.interactive.imagetool.manager.watch()` when
   notebook synchronization is relevant.
+- Mention `%watch --restore` when a saved manager workspace contains disconnected
+  watched rows that should reconnect to variables in an open notebook.
 
 ## Troubleshooting
 

@@ -22,6 +22,7 @@ __all__ = [
     "set_default_manager",
     "show_in_manager",
     "use_manager",
+    "watch_info",
 ]
 
 
@@ -170,6 +171,7 @@ class WatchPacket(_BasePacket):
     packet_type: typing.Literal["watch"]
     watched_info: tuple[str, str]
     watched_data: xr.DataArray
+    watched_metadata: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
 
 
 class CommandPacket(_BasePacket):
@@ -184,6 +186,7 @@ class CommandPacket(_BasePacket):
         "remove-uid",
         "show-uid",
         "unwatch-uid",
+        "watch-info",
     ]
     command_arg: str | int | None = None
 
@@ -212,6 +215,7 @@ class Response(pydantic.BaseModel):
 
     status: typing.Literal["ok", "error", "unpickle-failed"]
     data: xr.DataArray | None = None
+    watch_info: dict[str, typing.Any] | None = None
     pickler_kind: typing.Literal["pickle", "cloudpickle"] = "pickle"
 
     model_config = {
@@ -518,9 +522,10 @@ class _ManagerServer(QtCore.QThread):
     sigReceived = QtCore.Signal(list, dict)
     sigLoadRequested = QtCore.Signal(list, str, dict)
     sigReplaceRequested = QtCore.Signal(list, list)
-    sigWatchedVarChanged = QtCore.Signal(str, str, object)
+    sigWatchedVarChanged = QtCore.Signal(str, str, object, object)
 
     sigDataRequested = QtCore.Signal(object)
+    sigWatchInfoRequested = QtCore.Signal()
     sigRemoveIndex = QtCore.Signal(int)
     sigShowIndex = QtCore.Signal(int)
     sigRemoveUID = QtCore.Signal(str)
@@ -560,6 +565,16 @@ class _ManagerServer(QtCore.QThread):
             self._cv.wakeAll()
         if self.isRunning() and not self.wait(timeout_ms):
             logger.warning("Manager server did not stop within timeout")
+
+    def _wait_for_return_value(self) -> typing.Any:
+        with QtCore.QMutexLocker(self._mutex):
+            while self._ret_val is _UNSET:
+                if self.stopped.is_set():
+                    break
+                self._cv.wait(self._mutex, 100)
+            value = self._ret_val
+            self._ret_val = _UNSET
+            return value
 
     def run(self) -> None:
         self.stopped.clear()
@@ -606,9 +621,11 @@ class _ManagerServer(QtCore.QThread):
 
                 logger.debug("Received payload with type %s", payload.packet_type)
                 if not (
-                    payload.packet_type == "command" and payload.command == "get-data"
+                    payload.packet_type == "command"
+                    and payload.command in {"get-data", "watch-info"}
                 ):
-                    # For non-get-data commands, send an immediate OK response
+                    # For commands without return payloads, send an immediate OK
+                    # response before dispatching work to the GUI thread.
                     logger.debug("Sending response...")
                     _send_multipart(sock, {"status": "ok"})
                     logger.debug("Response sent")
@@ -624,7 +641,9 @@ class _ManagerServer(QtCore.QThread):
                         )
                     case "watch":
                         self.sigWatchedVarChanged.emit(
-                            *payload.watched_info, payload.watched_data
+                            *payload.watched_info,
+                            payload.watched_data,
+                            payload.watched_metadata,
                         )
                     case "replace":
                         self.sigReplaceRequested.emit(
@@ -636,19 +655,13 @@ class _ManagerServer(QtCore.QThread):
                             case "get-data":
                                 self.sigDataRequested.emit(payload.command_arg)
                                 logger.debug("Getting data...")
-                                with QtCore.QMutexLocker(self._mutex):
-                                    while self._ret_val is _UNSET:
-                                        if self.stopped.is_set():
-                                            break
-                                        self._cv.wait(self._mutex, 100)
-                                    if self._ret_val is _UNSET:
-                                        logger.debug(
-                                            "Server stopping while waiting for data"
-                                        )
-                                        _send_multipart(sock, {"status": "error"})
-                                        break
-                                    data = self._ret_val
-                                    self._ret_val = _UNSET
+                                data = self._wait_for_return_value()
+                                if data is _UNSET:
+                                    logger.debug(
+                                        "Server stopping while waiting for data"
+                                    )
+                                    _send_multipart(sock, {"status": "error"})
+                                    break
 
                                 logger.debug("Data obtained, sending response...")
                                 _send_multipart(
@@ -657,6 +670,29 @@ class _ManagerServer(QtCore.QThread):
                                     use_cloudpickle=bool(
                                         payload.pickler_kind == "cloudpickle"
                                     ),
+                                )
+                                logger.debug("Response sent")
+
+                                continue
+                            case "watch-info":
+                                self.sigWatchInfoRequested.emit()
+                                logger.debug("Getting watched-variable info...")
+                                info = self._wait_for_return_value()
+                                if info is _UNSET:
+                                    logger.debug(
+                                        "Server stopping while waiting for "
+                                        "watched-variable info"
+                                    )
+                                    _send_multipart(sock, {"status": "error"})
+                                    break
+
+                                logger.debug(
+                                    "Watched-variable info obtained, sending "
+                                    "response..."
+                                )
+                                _send_multipart(
+                                    sock,
+                                    {"status": "ok", "watch_info": info},
                                 )
                                 logger.debug("Response sent")
 
@@ -800,6 +836,10 @@ class ImageToolManagerHandle:
         return erlab.interactive.imagetool.manager.watch(
             *varnames, target=self.index, **kwargs
         )
+
+    def watch_info(self) -> dict[str, typing.Any]:
+        """Return watched-variable metadata for this manager."""
+        return erlab.interactive.imagetool.manager.watch_info(target=self.index)
 
     def use(self) -> int:
         """Set this manager as the default for the current Python process."""
@@ -1126,6 +1166,7 @@ def _watch_data(
     show: bool = False,
     *,
     target: int | None = None,
+    watched_metadata: dict[str, typing.Any] | None = None,
 ) -> None:
     """Add or update a watched variable in the ImageToolManager.
 
@@ -1146,10 +1187,16 @@ def _watch_data(
         used. If no default is set, the only live manager is used. If multiple
         managers are live, an ambiguity error is raised.
     """
+    if watched_metadata is None:
+        watched_metadata = {}
+
     record = resolve_manager_record(target)
     _query_zmq(
         WatchPacket(
-            packet_type="watch", watched_info=(varname, uid), watched_data=data
+            packet_type="watch",
+            watched_info=(varname, uid),
+            watched_data=data,
+            watched_metadata=watched_metadata,
         ),
         record=record,
     )
@@ -1187,6 +1234,30 @@ def _unwatch_data(
         CommandPacket(packet_type="command", command="unwatch-uid", command_arg=uid),
         record=record,
     )
+
+
+def _watch_info(*, target: int | None = None) -> dict[str, typing.Any]:
+    """Return watched-variable metadata for the target manager."""
+    direct_manager = _direct_manager_for_target(target)
+    if direct_manager is not None:
+        return direct_manager._watch_info()
+    record = resolve_manager_record(target)
+    response = _query_zmq(
+        CommandPacket(packet_type="command", command="watch-info"),
+        record=record,
+    )
+    return response.watch_info or {}
+
+
+def watch_info(*, target: int | None = None) -> dict[str, typing.Any]:
+    """Return watched-variable metadata for the target manager.
+
+    This is primarily intended for editor integrations and the watcher restore
+    workflow.
+
+    .. versionadded:: 3.22.0
+    """
+    return _watch_info(target=target)
 
 
 def watch_data(varname: str, uid: str, data: xr.DataArray, show: bool = False) -> None:

@@ -12,6 +12,7 @@ from erlab.interactive.imagetool.manager._server import (
     set_default_manager,
 )
 from erlab.interactive.imagetool.manager._watcher._core import (
+    _AmbiguousWatchBindingError,
     _display_message,
     _get_or_create_watcher,
     _register_post_run_cell_callback,
@@ -74,6 +75,11 @@ class WatcherMagics(Magics):
     @argument("-x", action="store_true", help="Remove from manager.")
     @argument("-z", action="store_true", help="Stop watching all variables.")
     @argument(
+        "--restore",
+        action="store_true",
+        help="Reconnect watched variables from the open manager workspace.",
+    )
+    @argument(
         "--manager",
         "-m",
         type=int,
@@ -102,11 +108,14 @@ class WatcherMagics(Magics):
 
         * ``%watch -z``       - Stop watching all variables
 
+        * ``%watch --restore`` - Reconnect watched rows from the open manager
+                                 workspace
+
         """
         args = parse_argstring(self.watch, line)
         shell = self._typed_shell
 
-        if not args.darr and not args.z:
+        if not args.darr and not args.z and not args.restore:
             watched = watched_variables(shell=shell)
             if len(watched) == 0:
                 _display_message("No variables are being watched.")
@@ -120,18 +129,44 @@ class WatcherMagics(Magics):
 
             return
 
+        if args.restore:
+            before = set(watched_variables(shell=shell))
+            try:
+                watch(*args.darr, shell=shell, restore=True, target=args.manager)
+            except _AmbiguousWatchBindingError as exc:
+                _display_message(str(exc))
+                return
+            restored = tuple(
+                name
+                for name in watched_variables(shell=shell)
+                if name not in before or not args.darr or name in args.darr
+            )
+            if restored:
+                _display_message(
+                    f"Reconnected watched variables: {', '.join(restored)}",
+                    "🔄 Reconnected watched variables "
+                    + " ".join([f"<code>{varname}</code>" for varname in restored]),
+                )
+            else:
+                _display_message("No watched variables were reconnected.")
+            return
+
         if args.z:
             watch(shell=shell, stop_all=True, remove=args.x)
             _display_message("Stopped watching all variables.")
             return
 
-        watch(
-            *args.darr,
-            shell=shell,
-            stop=args.d or args.x,
-            remove=args.x,
-            target=args.manager,
-        )
+        try:
+            watch(
+                *args.darr,
+                shell=shell,
+                stop=args.d or args.x,
+                remove=args.x,
+                target=args.manager,
+            )
+        except _AmbiguousWatchBindingError as exc:
+            _display_message(str(exc))
+            return
 
         if args.d or args.x:
             _display_message(

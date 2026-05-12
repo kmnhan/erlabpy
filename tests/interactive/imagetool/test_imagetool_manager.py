@@ -18,7 +18,7 @@ import time
 import types
 import typing
 import webbrowser
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 
 import numpy as np
 import pydantic
@@ -5521,6 +5521,57 @@ def test_manager_data_watched_update_replaces_existing_tool_source_data(
         xr.testing.assert_identical(tool.slicer_area.data, updated)
 
 
+def test_manager_workspace_roundtrip_preserves_watched_binding(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager._data_recv(
+            [test_data],
+            {},
+            watched_var=("data", "watch:stable-data"),
+            watched_metadata={
+                "workspace_link_id": manager._workspace_link_id,
+                "source_label": None,
+                "connected": True,
+            },
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        workspace_link_id = manager._workspace_link_id
+        tree = manager._to_datatree()
+        tree.attrs.update(manager._workspace_root_attrs_payload(delta_save_count=0))
+        manifest = json.loads(tree.attrs["imagetool_workspace_manifest"])
+        assert manifest["workspace_link_id"] == workspace_link_id
+        attrs = tree["0/imagetool"].attrs
+        assert attrs["manager_node_watched_varname"] == "data"
+        assert attrs["manager_node_watched_uid"] == "watch:stable-data"
+        assert attrs["manager_node_watched_workspace_link_id"] == workspace_link_id
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        manager._workspace_link_id = "different-workspace-link"
+
+        manager._load_workspace_node(typing.cast("xr.DataTree", tree["0"]))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        wrapper = manager._imagetool_wrappers[0]
+        assert wrapper.watched
+        assert wrapper._watched_varname == "data"
+        assert wrapper._watched_uid == "watch:stable-data"
+        assert wrapper._watched_workspace_link_id == workspace_link_id
+        assert wrapper._watched_connected is False
+
+        manager._from_datatree(tree, replace=True, select=False)
+        assert manager._workspace_link_id == workspace_link_id
+
+
 def test_manager_watched_root_provenance_uses_variable_name(
     qtbot,
     monkeypatch,
@@ -8701,7 +8752,7 @@ def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
             _fname: str | os.PathLike[str],
             rewrite_groups: Iterable[manager_workspace._WorkspaceRewriteGroup],
             attr_updates: Iterable[manager_workspace._WorkspaceAttrUpdate],
-            root_attrs: typing.Mapping[str, typing.Any],
+            root_attrs: Mapping[str, typing.Any],
         ) -> None:
             rewrite_groups = tuple(rewrite_groups)
             updates = tuple(attr_updates)
@@ -9476,7 +9527,7 @@ def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
 
         def _write_partial_pending_then_raise(
             fname: str | os.PathLike[str],
-            _constructor: typing.Mapping[str, xr.Dataset],
+            _constructor: Mapping[str, xr.Dataset],
             _group_path: str,
             pending_path: str,
         ) -> None:

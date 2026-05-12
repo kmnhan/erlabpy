@@ -59,7 +59,8 @@ class _NamespaceShell:
 
 _STATE_LOCK: threading.RLock = threading.RLock()
 _WATCHERS: dict[int, _Watcher] = {}
-_POST_RUN_CELL_CALLBACKS: dict[int, tuple[typing.Any, typing.Callable[..., None]]] = {}
+_POST_RUN_CELL_CALLBACKS: dict[int, tuple[typing.Any, Callable[..., None]]] = {}
+_WORKSPACE_WATCH_NAMESPACE = uuid.UUID("1b949069-0469-4c5c-a2e2-2d49b393fcf2")
 
 
 class _MessageObject:
@@ -93,6 +94,86 @@ def _stopped_watching_message(varname: str, reason: str) -> None:
     )
 
 
+def _stable_watch_uid(
+    workspace_link_id: str, varname: str, source_label: str | None = None
+) -> str:
+    source = "" if source_label is None else source_label
+    key = f"{workspace_link_id}\0{source}\0{varname}"
+    return f"watch:{uuid.uuid5(_WORKSPACE_WATCH_NAMESPACE, key)}"
+
+
+class _AmbiguousWatchBindingError(ValueError):
+    """Raised when a watched variable name matches multiple saved rows."""
+
+
+def _ambiguous_watch_message(varname: str) -> str:
+    return (
+        f"Multiple watched ImageTool rows match variable {varname!r}. "
+        "Use Stop Watching on the extra manager rows, or reconnect from an "
+        "editor command that can target a specific watched row."
+    )
+
+
+def _watch_entries(
+    watch_info: dict[str, typing.Any],
+) -> tuple[dict[str, typing.Any], ...]:
+    raw_watched = watch_info.get("watched", ())
+    if not isinstance(raw_watched, (list, tuple)):
+        return ()
+    return tuple(
+        entry
+        for entry in raw_watched
+        if isinstance(entry, dict) and isinstance(entry.get("varname"), str)
+    )
+
+
+def _matching_watch_entries(
+    entries: tuple[dict[str, typing.Any], ...],
+    *,
+    varname: str,
+    workspace_link_id: str | None = None,
+) -> list[dict[str, typing.Any]]:
+    matches: list[dict[str, typing.Any]] = []
+    for entry in entries:
+        if entry.get("varname") != varname:
+            continue
+        entry_workspace_link_id = entry.get("workspace_link_id")
+        if (
+            workspace_link_id is not None
+            and entry_workspace_link_id is not None
+            and str(entry_workspace_link_id) != workspace_link_id
+        ):
+            continue
+        matches.append(entry)
+    return matches
+
+
+def _select_watch_entry(
+    candidates: list[dict[str, typing.Any]],
+    *,
+    varname: str,
+    source_label: str | None,
+) -> dict[str, typing.Any] | None:
+    if source_label is not None:
+        candidates = [
+            entry
+            for entry in candidates
+            if (entry.get("source_label") or None) == source_label
+        ]
+    else:
+        unlabeled = [
+            entry for entry in candidates if entry.get("source_label") in {None, ""}
+        ]
+        if len(unlabeled) == 1:
+            return unlabeled[0]
+        if len(unlabeled) > 1:
+            raise _AmbiguousWatchBindingError(_ambiguous_watch_message(varname))
+
+    if len(candidates) > 1:
+        raise _AmbiguousWatchBindingError(_ambiguous_watch_message(varname))
+    return candidates[0] if candidates else None
+
+
 class _Watcher:
     def __init__(self, shell: _ShellProtocol) -> None:
         self._shell: _ShellProtocol = shell
@@ -114,7 +195,56 @@ class _Watcher:
         self._poll_interval_s: float = 0.25
         self._poll_thread: threading.Thread | None = None
 
-    def watch(self, varname: str, *, target: int | None = None) -> None:
+    def _watch_info(self, target: int | None) -> dict[str, typing.Any]:
+        with contextlib.suppress(Exception):
+            return erlab.interactive.imagetool.manager.watch_info(target=target)
+        return {
+            "workspace_link_id": self._uid,
+            "watched": (),
+        }
+
+    def _watch_binding(
+        self,
+        varname: str,
+        *,
+        target: int | None,
+        source_label: str | None,
+    ) -> tuple[str, dict[str, typing.Any]]:
+        info = self._watch_info(target)
+        workspace_link_id = str(info.get("workspace_link_id") or self._uid)
+        source_label_text = None if source_label is None else str(source_label)
+        selected = _select_watch_entry(
+            _matching_watch_entries(
+                _watch_entries(info),
+                varname=varname,
+                workspace_link_id=workspace_link_id,
+            ),
+            varname=varname,
+            source_label=source_label_text,
+        )
+
+        if selected is not None and selected.get("uid") is not None:
+            uid = str(selected["uid"])
+            metadata = {
+                "workspace_link_id": workspace_link_id,
+                "source_label": selected.get("source_label"),
+                "connected": True,
+            }
+            return uid, metadata
+
+        return _stable_watch_uid(workspace_link_id, varname, source_label_text), {
+            "workspace_link_id": workspace_link_id,
+            "source_label": source_label_text,
+            "connected": True,
+        }
+
+    def watch(
+        self,
+        varname: str,
+        *,
+        target: int | None = None,
+        source_label: str | None = None,
+    ) -> None:
         """Watch a DataArray variable and show in ImageTool manager."""
         ns = self._shell.user_ns
         if varname not in ns:
@@ -130,9 +260,15 @@ class _Watcher:
             if varname in self.watched_vars:
                 # Already linked, trigger refresh and show
                 uid = self.watched_vars[varname]["uid"]
+                watched_metadata = typing.cast(
+                    "dict[str, typing.Any]",
+                    self.watched_vars[varname].get("watched_metadata", {}),
+                )
                 show = True
             else:
-                uid = f"{varname} {self._uid}"
+                uid, watched_metadata = self._watch_binding(
+                    varname, target=manager_record.index, source_label=source_label
+                )
 
         fingerprint = erlab.utils.hashing.fingerprint_dataarray(obj)
         with self._lock:
@@ -143,6 +279,7 @@ class _Watcher:
                 "target": manager_record.index,
                 "watch_host": manager_record.host,
                 "watch_port": manager_record.watch_port,
+                "watched_metadata": watched_metadata,
             }
             self._last_send = time.time()
 
@@ -213,8 +350,16 @@ class _Watcher:
                 return
             uid = state["uid"]
             target = state.get("target")
+            watched_metadata = typing.cast(
+                "dict[str, typing.Any]", state.get("watched_metadata", {})
+            )
         erlab.interactive.imagetool.manager._watch_data(
-            varname, uid, darr, show=show, target=target
+            varname,
+            uid,
+            darr,
+            show=show,
+            target=target,
+            watched_metadata=watched_metadata,
         )
 
     def start_thread(self) -> None:
@@ -291,13 +436,13 @@ class _Watcher:
                 logger.debug("Watcher received message: %s", info)
                 varname, uid, event = info["varname"], info["uid"], info["event"]
 
-                if not uid.endswith(self._uid):
-                    continue  # Not for this watcher instance
-
                 with self._lock:
-                    if varname not in self.watched_vars:
+                    state = self.watched_vars.get(varname)
+                    if state is None:
                         continue  # Not watching
-                    watched_target = self.watched_vars[varname].get("target")
+                    if state.get("uid") != uid:
+                        continue  # Not for this watcher binding
+                    watched_target = state.get("target")
                     if (
                         target is not None
                         and watched_target is not None
@@ -553,6 +698,37 @@ def watched_variables(
         return tuple(watcher.watched_vars.keys())
 
 
+def _restore_varnames(
+    watch_info: dict[str, typing.Any],
+    namespace: NamespaceType,
+    requested: tuple[str, ...],
+    *,
+    source_label: str | None,
+) -> tuple[str, ...]:
+    entries = _watch_entries(watch_info)
+    names = requested or tuple(
+        dict.fromkeys(str(entry["varname"]) for entry in entries)
+    )
+    restore_names: list[str] = []
+    for name in names:
+        try:
+            selected = _select_watch_entry(
+                _matching_watch_entries(entries, varname=name),
+                varname=name,
+                source_label=source_label,
+            )
+        except _AmbiguousWatchBindingError:
+            _display_message(
+                f"Skipped '{name}' because multiple watched rows match it.",
+                f"Skipped <code>{name}</code> because multiple watched rows match it.",
+            )
+            continue
+        if selected is not None and isinstance(namespace.get(name), xr.DataArray):
+            restore_names.append(name)
+
+    return tuple(dict.fromkeys(restore_names))
+
+
 @_inject_target_param_docs
 def watch(
     *varnames: str,
@@ -561,7 +737,9 @@ def watch(
     stop: bool = False,
     remove: bool = False,
     stop_all: bool = False,
+    restore: bool = False,
     target: int | None = None,
+    source_label: str | None = None,
     poll_interval_s: float = 0.25,
 ) -> tuple[str, ...]:
     """Watch namespace variables and synchronize them with ImageTool manager.
@@ -603,14 +781,25 @@ def watch(
         If ``True``, remove watched variables from manager while stopping.
     stop_all
         If ``True``, stop watching all variables in the namespace.
+    restore
+        If ``True``, reconnect watched variables stored in the selected ImageTool
+        manager workspace when variables with matching names exist in the namespace.
     target
         Optional 0-based ImageTool manager index to watch into. If omitted, the
         current process default is used. If no default is set, the only live manager is
         used. If multiple managers are live, an ambiguity error is raised.
+    source_label
+        Optional integration-supplied notebook/source label used to disambiguate
+        saved watched rows. Regular notebook users do not need to set this.
     poll_interval_s
         Polling interval in seconds for fallback polling when post-run hooks are
         unavailable (for example, non-IPython environments). Must be greater than 0.
         This value is ignored when a post-run callback is successfully registered.
+
+    .. versionchanged:: 3.22.0
+
+       Added ``restore`` and stable workspace-linked watched variables so saved
+       manager workspaces can reconnect to notebook variables by name.
 
     Returns
     -------
@@ -619,7 +808,7 @@ def watch(
     """
     shell, namespace = _resolve_or_infer_target(shell=shell, namespace=namespace)
 
-    if not varnames and not stop_all and not stop and not remove:
+    if not varnames and not stop_all and not stop and not remove and not restore:
         return watched_variables(shell=shell, namespace=namespace)
 
     watcher, key = _get_or_create_watcher(shell=shell, namespace=namespace)
@@ -630,9 +819,23 @@ def watch(
     elif stop or remove:
         for varname in varnames:
             watcher.stop_watching(varname, remove=remove)
+    elif restore:
+        restore_names = _restore_varnames(
+            watcher._watch_info(target),
+            shell_obj.user_ns,
+            tuple(varnames),
+            source_label=source_label,
+        )
+        for varname in restore_names:
+            watcher.watch(varname, target=target, source_label=source_label)
+
+        if restore_names and not _register_post_run_cell_callback(
+            shell_obj, watcher, key
+        ):
+            watcher.start_polling(poll_interval_s)
     else:
         for varname in varnames:
-            watcher.watch(varname, target=target)
+            watcher.watch(varname, target=target, source_label=source_label)
 
         if not _register_post_run_cell_callback(shell_obj, watcher, key):
             watcher.start_polling(poll_interval_s)
