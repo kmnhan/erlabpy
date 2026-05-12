@@ -2,23 +2,41 @@
 
 ### ✨ Features
 
-- **imagetool:** add coordinate and attribute editing ([7e67bcc](https://github.com/kmnhan/erlabpy/commit/7e67bccc94c05ca922a7d64b92e7ec3c8dade99a))
+- **imagetool:** add interpolation dialog (#336) ([f7ab159](https://github.com/kmnhan/erlabpy/commit/f7ab159a42bef48f45c176b87e708814464d4474))
+
+  Add an interpolation dialog for resampling data along a selected dimension. The dialog allows users to apply interpolation along customizable coordinates.
+
+- **ktool:** support angle-energy cuts in `ktool` (#332) ([743eda6](https://github.com/kmnhan/erlabpy/commit/743eda6f37165bfbf6e99a9ef933b55c3044fcf0))
+
+  `ktool` now supports displaying `alpha`-`eV` cuts.
+
+- **manager:** better manager workspace files (#333) ([e8600a4](https://github.com/kmnhan/erlabpy/commit/e8600a4f18041ec226c36c50f69f9169bb6477d6))
+
+  This is a change that significantly influences the workflow when working in ImageTool Manager. One ImageTool Manager window is now logically coupled to one workspace file, allowing you to save and load workspace documents more easily. You can save the entire state of your workspace by pressing `Ctrl+S` in any child window, just like working with experiment files in Igor Pro.
+
+- **manager:** support multiple manager instances (#331) ([d331f82](https://github.com/kmnhan/erlabpy/commit/d331f8242eca2e4624debf4c996245d98b8b0426))
+
+  Allow multiple ImageTool Manager windows to run at the same time. You can target a specific manager with a 0-based index in client code (e.g., `manager=2`), or set a default for the session. When multiple managers are running and no default is set, `manager=True` now raises an error. You can start a new manager instance from an existing manager window with the new `File → New Manager Instance` menu option.
+
+  Also adds new `%manager` magics for listing managers, selecting a default, checking the current default, and clearing it.
+
+- **imagetool:** add coordinate and attribute editing ([e0c954d](https://github.com/kmnhan/erlabpy/commit/e0c954ddd5ea51bd828489018e309a6f2d7b2228))
 
   Allows users to add scalar coordinates, add 1D associated coordinates along existing dimensions, and edit DataArray attributes directly from ImageTool. Use `Edit → Edit Coordinates` and `Edit → Edit Attributes` to open the respective dialogs.
 
-- **imagetool:** add dialog for renaming coordinates and dimensions ([0872924](https://github.com/kmnhan/erlabpy/commit/0872924ca9d862478b633e273c049d7f7c2680ea))
+- **imagetool:** add dialog for renaming coordinates and dimensions ([a0bec2f](https://github.com/kmnhan/erlabpy/commit/a0bec2f71712c500fc077bc07bd696388cc6e485))
 
   Adds an ImageTool `Edit → Rename...` dialog as an interface to `DataArray.rename`, allowing users to rename coordinates and dimensions in the ImageTool.
 
-- **manager:** prefer scan-number loading in copied code ([272cf06](https://github.com/kmnhan/erlabpy/commit/272cf06acca0c47c1cbccc5564fe89e7ef5ba6f9))
+- **manager:** prefer scan-number loading in copied code ([ca59635](https://github.com/kmnhan/erlabpy/commit/ca596357cc6041d918283f9d966497cf865ff755))
 
   ImageTool Manager now writes cleaner copied workflow code for data loaded from files. When an ERLab loader can infer and verify the scan number for the opened file, the copied code uses `erlab.io.load(scan, data_dir=...)` instead of embedding the full file path.
 
-- **imagetool:** add scale and offset coordinate editing ([d425029](https://github.com/kmnhan/erlabpy/commit/d425029c743d15bac1be754ec2dcba6da1db2d65))
+- **imagetool:** add scale and offset coordinate editing ([4cf0db0](https://github.com/kmnhan/erlabpy/commit/4cf0db0170c874087f13690c92ddc96a31d5a4f2))
 
   ImageTool’s Coordinate Editor can now transform numeric scalar and 1D coordinates with a simple `new = scale * old + offset` operation in a new tab.
 
-- **imagetool:** improve copied code ([8e8bf02](https://github.com/kmnhan/erlabpy/commit/8e8bf02f2a7edc4f9af97d83ab4d7a2dca176e9b))
+- **imagetool:** improve copied code ([9c19644](https://github.com/kmnhan/erlabpy/commit/9c19644bff05610be020dfa69a0a2e3e9a75793e))
 
   Code copied in various workflows in ImageTool Manager now starts from a meaningful source instead of assuming an arbitrary variable named `data`. Watched variables keep using the watched variable name, data loaded from files includes load code when available, and others prompt for the source variable name before copying.
 
@@ -58,11 +76,15 @@
 
 ### 🐞 Bug Fixes
 
-- **manager:** preserve file information during analysis ([3e34b82](https://github.com/kmnhan/erlabpy/commit/3e34b82b6274c4d800b0852a6a03b3d8f21f8cf4))
+- **manager:** improve contrast of some text in the metadata panel in dark mode ([9830ef8](https://github.com/kmnhan/erlabpy/commit/9830ef8bd3609155370ae050926546df9e68053e))
+
+- **manager:** fixes a PySide6 incompatibility related to provenance handling ([c948dc0](https://github.com/kmnhan/erlabpy/commit/c948dc0c51d7aca7a9aa0d6990e1af8bd397e0dd))
+
+- **manager:** preserve file information during analysis ([3b7f1b7](https://github.com/kmnhan/erlabpy/commit/3b7f1b72672b6a61646c9f7242257aa377a89e0f))
 
   ImageTool now keeps the file information when data loaded from a file is transformed in place, opened in a detached top-level window, or restored through the manager. ImageTool windows detached from the originally loaded parent now retain their full history. The manager metadata panel also shows the originating file when available.
 
-- **imagetool:** fix coordinate edit code generation ([5f19644](https://github.com/kmnhan/erlabpy/commit/5f19644e0c7c7931d5cb2ce358a1cefbe4d10b9f))
+- **imagetool:** fix coordinate edit code generation ([eeedeb0](https://github.com/kmnhan/erlabpy/commit/eeedeb0002cfb7e0c31311233c116905fa966ab6))
 
 - **io.plugins.hers:** correct coordinate handling for ALS BL10 data (#329) ([733eb60](https://github.com/kmnhan/erlabpy/commit/733eb60df99c49dc8984c50114ecc7e7b89ff2b8))
 
