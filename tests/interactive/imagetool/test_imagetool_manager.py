@@ -11457,8 +11457,7 @@ def test_manager_hover_tooltip(
         assert manager.get_imagetool(2).slicer_area.is_linked
 
         wrapper = manager._imagetool_wrappers[0]
-        wrapper._watched_varname = "sample"
-        wrapper._watched_uid = "sample kernel"
+        wrapper.set_watched_binding("sample", "sample kernel", connected=True)
         option = QtWidgets.QStyleOptionViewItem()
         delegate.initStyleOption(option, index)
         option.rect = view.visualRect(index)
