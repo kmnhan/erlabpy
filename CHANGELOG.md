@@ -1,6 +1,16 @@
-## Unreleased
+## v3.22.0 (2026-05-13)
 
 ### ✨ Features
+
+- **manager:** reconnect watched variables from saved workspaces (#337) ([6a3d433](https://github.com/kmnhan/erlabpy/commit/6a3d433773e0e9981bc45038d5078e4a58bcaeb3))
+
+  Makes watched variables in ImageTool Manager now reconnect by their name after notebook or workspace restarts.
+
+  Users can watch a variable with the usual `%watch data` command, restart the notebook kernel, rerun the notebook, and run `%watch data_name` again to reconnect the existing watched row instead of creating a duplicate. Saved ImageTool workspaces also remember watched variables, so reopening an `.itws` file shows the watched rows and lets the notebook reconnect them.
+
+  A new `%watch --restore` command reconnects all watched variables from the open manager workspace when matching variables exist in the notebook. This makes sharing notebooks and workspaces together straightforward: send the `.itws` file along with the `.ipynb` file, open both, execute run the notebook cells, then run `%watch --restore`.
+
+  Watched rows that cannot currently connect to a notebook variable are shown as disconnected until they are restored.
 
 - **imagetool:** add interpolation dialog (#336) ([f7ab159](https://github.com/kmnhan/erlabpy/commit/f7ab159a42bef48f45c176b87e708814464d4474))
 
