@@ -643,6 +643,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
 
         self._workspace_path: pathlib.Path | None = None
+        self._workspace_link_id: str = uuid.uuid4().hex
         self._workspace_loading_depth: int = 0
         self._workspace_saving_depth: int = 0
         self._workspace_structure_modified: bool = False
@@ -1156,7 +1157,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @contextlib.contextmanager
     def _workspace_document_access_context(
         self, fname: str | os.PathLike[str]
-    ) -> typing.Iterator[_WorkspaceDocumentAccess]:
+    ) -> Iterator[_WorkspaceDocumentAccess]:
         access = self._workspace_document_access(fname)
         try:
             yield access
@@ -1392,6 +1393,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _workspace_state_snapshot(self) -> dict[str, typing.Any]:
         return {
             "path": self._workspace_path,
+            "link_id": self._workspace_link_id,
             "needs_full_save": self._workspace_needs_full_save,
             "node_uid_counter": self._node_uid_counter,
             "structure_modified": self._workspace_structure_modified,
@@ -1410,6 +1412,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self, snapshot: dict[str, typing.Any]
     ) -> None:
         self._workspace_path = snapshot["path"]
+        self._workspace_link_id = snapshot["link_id"]
         self._workspace_needs_full_save = snapshot["needs_full_save"]
         self._node_uid_counter = snapshot["node_uid_counter"]
         self._workspace_structure_modified = snapshot["structure_modified"]
@@ -2009,6 +2012,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         show: bool = True,
         activate: bool = False,
         watched_var: tuple[str, str] | None = None,
+        watched_workspace_link_id: str | None = None,
+        watched_source_label: str | None = None,
+        watched_connected: bool = True,
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         uid: str | None = None,
@@ -2054,6 +2060,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._next_node_uid(uid),
             tool,
             watched_var=watched_var,
+            watched_workspace_link_id=watched_workspace_link_id,
+            watched_source_label=watched_source_label,
+            watched_connected=watched_connected,
             source_input_ndim=source_input_ndim,
             source_input_dtype=source_input_dtype,
             provenance_spec=provenance_spec,
@@ -3103,6 +3112,25 @@ class ImageToolManager(QtWidgets.QMainWindow):
             )
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim is not None:
             ds.attrs["manager_node_source_input_ndim"] = int(node.source_input_ndim)
+        if isinstance(node, _ImageToolWrapper) and node.watched:
+            watched_metadata = node.watched_metadata()
+            ds.attrs["manager_node_watched_varname"] = typing.cast(
+                "str", watched_metadata["varname"]
+            )
+            ds.attrs["manager_node_watched_uid"] = typing.cast(
+                "str", watched_metadata["uid"]
+            )
+            workspace_link_id = watched_metadata.get("workspace_link_id")
+            if workspace_link_id is not None:
+                ds.attrs["manager_node_watched_workspace_link_id"] = str(
+                    workspace_link_id
+                )
+            source_label = watched_metadata.get("source_label")
+            if source_label is not None:
+                ds.attrs["manager_node_watched_source_label"] = str(source_label)
+            ds.attrs["manager_node_watched_connected"] = bool(
+                watched_metadata.get("connected", False)
+            )
         output_id = node.output_id
         if kind == "imagetool" and output_id is not None:
             ds.attrs["manager_node_output_id"] = output_id
@@ -3255,6 +3283,24 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     "int | None",
                     ds.attrs.get("manager_node_source_input_ndim"),
                 )
+                watched_varname = ds.attrs.get("manager_node_watched_varname")
+                watched_uid = ds.attrs.get("manager_node_watched_uid")
+                if watched_varname is not None and watched_uid is not None:
+                    kwargs["watched_var"] = (str(watched_varname), str(watched_uid))
+                    kwargs["watched_workspace_link_id"] = (
+                        None
+                        if ds.attrs.get("manager_node_watched_workspace_link_id")
+                        is None
+                        else str(ds.attrs["manager_node_watched_workspace_link_id"])
+                    )
+                    kwargs["watched_source_label"] = (
+                        None
+                        if ds.attrs.get("manager_node_watched_source_label") is None
+                        else str(ds.attrs["manager_node_watched_source_label"])
+                    )
+                    # Loaded watched rows stay watched, but are disconnected until
+                    # a notebook explicitly reconnects them.
+                    kwargs["watched_connected"] = False
                 preferred_index: int | None = None
                 if node_path is not None and "/" not in node_path:
                     with contextlib.suppress(ValueError):
@@ -3393,6 +3439,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         "file may be from a newer version of erlab"
                     )
             manifest = metadata.manifest
+            if replace:
+                manifest_workspace_link_id = (
+                    None if manifest is None else manifest.get("workspace_link_id")
+                )
+                self._workspace_link_id = (
+                    str(manifest_workspace_link_id)
+                    if manifest_workspace_link_id
+                    else uuid.uuid4().hex
+                )
 
             root_keys = _manager_workspace._workspace_root_keys(tree, manifest)
 
@@ -3557,6 +3612,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             nodes=self._workspace_node_manifest_entries(),
             delta_save_count=delta_save_count,
             erlab_version=str(erlab.__version__),
+            workspace_link_id=self._workspace_link_id,
         )
 
     def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
@@ -4399,6 +4455,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         kwargs: dict[str, typing.Any],
         *,
         watched_var: tuple[str, str] | None = None,
+        watched_metadata: Mapping[str, typing.Any] | None = None,
         show: bool | None = None,
     ) -> list[bool]:
         """Slot function to receive data from the server.
@@ -4453,6 +4510,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         load_func = kwargs.pop("load_func", None)
         if show is None:
             show = len(data) == 1
+        watched_metadata = dict(watched_metadata or {})
+        if watched_var is not None:
+            watched_metadata.setdefault("workspace_link_id", self._workspace_link_id)
 
         for i, d in enumerate(data):
             # Set index-specific load function if provided
@@ -4464,6 +4524,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         show=show,
                         activate=show,
                         watched_var=watched_var,
+                        watched_workspace_link_id=typing.cast(
+                            "str | None",
+                            watched_metadata.get("workspace_link_id"),
+                        ),
+                        watched_source_label=typing.cast(
+                            "str | None", watched_metadata.get("source_label")
+                        ),
+                        watched_connected=bool(
+                            watched_metadata.get("connected", watched_var is not None)
+                        ),
                         source_input_ndim=d.ndim,
                         source_input_dtype=d.dtype,
                     )
@@ -4562,17 +4632,48 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if uid in self._all_nodes:
             self._node_for_target(uid).show()
 
-    @QtCore.Slot(str, str, object)
-    def _data_watched_update(self, varname: str, uid: str, darr: xr.DataArray) -> None:
+    @QtCore.Slot(str, str, object, object)
+    def _data_watched_update(
+        self,
+        varname: str,
+        uid: str,
+        darr: xr.DataArray,
+        watched_metadata: Mapping[str, typing.Any] | None = None,
+    ) -> None:
         """Update ImageTool window corresponding to the given watched variable."""
+        watched_metadata = dict(watched_metadata or {})
         idx = self._find_watched_idx(uid)
         if idx is None:
             # If the tool does not exist, create a new one
-            self._data_recv([darr], {}, watched_var=(varname, uid))
+            self._data_recv(
+                [darr],
+                {},
+                watched_var=(varname, uid),
+                watched_metadata={
+                    **dict(watched_metadata),
+                    "connected": True,
+                },
+            )
         else:
             # Update data in the existing tool
-            self._imagetool_wrappers[idx].set_source_input_ndim(darr.ndim)
-            self._imagetool_wrappers[idx].set_source_input_dtype(darr.dtype)
+            wrapper = self._imagetool_wrappers[idx]
+            wrapper.set_watched_binding(
+                varname,
+                uid,
+                workspace_link_id=typing.cast(
+                    "str | None",
+                    watched_metadata.get("workspace_link_id")
+                    or wrapper._watched_workspace_link_id,
+                ),
+                source_label=typing.cast(
+                    "str | None",
+                    watched_metadata.get("source_label")
+                    or wrapper._watched_source_label,
+                ),
+                connected=True,
+            )
+            wrapper.set_source_input_ndim(darr.ndim)
+            wrapper.set_source_input_dtype(darr.dtype)
             self.get_imagetool(idx).slicer_area.replace_source_data(darr)
 
     @QtCore.Slot(str)
@@ -4605,6 +4706,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _send_imagetool_data(self, index_or_uid: int | str) -> None:
         """Send data of the ImageTool window corresponding to the given index."""
         self._sigReplyData.emit(self._get_imagetool_data(index_or_uid))
+
+    def _watch_info(self) -> dict[str, typing.Any]:
+        """Return watched-variable metadata used by notebook reconnect workflows."""
+        return {
+            "workspace_link_id": self._workspace_link_id,
+            "watched": [
+                wrapper.watched_metadata()
+                for wrapper in self._imagetool_wrappers.values()
+                if wrapper.watched
+            ],
+        }
+
+    @QtCore.Slot()
+    def _send_watch_info(self) -> None:
+        """Send watched-variable metadata to the manager server."""
+        self._sigReplyData.emit(self._watch_info())
 
     def ensure_console_initialized(self) -> None:
         """Ensure that the console window is initialized."""
@@ -5211,6 +5328,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         server.sigLoadRequested.connect(self._data_load)
         server.sigReplaceRequested.connect(self._data_replace)
         server.sigDataRequested.connect(self._send_imagetool_data)
+        server.sigWatchInfoRequested.connect(self._send_watch_info)
         self._sigReplyData.connect(server.set_return_value)
         server.sigRemoveIndex.connect(self.remove_imagetool)
         server.sigShowIndex.connect(self.show_imagetool)

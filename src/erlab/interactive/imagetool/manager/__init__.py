@@ -52,6 +52,7 @@ __all__ = [
     "shutdown",
     "use_manager",
     "watch",
+    "watch_info",
     "watched_variables",
 ]
 
@@ -93,6 +94,7 @@ from erlab.interactive.imagetool.manager._server import (
     set_default_manager,
     show_in_manager,
     use_manager,
+    watch_info,
 )
 from erlab.interactive.imagetool.manager._watcher import (
     maybe_push,

@@ -55,6 +55,11 @@ or by dragging the `.itws` file back into the manager to recreate your windows
 exactly as they were. Share the file with collaborators and they will see the
 identical layout.
 
+If the workspace contains watched notebook variables, the watched rows reopen with
+their variable-name badges. The rows stay disconnected until a notebook defines the
+matching variables and reconnects them, as described in
+{ref}`imagetool-manager-reconnect-watches`.
+
 (imagetool-manager-nested-results)=
 
 ## Nested windows
@@ -275,7 +280,7 @@ The following lists common actions included in the {guilabel}`File`, {guilabel}`
 - {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. Handy when data is updated during acquisition.
 
 Icons next to each entry indicate special states: linked windows share a colored badge,
-chunked Dask arrays show the dask icon, watched variables display their notebook name,
+chunked Dask arrays show the dask icon, watched variables display their variable name,
 and rows opened from another row can show the {guilabel}`Stale`,
 {guilabel}`Unavailable`, or {guilabel}`Auto` badges described in
 {ref}`imagetool-manager-refresh`.
@@ -377,6 +382,7 @@ Controlling watches:
 ```python
 %watch data1 data2 data3   # add multiple variables
 %watch                     # list watched names
+%watch --restore           # reconnect saved watched rows by variable name
 %watch -d data1 data2      # stop watching specific variables
 %watch -x data1            # stop watching and close the window
 %watch -z                  # stop watching everything
@@ -385,11 +391,54 @@ Controlling watches:
 
 You can also right-click a tool in the manager and choose {guilabel}`Stop Watching`.
 
-If a variable is deleted or replaced with a non-`DataArray`, the manager automatically breaks the link and keeps the window as a regular ImageTool.
+If a variable is deleted or replaced with a non-`DataArray`, the manager automatically
+breaks the link and keeps the window as a regular ImageTool.
 
-:::{note}
-When a notebook kernel shuts down, watched windows remain open in the manager but no longer synchronize. Use {guilabel}`Stop Watching` or run `%watch -z` before closing the kernel to avoid confusion. Variables watched from different notebooks are color-coded for clarity.
-:::
+(imagetool-manager-reconnect-watches)=
+
+#### Reconnecting watched rows
+
+A watched row stores the variable name shown on its badge. If a notebook kernel stops,
+or if you close and reopen the manager workspace, the row stays in the manager but
+cannot synchronize until a notebook reconnects it. Disconnected watched rows keep
+their variable-name badge and show a disconnected tooltip in the manager.
+
+To reconnect one variable after restarting a notebook kernel:
+
+1. Run the notebook cells that create the `DataArray`.
+2. Run `%watch my_data` again.
+
+The manager reuses the existing watched row for `my_data` instead of creating a
+duplicate. This also forces a refresh if the automatic change detector missed an
+update.
+
+To reconnect every watched row in the open manager workspace:
+
+```python
+%watch --restore
+```
+
+`%watch --restore` looks at the watched variable names saved in the open workspace and
+reconnects the rows whose names exist in the current notebook namespace as
+`xarray.DataArray` objects. Rows for variables that are missing, or variables that
+currently hold a different kind of object, stay disconnected.
+
+To share a linked notebook and workspace with someone else:
+
+1. Save the manager workspace as a `.itws` file.
+2. Send both the `.ipynb` notebook and the `.itws` workspace.
+3. On the other computer, open the `.itws` file in ImageTool Manager.
+4. Run the notebook cells that create the watched variables.
+5. Run `%watch --restore`.
+
+The notebook and workspace do not need to live in the same folder. The rows reconnect
+by the variable names saved in the workspace, so the receiving notebook must define
+matching `DataArray` variables such as `my_data`.
+
+If several disconnected watched rows use the same variable name, `%watch my_data` and
+`%watch --restore` skip that name instead of guessing. Remove the extra watched links
+with {guilabel}`Stop Watching`, or use an editor integration that can reconnect a
+specific manager row.
 
 #### Outside IPython (e.g., marimo notebooks)
 
@@ -406,6 +455,9 @@ watch("my_data", stop=True)
 
 # Stop watching everything
 watch(stop_all=True)
+
+# Reconnect saved watched rows in the open manager workspace
+watch(restore=True)
 ```
 
 In non-IPython environments, watcher updates fall back to polling, which periodically checks for changes in the watched variables. You can adjust the frequency with `poll_interval_s` if needed:
@@ -452,6 +504,11 @@ Later, in any notebook, retrieve the stored variable with `%store -r my_data` an
 ### Editor integration
 
 If you are using VS Code (or other editor that supports VS Code extensions), the dedicated `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ) adds convenient features for working with the manager directly from notebooks. Search for `erlab` in the extensions panel of your editor to install it.
+
+Editor commands named {guilabel}`Reconnect Watched Variables` use the same restore
+workflow as `%watch --restore`: the notebook must define the watched
+{class}`xarray.DataArray` variables, and the open manager workspace supplies the saved
+watched row names.
 
 (imagetool-manager-automation)=
 

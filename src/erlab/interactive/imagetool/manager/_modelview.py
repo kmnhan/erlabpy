@@ -402,7 +402,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             watched_varname = str(tool_wrapper._watched_varname)
             watched_uid = str(tool_wrapper._watched_uid)
             kernel_uid = watched_uid.removeprefix(f"{watched_varname} ")
-            color = self.manager.color_for_watched_var_kernel(kernel_uid)
+            if tool_wrapper._watched_connected:
+                color = self.manager.color_for_watched_var_kernel(kernel_uid)
+            else:
+                color = option.palette.color(QtGui.QPalette.ColorRole.Mid)
 
             _fill_rounded_rect(
                 painter,
@@ -701,10 +704,17 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     )
             if watched_rect is not None and watched_rect.contains(pos):
                 varname = str(node._watched_varname)
+                if node._watched_connected:
+                    tooltip = f"Watching variable {varname!r}. Click for watch actions."
+                else:
+                    tooltip = (
+                        f"Watched variable {varname!r} is disconnected. "
+                        f"Run %watch {varname} or %watch --restore after defining it."
+                    )
                 return _RowBadge(
                     "watched",
                     watched_rect,
-                    f"Watching variable {varname!r}. Click for watch actions.",
+                    tooltip,
                 )
             return None
 
@@ -1616,7 +1626,15 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         refresh_action = typing.cast(
             "QtGui.QAction", menu.addAction("Refresh From Variable")
         )
-        refresh_action.setToolTip("Refresh this ImageTool from the watched variable")
+        if wrapper._watched_connected:
+            refresh_action.setToolTip(
+                "Refresh this ImageTool from the watched variable"
+            )
+        else:
+            refresh_action.setEnabled(False)
+            refresh_action.setToolTip(
+                "Reconnect this watched variable from the notebook"
+            )
         refresh_action.triggered.connect(wrapper._trigger_watched_update)
         stop_action = typing.cast("QtGui.QAction", menu.addAction("Stop Watching..."))
         stop_action.setToolTip("Detach this ImageTool from the watched variable")

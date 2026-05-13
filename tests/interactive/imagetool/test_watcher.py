@@ -48,11 +48,27 @@ def patch_manager(monkeypatch):
         "last_watch_calls": [],
         "last_unwatch_calls": [],
         "fetch_map": {},
+        "watch_info": {
+            "workspace_link_id": "workspace-link-0",
+            "watched": [],
+        },
     }
 
-    def watch_data(varname, uid, darr, show=False, target=None):
+    def watch_data(varname, uid, darr, show=False, target=None, watched_metadata=None):
         state["watched"][uid] = darr
         state["last_watch_calls"].append((varname, uid, darr, show))
+        metadata = {} if watched_metadata is None else watched_metadata
+        entry = {
+            "varname": varname,
+            "uid": uid,
+            "workspace_link_id": metadata.get("workspace_link_id"),
+            "source_label": metadata.get("source_label"),
+            "connected": True,
+        }
+        state["watch_info"]["watched"] = [
+            item for item in state["watch_info"]["watched"] if item.get("uid") != uid
+        ]
+        state["watch_info"]["watched"].append(entry)
 
     def unwatch_data(uid, remove=False, target=None):
         state["watched"].pop(uid, None)
@@ -61,6 +77,9 @@ def patch_manager(monkeypatch):
     def fetch(uid, target=None):
         return state["fetch_map"].get(uid)
 
+    def watch_info(target=None):
+        return state["watch_info"]
+
     # Patch manager attributes on the already-imported module namespace
     manager = erlab.interactive.imagetool.manager
     monkeypatch.setattr(manager, "_watch_data", watch_data, raising=False)
@@ -68,6 +87,7 @@ def patch_manager(monkeypatch):
     monkeypatch.setattr(manager, "watch_data", watch_data, raising=False)
     monkeypatch.setattr(manager, "unwatch_data", unwatch_data, raising=False)
     monkeypatch.setattr(manager, "fetch", fetch, raising=False)
+    monkeypatch.setattr(manager, "watch_info", watch_info, raising=False)
     monkeypatch.setattr(manager, "HOST_IP", "127.0.0.1", raising=False)
     monkeypatch.setattr(
         watcher_core,
@@ -137,6 +157,230 @@ def test_watch_and_maybe_push_and_delete(fake_shell, patch_manager, monkeypatch)
     # Try pushing non-watched var -> no action
     watcher._push_to_gui("nonwatched", xr.DataArray())
 
+    watcher.shutdown()
+
+
+def test_watch_uid_reconnects_with_workspace_link_id(
+    fake_shell, patch_manager, monkeypatch
+):
+    fake_shell.user_ns["data"] = xr.DataArray(np.array([1, 2, 3]), dims=("x",))
+
+    watcher1 = _Watcher(fake_shell)
+    monkeypatch.setattr(watcher1, "start_thread", lambda: None)
+    watcher1.watch("data")
+    uid1 = watcher1.watched_vars["data"]["uid"]
+    watcher1.shutdown()
+
+    watcher2 = _Watcher(fake_shell)
+    monkeypatch.setattr(watcher2, "start_thread", lambda: None)
+    watcher2.watch("data")
+    uid2 = watcher2.watched_vars["data"]["uid"]
+
+    assert uid2 == uid1
+    assert uid1.startswith("watch:")
+    assert patch_manager["last_watch_calls"][-1][1] == uid1
+    watcher2.shutdown()
+
+
+def test_watch_binding_helpers_handle_invalid_and_labeled_entries(monkeypatch):
+    messages = []
+    entries = watcher_core._watch_entries(
+        {
+            "watched": [
+                {"varname": "data", "uid": "watch:data", "workspace_link_id": "a"},
+                {"varname": "data", "uid": "watch:old", "workspace_link_id": "b"},
+                {"varname": "other", "uid": "watch:other", "workspace_link_id": "a"},
+                {"varname": None, "uid": "watch:invalid"},
+            ]
+        }
+    )
+
+    assert watcher_core._watch_entries({"watched": object()}) == ()
+    assert watcher_core._matching_watch_entries(
+        entries, varname="data", workspace_link_id="a"
+    ) == [{"varname": "data", "uid": "watch:data", "workspace_link_id": "a"}]
+    assert watcher_core._select_watch_entry(
+        [
+            {"varname": "data", "uid": "watch:a", "source_label": "notebook-a"},
+            {"varname": "data", "uid": "watch:b", "source_label": "notebook-b"},
+        ],
+        varname="data",
+        source_label="notebook-b",
+    ) == {"varname": "data", "uid": "watch:b", "source_label": "notebook-b"}
+    with pytest.raises(watcher_core._AmbiguousWatchBindingError):
+        watcher_core._select_watch_entry(
+            [
+                {"varname": "data", "uid": "watch:a", "source_label": None},
+                {"varname": "data", "uid": "watch:b", "source_label": ""},
+            ],
+            varname="data",
+            source_label=None,
+        )
+
+    monkeypatch.setattr(
+        watcher_core,
+        "_display_message",
+        lambda message, html=None: messages.append((message, html)),
+    )
+    restored = watcher_core._restore_varnames(
+        {
+            "watched": [
+                {"varname": "data", "uid": "watch:a", "source_label": None},
+                {"varname": "data", "uid": "watch:b", "source_label": ""},
+            ]
+        },
+        {"data": xr.DataArray(np.array([1]), dims=("x",))},
+        (),
+        source_label=None,
+    )
+    assert restored == ()
+    assert len(messages) == 1
+
+
+def test_watch_info_falls_back_to_local_uid(fake_shell, monkeypatch):
+    watcher = _Watcher(fake_shell)
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager,
+        "watch_info",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("manager down")),
+    )
+
+    info = watcher._watch_info(target=None)
+
+    assert info == {"workspace_link_id": watcher._uid, "watched": ()}
+    watcher.shutdown()
+
+
+def test_watch_restore_reconnects_workspace_rows(patch_manager, monkeypatch):
+    namespace = {
+        "data": xr.DataArray(np.array([1, 2, 3]), dims=("x",)),
+        "other": "not data",
+    }
+    uid = watcher_core._stable_watch_uid("workspace-link-0", "data")
+    patch_manager["watch_info"]["watched"] = [
+        {
+            "varname": "data",
+            "uid": uid,
+            "workspace_link_id": "workspace-link-0",
+            "source_label": None,
+            "connected": False,
+        },
+        {
+            "varname": "missing",
+            "uid": watcher_core._stable_watch_uid("workspace-link-0", "missing"),
+            "workspace_link_id": "workspace-link-0",
+            "source_label": None,
+            "connected": False,
+        },
+    ]
+    monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
+    monkeypatch.setattr(_Watcher, "start_polling", lambda self, interval_s=0.25: None)
+
+    watched = watcher_mod.watch(restore=True, namespace=namespace)
+
+    assert watched == ("data",)
+    assert patch_manager["last_watch_calls"][-1][1] == uid
+
+    watcher_mod.shutdown(namespace=namespace)
+
+
+def test_watch_restore_no_matches_skips_polling(patch_manager, monkeypatch):
+    namespace = {"other": "not data"}
+    poll_calls = []
+
+    monkeypatch.setattr(_Watcher, "start_thread", lambda self: None)
+    monkeypatch.setattr(
+        _Watcher,
+        "start_polling",
+        lambda self, interval_s=0.25: poll_calls.append(interval_s),
+    )
+
+    watched = watcher_mod.watch(restore=True, namespace=namespace)
+
+    assert watched == ()
+    assert patch_manager["last_watch_calls"] == []
+    assert poll_calls == []
+    watcher_mod.shutdown(namespace=namespace)
+
+
+def test_watch_warns_when_workspace_watch_match_is_ambiguous(
+    fake_shell, patch_manager, monkeypatch
+):
+    fake_shell.user_ns["data"] = xr.DataArray(np.array([1, 2, 3]), dims=("x",))
+    patch_manager["watch_info"]["watched"] = [
+        {
+            "varname": "data",
+            "uid": "watch:first",
+            "workspace_link_id": "workspace-link-0",
+            "source_label": "notebook-a",
+            "connected": False,
+        },
+        {
+            "varname": "data",
+            "uid": "watch:second",
+            "workspace_link_id": "workspace-link-0",
+            "source_label": "notebook-b",
+            "connected": False,
+        },
+    ]
+
+    watcher = _Watcher(fake_shell)
+    monkeypatch.setattr(watcher, "start_thread", lambda: None)
+
+    with pytest.raises(
+        watcher_core._AmbiguousWatchBindingError,
+        match="Multiple watched ImageTool rows match variable 'data'",
+    ):
+        watcher.watch("data")
+
+    assert patch_manager["last_watch_calls"] == []
+    watcher.shutdown()
+
+
+def test_recv_loop_ignores_mismatched_watch_uid(fake_shell, patch_manager, monkeypatch):
+    fake_shell.user_ns["a"] = xr.DataArray(np.array([0.0, 1.0]), dims=("x",))
+    watcher = _Watcher(fake_shell)
+    monkeypatch.setattr(watcher, "start_thread", lambda: None)
+    watcher.watch("a")
+    uid = watcher.watched_vars["a"]["uid"]
+
+    updated_da = xr.DataArray(np.array([10.0, 20.0]), dims=("x",))
+    patch_manager["fetch_map"][uid] = updated_da
+
+    class FakeSocket:
+        def __init__(self):
+            self._messages = [
+                {"varname": "a", "uid": "watch:other", "event": "updated"},
+                {"varname": "a", "uid": uid, "event": "updated"},
+            ]
+
+        def setsockopt(self, *args, **kwargs):
+            pass
+
+        def connect(self, *args, **kwargs):
+            pass
+
+        def recv_json(self):
+            if self._messages:
+                return self._messages.pop(0)
+            raise RuntimeError("stop")
+
+        def close(self):
+            pass
+
+    class FakeContext:
+        def socket(self, *_):
+            return FakeSocket()
+
+    monkeypatch.setattr(
+        watcher_core.zmq.Context, "instance", classmethod(lambda cls: FakeContext())
+    )
+
+    t = threading.Thread(target=watcher._recv_loop, daemon=True)
+    t.start()
+    t.join(timeout=2.0)
+
+    xr.testing.assert_identical(fake_shell.user_ns["a"], updated_da)
     watcher.shutdown()
 
 
@@ -304,6 +548,7 @@ def test_manager_reexports_watch_helpers():
     assert manager.watched_variables is watcher_mod.watched_variables
     assert manager.maybe_push is watcher_mod.maybe_push
     assert manager.shutdown is watcher_mod.shutdown
+    assert callable(manager.watch_info)
 
 
 def test_watch_shutdown_stops_threads_even_if_unwatch_fails(patch_manager, monkeypatch):
@@ -375,6 +620,74 @@ def test_watch_magic_delegates_to_watch_api(
     assert calls[-1][0] == ()
     assert calls[-1][1]["stop_all"] is True
     assert calls[-1][1]["remove"] is True
+
+    ip_shell.run_line_magic("watch", "--restore")
+    assert calls[-1][0] == ()
+    assert calls[-1][1]["restore"] is True
+    assert calls[-1][1]["target"] is None
+
+
+def test_watch_magic_restore_reports_reconnected_variables(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+    watched_states = iter([(), ("data",)])
+
+    monkeypatch.setattr(watcher_ipy, "watch", lambda *args, **kwargs: ())
+    monkeypatch.setattr(
+        watcher_ipy,
+        "watched_variables",
+        lambda **kwargs: next(watched_states),
+    )
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append((message, html)),
+    )
+
+    ip_shell.run_line_magic("watch", "--restore data")
+
+    assert len(messages) == 1
+
+
+def test_watch_magic_restore_reports_ambiguous_workspace_link(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+
+    def fake_watch(*varnames, **kwargs):
+        raise watcher_core._AmbiguousWatchBindingError("ambiguous watched row")
+
+    monkeypatch.setattr(watcher_ipy, "watch", fake_watch)
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append(message),
+    )
+
+    ip_shell.run_line_magic("watch", "--restore data")
+
+    assert messages == ["ambiguous watched row"]
+
+
+def test_watch_magic_reports_ambiguous_workspace_link(
+    ip_shell: IPython.InteractiveShell, monkeypatch
+):
+    messages = []
+
+    def fake_watch(*varnames, **kwargs):
+        raise watcher_core._AmbiguousWatchBindingError("ambiguous watched row")
+
+    monkeypatch.setattr(watcher_ipy, "watch", fake_watch)
+    monkeypatch.setattr(
+        watcher_ipy,
+        "_display_message",
+        lambda message, html=None: messages.append(message),
+    )
+
+    ip_shell.run_line_magic("watch", "data")
+
+    assert messages == ["ambiguous watched row"]
 
 
 def test_watch_magic_lists_currently_watched_variables(

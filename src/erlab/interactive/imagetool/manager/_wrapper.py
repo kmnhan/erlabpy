@@ -1062,6 +1062,9 @@ class _ImageToolWrapper(_ManagedWindowNode):
         uid: str,
         tool: ImageTool,
         watched_var: tuple[str, str] | None = None,
+        watched_workspace_link_id: str | None = None,
+        watched_source_label: str | None = None,
+        watched_connected: bool = True,
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         *,
@@ -1075,12 +1078,20 @@ class _ImageToolWrapper(_ManagedWindowNode):
         self._index = index
         self._watched_varname: str | None = None
         self._watched_uid: str | None = None
+        self._watched_workspace_link_id: str | None = None
+        self._watched_source_label: str | None = None
+        self._watched_connected: bool = False
         self._source_input_ndim = source_input_ndim
         self._source_input_dtype: np.dtype[typing.Any] | None = (
             np.dtype(source_input_dtype) if source_input_dtype is not None else None
         )
         if watched_var is not None:
-            self._watched_varname, self._watched_uid = watched_var
+            self.set_watched_binding(
+                *watched_var,
+                workspace_link_id=watched_workspace_link_id,
+                source_label=watched_source_label,
+                connected=watched_connected,
+            )
 
         super().__init__(
             manager,
@@ -1100,6 +1111,34 @@ class _ImageToolWrapper(_ManagedWindowNode):
     @property
     def watched(self) -> bool:
         return self._watched_varname is not None and self._watched_uid is not None
+
+    def set_watched_binding(
+        self,
+        varname: str,
+        uid: str,
+        *,
+        workspace_link_id: str | None = None,
+        source_label: str | None = None,
+        connected: bool = True,
+    ) -> None:
+        """Bind this root ImageTool to a watched variable."""
+        self._watched_varname = varname
+        self._watched_uid = uid
+        self._watched_workspace_link_id = workspace_link_id
+        self._watched_source_label = source_label
+        self._watched_connected = connected
+
+    def watched_metadata(self) -> dict[str, typing.Any]:
+        """Return JSON-serializable watched binding metadata."""
+        if not self.watched:
+            return {}
+        return {
+            "varname": self._watched_varname,
+            "uid": self._watched_uid,
+            "workspace_link_id": self._watched_workspace_link_id,
+            "source_label": self._watched_source_label,
+            "connected": self._watched_connected,
+        }
 
     def set_source_input_ndim(self, ndim: int | None) -> None:
         """Track the latest dimensionality of the root source before UI promotion."""
@@ -1174,6 +1213,9 @@ class _ImageToolWrapper(_ManagedWindowNode):
             )
             self._watched_varname = None
             self._watched_uid = None
+            self._watched_workspace_link_id = None
+            self._watched_source_label = None
+            self._watched_connected = False
             self.manager.tree_view.refresh(self.index)
             self.manager._mark_node_state_dirty(self.uid)
 
