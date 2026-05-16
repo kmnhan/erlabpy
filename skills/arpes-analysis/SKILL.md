@@ -57,8 +57,8 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 - Search `ImageTool`, `ImageTool Manager`, `%watch`, `fetch`,
   `show_in_manager`, `load_in_manager`, `managers`, `set_default_manager`,
   `manager_selection_info`, `workspace_path`, `Save Workspace`,
-  `Open Workspace`, `Add Data Files`, `Add Windows From Workspace`,
-  `%watch --restore`,
+  `Open Workspace`, `Open Recent`, `Add Data Files`,
+  `Add Windows From Workspace`, `%watch --restore`,
   `Reconnect Watched Variables`, `.itws`, `Result Placement`, `stale`,
   `automatic updates`, `Auto`, `Refit after update`, `code for repeating steps`,
   `ImageTool windows opened from tools`, or
