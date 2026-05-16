@@ -115,14 +115,6 @@ update. The {guilabel}`Automatic Updates…` dialog lets you apply a one-time up
 {guilabel}`Save`. Saving only changes the automatic-update preference; it does not
 refresh the current window immediately.
 
-:::{note}
-Planned improvement: when a stale child ImageTool was opened from a tool with
-detached file-backed provenance, {guilabel}`Reload Data` currently replays the child
-window's saved steps. A future release will add a way to rebuild that child from the
-parent tool's newest detached steps, so parent-side changes can be adopted without
-recreating the child window.
-:::
-
 Fitting tools can also take part in this flow. {guilabel}`ftool`, {guilabel}`goldtool`,
 and {guilabel}`restool` include {guilabel}`Refit after update`; when it is enabled,
 the tool reruns the same fit after compatible data from the ImageTool that opened it is
@@ -285,7 +277,7 @@ The following lists common actions included in the {guilabel}`File`, {guilabel}`
 - {guilabel}`Link` / {guilabel}`Unlink` – {kbd}`Ctrl+L` links the selected windows so they share cursors and slices; {kbd}`Ctrl+Shift+L` removes the links.
 - {guilabel}`Offload to Workspace` – Reloads the data as dask-backed data from the workspace file, freeing up memory but slowing down indexing. Use {guilabel}`Dask → Load Into Memory` in ImageTool to load it back into memory when needed.
 - {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
-- {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. Handy when data is updated during acquisition.
+- {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. When a source-bound child row is selected, reloads the reloadable ancestor ImageTool and refreshes the selected child path. Handy when data is updated during acquisition.
 
 Icons next to each entry indicate special states: linked windows share a colored badge,
 chunked Dask arrays show the dask icon, watched variables display their variable name,

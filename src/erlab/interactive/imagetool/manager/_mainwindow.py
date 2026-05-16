@@ -1777,6 +1777,60 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return None
         return uid if node.has_source_binding else None
 
+    def _selected_reload_targets(
+        self,
+    ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
+        selected_roots = self.tree_view.selected_imagetool_indices
+        selected_children = self.tree_view.selected_childtool_uids
+        if not selected_roots and not selected_children:
+            return None
+
+        reload_targets: list[int | str] = []
+        seen_targets: set[int | str] = set()
+        child_targets: dict[int | str, list[str]] = {}
+
+        def _add_reload_target(target: int | str) -> None:
+            if target in seen_targets:
+                return
+            seen_targets.add(target)
+            reload_targets.append(target)
+
+        for index in selected_roots:
+            if not self._node_for_target(index).reloadable:
+                return None
+            _add_reload_target(index)
+
+        for uid in selected_children:
+            try:
+                current: _ImageToolWrapper | _ManagedWindowNode = self._child_node(uid)
+            except KeyError:
+                return None
+            if not current.has_source_binding:
+                return None
+
+            reload_target: int | str | None = None
+            while True:
+                try:
+                    parent = self._parent_node(current)
+                except KeyError:
+                    break
+                if parent.is_imagetool and parent.reloadable:
+                    reload_target = (
+                        parent.index
+                        if isinstance(parent, _ImageToolWrapper)
+                        else parent.uid
+                    )
+                if isinstance(parent, _ImageToolWrapper):
+                    break
+                current = parent
+
+            if reload_target is None:
+                return None
+            _add_reload_target(reload_target)
+            child_targets.setdefault(reload_target, []).append(uid)
+
+        return reload_targets, child_targets
+
     @QtCore.Slot()
     def show_selected_source_updates(self) -> None:
         """Show automatic update controls for the selected child window."""
@@ -2567,6 +2621,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         imagetool_targets = self._selected_imagetool_targets()
         promotable_child_uid = self._selected_promotable_child_imagetool_uid()
         source_update_child_uid = self._selected_source_update_child_uid()
+        reload_targets = self._selected_reload_targets()
 
         selection_watched: list[int] = []
         selection_offloadable: list[int | str] = []
@@ -2609,11 +2664,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.store_action.setEnabled(bool(self.tree_view.selected_imagetool_indices))
 
-        self.reload_action.setVisible(
-            bool(imagetool_targets)
-            and len(selection_children) == 0
-            and all(self._node_for_target(s).reloadable for s in imagetool_targets)
-        )
+        self.reload_action.setVisible(reload_targets is not None)
         self.unwatch_action.setVisible(
             bool(imagetool_targets)
             and len(selection_watched) == len(imagetool_targets)
@@ -2899,8 +2950,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def reload_selected(self) -> None:
         """Reload data in selected ImageTool windows."""
-        for index in self._selected_imagetool_targets():
-            self._node_for_target(index).reload()
+        selected_reload_targets = self._selected_reload_targets()
+        if selected_reload_targets is None:
+            return
+
+        reload_targets, child_targets = selected_reload_targets
+        reloaded_targets: set[int | str] = set()
+        for target in reload_targets:
+            node = self._node_for_target(target)
+            if node.imagetool is not None and node.slicer_area._reload():
+                reloaded_targets.add(target)
+
+        for target, child_uids in child_targets.items():
+            if target not in reloaded_targets:
+                continue
+            for uid in child_uids:
+                self._refresh_source_chain_to_uid(uid)
 
     @QtCore.Slot()
     def remove_selected(self) -> None:

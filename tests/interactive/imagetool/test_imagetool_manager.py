@@ -1299,6 +1299,282 @@ def test_manager_childtool_source_updates(
         assert_nonempty_tooltip(tooltip_text)
 
 
+@pytest.mark.parametrize("auto_update", [False, True], ids=["manual", "auto"])
+def test_manager_reload_selected_child_tool_refreshes_from_file_parent(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    auto_update: bool,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = test_data.rename("scan")
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, DerivativeTool)
+        child.set_source_binding(child.source_spec, auto_update=auto_update)
+
+        updated = source.copy(deep=True)
+        updated.data = np.asarray(updated.data) + 100.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+
+        with qtbot.wait_signal(child.sigDataChanged, timeout=5000):
+            manager.reload_selected()
+
+        assert child.source_state == "fresh"
+        xr.testing.assert_identical(fetch(0), updated)
+        xr.testing.assert_identical(child.tool_data, updated.transpose("eV", "alpha"))
+
+
+def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_tool = itool(source.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=False,
+        )
+
+        grandchild_tool = itool(
+            source.isel(y=slice(0, 2)), manager=False, execute=False
+        )
+        assert isinstance(grandchild_tool, erlab.interactive.imagetool.ImageTool)
+        grandchild_uid = manager.add_imagetool_child(
+            grandchild_tool,
+            child_uid,
+            show=False,
+            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_auto_update=False,
+        )
+
+        child_node = manager._child_node(child_uid)
+        grandchild_node = manager._child_node(grandchild_uid)
+        updated = source + 50.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, grandchild_uid)
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+
+        with qtbot.wait_signal(
+            grandchild_tool.slicer_area.sigDataChanged, timeout=5000
+        ):
+            manager.reload_selected()
+
+        assert child_node.source_state == "fresh"
+        assert grandchild_node.source_state == "fresh"
+        xr.testing.assert_identical(fetch(child_uid), updated)
+        xr.testing.assert_identical(fetch(grandchild_uid), updated.isel(y=slice(0, 2)))
+
+
+def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        first_tool = itool(source.isel(x=slice(0, 2)), manager=False, execute=False)
+        second_tool = itool(source.isel(x=slice(2, 4)), manager=False, execute=False)
+        assert isinstance(first_tool, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(second_tool, erlab.interactive.imagetool.ImageTool)
+        first_uid = manager.add_imagetool_child(
+            first_tool,
+            0,
+            show=False,
+            source_spec=prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)})),
+            source_auto_update=False,
+        )
+        second_uid = manager.add_imagetool_child(
+            second_tool,
+            0,
+            show=False,
+            source_spec=prov.selection(prov.IselOperation(kwargs={"x": slice(2, 4)})),
+            source_auto_update=False,
+        )
+
+        root_node = manager._imagetool_wrappers[0]
+        root_area = root_node.slicer_area
+        original_reload = root_area._reload
+        reload_calls: list[int] = []
+
+        def _track_reload() -> bool:
+            reload_calls.append(root_node.index)
+            return original_reload()
+
+        monkeypatch.setattr(root_area, "_reload", _track_reload)
+
+        updated = source + 100.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, first_uid)
+        select_child_tool(manager, second_uid)
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+
+        manager.reload_selected()
+
+        assert reload_calls == [0]
+        qtbot.wait_until(
+            lambda: (
+                manager._child_node(first_uid).source_state == "fresh"
+                and manager._child_node(second_uid).source_state == "fresh"
+            ),
+            timeout=5000,
+        )
+        xr.testing.assert_identical(fetch(first_uid), updated.isel(x=slice(0, 2)))
+        xr.testing.assert_identical(fetch(second_uid), updated.isel(x=slice(2, 4)))
+
+
+def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        eligible_tool = itool(source.isel(x=slice(0, 2)), manager=False, execute=False)
+        unbound_tool = itool(source.isel(x=slice(1, 3)), manager=False, execute=False)
+        assert isinstance(eligible_tool, erlab.interactive.imagetool.ImageTool)
+        assert isinstance(unbound_tool, erlab.interactive.imagetool.ImageTool)
+        eligible_uid = manager.add_imagetool_child(
+            eligible_tool,
+            0,
+            show=False,
+            source_spec=prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)})),
+            source_auto_update=False,
+        )
+        unbound_uid = manager.add_imagetool_child(unbound_tool, 0, show=False)
+
+        root_node = manager._imagetool_wrappers[0]
+        reload_calls: list[int] = []
+        monkeypatch.setattr(
+            root_node.slicer_area,
+            "_reload",
+            lambda: reload_calls.append(root_node.index) or True,
+        )
+
+        updated = source + 100.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, eligible_uid)
+        select_child_tool(manager, unbound_uid)
+        manager._update_actions()
+        assert not manager.reload_action.isVisible()
+
+        manager.reload_selected()
+
+        assert reload_calls == []
+        xr.testing.assert_identical(fetch(0), source)
+        xr.testing.assert_identical(fetch(eligible_uid), source.isel(x=slice(0, 2)))
+
+
 def test_manager_full_data_childtool_updates_follow_transposed_view(
     qtbot,
     test_data,

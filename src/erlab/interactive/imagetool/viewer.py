@@ -1912,6 +1912,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return self._fetch_for_provenance_reload(), {}
         raise RuntimeError("Data cannot be reloaded")
 
+    def _reload(self) -> bool:
+        """Reload the displayed data and return whether the reload succeeded."""
+        if self.reloadable:  # pragma: no branch
+            try:
+                data, kwargs = self._fetch_reload_data()
+                self.replace_source_data(data, **kwargs)
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    self, "Error", "An error occurred while reloading data."
+                )
+                return False
+            return True
+        return False
+
     @QtCore.Slot()
     def reload(self) -> None:
         """Reload the displayed data from direct file state or file-rooted provenance.
@@ -1923,14 +1937,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         --------
         :attr:`reloadable`
         """
-        if self.reloadable:  # pragma: no branch
-            try:
-                data, kwargs = self._fetch_reload_data()
-                self.replace_source_data(data, **kwargs)
-            except Exception:
-                erlab.interactive.utils.MessageDialog.critical(
-                    self, "Error", "An error occurred while reloading data."
-                )
+        self._reload()
 
     def update_values(
         self, values: npt.NDArray | xr.DataArray, update: bool = True
