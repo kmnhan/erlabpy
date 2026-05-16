@@ -7,6 +7,7 @@ __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 import ast
 import contextlib
 import importlib
+import sys
 import typing
 import weakref
 
@@ -21,6 +22,40 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
+
+
+_MPL_QT_CURSOR_PATCH_ATTR = "_erlab_original_set_cursor"
+
+
+def _patch_packaged_macos_matplotlib_qt_cursor() -> None:
+    """Disable Matplotlib Qt cursor updates in the packaged macOS manager."""
+    if sys.platform != "darwin" or not erlab.utils.misc._IS_PACKAGED:
+        return
+
+    backend_qt = importlib.import_module("matplotlib.backends.backend_qt")
+    canvas_cls = typing.cast("typing.Any", getattr(backend_qt, "FigureCanvasQT", None))
+    if canvas_cls is None or hasattr(canvas_cls, _MPL_QT_CURSOR_PATCH_ATTR):
+        return
+
+    original_set_cursor = canvas_cls.set_cursor
+
+    def _set_cursor_noop(self, cursor) -> None:
+        return None
+
+    # The standalone macOS manager can crash when Matplotlib QtAgg draw-time
+    # cursor updates enter Qt Cocoa's QImage::toCGImage conversion.
+    setattr(canvas_cls, _MPL_QT_CURSOR_PATCH_ATTR, original_set_cursor)
+    canvas_cls.set_cursor = _set_cursor_noop
+
+
+def _resolve_console_namespace(
+    namespace: dict[str, typing.Any],
+) -> dict[str, typing.Any]:
+    _patch_packaged_macos_matplotlib_qt_cursor()
+    return {
+        name: importlib.import_module(module) if isinstance(module, str) else module
+        for name, module in namespace.items()
+    }
 
 
 class ToolNamespace:
@@ -323,12 +358,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
 
             if self._namespace is not None:
                 self.kernel_manager.kernel.shell.push(
-                    {
-                        name: importlib.import_module(module)
-                        if isinstance(module, str)
-                        else module
-                        for name, module in self._namespace.items()
-                    }
+                    _resolve_console_namespace(self._namespace)
                 )
                 super().execute(
                     r"xr.set_options(keep_attrs=True)",

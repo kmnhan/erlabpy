@@ -31,6 +31,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool._itool as itool_mod
+import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._registry as manager_registry
@@ -11295,6 +11296,105 @@ def test_manager_console(
         # Destroy console
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
+
+
+def test_packaged_macos_matplotlib_cursor_patch_applies_once(monkeypatch) -> None:
+    class _Canvas:
+        def set_cursor(self, cursor):
+            raise AssertionError("original cursor setter should be patched")
+
+    original_set_cursor = _Canvas.set_cursor
+    backend_qt = types.SimpleNamespace(FigureCanvasQT=_Canvas)
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
+
+    def _import_module(name: str):
+        if name == "matplotlib.backends.backend_qt":
+            return backend_qt
+        raise AssertionError(f"Unexpected import: {name}")
+
+    monkeypatch.setattr(manager_console.importlib, "import_module", _import_module)
+
+    manager_console._patch_packaged_macos_matplotlib_qt_cursor()
+    patched_set_cursor = _Canvas.set_cursor
+
+    assert (
+        getattr(_Canvas, manager_console._MPL_QT_CURSOR_PATCH_ATTR)
+        is original_set_cursor
+    )
+    assert patched_set_cursor is not original_set_cursor
+    assert _Canvas().set_cursor(object()) is None
+
+    manager_console._patch_packaged_macos_matplotlib_qt_cursor()
+
+    assert _Canvas.set_cursor is patched_set_cursor
+    assert (
+        getattr(_Canvas, manager_console._MPL_QT_CURSOR_PATCH_ATTR)
+        is original_set_cursor
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform", "is_packaged"),
+    [
+        ("darwin", False),
+        ("linux", True),
+    ],
+)
+def test_packaged_macos_matplotlib_cursor_patch_skips_other_envs(
+    monkeypatch, platform: str, is_packaged: bool
+) -> None:
+    class _Canvas:
+        def set_cursor(self, cursor):
+            return cursor
+
+    original_set_cursor = _Canvas.set_cursor
+
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", is_packaged)
+
+    def _import_module(name: str):
+        raise AssertionError(f"Unexpected import: {name}")
+
+    monkeypatch.setattr(manager_console.importlib, "import_module", _import_module)
+
+    manager_console._patch_packaged_macos_matplotlib_qt_cursor()
+
+    assert not hasattr(_Canvas, manager_console._MPL_QT_CURSOR_PATCH_ATTR)
+    assert _Canvas.set_cursor is original_set_cursor
+
+
+def test_resolve_console_namespace_patches_before_lazy_import(monkeypatch) -> None:
+    events: list[str] = []
+    literal = object()
+
+    def _patch_cursor() -> None:
+        events.append("patch")
+
+    def _import_module(name: str):
+        events.append(name)
+        return f"module:{name}"
+
+    monkeypatch.setattr(
+        manager_console, "_patch_packaged_macos_matplotlib_qt_cursor", _patch_cursor
+    )
+    monkeypatch.setattr(manager_console.importlib, "import_module", _import_module)
+
+    resolved = manager_console._resolve_console_namespace(
+        {
+            "literal": literal,
+            "plt": "matplotlib.pyplot",
+            "era": "erlab.analysis",
+        }
+    )
+
+    assert events == ["patch", "matplotlib.pyplot", "erlab.analysis"]
+    assert resolved == {
+        "literal": literal,
+        "plt": "module:matplotlib.pyplot",
+        "era": "module:erlab.analysis",
+    }
 
 
 def test_tool_namespace_get_data_item(
