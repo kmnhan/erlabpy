@@ -10,7 +10,6 @@ import pathlib
 import platform
 import subprocess
 import sys
-import tempfile
 import threading
 import traceback
 import typing
@@ -436,6 +435,7 @@ _WATCHED_VAR_COLORS: tuple[QtGui.QColor, ...] = (
 
 _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME = "managerWorkspaceSaveShortcut"
 _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS = 0.5
+_WORKSPACE_REBIND_KEEP_CHUNKS = object()
 
 
 def _workspace_lock_owner_text(
@@ -805,13 +805,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.unlink_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
         self.unlink_action.setToolTip("Unlink selected windows")
 
-        self.archive_action = QtWidgets.QAction("Archive", self)
-        self.archive_action.triggered.connect(self.archive_selected)
-        self.archive_action.setToolTip("Archive selected windows")
-
-        self.unarchive_action = QtWidgets.QAction("Unarchive", self)
-        self.unarchive_action.triggered.connect(self.unarchive_selected)
-        self.unarchive_action.setToolTip("Unarchive selected windows")
+        self.offload_action = QtWidgets.QAction("Offload to Workspace", self)
+        self.offload_action.triggered.connect(self.offload_selected_to_workspace)
+        self.offload_action.setToolTip(
+            "Free this data from memory and use dask-backed data from the "
+            "workspace file"
+        )
 
         self.console_action = QtWidgets.QAction("Console", self)
         self.console_action.triggered.connect(self.toggle_console)
@@ -892,8 +891,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.hide_action)
         file_menu.addSeparator()
         file_menu.addAction(self.remove_action)
-        file_menu.addAction(self.archive_action)
-        file_menu.addAction(self.unarchive_action)
+        file_menu.addAction(self.offload_action)
         file_menu.addSeparator()
         file_menu.addAction(self.settings_action)
 
@@ -1055,9 +1053,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         # Set initial splitter sizes
         right_splitter.setSizes([280, 140, 96])
         main_splitter.setSizes([100, 150])
-
-        # Temporary directory for storing archived data
-        self._tmp_dir = tempfile.TemporaryDirectory(prefix="erlab_archive_")
 
         # Store most recent name filter and directory for new windows
         self._recent_name_filter: str | None = None
@@ -1445,11 +1440,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         shortcut.activated.connect(self.save)
 
     @property
-    def cache_dir(self) -> str:
-        """Name of the cache directory where archived data are stored."""
-        return self._tmp_dir.name
-
-    @property
     def ntools(self) -> int:
         """Number of ImageTool windows being handled by the manager."""
         return len(self._imagetool_wrappers)
@@ -1538,10 +1528,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node = self._node_for_target(target)
         return node.is_imagetool
 
-    def _target_is_archived(self, target: int | str) -> bool:
-        node = self._node_for_target(target)
-        return node.archived
-
     def _selected_imagetool_targets(self) -> list[int | str]:
         targets: list[int | str] = list(self.tree_view.selected_imagetool_indices)
         targets.extend(
@@ -1568,10 +1554,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return None
         if self.tree_view.selected_imagetool_indices or self._selected_tool_uids():
             return None
-        uid = child_imagetool_uids[0]
-        if self._target_is_archived(uid):
-            return None
-        return uid
+        return child_imagetool_uids[0]
 
     def _selected_source_update_child_uid(self) -> str | None:
         selected_child_uids = self.tree_view.selected_childtool_uids
@@ -1640,10 +1623,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
             if not node.has_source_binding or node.source_state == "fresh":
                 continue
-            if node.archived:
-                self._mark_descendants_source_state(current_uid, node.source_state)
-                return False
-
             updated = node._update_from_parent_source()
             if updated and node.source_state == "fresh":
                 continue
@@ -1709,8 +1688,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 continue
             updated = child.handle_parent_source_replaced(parent_data)
             self.tree_view.refresh(child_uid)
-            if child.archived:
-                continue
             if updated:
                 self._propagate_source_change_from_uid(child_uid)
             elif child.source_state != "fresh":
@@ -1967,16 +1944,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.tree_view.refresh()
         self._mark_workspace_structure_dirty("Reindexed root windows")
 
-    def get_imagetool(self, index: int | str, unarchive: bool = True) -> ImageTool:
+    def get_imagetool(self, index: int | str) -> ImageTool:
         """Get the ImageTool object corresponding to the given index.
 
         Parameters
         ----------
         index
             Index of the ImageTool window to retrieve.
-        unarchive
-            Whether to unarchive the tool if it is archived, by default `True`. If set
-            to `False`, an error will be raised if the tool is archived.
 
         Returns
         -------
@@ -1987,13 +1961,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if not node.is_imagetool:
             raise KeyError(f"Target {index!r} is not an ImageTool")
 
-        wrapper = node
-        if wrapper.archived:
-            if unarchive:
-                wrapper.unarchive()
-            else:
-                raise KeyError(f"Tool of target '{index}' is archived")
-        tool = wrapper.imagetool
+        tool = node.imagetool
         if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
             raise KeyError(f"Tool of target '{index}' is not available")
         return tool
@@ -2390,18 +2358,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
         promotable_child_uid = self._selected_promotable_child_imagetool_uid()
         source_update_child_uid = self._selected_source_update_child_uid()
 
-        selection_archived: list[int | str] = []
-        selection_unarchived: list[int | str] = []
         selection_watched: list[int] = []
+        selection_offloadable: list[int | str] = []
 
         for target in imagetool_targets:
             node = self._node_for_target(target)
-            if node.archived:
-                selection_archived.append(target)
-            else:
-                selection_unarchived.append(target)
             if isinstance(node, _ImageToolWrapper) and node.watched:
                 selection_watched.append(node.index)
+            if (
+                node.imagetool is not None
+                and node.is_imagetool
+                and not node.slicer_area.data_chunked
+            ):
+                selection_offloadable.append(target)
 
         something_selected = bool(imagetool_targets or selection_children)
         root_imagetool_count = len(self.tree_view.selected_imagetool_indices)
@@ -2411,35 +2380,29 @@ class ImageToolManager(QtWidgets.QMainWindow):
             root_imagetool_count > 1 and root_imagetool_count == total_selected
         )
         multiple_selected = len(imagetool_targets) > 1
-        only_unarchived = len(selection_archived) == 0
-        only_archived = len(selection_unarchived) == 0 and len(imagetool_targets) > 0
 
         self.show_action.setEnabled(something_selected)
         self.hide_action.setEnabled(something_selected)
         self.remove_action.setEnabled(something_selected)
         self.rename_action.setEnabled(
-            only_unarchived and (single_selected or multiple_root_imagetools_selected)
+            single_selected or multiple_root_imagetools_selected
         )
         self.duplicate_action.setEnabled(something_selected)
         self.promote_action.setEnabled(promotable_child_uid is not None)
-        self.archive_action.setEnabled(
-            bool(imagetool_targets) and only_unarchived and len(selection_children) == 0
-        )
-        self.unarchive_action.setEnabled(
-            bool(imagetool_targets) and only_archived and len(selection_children) == 0
+        self.offload_action.setEnabled(
+            bool(imagetool_targets)
+            and len(selection_children) == 0
+            and len(selection_offloadable) == len(imagetool_targets)
         )
         self.concat_action.setEnabled(
             multiple_selected and len(selection_children) == 0
         )
-        self.store_action.setEnabled(
-            bool(self.tree_view.selected_imagetool_indices) and only_unarchived
-        )
+        self.store_action.setEnabled(bool(self.tree_view.selected_imagetool_indices))
 
         self.reload_action.setVisible(
             bool(imagetool_targets)
-            and only_unarchived
             and len(selection_children) == 0
-            and all(self._node_for_target(s).reloadable for s in selection_unarchived)
+            and all(self._node_for_target(s).reloadable for s in imagetool_targets)
         )
         self.unwatch_action.setVisible(
             bool(imagetool_targets)
@@ -2453,22 +2416,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.source_update_action.setVisible(source_update_child_uid is not None)
         self.source_update_action.setEnabled(source_update_child_uid is not None)
 
-        if not imagetool_targets or selection_children or not only_unarchived:
+        if not imagetool_targets or selection_children:
             self.link_action.setDisabled(True)
             self.unlink_action.setDisabled(True)
             return
 
-        self.link_action.setDisabled(len(selection_unarchived) <= 1)
+        self.link_action.setDisabled(len(imagetool_targets) <= 1)
         is_linked = [
             self.get_imagetool(index).slicer_area.is_linked
-            for index in selection_unarchived
+            for index in imagetool_targets
         ]
         self.unlink_action.setEnabled(any(is_linked))
 
-        if len(selection_unarchived) > 1 and all(is_linked):
+        if len(imagetool_targets) > 1 and all(is_linked):
             proxies = [
                 self.get_imagetool(index).slicer_area._linking_proxy
-                for index in selection_unarchived
+                for index in imagetool_targets
             ]
             if all(p == proxies[0] for p in proxies):  # pragma: no branch
                 self.link_action.setEnabled(False)
@@ -2700,14 +2663,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def show_selected(self) -> None:
         """Show selected windows."""
         index_list = self._selected_imagetool_targets()
-
-        require_unarchive = any(self._target_is_archived(i) for i in index_list)
-        if require_unarchive:  # pragma: no branch
-            # This is just to display the wait dialog for unarchiving.
-            # If this part is removed, the showing will just hang until the unarchiving
-            # is finished without any feedback.
-            self.unarchive_selected()
-
         for index in index_list:
             self._node_for_target(index).show()
 
@@ -2873,8 +2828,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node = self._child_node(uid)
         if not node.is_imagetool:
             raise KeyError(f"Target {uid!r} is not an ImageTool")
-        if node.archived:
-            raise KeyError(f"Target {uid!r} is archived")
 
         row_index = self.tree_view._model._row_index(uid)
         was_expanded = row_index.isValid() and self.tree_view.isExpanded(row_index)
@@ -2949,18 +2902,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self.tree_view.deselect_all()
 
     @QtCore.Slot()
-    def archive_selected(self) -> None:
-        """Archive selected ImageTool windows."""
-        with erlab.interactive.utils.wait_dialog(self, "Archiving..."):
-            for index in self._selected_imagetool_targets():
-                self._node_for_target(index).archive()
+    def offload_selected_to_workspace(self) -> None:
+        """Replace selected in-memory data with dask-backed workspace data.
 
-    @QtCore.Slot()
-    def unarchive_selected(self) -> None:
-        """Unarchive selected ImageTool windows."""
-        with erlab.interactive.utils.wait_dialog(self, "Unarchiving..."):
-            for index in self._selected_imagetool_targets():
-                self._node_for_target(index).unarchive()
+        .. versionadded:: 3.23.0
+        """
+        self.offload_to_workspace(self._selected_imagetool_targets())
 
     @property
     def _concat_dialog(self) -> _ConcatDialog:
@@ -3576,7 +3523,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     "kind": "imagetool" if node.is_imagetool else "tool",
                     "parent_uid": node.parent_uid,
                     "display_name": node.display_text,
-                    "archived": node.archived,
                 }
             )
             for child_uid in node._childtool_indices:
@@ -3836,7 +3782,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         fname: str | os.PathLike[str],
         uid: str,
         *,
-        chunks: str | None,
+        chunks: typing.Any,
     ) -> xr.DataArray:
         ds = _manager_xarray.open_workspace_dataset(
             fname, self._workspace_payload_path(uid), chunks=chunks
@@ -3856,31 +3802,44 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _rebind_workspace_backed_imagetools(
         self,
         fname: str | os.PathLike[str],
+        *,
+        targets: Iterable[int | str] | None = None,
+        chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
     ) -> None:
         pending: list[
             tuple[
                 _ManagedWindowNode,
                 typing.Any,
                 str,
-                str | None,
+                typing.Any,
             ]
         ] = []
-        nodes = (
-            node
-            for node in self._all_nodes.values()
-            if node.is_imagetool and node.imagetool is not None
-        )
+        if targets is None:
+            nodes = [
+                node
+                for node in self._all_nodes.values()
+                if node.is_imagetool and node.imagetool is not None
+            ]
+        else:
+            nodes = []
+            for target in targets:
+                node = self._node_for_target(target)
+                if node.is_imagetool and node.imagetool is not None:
+                    nodes.append(node)
         for node in sorted(nodes, key=lambda node: self._workspace_node_path(node.uid)):
             tool = node.imagetool
             if tool is None:
                 continue
             slicer_area = tool.slicer_area
+            rebind_chunks = chunks
+            if rebind_chunks is _WORKSPACE_REBIND_KEEP_CHUNKS:
+                rebind_chunks = {} if slicer_area._data.chunks is not None else None
             pending.append(
                 (
                     node,
                     copy.deepcopy(slicer_area.state),
                     node.name,
-                    "auto" if slicer_area._data.chunks is not None else None,
+                    rebind_chunks,
                 )
             )
         if not pending:
@@ -3897,6 +3856,60 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 slicer_area.set_data(data, auto_compute=False)
                 slicer_area.state = state
                 node.name = name
+
+    def offload_to_workspace(
+        self, targets: Iterable[int | str], *, native: bool = True
+    ) -> bool:
+        """Replace selected in-memory ImageTools with dask-backed workspace data.
+
+        .. versionadded:: 3.23.0
+        """
+        offload_targets: list[int | str] = []
+        for target in targets:
+            node = self._node_for_target(target)
+            if (
+                node.is_imagetool
+                and node.imagetool is not None
+                and not node.slicer_area.data_chunked
+            ):
+                offload_targets.append(target)
+        if not offload_targets:
+            return False
+
+        if self._workspace_path is None:
+            if not self.save_as(native=native):
+                return False
+        elif (
+            self.is_workspace_modified or self._workspace_needs_full_save
+        ) and not self.save(native=native):
+            return False
+
+        if self._workspace_path is None:
+            return False
+
+        origin = self._active_managed_window()
+        try:
+            with erlab.interactive.utils.wait_dialog(
+                origin or self, "Offloading to workspace..."
+            ):
+                self._rebind_workspace_backed_imagetools(
+                    self._workspace_path,
+                    targets=offload_targets,
+                    chunks={},
+                )
+            self._status_bar.showMessage("Data offloaded to workspace", 5000)
+        except Exception:
+            self._show_operation_error(
+                "Error while offloading to workspace",
+                "An error occurred while reconnecting data from the workspace file.",
+            )
+            self._restore_focus_after_workspace_save(origin)
+            return False
+
+        self._restore_focus_after_workspace_save(origin)
+        self._update_actions()
+        self._update_info()
+        return True
 
     def _workspace_requires_full_save(self, fname: str | os.PathLike[str]) -> bool:
         return _manager_workspace._workspace_requires_full_save(
@@ -5069,7 +5082,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         This is mainly used for handling tool windows such as goldtool and dtool opened
         from child ImageTool windows. This way, they can stay open even when the
-        ImageTool that opened them is archived or removed.
+        ImageTool that opened them is removed.
 
         All additional windows are closed when the manager is closed.
 
@@ -5463,9 +5476,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if self._standalone_app_windows:
             logger.debug("Closing standalone apps...")
             self._close_standalone_apps()
-
-        logger.debug("Cleaning up temporary directory...")
-        self._tmp_dir.cleanup()
 
         logger.debug("Releasing workspace lock...")
         self._release_workspace_lock()

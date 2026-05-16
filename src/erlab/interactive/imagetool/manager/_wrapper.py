@@ -7,7 +7,6 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 import contextlib
 import datetime
 import keyword
-import os
 import sys
 import typing
 import weakref
@@ -140,11 +139,6 @@ class _ManagedWindowNode(QtCore.QObject):
             "imagetool" if isinstance(window, ImageTool) else "tool"
         )
         self._name = window.windowTitle()
-        self._archived_fname: str | None = None
-        self._info_text_archived: str = ""
-        self._metadata_fields_archived: list[_MetadataField] = []
-        self._box_ratio_archived: float = float("NaN")
-        self._pixmap_archived: QtGui.QPixmap = QtGui.QPixmap()
 
         self._source_spec: (
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
@@ -156,10 +150,6 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_auto_update: bool = False
         self._output_id: str | None = None
         self._suspend_descendant_signal_propagation: bool = False
-
-        self.touch_timer = QtCore.QTimer(self)
-        self.touch_timer.setInterval(12 * 60 * 60 * 1000)
-        self.touch_timer.timeout.connect(self.touch_archive)
 
         self.window = window
         if source_spec is not None:
@@ -200,11 +190,6 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @window.setter
     def window(self, value: QtWidgets.QWidget | None) -> None:
-        had_archive_file = (
-            self.is_imagetool
-            and self._imagetool is None
-            and self._archived_fname is not None
-        )
         if self.imagetool is not None:
             self._detach_imagetool()
         elif self.tool_window is not None:
@@ -220,9 +205,6 @@ class _ManagedWindowNode(QtCore.QObject):
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
             old.close()
             self._tool_window = None
-
-        if had_archive_file:
-            self._discard_archived_file()
 
         if value is None:
             return
@@ -240,6 +222,9 @@ class _ManagedWindowNode(QtCore.QObject):
                 self._handle_imagetool_state_changed
             )
             value.slicer_area.sigDataEdited.connect(self._handle_imagetool_data_edited)
+            value.slicer_area.sigDataBackingChanged.connect(
+                self._handle_imagetool_backing_changed
+            )
             value.slicer_area.sigSourceDataReplaced.connect(
                 self._handle_source_data_replaced
             )
@@ -283,6 +268,10 @@ class _ManagedWindowNode(QtCore.QObject):
         with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigDataEdited.disconnect(self._handle_imagetool_data_edited)
         with contextlib.suppress(TypeError, RuntimeError):
+            old.slicer_area.sigDataBackingChanged.disconnect(
+                self._handle_imagetool_backing_changed
+            )
+        with contextlib.suppress(TypeError, RuntimeError):
             old.slicer_area.sigSourceDataReplaced.disconnect(
                 self._handle_source_data_replaced
             )
@@ -318,10 +307,6 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.imagetool is None:
             raise ValueError("ImageTool is not available")
         return self.imagetool.slicer_area
-
-    @property
-    def archived(self) -> bool:
-        return self.is_imagetool and self.imagetool is None
 
     @property
     def name(self) -> str:
@@ -364,16 +349,13 @@ class _ManagedWindowNode(QtCore.QObject):
             return erlab.interactive.utils._apply_qt_accent_color(
                 self.tool_window.info_text
             )
-        if self.archived:
-            text = self._info_text_archived
-        else:
-            text = erlab.utils.formatting.format_darr_html(
-                self.slicer_area._data,
-                show_size=True,
-                additional_info=[
-                    f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
-                ],
-            )
+        text = erlab.utils.formatting.format_darr_html(
+            self.slicer_area._data,
+            show_size=True,
+            additional_info=[
+                f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
+            ],
+        )
         return erlab.interactive.utils._apply_qt_accent_color(text)
 
     @property
@@ -435,9 +417,6 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def metadata_fields(self) -> list[_MetadataField]:
-        if self.archived and self._metadata_fields_archived:
-            return list(self._metadata_fields_archived)
-
         tool_window = self.tool_window
         kind_value = "ImageTool"
         if not self.is_imagetool:
@@ -480,9 +459,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def _preview_image(self) -> tuple[float, QtGui.QPixmap]:
-        return _preview_from_imagetool(
-            self.imagetool, self._box_ratio_archived, self._pixmap_archived
-        )
+        return _preview_from_imagetool(self.imagetool, float("NaN"), QtGui.QPixmap())
 
     @property
     def source_spec(
@@ -564,20 +541,6 @@ class _ManagedWindowNode(QtCore.QObject):
         self._childtools.pop(uid, None)
         with contextlib.suppress(ValueError):
             self._childtool_indices.remove(uid)
-
-    def _discard_archived_file(self) -> None:
-        if self._archived_fname is None:
-            return
-        self.touch_timer.stop()
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(self._archived_fname)
-        self._archived_fname = None
-
-    @QtCore.Slot()
-    def touch_archive(self) -> None:
-        if self._archived_fname is not None and os.path.exists(self._archived_fname):
-            with open(self._archived_fname, "a"):
-                os.utime(self._archived_fname)
 
     def set_source_binding(
         self,
@@ -809,9 +772,6 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def show(self) -> None:
-        if self.archived:
-            self.unarchive()
-
         window = self.window
         if window is None:
             return
@@ -842,48 +802,6 @@ class _ManagedWindowNode(QtCore.QObject):
         self.window = None
 
     @QtCore.Slot()
-    def archive(self) -> None:
-        if not self.is_imagetool or self.archived:
-            return
-        self._archived_fname = os.path.join(self.manager.cache_dir, f"{self.uid}.nc")
-        imagetool = typing.cast("ImageTool", self.imagetool)
-        imagetool.to_file(self._archived_fname)
-        self.touch_timer.start()
-
-        self._info_text_archived = self.info_text
-        self._metadata_fields_archived = self.metadata_fields
-        self._box_ratio_archived, self._pixmap_archived = self._preview_image
-        self.dispose()
-        self.manager._mark_descendants_source_unavailable(self.uid)
-        self.manager._mark_workspace_structure_dirty("Archived window")
-
-    @QtCore.Slot()
-    def unarchive(self) -> None:
-        if not self.is_imagetool or not self.archived:
-            return
-        self.touch_timer.stop()
-        self.window = ImageTool.from_file(
-            typing.cast("str", self._archived_fname), _in_manager=True
-        )
-        typing.cast("ImageTool", self.imagetool).show()
-        self._info_text_archived = ""
-        self._metadata_fields_archived = []
-        self._box_ratio_archived = float("NaN")
-        self._pixmap_archived = QtGui.QPixmap()
-        self.manager._sigReloadLinkers.emit()
-        self.manager._install_workspace_save_shortcut(
-            typing.cast("QtWidgets.QWidget", self.window)
-        )
-        self.manager._mark_workspace_structure_dirty("Unarchived window")
-        if self.has_source_binding and self.source_state != "fresh":
-            if self.source_auto_update:
-                self._update_from_parent_source()
-            else:
-                self.manager._mark_descendants_source_state(self.uid, self.source_state)
-            return
-        self.manager._propagate_source_change_from_uid(self.uid)
-
-    @QtCore.Slot()
     def reload(self) -> None:
         if self.imagetool is not None:
             self.slicer_area.reload()
@@ -905,6 +823,11 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:
         self.manager._mark_node_data_dirty(self.uid)
+
+    @QtCore.Slot()
+    def _handle_imagetool_backing_changed(self) -> None:
+        self.manager._mark_node_data_dirty(self.uid)
+        self._refresh_node_info()
 
     def _update_from_parent_source(self) -> bool:
         if self.tool_window is not None:
@@ -965,11 +888,8 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.tool_window.handle_parent_source_replaced(parent_data)
             return self.tool_window.source_state == "fresh"
 
-        if self.archived and self.has_source_binding:
-            # Archived ImageTools cannot apply live updates because their window is not
-            # available. Defer the refresh until unarchive instead of treating the node
-            # as unavailable.
-            self._set_source_state("stale")
+        if self.imagetool is None and self.has_source_binding:
+            self._set_source_state("unavailable")
             return False
 
         if self._output_id is not None and not self._source_auto_update:

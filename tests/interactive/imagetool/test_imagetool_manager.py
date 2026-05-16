@@ -634,13 +634,6 @@ def test_manager(
         assert manager.get_imagetool(1).slicer_area.is_linked
         assert manager.get_imagetool(2).slicer_area.is_linked
 
-        # Archiving and unarchiving
-        manager._imagetool_wrappers[1].archive()
-        manager._imagetool_wrappers[1].touch_archive()
-        assert manager._imagetool_wrappers[1].archived
-        manager._imagetool_wrappers[1].unarchive()
-        assert not manager._imagetool_wrappers[1].archived
-
         # Toggle visibility
         geometry = manager.get_imagetool(1).geometry()
         manager._imagetool_wrappers[1].hide()
@@ -648,8 +641,7 @@ def test_manager(
         manager._imagetool_wrappers[1].show()
         assert manager.get_imagetool(1).geometry() == geometry
 
-        # Removing archived tool
-        manager._imagetool_wrappers[0].archive()
+        # Removing tool
         manager.remove_imagetool(0)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
@@ -693,29 +685,11 @@ def test_manager(
         bring_manager_to_top(qtbot, manager)
         manager._update_info()
 
-        # Archive & unarchive single
-        manager.archive_action.trigger()
-        qtbot.wait_until(lambda: manager._imagetool_wrappers[1].archived, timeout=5000)
-
-        # Update info panel
-        bring_manager_to_top(qtbot, manager)
-        manager._update_info()
-
-        manager._imagetool_wrappers[1].unarchive()
-
-        # Batch archiving with show/hide
-        select_tools(manager, [1])
-        manager.archive_action.trigger()
-
+        # Batch show/hide
         select_tools(manager, [1, 2])
-
-        # Hide non-archived window, does nothing to archived window
         manager.hide_action.trigger()
-        # Unarchive the archived one and show both
         manager.show_action.trigger()
 
-        assert not manager._imagetool_wrappers[1].archived
-        assert not manager._imagetool_wrappers[2].archived
         assert manager.get_imagetool(1).isVisible()
         assert manager.get_imagetool(2).isVisible()
 
@@ -912,42 +886,6 @@ def test_manager(
 
         # Show about dialog
         accept_dialog(manager.about)
-
-
-def test_manager_archived_cache_cleanup(
-    qtbot,
-    test_data,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    with manager_context() as manager:
-        manager.show()
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-
-        test_data.qshow(manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        wrapper = manager._imagetool_wrappers[0]
-
-        wrapper.archive()
-        qtbot.wait_until(lambda: wrapper.archived, timeout=5000)
-        archived_path = pathlib.Path(typing.cast("str", wrapper._archived_fname))
-        assert archived_path.exists()
-
-        wrapper.unarchive()
-        qtbot.wait_until(lambda: not wrapper.archived, timeout=5000)
-        assert wrapper._archived_fname is None
-        assert not archived_path.exists()
-
-        wrapper.archive()
-        qtbot.wait_until(lambda: wrapper.archived, timeout=5000)
-        archived_path = pathlib.Path(typing.cast("str", wrapper._archived_fname))
-        assert archived_path.exists()
-
-        manager.remove_imagetool(0)
-        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
-        assert not archived_path.exists()
 
 
 def test_remove_from_window_shortcut(
@@ -3083,102 +3021,6 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         assert ".transpose(" in copied
 
 
-def test_manager_archived_output_child_reopens_existing_slot(
-    qtbot,
-    monkeypatch,
-    gold,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    with manager_context() as manager:
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        manager.show()
-
-        itool(gold, link=False, manager=True)
-        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-
-        child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child_uid = manager.add_childtool(child, 0, show=False)
-        configure_goldtool_child(child, fitted=True, spline=True)
-        child.open_itool()
-
-        child_node = manager._child_node(child_uid)
-        qtbot.wait_until(lambda: len(child_node._childtool_indices) == 1, timeout=5000)
-
-        output_uid = child_node._childtool_indices[0]
-        output_node = manager._child_node(output_uid)
-        output_node.archive()
-        assert output_node.archived
-
-        monkeypatch.setattr(
-            child, "_prompt_existing_output_imagetool", lambda: "update"
-        )
-        child.open_itool()
-
-        assert child_node._childtool_indices == [output_uid]
-        assert not output_node.archived
-        xr.testing.assert_identical(fetch(output_uid), child.corrected)
-
-
-def test_manager_archived_auto_updating_child_refreshes_on_unarchive(
-    qtbot,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    prov = erlab.interactive.imagetool.provenance
-    base = xr.DataArray(
-        np.arange(16, dtype=float).reshape((4, 4)),
-        dims=["x", "y"],
-        coords={"x": np.arange(4), "y": np.arange(4)},
-        name="scan",
-    )
-    updated = base.isel(x=slice(1, 3))
-
-    with manager_context() as manager:
-        manager.show()
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-
-        root_tool = itool(base.isel(x=slice(0, 2)), manager=False, execute=False)
-        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
-            root_tool,
-            show=False,
-            provenance_spec=prov.selection(
-                prov.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
-        )
-
-        child_tool = itool(base.isel(x=slice(0, 2)), manager=False, execute=False)
-        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
-            child_tool,
-            0,
-            show=False,
-            source_spec=prov.full_data(),
-            source_auto_update=True,
-        )
-
-        child_node = manager._child_node(child_uid)
-        child_node.archive()
-        assert child_node.archived
-
-        manager._imagetool_wrappers[0].set_detached_provenance(
-            prov.selection(prov.IselOperation(kwargs={"x": slice(1, 3)}))
-        )
-        with qtbot.wait_signal(manager._sigDataReplaced):
-            replace_data(0, updated)
-
-        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
-        assert child_node.archived
-
-        child_node.unarchive()
-        qtbot.wait_until(lambda: not child_node.archived, timeout=5000)
-        qtbot.wait_until(lambda: child_node.source_state == "fresh", timeout=5000)
-        xr.testing.assert_identical(fetch(child_uid), updated)
-
-
 def test_manager_nested_imagetool_refresh_updates_descendant_lineage(
     qtbot,
     manager_context: Callable[
@@ -3617,88 +3459,6 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
         xr.testing.assert_identical(parent_tool.tool_data, updated_root)
         xr.testing.assert_identical(fetch(leaf_uid), updated_root.isel(y=slice(0, 2)))
         assert manager._pending_source_refresh_targets == {}
-
-
-def test_manager_archived_nested_imagetool_refreshes_descendants_on_unarchive(
-    qtbot,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    prov = erlab.interactive.imagetool.provenance
-    base = xr.DataArray(
-        np.arange(16, dtype=float).reshape((4, 4)),
-        dims=["x", "y"],
-        coords={"x": np.arange(4), "y": np.arange(4)},
-        name="scan",
-    )
-
-    with manager_context() as manager:
-        manager.show()
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-
-        root_data = base.isel(x=slice(0, 2))
-        updated_root = base.isel(x=slice(1, 3))
-
-        root_tool = itool(root_data, manager=False, execute=False)
-        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(
-            root_tool,
-            show=False,
-            provenance_spec=prov.selection(
-                prov.IselOperation(kwargs={"x": slice(0, 2)})
-            ),
-        )
-
-        child_tool = itool(root_data.copy(deep=False), manager=False, execute=False)
-        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(
-            child_tool,
-            0,
-            show=False,
-            source_spec=prov.full_data(),
-            source_auto_update=True,
-        )
-
-        grandchild_tool = itool(
-            root_data.isel(y=slice(0, 2)), manager=False, execute=False
-        )
-        assert isinstance(grandchild_tool, erlab.interactive.imagetool.ImageTool)
-        grandchild_uid = manager.add_imagetool_child(
-            grandchild_tool,
-            child_uid,
-            show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
-            source_auto_update=True,
-        )
-
-        child_node = manager._child_node(child_uid)
-        grandchild_node = manager._child_node(grandchild_uid)
-
-        child_node.archive()
-        assert child_node.archived
-        qtbot.wait_until(
-            lambda: grandchild_node.source_state == "unavailable", timeout=5000
-        )
-
-        manager._imagetool_wrappers[0].set_detached_provenance(
-            prov.selection(prov.IselOperation(kwargs={"x": slice(1, 3)}))
-        )
-        with qtbot.wait_signal(manager._sigDataReplaced):
-            replace_data(0, updated_root)
-
-        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
-        assert grandchild_node.source_state == "unavailable"
-
-        child_node.unarchive()
-        qtbot.wait_until(lambda: not child_node.archived, timeout=5000)
-        qtbot.wait_until(lambda: child_node.source_state == "fresh", timeout=5000)
-        qtbot.wait_until(lambda: grandchild_node.source_state == "fresh", timeout=5000)
-
-        xr.testing.assert_identical(fetch(child_uid), updated_root)
-        xr.testing.assert_identical(
-            fetch(grandchild_uid), updated_root.isel(y=slice(0, 2))
-        )
 
 
 def test_manager_meshtool_output_itools_use_distinct_output_ids(
@@ -4257,9 +4017,8 @@ def test_manager_promote_action_enablement_and_menus(
 
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
-        manager._child_node(child_uid).archive()
         manager._update_actions()
-        assert not manager.promote_action.isEnabled()
+        assert manager.promote_action.isEnabled()
 
 
 def test_manager_rename_action_enablement_for_child_selection(
@@ -6899,6 +6658,18 @@ def test_workspace_dataset_encoding_respects_compression_preference() -> None:
         erlab.interactive.options["io/workspace/compress"] = old_value
 
 
+def test_workspace_dataset_encoding_persists_dask_chunksizes() -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=np.float64).reshape(5, 5),
+        dims=("x", "y"),
+    ).chunk({"x": (2, 3), "y": (4, 1)})
+    ds = xr.Dataset({"data": data})
+
+    assert manager_xarray.workspace_dataset_encoding(ds, compress=False) == {
+        "data": {"chunksizes": (2, 4)}
+    }
+
+
 def test_workspace_datatree_encoding_uses_group_paths() -> None:
     large_ds = xr.Dataset(
         {
@@ -8519,6 +8290,244 @@ def test_manager_workspace_save_as_preserves_live_in_memory_windows(
             assert child.slicer_area._data.chunks is None
     finally:
         object.__setattr__(dask_options, "compute_threshold", old_threshold)
+
+
+def test_manager_offload_to_workspace_save_as_rebinds_root_as_dask(
+    qtbot,
+    accept_dialog,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25.0).reshape((5, 5)), dims=["x", "y"], name="source"
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        select_tools(manager, [0])
+        manager._update_actions()
+        assert manager.offload_action.isEnabled()
+        assert root.slicer_area._data.chunks is None
+
+        fname = tmp_path / "offload.itws"
+
+        def _go_to_file(dialog: QtWidgets.QFileDialog):
+            dialog.setDirectory(str(tmp_path))
+            dialog.selectFile(str(fname))
+            focused = dialog.focusWidget()
+            if isinstance(focused, QtWidgets.QLineEdit):
+                focused.setText(fname.name)
+
+        results: list[bool] = []
+        accept_dialog(
+            lambda: results.append(manager.offload_to_workspace([0], native=False)),
+            pre_call=_go_to_file,
+        )
+
+        assert results == [True]
+        assert manager.workspace_path == str(fname.resolve())
+        assert not manager.is_workspace_modified
+
+        rebound = manager.get_imagetool(0).slicer_area._data
+        assert rebound.chunks is not None
+        assert manager_xarray._normalized_file_path(rebound.encoding.get("source")) == (
+            str(fname.resolve())
+        )
+        assert _compute_first_value(rebound) == 0.0
+
+        manager._update_actions()
+        assert not manager.offload_action.isEnabled()
+
+
+def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "dirty-offload.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        updated = data + 10.0
+        root.slicer_area.replace_source_data(
+            updated, auto_compute=False, emit_edited=True
+        )
+        assert manager.is_workspace_modified
+
+        original_save = manager.save
+        save_calls: list[bool] = []
+
+        def _save(*, native: bool = True) -> bool:
+            save_calls.append(native)
+            return original_save(native=native)
+
+        monkeypatch.setattr(manager, "save", _save)
+
+        assert manager.offload_to_workspace([0], native=False)
+        assert save_calls == [False]
+
+        rebound = manager.get_imagetool(0).slicer_area._data
+        assert rebound.chunks is not None
+        assert _compute_first_value(rebound) == 10.0
+        assert not manager.is_workspace_modified
+
+        with h5py.File(fname, "r") as h5_file:
+            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            assert saved[0, 0] == 10.0
+
+
+def test_manager_offload_to_workspace_save_cancel_or_failure_noop(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        monkeypatch.setattr(manager, "_workspace_save_dialog", lambda **_kwargs: None)
+        assert not manager.offload_to_workspace([0], native=False)
+        assert manager.workspace_path is None
+        assert root.slicer_area._data.chunks is None
+
+        fname = tmp_path / "failure-offload.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_data_dirty(manager._imagetool_wrappers[0].uid)
+
+        monkeypatch.setattr(manager, "save", lambda *, native=True: False)
+        assert not manager.offload_to_workspace([0], native=False)
+        assert root.slicer_area._data.chunks is None
+
+
+def test_manager_offload_to_workspace_preserves_child_source_state(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False, provenance_spec=prov.full_data())
+
+        child = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+
+        fname = tmp_path / "child-offload.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        assert manager.offload_to_workspace([0], native=False)
+        assert manager.get_imagetool(0).slicer_area._data.chunks is not None
+        assert child_node.source_state == "fresh"
+        assert child.slicer_area._data.chunks is None
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.offload_action.isEnabled()
+
+        assert manager.offload_to_workspace([child_uid], native=False)
+        assert child.slicer_area._data.chunks is not None
+        assert child_node.source_state == "fresh"
+        assert _compute_first_value(child.slicer_area._data) == 0.0
+
+        manager._update_actions()
+        assert not manager.offload_action.isEnabled()
+
+
+def test_manager_manual_chunk_edits_persist_on_next_workspace_save(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._imagetool_wrappers[0].uid
+
+        fname = tmp_path / "manual-chunks.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        root.slicer_area._set_chunks({"x": 2, "y": 3})
+
+        assert root.slicer_area._data.chunks == ((2, 2, 1), (3, 2))
+        assert uid in manager._workspace_dirty_data
+        assert manager.is_workspace_modified
+
+        with h5py.File(fname, "r") as h5_file:
+            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            assert saved.chunks is None
+
+        assert manager.save()
+        assert not manager.is_workspace_modified
+
+        with h5py.File(fname, "r") as h5_file:
+            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            assert saved.chunks == (2, 3)
+
+        opened = manager_xarray.open_workspace_dataset(
+            fname, manager._workspace_payload_path(uid), chunks={}
+        )
+        try:
+            rebound = opened[manager_mainwindow._ITOOL_DATA_NAME]
+            assert rebound.chunks == ((2, 2, 1), (3, 2))
+        finally:
+            opened.close()
 
 
 def test_manager_workspace_full_save_preserves_non_dask_data(
@@ -10537,7 +10546,6 @@ def test_remove_imagetool_removes_childtools() -> None:
         def __init__(self):
             self.uid = "root-uid-0"
             self._childtool_indices = [uid]
-            self.archived = True
             self.disposed = False
             self.deleted = False
 
@@ -10898,16 +10906,6 @@ def test_manager_open_files(
         with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
             manager.get_imagetool(0).slicer_area.reload()
 
-        # Try archive
-        manager._imagetool_wrappers[0].archive()
-        qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
-
-        # Unarchive
-        manager._imagetool_wrappers[0].unarchive()
-        qtbot.wait_until(
-            lambda: not manager._imagetool_wrappers[0].archived, timeout=5000
-        )
-
         # Simulate drag and drop with wrong filter, retry with correct filter
         # Dialogs created are:
         # select loader → failed alert → retry → select loader
@@ -11247,10 +11245,6 @@ def test_manager_console(
         # Test storing with ipython
         accept_dialog(manager.store_action.trigger)
         manager.console._console_widget.execute(r"%store -d data_0 data_1")
-
-        # Test calling wrapped methods
-        manager.console._console_widget.execute("tools[0].archive()")
-        qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
 
         # Test setting data
         manager.console._console_widget.execute(
@@ -13546,16 +13540,6 @@ def test_manager_reload(
         # Try reload
         with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):
             manager.get_imagetool(0).slicer_area.reload()
-
-        # Try archive
-        manager._imagetool_wrappers[0].archive()
-        qtbot.wait_until(lambda: manager._imagetool_wrappers[0].archived, timeout=5000)
-
-        # Unarchive
-        manager._imagetool_wrappers[0].unarchive()
-        qtbot.wait_until(
-            lambda: not manager._imagetool_wrappers[0].archived, timeout=5000
-        )
 
         # Try reload again
         with qtbot.wait_signal(manager.get_imagetool(0).slicer_area.sigDataChanged):

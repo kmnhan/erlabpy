@@ -564,6 +564,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigWriteHistory = QtCore.Signal()  #: :meta private:
     sigCursorColorsChanged = QtCore.Signal()  #: :meta private:
     sigDataEdited = QtCore.Signal()  #: :meta private:
+    sigDataBackingChanged = QtCore.Signal()  #: :meta private:
     sigSourceDataReplaced = QtCore.Signal(object)  #: :meta private:
     sigPointValueChanged = QtCore.Signal(float)  #: :meta private:
 
@@ -2135,8 +2136,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         chunks
             Chunk size to set. Passed to :meth:`xarray.DataArray.chunk`.
         """
+        state = copy.deepcopy(self.state)
         with erlab.interactive.utils.wait_dialog(self, "Setting Chunks…"):
             self.set_data(self._data.chunk(chunks), auto_compute=False)
+            self.state = state
+        self.sigDataBackingChanged.emit()
 
     @QtCore.Slot(int, int)
     @link_slicer

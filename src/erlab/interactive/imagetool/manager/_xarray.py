@@ -88,22 +88,47 @@ def _should_compress_workspace_variable(
     return int(variable.nbytes) >= min_bytes
 
 
+def _workspace_chunksizes_for_dataarray(
+    data_array: xr.DataArray,
+) -> tuple[int, ...] | None:
+    """Return a valid fixed HDF5 chunk shape for dask-backed workspace data."""
+    chunks = data_array.chunks
+    if chunks is None or data_array.ndim == 0:
+        return None
+
+    chunksizes: list[int] = []
+    for size, dim_chunks in zip(data_array.shape, chunks, strict=True):
+        if size <= 0 or len(dim_chunks) == 0:
+            return None
+        first = int(dim_chunks[0])
+        if first <= 0:
+            return None
+        chunksizes.append(min(first, int(size)))
+    return tuple(chunksizes)
+
+
 def workspace_dataset_encoding(
     ds: xr.Dataset,
     *,
     min_bytes: int = _WORKSPACE_COMPRESSION_MIN_BYTES,
     compress: bool | None = None,
 ) -> dict[Hashable, dict[str, typing.Any]]:
-    """Return h5netcdf encodings for compressible workspace data variables."""
+    """Return h5netcdf encodings for workspace data variables."""
     if compress is None:
         compress = workspace_compression_enabled()
-    if not compress:
-        return {}
 
     encoding: dict[Hashable, dict[str, typing.Any]] = {}
-    for name, variable in ds.data_vars.items():
-        if _should_compress_workspace_variable(variable.variable, min_bytes=min_bytes):
-            encoding[name] = _workspace_blosc2_encoding()
+    for name, data_array in ds.data_vars.items():
+        var_encoding: dict[str, typing.Any] = {}
+        chunksizes = _workspace_chunksizes_for_dataarray(data_array)
+        if chunksizes is not None:
+            var_encoding["chunksizes"] = chunksizes
+        if compress and _should_compress_workspace_variable(
+            data_array.variable, min_bytes=min_bytes
+        ):
+            var_encoding.update(_workspace_blosc2_encoding())
+        if var_encoding:
+            encoding[name] = var_encoding
     return encoding
 
 
@@ -113,11 +138,9 @@ def workspace_datatree_encoding(
     min_bytes: int = _WORKSPACE_COMPRESSION_MIN_BYTES,
     compress: bool | None = None,
 ) -> dict[str, dict[Hashable, dict[str, typing.Any]]]:
-    """Return nested h5netcdf encodings for compressible workspace payloads."""
+    """Return nested h5netcdf encodings for workspace payloads."""
     if compress is None:
         compress = workspace_compression_enabled()
-    if not compress:
-        return {}
 
     encoding: dict[str, dict[Hashable, dict[str, typing.Any]]] = {}
     for node in tree.subtree:
@@ -169,7 +192,7 @@ def _open_workspace_dataset_from_manager(
     file_manager: WorkspaceFileManager,
     group: str,
     *,
-    chunks: str | None,
+    chunks: typing.Any,
 ) -> xr.Dataset:
     store = H5NetCDFStore(
         file_manager,
@@ -187,7 +210,7 @@ def open_workspace_dataset(
     path: str | os.PathLike[str],
     group: str,
     *,
-    chunks: str | None,
+    chunks: typing.Any,
 ) -> xr.Dataset:
     """Open a workspace group through the manager-owned file manager."""
     target = _normalized_file_path(path)
@@ -199,7 +222,7 @@ def open_workspace_dataset(
 
 
 def open_workspace_datatree(
-    path: str | os.PathLike[str], *, chunks: str | None
+    path: str | os.PathLike[str], *, chunks: typing.Any
 ) -> xr.DataTree:
     """Open a workspace tree through the manager-owned file manager."""
     target = _normalized_file_path(path)

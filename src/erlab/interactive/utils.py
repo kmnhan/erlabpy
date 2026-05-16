@@ -3621,8 +3621,6 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if action == "cancel":
                 return None
             if action == "update":
-                if node.archived:
-                    node.unarchive()
                 node.set_output_binding(
                     output_id,
                     auto_update=node.source_auto_update,
