@@ -189,7 +189,8 @@ def test_history_menu_handles_empty_history(qtbot):
 
     actions = menu.actions()
     assert len(actions) == 1
-    assert actions[0].text() == "No history recorded yet"
+    assert actions[0].objectName() == "itool_history_empty_action"
+    assert actions[0].data() == {"kind": "empty"}
     assert not actions[0].isEnabled()
 
 
@@ -212,10 +213,11 @@ def test_history_menu_populates_actions_and_triggers(monkeypatch, qtbot):
     menu.update_actions()
 
     actions = menu.actions()
-    assert [action.text() for action in actions] == [
-        "  magma->plasma",
-        "• viridis->magma",
+    assert [action.objectName() for action in actions] == [
+        "itool_history_action_2",
+        "itool_history_action_1",
     ]
+    assert [action.data() for action in actions] == [1, 0]
 
     actions[0].trigger()
     actions[1].trigger()

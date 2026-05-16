@@ -138,7 +138,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Use {guilabel}`Edit → Edit Attributes` to open the {guilabel}`Attribute Editor` dialog. This is a GUI for {meth}`xarray.DataArray.assign_attrs` that lets you change existing attributes or add new typed attributes while leaving untouched attributes in place. Choose {guilabel}`String`, {guilabel}`Int`, {guilabel}`Float`, {guilabel}`Bool`, or {guilabel}`Python literal` when entering values.
 
-- Use {guilabel}`Edit → Rename...` to open the {guilabel}`Rename Coordinates and Dimensions` dialog. This is a GUI for {meth}`xarray.DataArray.rename` that lets you rename coordinates and dimensions.
+- Use {guilabel}`Edit → Rename…` to open the {guilabel}`Rename Coordinates and Dimensions` dialog. This is a GUI for {meth}`xarray.DataArray.rename` that lets you rename coordinates and dimensions.
 
 - Use {guilabel}`Edit → Swap Dimensions` to open the {guilabel}`Swap Dimensions` dialog. This is an interface for {meth}`xarray.DataArray.swap_dims`.
 
@@ -146,7 +146,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Overlay plots of numeric non-dimensional coordinates (e.g., temperature) on profile plots from {guilabel}`View → Plot Associated Coordinates`. Multi-dimensional coordinates are sliced with the active cursor and averaged over binned hidden dimensions. Right-click a profile plot to open associated coordinates in a new ImageTool window.
 
-- Use {guilabel}`View → Set Cursor Colors by Coordinate...` to color cursors by a dimension coordinate or numeric associated coordinate value at each cursor position.
+- Use {guilabel}`View → Set Cursor Colors by Coordinate…` to color cursors by a dimension coordinate or numeric associated coordinate value at each cursor position.
 
 (imagetool-slicing)=
 
@@ -204,9 +204,9 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - The default color cycle of cursors is user configurable. See [](./options.md).
 
-- Colors can be changed individually from {guilabel}`View → Edit Cursor Colors...`, where you can choose from a colormap or edit each cursor's color separately.
+- Colors can be changed individually from {guilabel}`View → Edit Cursor Colors…`, where you can choose from a colormap or edit each cursor's color separately.
 
-- Alternatively, the colors of the cursors can be set to follow a specific coordinate dynamically based on their positions. This can be enabled from {guilabel}`View → Set Cursor Colors by Coordinate...`.
+- Alternatively, the colors of the cursors can be set to follow a specific coordinate dynamically based on their positions. This can be enabled from {guilabel}`View → Set Cursor Colors by Coordinate…`.
 
 (imagetool-color)=
 
@@ -235,13 +235,13 @@ for reproducibility.
 
 - {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the angle and center from the guideline.
 - {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
-- {guilabel}`Edit → Interpolate...` opens the {guilabel}`Interpolate` dialog. Choose one dimension, enter the target coordinate values, and interpolate with {meth}`xarray.DataArray.interp` using `linear` or `nearest`.
+- {guilabel}`Edit → Interpolate…` opens the {guilabel}`Interpolate` dialog. Choose one dimension, enter the target coordinate values, and interpolate with {meth}`xarray.DataArray.interp` using `linear` or `nearest`.
 - {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`, `sum`, or `median`.
 - {guilabel}`Edit → Thin` opens the {guilabel}`Thin Data` dialog which uses {meth}`xarray.DataArray.thin`.
-- {guilabel}`Edit → Symmetrize → Mirror...` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
-- {guilabel}`Edit → Symmetrize → Rotational...` opens the rotational symmetrization dialog. If a rotation guideline is visible, the dialog pre-fills the center and fold count based on the guideline.
+- {guilabel}`Edit → Symmetrize → Mirror…` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
+- {guilabel}`Edit → Symmetrize → Rotational…` opens the rotational symmetrization dialog. If a rotation guideline is visible, the dialog pre-fills the center and fold count based on the guideline.
 - {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
-- {guilabel}`Edit → Correct With Edge...` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
+- {guilabel}`Edit → Correct With Edge…` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
 - {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, which applies a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
 - {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, which applies a non-destructive filter that applies coordinate-aware Gaussian broadening along selected dimensions.
 

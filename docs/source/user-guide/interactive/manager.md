@@ -52,8 +52,10 @@ workspace to import into the current manager.
 
 Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…`
 ({kbd}`Ctrl+O`) or by dragging the `.itws` file back into the manager to recreate
-your windows exactly as they were. Share the file with collaborators and they will
-see the identical layout.
+your windows exactly as they were. Use {guilabel}`File → Open Recent` to reopen a
+recent workspace, or {guilabel}`Clear Menu` at the bottom of that submenu to remove
+the saved recent-workspace list. Share the file with collaborators and they will see
+the identical layout.
 
 Use {guilabel}`File → Offload to Workspace` to save the workspace if needed, free
 selected in-memory ImageTool data, and reconnect those rows to dask-backed data read
@@ -86,8 +88,8 @@ as out of date, update it, and show the steps and code in the side panel.
 
 ## Choosing where new data opens
 
-Many ImageTool transform dialogs accessible from menu actions use {guilabel}`Result
-Placement` to decide what happens to the transformed data:
+Many ImageTool transform dialogs accessible from menu actions use
+{guilabel}`Result Placement` to decide what happens to the transformed data:
 
 - {guilabel}`Open Child Window` creates a new ImageTool row as a child of the current ImageTool.
 - {guilabel}`Open Top-Level Window` creates a separate top-level ImageTool.
@@ -108,7 +110,7 @@ may no longer match it. The manager shows this with badges:
 - {guilabel}`Auto` means the row is up to date and automatic updates are enabled.
 
 Click the badge in the tree or the update banner inside the tool window to review the
-update. The {guilabel}`Automatic Updates` dialog lets you apply a one-time update with
+update. The {guilabel}`Automatic Updates…` dialog lets you apply a one-time update with
 {guilabel}`Update Now`, or turn automatic updates on or off and save that preference with
 {guilabel}`Save`. Saving only changes the automatic-update preference; it does not
 refresh the current window immediately.
@@ -578,7 +580,7 @@ supported builds for Linux, please submit an issue to let us know!
 
 ### Updating the application
 
-Updates can be checked and installed from within the application itself. Select {guilabel}`Check for Updates...` in the menu bar under {guilabel}`Help` (Windows) or {guilabel}`ImageTool Manager` next to {fab}`apple` (macOS) and follow the prompts.
+Updates can be checked and installed from within the application itself. Select {guilabel}`Check for Updates` in the menu bar under {guilabel}`Help` (Windows) or {guilabel}`ImageTool Manager` next to {fab}`apple` (macOS) and follow the prompts.
 
 (build-from-source)=
 

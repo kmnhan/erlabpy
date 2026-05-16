@@ -1266,11 +1266,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.toggle_cursor_act.setToolTip("Toggle visibility of all cursors")
         self.toggle_cursor_act.toggled.connect(self.toggle_cursor_visibility)
 
-        self.cursor_color_act = QtWidgets.QAction("Edit Cursor Colors...", self)
+        self.cursor_color_act = QtWidgets.QAction("Edit Cursor Colors…", self)
         self.cursor_color_act.triggered.connect(self.edit_cursor_colors)
 
         self.cursor_colors_by_coord_act = QtWidgets.QAction(
-            "Set Cursor Colors by Coordinate...", self
+            "Set Cursor Colors by Coordinate…", self
         )
         self.cursor_colors_by_coord_act.triggered.connect(
             self._set_cursor_colors_by_coord

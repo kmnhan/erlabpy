@@ -431,20 +431,17 @@ def bring_manager_to_top(bot, manager):
         manager.raise_()
 
 
-def action_map(menu: QtWidgets.QMenu) -> dict[str, QtWidgets.QAction]:
-    return {
-        action.text().replace("&", ""): action
-        for action in menu.actions()
-        if not action.isSeparator()
-    }
-
-
 def action_map_by_object_name(menu: QtWidgets.QMenu) -> dict[str, QtWidgets.QAction]:
     return {
         action.objectName(): action
         for action in menu.actions()
         if not action.isSeparator() and action.objectName()
     }
+
+
+def trigger_menu_action(menu: QtWidgets.QMenu, action: QtGui.QAction) -> None:
+    assert action in menu.actions()
+    action.trigger()
 
 
 def menu_map_by_object_name(
@@ -563,7 +560,7 @@ def copy_full_code_for_uid(
     manager._update_info(uid=uid)
     menu = manager._build_metadata_derivation_menu()
     assert menu is not None
-    action_map(menu)["Copy Full Code"].trigger()
+    trigger_menu_action(menu, manager._metadata_copy_full_action)
     assert copied
     return copied[-1]
 
@@ -3975,7 +3972,7 @@ def test_manager_open_in_new_window_nests_imagetool_children(
             "_prompt_replay_input_name",
             lambda _node: pytest.fail("file-backed replay should not prompt"),
         )
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert copied
         assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
             copied[-1]
@@ -4013,18 +4010,9 @@ def test_manager_promote_action_enablement_and_menus(
         )
         nested_uid = manager._child_node(child_uid)._childtool_indices[0]
 
-        menu_actions = {
-            action.text().replace("&", ""): action
-            for action in manager.menu_bar.actions()
-            if action.menu() is not None
-        }
-        assert "Promote Window" in action_map(
-            typing.cast("QtWidgets.QMenu", menu_actions["Edit"].menu())
-        )
-        assert (
-            action_map(manager.tree_view._menu)["Promote Window"]
-            is manager.promote_action
-        )
+        menus = menu_map_by_object_name(manager.menu_bar)
+        assert manager.promote_action in menus["manager_edit_menu"].actions()
+        assert manager.promote_action in manager.tree_view._menu.actions()
 
         manager.tree_view.clearSelection()
         manager._update_actions()
@@ -4375,7 +4363,7 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         )
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert copied
         assert "scan.h5" in copied[-1]
 
@@ -4836,7 +4824,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
 
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Selected Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_selected_action)
         selected_namespace = _exec_generated_code(
             copied[-1],
             {"derived": data.copy(deep=True)},
@@ -4853,7 +4841,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             "_prompt_replay_input_name",
             lambda _node: "source_data",
         )
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
         full_namespace = _exec_generated_code(
             copied[-1],
             {"source_data": data.copy(deep=True)},
@@ -5038,7 +5026,7 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         )
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
             copied[-1]
         )
@@ -5441,7 +5429,7 @@ def test_manager_watched_root_provenance_uses_variable_name(
         manager._update_info(uid=node.uid)
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
         namespace = _exec_generated_code(
             copied[-1],
             {"my_data": test_data.copy(deep=True)},
@@ -5490,7 +5478,7 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
         manager._update_info(uid=node.uid)
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert prompted == [node.uid]
         assert copied
@@ -5539,7 +5527,7 @@ def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
         manager._update_info(uid=node.uid)
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied == []
 
@@ -5591,7 +5579,7 @@ def test_manager_file_backed_full_code_uses_load_code(
         manager._update_info(uid=node.uid)
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied
         assert not erlab.interactive.imagetool.provenance.uses_default_replay_input(
@@ -5650,7 +5638,7 @@ def test_manager_file_backed_full_code_prefers_scan_number_loader(
         manager._update_info(uid=node.uid)
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
-        action_map(menu)["Copy Full Code"].trigger()
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied
         assert f"erlab.io.load(2, data_dir={str(example_data_dir)!r})" in copied[-1]
@@ -7572,9 +7560,8 @@ def test_manager_open_recent_menu_state_labels_and_clear(
         actions = action_map_by_object_name(manager.open_recent_menu)
         first_action = actions["manager_recent_workspace_action_0"]
         second_action = actions["manager_recent_workspace_action_1"]
-        assert first_action.text() == "workspace.itws (beta)"
-        assert second_action.text() == "workspace.itws (alpha)"
         assert first_action.data() == str(workspace_b.resolve())
+        assert second_action.data() == str(workspace_a.resolve())
         assert first_action.toolTip() == str(workspace_b.resolve())
         assert first_action.statusTip() == str(workspace_b.resolve())
         assert "manager_clear_recent_workspaces_action" in actions

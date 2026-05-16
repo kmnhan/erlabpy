@@ -102,7 +102,7 @@ class _Fit2DParameterPlotItem(pg.PlotItem):
     def _setup_actions(self) -> None:
         self.vb.menu.addSeparator()
 
-        save_values_action = self.vb.menu.addAction("Save parameter values as HDF5")
+        save_values_action = self.vb.menu.addAction("Save parameter values as HDF5…")
         save_values_action.triggered.connect(self._save_parameter_values)
 
         show_values_action = self.vb.menu.addAction(

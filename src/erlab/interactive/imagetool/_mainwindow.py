@@ -391,12 +391,12 @@ class ImageTool(BaseImageTool):
         self.__recent_directory = value
 
     def initialize_actions(self) -> None:
-        self.open_act = QtWidgets.QAction("&Open...", self)
+        self.open_act = QtWidgets.QAction("&Open…", self)
         self.open_act.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.open_act.triggered.connect(self._open_file)
         self.open_act.setIcon(QtGui.QIcon.fromTheme("document-open"))
 
-        self.save_act = QtWidgets.QAction("&Save As...", self)
+        self.save_act = QtWidgets.QAction("&Save As…", self)
         self.save_act.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
         self.save_act.triggered.connect(self._export_file)
         self.save_act.setIcon(QtGui.QIcon.fromTheme("document-save-as"))
@@ -605,7 +605,8 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "Edit Attributes": {
                         "triggered": self._assign_attrs,
                     },
-                    "Rename...": {
+                    "renameAct": {
+                        "text": "Rename…",
                         "triggered": self._rename_dims_coords,
                     },
                     "Swap Dimensions": {
@@ -630,17 +631,32 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "tooltip": "Crop to the current axes view range",
                     },
                     "Average": {"triggered": self._average},
-                    "Interpolate...": {"triggered": self._interpolate},
-                    "Divide by Coordinate...": {"triggered": self._divide_by_coord},
+                    "interpolateAct": {
+                        "text": "Interpolate…",
+                        "triggered": self._interpolate,
+                    },
+                    "divideByCoordinateAct": {
+                        "text": "Divide by Coordinate…",
+                        "triggered": self._divide_by_coord,
+                    },
                     "Coarsen": {"triggered": self._coarsen},
                     "Thin": {"triggered": self._thin},
                     "Symmetrize": {
                         "actions": {
-                            "Mirror...": {"triggered": self._symmetrize},
-                            "Rotational...": {"triggered": self._symmetrize_nfold},
+                            "mirrorAct": {
+                                "text": "Mirror…",
+                                "triggered": self._symmetrize,
+                            },
+                            "rotationalAct": {
+                                "text": "Rotational…",
+                                "triggered": self._symmetrize_nfold,
+                            },
                         }
                     },
-                    "Correct With Edge...": {"triggered": self._correct_with_edge},
+                    "correctWithEdgeAct": {
+                        "text": "Correct With Edge…",
+                        "triggered": self._correct_with_edge,
+                    },
                 },
             },
             "viewMenu": {

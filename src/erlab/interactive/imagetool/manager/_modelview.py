@@ -1666,7 +1666,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                 "Reconnect this watched variable from the notebook"
             )
         refresh_action.triggered.connect(wrapper._trigger_watched_update)
-        stop_action = typing.cast("QtGui.QAction", menu.addAction("Stop Watching..."))
+        stop_action = typing.cast("QtGui.QAction", menu.addAction("Stop Watching"))
         stop_action.setToolTip("Detach this ImageTool from the watched variable")
         stop_action.triggered.connect(
             lambda _checked=False, target=wrapper: self._stop_watching_badge_target(

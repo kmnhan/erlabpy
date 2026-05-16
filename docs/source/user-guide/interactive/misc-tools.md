@@ -79,7 +79,7 @@ The first tab is for setting momentum conversion parameters. The image is update
 real time as you change the parameters. For angle-energy cuts, the preview keeps the
 full energy axis and displays the converted `k`/`eV` cut.
 
-Clicking {guilabel}`Copy code` will copy the code for conversion to the clipboard.
+Clicking {guilabel}`Copy to clipboard` will copy the code for conversion to the clipboard.
 
 {guilabel}`Open in ImageTool` performs a full conversion. When `ktool` was opened from
 an ImageTool in the manager, the converted data opens as a child row under `ktool`;
@@ -110,7 +110,7 @@ Brillouin-zone and symmetry previews are disabled for angle-energy cuts.
 
 The symmetrization preview uses the same rotational averaging as
 {func}`erlab.analysis.transform.symmetrize_nfold`, but it only affects the displayed
-image in `ktool`. {guilabel}`Open in ImageTool` and {guilabel}`Copy code` still use
+image in `ktool`. {guilabel}`Open in ImageTool` and {guilabel}`Copy to clipboard` still use
 the unsymmetrized momentum-converted data.
 
 :::
@@ -325,7 +325,7 @@ Some models have additional options that appear below the model selector that ar
 
   - Edit the independent variable name in the `f(...)` header and type your formula in the expression box (e.g., `a * x + b`).
   - Click {guilabel}`Apply` to rebuild the model from the current expression.
-  - Use {guilabel}`Edit init script...` to define helper functions or constants used in the expression.
+  - Use {guilabel}`Edit init script…` to define helper functions or constants used in the expression.
   - For more information, see the documentation for {class}`lmfit.models.ExpressionModel`.
 
 ### Workflow for 1D data
@@ -356,8 +356,8 @@ Some models have additional options that appear below the model selector that ar
    - You can right-click parameters in the table to assign/remove expressions.
 
      For instance, to tie the position of peak 1 (`p1_center`) to be always 0.1 units
-     above than peak 0 (`p0_center`), right-click `p1_center`, choose {guilabel}`Set
-     expression...`, and enter `p0_center + 0.1`.
+     above than peak 0 (`p0_center`), right-click `p1_center`, choose
+     {guilabel}`Set expression…`, and enter `p0_center + 0.1`.
 
    - Hover over rows in the parameter table to see tooltips with additional information.
 
@@ -380,7 +380,7 @@ Some models have additional options that appear below the model selector that ar
 
    If the fit fails to converge or gives unsatisfactory results, adjust the parameters and try again.
 
-   If you want to retry automatically, use {guilabel}`Fit×20`. You can increase {guilabel}`Max nfev` in the {guilabel}`Fit options` group, which sets the maximum number of function evaluations allowed. The `nfev` stat is highlighted in red when the fit hits this limit without converging.
+   If you want to retry automatically, use {guilabel}`Fit ×20`. You can increase {guilabel}`Max nfev` in the {guilabel}`Fit options` group, which sets the maximum number of function evaluations allowed. The `nfev` stat is highlighted in red when the fit hits this limit without converging.
 
    :::{admonition} About {guilabel}`Fit ×20`
    :class: tip

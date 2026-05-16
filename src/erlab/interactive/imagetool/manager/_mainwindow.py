@@ -746,7 +746,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.gc_action.setToolTip("Run garbage collection to free up memory")
         self.gc_action.setIcon(QtGui.QIcon.fromTheme("user-trash"))
 
-        self.open_action = QtWidgets.QAction("Add &Data Files...", self)
+        self.open_action = QtWidgets.QAction("Add &Data Files…", self)
         self.open_action.setObjectName("manager_add_data_files_action")
         self.open_action.triggered.connect(self.open)
         self.open_action.setToolTip("Load data files as new ImageTool rows")
@@ -764,7 +764,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.save_action.setIcon(QtGui.QIcon.fromTheme("document-save"))
         self.save_action.triggered.connect(self.save)
 
-        self.save_as_action = QtWidgets.QAction("Save Workspace &As...", self)
+        self.save_as_action = QtWidgets.QAction("Save Workspace &As…", self)
         self.save_as_action.setObjectName("manager_save_workspace_as_action")
         self.save_as_action.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
         self.save_as_action.setToolTip(
@@ -780,7 +780,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.compact_workspace_action.triggered.connect(self.compact_workspace)
 
-        self.load_action = QtWidgets.QAction("&Open Workspace...", self)
+        self.load_action = QtWidgets.QAction("&Open Workspace…", self)
         self.load_action.setObjectName("manager_open_workspace_action")
         self.load_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.load_action.setToolTip("Replace this workspace with a workspace file")
@@ -799,7 +799,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._refresh_open_recent_menu_action()
 
         self.import_workspace_action = QtWidgets.QAction(
-            "Add Windows From &Workspace...", self
+            "Add Windows From &Workspace…", self
         )
         self.import_workspace_action.setObjectName(
             "manager_add_windows_from_workspace_action"
@@ -885,7 +885,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.unwatch_action.setIcon(QtGui.QIcon.fromTheme("process-stop"))
         self.unwatch_action.setVisible(False)
 
-        self.source_update_action = QtWidgets.QAction("Automatic Updates...", self)
+        self.source_update_action = QtWidgets.QAction("Automatic Updates…", self)
         self.source_update_action.triggered.connect(self.show_selected_source_updates)
         self.source_update_action.setToolTip(
             "Turn automatic updates on or off for the selected child window"
@@ -1114,10 +1114,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._metadata_full_code: str | None = None
         self._metadata_node_uid: str | None = None
         self._metadata_copy_selected_action = QtGui.QAction("Copy Selected Code", self)
+        self._metadata_copy_selected_action.setObjectName(
+            "manager_copy_selected_code_action"
+        )
         self._metadata_copy_selected_action.triggered.connect(
             self._copy_selected_derivation_code
         )
         self._metadata_copy_full_action = QtGui.QAction("Copy Full Code", self)
+        self._metadata_copy_full_action.setObjectName("manager_copy_full_code_action")
         self._metadata_copy_full_action.triggered.connect(
             self._copy_full_derivation_code
         )

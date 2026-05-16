@@ -493,11 +493,12 @@ class ItoolPlotItem(pg.PlotItem):
             # ROI actions
             self.vb.menu.addSeparator()
             poly_roi_action = self.vb.menu.addAction("Add Polygon ROI")
+            poly_roi_action.setObjectName("itool_add_polygon_roi_action")
             poly_roi_action.triggered.connect(self.add_roi)
 
         self.vb.menu.addSeparator()
 
-        save_action = self.vb.menu.addAction("Save data as HDF5")
+        save_action = self.vb.menu.addAction("Save data as HDF5…")
         save_action.triggered.connect(self.save_current_data)
 
         copy_code_action = self.vb.menu.addAction("Copy selection code")
@@ -2841,17 +2842,20 @@ class ItoolPolyLineROI(pg.PolyLineROI):
         if self.menu is None:
             self.menu = super().getMenu()
 
-            edit_act = QtWidgets.QAction("Edit ROI...", self.menu)
+            edit_act = QtWidgets.QAction("Edit ROI…", self.menu)
+            edit_act.setObjectName("itool_edit_roi_action")
             edit_act.triggered.connect(self.edit_roi)
             self.menu.addAction(edit_act)
             self.menu.edit_act = edit_act
 
             slice_path_act = QtWidgets.QAction("Slice Along ROI Path", self.menu)
+            slice_path_act.setObjectName("itool_slice_along_roi_path_action")
             slice_path_act.triggered.connect(self.slice_along_path)
             self.menu.addAction(slice_path_act)
             self.menu.slice_path_act = slice_path_act
 
             mask_roi_act = QtWidgets.QAction("Mask Data with ROI", self.menu)
+            mask_roi_act.setObjectName("itool_mask_data_with_roi_action")
             mask_roi_act.triggered.connect(self.mask_with_roi)
             self.menu.addAction(mask_roi_act)
             self.menu.mask_roi_act = mask_roi_act

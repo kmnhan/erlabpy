@@ -877,7 +877,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
             "Each file will be opened in a separate window."
         )
 
-        self._loader_options_act = QtWidgets.QAction("Loader Options...", self)
+        self._loader_options_act = QtWidgets.QAction("Loader Options…", self)
         self._loader_options_act.triggered.connect(self._open_loader_options)
         self._loader_options_act.setToolTip(
             "Configure loader arguments used when opening files in the manager"
@@ -898,7 +898,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._finder_act.setToolTip(f"Open the current item in {fm_name}")
         self._finder_act.triggered.connect(self._open_in_file_manager)
 
-        self._open_dir_act = QtWidgets.QAction("&Open Folder...", self)
+        self._open_dir_act = QtWidgets.QAction("&Open Folder…", self)
         self._open_dir_act.triggered.connect(self._choose_directory)
         self._open_dir_act.setShortcut(QtGui.QKeySequence("Ctrl+Shift+O"))
         self._open_dir_act.setToolTip("Choose a directory to browse")
