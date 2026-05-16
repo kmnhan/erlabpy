@@ -888,15 +888,15 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.tool_window.handle_parent_source_replaced(parent_data)
             return self.tool_window.source_state == "fresh"
 
-        if self.imagetool is None and self.has_source_binding:
-            self._set_source_state("unavailable")
-            return False
-
         if self._output_id is not None and not self._source_auto_update:
             # Output-bound child ImageTools may be expensive to regenerate. When live
             # updates are disabled, defer the recomputation until the user explicitly
             # refreshes instead of resolving the payload just to mark the child stale.
             self._set_source_state("stale")
+            return False
+
+        if self.imagetool is None and self.has_source_binding:
+            self._set_source_state("unavailable")
             return False
 
         try:
