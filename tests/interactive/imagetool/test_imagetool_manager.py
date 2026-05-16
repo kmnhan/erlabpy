@@ -439,6 +439,25 @@ def action_map(menu: QtWidgets.QMenu) -> dict[str, QtWidgets.QAction]:
     }
 
 
+def action_map_by_object_name(menu: QtWidgets.QMenu) -> dict[str, QtWidgets.QAction]:
+    return {
+        action.objectName(): action
+        for action in menu.actions()
+        if not action.isSeparator() and action.objectName()
+    }
+
+
+def menu_map_by_object_name(
+    menu_bar: QtWidgets.QMenuBar,
+) -> dict[str, QtWidgets.QMenu]:
+    menus: dict[str, QtWidgets.QMenu] = {}
+    for action in menu_bar.actions():
+        menu = action.menu()
+        if menu is not None and menu.objectName():
+            menus[menu.objectName()] = menu
+    return menus
+
+
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
@@ -13710,29 +13729,48 @@ def test_manager_standalone_app_menus(
     )
 
     with manager_context() as manager:
-        menu_actions = {
-            action.text().replace("&", ""): action
-            for action in manager.menu_bar.actions()
-            if action.menu() is not None
-        }
+        menus = menu_map_by_object_name(manager.menu_bar)
 
-        assert "File" in menu_actions
-        assert "Apps" in menu_actions
-        file_actions = action_map(
-            typing.cast("QtWidgets.QMenu", menu_actions["File"].menu())
+        assert "manager_file_menu" in menus
+        assert "manager_apps_menu" in menus
+        file_menu = menus["manager_file_menu"]
+        file_action_names = [
+            action.objectName() if not action.isSeparator() else ""
+            for action in file_menu.actions()
+        ]
+        assert file_action_names[:8] == [
+            "manager_open_workspace_action",
+            "manager_save_workspace_action",
+            "manager_save_workspace_as_action",
+            "manager_compact_workspace_action",
+            "",
+            "manager_add_data_files_action",
+            "manager_add_windows_from_workspace_action",
+            "manager_explorer_action",
+        ]
+        file_actions = action_map_by_object_name(file_menu)
+        expected_open_shortcut = QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Open)
+        assert file_actions["manager_open_workspace_action"] is manager.load_action
+        assert manager.load_action.shortcut().toString(
+            QtGui.QKeySequence.SequenceFormat.PortableText
+        ) == expected_open_shortcut.toString(
+            QtGui.QKeySequence.SequenceFormat.PortableText
         )
-        assert "Data Explorer" in file_actions
-        assert "New Manager Instance" in file_actions
-        assert file_actions["New Manager Instance"].shortcut().isEmpty()
-        file_actions["New Manager Instance"].trigger()
+        assert file_actions["manager_add_data_files_action"] is manager.open_action
+        assert manager.open_action.shortcut().isEmpty()
+        assert (
+            file_actions["manager_add_windows_from_workspace_action"]
+            is manager.import_workspace_action
+        )
+        assert file_actions["manager_explorer_action"] is manager.explorer_action
+        assert file_actions["manager_new_instance_action"].shortcut().isEmpty()
+        file_actions["manager_new_instance_action"].trigger()
         assert launched == [True]
 
-        apps_actions = action_map(
-            typing.cast("QtWidgets.QMenu", menu_actions["Apps"].menu())
-        )
-        assert "Periodic Table" in apps_actions
+        apps_actions = action_map_by_object_name(menus["manager_apps_menu"])
+        assert apps_actions["manager_ptable_action"] is manager.ptable_action
         assert (
-            apps_actions["Periodic Table"]
+            apps_actions["manager_ptable_action"]
             .shortcut()
             .toString(QtGui.QKeySequence.SequenceFormat.PortableText)
             == "Ctrl+Shift+P"
