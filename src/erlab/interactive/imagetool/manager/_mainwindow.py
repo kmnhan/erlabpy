@@ -3862,7 +3862,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 _ManagedWindowNode,
                 typing.Any,
                 str,
-                bool,
+                str | None,
             ]
         ] = []
         nodes = (
@@ -3880,21 +3880,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     node,
                     copy.deepcopy(slicer_area.state),
                     node.name,
-                    slicer_area._data.chunks is None,
+                    "auto" if slicer_area._data.chunks is not None else None,
                 )
             )
         if not pending:
             return
         with self._workspace_load_context():
-            for node, state, name, auto_compute in pending:
+            for node, state, name, chunks in pending:
                 tool = node.imagetool
                 if tool is None:
                     continue
                 slicer_area = tool.slicer_area
                 data = self._workspace_rebind_data_for_uid(
-                    fname, node.uid, chunks="auto"
+                    fname, node.uid, chunks=chunks
                 )
-                slicer_area.set_data(data, auto_compute=auto_compute)
+                slicer_area.set_data(data, auto_compute=False)
                 slicer_area.state = state
                 node.name = name
 
