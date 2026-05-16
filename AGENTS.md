@@ -48,6 +48,7 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 ## Interactive Qt Notes
 
 - All Qt-facing runtime code and tests must behave the same under both PyQt6 and PySide6. Prefer `qtpy` APIs that are binding-neutral, avoid binding-specific signal/metaobject assumptions, and when lower-level Qt behavior is unavoidable, add a compatibility helper and validate the touched path under both bindings.
+- For Qt action and menu labels, use a trailing Unicode ellipsis (`…`) only when the command requires additional user input, a required selection, or required confirmation before it can complete. Do not use an ellipsis for immediate commands, toggles, submenus, informational windows/panels, or commands that only sometimes prompt. Use `…`, not ASCII `...`, for user-facing Qt action and menu labels. Tests must not assert action label text; use object names, action data, roles, shortcuts, enabled state, or behavior instead.
 - For tools launched from ImageTool, new actions that open/show data in ImageTool should be manager-aware (use manager flow when the parent tool is managed).
 - For new context-menu or file-dialog features, add tests for both accept and cancel dialog paths.
 - Prefer `accept_dialog` for real dialog interactions; use monkeypatch stubs to target hard-to-hit branches.

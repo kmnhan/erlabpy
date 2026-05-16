@@ -3053,7 +3053,9 @@ def test_itool_roi_lifecycle(qtbot) -> None:
 
     plot_item = win.slicer_area.main_image
     add_roi_action = next(
-        act for act in plot_item.vb.menu.actions() if act.text() == "Add Polygon ROI"
+        act
+        for act in plot_item.vb.menu.actions()
+        if act.objectName() == "itool_add_polygon_roi_action"
     )
     add_roi_action.trigger()
 
@@ -3062,10 +3064,10 @@ def test_itool_roi_lifecycle(qtbot) -> None:
 
     roi_menu = roi.getMenu()
     assert {
-        "Edit ROI...",
-        "Slice Along ROI Path",
-        "Mask Data with ROI",
-    }.issubset({act.text() for act in roi_menu.actions()})
+        "itool_edit_roi_action",
+        "itool_slice_along_roi_path_action",
+        "itool_mask_data_with_roi_action",
+    }.issubset({act.objectName() for act in roi_menu.actions()})
 
     state = copy.deepcopy(plot_item._serializable_state)
     assert "roi_states" in state
@@ -3597,7 +3599,7 @@ def test_itool_interpolate(qtbot, accept_dialog) -> None:
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    assert "Interpolate..." in win.mnb.action_dict
+    assert "interpolateAct" in win.mnb.action_dict
 
     target = np.linspace(0.0, 2.0, 5)
 

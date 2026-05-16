@@ -137,6 +137,8 @@ class HistoryMenu(QtWidgets.QMenu):
         states, current_index = self.slicer_area.history_states()
         if len(states) < 2:
             action = QtWidgets.QAction("No history recorded yet")
+            action.setObjectName("itool_history_empty_action")
+            action.setData({"kind": "empty"})
             action.setEnabled(False)
             self.addAction(action)
             self._actions.append(action)
@@ -147,6 +149,8 @@ class HistoryMenu(QtWidgets.QMenu):
             summary = describe_state_diff(prev_state, this_state) or "No changes"
             marker = "•" if i == current_index else " "
             action = QtWidgets.QAction(f"{marker} {summary}")
+            action.setObjectName(f"itool_history_action_{i}")
+            action.setData(i - current_index)
             action.triggered.connect(
                 lambda *, idx=i - current_index: self.slicer_area.go_to_history_index(
                     idx

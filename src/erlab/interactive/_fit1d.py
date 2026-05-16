@@ -1806,7 +1806,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         button_layout = QtWidgets.QHBoxLayout()
         self.expr_apply_button = QtWidgets.QPushButton("Apply")
-        self.expr_init_script_button = QtWidgets.QPushButton("Edit init script...")
+        self.expr_init_script_button = QtWidgets.QPushButton("Edit init script…")
         button_layout.addWidget(self.expr_init_script_button)
         button_layout.addWidget(self.expr_apply_button)
 
@@ -3136,7 +3136,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         row = index.row()
         param = self.param_model.param_at(row)
         menu = QtWidgets.QMenu(self)
-        set_action = typing.cast("QtGui.QAction", menu.addAction("Set expression..."))
+        set_action = typing.cast("QtGui.QAction", menu.addAction("Set expression…"))
         clear_action = typing.cast("QtGui.QAction", menu.addAction("Clear expression"))
         can_edit = self._can_edit_expr(param)
         set_action.setEnabled(can_edit)
