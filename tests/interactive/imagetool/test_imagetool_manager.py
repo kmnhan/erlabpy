@@ -8476,42 +8476,81 @@ def test_manager_workspace_save_as_preserves_live_in_memory_windows(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    with manager_context() as manager:
-        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+    dask_options = erlab.interactive.options.model.io.dask
+    old_threshold = dask_options.compute_threshold
+    object.__setattr__(dask_options, "compute_threshold", 0)
+    try:
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
 
-        root = itool(data, manager=False, execute=False)
-        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False)
-        child = itool(data + 1.0, manager=False, execute=False)
-        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
-        child_uid = manager.add_imagetool_child(child, 0, show=False)
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            child = itool(data + 1.0, manager=False, execute=False)
+            assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+            child_uid = manager.add_imagetool_child(child, 0, show=False)
 
-        def _load_workspace_file_should_not_run(*args, **kwargs):
-            raise AssertionError("Save As should not reload the saved workspace")
+            def _load_workspace_file_should_not_run(*args, **kwargs):
+                raise AssertionError("Save As should not reload the saved workspace")
 
-        monkeypatch.setattr(
-            manager, "_load_workspace_file", _load_workspace_file_should_not_run
-        )
+            monkeypatch.setattr(
+                manager, "_load_workspace_file", _load_workspace_file_should_not_run
+            )
 
-        new_fname = tmp_path / "new.itws"
+            new_fname = tmp_path / "new.itws"
 
-        def _go_to_file(dialog: QtWidgets.QFileDialog):
-            dialog.setDirectory(str(tmp_path))
-            dialog.selectFile(str(new_fname))
-            focused = dialog.focusWidget()
-            if isinstance(focused, QtWidgets.QLineEdit):
-                focused.setText(new_fname.name)
+            def _go_to_file(dialog: QtWidgets.QFileDialog):
+                dialog.setDirectory(str(tmp_path))
+                dialog.selectFile(str(new_fname))
+                focused = dialog.focusWidget()
+                if isinstance(focused, QtWidgets.QLineEdit):
+                    focused.setText(new_fname.name)
 
-        accept_dialog(lambda: manager.save_as(native=False), pre_call=_go_to_file)
+            accept_dialog(lambda: manager.save_as(native=False), pre_call=_go_to_file)
 
-        assert manager.workspace_path == str(new_fname.resolve())
-        assert not manager.is_workspace_modified
-        assert manager.get_imagetool(0) is root
-        assert manager._child_node(child_uid).imagetool is child
-        assert manager._imagetool_wrappers[0]._childtool_indices == [child_uid]
-        assert root.slicer_area._data.chunks is None
-        assert child.slicer_area._data.chunks is None
+            assert manager.workspace_path == str(new_fname.resolve())
+            assert not manager.is_workspace_modified
+            assert manager.get_imagetool(0) is root
+            assert manager._child_node(child_uid).imagetool is child
+            assert manager._imagetool_wrappers[0]._childtool_indices == [child_uid]
+            assert root.slicer_area._data.chunks is None
+            assert child.slicer_area._data.chunks is None
+    finally:
+        object.__setattr__(dask_options, "compute_threshold", old_threshold)
+
+
+def test_manager_workspace_full_save_preserves_non_dask_data(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dask_options = erlab.interactive.options.model.io.dask
+    old_threshold = dask_options.compute_threshold
+    object.__setattr__(dask_options, "compute_threshold", 0)
+    try:
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+            assert root.slicer_area._data.chunks is None
+
+            fname = tmp_path / "full-save.itws"
+            manager._save_workspace_document(fname, force_full=True)
+            manager._adopt_workspace_path(fname)
+            manager._mark_workspace_clean()
+            manager._workspace_needs_full_save = True
+
+            assert manager.save()
+            assert root.slicer_area._data.chunks is None
+            assert _compute_first_value(root.slicer_area._data) == 0.0
+    finally:
+        object.__setattr__(dask_options, "compute_threshold", old_threshold)
 
 
 def test_manager_workspace_save_as_rebinds_non_dask_file_backed_data(
