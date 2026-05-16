@@ -168,7 +168,7 @@ when you copy code.
 Multiple ImageTool Manager windows can run at the same time. The first live manager is
 manager `#0`, and later managers receive 0-based indexes in the order they start.
 
-To start a new manager instance, choose {guilabel}`File → New Manager Instance` from an
+To start a new manager instance, choose {guilabel}`File → New Manager Window` from an
 existing manager window.
 
 Indexes are not reused while a higher-index manager is live or starting. If managers

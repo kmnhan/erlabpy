@@ -63,6 +63,17 @@ logger = logging.getLogger(__name__)
 
 _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
+_RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
+_MAX_RECENT_WORKSPACES = 10
+
+
+def _manager_settings() -> QtCore.QSettings:
+    return QtCore.QSettings(
+        QtCore.QSettings.Format.IniFormat,
+        QtCore.QSettings.Scope.UserScope,
+        "erlabpy",
+        "imagetool-manager",
+    )
 
 
 def _launch_new_manager_instance() -> None:
@@ -696,6 +707,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 text="Periodic Table",
                 tooltip="Show the periodic table window",
                 shortcut="Ctrl+Shift+P",
+                icon_name="applications-science",
                 factory=self._create_ptable_window,
             ),
         }
@@ -713,6 +725,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.settings_action.triggered.connect(self.open_settings)
         self.settings_action.setShortcut(QtGui.QKeySequence.StandardKey.Preferences)
         self.settings_action.setToolTip("Open settings")
+        self.settings_action.setIcon(QtGui.QIcon.fromTheme("preferences-system"))
 
         self.show_action = QtWidgets.QAction("Show", self)
         self.show_action.triggered.connect(self.show_selected)
@@ -738,15 +751,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.open_action.triggered.connect(self.open)
         self.open_action.setToolTip("Load data files as new ImageTool rows")
 
-        self.new_manager_action = QtWidgets.QAction("New Manager Instance", self)
+        self.new_manager_action = QtWidgets.QAction("New Manager Window", self)
         self.new_manager_action.setObjectName("manager_new_instance_action")
         self.new_manager_action.triggered.connect(self.open_new_manager_instance)
-        self.new_manager_action.setToolTip("Open another ImageTool Manager process")
+        self.new_manager_action.setToolTip("Open another ImageTool Manager window")
+        self.new_manager_action.setIcon(QtGui.QIcon.fromTheme("window-new"))
 
         self.save_action = QtWidgets.QAction("&Save", self)
         self.save_action.setObjectName("manager_save_workspace_action")
         self.save_action.setShortcut(QtGui.QKeySequence.StandardKey.Save)
         self.save_action.setToolTip("Save this workspace")
+        self.save_action.setIcon(QtGui.QIcon.fromTheme("document-save"))
         self.save_action.triggered.connect(self.save)
 
         self.save_as_action = QtWidgets.QAction("Save Workspace &As...", self)
@@ -755,6 +770,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.save_as_action.setToolTip(
             "Save this workspace to a new file and use that file for future saves"
         )
+        self.save_as_action.setIcon(QtGui.QIcon.fromTheme("document-save-as"))
         self.save_as_action.triggered.connect(self.save_as)
 
         self.compact_workspace_action = QtWidgets.QAction("Compact Workspace", self)
@@ -768,7 +784,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.load_action.setObjectName("manager_open_workspace_action")
         self.load_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.load_action.setToolTip("Replace this workspace with a workspace file")
+        self.load_action.setIcon(QtGui.QIcon.fromTheme("document-open"))
         self.load_action.triggered.connect(self.load)
+
+        self.open_recent_menu = QtWidgets.QMenu("Open &Recent", self)
+        self.open_recent_menu.setObjectName("manager_open_recent_menu")
+        open_recent_action = self.open_recent_menu.menuAction()
+        if open_recent_action is None:
+            raise RuntimeError("Open Recent menu action was not created")
+        open_recent_action.setObjectName("manager_open_recent_menu_action")
+        open_recent_action.setIcon(QtGui.QIcon.fromTheme("document-open-recent"))
+        self.open_recent_menu.setToolTipsVisible(True)
+        self.open_recent_menu.aboutToShow.connect(self._populate_open_recent_menu)
+        self._refresh_open_recent_menu_action()
 
         self.import_workspace_action = QtWidgets.QAction(
             "Add Windows From &Workspace...", self
@@ -779,6 +807,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.import_workspace_action.setToolTip(
             "Add selected windows from another workspace file"
         )
+        self.import_workspace_action.setIcon(QtGui.QIcon.fromTheme("list-add"))
         self.import_workspace_action.triggered.connect(self.import_workspace)
 
         self.remove_action = QtWidgets.QAction("Remove", self)
@@ -793,12 +822,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.duplicate_action = QtWidgets.QAction("Duplicate", self)
         self.duplicate_action.triggered.connect(self.duplicate_selected)
         self.duplicate_action.setToolTip("Duplicate selected windows")
+        self.duplicate_action.setIcon(QtGui.QIcon.fromTheme("edit-copy"))
 
         self.promote_action = QtWidgets.QAction("Promote Window", self)
         self.promote_action.triggered.connect(self.promote_selected)
         self.promote_action.setToolTip(
             "Promote the selected nested ImageTool to a top-level window"
         )
+        self.promote_action.setIcon(QtGui.QIcon.fromTheme("go-up"))
 
         self.reindex_action = QtWidgets.QAction("Reset Index", self)
         self.reindex_action.triggered.connect(self.reindex)
@@ -844,12 +875,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.reload_action = QtWidgets.QAction("Reload Data", self)
         self.reload_action.triggered.connect(self.reload_selected)
-        self.reload_action.setToolTip("Reload data from file for selected windows")
+        self.reload_action.setToolTip("Reload selected data and refresh child paths")
+        self.reload_action.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
         self.reload_action.setVisible(False)
 
         self.unwatch_action = QtWidgets.QAction("Stop Watching", self)
         self.unwatch_action.triggered.connect(self.unwatch_selected)
         self.unwatch_action.setToolTip("Stop watching selected windows")
+        self.unwatch_action.setIcon(QtGui.QIcon.fromTheme("process-stop"))
         self.unwatch_action.setVisible(False)
 
         self.source_update_action = QtWidgets.QAction("Automatic Updates...", self)
@@ -857,6 +890,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.source_update_action.setToolTip(
             "Turn automatic updates on or off for the selected child window"
         )
+        self.source_update_action.setIcon(QtGui.QIcon.fromTheme("sync-synchronizing"))
         self.source_update_action.setVisible(False)
 
         self.about_action = QtWidgets.QAction("About", self)
@@ -868,6 +902,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             QtWidgets.QAction.MenuRole.ApplicationSpecificRole
         )
         self.check_update_action.triggered.connect(self.check_for_updates)
+        self.check_update_action.setIcon(
+            QtGui.QIcon.fromTheme("software-update-available")
+        )
         self.check_update_action.setVisible(erlab.utils.misc._IS_PACKAGED)
 
         release_notes_action, open_docs_action, report_issue_action = (
@@ -882,7 +919,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             "QtWidgets.QMenu", self.menu_bar.addMenu("&File")
         )
         file_menu.setObjectName("manager_file_menu")
+        file_menu.aboutToShow.connect(self._refresh_open_recent_menu_action)
         file_menu.addAction(self.load_action)
+        file_menu.addMenu(self.open_recent_menu)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
         file_menu.addAction(self.compact_workspace_action)
@@ -1107,6 +1146,159 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         # Initialize status bar
         self._status_bar.showMessage("")
+
+    @staticmethod
+    def _normalize_recent_workspace_paths(
+        paths: Iterable[str | os.PathLike[str]],
+    ) -> list[pathlib.Path]:
+        recent_paths: list[pathlib.Path] = []
+        seen: set[str] = set()
+        for value in paths:
+            path = pathlib.Path(value).expanduser().resolve()
+            if path.suffix.lower() != ".itws":
+                continue
+            key = os.path.normcase(str(path))
+            if key in seen:
+                continue
+            recent_paths.append(path)
+            seen.add(key)
+            if len(recent_paths) >= _MAX_RECENT_WORKSPACES:
+                break
+        return recent_paths
+
+    def _recent_workspace_paths(self) -> list[pathlib.Path]:
+        settings = _manager_settings()
+        settings.sync()
+        values = settings.value(_RECENT_WORKSPACES_SETTINGS_KEY, [])
+        if isinstance(values, str):
+            stored_paths = [values] if values else []
+        elif isinstance(values, (list, tuple)):
+            stored_paths = [str(value) for value in values if value]
+        else:
+            stored_paths = []
+        return self._normalize_recent_workspace_paths(stored_paths)
+
+    def _set_recent_workspace_paths(
+        self, paths: Iterable[str | os.PathLike[str]]
+    ) -> None:
+        recent_paths = self._normalize_recent_workspace_paths(paths)
+        settings = _manager_settings()
+        if recent_paths:
+            settings.setValue(
+                _RECENT_WORKSPACES_SETTINGS_KEY,
+                [str(path) for path in recent_paths],
+            )
+        else:
+            settings.remove(_RECENT_WORKSPACES_SETTINGS_KEY)
+        settings.sync()
+
+    def _record_recent_workspace(self, fname: str | os.PathLike[str]) -> None:
+        path = pathlib.Path(fname).expanduser().resolve()
+        if path.suffix.lower() != ".itws":
+            return
+        path_key = os.path.normcase(str(path))
+        paths = [
+            existing
+            for existing in self._recent_workspace_paths()
+            if os.path.normcase(str(existing)) != path_key
+        ]
+        self._set_recent_workspace_paths([path, *paths])
+        self._refresh_open_recent_menu_action()
+
+    @QtCore.Slot()
+    def _clear_recent_workspaces(self) -> None:
+        self._set_recent_workspace_paths([])
+        self._populate_open_recent_menu()
+
+    def _refresh_open_recent_menu_action(self) -> None:
+        self.open_recent_menu.setEnabled(bool(self._recent_workspace_paths()))
+
+    def _populate_open_recent_menu(self) -> None:
+        self.open_recent_menu.clear()
+        paths = self._recent_workspace_paths()
+        self.open_recent_menu.setEnabled(bool(paths))
+        if not paths:
+            return
+
+        name_counts: dict[str, int] = {}
+        for path in paths:
+            name_counts[path.name] = name_counts.get(path.name, 0) + 1
+
+        for index, path in enumerate(paths):
+            label = path.name
+            if name_counts[path.name] > 1:
+                label = f"{path.name} ({path.parent.name or path.parent})"
+            action = QtWidgets.QAction(label, self.open_recent_menu)
+            action.setObjectName(f"manager_recent_workspace_action_{index}")
+            action.setData(str(path))
+            action.setToolTip(str(path))
+            action.setStatusTip(str(path))
+            action.triggered.connect(
+                lambda _checked=False, recent_path=path: self.open_recent_workspace(
+                    recent_path
+                )
+            )
+            self.open_recent_menu.addAction(action)
+
+        self.open_recent_menu.addSeparator()
+        clear_action = QtWidgets.QAction("Clear Menu", self.open_recent_menu)
+        clear_action.setObjectName("manager_clear_recent_workspaces_action")
+        clear_action.triggered.connect(self._clear_recent_workspaces)
+        self.open_recent_menu.addAction(clear_action)
+
+    @QtCore.Slot(str)
+    def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
+        """Open a recently used workspace file."""
+        path = pathlib.Path(fname).expanduser().resolve()
+        if not path.exists():
+            path_key = os.path.normcase(str(path))
+            self._set_recent_workspace_paths(
+                existing
+                for existing in self._recent_workspace_paths()
+                if os.path.normcase(str(existing)) != path_key
+            )
+            self._refresh_open_recent_menu_action()
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Workspace Not Found",
+                f"The recent workspace file no longer exists:\n{path}",
+            )
+            return False
+        if not self._confirm_save_dirty_workspace(
+            "Opening a workspace replaces the windows currently in this manager."
+        ):
+            return False
+        self._recent_directory = str(path.parent)
+        try:
+            loaded = self._load_workspace_file(
+                path,
+                replace=True,
+                associate=True,
+                mark_dirty=False,
+                select=False,
+            )
+        except Exception as exc:
+            if _manager_workspace._is_workspace_file_lock_error(exc):
+                logger.info(
+                    "Workspace file is already open or locked: %s",
+                    path,
+                    extra={"suppress_ui_alert": True},
+                )
+                _show_workspace_file_lock_error(self, path)
+            else:
+                logger.exception(
+                    "Error while loading workspace",
+                    extra={"suppress_ui_alert": True},
+                )
+                erlab.interactive.utils.MessageDialog.critical(
+                    self,
+                    "Error",
+                    "An error occurred while loading the workspace file.",
+                )
+            return False
+        if loaded:
+            self._record_recent_workspace(path)
+        return loaded
 
     @property
     def workspace_path(self) -> str | None:
@@ -3791,6 +3983,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._rebind_workspace_backed_imagetools(associated_fname)
         self._drain_workspace_deferred_events()
         self._mark_workspace_clean()
+        self._record_recent_workspace(associated_fname)
 
     def _workspace_rebind_data_for_uid(
         self,
@@ -4166,6 +4359,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             )
         self._status_bar.showMessage(message, 5000)
         self._restore_focus_after_workspace_save(origin)
+        self._record_recent_workspace(self._workspace_path)
         return True
 
     @QtCore.Slot()
@@ -4191,6 +4385,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._workspace_needs_full_save = False
             self._drain_workspace_deferred_events()
             self._mark_workspace_clean()
+            self._record_recent_workspace(access.path)
         except Exception:
             self._show_operation_error(
                 "Error while saving workspace",
@@ -4400,7 +4595,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         fname = dialog.selectedFiles()[0]
         self._recent_directory = os.path.dirname(fname)
         try:
-            return self._load_workspace_file(
+            loaded = self._load_workspace_file(
                 fname,
                 replace=False,
                 associate=False,
@@ -4426,6 +4621,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     "An error occurred while importing the workspace file.",
                 )
             return False
+        else:
+            if loaded:
+                self._record_recent_workspace(fname)
+            return loaded
 
     @QtCore.Slot()
     def open(self, *, native: bool = True) -> None:
@@ -5419,15 +5618,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def open_new_manager_instance(self) -> None:
-        """Open another ImageTool Manager process."""
+        """Open another ImageTool Manager window."""
         try:
             _launch_new_manager_instance()
         except Exception:
-            logger.exception("Failed to open a new ImageTool Manager instance")
+            logger.exception("Failed to open a new ImageTool Manager window")
             erlab.interactive.utils.MessageDialog.critical(
                 self,
-                title="New Manager Instance",
-                text="Could not open another ImageTool Manager instance.",
+                title="New Manager Window",
+                text="Could not open another ImageTool Manager window.",
             )
 
     @QtCore.Slot()

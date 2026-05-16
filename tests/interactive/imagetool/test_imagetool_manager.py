@@ -458,6 +458,20 @@ def menu_map_by_object_name(
     return menus
 
 
+@pytest.fixture(autouse=True)
+def isolated_recent_workspace_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> pathlib.Path:
+    settings_path = tmp_path / "recent-workspaces.ini"
+
+    def _settings() -> QtCore.QSettings:
+        return QtCore.QSettings(str(settings_path), QtCore.QSettings.Format.IniFormat)
+
+    _settings().clear()
+    monkeypatch.setattr(manager_mainwindow, "_manager_settings", _settings)
+    return settings_path
+
+
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
@@ -7534,6 +7548,197 @@ def test_manager_workspace_path_lock_contract(
             manager._set_workspace_path(tmp_path / "other.itws")
 
 
+def test_manager_open_recent_menu_state_labels_and_clear(
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    workspace_a = tmp_path / "alpha" / "workspace.itws"
+    workspace_b = tmp_path / "beta" / "workspace.itws"
+    workspace_a.parent.mkdir()
+    workspace_b.parent.mkdir()
+    workspace_a.touch()
+    workspace_b.touch()
+
+    with manager_context() as manager:
+        assert not manager.open_recent_menu.isEnabled()
+
+        manager._record_recent_workspace(workspace_a)
+        manager._record_recent_workspace(workspace_b)
+        manager._populate_open_recent_menu()
+
+        assert manager.open_recent_menu.isEnabled()
+        actions = action_map_by_object_name(manager.open_recent_menu)
+        first_action = actions["manager_recent_workspace_action_0"]
+        second_action = actions["manager_recent_workspace_action_1"]
+        assert first_action.text() == "workspace.itws (beta)"
+        assert second_action.text() == "workspace.itws (alpha)"
+        assert first_action.data() == str(workspace_b.resolve())
+        assert first_action.toolTip() == str(workspace_b.resolve())
+        assert first_action.statusTip() == str(workspace_b.resolve())
+        assert "manager_clear_recent_workspaces_action" in actions
+
+        actions["manager_clear_recent_workspaces_action"].trigger()
+        assert manager._recent_workspace_paths() == []
+        assert not manager.open_recent_menu.isEnabled()
+
+
+def test_manager_recent_workspaces_dedupe_move_to_top_and_cap(
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    paths = [tmp_path / f"workspace-{idx}.itws" for idx in range(12)]
+    for path in paths:
+        path.touch()
+
+    with manager_context() as manager:
+        for path in paths:
+            manager._record_recent_workspace(path)
+
+        assert manager._recent_workspace_paths() == [
+            path.resolve() for path in reversed(paths[2:])
+        ]
+
+        manager._record_recent_workspace(paths[6])
+
+        assert manager._recent_workspace_paths() == [
+            paths[6].resolve(),
+            paths[11].resolve(),
+            paths[10].resolve(),
+            paths[9].resolve(),
+            paths[8].resolve(),
+            paths[7].resolve(),
+            paths[5].resolve(),
+            paths[4].resolve(),
+            paths[3].resolve(),
+            paths[2].resolve(),
+        ]
+
+
+def test_manager_open_recent_workspace_flow(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    older = tmp_path / "older.itws"
+    newer = tmp_path / "newer.itws"
+    missing = tmp_path / "missing.itws"
+    older.touch()
+    newer.touch()
+
+    with manager_context() as manager:
+        manager._set_recent_workspace_paths([newer.resolve(), older.resolve()])
+        load_calls: list[tuple[pathlib.Path, dict[str, typing.Any]]] = []
+
+        def _record_load(path, **kwargs):
+            load_calls.append((pathlib.Path(path), kwargs))
+            return True
+
+        monkeypatch.setattr(manager, "_load_workspace_file", _record_load)
+        monkeypatch.setattr(
+            manager, "_confirm_save_dirty_workspace", lambda _message: False
+        )
+
+        assert not manager.open_recent_workspace(older)
+        assert load_calls == []
+        assert manager._recent_workspace_paths() == [
+            newer.resolve(),
+            older.resolve(),
+        ]
+
+        monkeypatch.setattr(
+            manager, "_confirm_save_dirty_workspace", lambda _message: True
+        )
+        assert manager.open_recent_workspace(older)
+        assert load_calls == [
+            (
+                older.resolve(),
+                {
+                    "replace": True,
+                    "associate": True,
+                    "mark_dirty": False,
+                    "select": False,
+                },
+            )
+        ]
+        assert manager._recent_workspace_paths() == [
+            older.resolve(),
+            newer.resolve(),
+        ]
+
+        missing_warnings: list[tuple[typing.Any, ...]] = []
+        manager._set_recent_workspace_paths([missing.resolve(), older.resolve()])
+        monkeypatch.setattr(
+            QtWidgets.QMessageBox,
+            "warning",
+            lambda *args: missing_warnings.append(args),
+        )
+
+        assert not manager.open_recent_workspace(missing)
+        assert len(missing_warnings) == 1
+        assert manager._recent_workspace_paths() == [older.resolve()]
+
+
+def test_manager_records_recent_workspace_accesses(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    opened = tmp_path / "opened.itws"
+    saved = tmp_path / "saved.itws"
+    imported = tmp_path / "imported.itws"
+    for path in (opened, saved, imported):
+        path.touch()
+
+    with manager_context() as manager:
+        with manager._workspace_document_access_context(opened) as access:
+            manager._associate_loaded_workspace_file(
+                opened,
+                manager_workspace._current_workspace_schema_version(),
+                workspace_access=access,
+            )
+
+        monkeypatch.setattr(
+            manager, "_workspace_save_dialog", lambda **_kwargs: str(saved)
+        )
+        monkeypatch.setattr(
+            manager, "_save_workspace_document", lambda *_args, **_kwargs: None
+        )
+        monkeypatch.setattr(
+            manager, "_rebind_workspace_backed_imagetools", lambda *_args: None
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *_args, **_kwargs: contextlib.nullcontext(),
+        )
+        assert manager.save_as(native=False)
+
+        monkeypatch.setattr(QtWidgets.QFileDialog, "exec", lambda _dialog: True)
+        monkeypatch.setattr(
+            QtWidgets.QFileDialog,
+            "selectedFiles",
+            lambda _dialog: [str(imported)],
+        )
+        monkeypatch.setattr(
+            manager, "_load_workspace_file", lambda *_args, **_kwargs: True
+        )
+        assert manager.import_workspace(native=False)
+
+        assert manager._recent_workspace_paths()[:3] == [
+            imported.resolve(),
+            saved.resolve(),
+            opened.resolve(),
+        ]
+
+
 def test_manager_application_quit_request_resets_when_close_fails(
     monkeypatch,
     manager_context: Callable[
@@ -13722,6 +13927,13 @@ def test_manager_standalone_app_menus(
     ],
 ) -> None:
     launched: list[bool] = []
+    theme_icon_names: list[str] = []
+
+    def _record_theme_icon(name: str, *_args: typing.Any) -> QtGui.QIcon:
+        theme_icon_names.append(name)
+        return QtGui.QIcon()
+
+    monkeypatch.setattr(QtGui.QIcon, "fromTheme", staticmethod(_record_theme_icon))
     monkeypatch.setattr(
         manager_mainwindow,
         "_launch_new_manager_instance",
@@ -13738,8 +13950,9 @@ def test_manager_standalone_app_menus(
             action.objectName() if not action.isSeparator() else ""
             for action in file_menu.actions()
         ]
-        assert file_action_names[:8] == [
+        assert file_action_names[:9] == [
             "manager_open_workspace_action",
+            "manager_open_recent_menu_action",
             "manager_save_workspace_action",
             "manager_save_workspace_as_action",
             "manager_compact_workspace_action",
@@ -13755,6 +13968,9 @@ def test_manager_standalone_app_menus(
             QtGui.QKeySequence.SequenceFormat.PortableText
         ) == expected_open_shortcut.toString(
             QtGui.QKeySequence.SequenceFormat.PortableText
+        )
+        assert file_actions["manager_open_recent_menu_action"] is (
+            manager.open_recent_menu.menuAction()
         )
         assert file_actions["manager_add_data_files_action"] is manager.open_action
         assert manager.open_action.shortcut().isEmpty()
@@ -13775,6 +13991,15 @@ def test_manager_standalone_app_menus(
             .toString(QtGui.QKeySequence.SequenceFormat.PortableText)
             == "Ctrl+Shift+P"
         )
+        assert {
+            "document-open",
+            "document-open-recent",
+            "document-save",
+            "document-save-as",
+            "list-add",
+            "window-new",
+            "applications-science",
+        }.issubset(theme_icon_names)
 
 
 def test_launch_new_manager_instance_uses_detached_source_process(monkeypatch) -> None:
@@ -13896,8 +14121,8 @@ def test_open_new_manager_instance_shows_error_dialog(monkeypatch) -> None:
     assert dialogs == [
         (
             parent,
-            "New Manager Instance",
-            "Could not open another ImageTool Manager instance.",
+            "New Manager Window",
+            "Could not open another ImageTool Manager window.",
         )
     ]
 
