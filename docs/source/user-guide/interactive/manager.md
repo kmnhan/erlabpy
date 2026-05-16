@@ -47,13 +47,13 @@ Windows in an ImageTool Manager instance can be saved to a workspace file (`.itw
 similar to how Igor Pro experiment files work. Pressing {kbd}`Ctrl+S` in any child
 window saves the entire manager workspace, including all windows and their state.
 
-{guilabel}`File → Import From Workspace…` lets you choose windows from another workspace
-to import into the current manager.
+{guilabel}`File → Add Windows From Workspace…` lets you choose windows from another
+workspace to import into the current manager.
 
 Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspace…`
-or by dragging the `.itws` file back into the manager to recreate your windows
-exactly as they were. Share the file with collaborators and they will see the
-identical layout.
+({kbd}`Ctrl+O`) or by dragging the `.itws` file back into the manager to recreate
+your windows exactly as they were. Share the file with collaborators and they will
+see the identical layout.
 
 Use {guilabel}`File → Offload to Workspace` to save the workspace if needed, free
 selected in-memory ImageTool data, and reconnect those rows to dask-backed data read
@@ -225,7 +225,8 @@ Once the manager is running, you can open ImageTools in several ways:
 
 - The {guilabel}`File → Move to Manager` ({kbd}`Ctrl+Shift+M`) action from an ImageTool window opened outside the manager. This action moves the active ImageTool to the manager.
 
-- Use the manager’s {guilabel}`File → Open File…` action to load data in a new ImageTool.
+- Use the manager’s {guilabel}`File → Add Data Files…` action to load data in a
+  new ImageTool.
 
 - Drag and drop supported ARPES data into the manager window.
 

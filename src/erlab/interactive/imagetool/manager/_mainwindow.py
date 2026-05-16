@@ -733,21 +733,24 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.gc_action.setToolTip("Run garbage collection to free up memory")
         self.gc_action.setIcon(QtGui.QIcon.fromTheme("user-trash"))
 
-        self.open_action = QtWidgets.QAction("&Open File...", self)
+        self.open_action = QtWidgets.QAction("Add &Data Files...", self)
+        self.open_action.setObjectName("manager_add_data_files_action")
         self.open_action.triggered.connect(self.open)
-        self.open_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
-        self.open_action.setToolTip("Open file(s) in ImageTool")
+        self.open_action.setToolTip("Load data files as new ImageTool rows")
 
         self.new_manager_action = QtWidgets.QAction("New Manager Instance", self)
+        self.new_manager_action.setObjectName("manager_new_instance_action")
         self.new_manager_action.triggered.connect(self.open_new_manager_instance)
         self.new_manager_action.setToolTip("Open another ImageTool Manager process")
 
         self.save_action = QtWidgets.QAction("&Save", self)
+        self.save_action.setObjectName("manager_save_workspace_action")
         self.save_action.setShortcut(QtGui.QKeySequence.StandardKey.Save)
         self.save_action.setToolTip("Save this workspace")
         self.save_action.triggered.connect(self.save)
 
         self.save_as_action = QtWidgets.QAction("Save Workspace &As...", self)
+        self.save_as_action.setObjectName("manager_save_workspace_as_action")
         self.save_as_action.setShortcut(QtGui.QKeySequence.StandardKey.SaveAs)
         self.save_as_action.setToolTip(
             "Save this workspace to a new file and use that file for future saves"
@@ -755,20 +758,26 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.save_as_action.triggered.connect(self.save_as)
 
         self.compact_workspace_action = QtWidgets.QAction("Compact Workspace", self)
+        self.compact_workspace_action.setObjectName("manager_compact_workspace_action")
         self.compact_workspace_action.setToolTip(
             "Rewrite this workspace file to remove unused space"
         )
         self.compact_workspace_action.triggered.connect(self.compact_workspace)
 
         self.load_action = QtWidgets.QAction("&Open Workspace...", self)
+        self.load_action.setObjectName("manager_open_workspace_action")
+        self.load_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
         self.load_action.setToolTip("Replace this workspace with a workspace file")
         self.load_action.triggered.connect(self.load)
 
         self.import_workspace_action = QtWidgets.QAction(
-            "&Import From Workspace...", self
+            "Add Windows From &Workspace...", self
+        )
+        self.import_workspace_action.setObjectName(
+            "manager_add_windows_from_workspace_action"
         )
         self.import_workspace_action.setToolTip(
-            "Add selected windows from a workspace file"
+            "Add selected windows from another workspace file"
         )
         self.import_workspace_action.triggered.connect(self.import_workspace)
 
@@ -872,16 +881,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&File")
         )
-        file_menu.addAction(self.open_action)
-        file_menu.addAction(self.new_manager_action)
-        file_menu.addSeparator()
-        file_menu.addAction(self.explorer_action)
-        file_menu.addSeparator()
+        file_menu.setObjectName("manager_file_menu")
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
         file_menu.addAction(self.compact_workspace_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.open_action)
         file_menu.addAction(self.import_workspace_action)
+        file_menu.addAction(self.explorer_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.new_manager_action)
         file_menu.addSeparator()
         file_menu.addAction(self.store_action)
         file_menu.addSeparator()
@@ -898,6 +908,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         edit_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&Edit")
         )
+        edit_menu.setObjectName("manager_edit_menu")
         edit_menu.addAction(self.reindex_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.concat_action)
@@ -911,6 +922,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         view_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&View")
         )
+        view_menu.setObjectName("manager_view_menu")
         view_menu.addAction(self.console_action)
         view_menu.addSeparator()
         view_menu.addAction(self.preview_action)
@@ -919,6 +931,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         apps_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&Apps")
         )
+        apps_menu.setObjectName("manager_apps_menu")
         apps_menu.addAction(self.ptable_action)
 
         self._dask_menu = DaskMenu(self, "Dask")
@@ -927,6 +940,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         help_menu: QtWidgets.QMenu = typing.cast(
             "QtWidgets.QMenu", self.menu_bar.addMenu("&Help")
         )
+        help_menu.setObjectName("manager_help_menu")
         help_menu.addAction(self.about_action)
         help_menu.addAction(self.check_update_action)
         help_menu.addAction(release_notes_action)
@@ -2620,6 +2634,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _create_standalone_app_action(self, key: str) -> QtWidgets.QAction:
         spec = self._standalone_app_specs[key]
         action = QtWidgets.QAction(spec.text, self)
+        action.setObjectName(f"manager_{key}_action")
         action.triggered.connect(
             lambda _checked=False, app_key=key: self._show_standalone_app(app_key)
         )
