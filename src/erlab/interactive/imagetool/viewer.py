@@ -2118,6 +2118,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Computing…"):
                     self.set_data(self._data.compute())
+                self.sigDataBackingChanged.emit()
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while loading data into memory."
