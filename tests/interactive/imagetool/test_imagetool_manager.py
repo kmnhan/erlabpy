@@ -8883,6 +8883,51 @@ def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
             assert saved[0, 0] == 10.0
 
 
+def test_manager_compute_offloaded_workspace_data_marks_backing_dirty(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._imagetool_wrappers[0].uid
+
+        fname = tmp_path / "compute-offloaded.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        assert manager.offload_to_workspace([0], native=False)
+        assert root.slicer_area._data.chunks is not None
+        assert not manager.is_workspace_modified
+
+        root.slicer_area._compute_chunked()
+
+        assert root.slicer_area._data.chunks is None
+        assert uid in manager._workspace_dirty_data
+        assert manager.is_workspace_modified
+
+        select_tools(manager, [0])
+        manager._update_actions()
+        assert manager.offload_action.isEnabled()
+
+        assert manager.save()
+        assert not manager.is_workspace_modified
+
+        with h5py.File(fname, "r") as h5_file:
+            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            assert saved.chunks is None
+
+
 def test_manager_offload_to_workspace_save_cancel_or_failure_noop(
     qtbot,
     monkeypatch,
