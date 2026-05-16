@@ -205,7 +205,7 @@ class MinimalScaleTool(erlab.interactive.utils.ToolWindow):
 
     @property
     def tool_data(self) -> xr.DataArray:
-        # ToolWindow archives this array separately from the UI state model.
+        # ToolWindow stores this array separately from the UI state model.
         return self._data
 
     @property
@@ -456,7 +456,7 @@ Some implementation details matter:
 - Always use `self.setCentralWidget(...)`, not `QtWidgets.QMainWindow.setCentralWidget`.
   `ToolWindow` wraps the actual content widget so it can show update status above it.
 - Keep `StateModel` focused on UI state. The main data already comes from `tool_data`
-  and is stored separately when the tool is archived. If you need to persist expensive
+  and is stored separately in workspace files. If you need to persist expensive
   calculated arrays, use the explicit persistence hooks instead of `tool_status` so
   ordinary history snapshots stay cheap.
 - Make the `tool_status` getter and setter fully describe and restore the current UI
@@ -694,7 +694,7 @@ To make the tool discoverable across ERLabPy, update the relevant entry points:
 
 If the tool should be available from an ImageTool in the manager, check both the plain
 ImageTool launch path and the manager launch path. The manager flow is slightly
-different because the tool row can be hidden, archived, restored, or rebound to watched
+different because the tool row can be hidden, saved, restored, or rebound to watched
 notebook data.
 
 ## Test and document the contribution

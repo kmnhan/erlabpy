@@ -39,7 +39,7 @@ changed, and it can show code that repeats the selected steps in a notebook or s
 - Synchronize directly with Jupyter via `%watch`, access data from scripts using {func}`fetch <erlab.interactive.imagetool.manager.fetch>`, copy code that repeats GUI steps, and perform quick analyses in the GUI through a built-in IPython console.
 - Drag-and-drop files to open them quickly, or use the integrated data explorer to browse preview data.
 
-(imagetool-manager-archive-workspace)=
+(imagetool-manager-workspace)=
 
 ## Saving and loading
 
@@ -54,6 +54,11 @@ Saved ImageTool workspaces can be reloaded via {guilabel}`File → Open Workspac
 or by dragging the `.itws` file back into the manager to recreate your windows
 exactly as they were. Share the file with collaborators and they will see the
 identical layout.
+
+Use {guilabel}`File → Offload to Workspace` to save the workspace if needed, free
+selected in-memory ImageTool data, and reconnect those rows to dask-backed data read
+from the `.itws` file. Use {guilabel}`Dask → Load Into Memory` in ImageTool to bring
+that data back into memory.
 
 If the workspace contains watched notebook variables, the watched rows reopen with
 their variable-name badges. The rows stay disconnected until a notebook defines the
@@ -275,7 +280,7 @@ The following lists common actions included in the {guilabel}`File`, {guilabel}`
 - {guilabel}`Rename` / {guilabel}`Duplicate` – Rename multiple selections at once or activate in-place editing for a single tool. {guilabel}`Duplicate` clones the currently selected windows, including their state.
 - {guilabel}`Reset Index` – Renumbers all windows from zero.
 - {guilabel}`Link` / {guilabel}`Unlink` – {kbd}`Ctrl+L` links the selected windows so they share cursors and slices; {kbd}`Ctrl+Shift+L` removes the links.
-- {guilabel}`Archive` / {guilabel}`Unarchive` – {guilabel}`Archive` writes a tool’s dataset and UI state to a temporary file, frees its memory, and grays it out in the list. {guilabel}`Unarchive` reopens it. Both actions are under {guilabel}`File`.
+- {guilabel}`Offload to Workspace` – Reloads the data as dask-backed data from the workspace file, freeing up memory but slowing down indexing. Use {guilabel}`Dask → Load Into Memory` in ImageTool to load it back into memory when needed.
 - {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
 - {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. Handy when data is updated during acquisition.
 

@@ -227,18 +227,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     ]:
         # Determine which icons should be visible
         is_linked: bool = (
-            isinstance(node, _ImageToolWrapper)
-            and not node.archived
-            and node.slicer_area.is_linked
+            isinstance(node, _ImageToolWrapper) and node.slicer_area.is_linked
         )
         is_watched: bool = (
             isinstance(node, _ImageToolWrapper) and node._watched_varname is not None
         )
-        is_dask: bool = (
-            not node.archived
-            and node.imagetool is not None
-            and node.slicer_area.data_chunked
-        )
+        is_dask: bool = node.imagetool is not None and node.slicer_area.data_chunked
 
         # Precompute geometry constants
         icon_size = self.icon_size
@@ -368,14 +362,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         # Draw label (skip while editing for inline editor)
         if not is_editing:  # pragma: no branch
             palette = option.palette
-            if tool_wrapper.archived:
-                color_group = QtGui.QPalette.ColorGroup.Disabled
-            else:
-                color_group = (
-                    QtGui.QPalette.ColorGroup.Active
-                    if QtWidgets.QStyle.StateFlag.State_Active in option.state
-                    else QtGui.QPalette.ColorGroup.Inactive
-                )
+            color_group = (
+                QtGui.QPalette.ColorGroup.Active
+                if QtWidgets.QStyle.StateFlag.State_Active in option.state
+                else QtGui.QPalette.ColorGroup.Inactive
+            )
             role = (
                 QtGui.QPalette.ColorRole.HighlightedText
                 if QtWidgets.QStyle.StateFlag.State_Selected in option.state
@@ -444,8 +435,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         # Preview popup (hover)
         if (
-            not tool_wrapper.archived
-            and not is_editing
+            not is_editing
             and self.manager.preview_action.isChecked()
             and (
                 QtWidgets.QStyle.StateFlag.State_MouseOver in option.state
@@ -518,8 +508,6 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 if selected
                 else QtGui.QPalette.ColorRole.Text
             )
-            if child_node is not None and child_node.archived and not selected:
-                role = QtGui.QPalette.ColorRole.Mid
             painter.setPen(option.palette.color(role))
 
             text_rect = QtCore.QRect(option.rect)
@@ -923,9 +911,6 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return QtCore.QModelIndex()
         return self.index(self.manager._displayed_indices.index(index_or_uid), 0)
 
-    def _is_archived(self, row_index: QtCore.QModelIndex) -> bool:
-        return self._imagetool_wrapper(row_index).archived
-
     def index(
         self, row: int, column: int, parent: QtCore.QModelIndex | None = None
     ) -> QtCore.QModelIndex:
@@ -1089,19 +1074,20 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         )
         if isinstance(node, _ImageToolWrapper):
             # Only parents accept drops (children are reordered via the parent)
-            flags = default_flags | QtCore.Qt.ItemFlag.ItemIsDropEnabled
-            if not self._is_archived(index):
-                # ImageTool, not archived
-                flags |= QtCore.Qt.ItemFlag.ItemIsEditable
-            return flags
+            return (
+                default_flags
+                | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+                | QtCore.Qt.ItemFlag.ItemIsEditable
+            )
 
         child_node = self._node_from_uid(typing.cast("str", node))
         if child_node is None:
             return QtCore.Qt.ItemFlag.NoItemFlags
-        flags = default_flags | QtCore.Qt.ItemFlag.ItemIsDropEnabled
-        if not child_node.archived:
-            flags |= QtCore.Qt.ItemFlag.ItemIsEditable
-        return flags
+        return (
+            default_flags
+            | QtCore.Qt.ItemFlag.ItemIsDropEnabled
+            | QtCore.Qt.ItemFlag.ItemIsEditable
+        )
 
     def supportedDragActions(self) -> QtCore.Qt.DropAction:
         return QtCore.Qt.DropAction.MoveAction
@@ -1522,8 +1508,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._menu.addSeparator()
         self._menu.addAction(manager.remove_action)
         self._menu.addAction(manager.unwatch_action)
-        self._menu.addAction(manager.archive_action)
-        self._menu.addAction(manager.unarchive_action)
+        self._menu.addAction(manager.offload_action)
         self._menu.addAction(manager.reload_action)
         self._menu.addAction(manager.source_update_action)
         self._menu.addSeparator()

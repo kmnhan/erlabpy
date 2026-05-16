@@ -89,8 +89,6 @@ class ToolNamespace:
     @property
     def tool(self) -> ImageTool:
         """The underlying ImageTool object."""
-        if self._wrapper.archived:
-            self._wrapper.unarchive()
         return typing.cast("ImageTool", self._wrapper.imagetool)
 
     @property
@@ -121,9 +119,7 @@ class ToolNamespace:
         time_repr = self._wrapper._created_time.isoformat(sep=" ", timespec="seconds")
         out = f"ImageTool {self._wrapper.index}: {self._wrapper.name}\n"
         out += f"  Added: {time_repr}\n"
-        out += f"  Archived: {self._wrapper.archived}\n"
-        if not self._wrapper.archived:
-            out += f"  Linked: {self.tool.slicer_area.is_linked}\n"
+        out += f"  Linked: {self.tool.slicer_area.is_linked}\n"
         return out
 
 

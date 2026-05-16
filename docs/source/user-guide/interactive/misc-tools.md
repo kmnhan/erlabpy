@@ -477,7 +477,7 @@ only show the data within the fit window used when the fit was saved. To preserv
 full data in the ImageTool window, `ftool` settings, fit result, and any ImageTool
 windows opened from `ftool`, open {guilabel}`ftool` from data in the
 {ref}`ImageTool manager <imagetool-manager>` and
-{ref}`save as a workspace <imagetool-manager-archive-workspace>`.
+{ref}`save as a workspace <imagetool-manager-workspace>`.
 :::
 
 (guide-restool)=

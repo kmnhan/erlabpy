@@ -1701,10 +1701,8 @@ def test_managed_tool_window_node_detached_update_branches(
     node.window = None
     node.set_detached_provenance(display_spec)
     assert node.derivation_lines == ["Start from data", "Use output"]
-    node._discard_archived_file()
     node._handle_tool_data_changed()
     node.show()
-    node.archive()
 
     node.set_output_binding("out", state="fresh")
     parent_tool.set_source_binding(prov.full_data(), state="stale")
