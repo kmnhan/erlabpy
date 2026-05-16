@@ -168,11 +168,15 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     type_rect, _, _ = self._compute_tool_type_info(option, child_node)
                     if type_rect is not None:
                         rect.setLeft(type_rect.right() + self.tool_type_rect_gap + 1)
+                    _, dask_rect, _, _ = self._compute_icons_info(option, child_node)
                     status_rect, _, _ = self._compute_child_status_info(
-                        option, child_node
+                        option,
+                        child_node,
+                        right_edge=dask_rect.left() if dask_rect is not None else None,
                     )
-                    if status_rect is not None:
-                        rect.setRight(status_rect.left() - self.icon_right_pad)
+                    right_badge_rect = status_rect or dask_rect
+                    if right_badge_rect is not None:
+                        rect.setRight(right_badge_rect.left() - self.icon_right_pad)
             rect.setTop(rect.center().y() - editor.sizeHint().height() / 2)
             editor.setGeometry(rect.toRect())
 
@@ -212,7 +216,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         self.preview_popup.show()
 
     def _compute_icons_info(
-        self, option: QtWidgets.QStyleOptionViewItem, tool_wrapper: _ImageToolWrapper
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        node: _ImageToolWrapper | _ManagedWindowNode,
     ) -> tuple[
         int,
         QtCore.QRect | None,
@@ -221,11 +227,17 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     ]:
         # Determine which icons should be visible
         is_linked: bool = (
-            not tool_wrapper.archived and tool_wrapper.slicer_area.is_linked
+            isinstance(node, _ImageToolWrapper)
+            and not node.archived
+            and node.slicer_area.is_linked
         )
-        is_watched: bool = tool_wrapper._watched_varname is not None
+        is_watched: bool = (
+            isinstance(node, _ImageToolWrapper) and node._watched_varname is not None
+        )
         is_dask: bool = (
-            not tool_wrapper.archived and tool_wrapper.slicer_area.data_chunked
+            not node.archived
+            and node.imagetool is not None
+            and node.slicer_area.data_chunked
         )
 
         # Precompute geometry constants
@@ -253,7 +265,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         # Watched variable name label
         if is_watched:
-            watched_text: str = typing.cast("str", tool_wrapper._watched_varname)
+            watched_text: str = typing.cast(
+                "str", typing.cast("_ImageToolWrapper", node)._watched_varname
+            )
 
             # Use a smaller font for the watched label
             watched_font = QtGui.QFont(option.font)
@@ -460,6 +474,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         status_rect: QtCore.QRect | None = None
         status_text: str | None = None
         status_color: QtGui.QColor | None = None
+        dask_rect: QtCore.QRect | None = None
         try:
             child_node = self.manager._child_node(index.internalPointer())
         except KeyError:
@@ -468,8 +483,11 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             type_rect, type_text, type_color = self._compute_tool_type_info(
                 option, child_node
             )
+            _, dask_rect, _, _ = self._compute_icons_info(option, child_node)
             status_rect, status_text, status_color = self._compute_child_status_info(
-                option, child_node
+                option,
+                child_node,
+                right_edge=dask_rect.left() if dask_rect is not None else None,
             )
 
         if type_rect and type_text and type_color:
@@ -507,8 +525,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             text_rect = QtCore.QRect(option.rect)
             if type_rect is not None:
                 text_rect.setLeft(type_rect.right() + self.tool_type_rect_gap + 1)
-            if status_rect is not None:
-                text_rect.setRight(status_rect.left() - self.icon_right_pad)
+            right_badge_rect = status_rect or dask_rect
+            if right_badge_rect is not None:
+                text_rect.setRight(right_badge_rect.left() - self.icon_right_pad)
 
             # Elide text if necessary
             elided_text = QtGui.QFontMetrics(option.font).elidedText(
@@ -522,6 +541,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided_text,
             )
+            if dask_rect:
+                self._paint_icon(painter, option, dask_rect, self._dask_icon)
             if status_rect and status_text and status_color:
                 _fill_rounded_rect(
                     painter,
@@ -622,6 +643,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         self,
         option: QtWidgets.QStyleOptionViewItem,
         child_node: _ManagedWindowNode,
+        *,
+        right_edge: int | None = None,
     ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
         match child_node.source_state:
             case "stale":
@@ -644,7 +667,9 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             QtGui.QFontMetrics(badge_font).boundingRect(text).width()
             + self.child_status_rect_hpad * 2
         )
-        rect_x = option.rect.right() - badge_width - self.icon_right_pad
+        if right_edge is None:
+            right_edge = option.rect.right()
+        rect_x = right_edge - badge_width - self.icon_right_pad
         return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
 
     def _option_for_index(
@@ -673,8 +698,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         """Return the badge under ``pos`` using the same geometry as painting.
 
         The ordering here mirrors the visual layout. For top-level rows the badges are
-        right-aligned; for child rows the tool-type badge is checked before the
-        right-side source status badge. Tooltip, cursor, and click paths all call this
+        right-aligned; for child rows the tool-type badge is checked before right-side
+        dask and source status badges. Tooltip, cursor, and click paths all call this
         method so any badge geometry change has one source of truth.
         """
         if not index.isValid():
@@ -733,7 +758,19 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 f"Tool type: {type_text}. Click to show this tool.",
             )
 
-        status_rect, _, _ = self._compute_child_status_info(option, child_node)
+        _, dask_rect, _, _ = self._compute_icons_info(option, child_node)
+        status_rect, _, _ = self._compute_child_status_info(
+            option,
+            child_node,
+            right_edge=dask_rect.left() if dask_rect is not None else None,
+        )
+        if dask_rect is not None and dask_rect.contains(pos):
+            return _RowBadge(
+                "dask",
+                dask_rect,
+                "Dask-backed data. Click to open Dask and chunk controls.",
+            )
+
         if status_rect is None or not status_rect.contains(pos):
             return None
         match child_node.source_state:
@@ -1567,6 +1604,12 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             case "dask":
                 if isinstance(node, _ImageToolWrapper):
                     self._show_dask_badge_menu(node, badge.rect)
+                elif isinstance(node, str):
+                    try:
+                        child_node = self._model.manager._child_node(node)
+                    except KeyError:
+                        return
+                    self._show_dask_badge_menu(child_node, badge.rect)
             case "link":
                 if isinstance(node, _ImageToolWrapper):
                     self._unlink_badge_target(node)
@@ -1585,10 +1628,12 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                     child_node.show_source_update_dialog(parent=self._model.manager)
 
     def _show_dask_badge_menu(
-        self, wrapper: _ImageToolWrapper, badge_rect: QtCore.QRect
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        badge_rect: QtCore.QRect,
     ) -> None:
         """Open the clicked tool's Dask menu at the badge location."""
-        tool = wrapper.imagetool
+        tool = node.imagetool
         if tool is None:
             return
         tool.slicer_area.compute_act.setEnabled(tool.slicer_area.data_chunked)

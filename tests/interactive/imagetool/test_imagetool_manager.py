@@ -11587,6 +11587,113 @@ def test_manager_hover_tooltip(
         assert text is None
 
 
+def test_manager_child_imagetool_dask_badge(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    monkeypatch,
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        parent_tool = itool(test_data, manager=False, execute=False)
+        assert isinstance(parent_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(parent_tool, show=False)
+
+        child_tool = itool(test_data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=erlab.interactive.imagetool.provenance.full_data(),
+            source_auto_update=True,
+        )
+        child_tool.slicer_area._auto_chunk()
+        assert child_tool.slicer_area.data_chunked
+
+        view = manager.tree_view
+        model = view._model
+        delegate = view._delegate
+
+        parent_index = model.index(0, 0)
+        view.expand(parent_index)
+        QtWidgets.QApplication.processEvents()
+
+        child_index = model._row_index(child_uid)
+        child_node = manager._child_node(child_uid)
+        child_option = delegate._option_for_index(view, child_index)
+        assert not child_option.rect.isEmpty()
+
+        _, dask_rect, _, _ = delegate._compute_icons_info(child_option, child_node)
+        assert dask_rect is not None
+        status_rect, _, _ = delegate._compute_child_status_info(
+            child_option, child_node, right_edge=dask_rect.left()
+        )
+        assert status_rect is not None
+        assert not dask_rect.intersects(status_rect)
+
+        dask_badge = delegate._badge_at(child_option, child_index, dask_rect.center())
+        assert dask_badge is not None
+        assert dask_badge.kind == "dask"
+
+        status_badge = delegate._badge_at(
+            child_option, child_index, status_rect.center()
+        )
+        assert status_badge is not None
+        assert status_badge.kind == "source_status"
+
+        text = None
+
+        def fake_show_text(pos, s, *args, **kwargs):
+            nonlocal text
+            text = s
+
+        monkeypatch.setattr(QtWidgets.QToolTip, "showText", fake_show_text)
+
+        event = QtGui.QHelpEvent(
+            QtCore.QEvent.Type.ToolTip,
+            dask_rect.center(),
+            view.viewport().mapToGlobal(dask_rect.center()),
+        )
+        handled = delegate.helpEvent(event, view, child_option, child_index)
+        assert handled
+        assert_nonempty_tooltip(text)
+
+        def _mouse_move(pos: QtCore.QPoint) -> QtGui.QMouseEvent:
+            global_pos = view.viewport().mapToGlobal(pos)
+            return QtGui.QMouseEvent(
+                QtCore.QEvent.Type.MouseMove,
+                QtCore.QPointF(pos),
+                QtCore.QPointF(global_pos),
+                QtCore.Qt.MouseButton.NoButton,
+                QtCore.Qt.MouseButton.NoButton,
+                QtCore.Qt.KeyboardModifier.NoModifier,
+            )
+
+        delegate.eventFilter(view.viewport(), _mouse_move(dask_rect.center()))
+        assert (
+            view.viewport().cursor().shape() == QtCore.Qt.CursorShape.PointingHandCursor
+        )
+
+        popup_positions: list[QtCore.QPoint] = []
+        monkeypatch.setattr(child_tool._dask_menu, "popup", popup_positions.append)
+        click_tree_view_pos(view, dask_rect.center())
+        assert popup_positions == [view.viewport().mapToGlobal(dask_rect.bottomLeft())]
+
+        source_dialog_parents: list[ImageToolManager] = []
+        monkeypatch.setattr(
+            child_node,
+            "show_source_update_dialog",
+            lambda *, parent: source_dialog_parents.append(parent),
+        )
+        click_tree_view_pos(view, status_rect.center())
+        assert source_dialog_parents == [manager]
+
+
 def test_manager_badge_hit_testing_edge_paths(
     qtbot,
     monkeypatch,
