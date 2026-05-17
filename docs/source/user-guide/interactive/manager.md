@@ -544,7 +544,10 @@ Under the hood these functions communicate with the GUI via ZeroMQ. Manager disc
 
 ## Installing as a standalone application
 
-Standalone bundles for Windows and macOS let you run the manager without managing a Python environment. They add OS-level conveniences such as opening supported files by double-clicking them (or, on macOS, dropping files onto the Dock icon). For macOS 26 and later, the app also features a dynamic icon that matches the new design language.
+Standalone bundles for Windows and macOS let you run the manager without managing a
+Python environment. They add OS-level conveniences such as opening supported files by
+double-clicking them (or, on macOS, dropping files onto the Dock icon). For macOS 26 and
+later, the app also features a dynamic icon that matches the new design language.
 
 Download the latest release from the [project’s releases page](https://github.com/kmnhan/erlabpy/releases), then follow the platform-specific steps below. For other platforms, or if you prefer full control, build from source via {ref}`build-from-source`.
 

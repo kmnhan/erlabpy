@@ -57,9 +57,19 @@ def find_libomp_dylib():
 
 
 if sys.platform.startswith("win"):
-    # Required for numba cache directory resolution on Windows
+    # win32com is required for numba cache directory resolution on Windows
     # Used in numba.misc.appdirs._get_win_folder_with_pywin32
-    hiddenimports += ["win32com"]
+    # Others are required for right-click menu on taskbar icon
+    hiddenimports += [
+        "pythoncom",
+        "pywintypes",
+        "win32com",
+        "win32com.propsys",
+        "win32com.propsys.propsys",
+        "win32com.propsys.pscon",
+        "win32com.shell",
+        "win32com.shell.shell",
+    ]
 elif sys.platform == "darwin":
     libomp_path = find_libomp_dylib()
     if libomp_path is not None:

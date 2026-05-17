@@ -111,6 +111,7 @@ pyinstaller = [
     "colorcet>=3.1.0",
     "pyinstaller>=6.19.0",
     "pyinstaller-versionfile>=3.0.1",
+    "pywin32>=306; sys_platform == 'win32'",
     "requests>=2.32.0",
     "seaborn>=0.13.2",
 ]
