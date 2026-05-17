@@ -4589,13 +4589,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._workspace_saving_depth += 1
         try:
             if self._workspace_requires_full_save(fname):
-                root_attrs = self._workspace_root_attrs_payload(delta_save_count=0)
-                return _manager_workspace._WorkspaceSaveSnapshot(
-                    generation=generation,
-                    root_attrs=root_attrs,
-                    delta_save_count=0,
-                    full_tree=self._to_datatree(),
-                )
+                return self._workspace_full_save_snapshot(generation)
             delta_save_count = self._workspace_delta_save_count + 1
             root_attrs = self._workspace_root_attrs_payload(
                 delta_save_count=delta_save_count
@@ -4606,12 +4600,26 @@ class ImageToolManager(QtWidgets.QMainWindow):
         finally:
             self._workspace_saving_depth -= 1
 
+    def _workspace_full_save_snapshot(
+        self, generation: int
+    ) -> _manager_workspace._WorkspaceSaveSnapshot:
+        return _manager_workspace._WorkspaceSaveSnapshot(
+            generation=generation,
+            root_attrs=self._workspace_root_attrs_payload(delta_save_count=0),
+            delta_save_count=0,
+            full_tree=self._to_datatree(),
+        )
+
     def _open_workspace_save_wait_dialog(
-        self, parent: QtWidgets.QWidget
+        self,
+        parent: QtWidgets.QWidget,
+        *,
+        title: str = "Saving Workspace",
+        label_text: str = "Saving workspace...",
     ) -> QtWidgets.QDialog:
-        dialog = QtWidgets.QProgressDialog("Saving workspace...", "", 0, 0, parent)
+        dialog = QtWidgets.QProgressDialog(label_text, "", 0, 0, parent)
         dialog.setCancelButton(None)
-        dialog.setWindowTitle("Saving Workspace")
+        dialog.setWindowTitle(title)
         dialog.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         dialog.setMinimumDuration(0)
         dialog.setAutoClose(False)
@@ -4645,6 +4653,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         fname: str | os.PathLike[str],
         snapshot: _manager_workspace._WorkspaceSaveSnapshot,
         origin: QtWidgets.QWidget | None,
+        *,
+        wait_dialog_title: str = "Saving Workspace",
+        wait_dialog_text: str = "Saving workspace...",
     ) -> tuple[bool, float, str]:
         loop = QtCore.QEventLoop(self)
         result: dict[str, typing.Any] = {"ok": False, "elapsed": 0.0, "error": ""}
@@ -4657,7 +4668,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         def _show_wait_dialog() -> None:
             nonlocal wait_dialog
             if wait_dialog is None and self._workspace_save_in_progress:
-                wait_dialog = self._open_workspace_save_wait_dialog(origin or self)
+                wait_dialog = self._open_workspace_save_wait_dialog(
+                    origin or self,
+                    title=wait_dialog_title,
+                    label_text=wait_dialog_text,
+                )
 
         wait_timer.timeout.connect(_show_wait_dialog)
         worker.signals.finished.connect(receiver.finish)
@@ -4799,8 +4814,46 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return
         try:
             logger.debug("Compacting workspace before shutdown...")
-            self._save_workspace_document(self._workspace_path, force_full=True)
+            self._drain_workspace_deferred_events()
+            generation = self._workspace_dirty_generation
+            self._workspace_saving_depth += 1
+            try:
+                snapshot = self._workspace_full_save_snapshot(generation)
+            finally:
+                self._workspace_saving_depth -= 1
+            try:
+                ok, _, error_text = self._run_workspace_save_worker(
+                    self._workspace_path,
+                    snapshot,
+                    self,
+                    wait_dialog_title="Optimizing Workspace",
+                    wait_dialog_text="Optimizing workspace file…",
+                )
+            except Exception:
+                snapshot.close()
+                raise
+            if not ok:
+                logger.error(
+                    "Failed to compact workspace before shutdown%s",
+                    f":\n{error_text}" if error_text else "",
+                    extra={"suppress_ui_alert": True},
+                )
+                return
+            self._workspace_needs_full_save = False
             self._workspace_delta_save_count = 0
+            self._workspace_schema_version = (
+                _manager_workspace._current_workspace_schema_version()
+            )
+            self._drain_workspace_deferred_events()
+            post_save_events = tuple(
+                event
+                for event in self._workspace_dirty_events
+                if event.generation > snapshot.generation
+            )
+            if post_save_events:
+                self._restore_workspace_dirty_events(post_save_events)
+            else:
+                self._mark_workspace_clean()
         except Exception:
             logger.exception(
                 "Failed to compact workspace before shutdown",

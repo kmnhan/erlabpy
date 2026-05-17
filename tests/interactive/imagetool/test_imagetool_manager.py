@@ -8488,6 +8488,7 @@ def test_manager_compact_workspace_edge_paths(
 
 
 def test_manager_shutdown_compaction_logs_failure(
+    caplog,
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -8497,15 +8498,27 @@ def test_manager_shutdown_compaction_logs_failure(
     with manager_context() as manager:
         manager._workspace_path = tmp_path / "workspace.itws"
         manager._workspace_delta_save_count = 1
+
+        def _fail_worker(
+            _fname: str | os.PathLike[str],
+            snapshot: manager_workspace._WorkspaceSaveSnapshot,
+            _origin: QtWidgets.QWidget | None,
+            **_kwargs,
+        ) -> tuple[bool, float, str]:
+            snapshot.close()
+            return False, 0.0, "compact failed"
+
         monkeypatch.setattr(
             manager,
-            "_save_workspace_document",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                RuntimeError("compact failed")
-            ),
+            "_run_workspace_save_worker",
+            _fail_worker,
         )
 
-        manager._compact_workspace_before_shutdown()
+        with caplog.at_level(logging.ERROR, logger=manager_mainwindow.logger.name):
+            manager._compact_workspace_before_shutdown()
+
+    assert "Failed to compact workspace before shutdown" in caplog.text
+    assert "compact failed" in caplog.text
 
 
 def test_manager_workspace_save_dialog_paths(
@@ -8652,6 +8665,10 @@ def test_manager_save_and_wait_dialog_error_paths(
     with manager_context() as manager:
         wait_dialog = manager._open_workspace_save_wait_dialog(manager)
         qtbot.addWidget(wait_dialog)
+        assert wait_dialog.windowTitle() == "Saving Workspace"
+        assert typing.cast("QtWidgets.QProgressDialog", wait_dialog).labelText() == (
+            "Saving workspace..."
+        )
         wait_dialog.close()
 
         manager._show_workspace_save_worker_error("Traceback text")
@@ -9967,10 +9984,15 @@ def test_manager_workspace_save_shows_wait_dialog_when_actual_save_is_slow(
             time.sleep(0.05)
             return original_write(*args, **kwargs)
 
-        wait_calls: list[QtWidgets.QWidget] = []
+        wait_calls: list[tuple[QtWidgets.QWidget, str, str]] = []
 
-        def _fake_open_wait_dialog(parent: QtWidgets.QWidget) -> QtWidgets.QDialog:
-            wait_calls.append(parent)
+        def _fake_open_wait_dialog(
+            parent: QtWidgets.QWidget,
+            *,
+            title: str = "Saving Workspace",
+            label_text: str = "Saving workspace...",
+        ) -> QtWidgets.QDialog:
+            wait_calls.append((parent, title, label_text))
             return QtWidgets.QDialog(parent)
 
         focus_restored: list[QtWidgets.QWidget | None] = []
@@ -9997,7 +10019,7 @@ def test_manager_workspace_save_shows_wait_dialog_when_actual_save_is_slow(
         )
 
         assert manager.save()
-        assert wait_calls == [root]
+        assert wait_calls == [(root, "Saving Workspace", "Saving workspace...")]
         assert focus_restored == [root]
 
 
@@ -10028,6 +10050,7 @@ def test_manager_workspace_save_keeps_post_command_changes_dirty(
             _fname: str | os.PathLike[str],
             snapshot: manager_workspace._WorkspaceSaveSnapshot,
             _origin: QtWidgets.QWidget | None,
+            **_kwargs,
         ) -> tuple[bool, float, str]:
             snapshot.close()
             manager._mark_node_state_dirty(uid)
@@ -10132,6 +10155,72 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
             assert "transaction_protocol" not in manifest
 
 
+def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._imagetool_wrappers[0].uid
+
+        fname = tmp_path / "slow-shutdown-compact.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        manager._mark_node_state_dirty(uid)
+        assert manager.save()
+        assert manager._workspace_delta_save_count == 1
+
+        original_write = manager_workspace._write_full_workspace_tree_file
+
+        def _slow_write_full_workspace_tree_file(*args, **kwargs):
+            time.sleep(0.05)
+            return original_write(*args, **kwargs)
+
+        wait_calls: list[tuple[QtWidgets.QWidget, str, str]] = []
+
+        def _fake_open_wait_dialog(
+            parent: QtWidgets.QWidget,
+            *,
+            title: str = "Saving Workspace",
+            label_text: str = "Saving workspace...",
+        ) -> QtWidgets.QDialog:
+            wait_calls.append((parent, title, label_text))
+            return QtWidgets.QDialog(parent)
+
+        monkeypatch.setattr(
+            manager_mainwindow,
+            "_WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS",
+            0.01,
+        )
+        monkeypatch.setattr(
+            manager_workspace,
+            "_write_full_workspace_tree_file",
+            _slow_write_full_workspace_tree_file,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_open_workspace_save_wait_dialog",
+            _fake_open_wait_dialog,
+        )
+
+        manager._compact_workspace_before_shutdown()
+
+        assert wait_calls == [
+            (manager, "Optimizing Workspace", "Optimizing workspace file…")
+        ]
+        assert manager._workspace_delta_save_count == 0
+
+
 def test_manager_workspace_shutdown_compact_skips_dirty_workspace(
     qtbot,
     monkeypatch,
@@ -10158,7 +10247,7 @@ def test_manager_workspace_shutdown_compact_skips_dirty_workspace(
 
         monkeypatch.setattr(
             manager,
-            "_save_workspace_document",
+            "_run_workspace_save_worker",
             lambda *args, **kwargs: pytest.fail(
                 "Dirty shutdown compaction should not write discarded changes"
             ),
