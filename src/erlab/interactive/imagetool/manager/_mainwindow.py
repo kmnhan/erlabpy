@@ -1095,7 +1095,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.open_recent_menu = QtWidgets.QMenu("Open &Recent", self)
         self.open_recent_menu.setObjectName("manager_open_recent_menu")
         open_recent_action = self.open_recent_menu.menuAction()
-        if open_recent_action is None:
+        # Qt creates a menu action for every QMenu; this keeps type narrowing explicit.
+        if open_recent_action is None:  # pragma: no cover
             raise RuntimeError("Open Recent menu action was not created")
         open_recent_action.setObjectName("manager_open_recent_menu_action")
         open_recent_action.setIcon(QtGui.QIcon.fromTheme("document-open-recent"))

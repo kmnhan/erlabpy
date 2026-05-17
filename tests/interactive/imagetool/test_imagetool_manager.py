@@ -692,6 +692,59 @@ def test_workspace_properties_dialog_without_associated_file(qtbot) -> None:
         )
         is None
     )
+    dialog._copy_path()
+    dialog._reveal_path()
+
+
+def test_workspace_properties_dialog_file_detail_branches(
+    qtbot, monkeypatch, tmp_path
+) -> None:
+    missing_workspace = (tmp_path / "missing.itws").resolve()
+    state = _WorkspacePropertiesState(is_modified=False, top_level_window_count=1)
+    dialog = _WorkspacePropertiesDialog(
+        missing_workspace,
+        state=state,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.value_labels["size"].text() == "File not found"
+    assert dialog.value_labels["modified"].text() == "File not found"
+    assert dialog.value_labels["open_windows"].text() == "1"
+    assert dialog._status_text(missing_workspace, state) == "Associated file"
+
+    assert manager_mainwindow._workspace_file_type_text(None) == (
+        "Unsaved ImageTool workspace"
+    )
+    assert manager_mainwindow._workspace_file_type_text(
+        tmp_path / "workspace.itws"
+    ) == ("ImageTool Workspace (.itws)")
+    assert manager_mainwindow._workspace_file_type_text(tmp_path / "workspace.h5") == (
+        "xarray HDF5 Workspace (.h5)"
+    )
+    assert manager_mainwindow._workspace_file_type_text(tmp_path / "notes.txt") == (
+        "TXT file"
+    )
+    assert manager_mainwindow._workspace_file_type_text(tmp_path / "README") == "File"
+
+    assert manager_mainwindow._format_workspace_file_size(1) == "1 byte"
+    assert manager_mainwindow._format_workspace_file_size(999) == "999 bytes"
+    assert manager_mainwindow._format_workspace_file_size(1_000).startswith("1.00 KB")
+    assert manager_mainwindow._format_workspace_file_size(10**16).startswith(
+        "10000.00 PB"
+    )
+
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", "darwin")
+    assert manager_mainwindow._workspace_file_manager_action_text() == (
+        "Reveal in Finder"
+    )
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", "win32")
+    assert manager_mainwindow._workspace_file_manager_action_text() == (
+        "Reveal in File Explorer"
+    )
+    monkeypatch.setattr(manager_mainwindow.sys, "platform", "linux")
+    assert manager_mainwindow._workspace_file_manager_action_text() == (
+        "Open Containing Folder"
+    )
 
 
 @pytest.mark.parametrize("use_socket", [False, True], ids=["no_socket", "socket"])
@@ -1665,6 +1718,65 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
         assert reload_calls == []
         xr.testing.assert_identical(fetch(0), source)
         xr.testing.assert_identical(fetch(eligible_uid), source.isel(x=slice(0, 2)))
+
+
+def test_manager_selected_reload_targets_handles_stale_selection(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            type(manager.tree_view),
+            "selected_imagetool_indices",
+            property(lambda _view: []),
+        )
+        monkeypatch.setattr(
+            type(manager.tree_view),
+            "selected_childtool_uids",
+            property(lambda _view: ["stale-child"]),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_child_node",
+            lambda _uid: (_ for _ in ()).throw(KeyError("missing")),
+        )
+
+        assert manager._selected_reload_targets() is None
+
+        child_node = types.SimpleNamespace(has_source_binding=True)
+        monkeypatch.setattr(manager, "_child_node", lambda _uid: child_node)
+        monkeypatch.setattr(
+            manager,
+            "_parent_node",
+            lambda _node: (_ for _ in ()).throw(KeyError("missing-parent")),
+        )
+
+        assert manager._selected_reload_targets() is None
+
+
+def test_manager_reload_selected_skips_child_refresh_when_parent_reload_fails(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        node = types.SimpleNamespace(
+            imagetool=object(),
+            slicer_area=types.SimpleNamespace(_reload=lambda: False),
+        )
+        refreshed: list[str] = []
+        monkeypatch.setattr(
+            manager, "_selected_reload_targets", lambda: ([0], {0: ["child"]})
+        )
+        monkeypatch.setattr(manager, "_node_for_target", lambda _target: node)
+        monkeypatch.setattr(manager, "_refresh_source_chain_to_uid", refreshed.append)
+
+        manager.reload_selected()
+
+        assert refreshed == []
 
 
 def test_manager_full_data_childtool_updates_follow_transposed_view(
@@ -7059,6 +7171,21 @@ def test_workspace_dataset_encoding_persists_dask_chunksizes() -> None:
     }
 
 
+def test_workspace_chunksizes_rejects_invalid_chunk_shapes() -> None:
+    assert (
+        manager_xarray._workspace_chunksizes_for_dataarray(
+            types.SimpleNamespace(chunks=((1,),), ndim=1, shape=(0,))
+        )
+        is None
+    )
+    assert (
+        manager_xarray._workspace_chunksizes_for_dataarray(
+            types.SimpleNamespace(chunks=((0,),), ndim=1, shape=(5,))
+        )
+        is None
+    )
+
+
 def test_workspace_datatree_encoding_uses_group_paths() -> None:
     large_ds = xr.Dataset(
         {
@@ -7973,6 +8100,43 @@ def test_manager_recent_workspaces_dedupe_move_to_top_and_cap(
         ]
 
 
+def test_manager_recent_workspace_normalization_and_settings(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    workspace = tmp_path / "workspace.itws"
+    data_file = tmp_path / "data.h5"
+    workspace.touch()
+    data_file.touch()
+
+    assert ImageToolManager._normalize_recent_workspace_paths(
+        [data_file, workspace, workspace]
+    ) == [workspace.resolve()]
+
+    with manager_context() as manager:
+        settings = manager_mainwindow._manager_settings()
+        settings.setValue(
+            manager_mainwindow._RECENT_WORKSPACES_SETTINGS_KEY, str(workspace)
+        )
+        settings.sync()
+        assert manager._recent_workspace_paths() == [workspace.resolve()]
+
+        class _ObjectSettings:
+            def sync(self) -> None:
+                pass
+
+            def value(self, _key, _default):
+                return object()
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_manager_settings", lambda: _ObjectSettings()
+        )
+        assert manager._recent_workspace_paths() == []
+
+
 def test_manager_open_recent_workspace_flow(
     monkeypatch,
     tmp_path,
@@ -8037,6 +8201,57 @@ def test_manager_open_recent_workspace_flow(
         assert not manager.open_recent_workspace(missing)
         assert len(missing_warnings) == 1
         assert manager._recent_workspace_paths() == [older.resolve()]
+
+
+def test_manager_open_recent_workspace_reports_load_errors(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    workspace = tmp_path / "broken.itws"
+    workspace.touch()
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager, "_confirm_save_dirty_workspace", lambda _message: True
+        )
+        monkeypatch.setattr(
+            manager,
+            "_load_workspace_file",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        lock_errors: list[pathlib.Path] = []
+        monkeypatch.setattr(
+            manager_workspace,
+            "_is_workspace_file_lock_error",
+            lambda _exc: True,
+        )
+        monkeypatch.setattr(
+            manager_mainwindow,
+            "_show_workspace_file_lock_error",
+            lambda _parent, path: lock_errors.append(pathlib.Path(path)),
+        )
+        assert not manager.open_recent_workspace(workspace)
+        assert lock_errors == [workspace.resolve()]
+
+        critical_messages: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            manager_workspace,
+            "_is_workspace_file_lock_error",
+            lambda _exc: False,
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils.MessageDialog,
+            "critical",
+            lambda _parent, title, message: critical_messages.append((title, message)),
+        )
+        assert not manager.open_recent_workspace(workspace)
+        assert critical_messages == [
+            ("Error", "An error occurred while loading the workspace file.")
+        ]
 
 
 def test_manager_records_recent_workspace_accesses(
@@ -8140,6 +8355,34 @@ def test_manager_startup_args_parse_flags_and_file_paths(tmp_path) -> None:
 
     assert open_workspace_dialog
     assert file_args == [workspace, data_file]
+
+
+def test_manager_startup_open_workspace_dialog_schedules_load(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[tuple[int, typing.Callable[[], None]]] = []
+
+    monkeypatch.setattr(
+        manager_module.sys,
+        "argv",
+        ["erlab-imagetool-manager", manager_desktop.OPEN_WORKSPACE_DIALOG_ARG],
+    )
+    monkeypatch.setattr(
+        manager_module.QtCore.QTimer,
+        "singleShot",
+        lambda interval, callback: calls.append((interval, callback)),
+    )
+
+    with manager_context() as manager:
+        assert any(
+            interval == 0
+            and getattr(callback, "__self__", None) is manager
+            and getattr(callback, "__name__", "") == "load"
+            for interval, callback in calls
+        )
 
 
 def test_manager_application_quit_request_resets_when_close_fails(
@@ -9098,6 +9341,77 @@ def test_manager_offload_to_workspace_save_cancel_or_failure_noop(
         monkeypatch.setattr(manager, "save", lambda *, native=True: False)
         assert not manager.offload_to_workspace([0], native=False)
         assert root.slicer_area._data.chunks is None
+
+
+def test_manager_offload_to_workspace_edge_paths(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        calls: list[list[int]] = []
+        monkeypatch.setattr(manager, "_selected_imagetool_targets", lambda: [0])
+        monkeypatch.setattr(
+            manager,
+            "offload_to_workspace",
+            lambda targets: calls.append(list(targets)) or True,
+        )
+        manager.offload_selected_to_workspace()
+        assert calls == [[0]]
+
+    with manager_context() as manager:
+        assert not manager.offload_to_workspace([])
+
+    fake_node = types.SimpleNamespace(
+        is_imagetool=True,
+        imagetool=object(),
+        slicer_area=types.SimpleNamespace(data_chunked=False),
+    )
+
+    with manager_context() as manager:
+        monkeypatch.setattr(manager, "_node_for_target", lambda _target: fake_node)
+        monkeypatch.setattr(manager, "save_as", lambda *, native=True: True)
+        assert not manager.offload_to_workspace([0], native=False)
+
+    with manager_context() as manager:
+        workspace = tmp_path / "offload-error.itws"
+        manager._workspace_path = workspace
+        manager._workspace_needs_full_save = False
+        monkeypatch.setattr(manager, "_node_for_target", lambda _target: fake_node)
+        monkeypatch.setattr(
+            manager, "_active_managed_window", lambda: typing.cast("typing.Any", None)
+        )
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "wait_dialog",
+            lambda *_args, **_kwargs: contextlib.nullcontext(),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_rebind_workspace_backed_imagetools",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        errors: list[tuple[str, str]] = []
+        restored: list[object | None] = []
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda title, message: errors.append((title, message)),
+        )
+        monkeypatch.setattr(
+            manager, "_restore_focus_after_workspace_save", restored.append
+        )
+
+        assert not manager.offload_to_workspace([0], native=False)
+        assert errors == [
+            (
+                "Error while offloading to workspace",
+                "An error occurred while reconnecting data from the workspace file.",
+            )
+        ]
+        assert restored == [None]
 
 
 def test_manager_offload_to_workspace_preserves_child_source_state(
@@ -12402,6 +12716,11 @@ def test_manager_child_imagetool_dask_badge(
         assert status_rect is not None
         assert not dask_rect.intersects(status_rect)
 
+        editor = QtWidgets.QLineEdit(view.viewport())
+        delegate.updateEditorGeometry(editor, child_option, child_index)
+        assert editor.geometry().right() < status_rect.left()
+        editor.deleteLater()
+
         dask_badge = delegate._badge_at(child_option, child_index, dask_rect.center())
         assert dask_badge is not None
         assert dask_badge.kind == "dask"
@@ -14551,6 +14870,136 @@ def test_manager_macos_dock_menu_actions(
         assert new_manager_calls == [True]
 
 
+def test_manager_desktop_configure_process_platform_branch(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        manager_desktop, "set_windows_app_user_model_id", lambda: calls.append("appid")
+    )
+    monkeypatch.setattr(
+        manager_desktop, "install_windows_jump_list", lambda: calls.append("jump-list")
+    )
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "linux")
+    manager_desktop.configure_process()
+    assert calls == []
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    manager_desktop.configure_process()
+    assert calls == ["appid", "jump-list"]
+
+
+def test_manager_macos_dock_menu_skip_and_failure_paths(
+    qtbot, monkeypatch, caplog
+) -> None:
+    class _FakeManager(QtWidgets.QWidget):
+        def load(self) -> None:
+            pass
+
+        def open_new_manager_instance(self) -> None:
+            pass
+
+    manager = _FakeManager()
+    qtbot.addWidget(manager)
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "linux")
+    assert manager_desktop.install_macos_dock_menu(manager) is None
+
+    deleted_menus: list[QtWidgets.QMenu] = []
+
+    def _raise_dock_menu(_menu) -> None:
+        raise RuntimeError("dock unavailable")
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QMenu,
+        "setAsDockMenu",
+        _raise_dock_menu,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QMenu,
+        "deleteLater",
+        lambda menu: deleted_menus.append(menu),
+    )
+    caplog.set_level(logging.DEBUG, logger=manager_desktop.logger.name)
+
+    assert manager_desktop.install_macos_dock_menu(manager) is None
+    assert len(deleted_menus) == 1
+    assert "Could not install macOS Dock menu" in caplog.text
+
+
+def test_manager_desktop_record_macos_recent_workspace(
+    monkeypatch, caplog, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace.itws"
+    data_file = tmp_path / "data.h5"
+    recorded: list[pathlib.Path] = []
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        manager_desktop,
+        "_record_macos_recent_document",
+        lambda path: recorded.append(pathlib.Path(path)),
+    )
+
+    manager_desktop.record_recent_workspace(data_file)
+    manager_desktop.record_recent_workspace(workspace)
+    assert recorded == [workspace.resolve()]
+
+    caplog.set_level(logging.DEBUG, logger=manager_desktop.logger.name)
+    monkeypatch.setattr(
+        manager_desktop,
+        "_record_macos_recent_document",
+        lambda _path: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    manager_desktop.record_recent_workspace(workspace)
+    assert "Could not record workspace with desktop shell" in caplog.text
+
+
+def test_manager_desktop_macos_recent_document_import_paths(
+    monkeypatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace.itws"
+    noted_urls: list[tuple[str, str]] = []
+
+    class _Controller:
+        def noteNewRecentDocumentURL_(self, url) -> None:
+            noted_urls.append(url)
+
+    class _NSDocumentController:
+        @staticmethod
+        def sharedDocumentController():
+            return _Controller()
+
+    class _NSURL:
+        @staticmethod
+        def fileURLWithPath_(path):
+            return ("url", path)
+
+    appkit = types.ModuleType("AppKit")
+    appkit.NSDocumentController = _NSDocumentController
+    foundation = types.ModuleType("Foundation")
+    foundation.NSURL = _NSURL
+    monkeypatch.setitem(sys.modules, "AppKit", appkit)
+    monkeypatch.setitem(sys.modules, "Foundation", foundation)
+
+    manager_desktop._record_macos_recent_document(workspace)
+    assert noted_urls == [("url", str(workspace))]
+
+    fallback_paths: list[pathlib.Path] = []
+    monkeypatch.setitem(sys.modules, "AppKit", None)
+    monkeypatch.setitem(sys.modules, "Foundation", None)
+    monkeypatch.setattr(
+        manager_desktop,
+        "_record_macos_recent_document_ctypes",
+        lambda path: fallback_paths.append(path),
+    )
+
+    manager_desktop._record_macos_recent_document(workspace)
+    assert fallback_paths == [workspace]
+
+
 def test_manager_desktop_helpers_record_windows_recent_workspace(
     monkeypatch, tmp_path
 ) -> None:
@@ -14582,6 +15031,217 @@ def test_manager_desktop_helpers_record_windows_recent_workspace(
         ("appid", manager_desktop.APP_USER_MODEL_ID, None),
         ("recent", manager_desktop._SHARD_PATHW, str(workspace.resolve())),
     ]
+
+
+def test_manager_desktop_windows_app_id_error_paths(monkeypatch, caplog) -> None:
+    class _ReturningShell32:
+        def SetCurrentProcessExplicitAppUserModelID(self, _app_id):
+            return 5
+
+    class _RaisingShell32:
+        def SetCurrentProcessExplicitAppUserModelID(self, _app_id):
+            raise OSError("shell unavailable")
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "linux")
+    manager_desktop.set_windows_app_user_model_id()
+
+    caplog.set_level(logging.DEBUG, logger=manager_desktop.logger.name)
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(
+        manager_desktop.ctypes,
+        "windll",
+        types.SimpleNamespace(shell32=_ReturningShell32()),
+        raising=False,
+    )
+    manager_desktop.set_windows_app_user_model_id()
+    assert "SetCurrentProcessExplicitAppUserModelID returned 5" in caplog.text
+
+    monkeypatch.setattr(
+        manager_desktop.ctypes,
+        "windll",
+        types.SimpleNamespace(shell32=_RaisingShell32()),
+        raising=False,
+    )
+    manager_desktop.set_windows_app_user_model_id()
+    assert "Could not set Windows AppUserModelID" in caplog.text
+
+
+def test_manager_desktop_windows_recent_workspace_error_path(
+    monkeypatch, caplog, tmp_path
+) -> None:
+    class _RaisingShell32:
+        def SHAddToRecentDocs(self, _flags, _path) -> None:
+            raise OSError("recent unavailable")
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(
+        manager_desktop.ctypes,
+        "windll",
+        types.SimpleNamespace(shell32=_RaisingShell32()),
+        raising=False,
+    )
+    caplog.set_level(logging.DEBUG, logger=manager_desktop.logger.name)
+
+    manager_desktop.record_recent_workspace(tmp_path / "workspace.itws")
+
+    assert "Could not record workspace with desktop shell" in caplog.text
+
+
+def test_manager_desktop_windows_jump_list_import_and_error_paths(
+    monkeypatch, caplog
+) -> None:
+    monkeypatch.setattr(manager_desktop.sys, "platform", "linux")
+    manager_desktop.install_windows_jump_list()
+
+    caplog.set_level(logging.DEBUG, logger=manager_desktop.logger.name)
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "pythoncom", None)
+    manager_desktop.install_windows_jump_list()
+    assert "pywin32 is unavailable" in caplog.text
+
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CLSCTX_INPROC_SERVER = "inproc"
+
+    def _raise_create_instance(*_args):
+        raise RuntimeError("COM unavailable")
+
+    pythoncom.CoCreateInstance = _raise_create_instance
+    win32com = types.ModuleType("win32com")
+    propsys_package = types.ModuleType("win32com.propsys")
+    propsys = types.SimpleNamespace(
+        IID_IPropertyStore="property-store",
+        PROPVARIANTType=lambda value: ("variant", value),
+    )
+    pscon = types.SimpleNamespace(PKEY_Title="title")
+    propsys_package.propsys = propsys
+    propsys_package.pscon = pscon
+    shell_package = types.ModuleType("win32com.shell")
+    shell = types.SimpleNamespace(
+        CLSID_DestinationList="destination-list",
+        IID_ICustomDestinationList="destination-list-iface",
+        CLSID_EnumerableObjectCollection="collection",
+        IID_IObjectCollection="collection-iface",
+        CLSID_ShellLink="shell-link",
+        IID_IShellLink="shell-link-iface",
+    )
+    shell_package.shell = shell
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.propsys", propsys_package)
+    monkeypatch.setitem(sys.modules, "win32com.propsys.propsys", propsys)
+    monkeypatch.setitem(sys.modules, "win32com.propsys.pscon", pscon)
+    monkeypatch.setitem(sys.modules, "win32com.shell", shell_package)
+    monkeypatch.setitem(sys.modules, "win32com.shell.shell", shell)
+
+    manager_desktop.install_windows_jump_list()
+    assert "Could not install Windows Jump List tasks" in caplog.text
+
+
+def test_manager_desktop_windows_jump_list_installs_tasks(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(manager_desktop.sys, "executable", r"C:\App\manager.exe")
+
+    shell = types.SimpleNamespace(
+        CLSID_DestinationList="destination-list",
+        IID_ICustomDestinationList="destination-list-iface",
+        CLSID_EnumerableObjectCollection="collection",
+        IID_IObjectCollection="collection-iface",
+        CLSID_ShellLink="shell-link",
+        IID_IShellLink="shell-link-iface",
+    )
+    propsys = types.SimpleNamespace(
+        IID_IPropertyStore="property-store",
+        PROPVARIANTType=lambda value: ("variant", value),
+    )
+    pscon = types.SimpleNamespace(PKEY_Title="title")
+
+    class _DestinationList:
+        def SetAppID(self, app_id) -> None:
+            calls.append(("appid", app_id))
+
+        def BeginList(self) -> None:
+            calls.append(("begin", None))
+
+        def AppendKnownCategory(self, category) -> None:
+            calls.append(("category", category))
+
+        def AddUserTasks(self, collection) -> None:
+            calls.append(("tasks", len(collection.links)))
+
+        def CommitList(self) -> None:
+            calls.append(("commit", None))
+
+    class _Collection:
+        def __init__(self) -> None:
+            self.links: list[_ShellLink] = []
+
+        def AddObject(self, link) -> None:
+            self.links.append(link)
+
+    class _PropertyStore:
+        def SetValue(self, key, value) -> None:
+            calls.append(("property", (key, value)))
+
+        def Commit(self) -> None:
+            calls.append(("property-commit", None))
+
+    class _ShellLink:
+        def SetPath(self, path) -> None:
+            calls.append(("path", path))
+
+        def SetArguments(self, arguments) -> None:
+            calls.append(("arguments", arguments))
+
+        def SetDescription(self, description) -> None:
+            calls.append(("description", description))
+
+        def SetIconLocation(self, path, index) -> None:
+            calls.append(("icon", (path, index)))
+
+        def QueryInterface(self, interface):
+            calls.append(("query", interface))
+            return _PropertyStore()
+
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CLSCTX_INPROC_SERVER = "inproc"
+
+    def _create_instance(clsid, *_args):
+        if clsid == shell.CLSID_DestinationList:
+            return _DestinationList()
+        if clsid == shell.CLSID_EnumerableObjectCollection:
+            return _Collection()
+        if clsid == shell.CLSID_ShellLink:
+            return _ShellLink()
+        raise AssertionError(f"unexpected CLSID {clsid!r}")
+
+    pythoncom.CoCreateInstance = _create_instance
+    win32com = types.ModuleType("win32com")
+    propsys_package = types.ModuleType("win32com.propsys")
+    propsys_package.propsys = propsys
+    propsys_package.pscon = pscon
+    shell_package = types.ModuleType("win32com.shell")
+    shell_package.shell = shell
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.propsys", propsys_package)
+    monkeypatch.setitem(sys.modules, "win32com.propsys.propsys", propsys)
+    monkeypatch.setitem(sys.modules, "win32com.propsys.pscon", pscon)
+    monkeypatch.setitem(sys.modules, "win32com.shell", shell_package)
+    monkeypatch.setitem(sys.modules, "win32com.shell.shell", shell)
+
+    manager_desktop.install_windows_jump_list()
+
+    assert ("appid", manager_desktop.APP_USER_MODEL_ID) in calls
+    assert ("category", manager_desktop._KDC_RECENT) in calls
+    assert ("tasks", len(manager_desktop._WINDOWS_JUMP_LIST_TASKS)) in calls
+    assert (
+        "arguments",
+        manager_desktop.OPEN_WORKSPACE_DIALOG_ARG,
+    ) in calls
+    assert ("arguments", manager_desktop.NEW_MANAGER_WINDOW_ARG) in calls
+    assert ("property", ("title", ("variant", "Open Workspace…"))) in calls
+    assert ("commit", None) in calls
 
 
 def test_manager_windows_jump_list_task_specs() -> None:
