@@ -2052,12 +2052,18 @@ class CategoryLegend(QtWidgets.QWidget):
         self._active_category = category
         self._refresh_entry_states()
 
-    def _entry_at_cursor(self) -> LegendEntry | None:
-        local_pos = self.mapFromGlobal(QtGui.QCursor.pos())
+    def _entry_at_position(self, local_pos: QtCore.QPoint) -> LegendEntry | None:
         if not self.rect().contains(local_pos):
             return None
         widget = self.childAt(local_pos)
-        return widget if isinstance(widget, LegendEntry) else None
+        while widget is not None:
+            if isinstance(widget, LegendEntry):
+                return widget
+            widget = widget.parentWidget()
+        return None
+
+    def _entry_at_cursor(self) -> LegendEntry | None:
+        return self._entry_at_position(self.mapFromGlobal(QtGui.QCursor.pos()))
 
     def _set_hovered_category(self, category: str | None) -> None:
         if category == self._active_category:
@@ -2068,6 +2074,25 @@ class CategoryLegend(QtWidgets.QWidget):
     def _sync_hovered_category_from_cursor(self) -> None:
         entry = self._entry_at_cursor()
         self._set_hovered_category(None if entry is None else entry.category)
+
+    def _sync_hovered_category_from_position(self, local_pos: QtCore.QPoint) -> None:
+        entry = self._entry_at_position(local_pos)
+        self._set_hovered_category(None if entry is None else entry.category)
+
+    def _event_position_in_self(
+        self,
+        watched: QtCore.QObject | None,
+        event: QtCore.QEvent,
+    ) -> QtCore.QPoint | None:
+        if isinstance(event, QtGui.QMouseEvent | QtGui.QEnterEvent):
+            local_pos = event.position().toPoint()
+        else:
+            return None
+        if watched is self:
+            return local_pos
+        if isinstance(watched, QtWidgets.QWidget):
+            return watched.mapTo(self, local_pos)
+        return None
 
     def _refresh_entry_states(self) -> None:
         for entry_category, entry in self.entries.items():
@@ -2105,7 +2130,11 @@ class CategoryLegend(QtWidgets.QWidget):
             }
             and (watched is self or isinstance(watched, LegendEntry))
         ):
-            self._sync_hovered_category_from_cursor()
+            local_pos = self._event_position_in_self(watched, event)
+            if local_pos is None:
+                self._sync_hovered_category_from_cursor()
+            else:
+                self._sync_hovered_category_from_position(local_pos)
         return super().eventFilter(watched, event)
 
     def _handle_entry_hovered(self, category: str) -> None:

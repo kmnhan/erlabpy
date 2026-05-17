@@ -763,7 +763,6 @@ def ensure_same_coord_names(
     a bug in the data acquisition software.
     """
     if isinstance(data_list[0], xr.DataTree):
-        data_list = typing.cast("list[xr.DataTree]", data_list)
         all_coord_name_dict: dict[str, set[Hashable]] = {}
         for path, nodes in xr.group_subtrees(*data_list):
             all_coord_name_dict[path] = set().union(
@@ -781,11 +780,19 @@ def ensure_same_coord_names(
                 )
         for i, result in enumerate(results):
             data_list[i] = xr.DataTree.from_dict(result)
-    else:
-        all_coord_names: set[Hashable] = set().union(
+    elif isinstance(data_list[0], xr.DataArray):
+        all_array_coord_names: set[Hashable] = set().union(
             *(d.coords.keys() for d in data_list)
         )
         for i, data in enumerate(data_list):
-            missing = all_coord_names - set(data.coords.keys())
+            missing = all_array_coord_names - set(data.coords.keys())
+            if missing:
+                data_list[i] = data.assign_coords(dict.fromkeys(missing, np.nan))
+    else:
+        all_dataset_coord_names: set[Hashable] = set().union(
+            *(d.coords.keys() for d in data_list)
+        )
+        for i, data in enumerate(data_list):
+            missing = all_dataset_coord_names - set(data.coords.keys())
             if missing:
                 data_list[i] = data.assign_coords(dict.fromkeys(missing, np.nan))

@@ -261,9 +261,8 @@ def _send_multipart(
 
     pickler_kind = b"cloudpickle" if use_cloudpickle else b"pickle"
     header = memoryview(bio.getbuffer())
-    frames: list[memoryview | bytes] = [pickler_kind, header] + [
-        memoryview(b) for b in buffers
-    ]
+    frames: list[memoryview[int] | bytes] = [pickler_kind, header]
+    frames.extend(memoryview(buffer) for buffer in buffers)
 
     def _normalize_frame(frame: memoryview | bytes) -> memoryview | bytes:
         if not isinstance(frame, memoryview):

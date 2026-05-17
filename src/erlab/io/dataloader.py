@@ -185,9 +185,7 @@ def _combine_by_coords_general(
                     xr.combine_by_coords([node.dataset for node in nodes], **kwargs),
                 )
         return xr.DataTree.from_dict(out_dict)
-    return xr.combine_by_coords(
-        typing.cast("list[xr.DataArray] | list[xr.Dataset]", data_objects), **kwargs
-    )
+    return xr.combine_by_coords(data_objects, **kwargs)
 
 
 class LoaderBase(metaclass=_Loader):
@@ -1895,17 +1893,11 @@ class LoaderBase(metaclass=_Loader):
 
         new_attrs: dict[str, str | float | datetime.datetime] = {}
         for k, v in self.additional_attrs.items():
-            if k not in darr.attrs:
+            if k not in darr.attrs or k in self.overridden_attrs:
                 if callable(v):
                     new_attrs[k] = v(darr)
                 else:
                     new_attrs[k] = v
-
-        new_attrs = {
-            k: v
-            for k, v in self.additional_attrs.items()
-            if k not in darr.attrs or k in self.overridden_attrs
-        }
         new_attrs["data_loader_name"] = str(self.name)
         darr = darr.assign_attrs(new_attrs)
 

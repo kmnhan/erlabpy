@@ -228,7 +228,8 @@ def correct_with_edge(
         else:
             erlab.plotting.plot_array(darr, ax=axes[0], **plot_kw)
             erlab.plotting.plot_array(corrected, ax=axes[1], **plot_kw)
-        edge_quad.plot(ax=axes[0], ls="--", color="0.35")
+        edge_plot = typing.cast("typing.Any", edge_quad.plot)
+        edge_plot(ax=axes[0], ls="--", color="0.35")
 
         erlab.plotting.proportional_colorbar(ax=axes[0])
         erlab.plotting.proportional_colorbar(ax=axes[1])
@@ -575,8 +576,15 @@ def _plot_gold_fit(
         ax0.plot(gold[along], res.eval(res.params, x=gold[along]), "r-", lw=0.75)
     ax0.set_ylim(gold.eV[[0, -1]])
 
-    data_kws = {"lw": 0.5, "ms": 2, "mfc": "w", "zorder": 0, "c": "0.4", "capsize": 0}
-    fit_kws = {"c": "r", "lw": 0.75}
+    data_kws: dict[str, typing.Any] = {
+        "lw": 0.5,
+        "ms": 2,
+        "mfc": "w",
+        "zorder": 0,
+        "c": "0.4",
+        "capsize": 0,
+    }
+    fit_kws: dict[str, typing.Any] = {"c": "r", "lw": 0.75}
 
     if is_callable:
         residuals = res(center_arr[along].values) - center_arr.values

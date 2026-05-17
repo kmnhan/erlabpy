@@ -63,7 +63,7 @@ def _parse_dict_arg(
     if isinstance(arg_value, Mapping):
         arg_dict = dict(arg_value)
     elif np.isscalar(arg_value):
-        arg_dict = dict.fromkeys(dims, arg_value)
+        arg_dict = dict.fromkeys(dims, typing.cast("float", arg_value))
     elif isinstance(arg_value, Collection):
         if len(arg_value) != len(dims):
             raise ValueError(
