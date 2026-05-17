@@ -398,7 +398,12 @@ class _WorkspacePropertiesDialog(QtWidgets.QDialog):
 
         icon_label = QtWidgets.QLabel(self)
         icon_label.setObjectName("manager_workspace_properties_icon_label")
-        icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
+        style = self.style()
+        icon = (
+            QtGui.QIcon()
+            if style is None
+            else style.standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
+        )
         icon_label.setPixmap(icon.pixmap(32, 32))
         icon_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter

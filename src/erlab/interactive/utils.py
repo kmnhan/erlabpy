@@ -1050,15 +1050,15 @@ def file_loaders(
     if not file_name:
         return valid_loaders
 
-    if not isinstance(file_name, Iterable):
-        file_name = [file_name]
-
-    file_name = [pathlib.Path(f) for f in file_name]
+    if isinstance(file_name, (str, os.PathLike)):
+        file_paths = [pathlib.Path(file_name)]
+    else:
+        file_paths = [pathlib.Path(f) for f in file_name]
 
     valid_keys: list[str] = []
     for name_filter in valid_loaders:
         for pattern in _filter_to_patterns(name_filter):
-            if all(fnmatch.fnmatch(p.name, pattern) for p in file_name):
+            if all(fnmatch.fnmatch(p.name, pattern) for p in file_paths):
                 valid_keys.append(name_filter)
                 break
 
@@ -4234,7 +4234,7 @@ class AnalysisWindow(ToolWindow):
         self.data = parse_data(data)
         if title is None:
             title = self.data.name
-        self.setWindowTitle(title)
+        self.setWindowTitle("" if title is None else str(title))
 
         self._main = QtWidgets.QWidget(self)
         self.setCentralWidget(self._main)
@@ -4524,10 +4524,10 @@ class DictMenuBar(QtWidgets.QMenuBar):
         self, parent: QtWidgets.QMenuBar | QtWidgets.QMenu, **kwargs
     ) -> None:
         for name, opts in kwargs.items():
-            menu = opts.pop("menu", None)
+            menu_opt = opts.pop("menu", None)
             actions = opts.pop("actions", {})
 
-            if menu is None:
+            if menu_opt is None:
                 title = opts.pop("title", None)
                 icon = opts.pop("icon", None)
                 if title is None:
@@ -4537,7 +4537,13 @@ class DictMenuBar(QtWidgets.QMenuBar):
                 else:
                     menu = parent.addMenu(icon, title)
             else:
-                menu = parent.addMenu(menu)
+                if not isinstance(menu_opt, QtWidgets.QMenu):
+                    raise TypeError("menu must be a QMenu instance")
+                parent.addMenu(menu_opt)
+                menu = menu_opt
+
+            if menu is None:
+                raise RuntimeError("Could not create menu")
 
             self.menu_dict[name] = menu
 

@@ -322,7 +322,7 @@ class MERLINLoader(LoaderBase):
             unique_regions = np.unique(regions)
 
             # Group data by region to set equal energy axis for each region
-            data_for_region: list[list[xr.DataArray]] = [
+            region_data_groups = [
                 [
                     data
                     for r, data in zip(regions, data_list, strict=True)
@@ -330,8 +330,9 @@ class MERLINLoader(LoaderBase):
                 ]
                 for region in unique_regions
             ]
-            data_for_region = [
-                self.pre_combine_multiple(d, {})[0] for d in data_for_region
+            data_for_region: list[list[xr.DataArray]] = [
+                typing.cast("list[xr.DataArray]", self.pre_combine_multiple(d, {})[0])
+                for d in region_data_groups
             ]
 
             # Combine regions that correspond to same scan index into single DataTree

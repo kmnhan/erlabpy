@@ -403,23 +403,27 @@ def slice_along_path(
     vertices = dict(
         either_dict_or_kwargs(vertices, vertices_kwargs, "slice_along_path")
     )
+    vertex_arrays: dict[Hashable, npt.NDArray[np.floating]] = {}
 
     for dim, vert in vertices.items():
         if dim not in darr.dims:
             raise ValueError(f"Dimension {dim} not found in data array")
 
         # Convert to numpy array
-        vert_arr = np.asarray(vert)
+        vert_arr = np.asarray(vert, dtype=float)
         if vert_arr.ndim != 1:
             raise ValueError("Each vertex must be 1-dimensional")
-        vertices[dim] = vert_arr
+        vertex_arrays[dim] = vert_arr
 
-    if not all(len(p) == len(next(iter(vertices.values()))) for p in vertices.values()):
+    if not all(
+        len(p) == len(next(iter(vertex_arrays.values())))
+        for p in vertex_arrays.values()
+    ):
         raise ValueError("Vertices must have the same length along all dimensions")
 
     if step_size is None:
         step_size = np.inf
-        for dim in vertices:
+        for dim in vertex_arrays:
             dif = np.diff(darr[dim].values)
             if np.allclose(dif, dif[0], equal_nan=True):
                 step_size = min(step_size, np.abs(dif[0]))
@@ -432,7 +436,7 @@ def slice_along_path(
         if step_size <= 0:
             raise ValueError("Step size must be positive")
 
-    points: npt.NDArray[np.floating] = np.array(list(vertices.values())).T
+    points: npt.NDArray[np.floating] = np.array(list(vertex_arrays.values())).T
 
     # Calculate number of points for each segment
     num_points = [
@@ -465,7 +469,7 @@ def slice_along_path(
     interp_kwargs.setdefault("method", "linearfast")
 
     return darr.interp(
-        dict(zip(vertices.keys(), interp_coords, strict=False)), **interp_kwargs
+        dict(zip(vertex_arrays.keys(), interp_coords, strict=False)), **interp_kwargs
     )
 
 
@@ -528,9 +532,9 @@ def slice_along_vector(
     :func:`erlab.analysis.interpolate.slice_along_path`
 
     """
-    direction: dict[str, float] = {
-        k: float(v / np.linalg.norm(list(direction.values())))
-        for k, v in direction.items()
+    direction_norm = np.linalg.norm(list(direction.values()))
+    unit_direction: dict[str, float] = {
+        k: float(v / direction_norm) for k, v in direction.items()
     }
     if isinstance(stretch, Iterable):
         lm, lp = stretch
@@ -538,7 +542,7 @@ def slice_along_vector(
         lm = lp = stretch
 
     vert: Mapping[Hashable, Sequence[float]] = {
-        k: (center[k] - lm * direction[k], center[k] + lp * direction[k])
+        k: (center[k] - lm * unit_direction[k], center[k] + lp * unit_direction[k])
         for k in center
     }
     return slice_along_path(data, vertices=vert, **kwargs)

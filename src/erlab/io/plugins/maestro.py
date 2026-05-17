@@ -177,17 +177,17 @@ class MAESTROMicroLoader(LoaderBase):
 
         def _parse_attr(v) -> str | int | float:
             """Strip quotes and convert numerical strings to int or float."""
-            v = v.strip().decode()
+            value = v.strip().decode()
             try:
-                v = float(v)
-                if v.is_integer():
-                    return int(v)
+                numeric_value = float(value)
+                if numeric_value.is_integer():
+                    return int(numeric_value)
             except ValueError:
-                if v.startswith("'") and v.endswith("'"):
-                    return v[1:-1]
-                return v
+                if value.startswith("'") and value.endswith("'"):
+                    return value[1:-1]
+                return value
             else:
-                return v
+                return numeric_value
 
         nested_attrs: dict[Hashable, dict[str, tuple[str, str | int | float]]] = {}
         for key, val in groups["/Headers"].data_vars.items():
