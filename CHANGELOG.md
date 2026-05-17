@@ -1,3 +1,45 @@
+## Unreleased
+
+### ✨ Features
+
+- **manager:** add menu item that shows the current workspace properties, including path and file status ([46c4055](https://github.com/kmnhan/erlabpy/commit/46c4055ee35229ac7d3ed855c7d04bbc67efd07d))
+
+- **manager:** add right-click menu items to Windows taskbar icon and macOS dock icon for standalone installations ([73ec9d2](https://github.com/kmnhan/erlabpy/commit/73ec9d2adb93a07dd61694fc3ca08b1bc91fe9cf))
+
+- **manager:** add "Open Recent" menu with recently used workspace files ([1b2e18b](https://github.com/kmnhan/erlabpy/commit/1b2e18b50b02d5358202e79cb518826c699a6f96))
+
+- **manager:** add workspace offload for ImageTool data ([70f15ce](https://github.com/kmnhan/erlabpy/commit/70f15ce825d75e9ded6277ba32e28b507681779a))
+
+  Replace the old Archive/Unarchive workflow with `Offload to Workspace` in the ImageTool manager. The new action saves the workspace when needed, frees selected in-memory ImageTool data, and reconnects it as dask-backed data from the `.itws` workspace file. Dask-backed data can be loaded in to memory with `Load Into Memory`. Additionally, user-configured chunk size edits are now saved into the workspace file so reloaded data keeps the intended chunk layout.
+
+### 🐞 Bug Fixes
+
+- **manager:** show message while optimizing workspaces on quit ([2853ef1](https://github.com/kmnhan/erlabpy/commit/2853ef1ebc6d5b854edf23a36d932e8a1de81b3c))
+
+- **manager:** allow Reload Data from child tools ([d41649e](https://github.com/kmnhan/erlabpy/commit/d41649e3af7c15a4e23795947ce68a8ebb58197d))
+
+  Reload Data now works from child tools and child ImageTool rows in the manager.
+
+  chore: fix bug
+
+- **manager:** avoid standalone macOS matplotlib cursor crash ([85bfbb7](https://github.com/kmnhan/erlabpy/commit/85bfbb794c575ffcd4febffc7968717c1328dfd9))
+
+  Disable Matplotlib QtAgg cursor updates inside the packaged macOS ImageTool Manager before the console imports `matplotlib.pyplot`. This avoids the Qt Cocoa `QImage::toCGImage` crash triggered by `Plot with matplotlib`.
+
+- **imagetool:** show dask badges for child ImageTools ([c34941a](https://github.com/kmnhan/erlabpy/commit/c34941a679093d1497019fcf75a658dbcb1aeb7b))
+
+- **manager:** preserve non-dask data after manager save ([63a4d55](https://github.com/kmnhan/erlabpy/commit/63a4d556713c51b61322e96674bb89c1053ee615))
+
+  Retains the chunked state of each ImageTool's data when saving a workspace, and ensures that non-dask data remains non-dask after saving and reloading a workspace.
+
+### ♻️ Code Refactor
+
+- **interactive:** improve menu action labels and icons for clarity and consistency ([9ad2def](https://github.com/kmnhan/erlabpy/commit/9ad2def749f74915360e3c834475204f62b55897))
+
+- **manager:** clarify menu action names ([ffb2964](https://github.com/kmnhan/erlabpy/commit/ffb296408410e6b4f98148b2e51a33268ca31323))
+
+  Rename manager file-menu actions so `.itws` workspace handling is the primary open flow: `Open Workspace...` now owns the `Ctrl + O` shortcut, and data loading is renamed to `Add Data Files...`.
+
 ## v3.22.0 (2026-05-13)
 
 ### ✨ Features
