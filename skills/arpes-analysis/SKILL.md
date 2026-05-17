@@ -59,7 +59,8 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `manager_selection_info`, `workspace_path`, `Save Workspace`,
   `Open Workspace`, `Open Recent`, `Add Data Files`,
   `Add Windows From Workspace`, `%watch --restore`,
-  `Reconnect Watched Variables`, `.itws`, `Result Placement`, `stale`,
+  `Reconnect Watched Variables`, `.itws`, `standalone application`,
+  `recent documents`, `Jump List`, `Dock menu`, `Result Placement`, `stale`,
   `automatic updates`, `Auto`, `Refit after update`, `code for repeating steps`,
   `ImageTool windows opened from tools`, or
   `workflow-bridge` for notebook and interactive-workflow questions.

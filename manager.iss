@@ -7,6 +7,7 @@
 #define MyAppDistDir (MyAppOutputDir + "\\ImageTool Manager")
 #define MyAppVersion GetVersionNumbersString(MyAppDistDir + "\\" + MyAppExeName)
 #define MyAppAssocPrefix "dev.kmnhan.erlabpy"
+#define MyAppUserModelID "dev.kmnhan.erlabpy.imagetoolmanager"
 
 [Setup]
 AppId={{9E766090-E7A4-4D16-ACB4-C670DF6B2148}
@@ -56,6 +57,7 @@ Source: "{#MyAppDistDir}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubd
 Root: HKA; Subkey: "Software\Classes\.itws"; ValueType: string; ValueName: ""; ValueData: "{#MyAppAssocPrefix}.itws"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\.itws\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppAssocPrefix}.itws"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocPrefix}.itws"; ValueType: string; ValueName: ""; ValueData: "ImageTool Workspace File"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\{#MyAppAssocPrefix}.itws"; ValueType: string; ValueName: "AppUserModelID"; ValueData: "{#MyAppUserModelID}"; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocPrefix}.itws\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocPrefix}.itws\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
@@ -113,8 +115,8 @@ Root: HKA; Subkey: "Software\Classes\{#MyAppAssocPrefix}.zip\DefaultIcon"; Value
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocPrefix}.zip\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppUserModelID}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppUserModelID}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

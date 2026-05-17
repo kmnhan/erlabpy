@@ -31,7 +31,9 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool._itool as itool_mod
+import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._console as manager_console
+import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._registry as manager_registry
@@ -8002,6 +8004,54 @@ def test_manager_records_recent_workspace_accesses(
         ]
 
 
+def test_manager_records_packaged_workspace_with_desktop_shell(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    workspace = tmp_path / "workspace.itws"
+    data_file = tmp_path / "data.h5"
+    workspace.touch()
+    data_file.touch()
+    recorded: list[pathlib.Path] = []
+
+    monkeypatch.setattr(
+        manager_desktop,
+        "record_recent_workspace",
+        lambda path: recorded.append(pathlib.Path(path)),
+    )
+
+    with manager_context() as manager:
+        monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
+        manager._record_recent_workspace(workspace)
+        manager._record_recent_workspace(data_file)
+
+    assert recorded == [workspace.resolve()]
+
+
+def test_manager_startup_args_parse_flags_and_file_paths(tmp_path) -> None:
+    workspace = tmp_path / "workspace.itws"
+    data_file = tmp_path / "data.h5"
+    workspace.touch()
+    data_file.touch()
+
+    file_args, open_workspace_dialog = manager_module._parse_startup_args(
+        [
+            manager_desktop.OPEN_WORKSPACE_DIALOG_ARG,
+            str(workspace),
+            manager_desktop.NEW_MANAGER_WINDOW_ARG,
+            "--ignored",
+            str(tmp_path / "missing.itws"),
+            str(data_file),
+        ]
+    )
+
+    assert open_workspace_dialog
+    assert file_args == [workspace, data_file]
+
+
 def test_manager_application_quit_request_resets_when_close_fails(
     monkeypatch,
     manager_context: Callable[
@@ -14308,6 +14358,106 @@ def test_manager_standalone_app_menus(
             "window-new",
             "applications-science",
         }.issubset(theme_icon_names)
+
+
+def test_manager_macos_dock_menu_actions(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dock_menus: list[QtWidgets.QMenu] = []
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        manager_desktop.QtWidgets.QMenu,
+        "setAsDockMenu",
+        lambda menu: dock_menus.append(menu),
+    )
+
+    with manager_context() as manager:
+        load_calls: list[bool] = []
+        new_manager_calls: list[bool] = []
+        monkeypatch.setattr(manager, "load", lambda: load_calls.append(True))
+        monkeypatch.setattr(
+            manager,
+            "open_new_manager_instance",
+            lambda: new_manager_calls.append(True),
+        )
+
+        dock_menu = manager_desktop.install_macos_dock_menu(manager)
+
+        assert dock_menu is not None
+        assert dock_menus == [dock_menu]
+        assert manager._macos_dock_menu is dock_menu
+
+        actions = action_map_by_object_name(dock_menu)
+        actions["manager_dock_open_workspace_action"].trigger()
+        actions["manager_dock_new_manager_action"].trigger()
+
+        assert load_calls == [True]
+        assert new_manager_calls == [True]
+
+
+def test_manager_desktop_helpers_record_windows_recent_workspace(
+    monkeypatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace.itws"
+    data_file = tmp_path / "data.h5"
+    calls: list[tuple[str, object, object | None]] = []
+
+    class _Shell32:
+        def SetCurrentProcessExplicitAppUserModelID(self, app_id):
+            calls.append(("appid", app_id.value, None))
+            return 0
+
+        def SHAddToRecentDocs(self, flags, path):
+            calls.append(("recent", flags, path.value))
+
+    monkeypatch.setattr(manager_desktop.sys, "platform", "win32")
+    monkeypatch.setattr(
+        manager_desktop.ctypes,
+        "windll",
+        types.SimpleNamespace(shell32=_Shell32()),
+        raising=False,
+    )
+
+    manager_desktop.set_windows_app_user_model_id()
+    manager_desktop.record_recent_workspace(workspace)
+    manager_desktop.record_recent_workspace(data_file)
+
+    assert calls == [
+        ("appid", manager_desktop.APP_USER_MODEL_ID, None),
+        ("recent", manager_desktop._SHARD_PATHW, str(workspace.resolve())),
+    ]
+
+
+def test_manager_windows_jump_list_task_specs() -> None:
+    assert manager_desktop._WINDOWS_JUMP_LIST_TASKS == (
+        (
+            "Open Workspace…",
+            (manager_desktop.OPEN_WORKSPACE_DIALOG_ARG,),
+            "Open an ImageTool workspace file",
+        ),
+        (
+            "New Manager Window",
+            (manager_desktop.NEW_MANAGER_WINDOW_ARG,),
+            "Open another ImageTool Manager window",
+        ),
+    )
+
+
+def test_manager_packaging_declares_desktop_integration_metadata() -> None:
+    installer_text = pathlib.Path("manager.iss").read_text()
+    spec_text = pathlib.Path("manager.spec").read_text()
+
+    assert '#define MyAppUserModelID "dev.kmnhan.erlabpy.imagetoolmanager"' in (
+        installer_text
+    )
+    assert 'ValueName: "AppUserModelID"' in installer_text
+    assert 'AppUserModelID: "{#MyAppUserModelID}"' in installer_text
+    assert '"win32com.propsys.propsys"' in spec_text
+    assert '"win32com.shell.shell"' in spec_text
 
 
 def test_launch_new_manager_instance_uses_detached_source_process(monkeypatch) -> None:

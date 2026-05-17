@@ -25,6 +25,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
+from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
@@ -1208,6 +1209,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ]
         self._set_recent_workspace_paths([path, *paths])
         self._refresh_open_recent_menu_action()
+        if erlab.utils.misc._IS_PACKAGED:
+            _desktop.record_recent_workspace(path)
 
     @QtCore.Slot()
     def _clear_recent_workspaces(self) -> None:

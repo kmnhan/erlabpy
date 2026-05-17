@@ -68,6 +68,7 @@ import warnings
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager._logging import (
     configure_logging,
     get_log_file_path,
@@ -104,6 +105,9 @@ from erlab.interactive.imagetool.manager._watcher import (
 )
 
 logger = logging.getLogger(__name__)
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 _manager_instance: ImageToolManager | None = None
@@ -187,6 +191,25 @@ def _cleanup_update_tmp_dirs(settings) -> None:
     settings.setValue("update_tmp_dirs", "")
 
 
+def _parse_startup_args(args: Iterable[str]) -> tuple[list[pathlib.Path], bool]:
+    file_args: list[pathlib.Path] = []
+    open_workspace_dialog = False
+
+    for arg in args:
+        if arg == _desktop.OPEN_WORKSPACE_DIALOG_ARG:
+            open_workspace_dialog = True
+            continue
+        if arg == _desktop.NEW_MANAGER_WINDOW_ARG:
+            continue
+        if arg.startswith("-"):
+            continue
+        path = pathlib.Path(arg)
+        if path.exists():
+            file_args.append(path)
+
+    return file_args, open_workspace_dialog
+
+
 def main(execute: bool = True) -> None:
     """Start the ImageToolManager application.
 
@@ -194,9 +217,11 @@ def main(execute: bool = True) -> None:
     """
     global _manager_instance
 
-    file_args = [pathlib.Path(f) for f in sys.argv[1:] if pathlib.Path(f).exists()]
-    # Files passed as command-line arguments
-    # Also handles opening files on Windows
+    startup_files, open_workspace_dialog = _parse_startup_args(sys.argv[1:])
+    # Files passed as command-line arguments also handle opening files on Windows.
+
+    if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+        _desktop.configure_process()
 
     qapp = typing.cast(
         "QtWidgets.QApplication | None", QtWidgets.QApplication.instance()
@@ -206,8 +231,8 @@ def main(execute: bool = True) -> None:
         qapp.setStyle("Fusion")
         qapp.setAttribute(QtCore.Qt.ApplicationAttribute.AA_DontShowIconsInMenus, False)
 
-        if file_args:
-            qapp._pending_files.extend(file_args)
+        if startup_files:
+            qapp._pending_files.extend(startup_files)
 
     if (
         sys.platform != "darwin" or not erlab.utils.misc._IS_PACKAGED
@@ -224,11 +249,17 @@ def main(execute: bool = True) -> None:
     _manager_instance.show()
     _manager_instance.activateWindow()
 
+    if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
+        _desktop.install_macos_dock_menu(_manager_instance)
+
     if isinstance(qapp, _ManagerApp):  # pragma: no cover
         pending = qapp._pending_files.copy()
         if pending:
             _manager_instance._handle_dropped_files(pending)
             qapp._pending_files.clear()
+
+    if open_workspace_dialog:
+        QtCore.QTimer.singleShot(0, _manager_instance.load)
 
     if erlab.utils.misc._IS_PACKAGED:  # pragma: no cover
         # Handle cleanup after a successful application update
