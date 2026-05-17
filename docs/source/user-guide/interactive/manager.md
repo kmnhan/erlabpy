@@ -57,6 +57,12 @@ recent workspace, or {guilabel}`Clear Menu` at the bottom of that submenu to rem
 the saved recent-workspace list. Share the file with collaborators and they will see
 the identical layout.
 
+To check where the open manager is saved, choose {guilabel}`File → Workspace Properties`
+({kbd}`Alt+Return`). The dialog shows the associated workspace path, basic file
+status, whether there are unsaved changes, and the number of open ImageTool windows.
+Use its buttons to copy the path or reveal the `.itws` file in your system file
+browser.
+
 Use {guilabel}`File → Offload to Workspace` to save the workspace if needed, free
 selected in-memory ImageTool data, and reconnect those rows to dask-backed data read
 from the `.itws` file. Use {guilabel}`Dask → Load Into Memory` in ImageTool to bring

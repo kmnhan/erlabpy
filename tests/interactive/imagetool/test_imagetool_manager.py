@@ -77,7 +77,11 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _RenameDialog,
     _text_to_loader_extension_value,
 )
-from erlab.interactive.imagetool.manager._mainwindow import _LoadSourceDetailsDialog
+from erlab.interactive.imagetool.manager._mainwindow import (
+    _LoadSourceDetailsDialog,
+    _WorkspacePropertiesDialog,
+    _WorkspacePropertiesState,
+)
 from erlab.interactive.imagetool.manager._modelview import (
     _MIME,
     _NODE_UID_ROLE,
@@ -602,6 +606,92 @@ def test_load_source_details_dialog_kwargs_editor_wraps_and_highlights(
     )
     dialog.kwargs_edit.setPlainText(None)
     assert dialog.kwargs_edit.toPlainText() == ""
+
+
+def test_workspace_properties_dialog_actions(qtbot, monkeypatch, tmp_path) -> None:
+    workspace_path = (tmp_path / "workspace.itws").resolve()
+    workspace_path.write_bytes(b"itws")
+    copied: list[str] = []
+    revealed: list[pathlib.Path] = []
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda content: copied.append(str(content)) or str(content),
+    )
+    monkeypatch.setattr(
+        erlab.utils.misc,
+        "open_in_file_manager",
+        lambda path: revealed.append(pathlib.Path(path)),
+    )
+
+    dialog = _WorkspacePropertiesDialog(
+        workspace_path,
+        state=_WorkspacePropertiesState(
+            is_modified=True,
+            top_level_window_count=3,
+        ),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert not dialog.findChildren(QtWidgets.QLineEdit)
+    path_label = dialog.findChild(
+        QtWidgets.QLabel, "manager_workspace_path_value_label"
+    )
+    assert path_label is not None
+    assert path_label.text() == str(workspace_path)
+    assert path_label.toolTip() == str(workspace_path)
+    assert path_label.textInteractionFlags() == (
+        QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    assert dialog.value_labels["open_windows"].text() == "3"
+    assert dialog.value_labels["size"].text()
+    assert dialog.value_labels["modified"].text()
+    assert (
+        dialog.findChild(
+            QtWidgets.QPlainTextEdit, "manager_workspace_dirty_details_edit"
+        )
+        is None
+    )
+
+    assert dialog.copy_path_button is not None
+    assert dialog.reveal_button is not None
+
+    dialog.copy_path_button.click()
+    dialog.reveal_button.click()
+
+    assert copied == [str(workspace_path)]
+    assert revealed == [workspace_path]
+
+
+def test_workspace_properties_dialog_without_associated_file(qtbot) -> None:
+    dialog = _WorkspacePropertiesDialog(
+        None,
+        state=_WorkspacePropertiesState(is_modified=False, top_level_window_count=0),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert not dialog.findChildren(QtWidgets.QLineEdit)
+    assert (
+        dialog.findChild(QtWidgets.QLabel, "manager_workspace_path_value_label") is None
+    )
+    assert dialog.value_labels["open_windows"].text() == "0"
+    assert dialog.copy_path_button is None
+    assert dialog.reveal_button is None
+    assert (
+        dialog.findChild(
+            QtWidgets.QAbstractButton, "manager_copy_workspace_path_button"
+        )
+        is None
+    )
+    assert (
+        dialog.findChild(
+            QtWidgets.QAbstractButton, "manager_reveal_workspace_path_button"
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("use_socket", [False, True], ids=["no_socket", "socket"])
@@ -14278,6 +14368,52 @@ def test_manager_updated_opens_links(
     assert opened == [expected_url]
 
 
+def test_manager_workspace_properties_action_uses_current_state(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dialog_calls: list[
+        tuple[str | None, _WorkspacePropertiesState, QtWidgets.QWidget | None]
+    ] = []
+
+    class _FakeWorkspacePropertiesDialog:
+        def __init__(
+            self,
+            workspace_path: str | None,
+            *,
+            state: _WorkspacePropertiesState,
+            parent: QtWidgets.QWidget | None = None,
+        ) -> None:
+            dialog_calls.append((workspace_path, state, parent))
+
+        def exec(self) -> int:
+            return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        manager_mainwindow, "_WorkspacePropertiesDialog", _FakeWorkspacePropertiesDialog
+    )
+
+    with manager_context() as manager:
+        manager.workspace_properties_action.trigger()
+        assert dialog_calls[-1][0] is None
+        assert not dialog_calls[-1][1].is_modified
+        assert dialog_calls[-1][1].top_level_window_count == 0
+        assert dialog_calls[-1][2] is manager
+
+        workspace_path = tmp_path / "workspace.itws"
+        workspace_path.touch()
+        manager._adopt_workspace_path(workspace_path)
+
+        manager.workspace_properties_action.trigger()
+        assert dialog_calls[-1][0] == str(workspace_path.resolve())
+        assert not dialog_calls[-1][1].is_modified
+        assert dialog_calls[-1][1].top_level_window_count == 0
+        assert dialog_calls[-1][2] is manager
+
+
 def test_manager_standalone_app_menus(
     monkeypatch,
     manager_context: Callable[
@@ -14308,12 +14444,13 @@ def test_manager_standalone_app_menus(
             action.objectName() if not action.isSeparator() else ""
             for action in file_menu.actions()
         ]
-        assert file_action_names[:9] == [
+        assert file_action_names[:10] == [
             "manager_open_workspace_action",
             "manager_open_recent_menu_action",
             "manager_save_workspace_action",
             "manager_save_workspace_as_action",
             "manager_compact_workspace_action",
+            "manager_workspace_properties_action",
             "",
             "manager_add_data_files_action",
             "manager_add_windows_from_workspace_action",
@@ -14336,6 +14473,19 @@ def test_manager_standalone_app_menus(
             file_actions["manager_add_windows_from_workspace_action"]
             is manager.import_workspace_action
         )
+        assert (
+            file_actions["manager_workspace_properties_action"]
+            is manager.workspace_properties_action
+        )
+        assert manager.workspace_properties_action.menuRole() == (
+            QtWidgets.QAction.MenuRole.NoRole
+        )
+        assert (
+            manager.workspace_properties_action.shortcut().toString(
+                QtGui.QKeySequence.SequenceFormat.PortableText
+            )
+            == "Alt+Return"
+        )
         assert file_actions["manager_explorer_action"] is manager.explorer_action
         assert file_actions["manager_new_instance_action"].shortcut().isEmpty()
         file_actions["manager_new_instance_action"].trigger()
@@ -14354,6 +14504,7 @@ def test_manager_standalone_app_menus(
             "document-open-recent",
             "document-save",
             "document-save-as",
+            "document-properties",
             "list-add",
             "window-new",
             "applications-science",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import datetime
 import gc
 import json
 import logging
@@ -309,6 +310,286 @@ class _LoadSourceDetailsDialog(QtWidgets.QDialog):
         close_button.clicked.connect(self.accept)
         layout.addWidget(self.button_box)
         self.adjustSize()
+
+
+def _workspace_file_manager_action_text() -> str:
+    if sys.platform == "darwin":
+        return "Reveal in Finder"
+    if sys.platform.startswith("win"):
+        return "Reveal in File Explorer"
+    return "Open Containing Folder"
+
+
+@dataclass(frozen=True)
+class _WorkspacePropertiesState:
+    is_modified: bool
+    top_level_window_count: int
+
+
+def _workspace_file_type_text(path: pathlib.Path | None) -> str:
+    if path is None:
+        return "Unsaved ImageTool workspace"
+    match path.suffix.lower():
+        case ".itws":
+            return "ImageTool Workspace (.itws)"
+        case ".h5":
+            return "xarray HDF5 Workspace (.h5)"
+        case suffix if suffix:
+            return f"{suffix.removeprefix('.').upper()} file"
+        case _:
+            return "File"
+
+
+def _format_workspace_file_size(size: int) -> str:
+    if size == 1:
+        return "1 byte"
+    bytes_text = f"{size:,} bytes"
+    if size < 1000:
+        return bytes_text
+    value = float(size)
+    for unit in ("KB", "MB", "GB", "TB"):
+        value /= 1000.0
+        if value < 1000.0:
+            return f"{value:.2f} {unit} ({bytes_text})"
+    return f"{value:.2f} PB ({bytes_text})"
+
+
+def _format_workspace_file_time(timestamp: float) -> str:
+    return (
+        datetime.datetime.fromtimestamp(timestamp)
+        .astimezone()
+        .strftime("%Y-%m-%d %H:%M:%S %Z")
+    )
+
+
+class _WorkspacePropertiesDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        workspace_path: str | os.PathLike[str] | None,
+        *,
+        state: _WorkspacePropertiesState,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        workspace_name = (
+            "Untitled Workspace"
+            if workspace_path is None
+            else pathlib.Path(workspace_path).resolve().name
+        )
+        self.setWindowTitle(f"{workspace_name} Properties")
+        self.setModal(True)
+        self.setMinimumWidth(540)
+
+        self._workspace_path = (
+            None if workspace_path is None else pathlib.Path(workspace_path).resolve()
+        )
+        self.value_labels: dict[str, QtWidgets.QLabel] = {}
+        self.copy_path_button: QtWidgets.QAbstractButton | None = None
+        self.reveal_button: QtWidgets.QAbstractButton | None = None
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 12)
+        layout.setSpacing(14)
+
+        header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+        layout.addLayout(header_layout)
+
+        icon_label = QtWidgets.QLabel(self)
+        icon_label.setObjectName("manager_workspace_properties_icon_label")
+        icon = self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_FileIcon)
+        icon_label.setPixmap(icon.pixmap(32, 32))
+        icon_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignHCenter
+        )
+        header_layout.addWidget(icon_label, 0)
+
+        title_layout = QtWidgets.QVBoxLayout()
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(2)
+        header_layout.addLayout(title_layout, 1)
+
+        title_label = QtWidgets.QLabel(workspace_name, self)
+        title_label.setObjectName("manager_workspace_name_label")
+        title_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        title_label.setWordWrap(True)
+        title_font = title_label.font()
+        title_font.setPointSize(title_font.pointSize() + 1)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_layout.addWidget(title_label)
+
+        status_label = QtWidgets.QLabel(
+            self._status_text(self._workspace_path, state), self
+        )
+        status_label.setObjectName("manager_workspace_status_label")
+        status_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+        title_layout.addWidget(status_label)
+
+        details_layout = QtWidgets.QGridLayout()
+        details_layout.setContentsMargins(44, 0, 0, 0)
+        details_layout.setHorizontalSpacing(14)
+        details_layout.setVerticalSpacing(7)
+        details_layout.setColumnStretch(1, 1)
+        layout.addLayout(details_layout)
+
+        row = 0
+        if self._workspace_path is None:
+            row = self._add_detail(
+                details_layout,
+                row,
+                "type",
+                "Type",
+                _workspace_file_type_text(None),
+            )
+        else:
+            row = self._add_detail(
+                details_layout,
+                row,
+                "path",
+                "Path",
+                str(self._workspace_path),
+            )
+            row = self._add_detail(
+                details_layout,
+                row,
+                "type",
+                "Type",
+                _workspace_file_type_text(self._workspace_path),
+            )
+            stat: os.stat_result | None = None
+            with contextlib.suppress(OSError):
+                stat = self._workspace_path.stat()
+            if stat is None:
+                row = self._add_detail(
+                    details_layout,
+                    row,
+                    "size",
+                    "Size",
+                    "File not found",
+                )
+                row = self._add_detail(
+                    details_layout,
+                    row,
+                    "modified",
+                    "Modified",
+                    "File not found",
+                )
+            else:
+                row = self._add_detail(
+                    details_layout,
+                    row,
+                    "size",
+                    "Size",
+                    _format_workspace_file_size(stat.st_size),
+                )
+                row = self._add_detail(
+                    details_layout,
+                    row,
+                    "modified",
+                    "Modified",
+                    _format_workspace_file_time(stat.st_mtime),
+                )
+
+        row = self._add_detail(
+            details_layout,
+            row,
+            "unsaved_changes",
+            "Unsaved changes",
+            "Yes" if state.is_modified else "No",
+        )
+        self._add_detail(
+            details_layout,
+            row,
+            "open_windows",
+            "Open windows",
+            str(state.top_level_window_count),
+        )
+
+        self.button_box = QtWidgets.QDialogButtonBox(self)
+        if self._workspace_path is not None:
+            self.copy_path_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    "Copy Path", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
+                ),
+            )
+            self.copy_path_button.setObjectName("manager_copy_workspace_path_button")
+            self.copy_path_button.clicked.connect(lambda: self._copy_path())
+
+            self.reveal_button = typing.cast(
+                "QtWidgets.QAbstractButton",
+                self.button_box.addButton(
+                    _workspace_file_manager_action_text(),
+                    QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+                ),
+            )
+            self.reveal_button.setObjectName("manager_reveal_workspace_path_button")
+            self.reveal_button.clicked.connect(lambda: self._reveal_path())
+
+        close_button = typing.cast(
+            "QtWidgets.QAbstractButton",
+            self.button_box.addButton(QtWidgets.QDialogButtonBox.StandardButton.Close),
+        )
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(self.button_box)
+        self.adjustSize()
+
+    @staticmethod
+    def _status_text(
+        workspace_path: pathlib.Path | None, state: _WorkspacePropertiesState
+    ) -> str:
+        if workspace_path is None:
+            return "Not saved to a file"
+        if state.is_modified:
+            return "Associated file with unsaved changes"
+        return "Associated file"
+
+    def _add_detail(
+        self,
+        layout: QtWidgets.QGridLayout,
+        row: int,
+        key: str,
+        label: str,
+        value: str,
+    ) -> int:
+        key_label = QtWidgets.QLabel(label, self)
+        key_label.setObjectName(f"manager_workspace_{key}_label")
+        key_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignTop
+        )
+        key_label.setForegroundRole(QtGui.QPalette.ColorRole.PlaceholderText)
+
+        value_label = QtWidgets.QLabel(value, self)
+        value_label.setObjectName(f"manager_workspace_{key}_value_label")
+        value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        value_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        value_label.setWordWrap(True)
+        value_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        value_label.setToolTip(value)
+
+        layout.addWidget(key_label, row, 0)
+        layout.addWidget(value_label, row, 1)
+        self.value_labels[key] = value_label
+        return row + 1
+
+    def _copy_path(self) -> None:
+        if self._workspace_path is None:
+            return
+        erlab.interactive.utils.copy_to_clipboard(str(self._workspace_path))
+
+    def _reveal_path(self) -> None:
+        if self._workspace_path is None:
+            return
+        erlab.utils.misc.open_in_file_manager(self._workspace_path)
 
 
 def _check_message_is_progressbar(message: str) -> bool:
@@ -781,6 +1062,24 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.compact_workspace_action.triggered.connect(self.compact_workspace)
 
+        self.workspace_properties_action = QtWidgets.QAction(
+            "Workspace Properties", self
+        )
+        self.workspace_properties_action.setObjectName(
+            "manager_workspace_properties_action"
+        )
+        self.workspace_properties_action.setMenuRole(QtWidgets.QAction.MenuRole.NoRole)
+        self.workspace_properties_action.setShortcut(QtGui.QKeySequence("Alt+Return"))
+        self.workspace_properties_action.setToolTip(
+            "Show properties for the current workspace"
+        )
+        self.workspace_properties_action.setIcon(
+            QtGui.QIcon.fromTheme("document-properties")
+        )
+        self.workspace_properties_action.triggered.connect(
+            self.show_workspace_properties
+        )
+
         self.load_action = QtWidgets.QAction("&Open Workspace…", self)
         self.load_action.setObjectName("manager_open_workspace_action")
         self.load_action.setShortcut(QtGui.QKeySequence.StandardKey.Open)
@@ -926,6 +1225,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
         file_menu.addAction(self.compact_workspace_action)
+        file_menu.addAction(self.workspace_properties_action)
         file_menu.addSeparator()
         file_menu.addAction(self.open_action)
         file_menu.addAction(self.import_workspace_action)
@@ -1311,6 +1611,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def workspace_path(self) -> str | None:
         """Path of the workspace document associated with this manager."""
         return None if self._workspace_path is None else str(self._workspace_path)
+
+    @QtCore.Slot()
+    def show_workspace_properties(self) -> None:
+        """Show properties for the workspace associated with this manager."""
+        _WorkspacePropertiesDialog(
+            self.workspace_path,
+            state=self._workspace_properties_state(),
+            parent=self,
+        ).exec()
+
+    def _workspace_properties_state(self) -> _WorkspacePropertiesState:
+        return _WorkspacePropertiesState(
+            is_modified=self.is_workspace_modified,
+            top_level_window_count=self.ntools,
+        )
 
     @property
     def is_workspace_modified(self) -> bool:
