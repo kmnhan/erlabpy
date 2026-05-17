@@ -14524,6 +14524,7 @@ def test_manager_macos_dock_menu_actions(
         manager_desktop.QtWidgets.QMenu,
         "setAsDockMenu",
         lambda menu: dock_menus.append(menu),
+        raising=False,
     )
 
     with manager_context() as manager:
