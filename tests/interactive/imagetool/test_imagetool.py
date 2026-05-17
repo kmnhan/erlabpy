@@ -1648,6 +1648,33 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     win.close()
 
 
+def test_itool_reload_reports_failure_and_nonreloadable_noop(qtbot, monkeypatch):
+    win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
+    qtbot.addWidget(win)
+
+    assert not win.slicer_area.reloadable
+    assert not win.slicer_area._reload()
+
+    errors: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        lambda _parent, title, text: errors.append((title, text)),
+    )
+    monkeypatch.setattr(
+        type(win.slicer_area), "reloadable", property(lambda _area: True)
+    )
+    monkeypatch.setattr(
+        win.slicer_area,
+        "_fetch_reload_data",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    assert not win.slicer_area._reload()
+    assert errors == [("Error", "An error occurred while reloading data.")]
+    win.close()
+
+
 def test_itool_save(qtbot, accept_dialog) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = itool(data, execute=False)

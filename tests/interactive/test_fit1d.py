@@ -528,6 +528,35 @@ def test_parameter_table_model_and_delegate(qtbot) -> None:
     assert params["amp"].value == pytest.approx(2.5)
 
 
+def test_fit1d_parameter_context_menu_builds_actions(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+
+    index = win.param_model.index(0, 0)
+    menus: list[QtWidgets.QMenu] = []
+    exec_positions: list[QtCore.QPoint] = []
+
+    class _TrackingMenu(QtWidgets.QMenu):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            menus.append(self)
+
+        def exec(self, pos):
+            exec_positions.append(pos)
+
+    monkeypatch.setattr(win.param_view, "indexAt", lambda _pos: index)
+    monkeypatch.setattr(fit1d.QtWidgets, "QMenu", _TrackingMenu)
+
+    win._show_param_menu(QtCore.QPoint(1, 1))
+
+    assert len(menus) == 1
+    assert [action.text() for action in menus[0].actions()] == [
+        "Set expression…",
+        "Clear expression",
+    ]
+    assert exec_positions
+
+
 def test_fit1d_guess_components_and_slider(qtbot) -> None:
     x = np.linspace(-1.0, 1.0, 101)
     data = np.exp(-((x - 0.2) ** 2) / (2.0 * 0.3**2))

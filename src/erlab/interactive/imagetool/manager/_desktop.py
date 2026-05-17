@@ -171,7 +171,10 @@ def _record_macos_recent_document(path: pathlib.Path) -> None:
     NSDocumentController.sharedDocumentController().noteNewRecentDocumentURL_(url)
 
 
-def _record_macos_recent_document_ctypes(path: pathlib.Path) -> None:
+# Last-resort bridge for macOS builds without PyObjC; exercised manually on macOS.
+def _record_macos_recent_document_ctypes(
+    path: pathlib.Path,
+) -> None:  # pragma: no cover
     objc_path = ctypes.util.find_library("objc")
     appkit_path = ctypes.util.find_library("AppKit")
     foundation_path = ctypes.util.find_library("Foundation")
