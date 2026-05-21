@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from qtpy import QtCore
 
 import erlab
-from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
+from erlab.interactive.imagetool import _serialization
+from erlab.interactive.imagetool.manager import _xarray
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, MutableMapping
@@ -138,7 +139,7 @@ def _open_workspace_h5_file_for_update(
 ) -> Iterator[typing.Any]:
     import h5py
 
-    with _manager_xarray._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
         yield h5_file
 
 
@@ -607,7 +608,7 @@ def _recover_workspace_transactions(fname: str | os.PathLike[str]) -> None:
 
     if not pathlib.Path(fname).exists():
         return
-    with _manager_xarray._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "a") as h5_file:
         if not _workspace_file_is_workspace(h5_file):
             return
         for name in list(h5_file):
@@ -659,8 +660,8 @@ def _read_workspace_root_attrs_h5py(
 ) -> dict[typing.Hashable, typing.Any]:
     import h5py
 
-    _manager_xarray.ensure_workspace_hdf5_filters_registered()
-    with _manager_xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+    _xarray.ensure_workspace_hdf5_filters_registered()
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
         if not _workspace_file_is_workspace(h5_file):
             raise ValueError("Not a valid workspace file")
         return _h5py_attrs_to_dict(h5_file.attrs)
@@ -676,7 +677,7 @@ def _read_workspace_dataset_group_h5py(
     import numpy as np
     import xarray as xr
 
-    _manager_xarray.ensure_workspace_hdf5_filters_registered()
+    _xarray.ensure_workspace_hdf5_filters_registered()
     group_path = group_path.strip("/")
     internal_attrs = (
         "CLASS",
@@ -687,7 +688,7 @@ def _read_workspace_dataset_group_h5py(
         "_Netcdf4Dimid",
         "coordinates",
     )
-    with _manager_xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
+    with _xarray._workspace_file_lock(fname), h5py.File(fname, "r") as h5_file:
         if group_path not in h5_file or not isinstance(h5_file[group_path], h5py.Group):
             return None
         group = h5_file[group_path]
@@ -707,6 +708,24 @@ def _read_workspace_dataset_group_h5py(
             data_name = next(iter(datasets))
         else:
             return None
+
+        def _dataset_dims(dataset: h5py.Dataset) -> tuple[str, ...] | None:
+            dims: list[str] = []
+            for axis, dim in enumerate(dataset.dims):
+                dim_keys = list(dim.keys())
+                if len(dim_keys) != 1:
+                    return None
+                dim_name = str(dim_keys[0])
+                scale = dim[dim_name]
+                if (
+                    not isinstance(scale, h5py.Dataset)
+                    or scale.ndim != 1
+                    or scale.shape[0] != dataset.shape[axis]
+                    or scale.dtype.kind not in "biufc"
+                ):
+                    return None
+                dims.append(dim_name)
+            return tuple(dims)
 
         data_dataset = datasets[data_name]
         dims: list[str] = []
@@ -734,11 +753,20 @@ def _read_workspace_dataset_group_h5py(
         scalar_coord_names = data_dataset.attrs.get("coordinates", "")
         if isinstance(scalar_coord_names, bytes):
             scalar_coord_names = scalar_coord_names.decode()
+        legacy_spaced_coord_names = tuple(
+            name
+            for name, dataset in datasets.items()
+            if name != data_name
+            and _serialization.coord_name_needs_private_storage(name)
+            and dataset.dtype.kind in "biufc"
+        )
         if isinstance(scalar_coord_names, str):
             for coord_name in scalar_coord_names.split():
                 if coord_name not in group or not isinstance(
                     group[coord_name], h5py.Dataset
                 ):
+                    if legacy_spaced_coord_names:
+                        continue
                     return None
                 coord_dataset = group[coord_name]
                 if coord_dataset.ndim != 0 or coord_dataset.dtype.kind not in "biufc":
@@ -749,25 +777,89 @@ def _read_workspace_dataset_group_h5py(
                     _h5py_attrs_to_dict(coord_dataset.attrs, exclude=internal_attrs),
                 )
 
-        return xr.Dataset(
-            {
-                data_name: (
-                    tuple(dims),
-                    np.asarray(data_dataset[()]),
-                    _h5py_attrs_to_dict(data_dataset.attrs, exclude=internal_attrs),
-                )
-            },
-            coords=coords,
-            attrs=_h5py_attrs_to_dict(group.attrs),
+        data_attrs = _h5py_attrs_to_dict(data_dataset.attrs, exclude=internal_attrs)
+        data_vars: dict[typing.Hashable, typing.Any] = {
+            data_name: (
+                tuple(dims),
+                np.asarray(data_dataset[()]),
+                data_attrs,
+            )
+        }
+
+        private_records = _serialization.private_coord_records_from_attrs(data_attrs)
+        for record in private_records or ():
+            variable_name = record["variable_name"]
+            if variable_name not in group or not isinstance(
+                group[variable_name], h5py.Dataset
+            ):
+                return None
+            coord_dataset = group[variable_name]
+            coord_dims = tuple(record["dims"])
+            if (
+                coord_dataset.ndim != len(coord_dims)
+                or coord_dataset.dtype.kind not in "biufc"
+                or not all(dim in dims for dim in coord_dims)
+            ):
+                return None
+            data_vars[variable_name] = (
+                coord_dims,
+                np.asarray(coord_dataset[()]),
+                _h5py_attrs_to_dict(coord_dataset.attrs, exclude=internal_attrs),
+            )
+
+        for variable_name in legacy_spaced_coord_names:
+            if variable_name in data_vars:
+                continue
+            coord_dataset = datasets[variable_name]
+            coord_dims = _dataset_dims(coord_dataset)
+            if coord_dims is None or not all(dim in dims for dim in coord_dims):
+                continue
+            data_vars[variable_name] = (
+                coord_dims,
+                np.asarray(coord_dataset[()]),
+                _h5py_attrs_to_dict(coord_dataset.attrs, exclude=internal_attrs),
+            )
+
+        return _serialization.restore_private_coords(
+            xr.Dataset(
+                data_vars,
+                coords=coords,
+                attrs=_h5py_attrs_to_dict(group.attrs),
+            ),
+            data_name,
         )
 
 
+def _workspace_h5py_data_name(ds: xr.Dataset) -> typing.Hashable | None:
+    if _serialization.ITOOL_DATA_NAME in ds.data_vars:
+        return _serialization.ITOOL_DATA_NAME
+    if len(ds.data_vars) == 1:
+        return next(iter(ds.data_vars))
+    return None
+
+
 def _workspace_dataset_can_write_h5py(ds: xr.Dataset) -> bool:
-    if len(ds.data_vars) != 1:
+    data_name = _workspace_h5py_data_name(ds)
+    if data_name is None:
         return False
-    data_array = next(iter(ds.data_vars.values()))
+    private_data_names = set(_serialization.private_coord_variable_names(ds, data_name))
+    if any(
+        name != data_name and name not in private_data_names for name in ds.data_vars
+    ):
+        return False
+    data_array = ds[data_name]
     if data_array.chunks is not None or data_array.dtype.kind not in "biufc":
         return False
+    for private_name in private_data_names:
+        if private_name not in ds.data_vars:
+            return False
+        private_data = ds[private_name]
+        if (
+            private_data.chunks is not None
+            or private_data.dtype.kind not in "biufc"
+            or not all(dim in data_array.dims for dim in private_data.dims)
+        ):
+            return False
     for dim in data_array.dims:
         coord = ds.coords.get(dim)
         if coord is None or coord.dims != (dim,) or coord.dtype.kind not in "biufc":
@@ -792,8 +884,12 @@ def _write_workspace_dataset_group_h5py(
 
     if not _workspace_dataset_can_write_h5py(ds):
         return False
+    data_name = _workspace_h5py_data_name(ds)
+    if data_name is None:
+        return False
+    private_data_names = _serialization.private_coord_variable_names(ds, data_name)
 
-    _manager_xarray.ensure_workspace_hdf5_filters_registered()
+    _xarray.ensure_workspace_hdf5_filters_registered()
     group_path = group_path.strip("/")
     with h5py.File(fname, "a") as h5_file:
         if group_path in h5_file:
@@ -804,8 +900,9 @@ def _write_workspace_dataset_group_h5py(
         try:
             for key, value in ds.attrs.items():
                 group.attrs[key] = value
-            data_name, data_array = next(iter(ds.data_vars.items()))
+            data_array = ds[data_name]
             dim_scales = []
+            dim_scales_by_name = {}
             for dim_id, dim in enumerate(data_array.dims):
                 coord = ds.coords[dim]
                 coord_dataset = group.create_dataset(
@@ -816,9 +913,10 @@ def _write_workspace_dataset_group_h5py(
                 for key, value in coord.attrs.items():
                     coord_dataset.attrs[key] = value
                 dim_scales.append(coord_dataset)
+                dim_scales_by_name[dim] = coord_dataset
 
             if encoding is None:
-                encoding = _manager_xarray.workspace_dataset_encoding(ds)
+                encoding = _xarray.workspace_dataset_encoding(ds)
             data_encoding = encoding.get(data_name, {})
             create_kwargs: dict[str, typing.Any] = {}
             if "chunksizes" in data_encoding:
@@ -857,6 +955,23 @@ def _write_workspace_dataset_group_h5py(
                 if isinstance(existing_coordinates, str) and existing_coordinates:
                     coordinates = f"{existing_coordinates} {coordinates}"
                 data_dataset.attrs["coordinates"] = coordinates
+
+            for private_name in private_data_names:
+                private_data = ds[private_name]
+                private_dataset = group.create_dataset(
+                    str(private_name), data=np.asarray(private_data.data)
+                )
+                coordinate_ids: list[int] = []
+                for private_dim_index, private_dim in enumerate(private_data.dims):
+                    scale = dim_scales_by_name[private_dim]
+                    private_dataset.dims[private_dim_index].attach_scale(scale)
+                    coordinate_ids.append(data_array.dims.index(private_dim))
+                if coordinate_ids:
+                    private_dataset.attrs["_Netcdf4Coordinates"] = np.asarray(
+                        coordinate_ids, dtype=np.int32
+                    )
+                for key, value in private_data.attrs.items():
+                    private_dataset.attrs[key] = value
         except Exception:
             del parent[group_name]
             return False
@@ -870,15 +985,16 @@ def _write_workspace_dataset_group_to_file(
     *,
     lock_path: str | os.PathLike[str] | None = None,
 ) -> None:
-    encoding = _manager_xarray.workspace_dataset_encoding(ds)
+    encoding = _xarray.workspace_dataset_encoding(ds)
     if lock_path is not None:
-        normalized_lock_path = _manager_xarray._normalized_file_path(lock_path)
+        normalized_lock_path = _xarray._normalized_file_path(lock_path)
         if normalized_lock_path is not None and any(
-            normalized_lock_path in _manager_xarray.dataarray_source_paths(data_array)
+            normalized_lock_path in _xarray.dataarray_source_paths(data_array)
             for data_array in (*ds.data_vars.values(), *ds.coords.values())
         ):
             ds = ds.load()
 
+    ds = _serialization.encode_private_coords(ds, _serialization.ITOOL_DATA_NAME)
     ds = ds.copy(deep=False)
     stale_encoding_keys = {
         "chunksizes",
@@ -896,7 +1012,7 @@ def _write_workspace_dataset_group_to_file(
             variable.encoding.pop(key, None)
 
     maybe_lock = (
-        _manager_xarray._workspace_file_lock(lock_path)
+        _xarray._workspace_file_lock(lock_path)
         if lock_path is not None
         else contextlib.nullcontext()
     )
@@ -1139,10 +1255,10 @@ def _write_full_workspace_tree_file(
     tmp_fname = f"{fname}.tmp-{uuid.uuid4().hex}"
     try:
         copied_paths: set[str] = set()
-        _manager_xarray.ensure_workspace_hdf5_filters_registered()
+        _xarray.ensure_workspace_hdf5_filters_registered()
         copy_groups_tuple = tuple(copy_groups)
         if copy_source is not None and copy_groups_tuple:
-            with _manager_xarray._workspace_file_lock(copy_source):
+            with _xarray._workspace_file_lock(copy_source):
                 shutil.copyfile(copy_source, tmp_fname)
             staging_root = f"__itws_copy_{uuid.uuid4().hex}"
             staged_groups: list[

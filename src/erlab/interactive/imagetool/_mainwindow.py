@@ -19,6 +19,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 
 if typing.TYPE_CHECKING:
@@ -26,7 +27,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
-_ITOOL_DATA_NAME: str = "<erlab-itool-data>"
+_ITOOL_DATA_NAME: str = _serialization.ITOOL_DATA_NAME
 #: Name to use for the data variable in cached datasets
 
 
@@ -182,7 +183,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
             The name of the target netcdf file.
 
         """
-        self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+        _serialization.encode_private_coords(
+            self.to_dataset(), _ITOOL_DATA_NAME
+        ).to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
 
     @classmethod
     def from_dataset(cls, ds: xr.Dataset, **kwargs) -> typing.Self:
@@ -196,6 +199,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
             Additional keyword arguments passed to the constructor.
 
         """
+        ds = _serialization.restore_private_coords(ds, _ITOOL_DATA_NAME)
         saved_version = ds.attrs.get("erlab_version", "0.0.0")
         if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
             erlab.utils.misc.emit_user_level_warning(
