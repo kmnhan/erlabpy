@@ -1,6 +1,7 @@
 import contextlib
 import os
 import re
+import types
 
 import numpy as np
 import pyqtgraph as pg
@@ -180,6 +181,18 @@ def test_fit2d_status_and_persistence_preserve_transpose_orientation(qtbot) -> N
     updated.data = np.asarray(updated.data) + 1.0
     win_roundtripped.update_data(updated)
     xr.testing.assert_identical(win_roundtripped.tool_data, updated.transpose("x", "y"))
+
+
+def test_fit2d_saved_dims_ignore_missing_or_incompatible_state() -> None:
+    data = _make_2d_data()
+
+    assert Fit2DTool._data_with_saved_dims(data, None) is data
+    assert (
+        Fit2DTool._data_with_saved_dims(
+            data, types.SimpleNamespace(data_dims_full=("x", "missing"))
+        )
+        is data
+    )
 
 
 def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:

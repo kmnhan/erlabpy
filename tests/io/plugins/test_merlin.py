@@ -255,6 +255,50 @@ def test_load_bcs_legacy_single_motor_scan(tmp_path) -> None:
     assert data.attrs["Stay at End"] == 1
 
 
+def test_legacy_bcs_table_rejects_malformed_rows(tmp_path, monkeypatch) -> None:
+    scan_path = tmp_path / "legacy.txt"
+
+    with pytest.raises(ValueError, match="ragged BCS data rows"):
+        _merlin_bcs._load_legacy_bcs_table(scan_path, ["x\ty", "1\t2", "3"])
+
+    monkeypatch.setattr(_merlin_bcs, "_legacy_bcs_header_index", lambda *_args: 0)
+    with pytest.raises(ValueError, match="not a valid BCS data file"):
+        _merlin_bcs._load_legacy_bcs_table(scan_path, ["x"])
+
+    with pytest.raises(ValueError, match="contains no BCS data rows"):
+        _merlin_bcs._load_legacy_bcs_table(scan_path, ["x\ty", ""])
+
+    with pytest.raises(ValueError, match="contains non-numeric BCS data rows"):
+        _merlin_bcs._load_legacy_bcs_table(scan_path, ["x\ty", "1\tbad"])
+
+
+def test_legacy_bcs_helpers_skip_blank_rows_and_keep_bad_scalars(tmp_path) -> None:
+    scan_path = tmp_path / "legacy.txt"
+    data = _merlin_bcs._load_legacy_bcs_table(
+        scan_path,
+        [
+            "Start, Stop, Increment",
+            "Motor",
+            "Stay at End: maybe",
+            "",
+            "Motor\tSignal",
+            "",
+            "1.0\t2.0",
+        ],
+    )
+
+    assert data.attrs["Stay at End"] == "maybe"
+    assert data.sizes == {"Motor": 1}
+    np.testing.assert_allclose(data["Signal"].values, [2.0])
+
+    assert _merlin_bcs._legacy_bcs_header_index(scan_path, ["x\ty", "", "1\t2"]) == 0
+    with pytest.raises(ValueError, match="not a valid BCS data file"):
+        _merlin_bcs._legacy_bcs_header_index(scan_path, ["x\ty", "bad\trow"])
+    assert _merlin_bcs._legacy_time_scan_attrs(
+        ["Date: today", "bad", "desc", "bad", "0 bad 0 0 still-bad"]
+    ) == {"Description": "desc"}
+
+
 def test_load_bcs_unsupported_legacy_tabular_scan(tmp_path) -> None:
     scan_path = tmp_path / "plain_table.txt"
     scan_path.write_text("x\ty\n1.0\t2.0", encoding="utf-8")
