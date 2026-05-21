@@ -4,6 +4,7 @@ import pathlib
 import tempfile
 import types
 import typing
+import warnings
 import weakref
 
 import numpy as np
@@ -2579,6 +2580,81 @@ def test_itool_guideline_state_dataset_roundtrip(qtbot) -> None:
         angle=-30.0,
         offset=(2.0, 2.0),
         follow_cursor=True,
+    )
+
+    restored.close()
+    win.close()
+
+
+@pytest.mark.parametrize(
+    ("coord_dims", "coord_values"),
+    [
+        (("x",), np.linspace(10.0, 20.0, 5)),
+        (("x", "y"), np.arange(25.0).reshape((5, 5))),
+    ],
+)
+def test_itool_file_roundtrip_preserves_spaced_associated_coord(
+    qtbot,
+    tmp_path,
+    coord_dims: tuple[str, ...],
+    coord_values: np.ndarray,
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5.0),
+            "y": np.arange(5.0),
+            "Fake Motor": (coord_dims, coord_values),
+        },
+    )
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    fname = tmp_path / "spaced-coord.h5"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        win.to_file(fname)
+
+    assert not any("space in its name" in str(item.message) for item in caught)
+    restored = ImageTool.from_file(fname)
+    qtbot.addWidget(restored)
+
+    assert "Fake Motor" in restored.slicer_area._data.coords
+    xarray.testing.assert_equal(
+        restored.slicer_area._data.coords["Fake Motor"],
+        data.coords["Fake Motor"],
+    )
+
+    restored.close()
+    win.close()
+
+
+def test_itool_from_file_recovers_legacy_spaced_associated_coord(
+    qtbot, tmp_path
+) -> None:
+    data = xr.DataArray(
+        np.arange(25.0).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={
+            "x": np.arange(5.0),
+            "y": np.arange(5.0),
+            "Fake Motor": ("x", np.linspace(10.0, 20.0, 5)),
+        },
+    )
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    legacy = win.to_dataset().reset_coords("Fake Motor")
+
+    fname = tmp_path / "legacy-spaced-coord.h5"
+    legacy.to_netcdf(fname, engine="h5netcdf", invalid_netcdf=True)
+    restored = ImageTool.from_file(fname)
+    qtbot.addWidget(restored)
+
+    assert "Fake Motor" in restored.slicer_area._data.coords
+    xarray.testing.assert_equal(
+        restored.slicer_area._data.coords["Fake Motor"],
+        data.coords["Fake Motor"],
     )
 
     restored.close()

@@ -17,6 +17,7 @@ import tempfile
 import time
 import types
 import typing
+import warnings
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping
 
@@ -9113,6 +9114,57 @@ def test_manager_workspace_v4_save_open_replaces_and_binds_path(
         assert _compute_first_value(manager.get_imagetool(0).slicer_area._data) == 0
 
 
+def test_manager_workspace_h5py_fast_path_preserves_spaced_associated_coord(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25.0).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={
+                "x": np.arange(5.0),
+                "y": np.arange(5.0),
+                "Fake Motor": (("x", "y"), np.arange(25.0).reshape((5, 5))),
+            },
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "spaced-coord.itws"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            manager._save_workspace_document(fname, force_full=True)
+        assert not any("space in its name" in str(item.message) for item in caught)
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        monkeypatch.setattr(
+            manager_xarray,
+            "open_workspace_dataset",
+            lambda *args, **kwargs: pytest.fail(
+                "spaced numeric coords should stay on the h5py fast path"
+            ),
+        )
+
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded = manager.get_imagetool(0).slicer_area._data
+        assert loaded.chunks is None
+        assert "Fake Motor" in loaded.coords
+        xarray.testing.assert_equal(
+            loaded.coords["Fake Motor"], data.coords["Fake Motor"]
+        )
+
+
 def test_manager_workspace_import_appends_without_reassociation(
     qtbot,
     monkeypatch,
@@ -9320,6 +9372,52 @@ def test_manager_workspace_load_reopens_offloaded_data_as_dask(
             str(fname.resolve())
         )
         assert _compute_first_value(loaded) == 0.0
+
+
+def test_manager_workspace_load_reopens_offloaded_spaced_coord_data_as_dask(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25.0).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={
+                "x": np.arange(5.0),
+                "y": np.arange(5.0),
+                "Fake Motor": ("x", np.linspace(10.0, 20.0, 5)),
+            },
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "offload-spaced-coord.itws"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            manager._save_workspace_document(fname, force_full=True)
+        assert not any("space in its name" in str(item.message) for item in caught)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        assert manager.offload_to_workspace([0], native=False)
+        assert root.slicer_area._data.chunks is not None
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        loaded = manager.get_imagetool(0).slicer_area._data
+        assert loaded.chunks is not None
+        assert "Fake Motor" in loaded.coords
+        np.testing.assert_allclose(
+            np.asarray(loaded.coords["Fake Motor"]),
+            np.asarray(data.coords["Fake Motor"]),
+        )
 
 
 def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
