@@ -3883,13 +3883,40 @@ class ImageToolManager(QtWidgets.QMainWindow):
         selection_item: QtWidgets.QTreeWidgetItem | None = None,
         manifest: dict[str, typing.Any] | None = None,
         node_path: str | None = None,
+        workspace_file_path: str | os.PathLike[str] | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
-            ds = (
-                typing.cast("xr.DataTree", node_tree["imagetool"])
-                .to_dataset(inherit=False)
-                .load()
-            )
+            ds = None
+            if (
+                manifest is not None
+                and node_path is not None
+                and workspace_file_path is not None
+            ):
+                nodes = manifest.get("nodes", ())
+                if isinstance(nodes, list):
+                    for entry in nodes:
+                        if (
+                            isinstance(entry, dict)
+                            and entry.get("path") == node_path
+                            and entry.get("kind") == "imagetool"
+                            and entry.get("data_backing") == "dask"
+                        ):
+                            opened = _manager_xarray.open_workspace_dataset(
+                                workspace_file_path,
+                                f"{node_path}/imagetool",
+                                chunks={},
+                            )
+                            try:
+                                ds = opened.copy(deep=False)
+                            finally:
+                                opened.close()
+                            break
+            if ds is None:
+                ds = (
+                    typing.cast("xr.DataTree", node_tree["imagetool"])
+                    .to_dataset(inherit=False)
+                    .load()
+                )
             target = self._load_workspace_imagetool_dataset(
                 ds, parent_target=parent_target, node_path=node_path
             )
@@ -3938,6 +3965,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     parent_target=target,
                     selection_item=child_item,
                     manifest=manifest,
+                    workspace_file_path=workspace_file_path,
                     node_path=(
                         None
                         if node_path is None
@@ -3953,6 +3981,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         *,
         root_item: QtWidgets.QTreeWidgetItem | None = None,
         manifest: dict[str, typing.Any] | None = None,
+        workspace_file_path: str | os.PathLike[str] | None = None,
     ) -> None:
         for key in root_keys:
             if key not in tree:
@@ -3964,6 +3993,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     node,
                     selection_item=item,
                     manifest=manifest,
+                    workspace_file_path=workspace_file_path,
                     node_path=key,
                 )
 
@@ -4128,6 +4158,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         replace: bool = False,
         mark_dirty: bool = True,
         select: bool = True,
+        workspace_file_path: str | os.PathLike[str] | None = None,
     ) -> bool:
         """Restore the state of the manager from a DataTree object."""
         opened_tree = tree
@@ -4198,6 +4229,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         root_keys,
                         root_item=root_item,
                         manifest=manifest,
+                        workspace_file_path=workspace_file_path,
                     )
                     if not mark_dirty:
                         self._drain_workspace_deferred_events()
@@ -5301,6 +5333,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 replace=replace,
                 mark_dirty=mark_dirty,
                 select=select,
+                workspace_file_path=access.path,
             )
             if loaded and associate:
                 self._associate_loaded_workspace_file(
@@ -5941,6 +5974,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                                         replace=True,
                                         mark_dirty=False,
                                         select=False,
+                                        workspace_file_path=access.path,
                                     )
                                     workspace_dt_owned = False
                                     if loaded_workspace:

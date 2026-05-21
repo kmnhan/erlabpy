@@ -10116,6 +10116,53 @@ def test_manager_workspace_load_reopens_offloaded_data_as_dask(
         assert _compute_first_value(loaded) == 0.0
 
 
+def test_manager_workspace_import_reopens_offloaded_data_as_dask(
+    qtbot,
+    accept_dialog,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "offload-import.itws"
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        assert manager.offload_to_workspace([0], native=False)
+        assert root.slicer_area._data.chunks is not None
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        loaded: list[bool] = []
+        accept_dialog(
+            lambda: loaded.append(
+                manager._load_workspace_file(
+                    fname,
+                    replace=False,
+                    associate=False,
+                    mark_dirty=True,
+                    select=True,
+                )
+            )
+        )
+
+        assert loaded == [True]
+        loaded_data = manager.get_imagetool(0).slicer_area._data
+        assert loaded_data.chunks is not None
+        assert manager_xarray._normalized_file_path(
+            loaded_data.encoding.get("source")
+        ) == str(fname.resolve())
+        assert _compute_first_value(loaded_data) == 0.0
+
+
 def test_manager_workspace_load_reopens_offloaded_spaced_coord_data_as_dask(
     qtbot,
     tmp_path,
