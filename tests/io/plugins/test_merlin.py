@@ -186,6 +186,83 @@ def _save_text_payload(path, columns, rows) -> None:
     path.write_text(data_table, encoding="utf-8")
 
 
+def test_load_bcs_legacy_time_scan(tmp_path) -> None:
+    scan_path = tmp_path / "TimeScan0182.txt"
+    scan_path.write_text(
+        "Date: 5/21/2026\n"
+        "1\n"
+        "\n"
+        "6000001\t0\n"
+        "0.00000000\t1.00000000\t0.00000000\t0.00000000\t1.00000000\t0.00000000\n"
+        "Time (s)\tBeam Current\tsr_energy\tIG003_M302\t\n"
+        "1.10200000\t500.65517292\t1.89278102\t6.49244684E-10\n"
+        "2.97700000\t500.62369259\t1.89278102\t6.49244684E-10",
+        encoding="utf-8",
+    )
+
+    data = load_bcs(scan_path)
+
+    assert isinstance(data, xr.Dataset)
+    assert data.sizes == {"Time (s)": 2}
+    assert set(data.data_vars) == {"Beam Current", "sr_energy", "IG003_M302"}
+    np.testing.assert_allclose(data["Time (s)"].values, [1.102, 2.977])
+    np.testing.assert_allclose(
+        data["Beam Current"].values, [500.65517292, 500.62369259]
+    )
+    assert data["Beam Current"].dtype == np.float64
+    assert data.attrs["Scan Type"] == "Time"
+    assert data.attrs["Date"] == "5/21/2026"
+    assert data.attrs["Description Length"] == 0
+    assert data.attrs["Number of Samples"] == 6000001
+    assert data.attrs["Delay After Move (s)"] == 0.0
+    assert data.attrs["Count Time (s)"] == 1.0
+
+
+def test_load_bcs_legacy_single_motor_scan(tmp_path) -> None:
+    scan_path = tmp_path / "PolarScan0189.txt"
+    scan_path.write_text(
+        "Start, Stop, Increment\n"
+        "Pol Analyzer\n"
+        "Start: 190.00000000\n"
+        "Stop: -190.00000000\n"
+        "Increment: 5.00000000\n"
+        "Delay After Move (s): 0.10000000\n"
+        "Count Time (s): 0.50000000\n"
+        "Stay at End: 1\n"
+        "Description Length: 0\n"
+        "\n"
+        "Pol Analyzer\tBeam Current\tsr_energy\tAI Ext Chan 0\n"
+        "190.07619848\t500.26986670\t1.89278102\t0.96488904\n"
+        "184.85630287\t500.19269537\t1.89278102\t0.96534217",
+        encoding="utf-8",
+    )
+
+    data = load_bcs(scan_path)
+
+    assert isinstance(data, xr.Dataset)
+    assert data.sizes == {"Pol Analyzer": 2}
+    assert set(data.data_vars) == {"Beam Current", "sr_energy", "AI Ext Chan 0"}
+    np.testing.assert_allclose(
+        data["Pol Analyzer"].values, [190.07619848, 184.85630287]
+    )
+    np.testing.assert_allclose(data["AI Ext Chan 0"].values, [0.96488904, 0.96534217])
+    assert data["AI Ext Chan 0"].dims == ("Pol Analyzer",)
+    assert data.attrs["Scan Type"] == "Single Motor"
+    assert data.attrs["Motor"] == "Pol Analyzer"
+    assert data.attrs["Start"] == 190.0
+    assert data.attrs["Stop"] == -190.0
+    assert data.attrs["Increment"] == 5.0
+    assert data.attrs["Stay at End"] == 1
+
+
+def test_load_bcs_unsupported_legacy_tabular_scan(tmp_path) -> None:
+    scan_path = tmp_path / "plain_table.txt"
+    scan_path.write_text("x\ty\n1.0\t2.0", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a supported legacy BCS"):
+        load_bcs(scan_path)
+
+
 def test_load_bcs_dataarray(tmp_path) -> None:
     scan_path, expected_images = _write_bcs_scan(tmp_path)
 

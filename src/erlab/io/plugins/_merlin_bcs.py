@@ -1,5 +1,6 @@
 """Private helpers for ALS beamline control system files."""
 
+import contextlib
 import csv
 import json
 import os
@@ -42,7 +43,7 @@ def _unique_name(name: str, existing: set[str]) -> str:
     return unique
 
 
-def load_bcs(path: str | os.PathLike) -> xr.DataArray | xr.DataTree:
+def load_bcs(path: str | os.PathLike) -> xr.DataArray | xr.Dataset | xr.DataTree:
     """Load a beamline control system scan.
 
     Parameters
@@ -54,18 +55,25 @@ def load_bcs(path: str | os.PathLike) -> xr.DataArray | xr.DataTree:
 
     Returns
     -------
-    xarray.DataArray or xarray.DataTree
+    xarray.DataArray, xarray.Dataset, or xarray.DataTree
         A data array containing the compiled payload stack for BCS files with one
         payload column. If a file contains multiple payload columns, each payload stream
-        is loaded into a separate child node of a data tree.
+        is loaded into a separate child node of a data tree. Legacy tabular BCS scans
+        without payload columns are returned as a dataset with one data variable per
+        measured channel.
 
     .. versionchanged:: 3.22.0
 
-        Added support for plain tabular text payloads referenced by BCS data tables.
+        Added support for plain tabular text payloads referenced by BCS data tables and
+        legacy ALS tabular BCS Time Scan and Single Motor Scan files.
     """
     path = pathlib.Path(path)
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
 
-    header, columns, rows = _parse_bcs_table(path)
+    if not _has_modern_bcs_markers(lines):
+        return _load_legacy_bcs_table(path, lines)
+
+    header, columns, rows = _parse_bcs_table(path, lines)
 
     payload_columns = _find_payload_columns(columns, rows)
     if not payload_columns:
@@ -118,8 +126,8 @@ def load_bcs(path: str | os.PathLike) -> xr.DataArray | xr.DataTree:
 
 def _parse_bcs_table(
     path: pathlib.Path,
+    lines: list[str],
 ) -> tuple[_BCSHeader, list[str], list[_BCSRow]]:
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
     try:
         header_start = next(
             i for i, line in enumerate(lines) if line.strip() == "HEADER"
@@ -142,6 +150,155 @@ def _parse_bcs_table(
         raise ValueError(f"{path} contains no BCS data rows")
 
     return header, columns, rows
+
+
+def _has_modern_bcs_markers(lines: list[str]) -> bool:
+    markers = {line.strip() for line in lines}
+    return "HEADER" in markers and "DATA" in markers
+
+
+def _load_legacy_bcs_table(path: pathlib.Path, lines: list[str]) -> xr.Dataset:
+    header_index = _legacy_bcs_header_index(path, lines)
+    columns = _clean_legacy_bcs_row(_split_legacy_bcs_row(lines[header_index]))
+    if len(columns) < 2:
+        raise ValueError(f"{path} is not a valid BCS data file")
+
+    data_rows: list[list[str]] = []
+    for line in lines[header_index + 1 :]:
+        if not line.strip():
+            continue
+
+        row = _clean_legacy_bcs_row(_split_legacy_bcs_row(line))
+        if len(row) != len(columns):
+            raise ValueError(f"{path} contains ragged BCS data rows")
+        data_rows.append(row)
+
+    if not data_rows:
+        raise ValueError(f"{path} contains no BCS data rows")
+
+    try:
+        values = np.asarray(data_rows, dtype=np.float64)
+    except ValueError as err:
+        raise ValueError(f"{path} contains non-numeric BCS data rows") from err
+
+    scan_dim = columns[0]
+    existing_names = {scan_dim}
+    attrs = _legacy_bcs_attrs(path, lines[:header_index], scan_dim)
+    data_vars = {
+        _unique_name(column, existing_names): (scan_dim, values[:, i])
+        for i, column in enumerate(columns[1:], start=1)
+    }
+    return xr.Dataset(
+        data_vars=data_vars,
+        coords={scan_dim: values[:, 0]},
+        attrs=attrs,
+    )
+
+
+def _legacy_bcs_header_index(path: pathlib.Path, lines: list[str]) -> int:
+    for i, line in enumerate(lines):
+        columns = _clean_legacy_bcs_row(_split_legacy_bcs_row(line))
+        if len(columns) < 2 or _legacy_bcs_numeric_row(columns):
+            continue
+
+        for following_line in lines[i + 1 :]:
+            if not following_line.strip():
+                continue
+
+            row = _clean_legacy_bcs_row(_split_legacy_bcs_row(following_line))
+            if len(row) == len(columns) and _legacy_bcs_numeric_row(row):
+                return i
+            break
+
+    raise ValueError(f"{path} is not a valid BCS data file")
+
+
+def _split_legacy_bcs_row(line: str) -> list[str]:
+    return next(csv.reader([line], delimiter="\t"))
+
+
+def _clean_legacy_bcs_row(row: list[str]) -> list[str]:
+    row = [cell.strip() for cell in row]
+    while row and row[-1] == "":
+        row.pop()
+    return row
+
+
+def _legacy_bcs_numeric_row(row: list[str]) -> bool:
+    try:
+        [float(cell) for cell in row]
+    except ValueError:
+        return False
+    return True
+
+
+def _legacy_bcs_attrs(
+    path: pathlib.Path, preamble_lines: list[str], scan_dim: str
+) -> dict[str, typing.Any]:
+    attrs: dict[str, typing.Any] = {}
+    stripped = [line.strip() for line in preamble_lines]
+    first = next((line for line in stripped if line), "")
+
+    if first.startswith("Date: "):
+        attrs["Scan Type"] = "Time"
+        attrs["Date"] = first.split("Date: ", 1)[1]
+        attrs |= _legacy_time_scan_attrs(stripped)
+        return attrs
+
+    if first == "Start, Stop, Increment":
+        attrs["Scan Type"] = "Single Motor"
+        attrs["Motor"] = scan_dim
+        for line in stripped[2:]:
+            if ":" not in line:
+                continue
+
+            key, value = line.split(":", 1)
+            attrs[key] = _parse_legacy_bcs_scalar(value.strip())
+        return attrs
+
+    raise ValueError(
+        f"{path} is not a supported legacy BCS Time Scan or Single Motor Scan file"
+    )
+
+
+def _legacy_time_scan_attrs(lines: list[str]) -> dict[str, typing.Any]:
+    attrs: dict[str, typing.Any] = {}
+
+    if len(lines) > 1 and lines[1]:
+        with contextlib.suppress(ValueError):
+            attrs["Description Length"] = int(lines[1].split()[0]) - 1
+
+    if len(lines) > 2 and lines[2]:
+        attrs["Description"] = lines[2]
+
+    if len(lines) > 3 and lines[3]:
+        with contextlib.suppress(ValueError):
+            attrs["Number of Samples"] = int(lines[3].split()[0])
+
+    if len(lines) > 4 and lines[4]:
+        values = lines[4].split()
+        if len(values) >= 5:
+            try:
+                period_sec = float(values[1])
+                count_sec = float(values[4])
+            except ValueError:
+                pass
+            else:
+                attrs["Delay After Move (s)"] = max(0.0, period_sec - count_sec)
+                attrs["Count Time (s)"] = count_sec
+
+    return attrs
+
+
+def _parse_legacy_bcs_scalar(value: str) -> str | int | float:
+    try:
+        parsed = float(value)
+    except ValueError:
+        return value
+
+    if parsed.is_integer() and not any(marker in value.casefold() for marker in ".e"):
+        return int(parsed)
+    return parsed
 
 
 def _find_payload_columns(columns: list[str], rows: list[_BCSRow]) -> list[str]:
