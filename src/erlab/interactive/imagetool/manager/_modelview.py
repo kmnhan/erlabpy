@@ -232,7 +232,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         is_watched: bool = (
             isinstance(node, _ImageToolWrapper) and node._watched_varname is not None
         )
-        is_dask: bool = node.imagetool is not None and node.slicer_area.data_chunked
+        is_lazy: bool = node.imagetool is not None and node.slicer_area.data_loadable
 
         # Precompute geometry constants
         icon_size = self.icon_size
@@ -248,7 +248,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         rect_x = option.rect.right()
 
         # Dask icon
-        if is_dask:
+        if is_lazy:
             rect_x -= rect_dx
             dask_rect = QtCore.QRect(rect_x, rect_y, rect_size, rect_size)
 
@@ -701,10 +701,15 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 option, node
             )
             if dask_rect is not None and dask_rect.contains(pos):
+                tooltip = (
+                    "Dask-backed data. Click to open Dask and chunk controls."
+                    if node.slicer_area.data_chunked
+                    else "File-backed data. Click to load into memory."
+                )
                 return _RowBadge(
                     "dask",
                     dask_rect,
-                    "Dask-backed data. Click to open Dask and chunk controls.",
+                    tooltip,
                 )
             if link_rect is not None and link_rect.contains(pos):
                 proxy = node.slicer_area._linking_proxy
@@ -753,10 +758,15 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             right_edge=dask_rect.left() if dask_rect is not None else None,
         )
         if dask_rect is not None and dask_rect.contains(pos):
+            tooltip = (
+                "Dask-backed data. Click to open Dask and chunk controls."
+                if child_node.slicer_area.data_chunked
+                else "File-backed data. Click to load into memory."
+            )
             return _RowBadge(
                 "dask",
                 dask_rect,
-                "Dask-backed data. Click to open Dask and chunk controls.",
+                tooltip,
             )
 
         if status_rect is None or not status_rect.contains(pos):
@@ -1621,7 +1631,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         tool = node.imagetool
         if tool is None:
             return
-        tool.slicer_area.compute_act.setEnabled(tool.slicer_area.data_chunked)
+        tool.slicer_area.compute_act.setEnabled(tool.slicer_area.data_loadable)
         tool._dask_menu.update_actions_visibility()
         viewport = self.viewport()
         if viewport is None:

@@ -784,7 +784,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
             visible = is_running()
 
-        self.slicer_area.compute_act.setEnabled(self.slicer_area.data_chunked)
+        self.slicer_area.compute_act.setEnabled(self.slicer_area.data_loadable)
         self.action_dict["moveToManagerAct"].setVisible(visible)
 
     @QtCore.Slot()

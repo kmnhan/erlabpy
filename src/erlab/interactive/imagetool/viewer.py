@@ -15,6 +15,7 @@ import importlib
 import inspect
 import itertools
 import logging
+import os
 import pathlib
 import threading
 import typing
@@ -34,7 +35,6 @@ from erlab.interactive.imagetool._viewer_dialogs import (
 )
 
 if typing.TYPE_CHECKING:
-    import os
     from collections.abc import Callable, Collection, Hashable, Iterable
 
     import qtawesome
@@ -610,6 +610,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         state: ImageSlicerState | None = None,
         file_path: str | os.PathLike | None = None,
         load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
+        auto_compute: bool = True,
         image_cls=None,
         plotdata_cls=None,
         _in_manager: bool = False,
@@ -795,7 +796,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._data: xr.DataArray
         self._array_slicer: erlab.interactive.imagetool.slicer.ArraySlicer
 
-        self.set_data(data, rad2deg=rad2deg, file_path=file_path, load_func=load_func)
+        self.set_data(
+            data,
+            rad2deg=rad2deg,
+            file_path=file_path,
+            load_func=load_func,
+            auto_compute=auto_compute,
+        )
 
         if self.bench:
             print("\n")
@@ -2107,17 +2114,35 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         return self._data.chunks is not None
 
+    @property
+    def data_file_backed(self) -> bool:
+        """Check if non-dask data is still lazily backed by a file."""
+        sources = [self._data.encoding.get("source")]
+        sources.extend(
+            coord.encoding.get("source") for coord in self._data.coords.values()
+        )
+        return (
+            self._data.chunks is None
+            and not isinstance(self._data.variable._data, (np.ndarray, np.generic))
+            and any(isinstance(value, (str, bytes, os.PathLike)) for value in sources)
+        )
+
+    @property
+    def data_loadable(self) -> bool:
+        """Check if the data can be explicitly loaded into memory."""
+        return self.data_chunked or self.data_file_backed
+
     @QtCore.Slot()
     def _compute_chunked(self) -> None:
-        """Load chunked data into memory.
+        """Load lazy data into memory.
 
-        This method computes the entire data array and loads it into memory if the data
-        is chunked.
+        This method computes or loads the entire data array when it is dask-backed or
+        lazily backed by a file.
         """
-        if self.data_chunked:
+        if self.data_loadable:
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Computing…"):
-                    self.set_data(self._data.compute())
+                    self.set_data(self._data.load())
                 self.sigDataBackingChanged.emit()
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
