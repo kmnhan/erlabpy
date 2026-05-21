@@ -252,6 +252,18 @@ def test_itool_tools(qtbot, test_data_type, condition, use_dask) -> None:
     win.close()
 
 
+def test_itool_file_menu_visibility_updates_compute_action(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy().chunk()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area._in_manager = True
+    win.slicer_area.compute_act.setEnabled(False)
+    win.mnb._file_menu_visibility()
+
+    assert win.slicer_area.compute_act.isEnabled() == win.slicer_area.data_loadable
+
+
 def test_copy_selection_code_includes_crop_with_alt(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),

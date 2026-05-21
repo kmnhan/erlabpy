@@ -32,6 +32,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool._itool as itool_mod
+import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
@@ -7423,6 +7424,723 @@ def test_open_workspace_datatree_reads_uncompressed_workspace(tmp_path) -> None:
         opened.close()
 
 
+def test_imagetool_private_coord_serialization_edge_cases() -> None:
+    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    private_prefix = imagetool_serialization._PRIVATE_COORD_VAR_PREFIX
+    data_name = imagetool_serialization.ITOOL_DATA_NAME
+    valid_payload = json.dumps(
+        [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["x"]}]
+    )
+
+    assert imagetool_serialization.private_coord_records_from_attrs(
+        {private_attr: valid_payload.encode()}
+    ) == ({"coord_name": "Fake Motor", "variable_name": "private", "dims": ("x",)},)
+    assert (
+        imagetool_serialization.private_coord_records_from_attrs({private_attr: 1})
+        == ()
+    )
+    assert (
+        imagetool_serialization.private_coord_records_from_attrs(
+            {private_attr: "{not-json"}
+        )
+        == ()
+    )
+    assert (
+        imagetool_serialization.private_coord_records_from_attrs(
+            {private_attr: json.dumps([[]])}
+        )
+        == ()
+    )
+    assert (
+        imagetool_serialization.private_coord_records_from_attrs(
+            {private_attr: json.dumps([{"coord_name": "Fake Motor", "dims": ["x"]}])}
+        )
+        == ()
+    )
+    assert (
+        imagetool_serialization.private_coord_variable_names(
+            xr.Dataset({"other": ("x", [1.0])})
+        )
+        == ()
+    )
+
+    ds = xr.Dataset(
+        {
+            data_name: ("x", np.arange(2.0)),
+            f"{private_prefix}0": ("x", np.arange(2.0) + 10.0),
+        },
+        coords={"x": np.arange(2.0), "Fake Motor": ("x", np.arange(2.0) + 20.0)},
+    )
+    encoded = imagetool_serialization.encode_private_coords(ds)
+
+    assert imagetool_serialization.private_coord_variable_names(encoded) == (
+        f"{private_prefix}1",
+    )
+    restored = imagetool_serialization.restore_private_coords(encoded)
+    xr.testing.assert_equal(restored.coords["Fake Motor"], ds.coords["Fake Motor"])
+
+
+def test_imagetool_private_coord_restore_ignores_invalid_records() -> None:
+    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    data_name = imagetool_serialization.ITOOL_DATA_NAME
+    missing_data = xr.Dataset({"other": ("x", [1.0])})
+
+    assert imagetool_serialization.restore_private_coords(missing_data) is missing_data
+
+    payload = json.dumps(
+        [
+            {"coord_name": "Missing", "variable_name": "missing", "dims": ["x"]},
+            {"coord_name": "Bad Dims", "variable_name": "present", "dims": ["z"]},
+        ]
+    )
+    encoded = xr.Dataset(
+        {
+            data_name: ("x", [1.0]),
+            "present": ("z", [2.0]),
+        },
+        attrs={"root": "kept"},
+    )
+    encoded[data_name].attrs[private_attr] = payload
+
+    restored = imagetool_serialization.restore_private_coords(encoded)
+
+    assert private_attr not in restored[data_name].attrs
+    assert "Missing" not in restored.coords
+    assert "Bad Dims" not in restored.coords
+    assert "present" in restored.data_vars
+
+    legacy = xr.Dataset(
+        {
+            data_name: ("x", [1.0]),
+            "plain": ("x", [2.0]),
+            "Fake Motor": ("z", [3.0]),
+        }
+    )
+
+    legacy_restored = imagetool_serialization.restore_private_coords(legacy)
+
+    assert "plain" in legacy_restored.data_vars
+    assert "Fake Motor" in legacy_restored.data_vars
+
+
+def test_workspace_h5py_attrs_and_root_validation(tmp_path) -> None:
+    import h5py
+
+    assert manager_workspace._h5py_attrs_to_dict({"name": b"value"}) == {
+        "name": "value"
+    }
+
+    fname = tmp_path / "plain.h5"
+    with h5py.File(fname, "w"):
+        pass
+
+    with pytest.raises(ValueError, match="Not a valid workspace file"):
+        manager_workspace._read_workspace_root_attrs_h5py(fname)
+
+
+def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "scalar-fast-path.itws"
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(2.0), "y": np.arange(3.0), "temperature": 20.0},
+        attrs={"coordinates": b""},
+        name=manager_mainwindow._ITOOL_DATA_NAME,
+    )
+    ds = data.to_dataset()
+
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", ds
+    )
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname,
+        "0/imagetool",
+        preferred_data_name=manager_mainwindow._ITOOL_DATA_NAME,
+    )
+
+    assert loaded is not None
+    expected = data.copy()
+    expected.attrs.pop("coordinates")
+    xr.testing.assert_equal(
+        loaded[manager_mainwindow._ITOOL_DATA_NAME],
+        expected,
+    )
+    assert loaded.coords["temperature"].item() == 20.0
+    with h5py.File(fname, "r") as h5_file:
+        coordinates = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME].attrs[
+            "coordinates"
+        ]
+    if isinstance(coordinates, bytes):
+        coordinates = coordinates.decode()
+    assert coordinates == "temperature"
+
+
+def test_workspace_h5py_fast_path_rejects_invalid_payloads(
+    monkeypatch, tmp_path
+) -> None:
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+
+    assert not manager_workspace._workspace_dataset_can_write_h5py(
+        xr.Dataset(
+            {
+                data_name: ("x", [1.0]),
+                "extra": ("x", [2.0]),
+            },
+            coords={"x": [0.0]},
+        )
+    )
+
+    missing_private = xr.Dataset({data_name: ("x", [1.0])}, coords={"x": [0.0]})
+    missing_private[data_name].attrs[private_attr] = json.dumps(
+        [{"coord_name": "Fake Motor", "variable_name": "missing", "dims": ["x"]}]
+    )
+    assert not manager_workspace._workspace_dataset_can_write_h5py(missing_private)
+
+    bad_private_dims = xr.Dataset(
+        {
+            data_name: ("x", [1.0]),
+            "private": ("z", [2.0]),
+        },
+        coords={"x": [0.0], "z": [0.0]},
+    )
+    bad_private_dims[data_name].attrs[private_attr] = json.dumps(
+        [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["z"]}]
+    )
+    assert not manager_workspace._workspace_dataset_can_write_h5py(bad_private_dims)
+    assert not manager_workspace._workspace_dataset_can_write_h5py(
+        xr.Dataset({data_name: ("x", [1.0])}, coords={"x": ["bad"]})
+    )
+
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_dataset_can_write_h5py", lambda _ds: True
+    )
+    assert not manager_workspace._write_workspace_dataset_group_h5py(
+        tmp_path / "no-data-name.itws", "0/imagetool", xr.Dataset()
+    )
+
+    bad_attrs = xr.Dataset({data_name: ("x", [1.0])}, coords={"x": [0.0]})
+    bad_attrs.attrs["bad"] = object()
+    fname = tmp_path / "bad-attrs.itws"
+    assert not manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", bad_attrs
+    )
+    import h5py
+
+    with h5py.File(fname, "r") as h5_file:
+        assert "0/imagetool" not in h5_file
+
+
+def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
+    import h5py
+
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    fname = tmp_path / "malformed-reader.itws"
+
+    with h5py.File(fname, "w") as h5_file:
+        h5_file.create_dataset("not-a-group", data=np.arange(2.0))
+        multi = h5_file.create_group("multi")
+        multi.create_dataset("a", data=np.arange(2.0))
+        multi.create_dataset("b", data=np.arange(2.0))
+        no_dims = h5_file.create_group("no-dims")
+        no_dims.create_dataset(data_name, data=np.arange(2.0))
+        bad_scale = h5_file.create_group("bad-scale")
+        scale = bad_scale.create_dataset("x", data=np.arange(4.0).reshape(2, 2))
+        scale.make_scale("x")
+        bad_data = bad_scale.create_dataset(data_name, data=np.arange(2.0))
+        bad_data.dims[0].attach_scale(scale)
+        missing_scalar = h5_file.create_group("missing-scalar")
+        x = missing_scalar.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        missing_data = missing_scalar.create_dataset(data_name, data=np.arange(2.0))
+        missing_data.dims[0].attach_scale(x)
+        missing_data.attrs["coordinates"] = np.bytes_("missing")
+        missing_private = h5_file.create_group("missing-private")
+        x = missing_private.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        private_data = missing_private.create_dataset(data_name, data=np.arange(2.0))
+        private_data.dims[0].attach_scale(x)
+        private_data.attrs[private_attr] = json.dumps(
+            [{"coord_name": "Fake Motor", "variable_name": "missing", "dims": ["x"]}]
+        )
+        bad_private = h5_file.create_group("bad-private")
+        x = bad_private.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        private_data = bad_private.create_dataset(data_name, data=np.arange(2.0))
+        private_data.dims[0].attach_scale(x)
+        bad_coord = bad_private.create_dataset("private", data=np.arange(2.0))
+        bad_coord.dims[0].attach_scale(x)
+        private_data.attrs[private_attr] = json.dumps(
+            [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["z"]}]
+        )
+
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(fname, "missing") is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(fname, "not-a-group")
+        is None
+    )
+    assert manager_workspace._read_workspace_dataset_group_h5py(fname, "multi") is None
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(fname, "no-dims") is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(fname, "bad-scale") is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(fname, "missing-scalar")
+        is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(
+            fname, "missing-private", preferred_data_name=data_name
+        )
+        is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(
+            fname, "bad-private", preferred_data_name=data_name
+        )
+        is None
+    )
+
+
+def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
+    import h5py
+
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    fname = tmp_path / "legacy-spaced-coord.itws"
+
+    with h5py.File(fname, "w") as h5_file:
+        group = h5_file.create_group("valid")
+        x = group.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        data = group.create_dataset(data_name, data=np.arange(2.0))
+        data.dims[0].attach_scale(x)
+        data.attrs["coordinates"] = "missing"
+        fake = group.create_dataset("Fake Motor", data=np.arange(2.0) + 10.0)
+        fake.dims[0].attach_scale(x)
+        duplicate = h5_file.create_group("duplicate")
+        x = duplicate.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        data = duplicate.create_dataset(data_name, data=np.arange(2.0))
+        data.dims[0].attach_scale(x)
+        data.attrs[private_attr] = json.dumps(
+            [
+                {
+                    "coord_name": "Fake Motor",
+                    "variable_name": "Fake Motor",
+                    "dims": ["x"],
+                }
+            ]
+        )
+        fake = duplicate.create_dataset("Fake Motor", data=np.arange(2.0) + 20.0)
+        fake.dims[0].attach_scale(x)
+        invalid = h5_file.create_group("invalid")
+        x = invalid.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        data = invalid.create_dataset(data_name, data=np.arange(2.0))
+        data.dims[0].attach_scale(x)
+        invalid.create_dataset("Fake Motor", data=np.arange(2.0) + 30.0)
+
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname, "valid", preferred_data_name=data_name
+    )
+    assert loaded is not None
+    np.testing.assert_allclose(loaded.coords["Fake Motor"].values, [10.0, 11.0])
+    duplicate_loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname, "duplicate", preferred_data_name=data_name
+    )
+    assert duplicate_loaded is not None
+    np.testing.assert_allclose(
+        duplicate_loaded.coords["Fake Motor"].values, [20.0, 21.0]
+    )
+    invalid_loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname, "invalid", preferred_data_name=data_name
+    )
+    assert invalid_loaded is not None
+    assert "Fake Motor" not in invalid_loaded
+
+
+def test_workspace_h5py_writer_replaces_groups_and_preserves_attrs(tmp_path) -> None:
+    import h5py
+
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
+    fname = tmp_path / "writer-attrs.itws"
+    ds = xr.Dataset(
+        {
+            data_name: (
+                ("x", "y"),
+                np.arange(4.0).reshape(2, 2),
+                {"coordinates": "legacy"},
+            ),
+            "private": (("x",), np.arange(2.0), {"private_attr": "kept"}),
+        },
+        coords={
+            "x": ("x", np.arange(2.0), {"axis_attr": "x"}),
+            "y": ("y", np.arange(2.0), {"axis_attr": "y"}),
+            "temperature": ((), 20.0, {"units": "K"}),
+        },
+    )
+    ds[data_name].attrs[private_attr] = json.dumps(
+        [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["x"]}]
+    )
+
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", ds
+    )
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", ds
+    )
+
+    with h5py.File(fname, "r") as h5_file:
+        group = h5_file["0/imagetool"]
+        assert group["x"].attrs["axis_attr"] == "x"
+        assert group["temperature"].attrs["units"] == "K"
+        assert group["private"].attrs["private_attr"] == "kept"
+        coordinates = group[data_name].attrs["coordinates"]
+        if isinstance(coordinates, bytes):
+            coordinates = coordinates.decode()
+        assert coordinates == "legacy temperature"
+
+
+def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2.0), "y": np.arange(2.0)},
+    )
+    saved = itool(data, manager=False, execute=False)
+    qtbot.addWidget(saved)
+    assert isinstance(saved, erlab.interactive.imagetool.ImageTool)
+    ds = saved.to_dataset()
+    ds.attrs["manager_node_uid"] = "loaded"
+    ds.attrs["manager_node_provenance_spec"] = "{not-json"
+    ds.attrs["manager_node_live_source_spec"] = "{not-json"
+
+    with manager_context() as manager:
+        target = manager._load_workspace_imagetool_dataset(
+            ds, parent_target=None, node_path="-1"
+        )
+
+        assert target in manager._imagetool_wrappers
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+
+def test_manager_load_workspace_tool_dataset_rejects_root_tool(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with (
+        manager_context() as manager,
+        pytest.raises(ValueError, match="Workspace tool node has no parent"),
+    ):
+        manager._load_workspace_tool_dataset(xr.Dataset(), parent_target=None)
+
+
+def test_manager_from_h5py_workspace_manifest_validation(
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "missing.itws"
+
+    with manager_context() as manager:
+        with pytest.raises(TypeError, match="missing node ordering"):
+            manager._from_h5py_workspace_file(
+                fname, {}, replace=False, mark_dirty=False
+            )
+        with pytest.raises(ValueError, match="no loadable nodes"):
+            manager._from_h5py_workspace_file(
+                fname,
+                {
+                    "nodes": [
+                        [],
+                        {"path": 0, "kind": "imagetool"},
+                        {"path": "0", "kind": "unknown"},
+                    ],
+                    "root_order": [],
+                },
+                replace=False,
+                mark_dirty=False,
+            )
+        with pytest.raises(ValueError, match="no root ImageTool nodes"):
+            manager._from_h5py_workspace_file(
+                fname,
+                {
+                    "nodes": [{"path": "0/childtools/tool", "kind": "tool"}],
+                    "root_order": [],
+                },
+                replace=False,
+                mark_dirty=False,
+            )
+
+
+def test_manager_from_h5py_workspace_falls_back_after_fast_read_error(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape(5, 5), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        fname = tmp_path / "fallback-load.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        def _raise_fast_read(*_args, **_kwargs):
+            raise RuntimeError("fast path failed")
+
+        monkeypatch.setattr(
+            manager_workspace,
+            "_read_workspace_dataset_group_h5py",
+            _raise_fast_read,
+        )
+
+        assert manager._from_h5py_workspace_file(
+            fname, manifest, replace=True, mark_dirty=False
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+
+def test_manager_from_h5py_workspace_logs_restore_failure(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape(5, 5), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        fname = tmp_path / "restore-failure.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+
+        def _raise_load(*_args, **_kwargs):
+            raise RuntimeError("load failed")
+
+        def _raise_restore(*_args, **_kwargs):
+            raise RuntimeError("restore failed")
+
+        monkeypatch.setattr(manager, "_load_workspace_imagetool_dataset", _raise_load)
+        monkeypatch.setattr(manager, "_restore_replaced_workspace", _raise_restore)
+
+        with pytest.raises(RuntimeError, match="load failed"):
+            manager._from_h5py_workspace_file(
+                fname, manifest, replace=True, mark_dirty=False
+            )
+
+
+def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(16.0).reshape(4, 4), dims=("x", "y")).chunk(
+            {"x": 2}
+        )
+        root = itool(data, manager=False, execute=False, auto_compute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._imagetool_wrappers[0].uid
+        calls: list[typing.Any] = []
+
+        def _fake_rebind_data(_fname, _uid, *, chunks):
+            calls.append(chunks)
+            return data
+
+        monkeypatch.setattr(
+            manager, "_workspace_rebind_data_for_uid", _fake_rebind_data
+        )
+
+        manager._rebind_workspace_backed_imagetools(
+            tmp_path / "workspace.itws", backing_snapshot={}
+        )
+        assert calls == []
+
+        manager._rebind_workspace_backed_imagetools(tmp_path / "workspace.itws")
+
+        assert uid in manager._all_nodes
+        assert calls == [{}]
+
+
+def test_manager_workspace_full_save_copy_group_edge_cases(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    workspace_path = tmp_path / "copy-groups.itws"
+    workspace_path.touch()
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._workspace_path = workspace_path
+        monkeypatch.setattr(
+            manager_workspace,
+            "_read_workspace_root_attrs_h5py",
+            lambda _path: (_ for _ in ()).throw(RuntimeError("metadata failed")),
+        )
+        assert manager._workspace_full_save_copy_groups(xr.DataTree()) == (None, ())
+
+        monkeypatch.setattr(
+            manager_workspace,
+            "_read_workspace_root_attrs_h5py",
+            lambda _path: {"imagetool_workspace_schema_version": 1},
+        )
+        assert manager._workspace_full_save_copy_groups(xr.DataTree()) == (None, ())
+
+        data = xr.DataArray(np.arange(25.0).reshape(5, 5), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        uid = manager._imagetool_wrappers[0].uid
+        tool = DerivativeTool(data)
+        monkeypatch.setattr(tool, "can_save_and_load", lambda: False)
+        manager.add_childtool(tool, 0, show=False)
+        manager._mark_workspace_clean()
+        tree = manager._to_datatree()
+        try:
+            manifest_without_identities = {
+                "schema_version": manager_workspace._current_workspace_schema_version(),
+                "nodes": [[]],
+                "root_order": [0],
+            }
+            monkeypatch.setattr(
+                manager_workspace,
+                "_read_workspace_root_attrs_h5py",
+                lambda _path: {
+                    "imagetool_workspace_schema_version": (
+                        manager_workspace._current_workspace_schema_version()
+                    ),
+                    manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+                        manifest_without_identities
+                    ),
+                },
+            )
+            assert manager._workspace_full_save_copy_groups(tree) == (
+                str(workspace_path),
+                (),
+            )
+
+            manifest_with_missing_tree_payload = {
+                "schema_version": manager_workspace._current_workspace_schema_version(),
+                "nodes": [
+                    [],
+                    {"uid": uid, "kind": "imagetool", "path": "0"},
+                ],
+                "root_order": [0],
+            }
+            monkeypatch.setattr(
+                manager_workspace,
+                "_read_workspace_root_attrs_h5py",
+                lambda _path: {
+                    "imagetool_workspace_schema_version": (
+                        manager_workspace._current_workspace_schema_version()
+                    ),
+                    manager_workspace._WORKSPACE_MANIFEST_ATTR: json.dumps(
+                        manifest_with_missing_tree_payload
+                    ),
+                },
+            )
+            assert manager._workspace_full_save_copy_groups(xr.DataTree()) == (
+                str(workspace_path),
+                (),
+            )
+        finally:
+            tree.close()
+
+
+def test_prepare_workspace_transaction_promotes_missing_attr_fallback(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "fallback.itws"
+    _write_transaction_test_workspace(fname)
+    fallback = (
+        "0",
+        {"0/imagetool": _transaction_test_dataset(2.0, title="fallback")},
+    )
+    rewrite_map: dict[str, tuple[str, dict[str, xr.Dataset]]] = {}
+
+    group_operations, attr_updates = manager_workspace._prepare_workspace_transaction(
+        fname,
+        f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}fallback",
+        f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}fallback",
+        f"{manager_workspace._WORKSPACE_BACKUP_GROUP_PREFIX}fallback",
+        rewrite_map,
+        (("0/missing", {"itool_title": "new"}, fallback),),
+        _transaction_test_root_attrs(delta_save_count=1),
+    )
+
+    assert rewrite_map == {"0": fallback}
+    assert attr_updates == []
+    assert group_operations[0]["group_path"] == "0"
+    manager_workspace._recover_workspace_transactions(fname)
+    _assert_no_workspace_internal_groups(fname)
+
+
+def test_write_full_workspace_tree_file_skips_missing_copy_source_group(
+    tmp_path,
+) -> None:
+    fname = tmp_path / "missing-copy-group.itws"
+    _write_transaction_test_workspace(fname)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(3.0, title="rewritten")}
+    )
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname,
+            tree,
+            _transaction_test_root_attrs(),
+            copy_source=fname,
+            copy_groups=(("missing/source", "0/imagetool", None),),
+        )
+    finally:
+        tree.close()
+
+    assert _read_transaction_test_value(fname) == 3.0
+
+
 def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> None:
     import h5py
 
@@ -8793,6 +9511,30 @@ def test_open_multiple_files_workspace_locks_before_recovery(
 
     assert recovery_calls == []
     assert lock_calls == [fname]
+
+
+def test_open_multiple_files_loads_workspace_and_reads_metadata(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape(5, 5), dims=("x", "y"))
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        fname = tmp_path / "open-multiple.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        manager.open_multiple_files([fname], try_workspace=True)
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager.workspace_path == str(fname.resolve())
 
 
 def test_workspace_high_risk_path_detection() -> None:
