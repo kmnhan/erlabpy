@@ -101,6 +101,25 @@ def test_ftool_2d_fill_and_transpose(qtbot, accept_dialog) -> None:
     assert win._y_dim_name == win._data_full.dims[0]
 
 
+def test_fit2d_update_data_preserves_transpose_orientation(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win._do_transpose()
+    win.y_index_spin.setValue(2)
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) * 1.1
+    win.update_data(updated)
+
+    xr.testing.assert_identical(win.tool_data, updated.transpose("x", "y"))
+    assert win._y_dim_name == "x"
+    assert win.y_index_spin.value() == 2
+    assert win.y_index_spin.maximum() == updated.sizes["x"] - 1
+
+
 def test_fit2d_tool_status_restore(qtbot, exp_decay_model) -> None:
     data = _make_2d_data()
     params = exp_decay_model.make_params(n0=1.0, tau=1.0)
@@ -131,6 +150,36 @@ def test_fit2d_tool_status_restore(qtbot, exp_decay_model) -> None:
     assert win_restored.param_model.param_at(0).value == pytest.approx(2.0)
     win_restored.y_index_spin.setValue(1)
     assert win_restored.param_model.param_at(0).value == pytest.approx(3.0)
+
+
+def test_fit2d_status_and_persistence_preserve_transpose_orientation(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win._do_transpose()
+    win.y_index_spin.setValue(3)
+    status = win.tool_status
+
+    win_restored = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win_restored)
+    assert isinstance(win_restored, Fit2DTool)
+    win_restored.tool_status = status
+
+    xr.testing.assert_identical(win_restored.tool_data, data.transpose("x", "y"))
+    assert win_restored.y_index_spin.value() == 3
+
+    win_roundtripped = erlab.interactive.utils.ToolWindow.from_dataset(win.to_dataset())
+    qtbot.addWidget(win_roundtripped)
+    assert isinstance(win_roundtripped, Fit2DTool)
+    xr.testing.assert_identical(win_roundtripped.tool_data, data.transpose("x", "y"))
+    assert win_roundtripped.y_index_spin.value() == 3
+
+    updated = data.copy(deep=True)
+    updated.data = np.asarray(updated.data) + 1.0
+    win_roundtripped.update_data(updated)
+    xr.testing.assert_identical(win_roundtripped.tool_data, updated.transpose("x", "y"))
 
 
 def test_fit2d_tool_status_overlay_and_limits(qtbot, exp_decay_model) -> None:

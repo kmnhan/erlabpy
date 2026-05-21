@@ -367,6 +367,38 @@ class Fit2DTool(Fit1DTool):
         self._fit_2d_start_idx: int = 0
         self._fit_2d_initial_range: tuple[int, int] | None = None
 
+    @staticmethod
+    def _data_with_saved_dims(
+        data: xr.DataArray, state2d: _State2D | None
+    ) -> xr.DataArray:
+        if state2d is None or state2d.data_dims_full is None:
+            return data
+        saved_dims = tuple(state2d.data_dims_full)
+        if data.dims == saved_dims:
+            return data
+        if len(saved_dims) == data.ndim and set(saved_dims) == set(data.dims):
+            return data.transpose(*saved_dims)
+        return data
+
+    def _rebuild_ui_for_full_data(
+        self, data: xr.DataArray, params: lmfit.Parameters | None
+    ) -> None:
+        old_cw = self.centralWidget()
+        if old_cw is not None:
+            old_cw.setParent(None)
+            old_cw.deleteLater()
+
+        self._init_full_data_state(data, data_name=self._data_name_full)
+        self._reset_fit_state(
+            self._data_full.isel({self._y_dim_name: self._current_idx}),
+            self._model,
+            params,
+            data_name=self._data_name,
+            model_name=self._model_name,
+        )
+        self._build_ui()
+        self.param_model.sigParamsChanged.connect(self._update_params_full)
+
     def _update_params_full(self) -> None:
         self._params_full[self._current_idx] = self._params
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
@@ -669,6 +701,7 @@ class Fit2DTool(Fit1DTool):
         state_dict["state2d"] = _State2D(
             current_idx=int(self._current_idx),
             data_name_full=str(self._data_name_full),
+            data_dims_full=tuple(self._data_full.dims),
             params_full=[
                 self._serialize_params(params) if params is not None else None
                 for params in self._params_full
@@ -690,10 +723,15 @@ class Fit2DTool(Fit1DTool):
 
     @tool_status.setter
     def tool_status(self, status: Fit1DTool.StateModel) -> None:
+        state2d = status.state2d
+        restored_data = self._data_with_saved_dims(self._data_full, state2d)
+        if restored_data.dims != self._data_full.dims:
+            with self._history_suppressed():
+                self._rebuild_ui_for_full_data(restored_data, self._params.copy())
+
         super(Fit2DTool, self.__class__).tool_status.__set__(  # type: ignore[attr-defined]
             self, status
         )
-        state2d = status.state2d
         if state2d is not None:  # pragma: no branch
             y_size = int(self._data_full.sizes[self._y_dim_name])
             self._data_name_full = state2d.data_name_full
@@ -1550,21 +1588,8 @@ class Fit2DTool(Fit1DTool):
         old_geom = self.saveGeometry()
 
         def _apply_update(validated: xr.DataArray) -> bool:
-            old_cw = self.centralWidget()
-            if old_cw is not None:
-                old_cw.setParent(None)
-                old_cw.deleteLater()
-
-            self._init_full_data_state(validated, data_name=self._data_name_full)
-            self._reset_fit_state(
-                self._data_full.isel({self._y_dim_name: self._current_idx}),
-                self._model,
-                self._params.copy(),
-                data_name=self._data_name,
-                model_name=self._model_name,
-            )
-            self._build_ui()
-            self.param_model.sigParamsChanged.connect(self._update_params_full)
+            validated = self._data_with_saved_dims(validated, status.state2d)
+            self._rebuild_ui_for_full_data(validated, self._params.copy())
             with self._history_suppressed():
                 self.tool_status = status
             self._refresh_main_image()

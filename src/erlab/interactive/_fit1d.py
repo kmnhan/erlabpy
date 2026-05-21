@@ -593,6 +593,7 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
 class _State2D(pydantic.BaseModel):
     current_idx: int
     data_name_full: str
+    data_dims_full: tuple[typing.Any, ...] | None = None
     params_full: list[list[tuple[typing.Any, ...]] | None]
     initial_params_full: list[list[tuple[typing.Any, ...]] | None] | None = None
     params_from_coord_full: list[dict[str, str]]
