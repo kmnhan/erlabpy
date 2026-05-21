@@ -7103,7 +7103,7 @@ def _assert_no_workspace_internal_groups(fname: pathlib.Path) -> None:
 
     with h5py.File(fname, "r") as h5_file:
         assert not any(
-            name.startswith(manager_workspace._WORKSPACE_INTERNAL_GROUP_PREFIXES)
+            manager_workspace._is_workspace_internal_group_name(name)
             for name in h5_file
         )
 
@@ -7443,12 +7443,75 @@ def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> N
         assert manifest == {"schema_version": 4, "root_order": [0], "nodes": []}
 
 
+def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import h5py
+
+    fname = tmp_path / "copy.itws"
+    ds = xr.Dataset(
+        {
+            manager_mainwindow._ITOOL_DATA_NAME: (
+                ("x", "y"),
+                np.arange(12, dtype=np.float64).reshape(3, 4),
+            )
+        },
+        coords={
+            "x": np.arange(3, dtype=np.float64),
+            "y": np.arange(4, dtype=np.float64),
+        },
+        attrs={
+            "itool_title": "old",
+            "manager_node_uid": "n0",
+            "manager_node_kind": "imagetool",
+        },
+    )
+    tree = xr.DataTree.from_dict({"0/imagetool": ds})
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    rewritten = ds.assign_attrs(
+        {
+            "itool_title": "new",
+            "manager_node_uid": "n0",
+            "manager_node_kind": "imagetool",
+        }
+    )
+    tree = xr.DataTree.from_dict({"0/imagetool": rewritten})
+
+    def _fail_to_netcdf(*_args, **_kwargs):
+        raise AssertionError("unchanged payload should be copied with h5py")
+
+    monkeypatch.setattr(xr.Dataset, "to_netcdf", _fail_to_netcdf)
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname,
+            tree,
+            _transaction_test_root_attrs(),
+            copy_source=fname,
+            copy_groups=(("0/imagetool", "0/imagetool", dict(rewritten.attrs)),),
+        )
+    finally:
+        tree.close()
+
+    with h5py.File(fname, "r") as h5_file:
+        group = h5_file["0/imagetool"]
+        assert group.attrs["itool_title"] == "new"
+        np.testing.assert_array_equal(
+            group[manager_mainwindow._ITOOL_DATA_NAME][...],
+            np.arange(12, dtype=np.float64).reshape(3, 4),
+        )
+
+
 def test_workspace_recovery_discards_pending_only_transaction(tmp_path) -> None:
     fname = tmp_path / "pending-only.itws"
     _write_transaction_test_workspace(fname)
-    rewrite = manager_workspace._WorkspaceRewriteGroup(
-        "0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")}
-    )
+    rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "pendingonly"
     txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
@@ -7479,9 +7542,7 @@ def test_workspace_recovery_restores_backup_before_pending_move(tmp_path) -> Non
 
     fname = tmp_path / "backup-before-pending.itws"
     _write_transaction_test_workspace(fname)
-    rewrite = manager_workspace._WorkspaceRewriteGroup(
-        "0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")}
-    )
+    rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "backuponly"
     txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
@@ -7524,9 +7585,7 @@ def test_workspace_recovery_rolls_back_active_moved_before_commit(tmp_path) -> N
 
     fname = tmp_path / "active-before-commit.itws"
     _write_transaction_test_workspace(fname)
-    rewrite = manager_workspace._WorkspaceRewriteGroup(
-        "0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")}
-    )
+    rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "activemoved"
     txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
@@ -7572,9 +7631,7 @@ def test_workspace_recovery_rolls_back_active_moved_before_commit(tmp_path) -> N
 def test_workspace_recovery_accepts_committed_before_cleanup(tmp_path) -> None:
     fname = tmp_path / "committed-before-cleanup.itws"
     _write_transaction_test_workspace(fname)
-    rewrite = manager_workspace._WorkspaceRewriteGroup(
-        "0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")}
-    )
+    rewrite = ("0", {"0/imagetool": _transaction_test_dataset(2.0, title="new")})
     rewrite_map = {"0": rewrite}
     txn_id = "committed"
     txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
@@ -7608,14 +7665,11 @@ def test_workspace_recovery_rolls_back_attr_only_transaction(tmp_path) -> None:
 
     fname = tmp_path / "attrs-before-commit.itws"
     _write_transaction_test_workspace(fname)
-    fallback = manager_workspace._WorkspaceRewriteGroup(
-        "0", {"0/imagetool": _transaction_test_dataset(2.0, title="fallback")}
+    fallback = (
+        "0",
+        {"0/imagetool": _transaction_test_dataset(2.0, title="fallback")},
     )
-    attr_update = manager_workspace._WorkspaceAttrUpdate(
-        payload_path="0/imagetool",
-        attrs={"itool_title": "new"},
-        fallback=fallback,
-    )
+    attr_update = ("0/imagetool", {"itool_title": "new"}, fallback)
     txn_id = "attrrollback"
     txn_path = f"{manager_workspace._WORKSPACE_TRANSACTION_GROUP_PREFIX}{txn_id}"
     pending_root = f"{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}{txn_id}"
@@ -7632,7 +7686,7 @@ def test_workspace_recovery_rolls_back_attr_only_transaction(tmp_path) -> None:
             "committing",
         )
         manager_workspace._replace_h5_attrs(
-            h5_file["0/imagetool"].attrs, attr_updates[0].attrs
+            h5_file["0/imagetool"].attrs, attr_updates[0][1]
         )
         manager_workspace._write_root_attrs_to_open_workspace_file(h5_file, root_attrs)
         h5_file.flush()
@@ -8282,7 +8336,9 @@ def test_manager_records_recent_workspace_accesses(
             manager, "_save_workspace_document", lambda *_args, **_kwargs: None
         )
         monkeypatch.setattr(
-            manager, "_rebind_workspace_backed_imagetools", lambda *_args: None
+            manager,
+            "_rebind_workspace_backed_imagetools",
+            lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(
             erlab.interactive.utils,
@@ -9232,6 +9288,40 @@ def test_manager_offload_to_workspace_save_as_rebinds_root_as_dask(
         assert not manager.offload_action.isEnabled()
 
 
+def test_manager_workspace_load_reopens_offloaded_data_as_dask(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "offload-reopen.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+
+        assert manager.offload_to_workspace([0], native=False)
+        assert root.slicer_area._data.chunks is not None
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+
+        loaded = manager.get_imagetool(0).slicer_area._data
+        assert loaded.chunks is not None
+        assert manager_xarray._normalized_file_path(loaded.encoding.get("source")) == (
+            str(fname.resolve())
+        )
+        assert _compute_first_value(loaded) == 0.0
+
+
 def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
     qtbot,
     monkeypatch,
@@ -9566,7 +9656,7 @@ def test_manager_workspace_full_save_preserves_non_dask_data(
         object.__setattr__(dask_options, "compute_threshold", old_threshold)
 
 
-def test_manager_workspace_save_as_rebinds_non_dask_file_backed_data(
+def test_manager_workspace_save_as_preserves_external_non_dask_file_backed_data(
     qtbot,
     accept_dialog,
     tmp_path,
@@ -9610,8 +9700,57 @@ def test_manager_workspace_save_as_rebinds_non_dask_file_backed_data(
         rebound_source = manager_xarray._normalized_file_path(
             rebound.encoding.get("source")
         )
-        assert rebound_source == new_source
-        assert rebound_source != old_source
+        assert rebound_source == old_source
+        assert rebound_source != new_source
+        assert rebound.chunks is None
+
+        assert _compute_first_value(rebound) == 0.0
+
+
+def test_manager_workspace_save_as_rebinds_workspace_non_dask_file_backed_data(
+    qtbot,
+    accept_dialog,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        old_fname = tmp_path / "old.itws"
+        new_fname = tmp_path / "new.itws"
+        manager._save_workspace_document(old_fname, force_full=True)
+        manager._adopt_workspace_path(old_fname)
+        manager._rebind_workspace_backed_imagetools(old_fname, targets=[0], chunks=None)
+
+        live_data = manager.get_imagetool(0).slicer_area._data
+        old_source = str(old_fname.resolve())
+        assert (
+            manager_xarray._normalized_file_path(live_data.encoding.get("source"))
+            == old_source
+        )
+        assert live_data.chunks is None
+
+        def _go_to_file(dialog: QtWidgets.QFileDialog):
+            dialog.setDirectory(str(tmp_path))
+            dialog.selectFile(str(new_fname))
+            focused = dialog.focusWidget()
+            if isinstance(focused, QtWidgets.QLineEdit):
+                focused.setText(new_fname.name)
+
+        accept_dialog(lambda: manager.save_as(native=False), pre_call=_go_to_file)
+
+        rebound = manager.get_imagetool(0).slicer_area._data
+        new_source = str(new_fname.resolve())
+        assert (
+            manager_xarray._normalized_file_path(rebound.encoding.get("source"))
+            == new_source
+        )
         assert rebound.chunks is None
 
         old_fname.unlink()
@@ -9834,14 +9973,20 @@ def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
 
         def _record_transaction_write(
             _fname: str | os.PathLike[str],
-            rewrite_groups: Iterable[manager_workspace._WorkspaceRewriteGroup],
-            attr_updates: Iterable[manager_workspace._WorkspaceAttrUpdate],
+            rewrite_groups: Iterable[tuple[str, dict[str, xr.Dataset]]],
+            attr_updates: Iterable[
+                tuple[
+                    str,
+                    dict[str, typing.Any],
+                    tuple[str, dict[str, xr.Dataset]],
+                ]
+            ],
             root_attrs: Mapping[str, typing.Any],
         ) -> None:
             rewrite_groups = tuple(rewrite_groups)
             updates = tuple(attr_updates)
             assert rewrite_groups == ()
-            attr_write_calls.extend(update.payload_path for update in updates)
+            attr_write_calls.extend(update[0] for update in updates)
             original_transaction_write(_fname, rewrite_groups, updates, root_attrs)
 
         monkeypatch.setattr(
@@ -10573,14 +10718,206 @@ def test_manager_workspace_delta_save_splits_state_and_data_writes(
         replacement.data = np.asarray(replacement.data) + 10
         root.slicer_area.replace_source_data(replacement)
         assert manager.save()
-        assert any(
-            group is not None
-            and group.startswith(
-                f"/{manager_workspace._WORKSPACE_PENDING_GROUP_PREFIX}"
-            )
-            and group.endswith("/imagetool")
-            for group in dataset_writes
+
+        import h5py
+
+        with h5py.File(fname, "r") as h5_file:
+            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            assert saved[0, 0] == 10
+
+
+def test_manager_workspace_full_save_preserves_in_memory_backing_after_rebind(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
         )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "memory.itws"
+        backing_snapshot = manager._workspace_data_backing_snapshot()
+        manager._save_workspace_document(fname, force_full=True)
+        manager._rebind_workspace_backed_imagetools(
+            fname,
+            backing_snapshot=backing_snapshot,
+            old_workspace_path=None,
+        )
+
+        saved_data = manager.get_imagetool(0).slicer_area._data
+        assert manager_xarray.dataarray_is_numpy_backed(saved_data)
+        assert not manager_xarray.dataarray_is_file_backed(saved_data)
+
+
+def test_manager_workspace_file_backed_data_can_load_into_memory(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source_file = tmp_path / "source.itws"
+    source = xr.DataArray(
+        np.arange(25, dtype=np.float64).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": source.to_dataset(name=manager_mainwindow._ITOOL_DATA_NAME)}
+    )
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            source_file, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        file_backed = _open_external_file_backed_hdf5_imagetool_data(source_file)
+        root = itool(file_backed, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        slicer_area = manager.get_imagetool(0).slicer_area
+        assert slicer_area.data_file_backed
+        assert slicer_area.data_loadable
+        slicer_area._compute_chunked()
+
+        assert manager_xarray.dataarray_is_numpy_backed(slicer_area._data)
+        assert not slicer_area.data_file_backed
+
+
+def test_manager_workspace_load_keeps_saved_data_in_memory(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    dask_options = erlab.interactive.options.model.io.dask
+    old_threshold = dask_options.compute_threshold
+    object.__setattr__(dask_options, "compute_threshold", 0)
+    try:
+        with manager_context() as manager:
+            qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+            data = xr.DataArray(
+                np.arange(512 * 512, dtype=np.float64).reshape((512, 512)),
+                dims=["x", "y"],
+            )
+
+            root = itool(data, manager=False, execute=False)
+            assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+            manager.add_imagetool(root, show=False)
+
+            fname = tmp_path / "load-memory.itws"
+            manager._save_workspace_document(fname, force_full=True)
+            assert manager._load_workspace_file(
+                fname, replace=True, associate=True, mark_dirty=False, select=False
+            )
+
+            loaded = manager.get_imagetool(0).slicer_area
+            assert not loaded.data_chunked
+            assert not loaded.data_file_backed
+            assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+    finally:
+        object.__setattr__(dask_options, "compute_threshold", old_threshold)
+
+
+def test_manager_workspace_load_uses_h5py_fast_path(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5)},
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "h5py-fast-load.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        monkeypatch.setattr(
+            manager_xarray,
+            "open_workspace_datatree",
+            lambda *args, **kwargs: pytest.fail(
+                "simple v4 load should not open the workspace DataTree"
+            ),
+        )
+
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded = manager.get_imagetool(0).slicer_area
+        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert not loaded.data_chunked
+        assert not loaded.data_file_backed
+        np.testing.assert_array_equal(loaded._data.values, data.values)
+
+
+def test_manager_workspace_load_h5py_fast_path_falls_back_per_payload(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25, dtype=np.float64).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={"x": np.arange(5), "y": np.arange(5), "label": "sample"},
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "h5py-group-fallback.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        monkeypatch.setattr(
+            manager_xarray,
+            "open_workspace_datatree",
+            lambda *args, **kwargs: pytest.fail(
+                "unsupported payload should fall back by group, not by whole tree"
+            ),
+        )
+
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded = manager.get_imagetool(0).slicer_area
+        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        assert not loaded.data_chunked
+        assert not loaded.data_file_backed
+        assert loaded._data.coords["label"].item() == "sample"
 
 
 def test_manager_workspace_rejects_external_xarray_reader_for_active_workspace(
@@ -10656,6 +10993,46 @@ def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replac
             assert saved[0, 0] == 10
 
 
+def test_manager_workspace_same_file_lazy_data_delta_save_does_not_deadlock(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(512 * 512, dtype=np.float64).reshape((512, 512)),
+            dims=["x", "y"],
+            coords={"x": np.arange(512), "y": np.arange(512)},
+        )
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "same-file-lazy.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        manager._rebind_workspace_backed_imagetools(fname, targets=[0], chunks={})
+        assert manager.get_imagetool(0).slicer_area.data_chunked
+        manager.get_imagetool(0).slicer_area._set_chunks({"x": 128, "y": 64})
+
+        uid = manager._imagetool_wrappers[0].uid
+        manager._mark_node_data_dirty(uid)
+        assert manager.save()
+
+        import h5py
+
+        with h5py.File(fname, "r") as h5_file:
+            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            assert saved[0, 0] == 0
+            assert saved.chunks == (128, 64)
+
+
 def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
     qtbot,
     monkeypatch,
@@ -10707,7 +11084,7 @@ def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
             saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
             assert saved[0, 0] == 0
             assert not any(
-                name.startswith(manager_workspace._WORKSPACE_INTERNAL_GROUP_PREFIXES)
+                manager_workspace._is_workspace_internal_group_name(name)
                 for name in h5_file
             )
 
@@ -10748,7 +11125,7 @@ def test_manager_workspace_stale_pending_groups_do_not_poison_open_or_save(
         assert manager.save()
         with h5py.File(fname, "r") as h5_file:
             assert not any(
-                name.startswith(manager_workspace._WORKSPACE_INTERNAL_GROUP_PREFIXES)
+                manager_workspace._is_workspace_internal_group_name(name)
                 for name in h5_file
             )
 

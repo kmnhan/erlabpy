@@ -9,6 +9,7 @@ import typing
 
 import h5netcdf
 import hdf5plugin
+import numpy as np
 import xarray as xr
 from xarray.backends import CachingFileManager, H5NetCDFStore
 
@@ -55,6 +56,41 @@ def _workspace_file_identity(path: str | os.PathLike[str]) -> tuple[str, int, in
     except OSError:
         return target, 0, 0, 0
     return target, stat_result.st_dev, stat_result.st_ino, stat_result.st_mtime_ns
+
+
+def _xarray_source_path(value: object) -> str | None:
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        return None
+    return _normalized_file_path(value)
+
+
+def dataarray_source_paths(data_array: xr.DataArray) -> tuple[str, ...]:
+    """Return normalized file sources referenced by a DataArray and its coords."""
+    paths: list[str] = []
+
+    def _append_source(value: object) -> None:
+        source = _xarray_source_path(value)
+        if source is not None and source not in paths:
+            paths.append(source)
+
+    _append_source(data_array.encoding.get("source"))
+    for coord in data_array.coords.values():
+        _append_source(coord.encoding.get("source"))
+    return tuple(paths)
+
+
+def dataarray_is_numpy_backed(data_array: xr.DataArray) -> bool:
+    """Return True when a DataArray is already backed by an in-memory ndarray."""
+    return isinstance(data_array.variable._data, (np.ndarray, np.generic))
+
+
+def dataarray_is_file_backed(data_array: xr.DataArray) -> bool:
+    """Return True for non-dask xarray arrays still backed by a file manager."""
+    return (
+        data_array.chunks is None
+        and not dataarray_is_numpy_backed(data_array)
+        and bool(dataarray_source_paths(data_array))
+    )
 
 
 def ensure_workspace_hdf5_filters_registered() -> None:

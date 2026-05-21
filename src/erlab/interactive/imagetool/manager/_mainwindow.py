@@ -3758,6 +3758,123 @@ class ImageToolManager(QtWidgets.QMainWindow):
         _manager_workspace._set_legacy_workspace_schema(tree.attrs)
         return tree
 
+    def _load_workspace_imagetool_dataset(
+        self,
+        ds: xr.Dataset,
+        *,
+        parent_target: int | str | None,
+        node_path: str | None,
+    ) -> int | str:
+        uid = ds.attrs.get("manager_node_uid")
+        provenance_spec = ds.attrs.get("manager_node_provenance_spec")
+        live_source_spec = ds.attrs.get("manager_node_live_source_spec")
+        parse_provenance_spec = (
+            erlab.interactive.imagetool.provenance.parse_tool_provenance_spec
+        )
+        parsed_provenance_spec = None
+        if provenance_spec is not None:
+            try:
+                provenance_payload = typing.cast(
+                    "Mapping[str, typing.Any]",
+                    json.loads(provenance_spec),
+                )
+                parsed_provenance_spec = parse_provenance_spec(provenance_payload)
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved manager provenance for node %s",
+                    uid,
+                    exc_info=True,
+                )
+        parsed_source_spec = None
+        if live_source_spec is not None:
+            try:
+                source_payload = typing.cast(
+                    "Mapping[str, typing.Any]",
+                    json.loads(live_source_spec),
+                )
+                parsed_source_spec = (
+                    erlab.interactive.imagetool.provenance.require_live_source_spec(
+                        parse_provenance_spec(source_payload)
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved manager source provenance for node %s",
+                    uid,
+                    exc_info=True,
+                )
+        kwargs: dict[str, typing.Any] = {
+            "uid": uid,
+            "provenance_spec": parsed_provenance_spec,
+            "source_spec": parsed_source_spec,
+            "output_id": ds.attrs.get("manager_node_output_id"),
+            "source_auto_update": bool(
+                ds.attrs.get("manager_node_source_auto_update", False)
+            ),
+            "source_state": typing.cast(
+                "_ManagedWindowNode._source_state_type",
+                ds.attrs.get("manager_node_source_state", "fresh"),
+            ),
+        }
+        tool_kwargs: dict[str, typing.Any] = {"_in_manager": True}
+        if _ITOOL_DATA_NAME in ds and ds[_ITOOL_DATA_NAME].chunks is not None:
+            tool_kwargs["auto_compute"] = False
+        tool = ImageTool.from_dataset(ds, **tool_kwargs)
+        if parent_target is not None:
+            return self.add_imagetool_child(
+                tool,
+                parent_target,
+                show=ds.attrs.get("itool_visible", True),
+                **kwargs,
+            )
+
+        kwargs.pop("output_id", None)
+        kwargs["source_input_ndim"] = typing.cast(
+            "int | None",
+            ds.attrs.get("manager_node_source_input_ndim"),
+        )
+        watched_varname = ds.attrs.get("manager_node_watched_varname")
+        watched_uid = ds.attrs.get("manager_node_watched_uid")
+        if watched_varname is not None and watched_uid is not None:
+            kwargs["watched_var"] = (str(watched_varname), str(watched_uid))
+            kwargs["watched_workspace_link_id"] = (
+                None
+                if ds.attrs.get("manager_node_watched_workspace_link_id") is None
+                else str(ds.attrs["manager_node_watched_workspace_link_id"])
+            )
+            kwargs["watched_source_label"] = (
+                None
+                if ds.attrs.get("manager_node_watched_source_label") is None
+                else str(ds.attrs["manager_node_watched_source_label"])
+            )
+            # Loaded watched rows stay watched, but are disconnected until
+            # a notebook explicitly reconnects them.
+            kwargs["watched_connected"] = False
+        preferred_index: int | None = None
+        if node_path is not None and "/" not in node_path:
+            with contextlib.suppress(ValueError):
+                preferred_index = int(node_path)
+            if preferred_index is not None and preferred_index < 0:
+                preferred_index = None
+        return self.add_imagetool(
+            tool,
+            show=ds.attrs.get("itool_visible", True),
+            index=preferred_index,
+            **kwargs,
+        )
+
+    def _load_workspace_tool_dataset(
+        self, ds: xr.Dataset, *, parent_target: int | str | None
+    ) -> int | str:
+        if parent_target is None:
+            raise ValueError("Workspace tool node has no parent")
+        return self.add_childtool(
+            erlab.interactive.utils.ToolWindow.from_dataset(ds),
+            parent_target,
+            show=ds.attrs.get("tool_visible", True),
+            uid=ds.attrs.get("manager_node_uid"),
+        )
+
     def _load_workspace_node(
         self,
         node_tree: xr.DataTree,
@@ -3768,113 +3885,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node_path: str | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
-            ds = typing.cast("xr.DataTree", node_tree["imagetool"]).to_dataset(
-                inherit=False
+            ds = (
+                typing.cast("xr.DataTree", node_tree["imagetool"])
+                .to_dataset(inherit=False)
+                .load()
             )
-            uid = ds.attrs.get("manager_node_uid")
-            provenance_spec = ds.attrs.get("manager_node_provenance_spec")
-            live_source_spec = ds.attrs.get("manager_node_live_source_spec")
-            parse_provenance_spec = (
-                erlab.interactive.imagetool.provenance.parse_tool_provenance_spec
+            target = self._load_workspace_imagetool_dataset(
+                ds, parent_target=parent_target, node_path=node_path
             )
-            parsed_provenance_spec = None
-            if provenance_spec is not None:
-                try:
-                    provenance_payload = typing.cast(
-                        "Mapping[str, typing.Any]",
-                        json.loads(provenance_spec),
-                    )
-                    parsed_provenance_spec = parse_provenance_spec(provenance_payload)
-                except Exception:
-                    logger.warning(
-                        "Ignoring invalid saved manager provenance for node %s",
-                        uid,
-                        exc_info=True,
-                    )
-            parsed_source_spec = None
-            if live_source_spec is not None:
-                try:
-                    source_payload = typing.cast(
-                        "Mapping[str, typing.Any]",
-                        json.loads(live_source_spec),
-                    )
-                    parsed_source_spec = (
-                        erlab.interactive.imagetool.provenance.require_live_source_spec(
-                            parse_provenance_spec(source_payload)
-                        )
-                    )
-                except Exception:
-                    logger.warning(
-                        "Ignoring invalid saved manager source provenance for node %s",
-                        uid,
-                        exc_info=True,
-                    )
-            kwargs: dict[str, typing.Any] = {
-                "uid": uid,
-                "provenance_spec": parsed_provenance_spec,
-                "source_spec": parsed_source_spec,
-                "output_id": ds.attrs.get("manager_node_output_id"),
-                "source_auto_update": bool(
-                    ds.attrs.get("manager_node_source_auto_update", False)
-                ),
-                "source_state": typing.cast(
-                    "_ManagedWindowNode._source_state_type",
-                    ds.attrs.get("manager_node_source_state", "fresh"),
-                ),
-            }
-            tool = ImageTool.from_dataset(ds, _in_manager=True)
-            target: int | str
-            if parent_target is None:
-                kwargs.pop("output_id", None)
-                kwargs["source_input_ndim"] = typing.cast(
-                    "int | None",
-                    ds.attrs.get("manager_node_source_input_ndim"),
-                )
-                watched_varname = ds.attrs.get("manager_node_watched_varname")
-                watched_uid = ds.attrs.get("manager_node_watched_uid")
-                if watched_varname is not None and watched_uid is not None:
-                    kwargs["watched_var"] = (str(watched_varname), str(watched_uid))
-                    kwargs["watched_workspace_link_id"] = (
-                        None
-                        if ds.attrs.get("manager_node_watched_workspace_link_id")
-                        is None
-                        else str(ds.attrs["manager_node_watched_workspace_link_id"])
-                    )
-                    kwargs["watched_source_label"] = (
-                        None
-                        if ds.attrs.get("manager_node_watched_source_label") is None
-                        else str(ds.attrs["manager_node_watched_source_label"])
-                    )
-                    # Loaded watched rows stay watched, but are disconnected until
-                    # a notebook explicitly reconnects them.
-                    kwargs["watched_connected"] = False
-                preferred_index: int | None = None
-                if node_path is not None and "/" not in node_path:
-                    with contextlib.suppress(ValueError):
-                        preferred_index = int(node_path)
-                    if preferred_index is not None and preferred_index < 0:
-                        preferred_index = None
-                target = self.add_imagetool(
-                    tool,
-                    show=ds.attrs.get("itool_visible", True),
-                    index=preferred_index,
-                    **kwargs,
-                )
-            else:
-                target = self.add_imagetool_child(
-                    tool,
-                    parent_target,
-                    show=ds.attrs.get("itool_visible", True),
-                    **kwargs,
-                )
         elif "tool" in node_tree:
-            ds = typing.cast("xr.DataTree", node_tree["tool"]).to_dataset(inherit=False)
-            target = self.add_childtool(
-                erlab.interactive.utils.ToolWindow.from_dataset(ds),
-                typing.cast("int | str", parent_target),
-                show=ds.attrs.get("tool_visible", True),
-                uid=ds.attrs.get("manager_node_uid"),
+            ds = (
+                typing.cast("xr.DataTree", node_tree["tool"])
+                .to_dataset(inherit=False)
+                .load()
             )
+            target = self._load_workspace_tool_dataset(ds, parent_target=parent_target)
         else:
             raise ValueError("Workspace node has no supported window payload")
 
@@ -3942,6 +3967,149 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     node_path=key,
                 )
 
+    def _from_h5py_workspace_file(
+        self,
+        fname: str | os.PathLike[str],
+        manifest: Mapping[str, typing.Any],
+        *,
+        replace: bool,
+        mark_dirty: bool,
+    ) -> bool:
+        nodes = manifest.get("nodes", ())
+        root_order = manifest.get("root_order", ())
+        if not isinstance(nodes, list) or not isinstance(root_order, list):
+            raise TypeError("Workspace manifest is missing node ordering")
+
+        entries_by_path: dict[str, dict[str, typing.Any]] = {}
+        for entry in nodes:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            kind = entry.get("kind")
+            if not isinstance(path, str) or kind not in {"imagetool", "tool"}:
+                continue
+            entries_by_path[path] = entry
+        if not entries_by_path:
+            raise ValueError("Workspace manifest has no loadable nodes")
+
+        root_paths: list[str] = []
+        for root in root_order:
+            path = str(root)
+            if path in entries_by_path and "/" not in path and path not in root_paths:
+                root_paths.append(path)
+        root_paths.extend(
+            path
+            for path in entries_by_path
+            if "/" not in path and path not in root_paths
+        )
+        if not root_paths:
+            raise ValueError("Workspace manifest has no root ImageTool nodes")
+
+        child_paths: dict[str, list[str]] = {path: [] for path in entries_by_path}
+        for path in entries_by_path:
+            if "/childtools/" not in path:
+                continue
+            parent_path, child_key = path.rsplit("/childtools/", maxsplit=1)
+            if "/" not in child_key and parent_path in entries_by_path:
+                child_paths[parent_path].append(path)
+
+        def _load_xarray_dataset(
+            payload_path: str, *, chunks: typing.Any, load: bool
+        ) -> xr.Dataset:
+            opened = _manager_xarray.open_workspace_dataset(
+                fname, payload_path, chunks=chunks
+            )
+            try:
+                if load:
+                    return opened.load()
+                return opened.copy(deep=False)
+            finally:
+                opened.close()
+
+        def _load_dataset(
+            payload_path: str, *, entry: Mapping[str, typing.Any], imagetool: bool
+        ) -> xr.Dataset:
+            if imagetool and entry.get("data_backing") == "dask":
+                return _load_xarray_dataset(payload_path, chunks={}, load=False)
+            if imagetool:
+                try:
+                    ds = _manager_workspace._read_workspace_dataset_group_h5py(
+                        fname,
+                        payload_path,
+                        preferred_data_name=_ITOOL_DATA_NAME,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed h5py workspace payload read for %s",
+                        payload_path,
+                        exc_info=True,
+                    )
+                else:
+                    if ds is not None:
+                        return ds
+
+            return _load_xarray_dataset(payload_path, chunks=None, load=True)
+
+        def _load_path(path: str, parent_target: int | str | None = None) -> int | str:
+            entry = entries_by_path[path]
+            kind = typing.cast("str", entry["kind"])
+            is_imagetool = kind == "imagetool"
+            payload_path = f"{path}/{'imagetool' if is_imagetool else 'tool'}"
+            ds = _load_dataset(payload_path, entry=entry, imagetool=is_imagetool)
+            if is_imagetool:
+                target = self._load_workspace_imagetool_dataset(
+                    ds,
+                    parent_target=parent_target,
+                    node_path=path,
+                )
+            else:
+                target = self._load_workspace_tool_dataset(
+                    ds, parent_target=parent_target
+                )
+            for child_path in child_paths[path]:
+                _load_path(child_path, target)
+            return target
+
+        if replace:
+            manifest_workspace_link_id = manifest.get("workspace_link_id")
+            self._workspace_link_id = (
+                str(manifest_workspace_link_id)
+                if manifest_workspace_link_id
+                else uuid.uuid4().hex
+            )
+
+        maybe_guard = (
+            self._workspace_load_context()
+            if not mark_dirty
+            else contextlib.nullcontext()
+        )
+        backup_tree: xr.DataTree | None = None
+        backup_snapshot: dict[str, typing.Any] | None = None
+        with (
+            maybe_guard,
+            erlab.interactive.utils.wait_dialog(self, "Loading workspace..."),
+        ):
+            try:
+                if replace:
+                    backup_snapshot = self._workspace_state_snapshot()
+                    backup_tree = self._to_datatree()
+                    self.remove_all_tools()
+                for root_path in root_paths:
+                    _load_path(root_path)
+                if not mark_dirty:
+                    self._drain_workspace_deferred_events()
+            except Exception:
+                if backup_tree is not None and backup_snapshot is not None:
+                    try:
+                        self._restore_replaced_workspace(backup_tree, backup_snapshot)
+                    except Exception:
+                        logger.exception("Failed to restore previous workspace")
+                raise
+            finally:
+                if backup_tree is not None:
+                    backup_tree.close()
+        return True
+
     def _restore_replaced_workspace(
         self,
         backup_tree: xr.DataTree,
@@ -3967,10 +4135,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if not self._is_datatree_workspace(tree):
                 raise ValueError("Not a valid workspace file")
 
-            metadata = _manager_workspace._workspace_file_metadata_from_attrs(
-                tree.attrs
+            schema_version, _delta_save_count, manifest = (
+                _manager_workspace._workspace_file_metadata_from_attrs(tree.attrs)
             )
-            schema_version = metadata.schema_version
             match schema_version:
                 case 1:
                     tree = self._parse_datatree_compat_v1(tree)
@@ -3985,7 +4152,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         f"Unsupported workspace schema version {schema_version}, "
                         "file may be from a newer version of erlab"
                     )
-            manifest = metadata.manifest
             if replace:
                 manifest_workspace_link_id = (
                     None if manifest is None else manifest.get("workspace_link_id")
@@ -4116,15 +4282,22 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         def _append(uid: str) -> None:
             node = self._all_nodes[uid]
-            entries.append(
-                {
-                    "uid": uid,
-                    "path": self._workspace_node_path(uid),
-                    "kind": "imagetool" if node.is_imagetool else "tool",
-                    "parent_uid": node.parent_uid,
-                    "display_name": node.display_text,
-                }
-            )
+            entry: dict[str, typing.Any] = {
+                "uid": uid,
+                "path": self._workspace_node_path(uid),
+                "kind": "imagetool" if node.is_imagetool else "tool",
+                "parent_uid": node.parent_uid,
+                "display_name": node.display_text,
+            }
+            if node.is_imagetool and node.imagetool is not None:
+                data = node.slicer_area._data
+                if data.chunks is not None:
+                    entry["data_backing"] = "dask"
+                elif _manager_xarray.dataarray_is_file_backed(data):
+                    entry["data_backing"] = "file_lazy"
+                else:
+                    entry["data_backing"] = "memory"
+            entries.append(entry)
             for child_uid in node._childtool_indices:
                 if child_uid in self._all_nodes:
                     _append(child_uid)
@@ -4163,9 +4336,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
         tree: xr.DataTree = self._to_datatree()
+        copy_source, copy_groups = self._workspace_full_save_copy_groups(tree)
         try:
             _manager_workspace._write_full_workspace_tree_file(
-                fname, tree, self._workspace_root_attrs_payload(delta_save_count=0)
+                fname,
+                tree,
+                self._workspace_root_attrs_payload(delta_save_count=0),
+                copy_source=copy_source,
+                copy_groups=copy_groups,
             )
         finally:
             tree.close()
@@ -4347,6 +4525,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         native: bool = True,
         delta_save_count: int = 0,
         workspace_access: _WorkspaceDocumentAccess | None = None,
+        rebind_data: bool = True,
     ) -> None:
         associated_fname = fname
         associated_lock: QtCore.QLockFile | None = None
@@ -4373,7 +4552,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._workspace_needs_full_save = (
             _manager_workspace._workspace_schema_requires_full_save(schema_version)
         )
-        self._rebind_workspace_backed_imagetools(associated_fname)
+        if rebind_data:
+            self._rebind_workspace_backed_imagetools(associated_fname)
         self._drain_workspace_deferred_events()
         self._mark_workspace_clean()
         self._record_recent_workspace(associated_fname)
@@ -4400,12 +4580,31 @@ class ImageToolManager(QtWidgets.QMainWindow):
         finally:
             ds.close()
 
+    def _workspace_data_backing_snapshot(
+        self,
+    ) -> dict[str, tuple[str, tuple[str, ...]]]:
+        snapshot: dict[str, tuple[str, tuple[str, ...]]] = {}
+        for node in self._all_nodes.values():
+            if not node.is_imagetool or node.imagetool is None:
+                continue
+            data = node.slicer_area._data
+            if data.chunks is not None:
+                kind = "dask"
+            elif _manager_xarray.dataarray_is_file_backed(data):
+                kind = "file_lazy"
+            else:
+                kind = "memory"
+            snapshot[node.uid] = (kind, _manager_xarray.dataarray_source_paths(data))
+        return snapshot
+
     def _rebind_workspace_backed_imagetools(
         self,
         fname: str | os.PathLike[str],
         *,
         targets: Iterable[int | str] | None = None,
         chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
+        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
+        old_workspace_path: str | os.PathLike[str] | None = None,
     ) -> None:
         pending: list[
             tuple[
@@ -4432,9 +4631,23 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if tool is None:
                 continue
             slicer_area = tool.slicer_area
-            rebind_chunks = chunks
-            if rebind_chunks is _WORKSPACE_REBIND_KEEP_CHUNKS:
-                rebind_chunks = {} if slicer_area._data.chunks is not None else None
+            rebind_chunks: typing.Any
+            if backing_snapshot is not None:
+                backing = backing_snapshot.get(node.uid)
+                if backing is None:
+                    continue
+                kind, source_paths = backing
+                if kind == "memory":
+                    continue
+                if kind == "file_lazy":
+                    old_path = _manager_xarray._normalized_file_path(old_workspace_path)
+                    if old_path is None or old_path not in source_paths:
+                        continue
+                rebind_chunks = {} if kind == "dask" else None
+            else:
+                rebind_chunks = chunks
+                if rebind_chunks is _WORKSPACE_REBIND_KEEP_CHUNKS:
+                    rebind_chunks = {} if slicer_area._data.chunks is not None else None
             pending.append(
                 (
                     node,
@@ -4498,6 +4711,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     targets=offload_targets,
                     chunks={},
                 )
+                _manager_workspace._write_workspace_root_attrs_to_file(
+                    self._workspace_path,
+                    self._workspace_root_attrs_payload(
+                        delta_save_count=self._workspace_delta_save_count
+                    ),
+                )
             self._status_bar.showMessage("Data offloaded to workspace", 5000)
         except Exception:
             self._show_operation_error(
@@ -4524,18 +4743,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _workspace_rewrite_group_snapshot(
         self, uid: str
-    ) -> _manager_workspace._WorkspaceRewriteGroup:
+    ) -> tuple[str, dict[str, xr.Dataset]]:
         constructor: dict[str, xr.Dataset] = {}
         node = self._all_nodes[uid]
         node_path = self._workspace_node_path(uid)
         self._serialize_workspace_node(
             constructor, node, node_path, include_children=True
         )
-        return _manager_workspace._WorkspaceRewriteGroup(node_path, constructor)
+        return node_path, constructor
 
     def _workspace_attr_update_snapshot(
         self, uid: str
-    ) -> _manager_workspace._WorkspaceAttrUpdate | None:
+    ) -> tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]] | None:
         constructor: dict[str, xr.Dataset] = {}
         node = self._all_nodes[uid]
         node_path = self._workspace_node_path(uid)
@@ -4546,11 +4765,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ds = constructor.get(payload_path)
         if ds is None:
             return None
-        return _manager_workspace._WorkspaceAttrUpdate(
-            payload_path=payload_path,
-            attrs=dict(ds.attrs),
-            fallback=_manager_workspace._WorkspaceRewriteGroup(node_path, constructor),
-        )
+        return payload_path, dict(ds.attrs), (node_path, constructor)
 
     def _workspace_delta_save_snapshot(
         self,
@@ -4558,14 +4773,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
         root_attrs: dict[str, typing.Any],
         delta_save_count: int,
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
-        rewrite_groups: list[_manager_workspace._WorkspaceRewriteGroup] = []
+        rewrite_groups: list[tuple[str, dict[str, xr.Dataset]]] = []
         rewritten_uids: set[str] = set()
         for uid in self._workspace_highest_dirty_data_roots():
             rewrite_groups.append(self._workspace_rewrite_group_snapshot(uid))
             rewritten_uids.add(uid)
             rewritten_uids.update(self._iter_descendant_uids(uid))
 
-        attr_updates: list[_manager_workspace._WorkspaceAttrUpdate] = []
+        attr_updates: list[
+            tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
+        ] = []
         for uid in sorted(self._workspace_dirty_state - rewritten_uids):
             if uid not in self._all_nodes:
                 continue
@@ -4603,12 +4820,83 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _workspace_full_save_snapshot(
         self, generation: int
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
+        tree = self._to_datatree()
+        copy_source, copy_groups = self._workspace_full_save_copy_groups(tree)
         return _manager_workspace._WorkspaceSaveSnapshot(
             generation=generation,
             root_attrs=self._workspace_root_attrs_payload(delta_save_count=0),
             delta_save_count=0,
-            full_tree=self._to_datatree(),
+            full_tree=tree,
+            copy_source=copy_source,
+            copy_groups=copy_groups,
         )
+
+    def _workspace_full_save_copy_groups(
+        self, tree: xr.DataTree
+    ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
+        if self._workspace_path is None:
+            return None, ()
+        workspace_path = pathlib.Path(self._workspace_path)
+        if (
+            self._workspace_schema_version
+            != _manager_workspace._current_workspace_schema_version()
+            or not workspace_path.exists()
+        ):
+            return None, ()
+
+        try:
+            root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(
+                workspace_path
+            )
+        except Exception:
+            return None, ()
+        schema_version, _delta_save_count, manifest = (
+            _manager_workspace._workspace_file_metadata_from_attrs(root_attrs)
+        )
+        if (
+            schema_version != _manager_workspace._current_workspace_schema_version()
+            or manifest is None
+        ):
+            return None, ()
+
+        identities: dict[tuple[str, str], str] = {}
+        nodes = manifest.get("nodes", ())
+        if isinstance(nodes, list):
+            for entry in nodes:
+                if not isinstance(entry, dict):
+                    continue
+                uid = entry.get("uid")
+                kind = entry.get("kind")
+                path = entry.get("path")
+                if (
+                    isinstance(uid, str)
+                    and isinstance(kind, str)
+                    and kind in {"imagetool", "tool"}
+                    and isinstance(path, str)
+                ):
+                    identities[(uid, kind)] = f"{path}/{kind}"
+        copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
+        for uid, node in self._all_nodes.items():
+            if uid in self._workspace_dirty_data or uid in self._workspace_dirty_added:
+                continue
+            if not node.is_imagetool:
+                tool = node.tool_window
+                if tool is None or not tool.can_save_and_load():
+                    continue
+            kind = "imagetool" if node.is_imagetool else "tool"
+            source_path = identities.get((uid, kind))
+            if source_path is None:
+                continue
+            payload_path = self._workspace_payload_path(uid)
+            try:
+                payload_tree = typing.cast("xr.DataTree", tree[payload_path])
+            except KeyError:
+                continue
+            attrs = None
+            if uid in self._workspace_dirty_state or source_path != payload_path:
+                attrs = dict(payload_tree.to_dataset(inherit=False).attrs)
+            copy_groups.append((source_path, payload_path, attrs))
+        return str(workspace_path), tuple(copy_groups)
 
     def _open_workspace_save_wait_dialog(
         self,
@@ -4718,6 +5006,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._status_bar.showMessage("Workspace save already in progress", 3000)
             return False
         origin = self._active_managed_window()
+        old_workspace_path = self._workspace_path
+        backing_snapshot = self._workspace_data_backing_snapshot()
         self._status_bar.showMessage("Saving workspace...")
         try:
             snapshot = self._workspace_save_snapshot(self._workspace_path)
@@ -4748,7 +5038,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._workspace_schema_version = (
                 _manager_workspace._current_workspace_schema_version()
             )
-            self._rebind_workspace_backed_imagetools(self._workspace_path)
+            self._rebind_workspace_backed_imagetools(
+                self._workspace_path,
+                backing_snapshot=backing_snapshot,
+                old_workspace_path=old_workspace_path,
+            )
         self._drain_workspace_deferred_events()
         post_save_events = tuple(
             event
@@ -4777,6 +5071,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         fname = self._workspace_save_dialog(native=native, caption="Save Workspace As")
         if fname is None:
             return False
+        old_workspace_path = self._workspace_path
+        backing_snapshot = self._workspace_data_backing_snapshot()
         try:
             dialog_parent = origin or self
             with self._workspace_document_access_context(fname) as access:
@@ -4788,7 +5084,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         force_full=True,
                         document_access=access,
                     )
-                    self._rebind_workspace_backed_imagetools(access.path)
+                    self._rebind_workspace_backed_imagetools(
+                        access.path,
+                        backing_snapshot=backing_snapshot,
+                        old_workspace_path=old_workspace_path,
+                    )
                 self._set_workspace_path(access.path, workspace_lock=access.take_lock())
             self._workspace_needs_full_save = False
             self._drain_workspace_deferred_events()
@@ -4870,12 +5170,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return False
 
         origin = self._active_managed_window()
+        old_workspace_path = self._workspace_path
+        backing_snapshot = self._workspace_data_backing_snapshot()
         try:
             with erlab.interactive.utils.wait_dialog(
                 origin or self, "Compacting workspace..."
             ):
                 self._save_workspace_document(self._workspace_path, force_full=True)
-                self._rebind_workspace_backed_imagetools(self._workspace_path)
+                self._rebind_workspace_backed_imagetools(
+                    self._workspace_path,
+                    backing_snapshot=backing_snapshot,
+                    old_workspace_path=old_workspace_path,
+                )
             self._workspace_delta_save_count = 0
             self._status_bar.showMessage("Workspace compacted", 5000)
         except Exception:
@@ -4950,9 +5256,45 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> bool:
         with self._workspace_document_access_context(fname) as access:
             _manager_workspace._recover_workspace_transactions(access.path)
-            tree = _manager_xarray.open_workspace_datatree(access.path, chunks="auto")
-            metadata = _manager_workspace._workspace_file_metadata_from_attrs(
-                tree.attrs
+            if not select and replace:
+                try:
+                    root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(
+                        access.path
+                    )
+                    schema_version, delta_save_count, manifest = (
+                        _manager_workspace._workspace_file_metadata_from_attrs(
+                            root_attrs
+                        )
+                    )
+                    if (
+                        schema_version
+                        == _manager_workspace._current_workspace_schema_version()
+                        and manifest is not None
+                    ):
+                        loaded = self._from_h5py_workspace_file(
+                            access.path,
+                            manifest,
+                            replace=replace,
+                            mark_dirty=mark_dirty,
+                        )
+                        if loaded and associate:
+                            self._associate_loaded_workspace_file(
+                                access.path,
+                                schema_version,
+                                native=native,
+                                delta_save_count=delta_save_count,
+                                workspace_access=access,
+                                rebind_data=False,
+                            )
+                        return loaded
+                except Exception:
+                    logger.debug(
+                        "Failed h5py workspace load path; falling back to DataTree",
+                        exc_info=True,
+                    )
+            tree = _manager_xarray.open_workspace_datatree(access.path, chunks=None)
+            schema_version, delta_save_count, _manifest = (
+                _manager_workspace._workspace_file_metadata_from_attrs(tree.attrs)
             )
             loaded = self._from_datatree(
                 tree,
@@ -4963,10 +5305,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if loaded and associate:
                 self._associate_loaded_workspace_file(
                     access.path,
-                    metadata.schema_version,
+                    schema_version,
                     native=native,
-                    delta_save_count=metadata.delta_save_count,
+                    delta_save_count=delta_save_count,
                     workspace_access=access,
+                    rebind_data=False,
                 )
             return loaded
 
@@ -5558,7 +5901,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if try_workspace:
             for p in list(queued):
                 try:
-                    dt = _manager_xarray.open_workspace_datatree(p, chunks="auto")
+                    dt = _manager_xarray.open_workspace_datatree(p, chunks=None)
                 except Exception as exc:
                     if _manager_workspace._is_workspace_file_lock_error(exc):
                         logger.info(
@@ -5579,11 +5922,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
                                     access.path
                                 )
                                 workspace_dt = _manager_xarray.open_workspace_datatree(
-                                    access.path, chunks="auto"
+                                    access.path, chunks=None
                                 )
                                 workspace_dt_owned = True
                                 try:
-                                    metadata = metadata_from_attrs(workspace_dt.attrs)
+                                    (
+                                        schema_version,
+                                        delta_save_count,
+                                        _manifest,
+                                    ) = metadata_from_attrs(workspace_dt.attrs)
                                     if not self._confirm_save_dirty_workspace(
                                         "Opening a workspace replaces the windows "
                                         "currently in this manager."
@@ -5599,9 +5946,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                                     if loaded_workspace:
                                         self._associate_loaded_workspace_file(
                                             access.path,
-                                            metadata.schema_version,
-                                            delta_save_count=metadata.delta_save_count,
+                                            schema_version,
+                                            delta_save_count=delta_save_count,
                                             workspace_access=access,
+                                            rebind_data=False,
                                         )
                                 finally:
                                     if workspace_dt_owned:
