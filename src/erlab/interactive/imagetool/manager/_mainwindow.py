@@ -4842,7 +4842,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
                 slicer_area.set_data(data, auto_compute=False)
                 slicer_area.state = state
-                node.name = name
+                node._set_name(name, manual=False)
 
     def offload_to_workspace(
         self, targets: Iterable[int | str], *, native: bool = True
