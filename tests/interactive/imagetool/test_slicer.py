@@ -315,6 +315,46 @@ def test_state_restore_rebuilds_layout_caches_before_cursor_restore(qtbot) -> No
     np.testing.assert_allclose(slicer.get_values(0), saved_state["values"][0])
 
 
+def test_state_restore_suppresses_partial_cursor_restore_signal(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(107 * 36 * 35, dtype=np.float32).reshape(107, 36, 35),
+        dims=("eV", "y", "x"),
+        coords={
+            "eV": np.arange(107, dtype=np.float32),
+            "y": np.arange(36, dtype=np.float32),
+            "x": np.arange(35, dtype=np.float32),
+        },
+    )
+
+    parent = QtCore.QObject()
+    slicer = ArraySlicer(data, parent=parent)
+    slicer.add_cursor(update=False)
+    saved_state = {
+        "dims": ("x", "y", "eV"),
+        "bins": [[1, 1, 1], [1, 1, 1]],
+        "indices": [[26, 29, 36], [9, 9, 36]],
+        "values": [[26.0, 29.0, 36.0], [9.0, 9.0, 36.0]],
+        "snap_to_data": False,
+        "twin_coord_names": (),
+        "cursor_color_params": None,
+    }
+    emissions = []
+
+    slicer.sigIndexChanged.connect(lambda *args: emissions.append(args))
+
+    slicer.state = saved_state
+
+    assert emissions == []
+    assert slicer._obj.dims == saved_state["dims"]
+    assert slicer._obj.shape == (35, 36, 107)
+    assert slicer.get_indices(0) == saved_state["indices"][0]
+    assert slicer.get_indices(1) == saved_state["indices"][1]
+    assert (
+        slicer.point_value(1, binned=True)
+        == data.transpose("x", "y", "eV").data[9, 9, 36]
+    )
+
+
 def test_bin_along_axis_unbinned_matches_integer_index_selection(qtbot) -> None:
     values = np.arange(4 * 5 * 6, dtype=np.float32).reshape(4, 5, 6)
     data = xr.DataArray(

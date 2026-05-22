@@ -528,7 +528,7 @@ class ArraySlicer(QtCore.QObject):
         for i, (bins, indices, values) in enumerate(
             zip(state["bins"], state["indices"], state["values"], strict=True)
         ):
-            self.center_cursor(i)
+            self.center_cursor(i, update=False)
             self.set_indices(i, indices, update=False)
             self.set_values(i, values, update=False)
             self.set_bins(i, bins, update=False)

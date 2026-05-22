@@ -12372,6 +12372,44 @@ def test_manager_workspace_load_visible_windows_stays_clean_after_events(
         assert not manager.is_workspace_modified
 
 
+def test_manager_workspace_roundtrip_preserves_controls_visibility(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        manager._mark_workspace_clean()
+        assert not manager.is_workspace_modified
+
+        root.mnb.action_dict["toggleControlsAct"].trigger()
+        assert not root.controls_visible
+        qtbot.wait_until(lambda: manager.is_workspace_modified, timeout=5000)
+
+        fname = tmp_path / "controls.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        assert not manager.is_workspace_modified
+
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        restored = manager.get_imagetool(0)
+        assert not restored.controls_visible
+        assert not restored.mnb.action_dict["toggleControlsAct"].isChecked()
+        assert restored.slicer_area.state["controls_visible"] is False
+        assert not manager.is_workspace_modified
+
+
 def test_manager_workspace_delta_save_persists_geometry_changes(
     qtbot,
     tmp_path,

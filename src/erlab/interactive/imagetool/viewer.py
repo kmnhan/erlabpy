@@ -93,6 +93,7 @@ class ImageSlicerState(typing.TypedDict):
     current_cursor: int
     manual_limits: dict[str, list[float]]
     cursor_colors: list[str]
+    controls_visible: typing.NotRequired[bool]
     file_path: typing.NotRequired[str | None]
     load_func: typing.NotRequired[tuple[str, dict[str, typing.Any], int] | None]
     splitter_sizes: typing.NotRequired[list[list[int]]]
@@ -875,6 +876,13 @@ class ImageSlicerArea(QtWidgets.QWidget):
         return typing.cast("ColorMapState", prop)
 
     @property
+    def controls_visible(self) -> bool:
+        parent = self.parent()
+        if hasattr(parent, "controls_visible"):
+            return bool(typing.cast("typing.Any", parent).controls_visible)
+        return True
+
+    @property
     def state(self) -> ImageSlicerState:
         load_func = self._load_func
         if load_func is not None:
@@ -890,12 +898,19 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "file_path": str(self._file_path) if self._file_path is not None else None,
             "load_func": load_func,
             "cursor_colors": [c.name() for c in self.cursor_colors],
+            "controls_visible": self.controls_visible,
             "plotitem_states": [p._serializable_state for p in self.axes],
         }
 
     @state.setter
     def state(self, state: ImageSlicerState) -> None:
         logger.debug("Restoring state...")
+        parent = self.parent()
+        if hasattr(parent, "_set_controls_visible"):
+            typing.cast("typing.Any", parent)._set_controls_visible(
+                bool(state.get("controls_visible", True))
+            )
+
         if "splitter_sizes" in state:
             self.splitter_sizes = state["splitter_sizes"]
 
