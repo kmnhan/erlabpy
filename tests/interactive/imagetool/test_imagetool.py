@@ -1139,6 +1139,42 @@ def test_profile_menu_opens_associated_coord_targets(
     win.close()
 
 
+def test_profile_associated_coord_menu_does_not_compute_dask_coord(qtbot) -> None:
+    da = pytest.importorskip("dask.array")
+    from dask.callbacks import Callback
+
+    x = np.arange(3, dtype=float)
+    y = np.arange(4, dtype=float)
+    plane = da.from_array(x[:, None] * 10.0 + y[None, :], chunks=(1, 4))
+    data = xr.DataArray(
+        np.zeros((3, 4, 2), dtype=float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": x,
+            "y": y,
+            "z": np.arange(2, dtype=float),
+            "plane": (("x", "y"), plane),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    profile = win.slicer_area.profiles[0]
+    win.slicer_area.array_slicer.twin_coord_names = {"plane"}
+
+    computed_keys: list[object] = []
+    with Callback(pretask=lambda key, _dsk, _state: computed_keys.append(key)):
+        profile._refresh_associated_coord_menu()
+
+    assert computed_keys == []
+    assert profile._associated_coord_menu is not None
+    assert profile._associated_coord_menu.menuAction().isVisible()
+    associated_coord_action = _menu_action_by_data(
+        profile._associated_coord_menu, ("associated_coord", "plane")
+    )
+    assert associated_coord_action.menu() is not None
+    win.close()
+
+
 def test_associated_coord_dialog_empty_warning(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)),
@@ -2817,6 +2853,111 @@ def test_apply_func_preserves_source_data(qtbot) -> None:
 
     win.slicer_area.apply_func(None)
     xarray.testing.assert_identical(win.slicer_area.data, data)
+    win.close()
+
+
+def test_apply_func_preserves_dask_backed_preview(qtbot) -> None:
+    da = pytest.importorskip("dask.array")
+    from dask.callbacks import Callback
+
+    values = np.arange(25, dtype=np.float32).reshape((5, 5))
+    data = xr.DataArray(
+        da.from_array(values, chunks=(2, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    computed_keys: list[object] = []
+    with Callback(pretask=lambda key, _dsk, _state: computed_keys.append(key)):
+        win.slicer_area.apply_func(lambda darr: darr + 1, update=False)
+
+    assert computed_keys == []
+    assert win.slicer_area.data_chunked
+    assert win.slicer_area.data.chunks is not None
+    assert win.slicer_area._obj_shares_data_values is False
+    xarray.testing.assert_identical(
+        win.slicer_area.data.compute(), (data + 1).compute()
+    )
+
+    win.slicer_area.apply_func(None, update=False)
+    assert win.slicer_area.data_chunked
+    assert win.slicer_area.data.chunks == data.chunks
+    assert win.slicer_area._obj_shares_data_values is True
+    win.close()
+
+
+def test_apply_func_accepts_transposed_dask_preview_and_updates(qtbot) -> None:
+    da = pytest.importorskip("dask.array")
+
+    values = np.arange(20, dtype=np.float32).reshape((4, 5))
+    data = xr.DataArray(
+        da.from_array(values, chunks=(2, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(4), "y": np.arange(5)},
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.apply_func(lambda darr: (darr + 1).transpose("y", "x"))
+
+    assert win.slicer_area.data.dims == data.dims
+    assert win.slicer_area.data.chunks is not None
+    xarray.testing.assert_identical(
+        win.slicer_area.data.compute(), (data + 1).compute()
+    )
+    win.close()
+
+
+def test_apply_func_rejects_mismatched_dask_preview(qtbot) -> None:
+    da = pytest.importorskip("dask.array")
+
+    values = np.arange(20, dtype=np.float32).reshape((4, 5))
+    data = xr.DataArray(
+        da.from_array(values, chunks=(2, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(4), "y": np.arange(5)},
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    with pytest.raises(ValueError, match="dimensions do not match"):
+        win.slicer_area.apply_func(lambda darr: darr.expand_dims("z"), update=False)
+    with pytest.raises(ValueError, match="dimensions do not match"):
+        win.slicer_area.apply_func(lambda darr: darr.rename({"x": "z"}), update=False)
+    with pytest.raises(ValueError, match="shape does not match"):
+        win.slicer_area.apply_func(
+            lambda darr: darr.isel(x=slice(1, None)), update=False
+        )
+    win.close()
+
+
+def test_eager_preview_from_dask_source_updates_readout(qtbot) -> None:
+    da = pytest.importorskip("dask.array")
+
+    source_values = np.arange(20, dtype=np.float32).reshape((4, 5))
+    preview_values = source_values + 100.0
+    data = xr.DataArray(
+        da.from_array(source_values, chunks=(2, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(4), "y": np.arange(5)},
+    )
+    preview = xr.DataArray(preview_values, dims=data.dims, coords=data.coords)
+
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+    control = win.docks[0].widget().findChild(ItoolCrosshairControls)
+    assert control is not None
+
+    win.slicer_area.apply_func(lambda _darr: preview)
+    assert win.slicer_area.data_chunked
+    assert win.slicer_area.data.chunks is None
+
+    control.update_content()
+    win.slicer_area.set_index(0, 3)
+    assert control.spin_dat.value() == preview_values[3, 2]
     win.close()
 
 
