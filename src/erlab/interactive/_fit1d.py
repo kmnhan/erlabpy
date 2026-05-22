@@ -2878,6 +2878,10 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         self._start_next_multi_fit()
 
     def _start_next_multi_fit(self) -> None:
+        if self._fit_cancel_requested:
+            self._fit_cancel_requested = False
+            self._finish_multi_fit()
+            return
         if (
             self._fit_multi_total is None
             or self._fit_multi_fit_data is None
@@ -2897,7 +2901,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             if self._fit_multi_step >= (self._fit_multi_total or 0):
                 self._finish_multi_fit()
             else:
-                self._start_next_multi_fit()
+                erlab.interactive.utils.single_shot(self, 0, self._start_next_multi_fit)
 
         def _on_timeout() -> None:
             if self._fit_start_time is None:

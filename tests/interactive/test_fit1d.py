@@ -619,6 +619,90 @@ def test_fit1d_multiple_fits_and_save(qtbot, exp_decay_model, monkeypatch) -> No
     assert saved["ds"] is not None
 
 
+def test_fit1d_next_multi_step_is_deferred(qtbot, monkeypatch) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    started_steps: list[int] = []
+
+    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        win._fit_start_time = 0.0
+        if step == 1:
+            on_success(xr.Dataset())
+            return True
+        return False
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._run_fit_multiple(2)
+
+    assert started_steps == [1]
+    qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
+
+
+def test_fit1d_cancelled_before_deferred_multi_step_stops_sequence(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    started_steps: list[int] = []
+
+    monkeypatch.setattr(win, "_set_fit_ds", lambda result_ds, t0: win._params)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        started_steps.append(step)
+        win._fit_start_time = 0.0
+        if step == 1:
+            on_success(xr.Dataset())
+            return True
+        return False
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._run_fit_multiple(2)
+    assert started_steps == [1]
+
+    assert win._cancel_fit()
+    qtbot.waitUntil(
+        lambda: win._fit_multi_total is None and not win._fit_cancel_requested,
+        timeout=1000,
+    )
+    assert started_steps == [1]
+    assert win._fit_running_multi is False
+
+
 def test_fit1d_user_and_file_models(qtbot, tmp_path) -> None:
     x = np.linspace(0.0, 1.0, 5)
     data = xr.DataArray(np.zeros_like(x), dims=("x",), coords={"x": x}, name="line")
