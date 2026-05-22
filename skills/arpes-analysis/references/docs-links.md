@@ -1,6 +1,6 @@
 # ERLabPy docs links (stable)
 
-Last verified: 2026-03-13.
+Last verified: 2026-05-22.
 
 ## Base links
 
@@ -72,6 +72,8 @@ Last verified: 2026-03-13.
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/misc-tools.html#interactive-misc-magics
 - Interactive configuration:
   https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/options.html
+- Interactive tool authoring:
+  https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/tool-authoring.html
 
 ## API landing pages
 
@@ -104,9 +106,9 @@ Last verified: 2026-03-13.
 - `xarray.DataArray.kspace.convert_coords`:
   https://erlabpy.readthedocs.io/en/stable/accessors/xarray.DataArray.kspace.convert_coords.html
 - `xarray.DataArray.xlm.modelfit`:
-  https://xarray-lmfit.readthedocs.io/en/stable/accessors/xarray.DataArray.xlm.modelfit.html
+  https://xarray-lmfit.readthedocs.io/stable/accessors/xarray.DataArray.xlm.modelfit.html
 - `xarray.Dataset.xlm.modelfit`:
-  https://xarray-lmfit.readthedocs.io/en/stable/accessors/xarray.Dataset.xlm.modelfit.html
+  https://xarray-lmfit.readthedocs.io/stable/accessors/xarray.Dataset.xlm.modelfit.html
 
 ## URL patterns
 
