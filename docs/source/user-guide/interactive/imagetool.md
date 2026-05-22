@@ -197,7 +197,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
   Holding {kbd}`Alt` while opening the menu switches many actions to cropped mode, which crops the data to what is currently visible in the plot before performing the action. This is useful for conducting analysis on a specific region.
   :::
 
-- Use {guilabel}`Edit → Rotation Guidelines` to add guidelines for azimuthal offsets or symmetry operations.
+- Use {guilabel}`View → Rotation Guidelines` to add guidelines for azimuthal offsets or symmetry operations.
 
   The guideline center moves together with the cursor. The center and the angle of the guidelines feed directly into the {guilabel}`Rotate` dialog and {guilabel}`ktool` for fast alignment.
 
