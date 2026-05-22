@@ -2295,6 +2295,95 @@ def _linked_pair(qtbot):
     return typing.cast("list[ImageTool]", wins)
 
 
+class _SceneDragEvent:
+    def __init__(self, scene_pos: QtCore.QPointF) -> None:
+        self._scene_pos = scene_pos
+
+    def scenePos(self) -> QtCore.QPointF:
+        return self._scene_pos
+
+
+def _cursor_line_values(image, cursor: int) -> tuple[float, ...]:
+    return tuple(line.value() for line in image.cursor_lines[cursor].values())
+
+
+def test_linked_command_option_image_drag_refreshes_linked_cursors(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+    win0.slicer_area.add_cursor()
+    assert win0.slicer_area.n_cursors == 2
+    assert win1.slicer_area.n_cursors == 2
+
+    with qtbot.waitExposed(win0):
+        win0.show()
+    with qtbot.waitExposed(win1):
+        win1.show()
+
+    source_image = win0.slicer_area.main_image
+    target_image = win1.slicer_area.main_image
+    assert _cursor_line_values(target_image, 0) == (2.0, 2.0)
+    assert _cursor_line_values(target_image, 1) == (2.0, 2.0)
+
+    scene_pos = source_image.getViewBox().mapViewToScene(QtCore.QPointF(3.0, 1.0))
+    source_image.process_drag(
+        (
+            _SceneDragEvent(scene_pos),
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            | QtCore.Qt.KeyboardModifier.AltModifier,
+        )
+    )
+
+    for cursor in range(2):
+        qtbot.waitUntil(
+            lambda cursor=cursor: np.allclose(
+                _cursor_line_values(target_image, cursor), (3.0, 1.0)
+            )
+        )
+        assert win0.array_slicer.get_indices(cursor) == [3, 1]
+        assert win1.array_slicer.get_indices(cursor) == [3, 1]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_option_cursor_line_drag_refreshes_linked_cursors(
+    qtbot, monkeypatch
+) -> None:
+    win0, win1 = _linked_pair(qtbot)
+    win0.slicer_area.add_cursor()
+
+    with qtbot.waitExposed(win0):
+        win0.show()
+    with qtbot.waitExposed(win1):
+        win1.show()
+
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "keyboardModifiers",
+        staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
+    )
+
+    source_image = win0.slicer_area.main_image
+    target_image = win1.slicer_area.main_image
+    axis = source_image.display_axis[0]
+    line = source_image.cursor_lines[0][axis]
+
+    source_image.line_drag(line, 4.0, axis)
+
+    for cursor in range(2):
+        qtbot.waitUntil(
+            lambda cursor=cursor: np.allclose(
+                _cursor_line_values(target_image, cursor), (4.0, 2.0)
+            )
+        )
+        assert win0.array_slicer.get_indices(cursor) == [4, 2]
+        assert win1.array_slicer.get_indices(cursor) == [4, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
 def test_linked_cursor_undo_redo_propagates(qtbot) -> None:
     win0, win1 = _linked_pair(qtbot)
 

@@ -1883,9 +1883,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def refresh_current(self, axes: tuple[int, ...] | None = None) -> None:
         self.sigIndexChanged.emit(self.current_cursor, axes)
 
-    @QtCore.Slot(int, list)
+    @QtCore.Slot(object, object)
     @link_slicer
-    def refresh(self, cursor: int, axes: tuple[int, ...] | None = None) -> None:
+    def refresh(
+        self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None = None
+    ) -> None:
         self.sigIndexChanged.emit(cursor, axes)
 
     @QtCore.Slot()
