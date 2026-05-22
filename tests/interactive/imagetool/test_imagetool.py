@@ -42,6 +42,7 @@ from erlab.interactive.imagetool.dialogs import (
     ROIMaskDialog,
     ROIPathDialog,
     RotationDialog,
+    SelectionDialog,
     SwapDimsDialog,
     SymmetrizeDialog,
     SymmetrizeNfoldDialog,
@@ -134,6 +135,18 @@ def _menu_action_by_data(menu: QtWidgets.QMenu, data: object) -> QtGui.QAction:
     matches = [action for action in menu.actions() if action.data() == data]
     assert len(matches) == 1
     return matches[0]
+
+
+def _set_combo_data(combo: QtWidgets.QComboBox, data: object) -> None:
+    index = combo.findData(data, QtCore.Qt.ItemDataRole.UserRole)
+    assert index != -1
+    combo.setCurrentIndex(index)
+
+
+def _clear_selection_dialog(dialog: SelectionDialog) -> None:
+    for row in dialog.rows:
+        row.use_check.setChecked(False)
+        row.width_check.setChecked(False)
 
 
 def _assert_guideline_state(
@@ -712,7 +725,7 @@ def test_selection_expr_for_cursor_preserves_nonstring_qsel_dim(qtbot) -> None:
     qtbot.addWidget(win)
 
     expr = win.slicer_area.main_image._selection_expr_for_cursor("data", 0, (0,))
-    assert expr == 'data.qsel(**{"k-space": 0.0})'
+    assert expr == 'data.qsel({"k-space": 0.0})'
 
     win.close()
 
@@ -760,7 +773,7 @@ def test_plot_code_multicursor_image_with_non_identifier_dim_name(qtbot) -> None
     main_image = win.slicer_area.images[0]
 
     code = main_image._plot_code_multicursor()
-    assert 'selected = data.qsel(**{"k-space": 2.0})' in code
+    assert 'selected = data.qsel({"k-space": 2.0})' in code
 
     win.close()
 
@@ -3611,6 +3624,267 @@ def test_average_dialog_make_code_preserves_nonstring_dim(qtbot) -> None:
         _exec_data_fragment(data, dialog.make_code()),
         data.qsel.average("k-space"),
     )
+
+    dialog.close()
+    win.close()
+
+
+def _selection_4d_data() -> xr.DataArray:
+    return xr.DataArray(
+        np.arange(3 * 4 * 5 * 6).reshape((3, 4, 5, 6)).astype(float),
+        dims=["alpha", "eV", "beta", "hv"],
+        coords={
+            "alpha": np.arange(3, dtype=float),
+            "eV": np.arange(4, dtype=float),
+            "beta": np.arange(5, dtype=float),
+            "hv": np.linspace(20.0, 70.0, 6),
+        },
+        name="scan",
+    )
+
+
+def test_selection_dialog_seeds_4d_cursor_slice(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.set_index(3, 4)
+
+    dialog = SelectionDialog(win.slicer_area)
+
+    assert [row.use_check.isChecked() for row in dialog.rows] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+    expected = data.qsel(hv=60.0)
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+    assert dialog.buttonBox.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_accept_replaces_current_data(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.set_index(3, 2)
+
+    dialog = SelectionDialog(win.slicer_area)
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    dialog.accept()
+
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), data.qsel(hv=40.0).rename(None)
+    )
+    assert win.provenance_spec is not None
+    assert [op.op for op in win.provenance_spec.operations] == ["qsel", "rename"]
+
+    win.close()
+
+
+def test_selection_dialog_isel_range_executes_code(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[0]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "isel")
+    _set_combo_data(row.kind_combo, "range")
+    row.index_start_spin.setValue(1)
+    row.index_stop_spin.setValue(3)
+
+    expected = data.isel(alpha=slice(1, 3))
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4 * 5).reshape((3, 4, 5)).astype(float),
+        dims=["Fake Motor", "eV", "beta"],
+        coords={
+            "Fake Motor": np.arange(3, dtype=float),
+            "eV": np.arange(4, dtype=float),
+            "beta": np.arange(5, dtype=float),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[0]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "isel")
+    row.index_start_spin.setValue(1)
+
+    expected = data.isel({"Fake Motor": 1})
+    assert dialog.make_code() == '.isel({"Fake Motor": 1})'
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_sel_range_executes_code(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[1]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "sel")
+    _set_combo_data(row.kind_combo, "range")
+    row.value_start_spin.setValue(1.0)
+    row.value_stop_spin.setValue(3.0)
+
+    expected = data.sel(eV=slice(1.0, 3.0))
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_qsel_range_ignores_cursor_width(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.array_slicer.set_bin(0, axis=2, value=3, update=True)
+    dialog = SelectionDialog(win.slicer_area)
+    for dialog_row in dialog.rows:
+        dialog_row.use_check.setChecked(False)
+
+    row = dialog.rows[2]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "qsel")
+    _set_combo_data(row.kind_combo, "range")
+    row.value_start_spin.setValue(1.0)
+    row.value_stop_spin.setValue(3.0)
+
+    expected = data.qsel(beta=slice(1.0, 3.0))
+    assert row.width_check.isChecked()
+    assert not row.width_widget.isEnabled()
+    assert row.qsel_width_indexer() is None
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+    assert dialog.buttonBox.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_qsel_width_executes_code(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    row = dialog.rows[2]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "qsel")
+    _set_combo_data(row.kind_combo, "point")
+    row.value_start_spin.setValue(2.0)
+    row.width_check.setChecked(True)
+    row.width_spin.setValue(2.0)
+
+    expected = data.qsel(beta=2.0, beta_width=2.0)
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_uses_public_nonuniform_dimensions(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4 * 5).reshape((3, 4, 5)).astype(float),
+        dims=["alpha", "eV", "beta"],
+        coords={
+            "alpha": np.array([0.1, 0.4, 0.8]),
+            "eV": np.arange(4, dtype=float),
+            "beta": np.arange(5, dtype=float),
+        },
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    assert win.slicer_area.data.dims == ("alpha_idx", "eV", "beta")
+    row = dialog.rows[0]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "qsel")
+    row.value_start_spin.setValue(0.4)
+
+    expected = data.qsel(alpha=0.4)
+    selected = dialog.process_data(dialog.public_data)
+    assert selected.dims == ("eV", "beta")
+    xarray.testing.assert_identical(selected, expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+    spec = dialog.source_spec("scan_sel")
+    assert spec.kind == "public_data"
+    xarray.testing.assert_identical(
+        spec.apply(win.slicer_area.data), expected.rename("scan_sel")
+    )
+
+    dialog.close()
+    win.close()
+
+
+def test_selection_dialog_menu_action_key(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    action = win.mnb.action_dict["selectDataAct"]
+    assert action.isEnabled()
+
+    win.close()
+
+
+def test_selection_dialog_rejects_empty_selection(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"].copy(), execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    assert dialog.source_operations() == []
+    assert not dialog.buttonBox.button(
+        QtWidgets.QDialogButtonBox.StandardButton.Ok
+    ).isEnabled()
 
     dialog.close()
     win.close()

@@ -59,6 +59,7 @@ from erlab.interactive.imagetool._load_source import (
     _scan_number_load_call_args,
 )
 from erlab.interactive.imagetool._magic import _normalize_manager_target_args
+from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
     fetch,
@@ -4026,6 +4027,59 @@ def test_manager_meshtool_output_itools_use_distinct_output_ids(
         assert mesh_node.provenance_spec is not None
         xr.testing.assert_identical(fetch(corr_uid), child._corrected)
         xr.testing.assert_identical(fetch(mesh_uid), child._mesh)
+
+
+def test_manager_selection_dialog_opens_child_with_source_spec(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(3 * 4 * 5 * 6).reshape((3, 4, 5, 6)).astype(float),
+        dims=["alpha", "eV", "beta", "hv"],
+        coords={
+            "alpha": np.arange(3, dtype=float),
+            "eV": np.arange(4, dtype=float),
+            "beta": np.arange(5, dtype=float),
+            "hv": np.linspace(20.0, 70.0, 6),
+        },
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.set_index(3, 2)
+        dialog = SelectionDialog(parent_tool.slicer_area)
+        assert (
+            dialog.launch_mode_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
+            == "nest"
+        )
+
+        dialog.accept()
+
+        parent = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        child_tool = child_node.imagetool
+        expected = data.qsel(hv=40.0).rename("scan_sel")
+
+        assert child_tool is not None
+        assert child_node.source_spec is not None
+        assert [op.op for op in child_node.source_spec.operations] == ["qsel", "rename"]
+        xarray.testing.assert_identical(
+            child_node.source_spec.apply(parent_tool.slicer_area.data), expected
+        )
+        xarray.testing.assert_identical(
+            child_tool.slicer_area._data.rename(None), expected.rename(None)
+        )
 
 
 @pytest.mark.parametrize(
