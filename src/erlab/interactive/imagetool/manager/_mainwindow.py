@@ -1142,12 +1142,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.reindex_action.setToolTip("Reset indices of all windows")
 
         self.link_action = QtWidgets.QAction("Link", self)
-        self.link_action.triggered.connect(self.link_selected)
+        self.link_action.triggered.connect(lambda _checked=False: self.link_selected())
         self.link_action.setShortcut(QtGui.QKeySequence("Ctrl+L"))
         self.link_action.setToolTip("Link selected windows")
 
         self.unlink_action = QtWidgets.QAction("Unlink", self)
-        self.unlink_action.triggered.connect(self.unlink_selected)
+        self.unlink_action.triggered.connect(
+            lambda _checked=False: self.unlink_selected()
+        )
         self.unlink_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+L"))
         self.unlink_action.setToolTip("Unlink selected windows")
 

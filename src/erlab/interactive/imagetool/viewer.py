@@ -29,12 +29,14 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool import _history
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
 )
 
 if typing.TYPE_CHECKING:
+    import datetime
     from collections.abc import Callable, Collection, Hashable, Iterable
 
     import qtawesome
@@ -260,11 +262,17 @@ def record_history(method: Callable | None = None):
         @functools.wraps(method)
         def wrapped(self, *args, **kwargs):
             area = self.slicer_area if hasattr(self, "slicer_area") else self
-            area.sigWriteHistory.emit()
-            with area.history_suppressed():
-                # Prevent making additional records within the method
-                return method(self, *args, **kwargs)
+            transaction_id = kwargs.pop("__slicer_transaction_id", None)
+            keep_pending = kwargs.pop(
+                "__slicer_keep_pending", area._history_group_active
+            )
+            return area.record_history_mutation(
+                transaction_id,
+                lambda: method(self, *args, **kwargs),
+                keep_pending=keep_pending,
+            )
 
+        typing.cast("typing.Any", wrapped)._itool_records_history = True
         return wrapped
 
     if method is not None:
@@ -306,15 +314,41 @@ def link_slicer(
         def wrapped(*args, **kwargs):
             # skip sync if already synced
             skip_sync = kwargs.pop("__slicer_skip_sync", False)
+            transaction_id = kwargs.pop("__slicer_transaction_id", None)
+            keep_pending = kwargs.pop("__slicer_keep_pending", None)
+            obj = args[0]
+            records_history = getattr(func, "_itool_records_history", False)
+            if keep_pending is None:
+                keep_pending = obj._history_group_active
+            sync_enabled = (
+                obj.is_linked
+                and not skip_sync
+                and obj._link_sync_suppressed == 0
+                and obj._linking_proxy is not None
+                and (not color or obj._linking_proxy.link_colors)
+            )
+            if records_history and transaction_id is None and sync_enabled:
+                transaction_id = obj.next_linked_history_transaction_id()
 
-            out = func(*args, **kwargs)
-            if args[0].is_linked and not skip_sync:
+            call_kwargs = dict(kwargs)
+            if records_history:
+                call_kwargs["__slicer_transaction_id"] = transaction_id
+                call_kwargs["__slicer_keep_pending"] = keep_pending
+            out = func(*args, **call_kwargs)
+            if sync_enabled:
                 all_args = inspect.Signature.from_callable(func).bind(*args, **kwargs)
                 all_args.apply_defaults()
                 obj = all_args.arguments.pop("self")
                 if obj._linking_proxy is not None:  # pragma: no branch
                     obj._linking_proxy.sync(
-                        obj, func.__name__, all_args.arguments, indices, steps, color
+                        obj,
+                        func.__name__,
+                        all_args.arguments,
+                        indices,
+                        steps,
+                        color,
+                        transaction_id,
+                        keep_pending,
                     )
             return out
 
@@ -377,6 +411,8 @@ class SlicerLinkProxy:
         indices: bool,
         steps: bool,
         color: bool,
+        transaction_id: str | None,
+        keep_pending: bool,
     ) -> None:
         r"""Propagate changes across multiple :class:`ImageSlicerArea`\ s.
 
@@ -399,7 +435,15 @@ class SlicerLinkProxy:
             return
         for target in self.children.difference({source}):
             getattr(target, funcname)(
-                **self.convert_args(source, target, arguments, indices, steps)
+                **self.convert_args(
+                    source,
+                    target,
+                    dict(arguments),
+                    indices,
+                    steps,
+                    transaction_id,
+                    keep_pending,
+                )
             )
 
     def convert_args(
@@ -409,6 +453,8 @@ class SlicerLinkProxy:
         args: dict[str, typing.Any],
         indices: bool,
         steps: bool,
+        transaction_id: str | None,
+        keep_pending: bool,
     ):
         if indices:
             index: int | None = args.get("value")
@@ -425,6 +471,8 @@ class SlicerLinkProxy:
                 args["value"] = self.convert_index(source, target, axis, index, steps)
 
         args["__slicer_skip_sync"] = True  # passed onto the decorator
+        args["__slicer_transaction_id"] = transaction_id
+        args["__slicer_keep_pending"] = keep_pending
         return args
 
     @staticmethod
@@ -666,14 +714,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._obj_shares_data_values: bool = False
 
         # Queues to handle undo and redo
-        self._prev_states: collections.deque[ImageSlicerState] = collections.deque(
+        self._prev_states: collections.deque[_history.HistoryEntry] = collections.deque(
             maxlen=1000
         )
-        self._next_states: collections.deque[ImageSlicerState] = collections.deque(
+        self._next_states: collections.deque[_history.HistoryEntry] = collections.deque(
             maxlen=1000
         )
+        self._pending_history_entry: _history.HistoryEntry | None = None
+        self._pending_history_committed = False
+        self._link_sync_suppressed = 0
         self._history_group_active = False
-        self._history_group_recorded = False
         self._history_group_timer = QtCore.QTimer(self)
         self._history_group_timer.setSingleShot(True)
         self._history_group_timer.timeout.connect(self.end_history_group)
@@ -911,6 +961,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @state.setter
     def state(self, state: ImageSlicerState) -> None:
+        with self.history_suppressed(), self.link_sync_suppressed():
+            self._restore_state(state)
+
+    def _restore_state(self, state: ImageSlicerState) -> None:
         logger.debug("Restoring state...")
         parent = self.parent()
         if hasattr(parent, "_set_controls_visible"):
@@ -1180,6 +1234,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._write_history = original
 
     @contextlib.contextmanager
+    def link_sync_suppressed(self):
+        self._link_sync_suppressed += 1
+        try:
+            yield
+        finally:
+            self._link_sync_suppressed -= 1
+
+    @contextlib.contextmanager
     def history_group(self, timeout_ms: int = _HISTORY_GROUP_IDLE_TIMEOUT_MS):
         self.begin_history_group(timeout_ms)
         try:
@@ -1191,31 +1253,130 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def begin_history_group(
         self, timeout_ms: int = _HISTORY_GROUP_IDLE_TIMEOUT_MS
     ) -> None:
-        if not self._history_group_active:
-            self._history_group_recorded = False
         self._history_group_active = True
         self._history_group_timer.start(timeout_ms)
 
     @QtCore.Slot()
     def end_history_group(self) -> None:
+        self.finalize_history_entry()
         self._history_group_timer.stop()
         self._history_group_active = False
-        self._history_group_recorded = False
 
-    def _append_current_state_to_history(self) -> None:
-        last_state = self._prev_states[-1] if self.undoable else None
-        curr_state = self.state.copy()
+    def _history_state_snapshot(self) -> ImageSlicerState:
+        state = copy.deepcopy(self.state)
+        state.pop("splitter_sizes", None)
+        return state
 
-        # Don't store splitter sizes in history
-        if last_state is not None:
-            last_state.pop("splitter_sizes", None)
-        curr_state.pop("splitter_sizes", None)
+    def next_linked_history_transaction_id(self) -> str:
+        if (
+            self._history_group_active
+            and self._pending_history_entry is not None
+            and self._pending_history_entry.transaction_id is not None
+        ):
+            return self._pending_history_entry.transaction_id
+        return uuid.uuid4().hex
 
-        if last_state is None or last_state != curr_state:
-            # Only store state if it has changed
-            self._prev_states.append(curr_state)
-            self._next_states.clear()
+    def begin_history_entry(self, transaction_id: str | None) -> None:
+        if not self._write_history:
+            return
+        if self._pending_history_entry is not None:
+            if self._pending_history_entry.transaction_id == transaction_id:
+                return
+            self.finalize_history_entry()
+
+        before_state = self._history_state_snapshot()
+        entry = _history.HistoryEntry(
+            before_state=typing.cast("dict[str, typing.Any]", before_state),
+            after_state=typing.cast(
+                "dict[str, typing.Any]", copy.deepcopy(before_state)
+            ),
+            changed_paths=frozenset(),
+            transaction_id=transaction_id,
+        )
+        self._pending_history_entry = entry
+        self._pending_history_committed = False
+
+    def finalize_history_entry(self, *, keep_pending: bool = False) -> None:
+        entry = self._pending_history_entry
+        if entry is None:
+            return
+
+        after_state = self._history_state_snapshot()
+        entry.after_state = typing.cast("dict[str, typing.Any]", after_state)
+        entry.changed_paths = _history.changed_paths(entry.before_state, after_state)
+        if not entry.changed_paths and not keep_pending:
+            if self._pending_history_committed:
+                self._prev_states.remove(entry)
+            self._pending_history_entry = None
+            self._pending_history_committed = False
             self.sigHistoryChanged.emit()
+            return
+
+        if entry.changed_paths and not self._pending_history_committed:
+            self._prev_states.append(entry)
+            self._next_states.clear()
+            self._pending_history_committed = True
+
+        if not keep_pending:
+            self._pending_history_entry = None
+            self._pending_history_committed = False
+        self.sigHistoryChanged.emit()
+
+    def record_history_mutation(
+        self,
+        transaction_id: str | None,
+        mutation: Callable[[], typing.Any],
+        *,
+        keep_pending: bool = False,
+    ) -> typing.Any:
+        recording = self._write_history
+        self.begin_history_entry(transaction_id)
+        try:
+            with self.history_suppressed():
+                return mutation()
+        finally:
+            if recording:
+                self.finalize_history_entry(keep_pending=keep_pending)
+
+    def _apply_history_entry(self, entry: _history.HistoryEntry, *, undo: bool) -> None:
+        source = entry.before_state if undo else entry.after_state
+        patched = _history.patch_state(self.state, source, entry.changed_paths)
+        with self.history_suppressed(), self.link_sync_suppressed():
+            self.state = typing.cast("ImageSlicerState", patched)
+
+    def _apply_matching_linked_history_entry(
+        self, transaction_id: str, *, undo: bool
+    ) -> None:
+        self.end_history_group()
+        stack = self._prev_states if undo else self._next_states
+        entry = next(
+            (
+                candidate
+                for candidate in reversed(stack)
+                if candidate.transaction_id == transaction_id
+            ),
+            None,
+        )
+        if entry is None or not _history.entry_matches_current(
+            entry, self._history_state_snapshot(), undo=undo
+        ):
+            return
+
+        stack.remove(entry)
+        self._apply_history_entry(entry, undo=undo)
+        if undo:
+            self._next_states.append(entry)
+        else:
+            self._prev_states.append(entry)
+        self.sigHistoryChanged.emit()
+
+    def _propagate_history_entry(
+        self, entry: _history.HistoryEntry, *, undo: bool
+    ) -> None:
+        if entry.transaction_id is None or self._linking_proxy is None:
+            return
+        for target in tuple(self.linked_slicers):
+            target._apply_matching_linked_history_entry(entry.transaction_id, undo=undo)
 
     @QtCore.Slot()
     def write_state(self) -> None:
@@ -1223,13 +1384,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
 
         if self._history_group_active:
-            if not self._history_group_recorded:
-                self._append_current_state_to_history()
-                self._history_group_recorded = True
+            self.begin_history_entry(None)
             self._history_group_timer.start()
             return
 
-        self._append_current_state_to_history()
+        self.begin_history_entry(None)
+        QtCore.QTimer.singleShot(0, self.finalize_history_entry)
 
     @QtCore.Slot()
     @suppress_history
@@ -1241,38 +1401,102 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
-    @link_slicer
     @suppress_history
     def undo(self) -> None:
         """Undo the most recent action."""
         self.end_history_group()
         if self.undoable:  # pragma: no branch
-            self._next_states.append(self.state)
-            self.state = self._prev_states.pop()
+            entry = self._prev_states.pop()
+            self._apply_history_entry(entry, undo=True)
+            self._next_states.append(entry)
+            self._propagate_history_entry(entry, undo=True)
             self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
-    @link_slicer
     @suppress_history
     def redo(self) -> None:
         """Redo the most recently undone action."""
         self.end_history_group()
         if self.redoable:  # pragma: no branch
-            self._prev_states.append(self.state)
-            self.state = self._next_states.pop()
+            entry = self._next_states.pop()
+            self._apply_history_entry(entry, undo=False)
+            self._prev_states.append(entry)
+            self._propagate_history_entry(entry, undo=False)
             self.sigHistoryChanged.emit()
 
-    def history_states(self) -> tuple[list[ImageSlicerState], int]:
-        states = list(self._prev_states)
-        current_state = self.state.copy()
+    def history_states(
+        self, *, finalize_pending: bool = True
+    ) -> tuple[list[ImageSlicerState], int]:
+        if finalize_pending:
+            self.finalize_history_entry()
+        states = [
+            typing.cast("ImageSlicerState", entry.before_state)
+            for entry in self._prev_states
+        ]
+        current_state = self._history_state_snapshot()
         if not states or states[-1] != current_state:
             states.append(current_state)
         current_index = len(states) - 1
 
         if self._next_states:
-            states.extend(reversed(self._next_states))
+            states.extend(
+                typing.cast("ImageSlicerState", entry.after_state)
+                for entry in reversed(self._next_states)
+            )
 
         return states, current_index
+
+    def history_entry_changes(
+        self, *, finalize_pending: bool = True
+    ) -> list[
+        tuple[
+            int,
+            int,
+            ImageSlicerState,
+            ImageSlicerState,
+            bool,
+            datetime.datetime | None,
+        ]
+    ]:
+        if finalize_pending:
+            self.finalize_history_entry()
+        entries: list[
+            tuple[
+                int,
+                int,
+                ImageSlicerState,
+                ImageSlicerState,
+                bool,
+                datetime.datetime | None,
+            ]
+        ] = []
+        current_index = len(self._prev_states)
+        if current_index == 0 and self._next_states:
+            current_state = self._history_state_snapshot()
+            entries.append((0, 0, current_state, current_state, True, None))
+        for i, entry in enumerate(self._prev_states, start=1):
+            entries.append(
+                (
+                    i,
+                    i - current_index,
+                    typing.cast("ImageSlicerState", entry.before_state),
+                    typing.cast("ImageSlicerState", entry.after_state),
+                    i == current_index,
+                    entry.created_at,
+                )
+            )
+        for i, entry in enumerate(reversed(self._next_states), start=1):
+            entries.append(
+                (
+                    current_index + i,
+                    i,
+                    typing.cast("ImageSlicerState", entry.before_state),
+                    typing.cast("ImageSlicerState", entry.after_state),
+                    False,
+                    entry.created_at,
+                )
+            )
+        return entries
 
     def go_to_history_index(self, index: int) -> None:
         """Go to a specific index in the history.
@@ -2382,7 +2606,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.sigCurrentCursorChanged.emit(self.current_cursor)
 
     @QtCore.Slot()
-    @record_history
     def remove_current_cursor(self) -> None:
         self.remove_cursor(self.current_cursor)
 
@@ -2420,6 +2643,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.sigCursorColorsChanged.emit()
 
     @link_slicer(color=True)
+    @record_history
     def set_colormap(
         self,
         cmap: str | pg.ColorMap | None = None,
@@ -2431,43 +2655,53 @@ class ImageSlicerArea(QtWidgets.QWidget):
         levels: tuple[float, float] | None = None,
         update: bool = True,
     ) -> None:
-        if gamma is None and levels_locked is None and levels is None:
-            # These will be handled in their respective methods or calling widgets
-            self.sigWriteHistory.emit()
-            prop = copy.deepcopy(self._colormap_properties)
-            new_reverse = self.reverse_act.isChecked()
-            new_high_contrast = self.high_contrast_act.isChecked()
-            new_zero_centered = self.zero_centered_act.isChecked()
-            if any(
-                (
-                    prop["reverse"] != new_reverse,
-                    prop["high_contrast"] != new_high_contrast,
-                    prop["zero_centered"] != new_zero_centered,
-                )
-            ):
-                self._colormap_properties["reverse"] = new_reverse
-                self._colormap_properties["high_contrast"] = new_high_contrast
-                self._colormap_properties["zero_centered"] = new_zero_centered
-
+        action_values = gamma is None and levels_locked is None and levels is None
         if cmap is not None:
             self._colormap_properties["cmap"] = cmap
         if gamma is not None:
             self._colormap_properties["gamma"] = float(gamma)
-        if reverse is not None:
-            # Don't block signals here to trigger updates to linked buttons.
-            # Will be called twice, but unnoticable
-            self.reverse_act.setChecked(reverse)
-        if high_contrast is not None:
-            self.high_contrast_act.setChecked(high_contrast)
-        if zero_centered is not None:
-            self.zero_centered_act.setChecked(zero_centered)
+
+        reverse_value = (
+            self.reverse_act.isChecked()
+            if reverse is None and action_values
+            else reverse
+        )
+        high_contrast_value = (
+            self.high_contrast_act.isChecked()
+            if high_contrast is None and action_values
+            else high_contrast
+        )
+        zero_centered_value = (
+            self.zero_centered_act.isChecked()
+            if zero_centered is None and action_values
+            else zero_centered
+        )
+
+        reverse_blocker = QtCore.QSignalBlocker(self.reverse_act)
+        high_contrast_blocker = QtCore.QSignalBlocker(self.high_contrast_act)
+        zero_centered_blocker = QtCore.QSignalBlocker(self.zero_centered_act)
+        try:
+            if reverse_value is not None:
+                self._colormap_properties["reverse"] = bool(reverse_value)
+                self.reverse_act.setChecked(bool(reverse_value))
+            if high_contrast_value is not None:
+                self._colormap_properties["high_contrast"] = bool(high_contrast_value)
+                self.high_contrast_act.setChecked(bool(high_contrast_value))
+            if zero_centered_value is not None:
+                self._colormap_properties["zero_centered"] = bool(zero_centered_value)
+                self.zero_centered_act.setChecked(bool(zero_centered_value))
+        finally:
+            del reverse_blocker
+            del high_contrast_blocker
+            del zero_centered_blocker
+
         if levels_locked is not None:
             self.levels_locked = levels_locked
         if levels is not None:
             self.levels = levels
 
         properties = self.colormap_properties
-        cmap = erlab.interactive.colors._pg_colormap_powernorm_lut(
+        pg_colormap = erlab.interactive.colors._pg_colormap_powernorm_lut(
             properties["cmap"],
             properties["gamma"],
             properties["reverse"],
@@ -2475,12 +2709,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
             zero_centered=properties["zero_centered"],
         )
         for im in self._imageitems:
-            im.set_pg_colormap(cmap, update=update)
+            im.set_pg_colormap(pg_colormap, update=update)
         self.sigViewOptionChanged.emit()
 
     @QtCore.Slot()
     def refresh_colormap(self) -> None:
-        self.set_colormap(update=True)
+        self.set_colormap(
+            reverse=self.reverse_act.isChecked(),
+            high_contrast=self.high_contrast_act.isChecked(),
+            zero_centered=self.zero_centered_act.isChecked(),
+            update=True,
+        )
         logger.debug("Colormap refreshed")
 
     @QtCore.Slot(bool)

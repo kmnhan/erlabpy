@@ -777,7 +777,6 @@ class ItoolColormapControls(ItoolControlsBase):
         layout.addWidget(self.misc_controls)
 
     def _set_gamma(self, gamma: float) -> None:
-        self.slicer_area.sigWriteHistory.emit()
         self.slicer_area.set_colormap(gamma=gamma)
 
     def update_content(self) -> None:

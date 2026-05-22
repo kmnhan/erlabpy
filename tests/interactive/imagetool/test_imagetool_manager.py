@@ -59,6 +59,7 @@ from erlab.interactive.imagetool._load_source import (
     _scan_number_load_call_args,
 )
 from erlab.interactive.imagetool._magic import _normalize_manager_target_args
+from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import (
     ImageToolManager,
@@ -7154,6 +7155,45 @@ def test_manager_sync(
             win0.slicer_area.main_image.getViewBox().state["mouseEnabled"][:]
         )
         assert win1.slicer_area.main_image.getViewBox().viewRange() == [[2, 3], [1, 2]]
+
+
+def test_manager_link_action_links_colors(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool([test_data, test_data], link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        select_tools(manager, [0, 1])
+        qtbot.wait_until(lambda: manager.link_action.isEnabled())
+        manager.link_action.trigger()
+
+        proxy = manager.get_imagetool(0).slicer_area._linking_proxy
+        assert proxy is not None
+        assert proxy.link_colors is True
+
+        control = (
+            manager.get_imagetool(0).docks[1].widget().findChild(ItoolColormapControls)
+        )
+        assert control is not None
+        control._set_gamma(1.5)
+        assert manager.get_imagetool(1).slicer_area.colormap_properties[
+            "gamma"
+        ] == pytest.approx(1.5)
+
+        manager.get_imagetool(0).slicer_area.undo()
+        assert manager.get_imagetool(0).slicer_area.colormap_properties[
+            "gamma"
+        ] == pytest.approx(0.5)
+        assert manager.get_imagetool(1).slicer_area.colormap_properties[
+            "gamma"
+        ] == pytest.approx(0.5)
 
 
 def test_manager_workspace_io(
