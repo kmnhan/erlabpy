@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
+import dataclasses
+import datetime
 import numbers
 import pathlib
 import typing
 import weakref
-from collections.abc import Mapping, Sequence
+from collections.abc import Hashable, Mapping, MutableMapping, Sequence
 
 import numpy as np
 from qtpy import QtCore, QtWidgets
@@ -16,6 +19,22 @@ if typing.TYPE_CHECKING:
 _MISSING = object()
 
 _DetailRow = tuple[str, str, str]
+_StatePath = tuple[Hashable, ...]
+_HistoryEntryRow = tuple[
+    int, int, str, tuple[_DetailRow, ...], bool, datetime.datetime | None
+]
+
+
+@dataclasses.dataclass(slots=True, eq=False)
+class HistoryEntry:
+    before_state: dict[str, typing.Any]
+    after_state: dict[str, typing.Any]
+    changed_paths: frozenset[_StatePath]
+    transaction_id: str | None
+    created_at: datetime.datetime = dataclasses.field(
+        default_factory=lambda: datetime.datetime.now().astimezone()
+    )
+
 
 _DETAIL_LABELS = {
     "color.cmap": "Colormap",
@@ -105,6 +124,12 @@ def _detail_rows_to_lines(details: Sequence[_DetailRow]) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def _format_history_datetime(timestamp: datetime.datetime | None) -> str:
+    if timestamp is None:
+        return ""
+    return timestamp.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _changed_paths(
     prev_flat: Mapping[str, typing.Any], curr_flat: Mapping[str, typing.Any]
 ) -> set[str]:
@@ -115,6 +140,143 @@ def _changed_paths(
         if not (path == "splitter_sizes" or path.startswith("splitter_sizes."))
         and prev_flat.get(path, _MISSING) != curr_flat.get(path, _MISSING)
     }
+
+
+def changed_paths(
+    prev: Mapping[str, typing.Any], curr: Mapping[str, typing.Any]
+) -> frozenset[_StatePath]:
+    paths: set[_StatePath] = set()
+
+    def visit(old: typing.Any, new: typing.Any, prefix: _StatePath = ()) -> None:
+        if prefix and prefix[0] == "splitter_sizes":
+            return
+
+        if isinstance(old, Mapping) and isinstance(new, Mapping):
+            for key in set(old) | set(new):
+                visit(
+                    old.get(key, _MISSING),
+                    new.get(key, _MISSING),
+                    (*prefix, key),
+                )
+            return
+        if isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
+            for i, (old_item, new_item) in enumerate(zip(old, new, strict=True)):
+                visit(old_item, new_item, (*prefix, i))
+            return
+        old = _normalize_value(old)
+        new = _normalize_value(new)
+        if prefix and old != new:
+            paths.add(prefix)
+
+    visit(prev, curr)
+    return frozenset(paths)
+
+
+def _path_value(
+    state: Mapping[str, typing.Any], path: _StatePath, *, normalize: bool = True
+) -> typing.Any:
+    value: typing.Any = state
+    for part in path:
+        if isinstance(value, Mapping):
+            if part not in value:
+                return _MISSING
+            value = value[part]
+            continue
+        if isinstance(value, Sequence) and not isinstance(
+            value, (str, bytes, bytearray)
+        ):
+            if not isinstance(part, int) or isinstance(part, bool):
+                return _MISSING
+            index = part
+            if index < 0 or index >= len(value):
+                return _MISSING
+            value = value[index]
+            continue
+        return _MISSING
+    if normalize:
+        return _normalize_value(value)
+    return value
+
+
+def _set_path(
+    state: dict[str, typing.Any], path: _StatePath, value: typing.Any
+) -> None:
+    if not path:
+        return
+
+    target: typing.Any = state
+    for i, part in enumerate(path[:-1]):
+        next_part = path[i + 1]
+        if isinstance(target, MutableMapping):
+            child = target.get(part, _MISSING)
+            if not isinstance(child, (dict, list)):
+                if value is _MISSING:
+                    return
+                child = (
+                    []
+                    if isinstance(next_part, int) and not isinstance(next_part, bool)
+                    else {}
+                )
+                target[part] = child
+            target = child
+            continue
+        if isinstance(target, list):
+            if not isinstance(part, int) or isinstance(part, bool):
+                return
+            index = part
+            if index < 0 or index >= len(target):
+                return
+            child = target[index]
+            if not isinstance(child, (dict, list)):
+                if value is _MISSING:
+                    return
+                child = (
+                    []
+                    if isinstance(next_part, int) and not isinstance(next_part, bool)
+                    else {}
+                )
+                target[index] = child
+            target = child
+            continue
+        return
+
+    last = path[-1]
+    if isinstance(target, MutableMapping):
+        if value is _MISSING:
+            target.pop(last, None)
+        else:
+            target[last] = copy.deepcopy(value)
+    elif isinstance(target, list):
+        if not isinstance(last, int) or isinstance(last, bool):
+            return
+        index = last
+        if index < 0 or index >= len(target):
+            return
+        if value is _MISSING:
+            target.pop(index)
+        else:
+            target[index] = copy.deepcopy(value)
+
+
+def entry_matches_current(
+    entry: HistoryEntry, current: Mapping[str, typing.Any], *, undo: bool
+) -> bool:
+    expected = entry.after_state if undo else entry.before_state
+    return all(
+        _normalize_value(_path_value(current, path)) == _path_value(expected, path)
+        for path in entry.changed_paths
+    )
+
+
+def patch_state(
+    base: Mapping[str, typing.Any],
+    source: Mapping[str, typing.Any],
+    paths: frozenset[_StatePath],
+) -> dict[str, typing.Any]:
+    patched = copy.deepcopy(dict(base))
+    for path in paths:
+        _set_path(patched, path, _path_value(source, path, normalize=False))
+    return patched
 
 
 def _consume(changes: set[str], *paths: str, prefixes: Sequence[str] = ()) -> None:
@@ -439,9 +601,32 @@ def describe_state_diff(
 
 def _history_entries(
     slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea,
-) -> list[tuple[int, int, str, tuple[_DetailRow, ...], bool]]:
+) -> list[_HistoryEntryRow]:
+    history_entry_changes = getattr(slicer_area, "history_entry_changes", None)
+    if callable(history_entry_changes):
+        entry_rows: list[_HistoryEntryRow] = []
+        for (
+            i,
+            relative_index,
+            prev_state,
+            this_state,
+            is_current,
+            created_at,
+        ) in reversed(history_entry_changes(finalize_pending=False)):
+            change = _describe_state_change_rows(prev_state, this_state)
+            if change is None:
+                if not is_current:
+                    continue
+                summary, details = "Current state", ()
+            else:
+                summary, details = change
+            entry_rows.append(
+                (i, relative_index, summary, details, is_current, created_at)
+            )
+        return entry_rows
+
     states, current_index = slicer_area.history_states()
-    entries: list[tuple[int, int, str, tuple[_DetailRow, ...], bool]] = []
+    entries: list[_HistoryEntryRow] = []
     for i in range(len(states) - 1, 0, -1):
         prev_state, this_state = states[i - 1], states[i]
         change = _describe_state_change_rows(prev_state, this_state)
@@ -452,9 +637,9 @@ def _history_entries(
         else:
             summary, details = change
         is_current = i == current_index
-        entries.append((i, i - current_index, summary, details, is_current))
+        entries.append((i, i - current_index, summary, details, is_current, None))
     if current_index == 0 and len(states) > 1:
-        entries.append((0, 0, "Current state", (), True))
+        entries.append((0, 0, "Current state", (), True, None))
     return entries
 
 
@@ -579,12 +764,17 @@ class HistoryDialog(QtWidgets.QDialog):
             return
 
         current_item: QtWidgets.QListWidgetItem | None = None
-        for _, relative_index, summary, details, is_current in entries:
-            item = QtWidgets.QListWidgetItem(
-                f"Current: {summary}" if is_current else summary
-            )
+        for _, relative_index, summary, details, is_current, created_at in entries:
+            timestamp = _format_history_datetime(created_at)
+            text = f"Current: {summary}" if is_current else summary
+            if timestamp:
+                text = f"{text}\n{timestamp}"
+            item = QtWidgets.QListWidgetItem(text)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, relative_index)
             item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, details)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole + 2, timestamp)
+            if timestamp:
+                item.setToolTip(timestamp)
             if is_current:
                 font = item.font()
                 font.setBold(True)
@@ -817,7 +1007,7 @@ class HistoryMenu(QtWidgets.QMenu):
             self._actions.append(action)
             return
 
-        for state_index, relative_index, summary, _, is_current in entries:
+        for state_index, relative_index, summary, _, is_current, _ in entries:
             marker = "•" if is_current else " "
             action = QtWidgets.QAction(f"{marker} {summary}")
             action.setObjectName(f"itool_history_action_{state_index}")

@@ -467,21 +467,17 @@ def test_history_states_include_current_and_future(qtbot):
     qtbot.addWidget(win)
     area = win.slicer_area
 
-    base_state = area.state
-    past_state = copy.deepcopy(base_state)
-    past_state["color"]["reverse"] = True
-    future_state = copy.deepcopy(base_state)
-    future_state["current_cursor"] = base_state["current_cursor"] + 1
-
-    area._prev_states.clear()
-    area._next_states.clear()
-    area._prev_states.append(past_state)
-    area._next_states.append(future_state)
+    base_state = area._history_state_snapshot()
+    area.set_index(0, 1)
+    current_state = area._history_state_snapshot()
+    area.set_index(1, 1)
+    future_state = area._history_state_snapshot()
+    area.undo()
 
     states, current_index = area.history_states()
 
-    assert states[0] == past_state
-    assert states[1] == base_state
+    assert states[0] == base_state
+    assert states[1] == current_state
     assert states[2] == future_state
     assert current_index == 1
     win.close()
@@ -551,6 +547,133 @@ def test_controls_history_grouping_skips_nested_controls_and_disconnects(qtbot) 
     win.close()
 
 
+def test_history_entries_record_timestamps(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.set_index(0, 1)
+
+    entry = area._prev_states[-1]
+    assert entry.created_at.tzinfo is not None
+    assert entry.created_at.utcoffset() is not None
+    win.close()
+
+
+def test_noop_history_write_does_not_evict_full_undo_stack(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    base_state = area._history_state_snapshot()
+
+    area._prev_states.clear()
+    for i in range(area._prev_states.maxlen or 0):
+        before_state = copy.deepcopy(base_state)
+        after_state = copy.deepcopy(base_state)
+        before_state["current_cursor"] = i
+        after_state["current_cursor"] = i + 1
+        area._prev_states.append(
+            _history.HistoryEntry(
+                before_state,
+                after_state,
+                frozenset({("current_cursor",)}),
+                None,
+            )
+        )
+    oldest_entry = area._prev_states[0]
+
+    area.sigWriteHistory.emit()
+    area.finalize_history_entry()
+
+    assert len(area._prev_states) == area._prev_states.maxlen
+    assert area._prev_states[0] is oldest_entry
+    win.close()
+
+
+def test_noop_history_write_does_not_clear_redo_stack(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    base_state = area._history_state_snapshot()
+    future_state = copy.deepcopy(base_state)
+    future_state["current_cursor"] = base_state["current_cursor"] + 1
+    future_entry = _history.HistoryEntry(
+        base_state,
+        future_state,
+        frozenset({("current_cursor",)}),
+        None,
+    )
+    area._next_states.append(future_entry)
+
+    area.sigWriteHistory.emit()
+    area.finalize_history_entry()
+
+    assert list(area._next_states) == [future_entry]
+    win.close()
+
+
+def test_history_patch_preserves_unrelated_sequence_items():
+    before = {
+        "slice": {
+            "indices": [[2, 2], [2, 2]],
+            "values": [[2.0, 2.0], [2.0, 2.0]],
+        }
+    }
+    after = {
+        "slice": {
+            "indices": [[4, 2], [2, 2]],
+            "values": [[4.0, 2.0], [2.0, 2.0]],
+        }
+    }
+    current = {
+        "slice": {
+            "indices": [[4, 2], [2, 4]],
+            "values": [[4.0, 2.0], [2.0, 4.0]],
+        }
+    }
+
+    paths = _history.changed_paths(before, after)
+
+    assert paths == frozenset({("slice", "indices", 0, 0), ("slice", "values", 0, 0)})
+    assert _history.patch_state(current, before, paths) == {
+        "slice": {
+            "indices": [[2, 2], [2, 4]],
+            "values": [[2.0, 2.0], [2.0, 4.0]],
+        }
+    }
+
+
+def test_history_patch_uses_whole_path_for_sequence_shape_changes():
+    before = {"slice": {"indices": [[2, 2]]}}
+    after = {"slice": {"indices": [[2, 2], [4, 4]]}}
+    paths = _history.changed_paths(before, after)
+
+    assert paths == frozenset({("slice", "indices")})
+    assert _history.patch_state(after, before, paths) == before
+
+
+def test_history_patch_preserves_mapping_keys_containing_dots():
+    before = {"manual_limits": {"a.b": [0.0, 1.0]}}
+    after = {"manual_limits": {"a.b": [0.0, 2.0]}}
+    paths = _history.changed_paths(before, after)
+
+    assert paths == frozenset({("manual_limits", "a.b", 1)})
+    assert _history.patch_state(after, before, paths) == before
+
+
+def test_history_patch_uses_whole_path_for_arrays():
+    before = {"values": np.array([1, 2])}
+    after = {"values": np.array([1, 3])}
+    paths = _history.changed_paths(before, after)
+
+    assert paths == frozenset({("values",)})
+    patched = _history.patch_state(after, before, paths)
+    assert np.array_equal(patched["values"], before["values"])
+
+
 def test_history_group_context_manager_finalizes_entry(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
@@ -598,6 +721,39 @@ def test_history_entry_changes_finalizes_pending_entry(qtbot):
 
     assert entries == []
     assert area._pending_history_entry is None
+    win.close()
+
+
+def test_manual_limit_undo_preserves_dotted_dimension_name(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["a.b", "c"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.set_manual_limits({"a.b": [0.0, 1.0]})
+    area.sigWriteHistory.emit()
+    area.set_manual_limits({"a.b": [0.0, 2.0]})
+    area.finalize_history_entry()
+    area.undo()
+
+    assert area.manual_limits == {"a.b": [0.0, 1.0]}
+    win.close()
+
+
+def test_history_dialog_open_does_not_consume_new_entry(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    start_index = area.current_indices[0]
+    dialog = _history.HistoryDialog(area)
+    qtbot.addWidget(dialog)
+
+    area.set_index(0, start_index + 1)
+    area.undo()
+
+    assert area.current_indices[0] == start_index
+    dialog.close()
     win.close()
 
 
@@ -659,6 +815,30 @@ def test_history_group_coalesces_gamma_spinbox_steps(qtbot):
     win.close()
 
 
+def test_compound_colormap_change_records_one_entry(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    initial_gamma = area.colormap_properties["gamma"]
+
+    area.set_colormap(gamma=1.2, reverse=True)
+
+    assert area.colormap_properties["gamma"] == pytest.approx(1.2)
+    assert area.colormap_properties["reverse"] is True
+    assert area.reverse_act.isChecked()
+    assert len(area._prev_states) == 1
+    assert area._prev_states[-1].changed_paths == frozenset(
+        {("color", "gamma"), ("color", "reverse")}
+    )
+
+    area.undo()
+    assert area.colormap_properties["gamma"] == pytest.approx(initial_gamma)
+    assert area.colormap_properties["reverse"] is False
+    assert not area.reverse_act.isChecked()
+    win.close()
+
+
 def test_history_group_idle_timeout_starts_new_entry(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
@@ -696,6 +876,68 @@ def test_history_group_undo_redo_cancels_active_group(qtbot):
     win.close()
 
 
+def test_history_group_reuses_pending_linked_transaction_id(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.begin_history_group()
+    transaction_id = area.next_linked_history_transaction_id()
+    area.record_history_mutation(
+        transaction_id,
+        lambda: area.set_manual_limits({"x": [0.0, 1.0]}),
+        keep_pending=True,
+    )
+    assert area.next_linked_history_transaction_id() == transaction_id
+
+    area.record_history_mutation(
+        transaction_id,
+        lambda: area.set_manual_limits({"x": [0.0, 2.0]}),
+        keep_pending=True,
+    )
+    area.end_history_group()
+
+    assert [entry.transaction_id for entry in area._prev_states] == [transaction_id]
+    assert area._prev_states[-1].after_state["manual_limits"] == {"x": [0.0, 2.0]}
+    win.close()
+
+
+def test_history_group_linked_transaction_id_resets_after_local_split(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.begin_history_group()
+    first_transaction_id = area.next_linked_history_transaction_id()
+    area.record_history_mutation(
+        first_transaction_id,
+        lambda: area.set_manual_limits({"x": [0.0, 1.0]}),
+        keep_pending=True,
+    )
+    area.record_history_mutation(
+        None,
+        lambda: area.set_manual_limits({"x": [0.0, 1.0], "y": [0.0, 1.0]}),
+        keep_pending=True,
+    )
+    second_transaction_id = area.next_linked_history_transaction_id()
+    area.record_history_mutation(
+        second_transaction_id,
+        lambda: area.set_manual_limits({"x": [0.0, 2.0], "y": [0.0, 1.0]}),
+        keep_pending=True,
+    )
+    area.end_history_group()
+
+    assert second_transaction_id != first_transaction_id
+    assert [entry.transaction_id for entry in area._prev_states] == [
+        first_transaction_id,
+        None,
+        second_transaction_id,
+    ]
+    win.close()
+
+
 def test_quick_discrete_actions_remain_separate_history_entries(qtbot):
     data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
     win = ImageTool(data)
@@ -718,7 +960,22 @@ def test_history_entries_include_current_oldest_state():
 
     entries = _history._history_entries(area)
 
-    assert entries[-1] == (0, 0, "Current state", (), True)
+    assert entries[-1] == (0, 0, "Current state", (), True, None)
+
+
+def test_history_entries_include_current_after_undoing_to_oldest_state(qtbot):
+    data = xr.DataArray(np.arange(4).reshape((2, 2)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.set_index(0, 1)
+    area.undo()
+
+    entries = _history._history_entries(area)
+
+    assert entries[-1] == (0, 0, "Current state", (), True, None)
+    win.close()
 
 
 def test_history_menu_handles_empty_history(qtbot):
@@ -816,6 +1073,26 @@ def test_history_dialog_populates_current_entry_and_details(qtbot):
     assert ("Colormap", "magma", "viridis") in _detail_rows(details)
     assert all("->" not in "".join(row) for row in _detail_rows(details))
     assert not go_to_btn.isEnabled()
+
+
+def test_history_dialog_shows_entry_timestamp(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"])
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+    area.set_index(0, 1)
+
+    dialog = _history.HistoryDialog(area)
+    qtbot.addWidget(dialog)
+    history_list, _, _ = _dialog_widgets(dialog)
+
+    timestamp = _history._format_history_datetime(area._prev_states[-1].created_at)
+    item = history_list.item(0)
+    assert item.data(QtCore.Qt.ItemDataRole.UserRole + 2) == timestamp
+    assert item.toolTip() == timestamp
+    assert timestamp in item.text()
+    dialog.close()
+    win.close()
 
 
 def test_history_dialog_selection_updates_visible_details(qtbot):

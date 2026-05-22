@@ -2285,6 +2285,393 @@ def test_itool_ds(qtbot) -> None:
         win.close()
 
 
+def _linked_pair(qtbot):
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    wins = itool([data, data], execute=False, link=True)
+    assert isinstance(wins, list)
+    assert len(wins) == 2
+    for win in wins:
+        qtbot.addWidget(win)
+    return typing.cast("list[ImageTool]", wins)
+
+
+def test_linked_cursor_undo_redo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.set_index(0, 4)
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+
+    win0.slicer_area.redo()
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_cursor_entry_closes_before_unrecorded_linked_state(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+    for win in (win0, win1):
+        win.slicer_area.set_manual_limits({"x": [1.0, 3.0]})
+        win.slicer_area.flush_history()
+
+    win0.slicer_area.set_index(0, 4)
+    assert win0.slicer_area._pending_history_entry is None
+    assert win1.slicer_area._pending_history_entry is None
+
+    win0.slicer_area.view_all()
+    assert win0.slicer_area.manual_limits == {}
+    assert win1.slicer_area.manual_limits == {}
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+    assert win0.slicer_area.manual_limits == {}
+    assert win1.slicer_area.manual_limits == {}
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_grouped_cursor_undo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+    control = win0.docks[0].widget().findChild(ItoolCrosshairControls)
+    assert control is not None
+    control.update_content()
+
+    control.spin_idx[0].stepBy(1)
+    control.spin_idx[0].stepBy(1)
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_remove_current_cursor_undo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+    win0.slicer_area.add_cursor()
+    win0.slicer_area.flush_history()
+    win1.slicer_area.flush_history()
+
+    win0.slicer_area.remove_current_cursor()
+    assert win0.slicer_area.n_cursors == 1
+    assert win1.slicer_area.n_cursors == 1
+    assert (
+        win0.slicer_area._prev_states[-1].transaction_id
+        == win1.slicer_area._prev_states[-1].transaction_id
+    )
+
+    win0.slicer_area.undo()
+    assert win0.slicer_area.n_cursors == 2
+    assert win1.slicer_area.n_cursors == 2
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_gamma_undo_redo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.set_colormap(gamma=1.4)
+    assert win0.slicer_area.colormap_properties["gamma"] == pytest.approx(1.4)
+    assert win1.slicer_area.colormap_properties["gamma"] == pytest.approx(1.4)
+
+    win0.slicer_area.undo()
+    assert win0.slicer_area.colormap_properties["gamma"] == pytest.approx(0.5)
+    assert win1.slicer_area.colormap_properties["gamma"] == pytest.approx(0.5)
+
+    win0.slicer_area.redo()
+    assert win0.slicer_area.colormap_properties["gamma"] == pytest.approx(1.4)
+    assert win1.slicer_area.colormap_properties["gamma"] == pytest.approx(1.4)
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_grouped_gamma_undo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+    control = win0.docks[1].widget().findChild(ItoolColormapControls)
+    assert control is not None
+
+    control.gamma_widget.slider.sliderPressed.emit()
+    control.gamma_widget.setValue(1.2)
+    control.gamma_widget.setValue(1.4)
+    assert win0.slicer_area.colormap_properties["gamma"] == pytest.approx(1.4)
+    assert win1.slicer_area.colormap_properties["gamma"] == pytest.approx(1.4)
+
+    win0.slicer_area.undo()
+    assert win0.slicer_area.colormap_properties["gamma"] == pytest.approx(0.5)
+    assert win1.slicer_area.colormap_properties["gamma"] == pytest.approx(0.5)
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_compound_colormap_undo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.set_colormap(gamma=1.2, reverse=True)
+    for win in (win0, win1):
+        assert win.slicer_area.colormap_properties["gamma"] == pytest.approx(1.2)
+        assert win.slicer_area.colormap_properties["reverse"] is True
+        assert win.slicer_area.reverse_act.isChecked()
+        assert len(win.slicer_area._prev_states) == 1
+        assert win.slicer_area._prev_states[-1].changed_paths == frozenset(
+            {("color", "gamma"), ("color", "reverse")}
+        )
+
+    assert (
+        win0.slicer_area._prev_states[-1].transaction_id
+        == win1.slicer_area._prev_states[-1].transaction_id
+    )
+
+    win0.slicer_area.undo()
+    for win in (win0, win1):
+        assert win.slicer_area.colormap_properties["gamma"] == pytest.approx(0.5)
+        assert win.slicer_area.colormap_properties["reverse"] is False
+        assert not win.slicer_area.reverse_act.isChecked()
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_colormap_action_undo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.reverse_act.trigger()
+    assert win0.slicer_area.colormap_properties["reverse"] is True
+    assert win1.slicer_area.colormap_properties["reverse"] is True
+    assert win1.slicer_area.reverse_act.isChecked()
+
+    win0.slicer_area.undo()
+    assert win0.slicer_area.colormap_properties["reverse"] is False
+    assert win1.slicer_area.colormap_properties["reverse"] is False
+    assert not win0.slicer_area.reverse_act.isChecked()
+    assert not win1.slicer_area.reverse_act.isChecked()
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_controls_visibility_undo_redo_stays_local(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.mnb.action_dict["toggleControlsAct"].trigger()
+    assert not win0.controls_visible
+    assert win1.controls_visible
+
+    win0.slicer_area.undo()
+    assert win0.controls_visible
+    assert win1.controls_visible
+    assert not win1.slicer_area.redoable
+
+    win0.slicer_area.redo()
+    assert not win0.controls_visible
+    assert win1.controls_visible
+    assert not win1.slicer_area.redoable
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_undo_handles_local_entry_before_linked_entry(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.set_index(0, 4)
+    win0.mnb.action_dict["toggleControlsAct"].trigger()
+
+    win0.slicer_area.undo()
+    assert win0.controls_visible
+    assert win1.controls_visible
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_history_group_splits_linked_then_local_action(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.begin_history_group()
+    win0.slicer_area.set_index(0, 4)
+    win0.mnb.action_dict["toggleControlsAct"].trigger()
+    win0.slicer_area.end_history_group()
+
+    assert [entry.transaction_id for entry in win0.slicer_area._prev_states] == [
+        win1.slicer_area._prev_states[-1].transaction_id,
+        None,
+    ]
+
+    win0.slicer_area.undo()
+    assert win0.controls_visible
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_history_group_splits_local_then_linked_action(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.begin_history_group()
+    win0.mnb.action_dict["toggleControlsAct"].trigger()
+    win0.slicer_area.set_index(0, 4)
+    win0.slicer_area.end_history_group()
+
+    assert [entry.transaction_id for entry in win0.slicer_area._prev_states] == [
+        None,
+        win1.slicer_area._prev_states[-1].transaction_id,
+    ]
+
+    win0.slicer_area.undo()
+    assert not win0.controls_visible
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+
+    win0.slicer_area.undo()
+    assert win0.controls_visible
+    assert win1.controls_visible
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_history_group_resets_transaction_after_local_split(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.begin_history_group()
+    win0.slicer_area.set_index(0, 4)
+    win0.mnb.action_dict["toggleControlsAct"].trigger()
+    win0.slicer_area.set_index(1, 4)
+    win0.slicer_area.end_history_group()
+
+    source_transaction_ids = [
+        entry.transaction_id for entry in win0.slicer_area._prev_states
+    ]
+    assert source_transaction_ids[0] is not None
+    assert source_transaction_ids[1] is None
+    assert source_transaction_ids[2] is not None
+    assert source_transaction_ids[2] != source_transaction_ids[0]
+    assert [entry.transaction_id for entry in win1.slicer_area._prev_states] == [
+        source_transaction_ids[0],
+        source_transaction_ids[2],
+    ]
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+    assert not win0.controls_visible
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+    assert win0.controls_visible
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_undo_preserves_non_conflicting_peer_local_change(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.set_index(0, 4)
+    win1.mnb.action_dict["toggleControlsAct"].trigger()
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+    assert win1.controls_visible is False
+
+    win0.slicer_area.redo()
+    assert win0.array_slicer.get_indices(0) == [4, 2]
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+    assert win1.controls_visible is False
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_undo_preserves_non_conflicting_peer_cursor_change(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+    win0.slicer_area.add_cursor()
+    win0.slicer_area.flush_history()
+    win1.slicer_area.flush_history()
+
+    win0.slicer_area.set_index(0, 4, cursor=0)
+    with win1.slicer_area.link_sync_suppressed():
+        win1.slicer_area.set_index(1, 4, cursor=1)
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(1) == [2, 4]
+
+    win1.slicer_area.undo()
+    assert win1.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(1) == [2, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_undo_skips_peer_with_conflicting_local_change(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.set_index(0, 4)
+    with win1.slicer_area.link_sync_suppressed():
+        win1.slicer_area.set_index(0, 3)
+
+    win0.slicer_area.undo()
+    assert win0.array_slicer.get_indices(0) == [2, 2]
+    assert win1.array_slicer.get_indices(0) == [3, 2]
+
+    win1.slicer_area.undo()
+    assert win1.array_slicer.get_indices(0) == [4, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
 def test_itool_multidimensional(qtbot, move_and_compare_values) -> None:
     win = ImageTool(xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]))
     qtbot.addWidget(win)
