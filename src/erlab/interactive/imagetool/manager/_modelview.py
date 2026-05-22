@@ -1654,7 +1654,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             return
 
         wrapper.slicer_area.unlink()
-        self._model.manager._sigReloadLinkers.emit()
+        manager = self._model.manager
+        manager._mark_node_state_dirty(wrapper.uid)
+        manager._sigReloadLinkers.emit()
         self.refresh(wrapper.index)
 
     def _show_watched_badge_menu(

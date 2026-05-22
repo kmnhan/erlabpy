@@ -3495,8 +3495,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
     @QtCore.Slot(bool)
     def unlink_selected(self, deselect: bool = True) -> None:
         """Unlink selected ImageTool windows."""
+        dirty_uids: list[str] = []
         for index in self._selected_imagetool_targets():
-            self.get_imagetool(index).slicer_area.unlink()
+            node = self._node_for_target(index)
+            slicer_area = self.get_imagetool(index).slicer_area
+            if slicer_area.is_linked:
+                dirty_uids.append(node.uid)
+            slicer_area.unlink()
+        for uid in dirty_uids:
+            self._mark_node_state_dirty(uid)
         self._sigReloadLinkers.emit()
         if deselect:
             self.tree_view.deselect_all()
@@ -3624,11 +3631,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def link_imagetools(self, *indices: int | str, link_colors: bool = True) -> None:
         """Link the ImageTool windows corresponding to the given indices."""
+        if len(indices) <= 1:
+            return
         linker = erlab.interactive.imagetool.viewer.SlicerLinkProxy(
             *[self.get_imagetool(t).slicer_area for t in indices],
             link_colors=link_colors,
         )
         self._linkers.append(linker)
+        for index in indices:
+            self._mark_node_state_dirty(self._node_for_target(index).uid)
         self._sigReloadLinkers.emit()
 
     def name_of_imagetool(self, index: int) -> str:
@@ -3764,6 +3775,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         *,
         parent_target: int | str | None,
         node_path: str | None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> int | str:
         uid = ds.attrs.get("manager_node_uid")
         provenance_spec = ds.attrs.get("manager_node_provenance_spec")
@@ -3821,12 +3833,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool_kwargs["auto_compute"] = False
         tool = ImageTool.from_dataset(ds, **tool_kwargs)
         if parent_target is not None:
-            return self.add_imagetool_child(
+            target = self.add_imagetool_child(
                 tool,
                 parent_target,
                 show=ds.attrs.get("itool_visible", True),
                 **kwargs,
             )
+            self._record_workspace_loaded_imagetool_target(
+                ds, target, loaded_targets_by_uid
+            )
+            return target
 
         kwargs.pop("output_id", None)
         kwargs["source_input_ndim"] = typing.cast(
@@ -3856,12 +3872,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 preferred_index = int(node_path)
             if preferred_index is not None and preferred_index < 0:
                 preferred_index = None
-        return self.add_imagetool(
+        target = self.add_imagetool(
             tool,
             show=ds.attrs.get("itool_visible", True),
             index=preferred_index,
             **kwargs,
         )
+        self._record_workspace_loaded_imagetool_target(
+            ds, target, loaded_targets_by_uid
+        )
+        return target
 
     def _load_workspace_tool_dataset(
         self, ds: xr.Dataset, *, parent_target: int | str | None
@@ -3875,6 +3895,88 @@ class ImageToolManager(QtWidgets.QMainWindow):
             uid=ds.attrs.get("manager_node_uid"),
         )
 
+    @staticmethod
+    def _workspace_saved_uid_from_dataset(ds: xr.Dataset) -> str | None:
+        uid = ds.attrs.get("manager_node_uid")
+        if isinstance(uid, bytes):
+            with contextlib.suppress(UnicodeDecodeError):
+                uid = uid.decode()
+        if isinstance(uid, str) and uid:
+            return uid
+        return None
+
+    def _record_workspace_loaded_imagetool_target(
+        self,
+        ds: xr.Dataset,
+        target: int | str,
+        loaded_targets_by_uid: dict[str, int | str] | None,
+    ) -> None:
+        if loaded_targets_by_uid is None:
+            return
+        saved_uid = self._workspace_saved_uid_from_dataset(ds)
+        if saved_uid is not None:
+            loaded_targets_by_uid[saved_uid] = target
+
+    def _restore_workspace_link_groups(
+        self,
+        manifest: Mapping[str, typing.Any] | None,
+        loaded_targets_by_uid: Mapping[str, int | str],
+    ) -> None:
+        if manifest is None:
+            return
+        nodes = manifest.get("nodes", ())
+        if not isinstance(nodes, list):
+            return
+
+        group_targets: dict[int, list[int | str]] = {}
+        group_colors: dict[int, bool] = {}
+        invalid_groups: set[int] = set()
+        for entry in nodes:
+            if not isinstance(entry, dict) or "link_group" not in entry:
+                continue
+            uid = entry.get("uid")
+            link_group = entry.get("link_group")
+            link_colors = entry.get("link_colors")
+            if (
+                not isinstance(uid, str)
+                or type(link_group) is not int
+                or not isinstance(link_colors, bool)
+            ):
+                continue
+            target = loaded_targets_by_uid.get(uid)
+            if target is None:
+                continue
+            try:
+                node = self._node_for_target(target)
+            except KeyError:
+                continue
+            if not node.is_imagetool or node.imagetool is None:
+                continue
+            current_group_colors = group_colors.get(link_group)
+            if current_group_colors is None:
+                group_colors[link_group] = link_colors
+            elif current_group_colors != link_colors:
+                invalid_groups.add(link_group)
+                continue
+            targets = group_targets.setdefault(link_group, [])
+            if target not in targets:
+                targets.append(target)
+
+        for link_group in sorted(group_targets):
+            if link_group in invalid_groups:
+                continue
+            targets = [
+                target
+                for target in group_targets[link_group]
+                if not self.get_imagetool(target).slicer_area.is_linked
+            ]
+            if len(targets) <= 1:
+                continue
+            self.link_imagetools(
+                *targets,
+                link_colors=group_colors.get(link_group, True),
+            )
+
     def _load_workspace_node(
         self,
         node_tree: xr.DataTree,
@@ -3884,6 +3986,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         manifest: dict[str, typing.Any] | None = None,
         node_path: str | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> int | str:
         if "imagetool" in node_tree:
             ds = None
@@ -3918,7 +4021,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     .load()
                 )
             target = self._load_workspace_imagetool_dataset(
-                ds, parent_target=parent_target, node_path=node_path
+                ds,
+                parent_target=parent_target,
+                node_path=node_path,
+                loaded_targets_by_uid=loaded_targets_by_uid,
             )
         elif "tool" in node_tree:
             ds = (
@@ -3971,6 +4077,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         if node_path is None
                         else f"{node_path}/childtools/{child_key}"
                     ),
+                    loaded_targets_by_uid=loaded_targets_by_uid,
                 )
         return target
 
@@ -3982,6 +4089,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         root_item: QtWidgets.QTreeWidgetItem | None = None,
         manifest: dict[str, typing.Any] | None = None,
         workspace_file_path: str | os.PathLike[str] | None = None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> None:
         for key in root_keys:
             if key not in tree:
@@ -3995,6 +4103,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     manifest=manifest,
                     workspace_file_path=workspace_file_path,
                     node_path=key,
+                    loaded_targets_by_uid=loaded_targets_by_uid,
                 )
 
     def _from_h5py_workspace_file(
@@ -4035,6 +4144,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if not root_paths:
             raise ValueError("Workspace manifest has no root ImageTool nodes")
 
+        loaded_targets_by_uid: dict[str, int | str] = {}
         child_paths: dict[str, list[str]] = {path: [] for path in entries_by_path}
         for path in entries_by_path:
             if "/childtools/" not in path:
@@ -4091,6 +4201,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     ds,
                     parent_target=parent_target,
                     node_path=path,
+                    loaded_targets_by_uid=loaded_targets_by_uid,
                 )
             else:
                 target = self._load_workspace_tool_dataset(
@@ -4126,6 +4237,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.remove_all_tools()
                 for root_path in root_paths:
                     _load_path(root_path)
+                self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if not mark_dirty:
                     self._drain_workspace_deferred_events()
             except Exception:
@@ -4210,6 +4322,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             )
             backup_tree: xr.DataTree | None = None
             backup_snapshot: dict[str, typing.Any] | None = None
+            loaded_targets_by_uid: dict[str, int | str] = {}
             with (
                 maybe_guard,
                 erlab.interactive.utils.wait_dialog(self, "Loading workspace..."),
@@ -4230,7 +4343,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         root_item=root_item,
                         manifest=manifest,
                         workspace_file_path=workspace_file_path,
+                        loaded_targets_by_uid=loaded_targets_by_uid,
                     )
+                    self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                     if not mark_dirty:
                         self._drain_workspace_deferred_events()
                 except Exception:
@@ -4309,8 +4424,31 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ]
         return (*displayed, *remaining)
 
+    def _workspace_link_metadata_by_uid(self) -> dict[str, tuple[int, bool]]:
+        metadata: dict[str, tuple[int, bool]] = {}
+        group_index = 0
+        for linker in self._linkers:
+            linked_nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
+            for slicer_area in linker.children:
+                node = self.node_from_slicer_area(slicer_area)
+                if (
+                    node is None
+                    or not node.is_imagetool
+                    or node.imagetool is None
+                    or node.slicer_area._linking_proxy is not linker
+                ):
+                    continue
+                linked_nodes.append(node)
+            if len(linked_nodes) <= 1:
+                continue
+            for node in linked_nodes:
+                metadata[node.uid] = (group_index, bool(linker.link_colors))
+            group_index += 1
+        return metadata
+
     def _workspace_node_manifest_entries(self) -> list[dict[str, typing.Any]]:
         entries: list[dict[str, typing.Any]] = []
+        link_metadata = self._workspace_link_metadata_by_uid()
 
         def _append(uid: str) -> None:
             node = self._all_nodes[uid]
@@ -4329,6 +4467,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     entry["data_backing"] = "file_lazy"
                 else:
                     entry["data_backing"] = "memory"
+                link_info = link_metadata.get(uid)
+                if link_info is not None:
+                    entry["link_group"], entry["link_colors"] = link_info
             entries.append(entry)
             for child_uid in node._childtool_indices:
                 if child_uid in self._all_nodes:
