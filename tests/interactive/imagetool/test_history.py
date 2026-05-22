@@ -29,6 +29,7 @@ def _base_state() -> dict:
             "bins": [1, 1],
             "dims": ["x", "y"],
         },
+        "controls_visible": True,
     }
 
 
@@ -55,6 +56,8 @@ class _DummySlicerArea(QtCore.QObject):
         ("slice.indices", None, "Cursor moved"),
         ("slice.bins", None, "Number of bins changed"),
         ("slice.dims", None, "Transposed"),
+        ("controls_visible", True, "Controls shown"),
+        ("controls_visible", False, "Controls hidden"),
         ("color.reverse", True, "Colormap reversed"),
         ("color.cmap", "magma", "Changed colormap to magma"),
         ("color.gamma", 2.0, "Colormap options changed"),

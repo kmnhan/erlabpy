@@ -52,6 +52,8 @@ def parse_change(key: str, old, new) -> str:
             return "Number of bins changed"
         case "slice.dims":
             return "Transposed"
+        case "controls_visible":
+            return "Controls shown" if new else "Controls hidden"
         case "color.reverse":
             return "Colormap reversed"
         case "color.cmap":

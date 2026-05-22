@@ -1,4 +1,5 @@
 import copy
+import json
 import logging
 import pathlib
 import tempfile
@@ -1830,6 +1831,7 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
         "file_path": None,
         "load_func": None,
         "cursor_colors": ["#cccccc", "#ffff00"],
+        "controls_visible": True,
         "plotitem_states": [
             {
                 "roi_states": [],
@@ -2593,6 +2595,66 @@ def test_itool_guideline_state_dataset_roundtrip(qtbot) -> None:
         offset=(2.0, 2.0),
         follow_cursor=True,
     )
+
+    restored.close()
+    win.close()
+
+
+def test_itool_controls_visibility_menu_history_and_dataset_roundtrip(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    action = win.mnb.action_dict["toggleControlsAct"]
+    assert action.isCheckable()
+    assert action.isChecked()
+    assert win.controls_visible
+    assert win.slicer_area.state["controls_visible"] is True
+
+    action.trigger()
+    assert not action.isChecked()
+    assert not win.controls_visible
+    assert win.slicer_area.state["controls_visible"] is False
+    assert win.slicer_area.undoable
+
+    win.slicer_area.undo()
+    assert action.isChecked()
+    assert win.controls_visible
+    assert win.slicer_area.state["controls_visible"] is True
+
+    win.slicer_area.redo()
+    assert not action.isChecked()
+    assert not win.controls_visible
+    assert win.slicer_area.state["controls_visible"] is False
+
+    restored = ImageTool.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+
+    assert not restored.controls_visible
+    assert not restored.mnb.action_dict["toggleControlsAct"].isChecked()
+    assert restored.slicer_area.state["controls_visible"] is False
+
+    restored.close()
+    win.close()
+
+
+def test_itool_controls_visibility_legacy_state_defaults_visible(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.controls_visible = False
+
+    ds = win.to_dataset()
+    state = json.loads(ds.attrs["itool_state"])
+    state.pop("controls_visible")
+    ds.attrs["itool_state"] = json.dumps(state)
+
+    restored = ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+
+    assert restored.controls_visible
+    assert restored.mnb.action_dict["toggleControlsAct"].isChecked()
+    assert restored.slicer_area.state["controls_visible"] is True
 
     restored.close()
     win.close()

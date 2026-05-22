@@ -58,13 +58,14 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self, data=None, parent: QtWidgets.QWidget | None = None, **kwargs
     ) -> None:
         super().__init__(parent=parent)
+        state = kwargs.pop("state", None)
+        transpose = bool(kwargs.pop("transpose", False))
         self._provenance_spec: (
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
         ) = None
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
         )
-        self._sync_file_load_provenance()
         self.setCentralWidget(self.slicer_area)
 
         self.docks: tuple[QtWidgets.QDockWidget, ...] = tuple(
@@ -99,6 +100,12 @@ class BaseImageTool(QtWidgets.QMainWindow):
             self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, d)
         self.resize(720, 720)
 
+        if state is not None:
+            self.slicer_area.state = state
+        if transpose:
+            self.slicer_area.transpose_main_image()
+        self._sync_file_load_provenance()
+
         # Allow writing history after initialization
         self.slicer_area._write_history = True
 
@@ -117,6 +124,37 @@ class BaseImageTool(QtWidgets.QMainWindow):
         <erlab.interactive.imagetool.slicer.ArraySlicer>`.
         """  # noqa: D205
         return self.slicer_area.array_slicer
+
+    @property
+    def controls_visible(self) -> bool:
+        """Whether the ImageTool control docks are shown."""
+        return all(not dock.isHidden() for dock in self.docks)
+
+    @controls_visible.setter
+    def controls_visible(self, visible: bool) -> None:
+        self._set_controls_visible(visible)
+
+    def _set_controls_visible(self, visible: bool) -> None:
+        visible = bool(visible)
+        for dock in self.docks:
+            dock.setVisible(visible)
+
+        menu_bar = self.menuBar()
+        action = getattr(menu_bar, "action_dict", {}).get("toggleControlsAct")
+        if isinstance(action, QtGui.QAction):
+            with QtCore.QSignalBlocker(action):
+                action.setChecked(visible)
+
+    @QtCore.Slot(bool)
+    def _set_controls_visible_recorded(self, visible: bool) -> None:
+        visible = bool(visible)
+        if visible == self.controls_visible:
+            self._set_controls_visible(visible)
+            return
+
+        self.slicer_area.record_history_mutation(
+            None, lambda: self._set_controls_visible(visible)
+        )
 
     @property
     def provenance_spec(
@@ -415,6 +453,11 @@ class ImageTool(BaseImageTool):
         self.remove_act.triggered.connect(self.slicer_area.remove_from_manager)
         self.remove_act.setVisible(self.slicer_area._in_manager)
 
+        self.toggle_controls_act = QtWidgets.QAction("Show Controls", self)
+        self.toggle_controls_act.setCheckable(True)
+        self.toggle_controls_act.setChecked(self.controls_visible)
+        self.toggle_controls_act.triggered.connect(self._set_controls_visible_recorded)
+
         self._dask_menu.addSeparator()
         self._dask_menu.addAction(self.slicer_area.compute_act)
         self._dask_menu.addAction(self.slicer_area.chunk_auto_act)
@@ -668,6 +711,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                 "actions": {
                     "viewAllAct": self.slicer_area.view_all_act,
                     "transposeAct": self.slicer_area.transpose_act,
+                    "toggleControlsAct": self.image_tool.toggle_controls_act,
                     "sep0": {"separator": True},
                     "associatedAct": self.slicer_area.associated_coords_act,
                     "sep1": {"separator": True},
