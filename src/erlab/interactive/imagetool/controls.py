@@ -537,7 +537,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self._set_readout_source_indicator(self._readout_source)
 
         if self._readout_source is None:
-            if not self.slicer_area.data_chunked:
+            if self.array_slicer._obj.chunks is None:
                 self._set_spin_dat_value(
                     self.array_slicer.point_value(self.current_cursor, binned=True)
                 )
@@ -660,8 +660,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
 
-        # For chunked data, updating the point value is expensive, we let slicer_area
-        # emit sigPointValueChanged after computation is done
+        # For chunked displayed data, updating the point value is expensive, so
+        # slicer_area emits sigPointValueChanged after the batched computation is done.
         self.update_point_value_readout()
 
     @QtCore.Slot(int)

@@ -748,16 +748,23 @@ class ItoolPlotItem(pg.PlotItem):
             return
 
         menu.clear()
-        coord_profiles = self._displayed_associated_coord_profiles()
-        has_coord_profiles = bool(coord_profiles)
-        typing.cast("QtGui.QAction", menu.menuAction()).setVisible(has_coord_profiles)
+        coord_names: tuple[Hashable, ...] = ()
+        if len(self.display_axis) == 1:
+            display_dim = self.array_slicer._obj.dims[self.display_axis[0]]
+            coord_names = tuple(
+                name
+                for name in _plotted_associated_coord_names(self.array_slicer)
+                if display_dim in self.array_slicer.associated_coord_dims[name]
+            )
+        has_coords = bool(coord_names)
+        typing.cast("QtGui.QAction", menu.menuAction()).setVisible(has_coords)
         for separator in (
             self._associated_coord_menu_separator_above,
             self._associated_coord_menu_separator_below,
         ):
             if separator is not None:
-                separator.setVisible(has_coord_profiles)
-        for coord_name, _profile in coord_profiles:
+                separator.setVisible(has_coords)
+        for coord_name in coord_names:
             if len(self.array_slicer.associated_coord_dims[coord_name]) == 1:
                 coord_action = typing.cast(
                     "QtGui.QAction", menu.addAction(str(coord_name))
@@ -2519,7 +2526,7 @@ class ItoolPlotItem(pg.PlotItem):
     def refresh_items_data(
         self, cursor: int | tuple[int, ...], axes: tuple[int, ...] | None = None
     ) -> None:
-        if self.slicer_area.data_chunked:
+        if self.array_slicer._obj.chunks is not None:
             # When data is chunked, refreshing is handled by _handle_refresh_dask
             return
 

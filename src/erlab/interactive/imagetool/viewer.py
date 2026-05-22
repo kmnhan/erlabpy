@@ -1794,7 +1794,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             Tuple of axis indices to refresh. If `None`, all axes are refreshed.
 
         """
-        if not self.data_chunked:
+        if self.array_slicer._obj.chunks is None:
             return
 
         import dask
@@ -2315,10 +2315,36 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # source array remains unchanged and can be restored cheaply.
         self._applied_func = func
 
-        if self._applied_func is None:
+        if func is None:
             self._restore_obj_from_source(update=update)
-        else:
-            self.update_values(self._applied_func(self._data), update=update)
+            return
+
+        filtered = func(self._data)
+        if filtered.chunks is None:
+            self.update_values(filtered, update=update)
+            return
+
+        if self.data.ndim != filtered.ndim:
+            raise ValueError("DataArray dimensions do not match")
+        if set(self.data.dims) != set(filtered.dims):
+            raise ValueError("DataArray dimensions do not match")
+
+        if self.data.dims != filtered.dims:
+            filtered = filtered.transpose(*self.data.dims)
+        if self.data.shape != filtered.shape:
+            raise ValueError("DataArray shape does not match")
+
+        self.array_slicer.set_array(
+            filtered,
+            reset=False,
+            copy_values=False,
+            preserve_dims=tuple(filtered.dims),
+        )
+        self._obj_shares_data_values = False
+        if update:
+            self.array_slicer.clear_val_cache()
+            self.refresh_all(only_plots=True)
+            self.lock_levels(self.levels_locked)
 
     def set_manual_limits(self, manual_limits: dict[str, list[float]]) -> None:
         """Set manual limits for the axes.
