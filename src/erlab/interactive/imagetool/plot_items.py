@@ -2283,12 +2283,13 @@ class ItoolPlotItem(pg.PlotItem):
             data_pos_coords = (data_pos.x(), data_pos.y())
 
         if QtCore.Qt.KeyboardModifier.AltModifier in modifiers:
+            cursors = tuple(range(self.slicer_area.n_cursors))
             for c in range(self.slicer_area.n_cursors):
                 for i, ax in enumerate(self.display_axis):
                     self.slicer_area.set_value(
                         ax, data_pos_coords[i], update=False, uniform=True, cursor=c
                     )
-            self.slicer_area.refresh_all(self.display_axis)
+            self.slicer_area.refresh(cursors, self.display_axis)
         else:
             for i, ax in enumerate(self.display_axis):
                 self.slicer_area.set_value(
@@ -2426,8 +2427,8 @@ class ItoolPlotItem(pg.PlotItem):
         if cursor != self.slicer_area.current_cursor:
             self.slicer_area.set_current_cursor(cursor, update=True)
         if (
-            self.slicer_area.qapp.keyboardModifiers()
-            != QtCore.Qt.KeyboardModifier.AltModifier
+            QtCore.Qt.KeyboardModifier.AltModifier
+            not in self.slicer_area.qapp.keyboardModifiers()
         ):
             self.slicer_area.set_value(
                 axis, value, update=True, uniform=True, cursor=cursor
@@ -2438,7 +2439,7 @@ class ItoolPlotItem(pg.PlotItem):
                 self.slicer_area.set_value(
                     axis, value, update=False, uniform=True, cursor=c
                 )
-            self.slicer_area.sigIndexChanged.emit(cursors, (axis,))
+            self.slicer_area.refresh(cursors, (axis,))
 
     def remove_cursor(self, index: int) -> None:
         item = self.slicer_data_items.pop(index)
