@@ -6920,6 +6920,95 @@ def test_manager_workspace_io(
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
 
+def test_manager_workspace_preserves_link_groups(
+    qtbot,
+    tmp_path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool([test_data, test_data, test_data], link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        fname = tmp_path / "linked.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        assert not manager.is_workspace_modified
+
+        manager.link_imagetools(0, 1, link_colors=False)
+        assert manager.is_workspace_modified
+        manager._save_workspace_document(fname, force_full=True)
+
+        manifest = manager_workspace._workspace_manifest_from_attrs(
+            manager_workspace._read_workspace_root_attrs_h5py(fname)
+        )
+        linked_entries = [entry for entry in manifest["nodes"] if "link_group" in entry]
+        assert {entry["path"] for entry in linked_entries} == {"0", "1"}
+        assert {entry["link_group"] for entry in linked_entries} == {0}
+        assert {entry["link_colors"] for entry in linked_entries} == {False}
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        proxy0 = manager.get_imagetool(0).slicer_area._linking_proxy
+        proxy1 = manager.get_imagetool(1).slicer_area._linking_proxy
+        assert proxy0 is not None
+        assert proxy0 is proxy1
+        assert proxy0.link_colors is False
+        assert not manager.get_imagetool(2).slicer_area.is_linked
+        assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_unlink_removes_saved_link_group(
+    qtbot,
+    tmp_path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool([test_data, test_data], link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        fname = tmp_path / "unlinked.itws"
+        manager.link_imagetools(0, 1)
+        manager._save_workspace_document(fname, force_full=True)
+
+        select_tools(manager, [0, 1])
+        manager.unlink_selected()
+        assert manager.is_workspace_modified
+        manager._save_workspace_document(fname, force_full=True)
+
+        manifest = manager_workspace._workspace_manifest_from_attrs(
+            manager_workspace._read_workspace_root_attrs_h5py(fname)
+        )
+        assert all("link_group" not in entry for entry in manifest["nodes"])
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert not manager.get_imagetool(0).slicer_area.is_linked
+        assert not manager.get_imagetool(1).slicer_area.is_linked
+        assert not manager.is_workspace_modified
+
+
 def test_manager_workspace_save_selection_cancel_does_not_write(
     qtbot,
     monkeypatch,
