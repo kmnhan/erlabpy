@@ -529,6 +529,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     """
 
+    _HISTORY_GROUP_IDLE_TIMEOUT_MS = 300
+
     @property
     def provenance_spec(
         self,
@@ -670,6 +672,11 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._next_states: collections.deque[ImageSlicerState] = collections.deque(
             maxlen=1000
         )
+        self._history_group_active = False
+        self._history_group_recorded = False
+        self._history_group_timer = QtCore.QTimer(self)
+        self._history_group_timer.setSingleShot(True)
+        self._history_group_timer.timeout.connect(self.end_history_group)
 
         # Flag to prevent writing history when restoring state, must be set to True
         # after initialization is complete
@@ -1172,11 +1179,30 @@ class ImageSlicerArea(QtWidgets.QWidget):
         finally:
             self._write_history = original
 
-    @QtCore.Slot()
-    def write_state(self) -> None:
-        if not self._write_history:
-            return
+    @contextlib.contextmanager
+    def history_group(self, timeout_ms: int = _HISTORY_GROUP_IDLE_TIMEOUT_MS):
+        self.begin_history_group(timeout_ms)
+        try:
+            yield
+        finally:
+            self.end_history_group()
 
+    @QtCore.Slot()
+    def begin_history_group(
+        self, timeout_ms: int = _HISTORY_GROUP_IDLE_TIMEOUT_MS
+    ) -> None:
+        if not self._history_group_active:
+            self._history_group_recorded = False
+        self._history_group_active = True
+        self._history_group_timer.start(timeout_ms)
+
+    @QtCore.Slot()
+    def end_history_group(self) -> None:
+        self._history_group_timer.stop()
+        self._history_group_active = False
+        self._history_group_recorded = False
+
+    def _append_current_state_to_history(self) -> None:
         last_state = self._prev_states[-1] if self.undoable else None
         curr_state = self.state.copy()
 
@@ -1192,9 +1218,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.sigHistoryChanged.emit()
 
     @QtCore.Slot()
+    def write_state(self) -> None:
+        if not self._write_history:
+            return
+
+        if self._history_group_active:
+            if not self._history_group_recorded:
+                self._append_current_state_to_history()
+                self._history_group_recorded = True
+            self._history_group_timer.start()
+            return
+
+        self._append_current_state_to_history()
+
+    @QtCore.Slot()
     @suppress_history
     def flush_history(self) -> None:
         """Clear the undo and redo history."""
+        self.end_history_group()
         self._prev_states.clear()
         self._next_states.clear()
         self.sigHistoryChanged.emit()
@@ -1204,6 +1245,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @suppress_history
     def undo(self) -> None:
         """Undo the most recent action."""
+        self.end_history_group()
         if self.undoable:  # pragma: no branch
             self._next_states.append(self.state)
             self.state = self._prev_states.pop()
@@ -1214,6 +1256,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @suppress_history
     def redo(self) -> None:
         """Redo the most recently undone action."""
+        self.end_history_group()
         if self.redoable:  # pragma: no branch
             self._prev_states.append(self.state)
             self.state = self._next_states.pop()
@@ -1240,6 +1283,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             Index in the history to go to. 0 corresponds to the current state. Positive
             indices point to the future, while negative indices point to the past.
         """
+        self.end_history_group()
         if index == 0:
             return
         if index < 0:
