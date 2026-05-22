@@ -139,6 +139,10 @@ class _ManagedWindowNode(QtCore.QObject):
             "imagetool" if isinstance(window, ImageTool) else "tool"
         )
         self._name = window.windowTitle()
+        self._name_manually_overridden = (
+            isinstance(window, ImageTool)
+            and self._name.replace("[*]", "") != window.slicer_area.display_name
+        )
 
         self._source_spec: (
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
@@ -316,12 +320,17 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @name.setter
     def name(self, name: str) -> None:
+        self._set_name(name, manual=True)
+
+    def _set_name(self, name: str, *, manual: bool) -> None:
+        if manual:
+            self._name_manually_overridden = True
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
             self.manager.tree_view.refresh(self.uid)
             self.manager._mark_node_state_dirty(self.uid)
             return
-        if name == self._name and self.imagetool is not None:
+        if name == self._name and self.imagetool is not None and not manual:
             return
         self._name = name
         if self.imagetool is not None:
@@ -760,7 +769,10 @@ class _ManagedWindowNode(QtCore.QObject):
             if title is None:
                 title = self.imagetool.windowTitle()
             title = title.replace("[*]", "")
-            self.name = title
+            if self._name_manually_overridden:
+                self.imagetool.setWindowTitle(self.label_text)
+                return
+            self._set_name(title, manual=False)
 
     @QtCore.Slot()
     def visibility_changed(self, *, mark_dirty: bool = True) -> None:

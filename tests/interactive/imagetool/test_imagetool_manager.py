@@ -1447,6 +1447,244 @@ def test_manager_childtool_source_updates(
         assert_nonempty_tooltip(tooltip_text)
 
 
+def test_manager_reload_selected_preserves_manual_root_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = test_data.astype(float).rename("scan")
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+        root_index = model._row_index(0)
+        assert model.setData(
+            root_index,
+            "manual root name",
+            QtCore.Qt.ItemDataRole.EditRole,
+        )
+        assert manager.name_of_imagetool(0) == "manual root name"
+
+        updated = (source + 100.0).rename("reloaded_scan")
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+
+        root_tool = manager.get_imagetool(0)
+        with qtbot.wait_signal(root_tool.slicer_area.sigDataChanged, timeout=5000):
+            manager.reload_selected()
+
+        assert manager.name_of_imagetool(0) == "manual root name"
+        xr.testing.assert_identical(fetch(0), updated)
+
+
+def test_manager_reload_selected_preserves_manual_child_imagetool_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_tool = itool(source.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=False,
+        )
+
+        model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+        child_index = model._row_index(child_uid)
+        assert model.setData(
+            child_index,
+            "manual child name",
+            QtCore.Qt.ItemDataRole.EditRole,
+        )
+        child_node = manager._child_node(child_uid)
+        assert child_node.name == "manual child name"
+
+        updated = (source + 50.0).rename("reloaded_scan")
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+
+        with qtbot.wait_signal(child_tool.slicer_area.sigDataChanged, timeout=5000):
+            manager.reload_selected()
+
+        assert child_node.source_state == "fresh"
+        assert child_node.name == "manual child name"
+        xr.testing.assert_identical(fetch(child_uid), updated)
+
+
+def test_manager_workspace_reload_preserves_manual_root_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = test_data.astype(float).rename("scan")
+    source_path = tmp_path / "scan.h5"
+    source.to_netcdf(source_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=source_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        manager.rename_imagetool(0, "saved manual root")
+        workspace_path = tmp_path / "manual-root-name.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager.name_of_imagetool(0) == "saved manual root"
+
+        updated = (source + 200.0).rename("updated_scan")
+        updated.to_netcdf(source_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [0])
+        with qtbot.wait_signal(
+            manager.get_imagetool(0).slicer_area.sigDataChanged, timeout=5000
+        ):
+            manager.reload_selected()
+
+        assert manager.name_of_imagetool(0) == "saved manual root"
+        xr.testing.assert_identical(fetch(0), updated)
+
+
+def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = xr.DataArray(
+        np.arange(24, dtype=float).reshape((6, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(6), "y": np.arange(4)},
+        name="scan",
+    )
+    source_path = tmp_path / "scan.h5"
+    source.to_netcdf(source_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=source_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_tool = itool(source.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=False,
+        )
+        manager._child_node(child_uid).name = "saved manual child"
+
+        workspace_path = tmp_path / "manual-child-name.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        loaded_child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        loaded_child_node = manager._child_node(loaded_child_uid)
+        loaded_child_tool = manager.get_imagetool(loaded_child_uid)
+        assert loaded_child_node.name == "saved manual child"
+
+        updated = (source + 125.0).rename("updated_scan")
+        updated.to_netcdf(source_path, engine="h5netcdf")
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, loaded_child_uid)
+        with qtbot.wait_signal(
+            loaded_child_tool.slicer_area.sigDataChanged, timeout=5000
+        ):
+            manager.reload_selected()
+
+        assert loaded_child_node.source_state == "fresh"
+        assert loaded_child_node.name == "saved manual child"
+        xr.testing.assert_identical(fetch(loaded_child_uid), updated)
+
+
 @pytest.mark.parametrize("auto_update", [False, True], ids=["manual", "auto"])
 def test_manager_reload_selected_child_tool_refreshes_from_file_parent(
     qtbot,
