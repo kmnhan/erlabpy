@@ -82,6 +82,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
         self, slicer_area: ImageSlicerArea | ItoolControlsBase, *args, **kwargs
     ) -> None:
         self.sub_controls: list[ItoolControlsBase] = []
+        self._history_group_spins: list[erlab.interactive.utils.BetterSpinBox] = []
         super().__init__(*args, **kwargs)
         self._parent_control = weakref.ref(slicer_area)
         self.initialize_layout()
@@ -127,6 +128,7 @@ class ItoolControlsBase(QtWidgets.QWidget):
                 ctrl.initialize_widgets()
 
     def connect_signals(self) -> None:
+        self._connect_history_grouping()
         for ctrl in self.sub_controls:
             if isinstance(ctrl, ItoolControlsBase):  # pragma: no branch
                 ctrl.connect_signals()
@@ -135,9 +137,27 @@ class ItoolControlsBase(QtWidgets.QWidget):
         # Multiple inheritance disconnection is broken
         # https://bugreports.qt.io/browse/PYSIDE-229
         # Will not work correctly until this is fixed
+        self._disconnect_history_grouping()
         for ctrl in self.sub_controls:
             if isinstance(ctrl, ItoolControlsBase):
                 ctrl.disconnect_signals()
+
+    def _connect_history_grouping(self) -> None:
+        sub_controls = tuple(self.sub_controls)
+        for spin in self.findChildren(erlab.interactive.utils.BetterSpinBox):
+            if any(ctrl.isAncestorOf(spin) for ctrl in sub_controls):
+                continue
+            if spin not in self._history_group_spins:
+                spin.editingStarted.connect(self.slicer_area.begin_history_group)
+                self._history_group_spins.append(spin)
+
+    def _disconnect_history_grouping(self) -> None:
+        with contextlib.suppress(LookupError):
+            slicer_area = self.slicer_area
+            for spin in self._history_group_spins:
+                with contextlib.suppress(TypeError, RuntimeError):
+                    spin.editingStarted.disconnect(slicer_area.begin_history_group)
+        self._history_group_spins.clear()
 
     def update_content(self) -> None:
         for ctrl in self.sub_controls:
@@ -741,14 +761,9 @@ class ItoolColormapControls(ItoolControlsBase):
         self.gamma_widget = erlab.interactive.colors.ColorMapGammaWidget(
             spin_cls=erlab.interactive.utils.BetterSpinBox
         )
-        self.gamma_widget.valueChanged.connect(
-            lambda g: self.slicer_area.set_colormap(gamma=g)
-        )
+        self.gamma_widget.valueChanged.connect(self._set_gamma)
         self.gamma_widget.slider.sliderPressed.connect(
-            self.slicer_area.sigWriteHistory.emit
-        )
-        self.gamma_widget.spin.editingStarted.connect(
-            self.slicer_area.sigWriteHistory.emit
+            self.slicer_area.begin_history_group
         )
         self.gamma_widget.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed
@@ -760,6 +775,10 @@ class ItoolColormapControls(ItoolControlsBase):
         layout.addWidget(self.cb_colormap)
         layout.addWidget(self.gamma_widget)
         layout.addWidget(self.misc_controls)
+
+    def _set_gamma(self, gamma: float) -> None:
+        self.slicer_area.sigWriteHistory.emit()
+        self.slicer_area.set_colormap(gamma=gamma)
 
     def update_content(self) -> None:
         if not erlab.interactive.utils.qt_is_valid(

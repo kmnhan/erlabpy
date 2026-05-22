@@ -1219,8 +1219,14 @@ class ItoolPlotItem(pg.PlotItem):
     def _connect_guideline_history(self) -> None:
         for item in self._guidelines_items[:-1]:
             typing.cast("typing.Any", item)._sigAngleDragStarted.connect(
+                self.slicer_area.begin_history_group
+            )
+            typing.cast("typing.Any", item)._sigAngleDragStarted.connect(
                 self.slicer_area.sigWriteHistory.emit
             )
+        typing.cast(
+            "typing.Any", self._guidelines_items[-1]
+        ).sigPositionDragStarted.connect(self.slicer_area.begin_history_group)
         typing.cast(
             "typing.Any", self._guidelines_items[-1]
         ).sigPositionDragStarted.connect(self.slicer_area.sigWriteHistory.emit)
@@ -2381,7 +2387,10 @@ class ItoolPlotItem(pg.PlotItem):
                 lambda v, *, line=c, axis=ax: self.line_drag(line, v.temp_value, axis)
             )
             c.sigClicked.connect(lambda *, line=c: self.line_click(line))
-            c._sigDragStarted.connect(lambda: self.slicer_area.sigWriteHistory.emit())
+            c._sigDragStarted.connect(lambda *_: self.slicer_area.begin_history_group())
+            c._sigDragStarted.connect(
+                lambda *_: self.slicer_area.sigWriteHistory.emit()
+            )
 
         if update:
             self.refresh_cursor(new_cursor)
@@ -2756,7 +2765,10 @@ class ItoolColorBarItem(erlab.interactive.colors.BetterColorBarItem):
         self._span.setRegion(self.limits)
         self._span.blockSignals(False)
         self._span.sigRegionChangeStarted.connect(
-            lambda: self.slicer_area.sigWriteHistory.emit()
+            lambda *_: self.slicer_area.begin_history_group()
+        )
+        self._span.sigRegionChangeStarted.connect(
+            lambda *_: self.slicer_area.sigWriteHistory.emit()
         )
         self._span.sigRegionChanged.connect(self.level_change)
         self._span.sigRegionChangeFinished.connect(self.level_change_fin)
