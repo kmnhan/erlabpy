@@ -7538,6 +7538,33 @@ def test_workspace_h5py_attrs_and_root_validation(tmp_path) -> None:
         manager_workspace._read_workspace_root_attrs_h5py(fname)
 
 
+def _assert_workspace_h5py_roundtrip(
+    tmp_path: pathlib.Path, label: str, data: xr.DataArray
+) -> tuple[xr.Dataset, xr.Dataset, pathlib.Path]:
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    fname = tmp_path / f"{label}.itws"
+    ds = data.rename(data_name).to_dataset()
+
+    assert manager_workspace._workspace_dataset_can_write_h5py(ds)
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", ds
+    )
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname,
+        "0/imagetool",
+        preferred_data_name=data_name,
+    )
+    assert loaded is not None
+
+    opened = manager_xarray.open_workspace_dataset(fname, "0/imagetool", chunks=None)
+    try:
+        opened_loaded = opened.load()
+    finally:
+        opened.close()
+    xr.testing.assert_equal(loaded, opened_loaded)
+    return loaded, opened_loaded, fname
+
+
 def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
     import h5py
 
@@ -7577,6 +7604,132 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
     assert coordinates == "temperature"
 
 
+def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
+    tmp_path,
+) -> None:
+    import h5py
+
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    base = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(2.0), "y": np.arange(3.0)},
+    )
+
+    divided = base.assign_coords(mesh_current=("x", [1.0, 2.0]))
+    divided = divided / divided.coords["mesh_current"]
+    loaded, _opened, _fname = _assert_workspace_h5py_roundtrip(
+        tmp_path, "divide-by-coord", divided
+    )
+    assert loaded.coords["mesh_current"].dims == ("x",)
+    np.testing.assert_allclose(loaded.coords["mesh_current"], [1.0, 2.0])
+
+    loaded, _opened, _fname = _assert_workspace_h5py_roundtrip(
+        tmp_path,
+        "two-dimensional-associated-coord",
+        base.assign_coords(
+            detector_norm=(("x", "y"), np.arange(6.0).reshape(2, 3) + 1.0)
+        ),
+    )
+    assert loaded.coords["detector_norm"].dims == ("x", "y")
+
+    loaded, _opened, _fname = _assert_workspace_h5py_roundtrip(
+        tmp_path,
+        "unicode-scalar-coord",
+        base.assign_coords(label="sample"),
+    )
+    assert loaded.coords["label"].item() == "sample"
+
+    loaded, _opened, _fname = _assert_workspace_h5py_roundtrip(
+        tmp_path,
+        "unicode-associated-coord",
+        base.assign_coords(label=("x", np.array(["left", "right"]))),
+    )
+    assert loaded.coords["label"].dtype.kind == "U"
+
+    loaded, _opened, _fname = _assert_workspace_h5py_roundtrip(
+        tmp_path,
+        "bytes-associated-coord",
+        base.assign_coords(raw=("x", np.array([b"a", b"bb"], dtype="S2"))),
+    )
+    assert loaded.coords["raw"].dtype.kind == "S"
+
+    loaded, _opened, _fname = _assert_workspace_h5py_roundtrip(
+        tmp_path,
+        "datetime-associated-coord",
+        xr.DataArray(
+            np.arange(2.0),
+            dims=("time",),
+            coords={
+                "time": np.array(["2024-01-01", "2024-01-02"], dtype="datetime64[D]"),
+                "event_time": (
+                    "time",
+                    np.array(["2024-02-01", "2024-02-02"], dtype="datetime64[D]"),
+                ),
+            },
+        ),
+    )
+    assert loaded.coords["time"].dtype.kind == "M"
+    assert loaded.coords["event_time"].dtype.kind == "M"
+
+    loaded, _opened, _fname = _assert_workspace_h5py_roundtrip(
+        tmp_path,
+        "timedelta-associated-coord",
+        xr.DataArray(
+            np.arange(2.0),
+            dims=("delay",),
+            coords={
+                "delay": np.array([0, 5], dtype="timedelta64[ms]"),
+                "exposure": (
+                    "delay",
+                    np.array([1, 2], dtype="timedelta64[s]"),
+                ),
+            },
+        ),
+    )
+    assert loaded.coords["delay"].dtype == np.dtype("timedelta64[ms]")
+    assert loaded.coords["exposure"].dtype == np.dtype("timedelta64[s]")
+
+    with h5py.File(_fname, "r") as h5_file:
+        coordinates = h5_file["0/imagetool"][data_name].attrs["coordinates"]
+    if isinstance(coordinates, bytes):
+        coordinates = coordinates.decode()
+    assert coordinates == "exposure"
+
+
+def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    fname = tmp_path / "numeric-since-units.itws"
+    data = xr.DataArray(
+        [1.0, 2.0],
+        dims=("x",),
+        coords={
+            "x": [0.0, 1.0],
+            "elapsed": xr.DataArray(
+                [0.0, 1.0],
+                dims=("x",),
+                attrs={"units": "seconds since start"},
+            ),
+        },
+        name=data_name,
+    )
+    ds = data.to_dataset()
+
+    assert manager_workspace._workspace_dataset_can_write_h5py(ds)
+    assert manager_workspace._write_workspace_dataset_group_h5py(
+        fname, "0/imagetool", ds
+    )
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname,
+        "0/imagetool",
+        preferred_data_name=data_name,
+    )
+
+    assert loaded is not None
+    xr.testing.assert_equal(loaded[data_name], data)
+    assert loaded.coords["elapsed"].attrs["units"] == "seconds since start"
+
+
 def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     monkeypatch, tmp_path
 ) -> None:
@@ -7610,9 +7763,30 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
         [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["z"]}]
     )
     assert not manager_workspace._workspace_dataset_can_write_h5py(bad_private_dims)
+
     assert not manager_workspace._workspace_dataset_can_write_h5py(
-        xr.Dataset({data_name: ("x", [1.0])}, coords={"x": ["bad"]})
+        xr.Dataset(
+            {data_name: ("x", [1.0])},
+            coords={"x": np.array([object()], dtype=object)},
+        )
     )
+
+    bad_associated_dims = xr.Dataset(
+        {data_name: ("x", [1.0])},
+        coords={"x": [0.0], "z": [0.0], "bad": ("z", [1.0])},
+    )
+    assert not manager_workspace._workspace_dataset_can_write_h5py(bad_associated_dims)
+
+    import dask.array as da
+
+    chunked_coord = xr.Dataset(
+        {data_name: ("x", [1.0, 2.0])},
+        coords={
+            "x": [0.0, 1.0],
+            "chunked": ("x", da.from_array(np.array([1.0, 2.0]), chunks=(1,))),
+        },
+    )
+    assert not manager_workspace._workspace_dataset_can_write_h5py(chunked_coord)
 
     monkeypatch.setattr(
         manager_workspace, "_workspace_dataset_can_write_h5py", lambda _ds: True
@@ -7676,6 +7850,45 @@ def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
         private_data.attrs[private_attr] = json.dumps(
             [{"coord_name": "Fake Motor", "variable_name": "private", "dims": ["z"]}]
         )
+        bad_associated_no_scale = h5_file.create_group("bad-associated-no-scale")
+        x = bad_associated_no_scale.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        data = bad_associated_no_scale.create_dataset(data_name, data=np.arange(2.0))
+        data.dims[0].attach_scale(x)
+        data.attrs["coordinates"] = "associated"
+        bad_associated_no_scale.create_dataset("associated", data=np.arange(2.0))
+        bad_associated_length = h5_file.create_group("bad-associated-length")
+        x = bad_associated_length.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        data = bad_associated_length.create_dataset(data_name, data=np.arange(2.0))
+        data.dims[0].attach_scale(x)
+        data.attrs["coordinates"] = "associated"
+        associated = bad_associated_length.create_dataset(
+            "associated", data=np.arange(3.0)
+        )
+        associated.dims[0].attach_scale(x)
+        bad_associated_foreign_dim = h5_file.create_group("bad-associated-foreign-dim")
+        x = bad_associated_foreign_dim.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        z = bad_associated_foreign_dim.create_dataset("z", data=np.arange(2.0))
+        z.make_scale("z")
+        data = bad_associated_foreign_dim.create_dataset(data_name, data=np.arange(2.0))
+        data.dims[0].attach_scale(x)
+        data.attrs["coordinates"] = "associated"
+        associated = bad_associated_foreign_dim.create_dataset(
+            "associated", data=np.arange(2.0)
+        )
+        associated.dims[0].attach_scale(z)
+        bad_time = h5_file.create_group("bad-time-metadata")
+        x = bad_time.create_dataset("x", data=np.arange(2.0))
+        x.make_scale("x")
+        data = bad_time.create_dataset(data_name, data=np.arange(2.0))
+        data.dims[0].attach_scale(x)
+        data.attrs["coordinates"] = "time"
+        time = bad_time.create_dataset("time", data=np.arange(2, dtype=np.int64))
+        time.dims[0].attach_scale(x)
+        time.attrs["units"] = "days since not-a-date"
+        time.attrs["calendar"] = "proleptic_gregorian"
 
     assert (
         manager_workspace._read_workspace_dataset_group_h5py(fname, "missing") is None
@@ -7704,6 +7917,30 @@ def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
     assert (
         manager_workspace._read_workspace_dataset_group_h5py(
             fname, "bad-private", preferred_data_name=data_name
+        )
+        is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(
+            fname, "bad-associated-no-scale", preferred_data_name=data_name
+        )
+        is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(
+            fname, "bad-associated-length", preferred_data_name=data_name
+        )
+        is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(
+            fname, "bad-associated-foreign-dim", preferred_data_name=data_name
+        )
+        is None
+    )
+    assert (
+        manager_workspace._read_workspace_dataset_group_h5py(
+            fname, "bad-time-metadata", preferred_data_name=data_name
         )
         is None
     )

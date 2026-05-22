@@ -667,6 +667,128 @@ def _read_workspace_root_attrs_h5py(
         return _h5py_attrs_to_dict(h5_file.attrs)
 
 
+def _workspace_h5py_dataset_storage_supported(dataset: typing.Any) -> bool:
+    import h5py
+
+    return dataset.dtype.kind in "biufcS" or (
+        dataset.dtype.kind == "O" and h5py.check_string_dtype(dataset.dtype) is not None
+    )
+
+
+def _workspace_h5py_coord_dims_fit(
+    coord: xr.DataArray, data_array: xr.DataArray
+) -> bool:
+    return all(
+        dim in data_array.sizes and coord.sizes[dim] == data_array.sizes[dim]
+        for dim in coord.dims
+    )
+
+
+def _workspace_h5py_variable_payload(
+    variable: xr.Variable, name: typing.Hashable
+) -> tuple[typing.Any, dict[typing.Hashable, typing.Any], typing.Any] | None:
+    import h5py
+    import numpy as np
+    import xarray as xr
+
+    try:
+        if variable.dtype.kind == "M":
+            variable = xr.coders.CFDatetimeCoder().encode(variable, name=str(name))
+        elif variable.dtype.kind == "m":
+            variable = xr.coders.CFTimedeltaCoder().encode(variable, name=str(name))
+    except Exception:
+        return None
+
+    data = np.asarray(variable.data)
+    dtype = None
+    if data.dtype.kind == "U":
+        data = data.astype(object)
+        dtype = h5py.string_dtype(encoding="utf-8")
+    elif data.dtype.kind not in "biufcS":
+        return None
+    return data, dict(variable.attrs), dtype
+
+
+def _workspace_h5py_dataarray_can_write(data_array: xr.DataArray) -> bool:
+    if data_array.chunks is not None:
+        return False
+    return (
+        _workspace_h5py_variable_payload(data_array.variable, data_array.name)
+        is not None
+    )
+
+
+def _workspace_h5py_read_values(dataset: typing.Any) -> typing.Any:
+    import h5py
+    import numpy as np
+
+    string_info = h5py.check_string_dtype(dataset.dtype)
+    if dataset.dtype.kind == "O" and string_info is not None:
+        values = np.asarray(dataset.asstr()[()])
+        if values.dtype.kind == "O":
+            values = values.astype(str)
+        return values
+    return np.asarray(dataset[()])
+
+
+def _workspace_h5py_decode_coord_variable(
+    variable: xr.Variable, name: str
+) -> xr.Variable | None:
+    import xarray as xr
+
+    attrs = variable.attrs
+    dtype_attr = attrs.get("dtype")
+    units_attr = attrs.get("units")
+    calendar_attr = attrs.get("calendar")
+    try:
+        if isinstance(dtype_attr, str) and dtype_attr.startswith("timedelta64["):
+            return xr.coders.CFTimedeltaCoder().decode(variable, name=name)
+        if (
+            isinstance(units_attr, str)
+            and isinstance(calendar_attr, str)
+            and " since " in units_attr
+        ):
+            return xr.coders.CFDatetimeCoder().decode(variable, name=name)
+    except Exception:
+        return None
+    return variable
+
+
+def _workspace_h5py_dataset_variable(
+    dataset: typing.Any,
+    dims: tuple[str, ...],
+    *,
+    name: str,
+    exclude_attrs: Iterable[typing.Hashable],
+) -> xr.Variable | None:
+    import xarray as xr
+
+    if not _workspace_h5py_dataset_storage_supported(dataset):
+        return None
+    variable = xr.Variable(
+        dims,
+        _workspace_h5py_read_values(dataset),
+        _h5py_attrs_to_dict(dataset.attrs, exclude=exclude_attrs),
+    )
+    return _workspace_h5py_decode_coord_variable(variable, name)
+
+
+def _workspace_h5py_create_dataset(
+    group: typing.Any, name: str, variable: xr.Variable
+) -> typing.Any | None:
+    payload = _workspace_h5py_variable_payload(variable, name)
+    if payload is None:
+        return None
+    data, attrs, dtype = payload
+    kwargs: dict[str, typing.Any] = {}
+    if dtype is not None:
+        kwargs["dtype"] = dtype
+    dataset = group.create_dataset(name, data=data, **kwargs)
+    for key, value in attrs.items():
+        dataset.attrs[key] = value
+    return dataset
+
+
 def _read_workspace_dataset_group_h5py(
     fname: str | os.PathLike[str],
     group_path: str,
@@ -694,7 +816,9 @@ def _read_workspace_dataset_group_h5py(
         group = h5_file[group_path]
         datasets: dict[str, h5py.Dataset] = {}
         for name, obj in group.items():
-            if not isinstance(obj, h5py.Dataset) or obj.dtype.kind not in "biufc":
+            if not isinstance(
+                obj, h5py.Dataset
+            ) or not _workspace_h5py_dataset_storage_supported(obj):
                 continue
             marker = obj.attrs.get("CLASS")
             if isinstance(marker, bytes):
@@ -721,13 +845,15 @@ def _read_workspace_dataset_group_h5py(
                     not isinstance(scale, h5py.Dataset)
                     or scale.ndim != 1
                     or scale.shape[0] != dataset.shape[axis]
-                    or scale.dtype.kind not in "biufc"
+                    or not _workspace_h5py_dataset_storage_supported(scale)
                 ):
                     return None
                 dims.append(dim_name)
             return tuple(dims)
 
         data_dataset = datasets[data_name]
+        if data_dataset.dtype.kind not in "biufc":
+            return None
         dims: list[str] = []
         coords: dict[str, typing.Any] = {}
         for axis, dim in enumerate(data_dataset.dims):
@@ -740,15 +866,19 @@ def _read_workspace_dataset_group_h5py(
                 not isinstance(scale, h5py.Dataset)
                 or scale.ndim != 1
                 or scale.shape[0] != data_dataset.shape[axis]
-                or scale.dtype.kind not in "biufc"
+                or not _workspace_h5py_dataset_storage_supported(scale)
             ):
                 return None
             dims.append(dim_name)
-            coords[dim_name] = (
-                dim_name,
-                np.asarray(scale[()]),
-                _h5py_attrs_to_dict(scale.attrs, exclude=internal_attrs),
+            coord_variable = _workspace_h5py_dataset_variable(
+                scale,
+                (dim_name,),
+                name=dim_name,
+                exclude_attrs=internal_attrs,
             )
+            if coord_variable is None:
+                return None
+            coords[dim_name] = coord_variable
 
         scalar_coord_names = data_dataset.attrs.get("coordinates", "")
         if isinstance(scalar_coord_names, bytes):
@@ -758,7 +888,7 @@ def _read_workspace_dataset_group_h5py(
             for name, dataset in datasets.items()
             if name != data_name
             and _serialization.coord_name_needs_private_storage(name)
-            and dataset.dtype.kind in "biufc"
+            and _workspace_h5py_dataset_storage_supported(dataset)
         )
         if isinstance(scalar_coord_names, str):
             for coord_name in scalar_coord_names.split():
@@ -769,13 +899,21 @@ def _read_workspace_dataset_group_h5py(
                         continue
                     return None
                 coord_dataset = group[coord_name]
-                if coord_dataset.ndim != 0 or coord_dataset.dtype.kind not in "biufc":
-                    return None
-                coords[coord_name] = (
-                    (),
-                    np.asarray(coord_dataset[()]),
-                    _h5py_attrs_to_dict(coord_dataset.attrs, exclude=internal_attrs),
+                if coord_dataset.ndim == 0:
+                    coord_dims = ()
+                else:
+                    coord_dims = _dataset_dims(coord_dataset)
+                    if coord_dims is None or not all(dim in dims for dim in coord_dims):
+                        return None
+                coord_variable = _workspace_h5py_dataset_variable(
+                    coord_dataset,
+                    coord_dims,
+                    name=coord_name,
+                    exclude_attrs=internal_attrs,
                 )
+                if coord_variable is None:
+                    return None
+                coords[coord_name] = coord_variable
 
         data_attrs = _h5py_attrs_to_dict(data_dataset.attrs, exclude=internal_attrs)
         data_vars: dict[typing.Hashable, typing.Any] = {
@@ -797,15 +935,19 @@ def _read_workspace_dataset_group_h5py(
             coord_dims = tuple(record["dims"])
             if (
                 coord_dataset.ndim != len(coord_dims)
-                or coord_dataset.dtype.kind not in "biufc"
+                or not _workspace_h5py_dataset_storage_supported(coord_dataset)
                 or not all(dim in dims for dim in coord_dims)
             ):
                 return None
-            data_vars[variable_name] = (
+            coord_variable = _workspace_h5py_dataset_variable(
+                coord_dataset,
                 coord_dims,
-                np.asarray(coord_dataset[()]),
-                _h5py_attrs_to_dict(coord_dataset.attrs, exclude=internal_attrs),
+                name=variable_name,
+                exclude_attrs=internal_attrs,
             )
+            if coord_variable is None:
+                return None
+            data_vars[variable_name] = coord_variable
 
         for variable_name in legacy_spaced_coord_names:
             if variable_name in data_vars:
@@ -814,11 +956,15 @@ def _read_workspace_dataset_group_h5py(
             coord_dims = _dataset_dims(coord_dataset)
             if coord_dims is None or not all(dim in dims for dim in coord_dims):
                 continue
-            data_vars[variable_name] = (
+            coord_variable = _workspace_h5py_dataset_variable(
+                coord_dataset,
                 coord_dims,
-                np.asarray(coord_dataset[()]),
-                _h5py_attrs_to_dict(coord_dataset.attrs, exclude=internal_attrs),
+                name=variable_name,
+                exclude_attrs=internal_attrs,
             )
+            if coord_variable is None:
+                continue
+            data_vars[variable_name] = coord_variable
 
         return _serialization.restore_private_coords(
             xr.Dataset(
@@ -856,18 +1002,26 @@ def _workspace_dataset_can_write_h5py(ds: xr.Dataset) -> bool:
         private_data = ds[private_name]
         if (
             private_data.chunks is not None
-            or private_data.dtype.kind not in "biufc"
-            or not all(dim in data_array.dims for dim in private_data.dims)
+            or not _workspace_h5py_coord_dims_fit(private_data, data_array)
+            or not _workspace_h5py_dataarray_can_write(private_data)
         ):
             return False
     for dim in data_array.dims:
         coord = ds.coords.get(dim)
-        if coord is None or coord.dims != (dim,) or coord.dtype.kind not in "biufc":
+        if (
+            coord is None
+            or coord.dims != (dim,)
+            or not _workspace_h5py_dataarray_can_write(coord)
+        ):
             return False
     for name, coord in ds.coords.items():
         if name in data_array.dims:
             continue
-        if coord.ndim != 0 or coord.dtype.kind not in "biufc":
+        if (
+            _serialization.coord_name_needs_private_storage(name)
+            or not _workspace_h5py_coord_dims_fit(coord, data_array)
+            or not _workspace_h5py_dataarray_can_write(coord)
+        ):
             return False
     return True
 
@@ -905,13 +1059,17 @@ def _write_workspace_dataset_group_h5py(
             dim_scales_by_name = {}
             for dim_id, dim in enumerate(data_array.dims):
                 coord = ds.coords[dim]
-                coord_dataset = group.create_dataset(
-                    str(dim), data=np.asarray(coord.data)
+                coord_dataset = _workspace_h5py_create_dataset(
+                    group, str(dim), coord.variable
                 )
+                if coord_dataset is None:
+                    del parent[group_name]
+                    return False
                 coord_dataset.make_scale(str(dim))
                 coord_dataset.attrs["_Netcdf4Dimid"] = np.int32(dim_id)
-                for key, value in coord.attrs.items():
-                    coord_dataset.attrs[key] = value
+                coord_dataset.attrs["_Netcdf4Coordinates"] = np.asarray(
+                    [dim_id], dtype=np.int32
+                )
                 dim_scales.append(coord_dataset)
                 dim_scales_by_name[dim] = coord_dataset
 
@@ -941,11 +1099,22 @@ def _write_workspace_dataset_group_h5py(
             for name, coord in ds.coords.items():
                 if name in data_array.dims:
                     continue
-                coord_dataset = group.create_dataset(
-                    str(name), data=np.asarray(coord.data)
+                coord_dataset = _workspace_h5py_create_dataset(
+                    group, str(name), coord.variable
                 )
-                for key, value in coord.attrs.items():
-                    coord_dataset.attrs[key] = value
+                if coord_dataset is None:
+                    del parent[group_name]
+                    return False
+                coordinate_ids = []
+                for coord_dim_index, coord_dim in enumerate(coord.dims):
+                    scale = dim_scales_by_name[coord_dim]
+                    coord_dataset.dims[coord_dim_index].attach_scale(scale)
+                    coordinate_ids.append(data_array.dims.index(coord_dim))
+                if coordinate_ids:
+                    coord_dataset.attrs["_Netcdf4Coordinates"] = np.asarray(
+                        coordinate_ids, dtype=np.int32
+                    )
+                    coord_dataset.attrs["_Netcdf4Dimid"] = np.int32(coordinate_ids[0])
                 scalar_coord_names.append(str(name))
             if scalar_coord_names:
                 existing_coordinates = data_dataset.attrs.get("coordinates")
@@ -958,20 +1127,24 @@ def _write_workspace_dataset_group_h5py(
 
             for private_name in private_data_names:
                 private_data = ds[private_name]
-                private_dataset = group.create_dataset(
-                    str(private_name), data=np.asarray(private_data.data)
+                private_dataset = _workspace_h5py_create_dataset(
+                    group, str(private_name), private_data.variable
                 )
-                coordinate_ids: list[int] = []
+                if private_dataset is None:
+                    del parent[group_name]
+                    return False
+                private_coordinate_ids: list[int] = []
                 for private_dim_index, private_dim in enumerate(private_data.dims):
                     scale = dim_scales_by_name[private_dim]
                     private_dataset.dims[private_dim_index].attach_scale(scale)
-                    coordinate_ids.append(data_array.dims.index(private_dim))
-                if coordinate_ids:
+                    private_coordinate_ids.append(data_array.dims.index(private_dim))
+                if private_coordinate_ids:
                     private_dataset.attrs["_Netcdf4Coordinates"] = np.asarray(
-                        coordinate_ids, dtype=np.int32
+                        private_coordinate_ids, dtype=np.int32
                     )
-                for key, value in private_data.attrs.items():
-                    private_dataset.attrs[key] = value
+                    private_dataset.attrs["_Netcdf4Dimid"] = np.int32(
+                        private_coordinate_ids[0]
+                    )
         except Exception:
             del parent[group_name]
             return False
