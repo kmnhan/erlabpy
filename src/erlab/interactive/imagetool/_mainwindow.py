@@ -677,6 +677,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self._crop_to_view,
                         "tooltip": "Crop to the current axes view range",
                     },
+                    "selectDataAct": {
+                        "text": "Select Data…",
+                        "triggered": self._select_data,
+                    },
                     "Average": {"triggered": self._average},
                     "interpolateAct": {
                         "text": "Interpolate…",
@@ -896,6 +900,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _crop_to_view(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CropToViewDialog)
+
+    @QtCore.Slot()
+    def _select_data(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.SelectionDialog)
 
     @QtCore.Slot()
     def _gaussian_filter(self) -> None:

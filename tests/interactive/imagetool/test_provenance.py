@@ -759,12 +759,11 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
         prov.QSelOperation(kwargs={"k-space": 1.0, "k-space_width": 1.0})
     )
     assert qsel_spec.derivation_code() == (
-        "derived = data\n"
-        'derived = derived.qsel(**{"k-space": 1.0, "k-space_width": 1.0})'
+        'derived = data\nderived = derived.qsel({"k-space": 1.0, "k-space_width": 1.0})'
     )
     xr.testing.assert_identical(
         qsel_spec.apply(string_key_data),
-        string_key_data.qsel(**{"k-space": 1.0, "k-space_width": 1.0}),
+        string_key_data.qsel({"k-space": 1.0, "k-space_width": 1.0}),
     )
 
     isel_spec = prov.full_data(prov.IselOperation(kwargs={1: slice(1, 3)}))

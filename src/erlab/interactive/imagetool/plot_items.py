@@ -1060,13 +1060,11 @@ class ItoolPlotItem(pg.PlotItem):
                 qsel_kw = self.array_slicer.qsel_args(cursor, self.display_axis)
                 qsel_kw = qsel_kw | sel_indexers
 
-                sel_code = erlab.interactive.utils.format_call_kwargs(qsel_kw)
+                sel_code = erlab.interactive.utils.format_kwargs(qsel_kw)
                 sel_code = f".qsel({sel_code})"
 
                 if isel_indexers:
-                    isel_code = erlab.interactive.utils.format_call_kwargs(
-                        isel_indexers
-                    )
+                    isel_code = erlab.interactive.utils.format_kwargs(isel_indexers)
                     sel_code = sel_code + f".isel({isel_code})"
 
                 return sel_code
@@ -1079,11 +1077,11 @@ class ItoolPlotItem(pg.PlotItem):
 
             if isel_kw or isel_indexers:
                 isel_kw.update(isel_indexers)
-                sel_code = erlab.interactive.utils.format_call_kwargs(isel_kw)
+                sel_code = erlab.interactive.utils.format_kwargs(isel_kw)
                 sel_code = f".isel({sel_code})"
 
             if sel_indexers:
-                crop_code = erlab.interactive.utils.format_call_kwargs(sel_indexers)
+                crop_code = erlab.interactive.utils.format_kwargs(sel_indexers)
                 sel_code = sel_code + f".sel({crop_code})"
 
         return sel_code
@@ -1582,13 +1580,9 @@ class ItoolPlotItem(pg.PlotItem):
 
         selected = data_name
         if isel_kwargs:
-            selected += (
-                f".isel({erlab.interactive.utils.format_call_kwargs(isel_kwargs)})"
-            )
+            selected += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
         if qsel_kwargs:
-            selected += (
-                f".qsel({erlab.interactive.utils.format_call_kwargs(qsel_kwargs)})"
-            )
+            selected += f".qsel({erlab.interactive.utils.format_kwargs(qsel_kwargs)})"
         if avg_nonuniform_dims:
             avg_arg = (
                 erlab.interactive.utils._parse_single_arg(avg_nonuniform_dims[0])
@@ -1718,7 +1712,7 @@ class ItoolPlotItem(pg.PlotItem):
             )
             selected = (
                 f"{data_name}.qsel("
-                f"{erlab.interactive.utils.format_call_kwargs(qsel_kwargs_nonnull)})"
+                f"{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)})"
             )
             if variable_dim is None:
                 plot_lines.append(selected + ".plot(ax=ax)")
@@ -1855,7 +1849,7 @@ class ItoolPlotItem(pg.PlotItem):
             if variable_dim is None:
                 selected_maps = [
                     f"{data_name}.qsel("
-                    f"{erlab.interactive.utils.format_call_kwargs(qsel_kwargs_nonnull)})"
+                    f"{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)})"
                 ]
             else:
                 selected_maps = []
@@ -1866,7 +1860,7 @@ class ItoolPlotItem(pg.PlotItem):
                     }
                     selected_maps.append(
                         f"{data_name}.qsel("
-                        f"{erlab.interactive.utils.format_call_kwargs(selected_map)})"
+                        f"{erlab.interactive.utils.format_kwargs(selected_map)})"
                     )
             return self._plot_code_image(
                 data_name,

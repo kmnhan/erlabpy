@@ -745,6 +745,397 @@ class AverageDialog(DataTransformDialog):
         return f"{placeholder}.qsel.average({arg})"
 
 
+class _SelectionRow:
+    def __init__(
+        self,
+        dialog: SelectionDialog,
+        axis: int,
+        dim: Hashable,
+        row: int,
+        *,
+        active: bool,
+    ) -> None:
+        self.dialog = dialog
+        self.axis = axis
+        self.dim = dim
+
+        data = dialog.public_data
+        coord = np.asarray(data[dim].values, dtype=float)
+        self._coord_ascending = coord[0] <= coord[-1]
+        current_index = dialog.array_slicer.get_index(
+            dialog.slicer_area.current_cursor, axis
+        )
+        current_value = float(
+            dialog.array_slicer.get_value(
+                dialog.slicer_area.current_cursor, axis, uniform=False
+            )
+        )
+        stop_index = min(current_index + 1, data.sizes[dim] - 1)
+        stop_value = float(coord[stop_index])
+        bin_value = dialog.array_slicer.get_bin_values(
+            dialog.slicer_area.current_cursor
+        )[axis]
+        is_binned = dialog.array_slicer.get_binned(dialog.slicer_area.current_cursor)[
+            axis
+        ]
+
+        self.use_check = QtWidgets.QCheckBox()
+        self.use_check.setObjectName(f"selection_use_{axis}")
+        self.use_check.setChecked(active)
+
+        self.dim_label = QtWidgets.QLabel(str(dim))
+        self.cursor_label = QtWidgets.QLabel(f"{current_value:.6g}")
+
+        self.method_combo = QtWidgets.QComboBox()
+        self.method_combo.setObjectName(f"selection_method_{axis}")
+        for method in ("qsel", "sel", "isel"):
+            self.method_combo.addItem(method, method)
+
+        self.kind_combo = QtWidgets.QComboBox()
+        self.kind_combo.setObjectName(f"selection_kind_{axis}")
+        self.kind_combo.addItem("Point", "point")
+        self.kind_combo.addItem("Range", "range")
+
+        self.index_start_spin = erlab.interactive.utils.BetterSpinBox(
+            integer=True,
+            compact=False,
+            minimum=0,
+            maximum=data.sizes[dim] - 1,
+            value=current_index,
+        )
+        self.index_stop_spin = erlab.interactive.utils.BetterSpinBox(
+            integer=True,
+            compact=False,
+            minimum=0,
+            maximum=data.sizes[dim],
+            value=min(current_index + 1, data.sizes[dim]),
+        )
+
+        self.value_start_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            decimals=6,
+            significant=True,
+            minimum=float(np.nanmin(coord)),
+            maximum=float(np.nanmax(coord)),
+            value=current_value,
+        )
+        self.value_stop_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            decimals=6,
+            significant=True,
+            minimum=float(np.nanmin(coord)),
+            maximum=float(np.nanmax(coord)),
+            value=stop_value,
+        )
+
+        self.start_stack = QtWidgets.QStackedWidget()
+        self.start_stack.addWidget(self.value_start_spin)
+        self.start_stack.addWidget(self.index_start_spin)
+
+        self.stop_stack = QtWidgets.QStackedWidget()
+        self.stop_stack.addWidget(self.value_stop_spin)
+        self.stop_stack.addWidget(self.index_stop_spin)
+
+        self.width_widget = QtWidgets.QWidget()
+        width_layout = QtWidgets.QHBoxLayout(self.width_widget)
+        width_layout.setContentsMargins(0, 0, 0, 0)
+        width_layout.setSpacing(3)
+        self.width_check = QtWidgets.QCheckBox()
+        self.width_check.setObjectName(f"selection_width_enabled_{axis}")
+        self.width_spin = erlab.interactive.utils.BetterSpinBox(
+            compact=False,
+            decimals=6,
+            significant=True,
+            minimum=0.0,
+            value=0.0 if bin_value is None else float(bin_value),
+        )
+        self.width_spin.setObjectName(f"selection_width_{axis}")
+        self.width_check.setChecked(is_binned and bin_value is not None)
+        width_layout.addWidget(self.width_check)
+        width_layout.addWidget(self.width_spin)
+
+        widgets: tuple[QtWidgets.QWidget, ...] = (
+            self.use_check,
+            self.dim_label,
+            self.cursor_label,
+            self.method_combo,
+            self.kind_combo,
+            self.start_stack,
+            self.stop_stack,
+            self.width_widget,
+        )
+        for column, widget in enumerate(widgets):
+            dialog.grid_layout.addWidget(widget, row, column)
+
+        for widget in (
+            self.use_check,
+            self.method_combo,
+            self.kind_combo,
+            self.index_start_spin,
+            self.index_stop_spin,
+            self.value_start_spin,
+            self.value_stop_spin,
+            self.width_check,
+            self.width_spin,
+        ):
+            if isinstance(widget, QtWidgets.QComboBox):
+                widget.currentIndexChanged.connect(dialog.update_preview)
+            elif isinstance(widget, QtWidgets.QAbstractButton):
+                widget.toggled.connect(dialog.update_preview)
+            else:
+                widget.valueChanged.connect(dialog.update_preview)
+
+        self.method_combo.currentIndexChanged.connect(self.sync_widgets)
+        self.kind_combo.currentIndexChanged.connect(self.sync_widgets)
+        self.width_check.toggled.connect(self.sync_widgets)
+        self.sync_widgets()
+
+    @property
+    def method(self) -> typing.Literal["qsel", "sel", "isel"]:
+        return typing.cast(
+            "typing.Literal['qsel', 'sel', 'isel']",
+            self.method_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def kind(self) -> typing.Literal["point", "range"]:
+        return typing.cast(
+            "typing.Literal['point', 'range']",
+            self.kind_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    def sync_widgets(self) -> None:
+        is_index = self.method == "isel"
+        is_range = self.kind == "range"
+        is_qsel = self.method == "qsel"
+
+        self.start_stack.setCurrentIndex(1 if is_index else 0)
+        self.stop_stack.setCurrentIndex(1 if is_index else 0)
+        self.stop_stack.setEnabled(is_range)
+        self.width_widget.setEnabled(is_qsel and not is_range)
+        self.width_spin.setEnabled(
+            is_qsel and not is_range and self.width_check.isChecked()
+        )
+
+    def indexer(self) -> tuple[Hashable, typing.Any]:
+        if self.method == "isel":
+            start = int(self.index_start_spin.value())
+            if self.kind == "point":
+                return self.dim, start
+            stop = int(self.index_stop_spin.value())
+            return self.dim, slice(min(start, stop), max(start, stop))
+
+        start = float(self.value_start_spin.value())
+        if self.kind == "point":
+            return self.dim, start
+
+        stop = float(self.value_stop_spin.value())
+        if self._coord_ascending:
+            return self.dim, slice(min(start, stop), max(start, stop))
+        return self.dim, slice(max(start, stop), min(start, stop))
+
+    def qsel_width_indexer(self) -> tuple[str, float] | None:
+        if (
+            self.method != "qsel"
+            or self.kind != "point"
+            or not self.width_check.isChecked()
+        ):
+            return None
+        width = float(self.width_spin.value())
+        if not np.isfinite(width) or width <= 0.0:
+            return None
+        return f"{self.dim}_width", width
+
+
+class SelectionDialog(DataTransformDialog):
+    title = "Select Data"
+    suffix = "_sel"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    def setup_widgets(self) -> None:
+        self.public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+
+        self.grid_layout = QtWidgets.QGridLayout()
+        self.grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_layout.setSpacing(3)
+
+        for column, label in enumerate(
+            (
+                "Use",
+                "Dimension",
+                "Cursor",
+                "Method",
+                "Selection",
+                "Start",
+                "Stop",
+                "Width",
+            )
+        ):
+            header = QtWidgets.QLabel(label)
+            header.setObjectName(f"selection_header_{column}")
+            self.grid_layout.addWidget(header, 0, column)
+
+        self.rows: list[_SelectionRow] = []
+        default_axis = self.public_data.ndim - 1 if self.public_data.ndim == 4 else None
+        for axis, dim in enumerate(self.public_data.dims):
+            self.rows.append(
+                _SelectionRow(
+                    self,
+                    axis,
+                    dim,
+                    axis + 1,
+                    active=axis == default_axis,
+                )
+            )
+
+        self.preview_label = QtWidgets.QLabel()
+        self.preview_label.setObjectName("selection_result_preview")
+        self.code_preview = QtWidgets.QPlainTextEdit()
+        self.code_preview.setObjectName("selection_code_preview")
+        self.code_preview.setReadOnly(True)
+        self.code_preview.setMaximumBlockCount(4)
+        self.code_preview.setMaximumHeight(
+            4 * QtGui.QFontMetrics(self.code_preview.font()).height()
+        )
+
+        self.layout_.addRow(self.grid_layout)
+        self.layout_.addRow("Result", self.preview_label)
+        self.layout_.addRow("Code", self.code_preview)
+        self.update_preview()
+
+    def _selection_kwargs(
+        self,
+    ) -> tuple[
+        dict[Hashable, typing.Any],
+        dict[Hashable, typing.Any],
+        dict[Hashable, typing.Any],
+    ]:
+        isel_kwargs: dict[Hashable, typing.Any] = {}
+        sel_kwargs: dict[Hashable, typing.Any] = {}
+        qsel_kwargs: dict[Hashable, typing.Any] = {}
+
+        target: dict[str, dict[Hashable, typing.Any]] = {
+            "isel": isel_kwargs,
+            "sel": sel_kwargs,
+            "qsel": qsel_kwargs,
+        }
+        for row in self.rows:
+            if not row.use_check.isChecked():
+                continue
+            dim, indexer = row.indexer()
+            target[row.method][dim] = indexer
+            width_indexer = row.qsel_width_indexer()
+            if width_indexer is not None:
+                width_dim, width = width_indexer
+                qsel_kwargs[width_dim] = width
+
+        return isel_kwargs, sel_kwargs, qsel_kwargs
+
+    def source_operations(
+        self,
+    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+        isel_kwargs, sel_kwargs, qsel_kwargs = self._selection_kwargs()
+        operations: list[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        ] = []
+        if isel_kwargs:
+            operations.append(
+                erlab.interactive.imagetool.provenance.IselOperation(kwargs=isel_kwargs)
+            )
+        if sel_kwargs:
+            operations.append(
+                erlab.interactive.imagetool.provenance.SelOperation(kwargs=sel_kwargs)
+            )
+        if qsel_kwargs:
+            operations.append(
+                erlab.interactive.imagetool.provenance.QSelOperation(kwargs=qsel_kwargs)
+            )
+        return operations
+
+    def process_data(self, data: xr.DataArray) -> xr.DataArray:
+        isel_kwargs, sel_kwargs, qsel_kwargs = self._selection_kwargs()
+        if isel_kwargs:
+            data = data.isel(isel_kwargs)
+        if sel_kwargs:
+            data = data.sel(sel_kwargs)
+        if qsel_kwargs:
+            data = data.qsel(qsel_kwargs)
+        return data
+
+    def make_code(self) -> str:
+        placeholder = self.slicer_area.watched_data_name or ""
+        code = placeholder
+        for method, kwargs in zip(
+            ("isel", "sel", "qsel"),
+            self._selection_kwargs(),
+            strict=True,
+        ):
+            if kwargs:
+                code += f".{method}({erlab.interactive.utils.format_kwargs(kwargs)})"
+        return code
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    @QtCore.Slot(bool)
+    @QtCore.Slot(object)
+    def update_preview(self, *args) -> None:
+        try:
+            selected = self.process_data(self.public_data)
+        except Exception as exc:
+            self.preview_label.setText(f"Invalid selection: {exc}")
+            self.code_preview.setPlainText(self.make_code())
+            ok_button = self.buttonBox.button(
+                QtWidgets.QDialogButtonBox.StandardButton.Ok
+            )
+            if ok_button is not None:
+                ok_button.setEnabled(False)
+            return
+
+        shape = " × ".join(str(size) for size in selected.shape)
+        dims = ", ".join(str(dim) for dim in selected.dims)
+        self.preview_label.setText(f"{selected.ndim}D ({shape}) [{dims}]")
+        self.code_preview.setPlainText(self.make_code())
+        ok_button = self.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setEnabled(
+                bool(self.source_operations())
+                and 2 <= selected.ndim <= 4
+                and selected.size > 0
+            )
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        if not self.source_operations():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Selection",
+                "Select at least one dimension before applying.",
+            )
+            return
+
+        try:
+            selected = self.process_data(self.public_data)
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self, "Error", "An error occurred while selecting data."
+            )
+            return
+
+        if not (2 <= selected.ndim <= 4) or selected.size == 0:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Selection",
+                "Selected data must have 2 to 4 dimensions and contain at least "
+                "one value.",
+            )
+            return
+
+        super().accept()
+
+
 class InterpolationDialog(DataTransformDialog):
     title = "Interpolate"
     enable_copy = True
@@ -1526,9 +1917,9 @@ class _BaseCropDialog(DataTransformDialog):
 
         out: str = self.slicer_area.watched_data_name or ""
         if sel_kwargs:
-            out += f".sel({erlab.interactive.utils.format_call_kwargs(sel_kwargs)})"
+            out += f".sel({erlab.interactive.utils.format_kwargs(sel_kwargs)})"
         if isel_kwargs:
-            out += f".isel({erlab.interactive.utils.format_call_kwargs(isel_kwargs)})"
+            out += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
 
         return out
 

@@ -303,7 +303,7 @@ def _coerce_float_sequence(value: typing.Any) -> list[float]:
 def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -> str:
     if not kwargs:
         return f"derived = derived.{method}()"
-    args = erlab.interactive.utils.format_call_kwargs(dict(kwargs))
+    args = erlab.interactive.utils.format_kwargs(dict(kwargs))
     return f"derived = derived.{method}({args})"
 
 
