@@ -660,18 +660,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "triggered": self._swap_dims,
                         "sep_after": True,
                     },
-                    "Rotate": {"triggered": self._rotate},
-                    "Rotation Guidelines": {
-                        "actions": {
-                            **{
-                                f"guide{i}": act
-                                for i, act in enumerate(guideline_actions)
-                            },
-                            "sep": {"separator": True},
-                            "followGuidelinesAct": guideline_follow_action,
-                        },
-                        "sep_after": True,
-                    },
+                    "Rotate": {"triggered": self._rotate, "sep_after": True},
                     "Crop": {"triggered": self._crop},
                     "Crop to View": {
                         "triggered": self._crop_to_view,
@@ -726,6 +715,16 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                     "cursorMoveMenu": {"title": "Cursor Control", "actions": {}},
                     "cursorColorAct": self.slicer_area.cursor_color_act,
                     "cursorColorCoordAct": self.slicer_area.cursor_colors_by_coord_act,
+                    "Rotation Guidelines": {
+                        "actions": {
+                            **{
+                                f"guide{i}": act
+                                for i, act in enumerate(guideline_actions)
+                            },
+                            "sep": {"separator": True},
+                            "followGuidelinesAct": guideline_follow_action,
+                        },
+                    },
                     "sep2": {"separator": True},
                     "colorInvertAct": self.slicer_area.reverse_act,
                     "highContrastAct": self.slicer_area.high_contrast_act,
