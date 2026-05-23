@@ -2,6 +2,20 @@
 
 ### ✨ Features
 
+- **imagetool:** better history entries ([cc7b2b0](https://github.com/kmnhan/erlabpy/commit/cc7b2b017c4c3e04d40f8020aaadffd20b21e830))
+
+  History entries are more descriptive. Also combines multiple operations into one entry if they are performed in quick succession.
+
+- **imagetool:** add selection dialog ([8f929bf](https://github.com/kmnhan/erlabpy/commit/8f929bf65a0310732954007202be7c3b5a554548))
+
+  Add `Select Data…` to the ImageTool Edit menu for building validated xarray selections without writing free-form code. The dialog supports per-dimension qsel, sel, and isel point/range selectors, previews the resulting shape, and can copy executable code.
+
+  Although it is easier to directly select slices from the right-click context menu of each plot, this is not always possible (e.g. for 4D data) and the dialog provides a more comprehensive interface for building complex selections.
+
+- **imagetool:** add a toggle for controls visibility ([3f81f9d](https://github.com/kmnhan/erlabpy/commit/3f81f9d0624bafea3feff391de906c06db95086b))
+
+  Adds a new menu action to toggle the visibility of the ImageTool controls.
+
 - **manager:** add menu item that shows the current workspace properties, including path and file status ([46c4055](https://github.com/kmnhan/erlabpy/commit/46c4055ee35229ac7d3ed855c7d04bbc67efd07d))
 
 - **manager:** add right-click menu items to Windows taskbar icon and macOS dock icon for standalone installations ([73ec9d2](https://github.com/kmnhan/erlabpy/commit/73ec9d2adb93a07dd61694fc3ca08b1bc91fe9cf))
@@ -13,6 +27,22 @@
   Replace the old Archive/Unarchive workflow with `Offload to Workspace` in the ImageTool manager. The new action saves the workspace when needed, frees selected in-memory ImageTool data, and reconnects it as dask-backed data from the `.itws` workspace file. Dask-backed data can be loaded in to memory with `Load Into Memory`. Additionally, user-configured chunk size edits are now saved into the workspace file so reloaded data keeps the intended chunk layout.
 
 ### 🐞 Bug Fixes
+
+- **imagetool:** properly link multiple cursor drag ([0cb8982](https://github.com/kmnhan/erlabpy/commit/0cb8982b745d3bd5d313b4e3325c0d9a55f63e41))
+
+- **imagetool:** fix inconsistent history entry creation behavior ([92fd122](https://github.com/kmnhan/erlabpy/commit/92fd122414731f0b07007788b7370a4c6be35524))
+
+- **imagetool:** preserve manual manager row names on reload ([e947e88](https://github.com/kmnhan/erlabpy/commit/e947e8811f3f2789c8e650b55d83c4ef17890ef1))
+
+  Manually set row names in ImageTool Manager now remain stable when data is reloaded.
+
+- **manager:** preserve and restore links in workspaces ([d1f8cb6](https://github.com/kmnhan/erlabpy/commit/d1f8cb6af0c1f8ea0e77639ac355aa9585384bce))
+
+- **ftool:** update plots when using fit × 20 (#341) ([4538b2d](https://github.com/kmnhan/erlabpy/commit/4538b2d5d6d1c2917c152b37f70670f473e1be7f))
+
+- **imagetool:** preserve associated coords with spaces in names on workspace save/load ([6fcbd8b](https://github.com/kmnhan/erlabpy/commit/6fcbd8b697a0e43f5b18e7dd34294578cd9ee141))
+
+- **ftool:** preserve transpose when updating data and restoring status ([42ed880](https://github.com/kmnhan/erlabpy/commit/42ed880f9f1ff5d78f465548abb43042567a84a7))
 
 - **manager:** show message while optimizing workspaces on quit ([2853ef1](https://github.com/kmnhan/erlabpy/commit/2853ef1ebc6d5b854edf23a36d932e8a1de81b3c))
 
@@ -32,7 +62,17 @@
 
   Retains the chunked state of each ImageTool's data when saving a workspace, and ensures that non-dask data remains non-dask after saving and reloading a workspace.
 
+### ⚡️ Performance
+
+- **imagetool:** remove redundant computations for dask-backed data ([25e1e4e](https://github.com/kmnhan/erlabpy/commit/25e1e4ecdb26f20688195474f1b14b038fb275d4))
+
+- **manager:** greatly speed up saving and loading `.itws` files ([c4c9914](https://github.com/kmnhan/erlabpy/commit/c4c99141d23a70ef1838be402c388a3f615b962e))
+
 ### ♻️ Code Refactor
+
+- **imagetool:** move rotation guidelines to `View` menu ([b955ee9](https://github.com/kmnhan/erlabpy/commit/b955ee944106dc597c552bedd5185e69f6023f0c))
+
+  Although it was initially added to the `Edit` menu, the rotation guidelines are more appropriately categorized under the `View`. This change moves `Rotation Guidelines` from `Edit` to `View`.
 
 - **interactive:** improve menu action labels and icons for clarity and consistency ([9ad2def](https://github.com/kmnhan/erlabpy/commit/9ad2def749f74915360e3c834475204f62b55897))
 
