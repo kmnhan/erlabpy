@@ -920,6 +920,102 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
     )
 
 
+def test_imagetool_selection_source_binding_materializes_current_coordinates() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    original = _base_data()
+    shifted = original.assign_coords(y=[20.0, 21.0, 22.0, 23.0])
+
+    binned = prov.ImageToolSelectionSourceBinding(
+        selection_indexers={"y": slice(1, 4)},
+        selection_binned_dims=("y",),
+    )
+    old_spec = binned.materialize(original)
+    new_spec = binned.materialize(shifted)
+
+    assert old_spec.operations[0].decoded_kwargs == {"y": 12.0, "y_width": 3.0}
+    assert new_spec.operations[0].decoded_kwargs == {"y": 22.0, "y_width": 3.0}
+    xr.testing.assert_identical(
+        new_spec.apply(shifted), shifted.qsel(y=22.0, y_width=3.0)
+    )
+
+    unbinned = prov.ImageToolSelectionSourceBinding(selection_indexers={"y": 2})
+    unbinned_spec = unbinned.materialize(shifted)
+    assert unbinned_spec.operations[0].decoded_kwargs == {"y": 22.0}
+    xr.testing.assert_identical(unbinned_spec.apply(shifted), shifted.qsel(y=22.0))
+
+    cropped = prov.ImageToolSelectionSourceBinding(crop_sel_indexers={"y": slice(1, 3)})
+    cropped_spec = cropped.materialize(shifted)
+    assert cropped_spec.operations[0].decoded_kwargs == {"y": slice(21.0, 22.0)}
+    xr.testing.assert_identical(
+        cropped_spec.apply(shifted),
+        shifted.sel(y=slice(21.0, 22.0)),
+    )
+
+
+def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+    binding = prov.ImageToolSelectionSourceBinding(
+        selection_mode="isel",
+        selection_indexers={"z": 1},
+        crop_sel_indexers={"x": slice(0, 3)},
+        crop_isel_indexers={"y": slice(1, 3)},
+        transpose_dims=("y", "x"),
+        squeeze=True,
+    )
+
+    reparsed = prov.ImageToolSelectionSourceBinding.model_validate(
+        binding.model_dump(mode="json")
+    )
+    assert reparsed == binding
+
+    spec = reparsed.materialize(data)
+    assert [op.op for op in spec.operations] == [
+        "isel",
+        "sel",
+        "isel",
+        "sort_coord_order",
+        "transpose",
+        "squeeze",
+    ]
+    xr.testing.assert_identical(
+        spec.apply(data),
+        erlab.utils.array.sort_coord_order(
+            data.isel(z=1).sel(x=slice(0.0, 2.0)).isel(y=slice(1, 3)),
+            data.coords.keys(),
+        )
+        .transpose("y", "x")
+        .squeeze(),
+    )
+
+
+def test_imagetool_selection_source_binding_validates_crop_indexers() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+    )
+
+    with pytest.raises(ValueError, match="Dimension `missing` not found"):
+        prov.ImageToolSelectionSourceBinding(
+            crop_sel_indexers={"missing": slice(0, 1)}
+        ).materialize(data)
+
+    with pytest.raises(ValueError, match="Selection for dimension `x` is empty"):
+        prov.ImageToolSelectionSourceBinding(
+            crop_sel_indexers={"x": slice(1, 1)}
+        ).materialize(data)
+
+    binding = prov.ImageToolSelectionSourceBinding(
+        crop_sel_indexers={"x": typing.cast("typing.Any", 1)}
+    )
+    spec = binding.materialize(data)
+    sel_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
+
+    assert sel_kwargs == {"x": 1.0}
+
+
 def test_tool_provenance_rejects_unsupported_hashables() -> None:
     class _UnsupportedHashable:
         def __hash__(self) -> int:

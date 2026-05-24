@@ -1398,6 +1398,34 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
     assert restored.input_provenance_spec == input_spec.to_replay_spec()
 
 
+def test_tool_window_dataset_roundtrips_source_binding(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
+    tool = _PersistentTool(data.isel(x=slice(1, 3)))
+    qtbot.addWidget(tool)
+
+    source_binding = prov.ImageToolSelectionSourceBinding(
+        selection_mode="isel",
+        selection_indexers={"x": slice(1, 3)},
+    )
+    source_spec = source_binding.materialize(data)
+    tool.set_source_binding(
+        source_spec,
+        source_binding=source_binding,
+        auto_update=True,
+        state="stale",
+    )
+
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+    qtbot.addWidget(restored)
+
+    assert isinstance(restored, _PersistentTool)
+    assert restored.source_spec == source_spec
+    assert restored.source_binding == source_binding
+    assert restored.source_auto_update is True
+    assert restored.source_state == "stale"
+
+
 def test_tool_window_dataset_ignores_invalid_saved_provenance(
     qtbot,
     caplog,
@@ -1407,6 +1435,7 @@ def test_tool_window_dataset_ignores_invalid_saved_provenance(
     qtbot.addWidget(tool)
     ds = tool.to_dataset()
     ds.attrs["tool_source_spec"] = "{not-json"
+    ds.attrs["tool_source_binding"] = "{not-json"
     ds.attrs["tool_input_provenance_spec"] = "{not-json"
 
     with caplog.at_level("WARNING", logger="erlab.interactive.utils"):
@@ -1417,7 +1446,26 @@ def test_tool_window_dataset_ignores_invalid_saved_provenance(
     assert restored.source_spec is None
     assert restored.input_provenance_spec is None
     assert "Ignoring invalid saved tool source provenance" in caplog.text
+    assert "Ignoring invalid saved tool source binding" in caplog.text
     assert "Ignoring invalid saved tool input provenance" in caplog.text
+
+
+def test_tool_window_source_binding_empty_and_type_error_branches(qtbot) -> None:
+    tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
+    qtbot.addWidget(tool)
+
+    assert tool.source_status_text == ""
+    assert tool.show_source_update_dialog() == int(
+        QtWidgets.QDialog.DialogCode.Rejected
+    )
+    with pytest.raises(TypeError, match="source_binding must be"):
+        tool.set_source_binding(
+            None,
+            source_binding=typing.cast(
+                "erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding",
+                object(),
+            ),
+        )
 
 
 def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) -> None:
@@ -1484,6 +1532,14 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
     with pytest.raises(TypeError, match="source_spec must be"):
         node.set_source_binding(typing.cast("object", {"kind": "full_data"}))
+    with pytest.raises(TypeError, match="source_binding must be"):
+        node.set_source_binding(
+            None,
+            source_binding=typing.cast(
+                "erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding",
+                object(),
+            ),
+        )
     with pytest.raises(ValueError, match="output_id must not be None"):
         node.set_output_binding(typing.cast("str", None))
     with pytest.raises(TypeError, match="output_id must be a string"):
@@ -1504,9 +1560,16 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     assert manager.tree_view.refreshed[-1] == "child"
     assert manager.updated[-1] == "child"
 
+    source_binding = prov.ImageToolSelectionSourceBinding()
     source_spec = prov.full_data()
-    tool.set_source_binding(source_spec, auto_update=True, state="stale")
+    tool.set_source_binding(
+        source_spec,
+        source_binding=source_binding,
+        auto_update=True,
+        state="stale",
+    )
     assert node.source_spec == source_spec
+    assert node.source_binding == source_binding
     assert node.source_state == "stale"
     assert node.source_auto_update is True
     assert node.has_source_binding is True
@@ -1669,6 +1732,24 @@ def test_managed_tool_window_node_detached_update_branches(
         "parent",
         tool,
     )
+    with pytest.raises(RuntimeError, match="not bound"):
+        node._materialized_source_spec(parent_data)
+
+    source_binding = prov.ImageToolSelectionSourceBinding(
+        selection_mode="isel",
+        selection_indexers={"x": slice(0, 2)},
+    )
+    bound_tool = _PersistentTool(parent_data.isel(x=slice(0, 2)))
+    qtbot.addWidget(bound_tool)
+    bound_node = _ManagedWindowNode(
+        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        "bound",
+        "parent",
+        bound_tool,
+        source_binding=source_binding,
+    )
+    assert bound_node._source_binding == source_binding
+    assert bound_node._source_spec == source_binding.materialize(parent_data)
 
     with pytest.raises(TypeError, match="provenance_spec must be"):
         node.set_source_binding(

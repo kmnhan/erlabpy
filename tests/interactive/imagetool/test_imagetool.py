@@ -1088,12 +1088,14 @@ def test_profile_menu_opens_associated_coord_targets(
         tuple[
             xr.DataArray,
             erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+            erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding
+            | None,
             bool,
         ]
     ] = []
 
-    def _capture_open(data, source_spec, *, use_parent_colormap):
-        captured.append((data, source_spec, use_parent_colormap))
+    def _capture_open(data, source_spec, *, source_binding=None, use_parent_colormap):
+        captured.append((data, source_spec, source_binding, use_parent_colormap))
 
     monkeypatch.setattr(profile, "_open_data_in_new_window", _capture_open)
 
@@ -1112,10 +1114,11 @@ def test_profile_menu_opens_associated_coord_targets(
     )
     assert temp_action.menu() is None
     temp_action.trigger()
-    temp_data, temp_spec, use_parent_colormap = captured[-1]
+    temp_data, temp_spec, temp_binding, use_parent_colormap = captured[-1]
     xr.testing.assert_identical(temp_data, data.coords["temp"])
     assert temp_spec.kind == "public_data"
     assert temp_spec.operations[-1].op == "select_coord"
+    assert temp_binding is None
     assert use_parent_colormap is False
 
     coord_menu = _menu_action_by_data(
@@ -1124,17 +1127,19 @@ def test_profile_menu_opens_associated_coord_targets(
     assert coord_menu is not None
 
     _menu_action_by_data(coord_menu, ("associated_coord_full", "plane")).trigger()
-    full_data, full_spec, use_parent_colormap = captured[-1]
+    full_data, full_spec, full_binding, use_parent_colormap = captured[-1]
     xr.testing.assert_identical(full_data, data.coords["plane"])
     assert full_spec.kind == "public_data"
     assert full_spec.operations[-1].op == "select_coord"
+    assert full_binding is None
     assert use_parent_colormap is False
 
     _menu_action_by_data(coord_menu, ("associated_coord_profile", "plane")).trigger()
-    profile_data, profile_spec, use_parent_colormap = captured[-1]
+    profile_data, profile_spec, profile_binding, use_parent_colormap = captured[-1]
     xr.testing.assert_identical(profile_data, data.isel(y=1, z=0).coords["plane"])
     assert profile_spec.kind == "selection"
     assert profile_spec.operations[-1].op == "select_coord"
+    assert profile_binding is None
     assert use_parent_colormap is False
     win.close()
 
@@ -2152,7 +2157,7 @@ def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
     monkeypatch.setattr(
         type(image),
         "_crop_indexers",
-        property(lambda self: {"alpha": slice(1, 4), "eV_idx": slice(0, 2)}),
+        property(lambda self: {"alpha": slice(1, 4)}),
     )
 
     monkeypatch.setattr(
@@ -2161,12 +2166,69 @@ def test_itool_make_tool_source_spec_includes_alt_crop_indexers(
         staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
     )
 
+    binding = image.make_tool_source_binding()
     spec = image.make_tool_source_spec()
     sel_kwargs = next(op.decoded_kwargs for op in spec.operations if op.op == "sel")
-    isel_kwargs = [op.decoded_kwargs for op in spec.operations if op.op == "isel"][-1]
 
+    assert binding.crop_sel_indexers == {"alpha": slice(1, 5)}
     assert sel_kwargs == {"alpha": slice(1, 4)}
-    assert isel_kwargs == {"eV": slice(0, 2)}
+
+    win.close()
+
+
+def test_itool_make_tool_source_binding_uses_index_crop_for_nonuniform_dim(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.zeros((4, 5), dtype=float),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.5, 2.0, 3.0], "y": np.arange(5.0)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+    monkeypatch.setattr(
+        type(image),
+        "_crop_indexers",
+        property(lambda self: {"x_idx": slice(None, None)}),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "queryKeyboardModifiers",
+        staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
+    )
+
+    binding = image.make_tool_source_binding()
+
+    assert binding.crop_isel_indexers == {"x": slice(None, None)}
+
+    win.close()
+
+
+def test_itool_make_tool_source_binding_falls_back_to_dim_lookup(
+    qtbot, monkeypatch
+) -> None:
+    win = itool(_TEST_DATA["3D"].copy(), execute=False)
+    qtbot.addWidget(win)
+
+    image = win.slicer_area.images[0]
+    image.array_slicer._dim_indices = {}
+    monkeypatch.setattr(
+        type(image),
+        "_crop_indexers",
+        property(lambda self: {"alpha": slice(1, 4)}),
+    )
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "queryKeyboardModifiers",
+        staticmethod(lambda: QtCore.Qt.KeyboardModifier.AltModifier),
+    )
+
+    binding = image.make_tool_source_binding()
+
+    assert binding.selection_indexers["beta"] == 2
+    assert binding.crop_sel_indexers == {"alpha": slice(1, 5)}
 
     win.close()
 
@@ -3529,6 +3591,7 @@ def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) ->
     image.open_in_ftool()
 
     assert child.source_spec == image.make_tool_source_spec(squeeze=True)
+    assert child.source_binding == image.make_tool_source_binding(squeeze=True)
     assert child.source_state == "fresh"
 
     win.close()
