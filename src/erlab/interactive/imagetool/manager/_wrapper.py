@@ -998,6 +998,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         watched_var: tuple[str, str] | None = None,
         watched_workspace_link_id: str | None = None,
         watched_source_label: str | None = None,
+        watched_source_uid: str | None = None,
         watched_connected: bool = True,
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
@@ -1014,6 +1015,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         self._watched_uid: str | None = None
         self._watched_workspace_link_id: str | None = None
         self._watched_source_label: str | None = None
+        self._watched_source_uid: str | None = None
         self._watched_connected: bool = False
         self._source_input_ndim = source_input_ndim
         self._source_input_dtype: np.dtype[typing.Any] | None = (
@@ -1024,6 +1026,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
                 *watched_var,
                 workspace_link_id=watched_workspace_link_id,
                 source_label=watched_source_label,
+                source_uid=watched_source_uid,
                 connected=watched_connected,
             )
 
@@ -1053,6 +1056,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         *,
         workspace_link_id: str | None = None,
         source_label: str | None = None,
+        source_uid: str | None = None,
         connected: bool = True,
     ) -> None:
         """Bind this root ImageTool to a watched variable."""
@@ -1060,6 +1064,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         self._watched_uid = uid
         self._watched_workspace_link_id = workspace_link_id
         self._watched_source_label = source_label
+        self._watched_source_uid = source_uid
         self._watched_connected = connected
 
     def watched_metadata(self) -> dict[str, typing.Any]:
@@ -1071,6 +1076,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             "uid": self._watched_uid,
             "workspace_link_id": self._watched_workspace_link_id,
             "source_label": self._watched_source_label,
+            "source_uid": self._watched_source_uid,
             "connected": self._watched_connected,
         }
 
@@ -1149,6 +1155,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             self._watched_uid = None
             self._watched_workspace_link_id = None
             self._watched_source_label = None
+            self._watched_source_uid = None
             self._watched_connected = False
             self.manager.tree_view.refresh(self.index)
             self.manager._mark_node_state_dirty(self.uid)

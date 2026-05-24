@@ -63,6 +63,7 @@ def patch_manager(monkeypatch):
             "uid": uid,
             "workspace_link_id": metadata.get("workspace_link_id"),
             "source_label": metadata.get("source_label"),
+            "source_uid": metadata.get("source_uid"),
             "connected": True,
         }
         state["watch_info"]["watched"] = [
@@ -180,6 +181,30 @@ def test_watch_uid_reconnects_with_workspace_link_id(
     assert uid1.startswith("watch:")
     assert patch_manager["last_watch_calls"][-1][1] == uid1
     watcher2.shutdown()
+
+
+def test_watch_source_uid_groups_same_watcher_variables(
+    fake_shell, patch_manager, monkeypatch
+):
+    fake_shell.user_ns["left"] = xr.DataArray(np.array([1, 2, 3]), dims=("x",))
+    fake_shell.user_ns["right"] = xr.DataArray(np.array([4, 5, 6]), dims=("x",))
+
+    watcher = _Watcher(fake_shell)
+    monkeypatch.setattr(watcher, "start_thread", lambda: None)
+
+    watcher.watch("left")
+    watcher.watch("right")
+
+    left_state = watcher.watched_vars["left"]
+    right_state = watcher.watched_vars["right"]
+    assert left_state["uid"] != right_state["uid"]
+    assert (
+        left_state["watched_metadata"]["source_uid"]
+        == right_state["watched_metadata"]["source_uid"]
+        == watcher._uid
+    )
+
+    watcher.shutdown()
 
 
 def test_watch_binding_helpers_handle_invalid_and_labeled_entries(monkeypatch):
