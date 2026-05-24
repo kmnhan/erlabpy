@@ -59,6 +59,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
+    from erlab.interactive.imagetool.provenance import ImageToolSelectionSourceBinding
     from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
@@ -2581,6 +2582,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         | None = None,
         source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,
@@ -2627,6 +2629,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_input_dtype=source_input_dtype,
             provenance_spec=provenance_spec,
             source_spec=source_spec,
+            source_binding=source_binding,
             source_auto_update=source_auto_update,
             source_state=source_state,
         )
@@ -3703,8 +3706,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ds.attrs["manager_node_live_source_spec"] = json.dumps(
                 node.source_spec.model_dump(mode="json")
             )
+        if kind == "imagetool" and node.source_binding is not None:
+            ds.attrs["manager_node_live_source_binding"] = json.dumps(
+                node.source_binding.model_dump(mode="json")
+            )
         if kind == "imagetool" and (
-            node.source_spec is not None or output_id is not None
+            node.source_spec is not None
+            or node.source_binding is not None
+            or output_id is not None
         ):
             ds.attrs["manager_node_source_state"] = node.source_state
             ds.attrs["manager_node_source_auto_update"] = bool(node.source_auto_update)
@@ -3787,6 +3796,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         uid = ds.attrs.get("manager_node_uid")
         provenance_spec = ds.attrs.get("manager_node_provenance_spec")
         live_source_spec = ds.attrs.get("manager_node_live_source_spec")
+        live_source_binding = ds.attrs.get("manager_node_live_source_binding")
         parse_provenance_spec = (
             erlab.interactive.imagetool.provenance.parse_tool_provenance_spec
         )
@@ -3822,10 +3832,30 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     uid,
                     exc_info=True,
                 )
+        parsed_source_binding = None
+        if live_source_binding is not None:
+            try:
+                provenance = erlab.interactive.imagetool.provenance
+                binding_payload = typing.cast(
+                    "Mapping[str, typing.Any]",
+                    json.loads(live_source_binding),
+                )
+                parsed_source_binding = (
+                    provenance.ImageToolSelectionSourceBinding.model_validate(
+                        binding_payload
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Ignoring invalid saved manager source binding for node %s",
+                    uid,
+                    exc_info=True,
+                )
         kwargs: dict[str, typing.Any] = {
             "uid": uid,
             "provenance_spec": parsed_provenance_spec,
             "source_spec": parsed_source_spec,
+            "source_binding": parsed_source_binding,
             "output_id": ds.attrs.get("manager_node_output_id"),
             "source_auto_update": bool(
                 ds.attrs.get("manager_node_source_auto_update", False)
@@ -6374,11 +6404,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         | None = None,
         source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
     ) -> str:
         parent_node = self._node_for_target(parent)
+        if source_spec is None and source_binding is not None:
+            source_spec = source_binding.materialize(parent_node.current_source_data())
         if provenance_spec is None and source_spec is not None:
             provenance_spec = (
                 erlab.interactive.imagetool.provenance.compose_display_provenance(
@@ -6396,6 +6429,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool,
             provenance_spec=provenance_spec,
             source_spec=source_spec,
+            source_binding=source_binding,
             source_auto_update=source_auto_update,
             source_state=source_state,
             output_id=output_id,

@@ -37,6 +37,7 @@ if typing.TYPE_CHECKING:
     import qtawesome
 
     from erlab.interactive.imagetool import ImageTool
+    from erlab.interactive.imagetool.provenance import ImageToolSelectionSourceBinding
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 else:
     import lazy_loader as _lazy
@@ -1116,66 +1117,103 @@ class ItoolPlotItem(pg.PlotItem):
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        """Return a source spec for the current plot selection.
+
+        The spec contains ``qsel``, ``isel``, and ``sel`` operations for the current
+        parent data. Copied code, derivation display, and older saved workspaces use
+        this form directly. Manager child refreshes should store
+        :meth:`make_tool_source_binding` and call ``materialize`` before applying the
+        source.
+
+        Parameters
+        ----------
+        transpose
+            Whether to append a transpose step for the opened tool.
+        squeeze
+            Whether to append a squeeze step for singleton dimensions.
+
+        Returns
+        -------
+        ToolProvenanceSpec
+            Source spec for the current parent data.
+        """
+        return self.make_tool_source_binding(
+            transpose=transpose, squeeze=squeeze
+        ).materialize(self.slicer_area._tool_source_parent_data())
+
+    def make_tool_source_binding(
+        self, *, transpose: bool = False, squeeze: bool = False
+    ) -> ImageToolSelectionSourceBinding:
+        """Return ImageTool selection state for future manager refreshes.
+
+        Parameters
+        ----------
+        transpose
+            Whether refreshed data should be transposed for the opened tool.
+        squeeze
+            Whether refreshed data should squeeze singleton dimensions.
+
+        Returns
+        -------
+        ImageToolSelectionSourceBinding
+            Selection state that stores cursor, bin, crop, transpose, and squeeze
+            choices from this plot.
+        """
         cursor = self.slicer_area.current_cursor
         alt_pressed: bool = (
             QtCore.Qt.KeyboardModifier.AltModifier
             in QtWidgets.QApplication.queryKeyboardModifiers()
         )
         selection_code = self.selection_code_for_cursor(cursor)
-        operations: list[
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
-        ] = []
-        if selection_code.startswith(".qsel"):
-            qsel_kwargs = self.array_slicer.qsel_args(cursor, self.display_axis)
-            if qsel_kwargs:
-                operations.append(
-                    erlab.interactive.imagetool.provenance.QSelOperation(
-                        kwargs=qsel_kwargs
-                    )
-                )
-        else:
-            isel_kwargs = self.array_slicer.isel_args(
-                cursor, self.display_axis, int_if_one=True
-            )
-            if isel_kwargs:
-                operations.append(
-                    erlab.interactive.imagetool.provenance.IselOperation(
-                        kwargs=isel_kwargs
-                    )
-                )
-
-        if alt_pressed:
-            crop_indexers = dict(self._crop_indexers)
-            isel_indexers: dict[Hashable, slice] = {}
-            for key in list(crop_indexers.keys()):
-                if isinstance(key, str) and key.endswith("_idx"):
-                    isel_indexers[key.removesuffix("_idx")] = crop_indexers.pop(key)
-
-            if crop_indexers:
-                operations.append(
-                    erlab.interactive.imagetool.provenance.SelOperation(
-                        kwargs=crop_indexers
-                    )
-                )
-            if isel_indexers:
-                operations.append(
-                    erlab.interactive.imagetool.provenance.IselOperation(
-                        kwargs=isel_indexers
-                    )
-                )
-
-        operations.append(
-            erlab.interactive.imagetool.provenance.SortCoordOrderOperation()
+        selection_indexers = self.array_slicer.isel_args(
+            cursor, self.display_axis, int_if_one=True
         )
-        if transpose:
-            operations.append(
-                erlab.interactive.imagetool.provenance.TransposeOperation(
-                    dims=tuple(reversed(self.current_data.dims))
-                )
-            )
-        if squeeze and any(size == 1 for size in self.current_data.shape):
-            operations.append(erlab.interactive.imagetool.provenance.SqueezeOperation())
-        return erlab.interactive.imagetool.provenance.selection(*operations)
+        selection_mode: typing.Literal["qsel", "isel"] = (
+            "qsel" if selection_code.startswith(".qsel") else "isel"
+        )
+        selection_binned_dims: list[Hashable] = []
+        if selection_code.startswith(".qsel"):
+            binned = self.array_slicer.get_binned(cursor)
+            for dim in selection_indexers:
+                axis_idx = self.array_slicer._dim_indices.get(dim)
+                if axis_idx is None:
+                    axis_idx = self.array_slicer._obj.dims.index(dim)
+                if binned[axis_idx]:
+                    selection_binned_dims.append(dim)
+
+        crop_sel_indexers: dict[Hashable, slice] = {}
+        crop_isel_indexers: dict[Hashable, slice] = {}
+        if alt_pressed:
+            for key, selector in self._crop_indexers.items():
+                axis_idx = self.array_slicer._dim_indices.get(key)
+                if axis_idx is None:
+                    axis_idx = self.array_slicer._obj.dims.index(key)
+                if selector.start is None or selector.stop is None:
+                    index_selector = selector
+                else:
+                    start = self.array_slicer.index_of_value(
+                        axis_idx, selector.start, uniform=True
+                    )
+                    stop = self.array_slicer.index_of_value(
+                        axis_idx, selector.stop, uniform=True
+                    )
+                    lower, upper = sorted((start, stop))
+                    index_selector = slice(lower, upper + 1, selector.step)
+                if isinstance(key, str) and key.endswith("_idx"):
+                    crop_isel_indexers[key.removesuffix("_idx")] = index_selector
+                else:
+                    crop_sel_indexers[key] = index_selector
+
+        transpose_dims = tuple(reversed(self.current_data.dims)) if transpose else None
+        return erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding(
+            selection_mode=selection_mode,
+            selection_indexers=selection_indexers,
+            selection_binned_dims=tuple(selection_binned_dims),
+            crop_sel_indexers=crop_sel_indexers,
+            crop_isel_indexers=crop_isel_indexers,
+            transpose_dims=transpose_dims,
+            squeeze=squeeze and any(size == 1 for size in self.current_data.shape),
+        )
 
     @property
     def is_guidelines_visible(self) -> bool:
@@ -1984,6 +2022,7 @@ class ItoolPlotItem(pg.PlotItem):
         data: xr.DataArray,
         source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
         *,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
         use_parent_colormap: bool,
     ) -> None:
         itool_kw: dict[str, typing.Any] = {"data": data, "execute": False}
@@ -2022,7 +2061,12 @@ class ItoolPlotItem(pg.PlotItem):
                     erlab.interactive.itool(manager=False, **itool_kw),
                 )
                 if tool is not None:  # pragma: no branch
-                    manager.add_imagetool_child(tool, target, source_spec=source_spec)
+                    manager.add_imagetool_child(
+                        tool,
+                        target,
+                        source_spec=source_spec,
+                        source_binding=source_binding,
+                    )
                 return
 
         tool_window = erlab.interactive.itool(**itool_kw)
@@ -2041,9 +2085,11 @@ class ItoolPlotItem(pg.PlotItem):
     def open_in_new_window(self) -> None:
         """Open the current data in a new window."""
         data = self.current_data
+        source_binding = self.make_tool_source_binding()
         self._open_data_in_new_window(
             data,
-            self.make_tool_source_spec(),
+            source_binding.materialize(self.slicer_area._tool_source_parent_data()),
+            source_binding=source_binding,
             use_parent_colormap=True,
         )
 
@@ -2063,6 +2109,7 @@ class ItoolPlotItem(pg.PlotItem):
         self._open_data_in_new_window(
             data,
             source_spec,
+            source_binding=None,
             use_parent_colormap=False,
         )
 
@@ -2075,7 +2122,13 @@ class ItoolPlotItem(pg.PlotItem):
                     data, data_name=self.get_selection_code(), execute=False
                 )
                 if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                    tool.set_source_binding(self.make_tool_source_spec())
+                    source_binding = self.make_tool_source_binding()
+                    tool.set_source_binding(
+                        source_binding.materialize(
+                            self.slicer_area._tool_source_parent_data()
+                        ),
+                        source_binding=source_binding,
+                    )
                 self.slicer_area.add_tool_window(tool)
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
@@ -2098,7 +2151,13 @@ class ItoolPlotItem(pg.PlotItem):
                 data, data_name=self.get_selection_code(), execute=False
             )
             if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                tool.set_source_binding(self.make_tool_source_spec())
+                source_binding = self.make_tool_source_binding()
+                tool.set_source_binding(
+                    source_binding.materialize(
+                        self.slicer_area._tool_source_parent_data()
+                    ),
+                    source_binding=source_binding,
+                )
             self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -2110,7 +2169,13 @@ class ItoolPlotItem(pg.PlotItem):
                 execute=False,
             )
             if isinstance(tool, erlab.interactive.utils.ToolWindow):
-                tool.set_source_binding(self.make_tool_source_spec(transpose=True))
+                source_binding = self.make_tool_source_binding(transpose=True)
+                tool.set_source_binding(
+                    source_binding.materialize(
+                        self.slicer_area._tool_source_parent_data()
+                    ),
+                    source_binding=source_binding,
+                )
             self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -2121,7 +2186,11 @@ class ItoolPlotItem(pg.PlotItem):
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(self.make_tool_source_spec(squeeze=True))
+            source_binding = self.make_tool_source_binding(squeeze=True)
+            tool.set_source_binding(
+                source_binding.materialize(self.slicer_area._tool_source_parent_data()),
+                source_binding=source_binding,
+            )
         self.slicer_area.add_tool_window(tool)
 
     @QtCore.Slot()

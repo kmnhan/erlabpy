@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 import xarray as xr
 from qtpy import QtCore
 
-from erlab.interactive.imagetool.slicer import ArraySlicer
+from erlab.interactive.imagetool.slicer import ArraySlicer, qsel_args_from_indexers
 
 
 def test_nonuniform_axes_ignores_user_idx_dim(qtbot) -> None:
@@ -470,6 +471,20 @@ def test_qsel_args_falls_back_to_dims_index_lookup(qtbot) -> None:
     slicer._dim_indices = {}
 
     assert slicer.qsel_args(0, (0, 1)) == {"z": 2.0}
+
+
+def test_qsel_args_from_indexers_validates_live_bin_coordinates() -> None:
+    data = xr.DataArray(
+        np.zeros(5, dtype=np.float32),
+        dims=("x",),
+        coords={"x": np.array([0.0, 1.0, 1.0, 3.0, 2.0])},
+    )
+
+    with pytest.raises(ValueError, match="Dimension `missing` not found"):
+        qsel_args_from_indexers(data, {"missing": 0}, ())
+
+    with pytest.raises(ValueError, match="Bin does not contain"):
+        qsel_args_from_indexers(data, {"x": slice(2, 5)}, ("x",))
 
 
 def test_isel_code_uses_call_kwargs_formatting(qtbot) -> None:

@@ -19,6 +19,11 @@ ImageTool window. A :class:`ToolProvenanceSpec` answers two questions:
    - Each operation is represented by an immutable :class:`ToolProvenanceOperation`
      subclass whose serialized fields are safe to persist in JSON.
 
+Manager children opened from an ImageTool cursor or bin selection do not keep the
+first generated ``qsel`` arguments as their refresh state. They store the selected
+parent indices in :class:`ImageToolSelectionSourceBinding` and rebuild ``qsel`` or
+``isel`` operations from the current parent data each time they refresh.
+
 Adding a new provenance-carrying operation follows the same pattern every time:
 
 1. Define a new :class:`ToolProvenanceOperation` subclass with a unique ``op``
@@ -45,8 +50,8 @@ Adding a new provenance-carrying operation follows the same pattern every time:
 6. Give the class a unique ``op`` discriminator literal. Subclasses register themselves
    automatically so serialized payloads can dispatch to the right model.
 
-7. Export the concrete operation class from this module so runtime call sites can
-   instantiate it directly.
+7. Export the operation class from this module so runtime call sites can instantiate
+   it directly.
 
 8. Add tests that cover round-trip validation, :meth:`apply`, and derivation text/code,
    plus any save/load path that persists the new operation.
@@ -54,7 +59,7 @@ Adding a new provenance-carrying operation follows the same pattern every time:
 Parsing of serialized payloads happens only through :func:`parse_tool_provenance_spec`
 and :func:`parse_tool_provenance_operation`. Runtime authoring code should create specs
 with :func:`full_data`, :func:`public_data`, or :func:`selection`, then instantiate
-concrete operation models from this module directly.
+operation models from this module directly.
 """
 
 from __future__ import annotations
@@ -72,6 +77,7 @@ __all__ = [
     "DivideByCoordOperation",
     "FileLoadSource",
     "FileReplayCall",
+    "ImageToolSelectionSourceBinding",
     "InterpolationOperation",
     "IselOperation",
     "MaskWithPolygonOperation",
@@ -475,12 +481,18 @@ _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 
 class ToolProvenanceOperation(pydantic.BaseModel):
-    """Base class for immutable provenance operations.
+    """Base class for operations stored in :class:`ToolProvenanceSpec`.
 
     New operations should keep runtime fields in their decoded Python form, prefer the
     annotated provenance field aliases in this module for lossless JSON serialization,
     implement :meth:`apply` to replay the transformation, and implement
     :meth:`derivation_entry` to describe the step in manager UI.
+
+    Operation instances store the exact arguments used by replay, copied code, and
+    derivation display. For ImageTool cursor or bin children that refresh after parent
+    coordinate edits, store the selected indices in
+    :class:`ImageToolSelectionSourceBinding` and rebuild ``qsel`` operations before
+    applying the spec.
     """
 
     live_applicable: typing.ClassVar[bool] = True
@@ -566,14 +578,23 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         """Apply this operation to the current derived array.
 
-        ``data`` is the array produced by the preceding replay step. ``parent_data`` is
-        the original parent source array for the enclosing provenance spec and is
-        available for operations that need parent coordinates, ordering, or other
-        contextual metadata while replaying.
+        Parameters
+        ----------
+        data
+            Array produced by the preceding replay step.
+        parent_data
+            Parent ImageTool data for the enclosing provenance spec. Operations may
+            inspect it for coordinates, dimension order, or metadata.
 
-        This method is used only for live-source provenance paths. Operations that are
-        intended purely for generated replay code should raise an error here and set
-        ``live_applicable = False``.
+        Returns
+        -------
+        xarray.DataArray
+            Array after this operation has been applied.
+
+        Notes
+        -----
+        Operations that only emit generated code should set ``live_applicable = False``
+        and raise from this method.
         """
         raise NotImplementedError
 
@@ -859,8 +880,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     """Immutable provenance recipe for rebuilding tool data from a parent ImageTool.
 
     Author new specs with :func:`full_data`, :func:`public_data`, or
-    :func:`selection` plus concrete operation instances from this module. Deserialize
-    saved payloads with :func:`parse_tool_provenance_spec`.
+    :func:`selection` plus operation instances from this module. Deserialize saved
+    payloads with :func:`parse_tool_provenance_spec`.
+
+    A spec records the exact operation arguments used for replay, copied code, and
+    derivation display. Manager children opened from ImageTool cursor or bin selections
+    should keep :class:`ImageToolSelectionSourceBinding` as their refresh state; that
+    binding builds a spec before refresh so edited parent coordinates are used.
     """
 
     schema_version: typing.Literal[2] = 2
@@ -1533,6 +1559,115 @@ def require_live_source_spec(
             "whose operations support `apply()`."
         )
     return spec
+
+
+class ImageToolSelectionSourceBinding(pydantic.BaseModel):
+    """ImageTool selection state stored for manager child refreshes.
+
+    Stores the parent dimension indices selected in an ImageTool plot. When a child
+    refreshes after parent coordinates change, :meth:`materialize` rebuilds ``qsel`` or
+    ``isel`` operations from the current parent data so the child follows the same
+    cursor or bin position instead of old coordinate labels.
+
+    Parameters
+    ----------
+    selection_mode
+        Use ``"qsel"`` when selected hidden dimensions should be represented by current
+        coordinate values, or ``"isel"`` when they must stay index-based.
+    selection_indexers
+        Parent dimension names mapped to integer indices or index slices from the
+        cursor or bin selection.
+    selection_binned_dims
+        Dimensions in ``selection_indexers`` whose slices should become ``qsel`` center
+        and width arguments.
+    crop_sel_indexers
+        Index slice selections from visible axes that should be represented by current
+        coordinate values during refresh.
+    crop_isel_indexers
+        Index slice selections from visible non-uniform axes.
+    transpose_dims
+        Dimension order to apply after selection, if the opened tool expects a
+        transposed input.
+    squeeze
+        Whether to squeeze singleton dimensions after selection.
+    """
+
+    schema_version: typing.Literal[1] = 1
+    kind: typing.Literal["imagetool_selection"] = "imagetool_selection"
+    selection_mode: typing.Literal["qsel", "isel"] = "qsel"
+    selection_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
+    selection_binned_dims: ProvenanceHashableTuple = ()
+    crop_sel_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
+    crop_isel_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
+    transpose_dims: NullableProvenanceHashableTuple = None
+    squeeze: bool = False
+
+    model_config = pydantic.ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    def materialize(self, parent_data: xr.DataArray) -> ToolProvenanceSpec:
+        """Build a source spec for the current parent data.
+
+        Parameters
+        ----------
+        parent_data
+            Current data from the parent ImageTool.
+
+        Returns
+        -------
+        ToolProvenanceSpec
+            Source spec whose ``qsel``, ``isel``, and ``sel`` operations match this
+            binding on ``parent_data``.
+        """
+        operations: list[ToolProvenanceOperation] = []
+        selection_data = ToolProvenanceSpec._starting_data_for_kind(
+            "selection", parent_data
+        )
+        selection_indexers = dict(self.selection_indexers)
+        if selection_indexers:
+            if self.selection_mode == "qsel":
+                operation = QSelOperation(
+                    kwargs=erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
+                        selection_data,
+                        selection_indexers,
+                        self.selection_binned_dims,
+                    )
+                )
+            else:
+                operation = IselOperation(kwargs=selection_indexers)
+            operations.append(operation)
+
+        crop_sel_indexers = dict(self.crop_sel_indexers)
+        if crop_sel_indexers:
+            crop_sel_kwargs: dict[Hashable, typing.Any] = {}
+            for dim, selector in crop_sel_indexers.items():
+                if dim not in selection_data.dims:
+                    raise ValueError(f"Dimension `{dim}` not found in data")
+                coord = selection_data[dim][selector].values
+                if isinstance(selector, slice):
+                    if coord.size == 0:
+                        raise ValueError(f"Selection for dimension `{dim}` is empty")
+                    crop_sel_kwargs[dim] = slice(
+                        erlab.utils.misc._convert_to_native(coord[0]),
+                        erlab.utils.misc._convert_to_native(coord[-1]),
+                    )
+                else:
+                    crop_sel_kwargs[dim] = erlab.utils.misc._convert_to_native(coord)
+            operations.append(SelOperation(kwargs=crop_sel_kwargs))
+
+        crop_isel_indexers = dict(self.crop_isel_indexers)
+        if crop_isel_indexers:
+            operations.append(IselOperation(kwargs=crop_isel_indexers))
+
+        operations.append(SortCoordOrderOperation())
+        if self.transpose_dims is not None:
+            operations.append(TransposeOperation(dims=self.transpose_dims))
+        if self.squeeze:
+            operations.append(SqueezeOperation())
+        return ToolProvenanceSpec(kind="selection").append_operations(*operations)
 
 
 def full_data(

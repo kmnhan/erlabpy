@@ -2068,6 +2068,106 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
 
+def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace_reload(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4 * 5 * 3, dtype=float).reshape((4, 5, 3)),
+        dims=("x", "y", "z"),
+        coords={"x": np.arange(4), "y": np.arange(5), "z": np.arange(3)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+        parent_tool.array_slicer.set_bin(0, axis=2, value=3, update=True)
+        parent_tool.slicer_area.images[0].open_in_new_window()
+
+        root = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(root._childtool_indices) == 1, timeout=5000)
+        child_uid = root._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+        assert child_node.source_binding is not None
+
+        tree = manager._to_datatree()
+        child_attrs = tree[f"0/childtools/{child_uid}/imagetool"].attrs
+        assert "manager_node_live_source_binding" in child_attrs
+        assert "manager_node_live_source_spec" in child_attrs
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        loaded_child = manager._child_node(child_uid)
+        assert loaded_child.source_binding is not None
+
+        shifted = data.assign_coords(z=[10.0, 11.0, 12.0])
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, shifted)
+
+        qtbot.wait_until(lambda: loaded_child.source_state == "stale", timeout=5000)
+        assert loaded_child._update_from_parent_source() is True
+        child_data = manager.get_imagetool(child_uid).slicer_area._data.rename(None)
+        assert not np.isnan(child_data.values).all()
+        xarray.testing.assert_identical(
+            child_data,
+            shifted.qsel(z=11.0, z_width=3.0).rename(None),
+        )
+
+
+def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("x", "y"),
+        coords={"x": np.arange(3.0), "y": np.arange(4.0)},
+        name="scan",
+    )
+    source_binding = prov.ImageToolSelectionSourceBinding(
+        selection_mode="isel",
+        selection_indexers={"y": slice(1, 3)},
+    )
+    source_spec = source_binding.materialize(data)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child = itool(source_spec.apply(data), manager=False, execute=False)
+        assert isinstance(child, erlab.interactive.imagetool.ImageTool)
+        qtbot.addWidget(child)
+        child_uid = manager.add_imagetool_child(
+            child,
+            0,
+            show=False,
+            source_binding=source_binding,
+        )
+        child_node = manager._child_node(child_uid)
+
+        assert child_node.source_binding == source_binding
+        assert child_node.source_spec == source_spec
+
+
 def test_manager_goldtool_output_itool_nests_under_tool(
     qtbot,
     monkeypatch,
@@ -8598,6 +8698,7 @@ def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
     ds.attrs["manager_node_uid"] = "loaded"
     ds.attrs["manager_node_provenance_spec"] = "{not-json"
     ds.attrs["manager_node_live_source_spec"] = "{not-json"
+    ds.attrs["manager_node_live_source_binding"] = "{not-json"
 
     with manager_context() as manager:
         target = manager._load_workspace_imagetool_dataset(

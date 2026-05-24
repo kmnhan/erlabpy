@@ -13,7 +13,7 @@ from qtpy import QtCore, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Hashable, Sequence
+    from collections.abc import Hashable, Mapping, Sequence
 
     import dask.array
     import xarray as xr
@@ -129,6 +129,67 @@ def _get_inc(coord):
     except IndexError:
         # Coord size is 1, assume increment of 1
         return 1
+
+
+def qsel_args_from_indexers(
+    data: xr.DataArray,
+    indexers: Mapping[Hashable, slice | int],
+    binned_dims: Sequence[Hashable],
+) -> dict[Hashable, float]:
+    """Build ``qsel`` keyword arguments from index selections.
+
+    Parameters
+    ----------
+    data
+        Data whose current coordinates should be used for the returned ``qsel`` values.
+    indexers
+        Dimension names mapped to integer indices or index slices.
+    binned_dims
+        Dimensions whose index slices should become ``qsel`` center and width
+        arguments.
+
+    Returns
+    -------
+    dict
+        Keyword arguments suitable for :meth:`xarray.DataArray.qsel`.
+
+    Raises
+    ------
+    ValueError
+        If a requested dimension is missing or a binned selection cannot be expressed
+        by the current coordinate values.
+    """
+    out: dict[Hashable, float] = {}
+    binned_dim_set = set(binned_dims)
+
+    for dim, selector in indexers.items():
+        if dim not in data.dims:
+            raise ValueError(f"Dimension `{dim}` not found in data")
+        coord_values = data[dim].values
+        inc = _get_inc(coord_values)
+        order = 3 if inc == 0 else erlab.utils.array.effective_decimals(inc)
+
+        if dim in binned_dim_set:
+            coord = data[dim][selector].values
+            center = float(np.round(coord.mean(), order))
+            width = float(np.round(coord[-1] - coord[0] + inc, order))
+
+            out[dim] = center
+            if not np.allclose(
+                data[dim]
+                .sel({dim: slice(center - width / 2, center + width / 2)})
+                .values,
+                coord,
+            ):
+                raise ValueError(
+                    "Bin does not contain the same values as the original data."
+                )
+
+            out[str(dim) + "_width"] = width
+        else:
+            out[dim] = float(np.round(coord_values[selector], order))
+
+    return out
 
 
 class ArraySlicer(QtCore.QObject):
@@ -1050,39 +1111,18 @@ class ArraySlicer(QtCore.QObject):
         return out
 
     def qsel_args(self, cursor: int, disp: Sequence[int]) -> dict:
-        out: dict[Hashable, float] = {}
         binned = self.get_binned(cursor)
+        indexers = self.isel_args(cursor, disp, int_if_one=True)
+        binned_dims: list[Hashable] = []
 
-        for dim, selector in self.isel_args(cursor, disp, int_if_one=True).items():
+        for dim in indexers:
             axis_idx = self._dim_indices.get(dim)
             if axis_idx is None:
                 axis_idx = self._obj.dims.index(dim)
-            inc = self.incs[axis_idx]
-            # Estimate minimum number of decimal places required to represent selection
-            order = self.get_significant(axis_idx)
-
             if binned[axis_idx]:
-                coord = self._obj[dim][selector].values
-                center = float(np.round(coord.mean(), order))
-                width = float(np.round(coord[-1] - coord[0] + inc, order))
+                binned_dims.append(dim)
 
-                out[dim] = center
-                if not np.allclose(
-                    self._obj[dim]
-                    .sel({dim: slice(center - width / 2, center + width / 2)})
-                    .values,
-                    coord,
-                ):
-                    raise ValueError(
-                        "Bin does not contain the same values as the original data."
-                    )
-
-                out[str(dim) + "_width"] = width
-
-            else:
-                out[dim] = float(np.round(self._obj[dim].values[selector], order))
-
-        return out
+        return qsel_args_from_indexers(self._obj, indexers, binned_dims)
 
     def qsel_code(self, cursor: int, disp: Sequence[int]) -> str:
         if self._hidden_axes_have_nonuniform(disp):
