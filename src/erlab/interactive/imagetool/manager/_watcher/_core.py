@@ -228,6 +228,7 @@ class _Watcher:
             metadata = {
                 "workspace_link_id": workspace_link_id,
                 "source_label": selected.get("source_label"),
+                "source_uid": self._uid,
                 "connected": True,
             }
             return uid, metadata
@@ -235,6 +236,7 @@ class _Watcher:
         return _stable_watch_uid(workspace_link_id, varname, source_label_text), {
             "workspace_link_id": workspace_link_id,
             "source_label": source_label_text,
+            "source_uid": self._uid,
             "connected": True,
         }
 
@@ -264,6 +266,7 @@ class _Watcher:
                     "dict[str, typing.Any]",
                     self.watched_vars[varname].get("watched_metadata", {}),
                 )
+                watched_metadata["source_uid"] = self._uid
                 show = True
             else:
                 uid, watched_metadata = self._watch_binding(
@@ -353,6 +356,7 @@ class _Watcher:
             watched_metadata = typing.cast(
                 "dict[str, typing.Any]", state.get("watched_metadata", {})
             )
+            watched_metadata["source_uid"] = self._uid
         erlab.interactive.imagetool.manager._watch_data(
             varname,
             uid,

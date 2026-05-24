@@ -6095,6 +6095,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
             watched_metadata={
                 "workspace_link_id": manager._workspace_link_id,
                 "source_label": "notebook-a",
+                "source_uid": "kernel-a",
                 "connected": True,
             },
         )
@@ -6110,6 +6111,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert attrs["manager_node_watched_uid"] == "watch:stable-data"
         assert attrs["manager_node_watched_workspace_link_id"] == workspace_link_id
         assert attrs["manager_node_watched_source_label"] == "notebook-a"
+        assert attrs["manager_node_watched_source_uid"] == "kernel-a"
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
@@ -6124,6 +6126,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert wrapper._watched_uid == "watch:stable-data"
         assert wrapper._watched_workspace_link_id == workspace_link_id
         assert wrapper._watched_source_label == "notebook-a"
+        assert wrapper._watched_source_uid == "kernel-a"
         assert wrapper._watched_connected is False
 
         with qtbot.wait_signal(manager._sigReplyData) as blocker:
@@ -6131,6 +6134,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert blocker.args[0]["workspace_link_id"] == "different-workspace-link"
         assert blocker.args[0]["watched"][0]["workspace_link_id"] == workspace_link_id
         assert blocker.args[0]["watched"][0]["source_label"] == "notebook-a"
+        assert blocker.args[0]["watched"][0]["source_uid"] == "kernel-a"
 
         manager._from_datatree(tree, replace=True, select=False)
         assert manager._workspace_link_id == workspace_link_id
@@ -6158,6 +6162,114 @@ def test_manager_workspace_watched_attrs_skip_missing_workspace_link(
         assert attrs["manager_node_watched_varname"] == "data"
         assert attrs["manager_node_watched_uid"] == "watch:stable-data"
         assert "manager_node_watched_workspace_link_id" not in attrs
+
+
+def test_manager_watched_badge_color_groups_by_source_uid(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        for varname, uid, source_uid in (
+            ("left", "watch:left", "kernel-a"),
+            ("right", "watch:right", "kernel-a"),
+            ("other", "watch:other", "kernel-b"),
+        ):
+            manager.add_imagetool(
+                erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+                watched_var=(varname, uid),
+                watched_source_uid=source_uid,
+            )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        left = manager._imagetool_wrappers[0]
+        right = manager._imagetool_wrappers[1]
+        other = manager._imagetool_wrappers[2]
+
+        assert (
+            manager.color_for_watched_var_source(left)
+            == manager_mainwindow._WATCHED_VAR_COLORS[0]
+        )
+        assert (
+            manager.color_for_watched_var_source(right)
+            == manager_mainwindow._WATCHED_VAR_COLORS[0]
+        )
+        assert (
+            manager.color_for_watched_var_source(other)
+            == manager_mainwindow._WATCHED_VAR_COLORS[1]
+        )
+
+
+def test_manager_watched_badge_color_falls_back_to_source_label(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            watched_var=("left", "watch:left"),
+            watched_source_label="notebook-a",
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            watched_var=("right", "watch:right"),
+            watched_source_label="notebook-a",
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            watched_var=("other", "watch:other"),
+            watched_source_label="notebook-b",
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        left = manager._imagetool_wrappers[0]
+        right = manager._imagetool_wrappers[1]
+        other = manager._imagetool_wrappers[2]
+        assert manager.color_for_watched_var_source(
+            left
+        ) == manager.color_for_watched_var_source(right)
+        assert manager.color_for_watched_var_source(
+            other
+        ) != manager.color_for_watched_var_source(left)
+
+
+def test_manager_watched_badge_color_uses_legacy_uid_suffix(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            watched_var=("left", "left legacy-kernel"),
+        )
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            watched_var=("right", "right legacy-kernel"),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        left = manager._imagetool_wrappers[0]
+        right = manager._imagetool_wrappers[1]
+        assert manager.color_for_watched_var_source(
+            left
+        ) == manager.color_for_watched_var_source(right)
 
 
 def test_manager_watched_root_provenance_uses_variable_name(

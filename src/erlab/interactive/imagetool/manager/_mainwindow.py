@@ -2572,6 +2572,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         watched_var: tuple[str, str] | None = None,
         watched_workspace_link_id: str | None = None,
         watched_source_label: str | None = None,
+        watched_source_uid: str | None = None,
         watched_connected: bool = True,
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
@@ -2620,6 +2621,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             watched_var=watched_var,
             watched_workspace_link_id=watched_workspace_link_id,
             watched_source_label=watched_source_label,
+            watched_source_uid=watched_source_uid,
             watched_connected=watched_connected,
             source_input_ndim=source_input_ndim,
             source_input_dtype=source_input_dtype,
@@ -3688,6 +3690,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_label = watched_metadata.get("source_label")
             if source_label is not None:
                 ds.attrs["manager_node_watched_source_label"] = str(source_label)
+            source_uid = watched_metadata.get("source_uid")
+            if source_uid is not None:
+                ds.attrs["manager_node_watched_source_uid"] = str(source_uid)
             ds.attrs["manager_node_watched_connected"] = bool(
                 watched_metadata.get("connected", False)
             )
@@ -3864,6 +3869,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 None
                 if ds.attrs.get("manager_node_watched_source_label") is None
                 else str(ds.attrs["manager_node_watched_source_label"])
+            )
+            kwargs["watched_source_uid"] = (
+                None
+                if ds.attrs.get("manager_node_watched_source_uid") is None
+                else str(ds.attrs["manager_node_watched_source_uid"])
             )
             # Loaded watched rows stay watched, but are disconnected until
             # a notebook explicitly reconnects them.
@@ -5723,6 +5733,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         watched_source_label=typing.cast(
                             "str | None", watched_metadata.get("source_label")
                         ),
+                        watched_source_uid=typing.cast(
+                            "str | None", watched_metadata.get("source_uid")
+                        ),
                         watched_connected=bool(
                             watched_metadata.get("connected", watched_var is not None)
                         ),
@@ -5789,14 +5802,26 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return k
         return None
 
-    def color_for_watched_var_kernel(self, kernel_uid: str) -> QtGui.QColor:
-        """Return a different color for different source kernels."""
-        all_kernel_uids = tuple(
-            typing.cast("str", v._watched_uid).removeprefix(f"{v._watched_varname} ")
-            for v in self._imagetool_wrappers.values()
-            if v.watched
+    def _watched_source_color_key(self, wrapper: _ImageToolWrapper) -> str:
+        if wrapper._watched_source_uid:
+            return f"source-uid:{wrapper._watched_source_uid}"
+        if wrapper._watched_source_label:
+            return f"source-label:{wrapper._watched_source_label}"
+        watched_uid = typing.cast("str", wrapper._watched_uid)
+        watched_varname = typing.cast("str", wrapper._watched_varname)
+        return f"legacy:{watched_uid.removeprefix(f'{watched_varname} ')}"
+
+    def color_for_watched_var_source(self, wrapper: _ImageToolWrapper) -> QtGui.QColor:
+        """Return a different color for different watched-variable sources."""
+        source_key = self._watched_source_color_key(wrapper)
+        all_source_keys = tuple(
+            dict.fromkeys(
+                self._watched_source_color_key(v)
+                for v in self._imagetool_wrappers.values()
+                if v.watched
+            )
         )
-        idx = all_kernel_uids.index(kernel_uid)
+        idx = all_source_keys.index(source_key)
         return _WATCHED_VAR_COLORS[idx % len(_WATCHED_VAR_COLORS)]
 
     @QtCore.Slot(str)
@@ -5861,6 +5886,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     "str | None",
                     watched_metadata.get("source_label")
                     or wrapper._watched_source_label,
+                ),
+                source_uid=typing.cast(
+                    "str | None",
+                    watched_metadata.get("source_uid") or wrapper._watched_source_uid,
                 ),
                 connected=True,
             )

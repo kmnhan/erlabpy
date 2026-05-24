@@ -405,10 +405,8 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         if watched_rect:
             palette = option.palette
             watched_varname = str(tool_wrapper._watched_varname)
-            watched_uid = str(tool_wrapper._watched_uid)
-            kernel_uid = watched_uid.removeprefix(f"{watched_varname} ")
             if tool_wrapper._watched_connected:
-                color = self.manager.color_for_watched_var_kernel(kernel_uid)
+                color = self.manager.color_for_watched_var_source(tool_wrapper)
             else:
                 color = option.palette.color(QtGui.QPalette.ColorRole.Mid)
 
