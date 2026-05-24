@@ -75,6 +75,20 @@ _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
 _RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
 _MAX_RECENT_WORKSPACES = 10
+_LINEAGE_STATUS_LABELS: dict[str, str] = {
+    "current": "Current inputs",
+    "changed": "Inputs changed",
+    "missing": "Inputs missing",
+}
+_LINEAGE_STATUS_BADGES: dict[str, str] = {
+    "changed": "Inputs changed",
+    "missing": "Inputs missing",
+}
+_LINEAGE_STATUS_TOOLTIPS: dict[str, str] = {
+    "current": "All recorded live inputs are still open and unchanged.",
+    "changed": "At least one recorded live input has changed since this data was made.",
+    "missing": "At least one recorded live input is no longer open.",
+}
 
 
 def _manager_settings() -> QtCore.QSettings:
@@ -2033,6 +2047,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node = self._all_nodes.pop(uid, None)
         if node is None:
             return
+        self._refresh_lineage_dependents(uid)
         self._pending_source_refresh_targets.pop(uid, None)
         for blocker_uid, target_uids in list(
             self._pending_source_refresh_targets.items()
@@ -2054,6 +2069,205 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if isinstance(target, int):
             return self._imagetool_wrappers[target]
         return self._all_nodes[target]
+
+    def _lineage_refs_for_uid(
+        self, uid: str
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptInputLineageRef, ...]:
+        node = self._all_nodes.get(uid)
+        if node is None or node.provenance_spec is None:
+            return ()
+        return erlab.interactive.imagetool.provenance.script_input_lineage_refs(
+            node.provenance_spec
+        )
+
+    def lineage_status_for_uid(
+        self, uid: str
+    ) -> typing.Literal["current", "changed", "missing"] | None:
+        refs = self._lineage_refs_for_uid(uid)
+        if not refs:
+            return None
+
+        changed = False
+        for ref in refs:
+            parent = self._all_nodes.get(ref.node_uid)
+            if parent is None:
+                return "missing"
+            if (
+                ref.node_lineage_token is not None
+                and parent.lineage_token != ref.node_lineage_token
+            ):
+                changed = True
+        return "changed" if changed else "current"
+
+    def lineage_status_label_for_uid(self, uid: str) -> str | None:
+        status = self.lineage_status_for_uid(uid)
+        if status is None:
+            return None
+        return _LINEAGE_STATUS_LABELS[status]
+
+    def lineage_status_badge_for_uid(self, uid: str) -> str | None:
+        status = self.lineage_status_for_uid(uid)
+        if status is None:
+            return None
+        return _LINEAGE_STATUS_BADGES.get(status)
+
+    def lineage_status_tooltip_for_uid(self, uid: str) -> str | None:
+        status = self.lineage_status_for_uid(uid)
+        if status is None:
+            return None
+        return _LINEAGE_STATUS_TOOLTIPS[status]
+
+    def lineage_input_summary_for_uid(self, uid: str) -> str | None:
+        refs = self._lineage_refs_for_uid(uid)
+        if not refs:
+            return None
+
+        parts: list[str] = []
+        seen: set[tuple[str, str, str | None]] = set()
+        for ref in refs:
+            key = (ref.name, ref.node_uid, ref.node_lineage_token)
+            if key in seen:
+                continue
+            seen.add(key)
+            parent = self._all_nodes.get(ref.node_uid)
+            if isinstance(parent, _ImageToolWrapper):
+                current = f"currently ImageTool {parent.index}"
+            elif parent is not None:
+                current = f"currently {parent.display_text}"
+            else:
+                current = "parent no longer open"
+            parts.append(f"{ref.name}: {ref.label} ({current})")
+        return "; ".join(parts)
+
+    def _lineage_dependent_uids(self, uid: str) -> list[str]:
+        return [
+            node_uid
+            for node_uid in self._all_nodes
+            if node_uid != uid
+            and any(ref.node_uid == uid for ref in self._lineage_refs_for_uid(node_uid))
+        ]
+
+    def _refresh_lineage_dependents(self, uid: str) -> None:
+        for dependent_uid in self._lineage_dependent_uids(uid):
+            self.tree_view.refresh(dependent_uid)
+            if self._metadata_node_uid == dependent_uid:
+                self._set_metadata_node(self._all_nodes[dependent_uid])
+
+    def _script_input_name_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str:
+        if isinstance(node, _ImageToolWrapper):
+            return f"data_{node.index}"
+        suffix = "".join(
+            character if character.isalnum() or character == "_" else "_"
+            for character in node.uid
+        )
+        if not suffix or suffix[0].isdigit():
+            suffix = f"_{suffix}"
+        return f"data_{suffix}"
+
+    def _script_input_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> erlab.interactive.imagetool.provenance.ScriptInput:
+        provenance_spec = (
+            node.provenance_spec.model_dump(mode="json")
+            if node.provenance_spec is not None
+            else None
+        )
+        if isinstance(node, _ImageToolWrapper):
+            label = f"ImageTool {node.index}"
+        else:
+            label = node.display_text
+        if isinstance(node, _ImageToolWrapper) and node.name:
+            label += f": {node.name}"
+        return erlab.interactive.imagetool.provenance.ScriptInput(
+            name=self._script_input_name_for_node(node),
+            label=label,
+            node_uid=node.uid,
+            node_lineage_token=node.lineage_token,
+            provenance_spec=provenance_spec,
+        )
+
+    def _multi_input_script_provenance(
+        self,
+        input_targets: Iterable[int | str],
+        *,
+        operation_label: str,
+        operation_code: str,
+        active_name: str = "derived",
+        start_label: str = "Run ImageTool manager action",
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        return erlab.interactive.imagetool.provenance.script(
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label=operation_label,
+                code=operation_code,
+            ),
+            start_label=start_label,
+            active_name=active_name,
+            script_inputs=tuple(
+                self._script_input_for_node(self._node_for_target(target))
+                for target in input_targets
+            ),
+        )
+
+    def _show_multi_input_script_result(
+        self,
+        data: xr.DataArray,
+        input_targets: Iterable[int | str],
+        *,
+        operation_label: str,
+        operation_code: str,
+    ) -> int | None:
+        input_targets = tuple(input_targets)
+        tool = erlab.interactive.itool(data, manager=False, execute=False)
+        if not isinstance(tool, ImageTool):
+            return None
+        return self.add_imagetool(
+            tool,
+            show=True,
+            activate=True,
+            provenance_spec=self._multi_input_script_provenance(
+                input_targets,
+                operation_label=operation_label,
+                operation_code=operation_code,
+            ),
+        )
+
+    def _workspace_loaded_uid_map(
+        self, loaded_targets_by_uid: Mapping[str, int | str]
+    ) -> dict[str, str]:
+        uid_map: dict[str, str] = {}
+        for saved_uid, target in loaded_targets_by_uid.items():
+            try:
+                actual_uid = self._node_for_target(target).uid
+            except KeyError:
+                continue
+            if actual_uid != saved_uid:
+                uid_map[saved_uid] = actual_uid
+        return uid_map
+
+    def _rebase_loaded_workspace_lineage_refs(
+        self, loaded_targets_by_uid: Mapping[str, int | str]
+    ) -> None:
+        uid_map = self._workspace_loaded_uid_map(loaded_targets_by_uid)
+        if not uid_map:
+            return
+
+        for target in loaded_targets_by_uid.values():
+            try:
+                node = self._node_for_target(target)
+            except KeyError:
+                continue
+            if node.provenance_spec is None:
+                continue
+            rebased = (
+                erlab.interactive.imagetool.provenance.rebase_script_input_node_uids(
+                    node.provenance_spec,
+                    uid_map,
+                )
+            )
+            if rebased != node.provenance_spec:
+                node.set_displayed_provenance(rebased, advance_lineage=False)
 
     def _child_node(self, uid: str) -> _ManagedWindowNode:
         node = self._all_nodes[uid]
@@ -2605,6 +2819,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,
+        lineage_token: str | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
@@ -2651,6 +2866,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_binding=source_binding,
             source_auto_update=source_auto_update,
             source_state=source_state,
+            lineage_token=lineage_token,
         )
         self._imagetool_wrappers[index] = wrapper
         self._register_root_wrapper(wrapper)
@@ -3063,6 +3279,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._imagetool_wrappers.pop(index)
         self._all_nodes.pop(wrapper.uid, None)
+        self._refresh_lineage_dependents(wrapper.uid)
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -3467,6 +3684,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         created_time = node._created_time
         recent_geometry = node._recent_geometry
         provenance_spec = node.provenance_spec
+        lineage_token = node.lineage_token
 
         self.tree_view.childtool_removed(uid)
         self._unregister_node(uid)
@@ -3477,6 +3695,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 show=False,
                 uid=uid,
                 provenance_spec=provenance_spec,
+                lineage_token=lineage_token,
             )
         wrapper = self._imagetool_wrappers[new_index]
         wrapper._created_time = created_time
@@ -3501,6 +3720,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.tree_view.setCurrentIndex(promoted_index)
         self.tree_view.scrollTo(promoted_index)
         self.tree_view.refresh(new_index)
+        self._refresh_lineage_dependents(uid)
         self._update_actions()
         self._mark_workspace_structure_dirty("Promoted child ImageTool")
         return new_index
@@ -3690,6 +3910,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> xr.Dataset:
         ds.attrs["manager_node_uid"] = node.uid
         ds.attrs["manager_node_kind"] = kind
+        ds.attrs["manager_node_lineage_token"] = node.lineage_token
         if node.provenance_spec is not None:
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
                 node.provenance_spec.model_dump(mode="json")
@@ -3872,6 +4093,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
         kwargs: dict[str, typing.Any] = {
             "uid": uid,
+            "lineage_token": ds.attrs.get("manager_node_lineage_token"),
             "provenance_spec": parsed_provenance_spec,
             "source_spec": parsed_source_spec,
             "source_binding": parsed_source_binding,
@@ -3954,6 +4176,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             parent_target,
             show=ds.attrs.get("tool_visible", True),
             uid=ds.attrs.get("manager_node_uid"),
+            lineage_token=ds.attrs.get("manager_node_lineage_token"),
         )
 
     @staticmethod
@@ -4298,6 +4521,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.remove_all_tools()
                 for root_path in root_paths:
                     _load_path(root_path)
+                self._rebase_loaded_workspace_lineage_refs(loaded_targets_by_uid)
                 self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if not mark_dirty:
                     self._drain_workspace_deferred_events()
@@ -4406,6 +4630,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         workspace_file_path=workspace_file_path,
                         loaded_targets_by_uid=loaded_targets_by_uid,
                     )
+                    self._rebase_loaded_workspace_lineage_refs(loaded_targets_by_uid)
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                     if not mark_dirty:
                         self._drain_workspace_deferred_events()
@@ -6395,6 +6620,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         *,
         show: bool = True,
         uid: str | None = None,
+        lineage_token: str | None = None,
     ) -> str:
         """Register a child tool window.
 
@@ -6416,6 +6642,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._next_node_uid(uid),
             parent.uid,
             tool,
+            lineage_token=lineage_token,
         )
         if not tool._tool_display_name:
             tool._tool_display_name = parent.name
@@ -6453,6 +6680,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
+        lineage_token: str | None = None,
     ) -> str:
         parent_node = self._node_for_target(parent)
         if source_spec is None and source_binding is not None:
@@ -6478,6 +6706,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_auto_update=source_auto_update,
             source_state=source_state,
             output_id=output_id,
+            lineage_token=lineage_token,
         )
         self._register_child_node(node)
         if output_id is not None and parent_node.tool_window is not None:

@@ -31,7 +31,9 @@ logger = logging.getLogger(__name__)
 
 _NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
 _TOOL_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 129
-_RowBadgeKind = typing.Literal["dask", "link", "watched", "tool_type", "source_status"]
+_RowBadgeKind = typing.Literal[
+    "dask", "link", "watched", "tool_type", "source_status", "lineage_status"
+]
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         child_node,
                         right_edge=dask_rect.left() if dask_rect is not None else None,
                     )
+                    if status_rect is None:
+                        status_rect, _, _ = self._compute_lineage_status_info(
+                            option,
+                            child_node,
+                            right_edge=(
+                                dask_rect.left() if dask_rect is not None else None
+                            ),
+                        )
                     right_badge_rect = status_rect or dask_rect
                     if right_badge_rect is not None:
                         rect.setRight(right_badge_rect.left() - self.icon_right_pad)
@@ -358,6 +368,16 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         icons_width, dask_rect, link_rect, watched_rect = self._compute_icons_info(
             option, tool_wrapper
         )
+        icon_rects = [
+            rect for rect in (dask_rect, link_rect, watched_rect) if rect is not None
+        ]
+        lineage_rect, lineage_text, lineage_color = self._compute_lineage_status_info(
+            option,
+            tool_wrapper,
+            right_edge=(
+                min(rect.left() for rect in icon_rects) if icon_rects else None
+            ),
+        )
 
         # Draw label (skip while editing for inline editor)
         if not is_editing:  # pragma: no branch
@@ -376,14 +396,21 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             # Elide text to leave room for icons on the right
             fm = QtGui.QFontMetrics(option.font)
             text = index.data(role=QtCore.Qt.ItemDataRole.DisplayRole)
+            text_rect = QtCore.QRect(option.rect)
+            if lineage_rect is not None:
+                text_rect.setRight(lineage_rect.left() - self.icon_right_pad)
             elided = fm.elidedText(
                 text,
                 view.textElideMode(),
-                option.rect.width() - self.icon_right_pad - icons_width,
+                (
+                    max(text_rect.width(), 0)
+                    if lineage_rect is not None
+                    else option.rect.width() - self.icon_right_pad - icons_width
+                ),
             )
             painter.setPen(palette.color(color_group, role))
             painter.drawText(
-                option.rect,
+                text_rect,
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided,
@@ -428,6 +455,28 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignCenter,
                 watched_varname,
+            )
+            painter.restore()
+
+        if lineage_rect and lineage_text and lineage_color:
+            _fill_rounded_rect(
+                painter,
+                lineage_rect,
+                facecolor=option.palette.base(),
+                edgecolor=lineage_color,
+                linewidth=self.icon_border_width,
+                radius=self.icon_corner_radius,
+            )
+            lineage_font = QtGui.QFont(option.font)
+            lineage_font.setPointSizeF(self._font_size * self.child_status_font_scale)
+            painter.save()
+            painter.setFont(lineage_font)
+            painter.setPen(lineage_color)
+            painter.drawText(
+                lineage_rect,
+                QtCore.Qt.AlignmentFlag.AlignVCenter
+                | QtCore.Qt.AlignmentFlag.AlignCenter,
+                lineage_text,
             )
             painter.restore()
 
@@ -477,6 +526,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 child_node,
                 right_edge=dask_rect.left() if dask_rect is not None else None,
             )
+            if status_rect is None:
+                status_rect, status_text, status_color = (
+                    self._compute_lineage_status_info(
+                        option,
+                        child_node,
+                        right_edge=dask_rect.left() if dask_rect is not None else None,
+                    )
+                )
 
         if type_rect and type_text and type_color:
             _fill_rounded_rect(
@@ -658,6 +715,38 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         rect_x = right_edge - badge_width - self.icon_right_pad
         return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
 
+    def _compute_lineage_status_info(
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        right_edge: int | None = None,
+    ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
+        text = self.manager.lineage_status_badge_for_uid(node.uid)
+        if text is None:
+            return None, None, None
+
+        match self.manager.lineage_status_for_uid(node.uid):
+            case "changed":
+                color = QtGui.QColor("#8a6d00")
+            case "missing":
+                color = QtGui.QColor("#59636e")
+            case _:
+                return None, None, None
+
+        rect_size = self.icon_size + 2 * self.icon_inner_pad
+        rect_y = option.rect.center().y() - (rect_size // 2)
+        badge_font = QtGui.QFont(option.font)
+        badge_font.setPointSizeF(self._font_size * self.child_status_font_scale)
+        badge_width = (
+            QtGui.QFontMetrics(badge_font).boundingRect(text).width()
+            + self.child_status_rect_hpad * 2
+        )
+        if right_edge is None:
+            right_edge = option.rect.right()
+        rect_x = right_edge - badge_width - self.icon_right_pad
+        return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
+
     def _option_for_index(
         self,
         view: QtWidgets.QAbstractItemView,
@@ -698,6 +787,18 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             _, dask_rect, link_rect, watched_rect = self._compute_icons_info(
                 option, node
             )
+            icon_rects = [
+                rect
+                for rect in (dask_rect, link_rect, watched_rect)
+                if rect is not None
+            ]
+            lineage_rect, _, _ = self._compute_lineage_status_info(
+                option,
+                node,
+                right_edge=(
+                    min(rect.left() for rect in icon_rects) if icon_rects else None
+                ),
+            )
             if dask_rect is not None and dask_rect.contains(pos):
                 tooltip = (
                     "Dask-backed data. Click to open Dask and chunk controls."
@@ -732,6 +833,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     watched_rect,
                     tooltip,
                 )
+            if lineage_rect is not None and lineage_rect.contains(pos):
+                tooltip = self.manager.lineage_status_tooltip_for_uid(node.uid)
+                if tooltip is not None:
+                    return _RowBadge("lineage_status", lineage_rect, tooltip)
             return None
 
         if not isinstance(node, str):
@@ -755,6 +860,13 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             child_node,
             right_edge=dask_rect.left() if dask_rect is not None else None,
         )
+        source_status = status_rect is not None
+        if status_rect is None:
+            status_rect, _, _ = self._compute_lineage_status_info(
+                option,
+                child_node,
+                right_edge=dask_rect.left() if dask_rect is not None else None,
+            )
         if dask_rect is not None and dask_rect.contains(pos):
             tooltip = (
                 "Dask-backed data. Click to open Dask and chunk controls."
@@ -769,6 +881,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         if status_rect is None or not status_rect.contains(pos):
             return None
+        if not source_status:
+            tooltip = self.manager.lineage_status_tooltip_for_uid(child_node.uid)
+            if tooltip is None:
+                return None
+            return _RowBadge("lineage_status", status_rect, tooltip)
+
         match child_node.source_state:
             case "stale":
                 tooltip = (

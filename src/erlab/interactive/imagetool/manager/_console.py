@@ -4,12 +4,13 @@ from __future__ import annotations
 
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
-import ast
 import contextlib
 import importlib
+import operator
 import sys
 import typing
 import weakref
+from dataclasses import dataclass
 
 import numpy as np
 import qtconsole.inprocess
@@ -19,6 +20,14 @@ from qtpy import QtCore, QtWidgets
 import erlab
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from IPython.core.interactiveshell import (
+        ExecutionInfo,
+        ExecutionResult,
+        InteractiveShell,
+    )
+
     from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
@@ -58,7 +67,453 @@ def _resolve_console_namespace(
     }
 
 
-class ToolNamespace:
+def _tool_data_name(index: int) -> str:
+    return f"data_{index}"
+
+
+def _dedupe_script_inputs(
+    inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
+) -> tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...]:
+    deduped: list[erlab.interactive.imagetool.provenance.ScriptInput] = []
+    seen: set[str] = set()
+    for script_input in inputs:
+        if script_input.name in seen:
+            continue
+        seen.add(script_input.name)
+        deduped.append(script_input)
+    return tuple(deduped)
+
+
+@dataclass(frozen=True)
+class _ConsoleOperand:
+    value: typing.Any
+    code: str
+    script_inputs: tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...] = ()
+    copyable: bool = True
+
+
+def _literal_code(value: typing.Any) -> tuple[str, bool]:
+    value = erlab.utils.misc._convert_to_native(value)
+    if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
+        return repr(value), True
+    if isinstance(value, slice):
+        start, start_copyable = _literal_code(value.start)
+        stop, stop_copyable = _literal_code(value.stop)
+        step, step_copyable = _literal_code(value.step)
+        return (
+            f"slice({start}, {stop}, {step})",
+            start_copyable and stop_copyable and step_copyable,
+        )
+    if isinstance(value, tuple):
+        parts = [_literal_code(item) for item in value]
+        suffix = "," if len(parts) == 1 else ""
+        return (
+            f"({', '.join(part for part, _copyable in parts)}{suffix})",
+            all(copyable for _part, copyable in parts),
+        )
+    if isinstance(value, list):
+        parts = [_literal_code(item) for item in value]
+        return (
+            f"[{', '.join(part for part, _copyable in parts)}]",
+            all(copyable for _part, copyable in parts),
+        )
+    if isinstance(value, dict):
+        dict_parts: list[str] = []
+        copyable = True
+        for key, item in value.items():
+            key_code, key_copyable = _literal_code(key)
+            item_code, item_copyable = _literal_code(item)
+            dict_parts.append(f"{key_code}: {item_code}")
+            copyable = copyable and key_copyable and item_copyable
+        return f"{{{', '.join(dict_parts)}}}", copyable
+    return repr(value), False
+
+
+def _merge_operands(
+    *operands: _ConsoleOperand,
+) -> tuple[tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...], bool]:
+    return (
+        _dedupe_script_inputs(
+            tuple(
+                script_input
+                for operand in operands
+                for script_input in operand.script_inputs
+            )
+        ),
+        all(operand.copyable for operand in operands),
+    )
+
+
+def _derived_operand_code(expression: str) -> str:
+    if any(symbol in expression for symbol in (" + ", " - ", " * ", " / ", " // ")):
+        return f"({expression})"
+    if any(symbol in expression for symbol in (" % ", " ** ", " & ", " | ", " ^ ")):
+        return f"({expression})"
+    if any(
+        symbol in expression
+        for symbol in (" < ", " <= ", " > ", " >= ", " == ", " != ")
+    ):
+        return f"({expression})"
+    return expression
+
+
+def _unwrap_console_value(value: typing.Any) -> typing.Any:
+    if isinstance(value, _ConsoleDataHandleMixin):
+        return value.data
+    if isinstance(value, tuple):
+        return tuple(_unwrap_console_value(item) for item in value)
+    if isinstance(value, list):
+        return [_unwrap_console_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            _unwrap_console_value(key): _unwrap_console_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
+    if isinstance(value, _ConsoleDataHandleMixin):
+        return value._console_operand()
+    if isinstance(value, tuple):
+        item_operands = tuple(_operand_from_value(item) for item in value)
+        suffix = "," if len(item_operands) == 1 else ""
+        inputs, copyable = _merge_operands(*item_operands)
+        return _ConsoleOperand(
+            tuple(operand.value for operand in item_operands),
+            f"({', '.join(operand.code for operand in item_operands)}{suffix})",
+            inputs,
+            copyable,
+        )
+    if isinstance(value, list):
+        item_operands = tuple(_operand_from_value(item) for item in value)
+        inputs, copyable = _merge_operands(*item_operands)
+        return _ConsoleOperand(
+            [operand.value for operand in item_operands],
+            f"[{', '.join(operand.code for operand in item_operands)}]",
+            inputs,
+            copyable,
+        )
+    if isinstance(value, dict):
+        key_operands = tuple(_operand_from_value(key) for key in value)
+        value_operands = tuple(_operand_from_value(item) for item in value.values())
+        pair_operands = tuple(
+            operand
+            for pair in zip(key_operands, value_operands, strict=True)
+            for operand in pair
+        )
+        inputs, copyable = _merge_operands(*pair_operands)
+        return _ConsoleOperand(
+            {
+                key_operand.value: value_operand.value
+                for key_operand, value_operand in zip(
+                    key_operands, value_operands, strict=True
+                )
+            },
+            "{"
+            + ", ".join(
+                f"{key_operand.code}: {value_operand.code}"
+                for key_operand, value_operand in zip(
+                    key_operands, value_operands, strict=True
+                )
+            )
+            + "}",
+            inputs,
+            copyable,
+        )
+    code, copyable = _literal_code(value)
+    return _ConsoleOperand(value, code, copyable=copyable)
+
+
+def _format_call_code(
+    args: tuple[typing.Any, ...], kwargs: dict[str, typing.Any]
+) -> tuple[
+    str,
+    tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...],
+    tuple[typing.Any, ...],
+    dict[str, typing.Any],
+    bool,
+]:
+    arg_operands = tuple(_operand_from_value(arg) for arg in args)
+    kwarg_operands = {key: _operand_from_value(value) for key, value in kwargs.items()}
+    inputs, copyable = _merge_operands(*arg_operands, *tuple(kwarg_operands.values()))
+    parts = [operand.code for operand in arg_operands]
+    parts.extend(f"{key}={operand.code}" for key, operand in kwarg_operands.items())
+    return (
+        ", ".join(parts),
+        inputs,
+        tuple(operand.value for operand in arg_operands),
+        {key: operand.value for key, operand in kwarg_operands.items()},
+        copyable,
+    )
+
+
+class _ConsoleDataHandleMixin:
+    __array_priority__ = 1000
+
+    @property
+    def data(self) -> xr.DataArray:
+        raise NotImplementedError
+
+    @property
+    def _console_tools(self) -> ToolsNamespace | None:
+        raise NotImplementedError
+
+    @property
+    def _console_is_source(self) -> bool:
+        return False
+
+    def _console_operand(self) -> _ConsoleOperand:
+        raise NotImplementedError
+
+    def _console_provenance_spec(
+        self, *, active_name: str, label: str
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        raise NotImplementedError
+
+    def _wrap_console_result(
+        self,
+        value: typing.Any,
+        expression: str,
+        script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
+        *,
+        copyable: bool,
+    ) -> typing.Any:
+        if not isinstance(value, xr.DataArray):
+            return value
+        return _DerivedDataNamespace(
+            self._console_tools,
+            value,
+            expression,
+            _dedupe_script_inputs(script_inputs),
+            copyable=copyable,
+        )
+
+    def _binary_operation(
+        self,
+        other: typing.Any,
+        symbol: str,
+        operation: Callable[[typing.Any, typing.Any], typing.Any],
+        *,
+        reflected: bool = False,
+    ) -> typing.Any:
+        left_operand = (
+            _operand_from_value(other) if reflected else self._console_operand()
+        )
+        right_operand = (
+            self._console_operand() if reflected else _operand_from_value(other)
+        )
+        inputs, copyable = _merge_operands(left_operand, right_operand)
+        result = operation(left_operand.value, right_operand.value)
+        expression = f"{left_operand.code} {symbol} {right_operand.code}"
+        return self._wrap_console_result(result, expression, inputs, copyable=copyable)
+
+    def _unary_operation(
+        self, symbol: str, operation: Callable[[typing.Any], typing.Any]
+    ) -> typing.Any:
+        operand = self._console_operand()
+        result = operation(operand.value)
+        return self._wrap_console_result(
+            result,
+            f"{symbol}{operand.code}",
+            operand.script_inputs,
+            copyable=operand.copyable,
+        )
+
+    def __add__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "+", operator.add)
+
+    def __radd__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "+", operator.add, reflected=True)
+
+    def __sub__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "-", operator.sub)
+
+    def __rsub__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "-", operator.sub, reflected=True)
+
+    def __mul__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "*", operator.mul)
+
+    def __rmul__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "*", operator.mul, reflected=True)
+
+    def __matmul__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "@", operator.matmul)
+
+    def __rmatmul__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "@", operator.matmul, reflected=True)
+
+    def __truediv__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "/", operator.truediv)
+
+    def __rtruediv__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "/", operator.truediv, reflected=True)
+
+    def __floordiv__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "//", operator.floordiv)
+
+    def __rfloordiv__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "//", operator.floordiv, reflected=True)
+
+    def __mod__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "%", operator.mod)
+
+    def __rmod__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "%", operator.mod, reflected=True)
+
+    def __pow__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "**", operator.pow)
+
+    def __rpow__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "**", operator.pow, reflected=True)
+
+    def __and__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "&", operator.and_)
+
+    def __rand__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "&", operator.and_, reflected=True)
+
+    def __or__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "|", operator.or_)
+
+    def __ror__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "|", operator.or_, reflected=True)
+
+    def __xor__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "^", operator.xor)
+
+    def __rxor__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "^", operator.xor, reflected=True)
+
+    def __lt__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "<", operator.lt)
+
+    def __le__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, "<=", operator.le)
+
+    def __gt__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, ">", operator.gt)
+
+    def __ge__(self, other: typing.Any) -> typing.Any:
+        return self._binary_operation(other, ">=", operator.ge)
+
+    def __eq__(self, other: object) -> typing.Any:
+        return self._binary_operation(other, "==", operator.eq)
+
+    def __ne__(self, other: object) -> typing.Any:
+        return self._binary_operation(other, "!=", operator.ne)
+
+    def __neg__(self) -> typing.Any:
+        return self._unary_operation("-", operator.neg)
+
+    def __pos__(self) -> typing.Any:
+        return self._unary_operation("+", operator.pos)
+
+    def __abs__(self) -> typing.Any:
+        operand = self._console_operand()
+        return self._wrap_console_result(
+            abs(operand.value),
+            f"abs({operand.code})",
+            operand.script_inputs,
+            copyable=operand.copyable,
+        )
+
+    def __invert__(self) -> typing.Any:
+        return self._unary_operation("~", operator.invert)
+
+    def __array__(
+        self,
+        dtype: np.dtype[typing.Any] | None = None,
+        copy: bool | None = None,
+    ) -> np.ndarray:
+        if copy is None:
+            return np.asarray(self.data, dtype=dtype)
+        return np.array(self.data, dtype=dtype, copy=copy)
+
+    def __array_ufunc__(
+        self,
+        ufunc: np.ufunc,
+        method: str,
+        *inputs: typing.Any,
+        **kwargs: typing.Any,
+    ) -> typing.Any:
+        if method != "__call__":
+            return NotImplemented
+        input_operands = tuple(_operand_from_value(value) for value in inputs)
+        kwarg_operands = {
+            key: _operand_from_value(value) for key, value in kwargs.items()
+        }
+        script_inputs, copyable = _merge_operands(
+            *input_operands, *tuple(kwarg_operands.values())
+        )
+        raw_kwargs = {key: operand.value for key, operand in kwarg_operands.items()}
+        result = ufunc(*(operand.value for operand in input_operands), **raw_kwargs)
+        arg_code = ", ".join(
+            (
+                *(operand.code for operand in input_operands),
+                *(f"{key}={operand.code}" for key, operand in kwarg_operands.items()),
+            )
+        )
+        return self._wrap_console_result(
+            result,
+            f"np.{ufunc.__name__}({arg_code})",
+            script_inputs,
+            copyable=copyable,
+        )
+
+    def __getitem__(self, key: typing.Any) -> typing.Any:
+        key_operand = _operand_from_value(key)
+        self_operand = self._console_operand()
+        result = self.data[key_operand.value]
+        inputs, copyable = _merge_operands(self_operand, key_operand)
+        return self._wrap_console_result(
+            result,
+            f"{self_operand.code}[{key_operand.code}]",
+            inputs,
+            copyable=copyable,
+        )
+
+    def qshow(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        tools = self._console_tools
+        if tools is None:
+            return self.data.qshow(*args, **kwargs)
+        return tools._qshow_handle(self, *args, **kwargs)
+
+    def __getattr__(self, attr: str) -> typing.Any:
+        data_attr = getattr(self.data, attr)
+        if not callable(data_attr):
+            if isinstance(data_attr, xr.DataArray):
+                operand = self._console_operand()
+                return self._wrap_console_result(
+                    data_attr,
+                    f"{operand.code}.{attr}",
+                    operand.script_inputs,
+                    copyable=operand.copyable,
+                )
+            return data_attr
+
+        def _method(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+            call_code, call_inputs, raw_args, raw_kwargs, args_copyable = (
+                _format_call_code(args, kwargs)
+            )
+            self_operand = self._console_operand()
+            result = data_attr(*raw_args, **raw_kwargs)
+            inputs, copyable = _merge_operands(
+                self_operand,
+                _ConsoleOperand(None, "", call_inputs, args_copyable),
+            )
+            return self._wrap_console_result(
+                result,
+                f"{self_operand.code}.{attr}({call_code})",
+                inputs,
+                copyable=copyable,
+            )
+
+        return _method
+
+
+class ToolNamespace(_ConsoleDataHandleMixin):
     """A console interface that represents a single ImageTool object.
 
     In the manager console, this namespace can be accessed with the variable
@@ -76,8 +531,11 @@ class ToolNamespace:
 
     """
 
-    def __init__(self, wrapper: _ImageToolWrapper) -> None:
+    def __init__(
+        self, wrapper: _ImageToolWrapper, tools: ToolsNamespace | None = None
+    ) -> None:
         self._wrapper_ref = weakref.ref(wrapper)
+        self._tools_ref = weakref.ref(tools) if tools is not None else None
 
     @property
     def _wrapper(self) -> _ImageToolWrapper:
@@ -97,23 +555,101 @@ class ToolNamespace:
         return self.tool.slicer_area._data
 
     @data.setter
-    def data(self, value: xr.DataArray) -> None:
-        self.tool.slicer_area.replace_source_data(value, emit_edited=True)
+    def data(self, value: xr.DataArray | _ConsoleDataHandleMixin) -> None:
+        provenance_spec = None
+        if isinstance(value, _ConsoleDataHandleMixin):
+            raw_value = value.data
+            provenance_spec = value._console_provenance_spec(
+                active_name=self._console_input_name,
+                label=f"Replace ImageTool {self._wrapper.index} data from console",
+            )
+        else:
+            raw_value = value
+        if provenance_spec is not None:
+            self._wrapper.set_detached_provenance(provenance_spec)
+        self.tool.slicer_area.replace_source_data(raw_value, emit_edited=True)
 
     def _get_data_item(self, key):
-        """Return a subset of the tool data for rewritten console assignments."""
+        """Return a subset of the tool data."""
         return self.tool.slicer_area._data[key]
 
     def _set_data_item(self, key, value) -> None:
         """Safely mutate a subset of the tool data from the console."""
-        self.tool.slicer_area._set_source_item(key, value)
+        self.tool.slicer_area._set_source_item(key, _unwrap_console_value(value))
+
+    @property
+    def _console_tools(self) -> ToolsNamespace | None:
+        if self._tools_ref is None:
+            return None
+        return self._tools_ref()
+
+    @property
+    def _console_is_source(self) -> bool:
+        return True
+
+    @property
+    def _console_input_name(self) -> str:
+        return _tool_data_name(self._wrapper.index)
+
+    def _script_input(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ScriptInput:
+        label = f"ImageTool {self._wrapper.index}"
+        if self._wrapper.name:
+            label += f": {self._wrapper.name}"
+        provenance_spec = (
+            self._wrapper.provenance_spec.model_dump(mode="json")
+            if self._wrapper.provenance_spec is not None
+            else None
+        )
+        return erlab.interactive.imagetool.provenance.ScriptInput(
+            name=self._console_input_name,
+            label=label,
+            node_uid=self._wrapper.uid,
+            node_lineage_token=self._wrapper.lineage_token,
+            provenance_spec=provenance_spec,
+        )
+
+    def _console_operand(self) -> _ConsoleOperand:
+        return _ConsoleOperand(
+            self.data,
+            self._console_input_name,
+            (self._script_input(),),
+        )
+
+    def _console_provenance_spec(
+        self, *, active_name: str, label: str
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        return self._wrapper.provenance_spec
+
+    def __setitem__(self, key: typing.Any, value: typing.Any) -> None:
+        key_operand = _operand_from_value(key)
+        value_operand = _operand_from_value(value)
+        self_operand = self._console_operand()
+        script_inputs, copyable = _merge_operands(
+            self_operand, key_operand, value_operand
+        )
+        provenance_spec = erlab.interactive.imagetool.provenance.script(
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label=f"Set ImageTool {self._wrapper.index} data item from console",
+                code=(
+                    f"{self_operand.code}[{key_operand.code}] = {value_operand.code}"
+                ),
+                copyable=copyable,
+            ),
+            start_label="Run ImageTool manager console code",
+            active_name=self._console_input_name,
+            script_inputs=script_inputs,
+        )
+        self._set_data_item(key_operand.value, value_operand.value)
+        self._wrapper.set_detached_provenance(provenance_spec)
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
         if hasattr(self._wrapper, attr):
             m = getattr(self._wrapper, attr)
             if callable(m):
                 return m
-        raise AttributeError(attr)
+        return super().__getattr__(attr)
 
     def __repr__(self) -> str:
         time_repr = self._wrapper._created_time.isoformat(sep=" ", timespec="seconds")
@@ -121,6 +657,86 @@ class ToolNamespace:
         out += f"  Added: {time_repr}\n"
         out += f"  Linked: {self.tool.slicer_area.is_linked}\n"
         return out
+
+
+class _DerivedDataNamespace(_ConsoleDataHandleMixin):
+    def __init__(
+        self,
+        tools: ToolsNamespace | None,
+        data: xr.DataArray,
+        expression: str,
+        script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
+        *,
+        copyable: bool,
+    ) -> None:
+        self._tools_ref = weakref.ref(tools) if tools is not None else None
+        self._data = data
+        self._expression = expression
+        self._script_inputs = _dedupe_script_inputs(script_inputs)
+        self._copyable = copyable
+        self._console_name: str | None = None
+
+    @property
+    def data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def _console_tools(self) -> ToolsNamespace | None:
+        if self._tools_ref is None:
+            return None
+        return self._tools_ref()
+
+    def _set_console_name(self, name: str) -> None:
+        self._console_name = name
+
+    def _console_operand(self) -> _ConsoleOperand:
+        if self._console_name is None:
+            return _ConsoleOperand(
+                self.data,
+                _derived_operand_code(self._expression),
+                self._script_inputs,
+                self._copyable,
+            )
+        provenance_spec = self._console_provenance_spec(
+            active_name=self._console_name,
+            label=f"Assign console variable {self._console_name!r}",
+        )
+        provenance_payload = (
+            provenance_spec.model_dump(mode="json")
+            if provenance_spec is not None
+            else None
+        )
+        return _ConsoleOperand(
+            self.data,
+            self._console_name,
+            (
+                erlab.interactive.imagetool.provenance.ScriptInput(
+                    name=self._console_name,
+                    label=f"console variable {self._console_name!r}",
+                    provenance_spec=provenance_payload,
+                ),
+            ),
+            provenance_spec is not None,
+        )
+
+    def _console_provenance_spec(
+        self, *, active_name: str, label: str
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if not self._script_inputs:
+            return None
+        return erlab.interactive.imagetool.provenance.script(
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label=label,
+                code=f"{active_name} = {self._expression}",
+                copyable=self._copyable,
+            ),
+            start_label="Run ImageTool manager console code",
+            active_name=active_name,
+            script_inputs=self._script_inputs,
+        )
+
+    def __repr__(self) -> str:
+        return repr(self.data)
 
 
 class ToolsNamespace:
@@ -142,6 +758,8 @@ class ToolsNamespace:
 
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager_ref = weakref.ref(manager)
+        self._shell_ref: weakref.ReferenceType[InteractiveShell] | None = None
+        self._namespace_snapshot: dict[str, int] = {}
 
     @property
     def _manager(self) -> ImageToolManager:
@@ -159,13 +777,173 @@ class ToolsNamespace:
             for idx in self._manager.tree_view.selected_imagetool_indices
         ]
 
+    @property
+    def selected(self) -> list[ToolNamespace]:
+        """Get provenance-aware handles for the selected windows."""
+        output: list[ToolNamespace] = []
+        for idx in self._manager.tree_view.selected_imagetool_indices:
+            namespace = self[idx]
+            if namespace is not None:
+                output.append(namespace)
+        return output
+
     def __getitem__(self, index: int) -> ToolNamespace | None:
         """Access a specific ImageTool object by its index."""
         if index not in self._manager._imagetool_wrappers:
             print(f"Tool {index} not found")
             return None
 
-        return ToolNamespace(self._manager._imagetool_wrappers[index])
+        return ToolNamespace(self._manager._imagetool_wrappers[index], self)
+
+    def bind_shell(self, shell: InteractiveShell) -> None:
+        self._shell_ref = weakref.ref(shell)
+        shell.events.register("pre_run_cell", self._pre_run_cell)
+        shell.events.register("post_run_cell", self._post_run_cell)
+
+    def unbind_shell(self) -> None:
+        if self._shell_ref is None:
+            return
+        shell = self._shell_ref()
+        if shell is not None:
+            with contextlib.suppress(KeyError, ValueError):
+                shell.events.unregister("pre_run_cell", self._pre_run_cell)
+            with contextlib.suppress(KeyError, ValueError):
+                shell.events.unregister("post_run_cell", self._post_run_cell)
+        self._shell_ref = None
+
+    def _pre_run_cell(self, info: ExecutionInfo | None = None) -> None:
+        if self._shell_ref is None:
+            return
+        shell = self._shell_ref()
+        if shell is None:
+            return
+        self._namespace_snapshot = {
+            name: id(value) for name, value in shell.user_ns.items()
+        }
+
+    def _post_run_cell(self, result: ExecutionResult | None = None) -> None:
+        if result is not None and (
+            result.error_before_exec is not None or result.error_in_exec is not None
+        ):
+            return
+        if self._shell_ref is not None and (shell := self._shell_ref()) is not None:
+            for name, value in shell.user_ns.items():
+                if (
+                    name.startswith("_")
+                    or self._namespace_snapshot.get(name) == id(value)
+                    or not isinstance(value, _DerivedDataNamespace)
+                ):
+                    continue
+                value._set_console_name(name)
+        if result is None or not isinstance(result.result, _DerivedDataNamespace):
+            return
+        self._show_handle(
+            result.result,
+            active_name=result.result._console_name or "derived",
+            label="Evaluate console expression",
+        )
+
+    def _manager_argument_targets_this_manager(self, value: typing.Any) -> bool:
+        if value is False:
+            return False
+        if value is None or value is True:
+            return True
+        try:
+            target = operator.index(value)
+        except TypeError:
+            return False
+        return target == getattr(self._manager, "manager_index", None)
+
+    def _show_dataarray_with_provenance(
+        self,
+        data: xr.DataArray,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        **kwargs,
+    ) -> bool:
+        display_kwargs = dict(kwargs)
+        display_kwargs.pop("execute", None)
+        tool = erlab.interactive.itool(
+            data, manager=False, execute=False, **display_kwargs
+        )
+        if not isinstance(tool, erlab.interactive.imagetool.ImageTool):
+            return False
+        self._manager.add_imagetool(
+            tool,
+            show=True,
+            activate=True,
+            provenance_spec=provenance_spec,
+        )
+        return True
+
+    def _show_handle(
+        self,
+        handle: _ConsoleDataHandleMixin,
+        *,
+        active_name: str,
+        label: str,
+        **kwargs: typing.Any,
+    ) -> bool:
+        provenance_spec = handle._console_provenance_spec(
+            active_name=active_name,
+            label=label,
+        )
+        if provenance_spec is None:
+            return False
+        return self._show_dataarray_with_provenance(
+            handle.data, provenance_spec, **kwargs
+        )
+
+    def itool(
+        self, data: typing.Any, *args: typing.Any, **kwargs: typing.Any
+    ) -> typing.Any:
+        manager = kwargs.get("manager")
+        replace = kwargs.get("replace")
+        if (
+            isinstance(data, _ConsoleDataHandleMixin)
+            and not args
+            and replace is None
+            and self._manager_argument_targets_this_manager(manager)
+        ):
+            display_kwargs = dict(kwargs)
+            display_kwargs.pop("manager", None)
+            display_kwargs.pop("replace", None)
+            if self._show_handle(
+                data,
+                active_name=(
+                    data._console_name
+                    if isinstance(data, _DerivedDataNamespace)
+                    and data._console_name is not None
+                    else "derived"
+                ),
+                label="Evaluate console expression",
+                **display_kwargs,
+            ):
+                return None
+        return erlab.interactive.itool(_unwrap_console_value(data), *args, **kwargs)
+
+    def _qshow_handle(
+        self,
+        data: _ConsoleDataHandleMixin,
+        *args: typing.Any,
+        **kwargs: typing.Any,
+    ) -> typing.Any:
+        manager = kwargs.get("manager")
+        if not args and self._manager_argument_targets_this_manager(manager):
+            display_kwargs = dict(kwargs)
+            display_kwargs.pop("manager", None)
+            if self._show_handle(
+                data,
+                active_name=(
+                    data._console_name
+                    if isinstance(data, _DerivedDataNamespace)
+                    and data._console_name is not None
+                    else "derived"
+                ),
+                label="Evaluate console expression",
+                **display_kwargs,
+            ):
+                return None
+        return data.data.qshow(*args, **kwargs)
 
     def __repr__(self) -> str:
         output = []
@@ -174,109 +952,6 @@ class ToolsNamespace:
         if not output:
             return "No tools"
         return "\n".join(output)
-
-
-class _ConsoleDataAssignmentTransformer(ast.NodeTransformer):
-    """Rewrite `tools[idx].data[...] = ...` into safe helper method calls."""
-
-    def __init__(self) -> None:
-        self.changed = False
-
-    @staticmethod
-    def _match_tool_data(target: ast.expr) -> ast.Subscript | None:
-        if not isinstance(target, ast.Attribute) or target.attr != "data":
-            return None
-        tool_expr = target.value
-        if not isinstance(tool_expr, ast.Subscript):
-            return None
-        if not isinstance(tool_expr.value, ast.Name) or tool_expr.value.id != "tools":
-            return None
-        return tool_expr
-
-    @classmethod
-    def _match_target(cls, target: ast.expr) -> tuple[ast.expr, ast.expr] | None:
-        if not isinstance(target, ast.Subscript):
-            return None
-        tool_expr = cls._match_tool_data(target.value)
-        if tool_expr is None:
-            return None
-        return tool_expr, target.slice
-
-    @staticmethod
-    def _helper_call(tool_expr: ast.expr, name: str, *args: ast.expr) -> ast.Call:
-        return ast.Call(
-            func=ast.Attribute(value=tool_expr, attr=name, ctx=ast.Load()),
-            args=list(args),
-            keywords=[],
-        )
-
-    def visit_Assign(self, node: ast.Assign) -> ast.Assign | ast.Expr:
-        self.generic_visit(node)
-        if len(node.targets) != 1:
-            return node
-        match = self._match_target(node.targets[0])
-        if match is None:
-            return node
-        tool_expr, key_expr = match
-        self.changed = True
-        return ast.copy_location(
-            ast.Expr(
-                value=self._helper_call(
-                    tool_expr, "_set_data_item", key_expr, node.value
-                )
-            ),
-            node,
-        )
-
-    def visit_AugAssign(
-        self, node: ast.AugAssign
-    ) -> ast.AugAssign | ast.Assign | ast.Expr:
-        self.generic_visit(node)
-        match = self._match_target(node.target)
-        if match is not None:
-            tool_expr, key_expr = match
-            current = self._helper_call(tool_expr, "_get_data_item", key_expr)
-            value = ast.BinOp(left=current, op=node.op, right=node.value)
-            self.changed = True
-            return ast.copy_location(
-                ast.Expr(
-                    value=self._helper_call(
-                        tool_expr, "_set_data_item", key_expr, value
-                    )
-                ),
-                node,
-            )
-
-        tool_data = self._match_tool_data(node.target)
-        if tool_data is None:
-            return node
-        self.changed = True
-        return ast.copy_location(
-            ast.Assign(
-                targets=[node.target],
-                value=ast.BinOp(
-                    left=ast.Attribute(value=tool_data, attr="data", ctx=ast.Load()),
-                    op=node.op,
-                    right=node.value,
-                ),
-            ),
-            node,
-        )
-
-
-def _rewrite_console_source(source: str) -> str:
-    """Rewrite console-only data item assignments without changing read semantics."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return source
-
-    transformer = _ConsoleDataAssignmentTransformer()
-    tree = transformer.visit(tree)
-    if not transformer.changed:
-        return source
-    ast.fix_missing_locations(tree)
-    return ast.unparse(tree)
 
 
 class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
@@ -316,6 +991,7 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
         self._erlab_loader_name: str | None = None
         self._erlab_data_dir: str | None = None
         self._erlab_io_hooks_registered = False
+        self._tools_namespace: ToolsNamespace | None = None
 
     def _restore_erlab_io_state(self, *args, **kwargs) -> None:
         erlab.io.set_loader(self._erlab_loader_name)
@@ -353,9 +1029,12 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             )
 
             if self._namespace is not None:
-                self.kernel_manager.kernel.shell.push(
-                    _resolve_console_namespace(self._namespace)
-                )
+                resolved_namespace = _resolve_console_namespace(self._namespace)
+                self.kernel_manager.kernel.shell.push(resolved_namespace)
+                tools_namespace = resolved_namespace.get("tools")
+                if isinstance(tools_namespace, ToolsNamespace):
+                    self._tools_namespace = tools_namespace
+                    tools_namespace.bind_shell(self.kernel_manager.kernel.shell)
                 super().execute(
                     r"xr.set_options(keep_attrs=True)",
                     hidden=True,
@@ -370,8 +1049,6 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     ) -> None:
         if not self.kernel_manager.kernel and not self._kernel_initializing:
             self.initialize_kernel()
-        if source is not None:
-            source = _rewrite_console_source(source)
         super().execute(source, hidden=hidden, interactive=interactive)
 
     def store_data_as(self, tool_index: int, name: str) -> None:
@@ -387,6 +1064,9 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
     @QtCore.Slot()
     def shutdown_kernel(self) -> None:
         if self.kernel_manager.kernel:
+            if self._tools_namespace is not None:
+                self._tools_namespace.unbind_shell()
+                self._tools_namespace = None
             if self._erlab_io_hooks_registered:
                 shell = self.kernel_manager.kernel.shell
                 with contextlib.suppress(KeyError, ValueError):
@@ -414,7 +1094,13 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
             return out
 
         info_str = (
-            _command_ansi("Access data", ["tools[<index>].data", "tools.selected_data"])
+            _command_ansi(
+                "Access raw data", ["tools[<index>].data", "tools.selected_data"]
+            )
+            + "\n"
+            + _command_ansi(
+                "Track provenance", ["tools[0] - tools[1]", "tools.selected[0]"]
+            )
             + "\n"
             + _command_ansi("Change data", ["tools[<index>].data = <value>"])
             + "\n"
@@ -461,6 +1147,7 @@ class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
 
     def __init__(self, manager: ImageToolManager) -> None:
         super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
+        tools_namespace = ToolsNamespace(manager)
 
         self._console_widget = _JupyterConsoleWidget(
             parent=self,
@@ -469,7 +1156,8 @@ class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
                 "xr": xr,
                 "erlab": erlab,
                 "eri": erlab.interactive,
-                "tools": ToolsNamespace(manager),
+                "itool": tools_namespace.itool,
+                "tools": tools_namespace,
                 "era": "erlab.analysis",
                 "eplt": "erlab.plotting",
                 "plt": "matplotlib.pyplot",

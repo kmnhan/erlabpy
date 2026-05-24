@@ -109,8 +109,25 @@ class _ConcatDialog(QtWidgets.QDialog):
                 to_concat = [
                     manager.get_imagetool(idx).slicer_area._data for idx in selected
                 ]
-                erlab.interactive.imagetool.manager.show_in_manager(
-                    xr.concat(to_concat, **self.concat_kwargs())
+                concat_kwargs = self.concat_kwargs()
+                input_names = [
+                    manager._script_input_name_for_node(
+                        manager._node_for_target(target)
+                    )
+                    for target in selected
+                ]
+                operation_code = (
+                    f"derived = xr.concat([{', '.join(input_names)}], "
+                    + ", ".join(
+                        f"{key}={value!r}" for key, value in concat_kwargs.items()
+                    )
+                    + ")"
+                )
+                created_index = manager._show_multi_input_script_result(
+                    xr.concat(to_concat, **concat_kwargs),
+                    selected,
+                    operation_label="Concatenate selected ImageTools",
+                    operation_code=operation_code,
                 )
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
@@ -119,7 +136,13 @@ class _ConcatDialog(QtWidgets.QDialog):
                     "An error occurred while concatenating data.",
                 )
             else:
-                if self._remove_original_check.isChecked():
+                if created_index is None:
+                    erlab.interactive.utils.MessageDialog.critical(
+                        self,
+                        "Error",
+                        "An error occurred while concatenating data.",
+                    )
+                elif self._remove_original_check.isChecked():
                     for index in sorted(
                         selected,
                         key=str,

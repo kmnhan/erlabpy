@@ -1,4 +1,3 @@
-import ast
 import concurrent.futures
 import contextlib
 import dataclasses
@@ -69,11 +68,7 @@ from erlab.interactive.imagetool.manager import (
     load_in_manager,
     replace_data,
 )
-from erlab.interactive.imagetool.manager._console import (
-    ToolNamespace,
-    _ConsoleDataAssignmentTransformer,
-    _rewrite_console_source,
-)
+from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _ConcatDialog,
@@ -14956,6 +14951,16 @@ def test_manager_console(
         manager.console._console_widget.execute("tools")
         assert str(_get_last_output_contents()) == "0: \n1: "
         manager.console._console_widget.execute("tools[0]")
+        manager.console._console_widget.execute(
+            "isinstance(tools[0].data, xr.DataArray)"
+        )
+        assert _get_last_output_contents() is True
+        manager.console._console_widget.execute(
+            "lst = [1]\nalias = lst\nlst += [2]",
+        )
+        shell = manager.console._console_widget.kernel_manager.kernel.shell
+        assert shell.user_ns["lst"] == [1, 2]
+        assert shell.user_ns["alias"] is shell.user_ns["lst"]
 
         # Select all
         select_tools(manager, list(manager._imagetool_wrappers.keys()))
@@ -15187,7 +15192,7 @@ def test_tool_namespace_set_data_item_marks_child_tools_stale(
         namespace = ToolNamespace(manager._imagetool_wrappers[0])
         child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
 
-        namespace._set_data_item((0, 0), -5.0)
+        namespace[(0, 0)] = -5.0
 
         assert float(parent_tool.slicer_area._data.values[0, 0]) == -5.0
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
@@ -15217,39 +15222,403 @@ def test_tool_namespace_set_data_item_failure_keeps_child_tools_fresh(
         child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
 
         with pytest.raises(IndexError, match="too many indices"):
-            namespace._set_data_item((0, 0, 0), -5.0)
+            namespace[(0, 0, 0)] = -5.0
 
         assert child.source_state == "fresh"
         assert float(parent_tool.slicer_area._data.values[0, 0]) == 0.0
 
 
-def test_console_assignment_transformer_match_helpers() -> None:
-    plain_name = typing.cast("ast.Expr", ast.parse("value").body[0]).value
-    attr_without_subscript = typing.cast(
-        "ast.Expr", ast.parse("tool.data").body[0]
-    ).value
-    other_tool = typing.cast("ast.Expr", ast.parse("other[0].data").body[0]).value
-    subscript_target = typing.cast(
-        "ast.Expr", ast.parse("other[0].data[1]").body[0]
-    ).value
-
-    assert _ConsoleDataAssignmentTransformer._match_tool_data(plain_name) is None
-    assert (
-        _ConsoleDataAssignmentTransformer._match_tool_data(attr_without_subscript)
-        is None
+def test_manager_console_bare_expression_opens_provenance_root(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(9, dtype=float).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+        name="left",
     )
-    assert _ConsoleDataAssignmentTransformer._match_tool_data(other_tool) is None
-    assert _ConsoleDataAssignmentTransformer._match_target(subscript_target) is None
+    data1 = data0 + 1.0
+    data1.name = "right"
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.console._console_widget.execute(
+            "raw_diff = tools[0].data - tools[1].data"
+        )
+        assert manager.ntools == 2
+        shell = manager.console._console_widget.kernel_manager.kernel.shell
+        assert isinstance(shell.user_ns["raw_diff"], xr.DataArray)
+
+        manager.console._console_widget.execute("tools[0] - tools[1]")
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data, data0 - data1
+        )
+        provenance = manager._imagetool_wrappers[2].provenance_spec
+        assert provenance is not None
+        assert [source.name for source in provenance.script_inputs] == [
+            "data_0",
+            "data_1",
+        ]
+        assert [source.node_uid for source in provenance.script_inputs] == [
+            manager._imagetool_wrappers[0].uid,
+            manager._imagetool_wrappers[1].uid,
+        ]
+        assert [source.node_lineage_token for source in provenance.script_inputs] == [
+            manager._imagetool_wrappers[0].lineage_token,
+            manager._imagetool_wrappers[1].lineage_token,
+        ]
+        assert (
+            manager.lineage_status_for_uid(manager._imagetool_wrappers[2].uid)
+            == "current"
+        )
+        assert provenance.operations
+        assert "data_0 - data_1" in typing.cast(
+            "str", provenance.operations[-1].derivation_entry().code
+        )
+
+        tree = manager._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        loaded = [
+            wrapper.provenance_spec
+            for wrapper in manager._imagetool_wrappers.values()
+            if wrapper.provenance_spec is not None
+            and len(wrapper.provenance_spec.script_inputs) == 2
+        ]
+        assert len(loaded) == 1
+        assert [source.name for source in loaded[0].script_inputs] == [
+            "data_0",
+            "data_1",
+        ]
+        derived_uid = manager._imagetool_wrappers[2].uid
+        assert manager.lineage_status_for_uid(derived_uid) == "current"
+
+        original_difference = manager.get_imagetool(2).slicer_area.data.copy()
+        manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 10.0)
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            original_difference,
+        )
+
+        manager.remove_imagetool(1)
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(derived_uid) == "missing",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            original_difference,
+        )
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
 
 
-def test_rewrite_console_source_handles_augassign_and_passthrough() -> None:
-    rewritten = _rewrite_console_source("tools[1].data[0, 0] += 1")
+def test_manager_console_assignment_tracks_until_explicit_show(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 2.0
 
-    assert "_get_data_item" in rewritten
-    assert "_set_data_item" in rewritten
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
 
-    assert _rewrite_console_source("left = right = 1") == "left = right = 1"
-    assert _rewrite_console_source("value += 1") == "value += 1"
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.console._console_widget.execute("diff = tools[0] - tools[1]")
+        assert manager.ntools == 2
+
+        manager.console._console_widget.execute(
+            "diff.qshow(manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data, data0 - data1
+        )
+        qshow_provenance = manager._imagetool_wrappers[2].provenance_spec
+        assert qshow_provenance is not None
+        assert qshow_provenance.active_name == "diff"
+
+        manager.console._console_widget.execute(
+            "non_manager = itool(diff, manager=False, execute=False)"
+        )
+        assert manager.ntools == 3
+
+        manager.console._console_widget.execute(
+            "itool(diff, manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(3).slicer_area.data, data0 - data1
+        )
+        itool_provenance = manager._imagetool_wrappers[3].provenance_spec
+        assert itool_provenance == qshow_provenance
+
+        manager.console._console_widget.execute("diff + tools[0]")
+        qtbot.wait_until(lambda: manager.ntools == 5, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(4).slicer_area.data,
+            data0 - data1 + data0,
+        )
+        nested_provenance = manager._imagetool_wrappers[4].provenance_spec
+        assert nested_provenance is not None
+        assert [source.name for source in nested_provenance.script_inputs] == [
+            "diff",
+            "data_0",
+        ]
+        nested_uid = manager._imagetool_wrappers[4].uid
+        assert manager.lineage_status_for_uid(nested_uid) == "current"
+        nested_data = manager.get_imagetool(4).slicer_area.data.copy()
+        manager.get_imagetool(1).slicer_area.replace_source_data(data1 + 5.0)
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(nested_uid) == "changed",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(4).slicer_area.data,
+            nested_data,
+        )
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
+def test_manager_console_selected_expression_opens_provenance_root(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 3.0
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.console._console_widget.execute("xr.DataArray([1.0], dims=['x'])")
+        assert manager.ntools == 2
+
+        select_tools(manager, [0, 1])
+        manager.console._console_widget.execute("tools.selected[0] - tools.selected[1]")
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            data0 - data1,
+        )
+        provenance = manager._imagetool_wrappers[2].provenance_spec
+        assert provenance is not None
+        assert [source.name for source in provenance.script_inputs] == [
+            "data_0",
+            "data_1",
+        ]
+        assert (
+            provenance.operations[-1].derivation_entry().code
+            == "derived = data_0 - data_1"
+        )
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
+def test_manager_concat_records_lineage_and_handles_removed_inputs(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 10.0
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        expected = xr.concat(
+            [
+                manager.get_imagetool(0).slicer_area.data,
+                manager.get_imagetool(1).slicer_area.data,
+            ],
+            dim="concat_dim",
+            coords="minimal",
+            compat="override",
+            join="outer",
+            combine_attrs="override",
+        )
+        expected = expected.assign_coords(concat_dim=np.arange(2))
+
+        select_tools(manager, [0, 1])
+        accept_dialog(manager.concat_action.trigger)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
+        concat_wrapper = manager._imagetool_wrappers[2]
+        provenance = concat_wrapper.provenance_spec
+        assert provenance is not None
+        assert [source.name for source in provenance.script_inputs] == [
+            "data_0",
+            "data_1",
+        ]
+        assert [source.node_uid for source in provenance.script_inputs] == [
+            manager._imagetool_wrappers[0].uid,
+            manager._imagetool_wrappers[1].uid,
+        ]
+        assert [source.node_lineage_token for source in provenance.script_inputs] == [
+            manager._imagetool_wrappers[0].lineage_token,
+            manager._imagetool_wrappers[1].lineage_token,
+        ]
+        operation_entry = provenance.operations[-1].derivation_entry()
+        assert operation_entry.label == "Concatenate selected ImageTools"
+        assert operation_entry.code is not None
+        assert "xr.concat([data_0, data_1]" in operation_entry.code
+        assert manager.lineage_status_for_uid(concat_wrapper.uid) == "current"
+
+        manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 1.0)
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(concat_wrapper.uid) == "changed",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
+
+        select_tools(manager, [0, 1])
+        expected_removed_inputs = xr.concat(
+            [
+                manager.get_imagetool(0).slicer_area.data,
+                manager.get_imagetool(1).slicer_area.data,
+            ],
+            dim="concat_dim",
+            coords="minimal",
+            compat="override",
+            join="outer",
+            combine_attrs="override",
+        )
+        expected_removed_inputs = expected_removed_inputs.assign_coords(
+            concat_dim=np.arange(2)
+        )
+
+        def _remove_originals(dialog: _ConcatDialog) -> None:
+            dialog._remove_original_check.setChecked(True)
+
+        accept_dialog(manager.concat_action.trigger, pre_call=_remove_originals)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        removed_inputs_wrapper = manager._imagetool_wrappers[3]
+        assert manager.lineage_status_for_uid(removed_inputs_wrapper.uid) == "missing"
+        xr.testing.assert_identical(
+            manager.get_imagetool(3).slicer_area.data,
+            expected_removed_inputs,
+        )
+
+
+def test_manager_console_replacement_updates_provenance_and_descendants(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(25, dtype=float).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    data1 = data0.assign_coords(time=("x", np.linspace(10.0, 50.0, 5)))
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1,
+            timeout=5000,
+        )
+        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+
+        manager.console._console_widget.execute(
+            "tools[0].data = tools[0].assign_coords(time=tools[1].time)"
+        )
+        qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area.data,
+            data0.assign_coords(time=data1.time),
+        )
+        provenance = manager._imagetool_wrappers[0].provenance_spec
+        assert provenance is not None
+        assert manager._imagetool_wrappers[0].source_spec is None
+        assert [source.name for source in provenance.script_inputs] == [
+            "data_0",
+            "data_1",
+        ]
+        assert (
+            provenance.operations[-1].derivation_entry().code
+            == "data_0 = data_0.assign_coords(time=data_1.time)"
+        )
+
+        tree = manager._to_datatree()
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        loaded_provenance = manager._imagetool_wrappers[0].provenance_spec
+        assert loaded_provenance is not None
+        assert [source.name for source in loaded_provenance.script_inputs] == [
+            "data_0",
+            "data_1",
+        ]
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
 
 
 def test_manager_hover_tooltip(

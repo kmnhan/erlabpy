@@ -90,6 +90,8 @@ __all__ = [
     "RestoreNonuniformDimsOperation",
     "RotateOperation",
     "ScriptCodeOperation",
+    "ScriptInput",
+    "ScriptInputLineageRef",
     "SelOperation",
     "SelectCoordOperation",
     "SliceAlongPathOperation",
@@ -113,9 +115,11 @@ __all__ = [
     "parse_tool_provenance_spec",
     "public_data",
     "rebase_default_replay_input",
+    "rebase_script_input_node_uids",
     "replay_file_provenance",
     "require_live_source_spec",
     "script",
+    "script_input_lineage_refs",
     "selection",
     "to_replay_provenance_spec",
     "uses_default_replay_input",
@@ -158,6 +162,16 @@ class DerivationEntry:
     label: str
     code: str | None
     copyable: bool = False
+
+
+@dataclass(frozen=True)
+class ScriptInputLineageRef:
+    """Live manager lineage captured by a script input."""
+
+    name: str
+    label: str
+    node_uid: str
+    node_lineage_token: str | None = None
 
 
 def _encode_fit_dataset(value: xr.Dataset) -> str:
@@ -878,17 +892,90 @@ class FileLoadSource(pydantic.BaseModel):
         return str(value)
 
 
+class ScriptInput(pydantic.BaseModel):
+    """One named input used by replay-only script provenance."""
+
+    name: str
+    label: str
+    node_uid: str | None = None
+    node_lineage_token: str | None = None
+    provenance_spec: dict[str, typing.Any] | None = None
+
+    model_config = pydantic.ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    @pydantic.field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: typing.Any) -> str:
+        name = _validate_active_name(value)
+        if name is None:
+            raise ValueError("script input name must not be None")
+        return name
+
+    @pydantic.field_validator("label", mode="before")
+    @classmethod
+    def _validate_label(cls, value: typing.Any) -> str:
+        if not isinstance(value, str):
+            raise TypeError("script input label must be a string")
+        if not value:
+            raise ValueError("script input label must not be empty")
+        return value
+
+    @pydantic.field_validator("node_uid", mode="before")
+    @classmethod
+    def _validate_node_uid(cls, value: typing.Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+    @pydantic.field_validator("node_lineage_token", mode="before")
+    @classmethod
+    def _validate_node_lineage_token(cls, value: typing.Any) -> str | None:
+        if value is None:
+            return None
+        token = str(value)
+        if not token:
+            raise ValueError("script input lineage token must not be empty")
+        return token
+
+    @pydantic.field_validator("provenance_spec", mode="before")
+    @classmethod
+    def _validate_provenance_spec(
+        cls, value: typing.Any
+    ) -> dict[str, typing.Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, ToolProvenanceSpec):
+            return value.model_dump(mode="json")
+        if isinstance(value, Mapping):
+            return dict(value)
+        raise TypeError(
+            "script input provenance must be a ToolProvenanceSpec or mapping"
+        )
+
+    def parsed_provenance_spec(self) -> ToolProvenanceSpec | None:
+        return parse_tool_provenance_spec(self.provenance_spec)
+
+
 class ToolProvenanceSpec(pydantic.BaseModel):
     """Immutable provenance recipe for rebuilding tool data from a parent ImageTool.
 
-    Author new specs with :func:`full_data`, :func:`public_data`, or
-    :func:`selection` plus operation instances from this module. Deserialize saved
-    payloads with :func:`parse_tool_provenance_spec`.
+    Author new specs with :func:`full_data`, :func:`public_data`, or :func:`selection`
+    plus concrete operation instances from this module. Deserialize saved payloads
+    with :func:`parse_tool_provenance_spec`.
 
     A spec records the exact operation arguments used for replay, copied code, and
     derivation display. Manager children opened from ImageTool cursor or bin selections
     should keep :class:`ImageToolSelectionSourceBinding` as their refresh state; that
     binding builds a spec before refresh so edited parent coordinates are used.
+
+    .. versionchanged:: 3.23.0
+       Script provenance can describe multiple manager inputs and records manager
+       lineage tokens so derived tools can show whether the live inputs still match
+       the inputs used to create them.
     """
 
     schema_version: typing.Literal[2] = 2
@@ -899,6 +986,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     operations: tuple[pydantic.SerializeAsAny[ToolProvenanceOperation], ...] = ()
     file_load_source: FileLoadSource | None = None
     replay_stages: tuple[ReplayStage, ...] = ()
+    script_inputs: tuple[ScriptInput, ...] = ()
 
     model_config = pydantic.ConfigDict(
         frozen=True,
@@ -950,6 +1038,18 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             for item in value
         )
 
+    @pydantic.field_validator("script_inputs", mode="before")
+    @classmethod
+    def _validate_script_inputs(cls, value: typing.Any) -> tuple[ScriptInput, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise TypeError("Serialized script inputs must be a sequence")
+        return tuple(
+            item if isinstance(item, ScriptInput) else ScriptInput.model_validate(item)
+            for item in value
+        )
+
     @pydantic.model_validator(mode="after")
     def _validate_kind_fields(self) -> typing.Self:
         if self.kind == "script":
@@ -978,10 +1078,12 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             or self.active_name is not None
             or self.file_load_source is not None
             or self.replay_stages
+            or self.script_inputs
         ):
             raise ValueError(
                 "Only script or file provenance specs may define `start_label`, "
-                "`seed_code`, `active_name`, `file_load_source`, or `replay_stages`"
+                "`seed_code`, `active_name`, `file_load_source`, `replay_stages`, "
+                "or `script_inputs`"
             )
         return self
 
@@ -1184,6 +1286,15 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def derivation_entries(self) -> list[DerivationEntry]:
         entries: list[DerivationEntry] = [self._start_entry()]
+        if self.kind == "script":
+            entries.extend(
+                DerivationEntry(
+                    f"Use {script_input.name} from {script_input.label}",
+                    None,
+                    False,
+                )
+                for script_input in self.script_inputs
+            )
         operations: Sequence[ToolProvenanceOperation]
         if self.kind == "file":
             operations = tuple(
@@ -1199,12 +1310,46 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 entries.append(entry)
         return entries
 
+    def _script_inputs_code(self, *, display: bool) -> str | None:
+        if not self.script_inputs:
+            return None
+
+        lines: list[str] = []
+        for script_input in self.script_inputs:
+            input_spec = script_input.parsed_provenance_spec()
+            if input_spec is None:
+                return None
+            code = (
+                input_spec.display_code() if display else input_spec.derivation_code()
+            )
+            if not code:
+                return None
+            lines.append(code)
+            active_name = replay_input_name(input_spec) or input_spec.active_name
+            if active_name is None:
+                return None
+            if active_name != script_input.name:
+                lines.append(f"{script_input.name} = {active_name}")
+        return "\n".join(lines)
+
     def derivation_code(self) -> str | None:
         prefix: str | None = None
-        if self.kind in {"script", "file"}:
+        if self.kind == "script" and self.script_inputs:
+            input_code = self._script_inputs_code(display=False)
+            if input_code is None:
+                return None
+            prefix = "\n".join(part for part in (input_code, self.seed_code) if part)
+        elif self.kind in {"script", "file"}:
             prefix = self.seed_code
         step_codes: list[str] = []
-        for entry in self.derivation_entries()[1:]:
+        code_entries = self.derivation_entries()[1:]
+        if self.kind == "script" and self.script_inputs:
+            code_entries = [
+                entry
+                for operation in self.operations
+                if (entry := operation.derivation_entry()) is not None
+            ]
+        for entry in code_entries:
             if entry.code is None:
                 return None
             step_codes.append(entry.code)
@@ -1271,11 +1416,23 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         no-op and normalization steps from copied provenance code.
         """
         prefix: str | None = None
-        if self.kind in {"script", "file"}:
+        if self.kind == "script" and self.script_inputs:
+            input_code = self._script_inputs_code(display=True)
+            if input_code is None:
+                return None
+            prefix = "\n".join(part for part in (input_code, self.seed_code) if part)
+        elif self.kind in {"script", "file"}:
             prefix = self.seed_code
 
         step_codes: list[str] = []
-        for entry in self.display_entries(parent_data=parent_data)[1:]:
+        code_entries = self.display_entries(parent_data=parent_data)[1:]
+        if self.kind == "script" and self.script_inputs:
+            code_entries = [
+                entry
+                for operation in self.operations
+                if (entry := operation.derivation_entry()) is not None
+            ]
+        for entry in code_entries:
             if entry.code is None:
                 return None
             step_codes.append(entry.code)
@@ -1309,6 +1466,76 @@ def parse_tool_provenance_spec(
         value = dict(value)
         value["schema_version"] = 2
     return ToolProvenanceSpec.model_validate(value)
+
+
+def script_input_lineage_refs(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+) -> tuple[ScriptInputLineageRef, ...]:
+    """Return all live manager lineage references stored in script inputs."""
+    spec = parse_tool_provenance_spec(value)
+    if spec is None:
+        return ()
+
+    refs: list[ScriptInputLineageRef] = []
+
+    def _collect(current: ToolProvenanceSpec) -> None:
+        for script_input in current.script_inputs:
+            if script_input.node_uid is not None:
+                refs.append(
+                    ScriptInputLineageRef(
+                        name=script_input.name,
+                        label=script_input.label,
+                        node_uid=script_input.node_uid,
+                        node_lineage_token=script_input.node_lineage_token,
+                    )
+                )
+            nested = script_input.parsed_provenance_spec()
+            if nested is not None:
+                _collect(nested)
+
+    _collect(spec)
+    return tuple(refs)
+
+
+def rebase_script_input_node_uids(
+    value: ToolProvenanceSpec | Mapping[str, typing.Any],
+    uid_map: Mapping[str, str],
+) -> ToolProvenanceSpec:
+    """Return ``value`` with script input node UIDs remapped recursively."""
+    spec = parse_tool_provenance_spec(value)
+    if spec is None:
+        raise TypeError("Expected provenance spec")
+    if not uid_map or not spec.script_inputs:
+        return spec
+
+    def _rebase(current: ToolProvenanceSpec) -> ToolProvenanceSpec:
+        if not current.script_inputs:
+            return current
+
+        changed = False
+        script_inputs: list[ScriptInput] = []
+        for script_input in current.script_inputs:
+            updates: dict[str, typing.Any] = {}
+            if script_input.node_uid is not None and script_input.node_uid in uid_map:
+                updates["node_uid"] = uid_map[script_input.node_uid]
+
+            nested = script_input.parsed_provenance_spec()
+            if nested is not None:
+                rebased_nested = _rebase(nested)
+                if rebased_nested != nested:
+                    updates["provenance_spec"] = rebased_nested.model_dump(mode="json")
+
+            if updates:
+                changed = True
+                script_inputs.append(script_input.model_copy(update=updates))
+            else:
+                script_inputs.append(script_input)
+
+        if not changed:
+            return current
+        return current.model_copy(update={"script_inputs": tuple(script_inputs)})
+
+    return _rebase(spec)
 
 
 def to_replay_provenance_spec(
@@ -1403,6 +1630,7 @@ def direct_replay_input_name(
     if (
         spec is None
         or spec.operations
+        or spec.script_inputs
         or spec.seed_code is None
         or spec.seed_code == _DEFAULT_REPLAY_SEED_CODE
     ):
@@ -1545,6 +1773,7 @@ def compose_full_provenance(
         seed_code=parent_spec.seed_code,
         active_name=local_spec.active_name or parent_spec.active_name,
         file_load_source=parent_spec.file_load_source or local_spec.file_load_source,
+        script_inputs=(*parent_spec.script_inputs, *local_spec.script_inputs),
         operations=(*parent_spec.operations, *local_operations),
     )
 
@@ -1699,6 +1928,7 @@ def script(
     seed_code: str | None = None,
     active_name: str | None = None,
     file_load_source: FileLoadSource | None = None,
+    script_inputs: Sequence[ScriptInput] = (),
 ) -> ToolProvenanceSpec:
     """Build a replay-only provenance spec for generated code."""
     return ToolProvenanceSpec(
@@ -1707,6 +1937,7 @@ def script(
         seed_code=seed_code,
         active_name=active_name,
         file_load_source=file_load_source,
+        script_inputs=tuple(script_inputs),
     ).append_operations(*operations)
 
 
