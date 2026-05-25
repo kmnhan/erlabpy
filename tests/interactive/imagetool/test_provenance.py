@@ -1961,6 +1961,66 @@ def test_script_input_lineage_refs_recurse_and_rebase() -> None:
     ]
 
 
+def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    left = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]})
+    right = xr.DataArray([0.5, 1.5], dims=("x",), coords={"x": [0, 1]})
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Mutate local input",
+            code="data_0[0] = 10.0\nderived = data_0 - data_1",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="ImageTool 0"),
+            prov.ScriptInput(name="data_1", label="ImageTool 1"),
+        ),
+    )
+
+    assert prov.script_provenance_replayable(spec)
+    result = prov.replay_script_provenance(
+        spec,
+        {"data_0": left, "data_1": right},
+    )
+
+    xr.testing.assert_identical(
+        result,
+        xr.DataArray([9.5, 0.5], dims=("x",), coords={"x": [0, 1]}),
+    )
+    xr.testing.assert_identical(
+        left,
+        xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]}),
+    )
+
+
+def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray([1.0], dims=("x",))
+    unsupported = prov.script(
+        prov.ScriptCodeOperation(
+            label="Unsupported",
+            code="import os\nderived = data_0",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    incomplete = prov.script(
+        prov.ScriptCodeOperation(label="Incomplete", code=None),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+
+    assert not prov.script_provenance_replayable(unsupported)
+    assert not prov.script_provenance_replayable(incomplete)
+    with pytest.raises(TypeError, match="unsupported Import"):
+        prov.replay_script_provenance(unsupported, {"data_0": data})
+    with pytest.raises(ValueError, match="non-replayable"):
+        prov.replay_script_provenance(incomplete, {"data_0": data})
+
+
 def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -> None:
     prov = erlab.interactive.imagetool.provenance
     image = xr.DataArray(

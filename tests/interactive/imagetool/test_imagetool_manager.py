@@ -15459,6 +15459,55 @@ def test_manager_console_selected_expression_opens_provenance_root(
         InteractiveShell.clear_instance()
 
 
+def test_manager_console_derived_tool_reload_action_routes_to_manager(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+    )
+    data1 = data0 + 1.0
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.console._console_widget.execute("tools[0] - tools[1]")
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        derived = manager.get_imagetool(2)
+        derived_uid = manager._imagetool_wrappers[2].uid
+        updated0 = data0 + 10.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+
+        assert derived.slicer_area.reloadable
+        menu_bar = typing.cast("typing.Any", derived.menuBar())
+        menu_bar._file_menu_visibility()
+        assert derived.slicer_area.reload_act.isVisible()
+        derived.slicer_area.reload_act.trigger()
+
+        xr.testing.assert_identical(
+            derived.slicer_area.data,
+            updated0 - data1,
+        )
+        assert manager.lineage_status_for_uid(derived_uid) == "current"
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
 def test_manager_concat_records_lineage_and_handles_removed_inputs(
     qtbot,
     accept_dialog,
@@ -15551,6 +15600,432 @@ def test_manager_concat_records_lineage_and_handles_removed_inputs(
             manager.get_imagetool(3).slicer_area.data,
             expected_removed_inputs,
         )
+
+
+def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+    )
+    data1 = data0 + 1.0
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data0 - data1,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        derived = manager.get_imagetool(2)
+        derived.slicer_area.array_slicer.set_indices(0, [2, 1], update=False)
+        before_token = manager._imagetool_wrappers[2].lineage_token
+        manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 10.0)
+        derived_uid = manager._imagetool_wrappers[2].uid
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+
+        manager.tree_view.deselect_all()
+        select_tools(manager, [2])
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
+        assert manager.tree_view._menu.actions().count(manager.reload_action) == 1
+        assert not hasattr(manager, "rebuild_inputs_action")
+        manager.reload_selected()
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            (data0 + 10.0) - data1,
+        )
+        assert manager.get_imagetool(2).slicer_area.array_slicer.get_indices(0) == [
+            2,
+            1,
+        ]
+        assert manager.lineage_status_for_uid(derived_uid) == "current"
+        assert manager._imagetool_wrappers[2].lineage_token != before_token
+
+
+def test_manager_reload_script_inputs_rebuilds_live_nested_input(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+    )
+    data1 = data0 + 1.0
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data0 - data1,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                (data0 - data1) + data0,
+                (2, 0),
+                operation_label="Add derived input",
+                operation_code="derived = data_2 + data_0",
+            )
+            == 3
+        )
+        qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+
+        final_uid = manager._imagetool_wrappers[3].uid
+        updated0 = data0 + 10.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(final_uid) == "changed",
+            timeout=5000,
+        )
+
+        manager.tree_view.deselect_all()
+        select_tools(manager, [3])
+        manager.reload_selected()
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(3).slicer_area.data,
+            (updated0 - data1) + updated0,
+        )
+        assert manager.lineage_status_for_uid(final_uid) == "current"
+        rebuilt_spec = manager._imagetool_wrappers[3].provenance_spec
+        assert rebuilt_spec is not None
+        assert rebuilt_spec.script_inputs[0].node_uid is None
+        nested_spec = rebuilt_spec.script_inputs[0].parsed_provenance_spec()
+        assert nested_spec is not None
+        assert [source.node_uid for source in nested_spec.script_inputs] == [
+            manager._imagetool_wrappers[0].uid,
+            manager._imagetool_wrappers[1].uid,
+        ]
+
+
+def test_manager_reload_script_inputs_after_workspace_roundtrip(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+    )
+    data1 = data0 + 1.0
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data0 - data1,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        workspace_path = tmp_path / "script-derived-reload.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        loaded_result = manager.get_imagetool(2).slicer_area.data.copy()
+        xr.testing.assert_identical(loaded_result, data0 - data1)
+        derived_uid = manager._imagetool_wrappers[2].uid
+        provenance = manager._imagetool_wrappers[2].provenance_spec
+        assert provenance is not None
+        assert [source.node_uid for source in provenance.script_inputs] == [
+            manager._imagetool_wrappers[0].uid,
+            manager._imagetool_wrappers[1].uid,
+        ]
+        assert manager.lineage_status_for_uid(derived_uid) == "current"
+
+        updated0 = data0 + 10.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data, loaded_result
+        )
+
+        before_token = manager._imagetool_wrappers[2].lineage_token
+        manager.tree_view.deselect_all()
+        select_tools(manager, [2])
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
+        manager.reload_selected()
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            updated0 - data1,
+        )
+        assert manager.lineage_status_for_uid(derived_uid) == "current"
+        assert manager._imagetool_wrappers[2].lineage_token != before_token
+
+
+def test_manager_reload_script_inputs_incompatible_prompt_paths(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+    data1 = data0 + 1.0
+    shifted0 = data0.assign_coords(x=[10.0, 11.0]) + 10.0
+    shifted1 = data1.assign_coords(x=[10.0, 11.0])
+    expected = shifted0 - shifted1
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data0 - data1,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        original = manager.get_imagetool(2).slicer_area.data.copy()
+        manager.get_imagetool(0).slicer_area.replace_source_data(shifted0)
+        manager.get_imagetool(1).slicer_area.replace_source_data(shifted1)
+        manager.tree_view.deselect_all()
+        select_tools(manager, [2])
+
+        monkeypatch.setattr(
+            manager, "_prompt_incompatible_reload_commit", lambda _details: "cancel"
+        )
+        manager.reload_selected()
+        assert manager.ntools == 3
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
+
+        monkeypatch.setattr(
+            manager, "_prompt_incompatible_reload_commit", lambda _details: "new"
+        )
+        manager.reload_selected()
+        qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
+        xr.testing.assert_identical(manager.get_imagetool(3).slicer_area.data, expected)
+
+        manager.tree_view.deselect_all()
+        select_tools(manager, [2])
+        monkeypatch.setattr(
+            manager, "_prompt_incompatible_reload_commit", lambda _details: "replace"
+        )
+        manager.reload_selected()
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
+
+
+def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 5.0
+    path1 = tmp_path / "right.nc"
+    data1.to_netcdf(path1)
+    file_spec = prov.file_load(
+        start_label="Load right",
+        seed_code=f"derived = xr.load_dataarray({str(path1)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path1),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        manager._imagetool_wrappers[1].set_detached_provenance(file_spec)
+        assert (
+            manager._show_multi_input_script_result(
+                data0 - data1,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        manager.remove_imagetool(1)
+        derived_uid = manager._imagetool_wrappers[2].uid
+        qtbot.wait_until(
+            lambda: manager.lineage_status_for_uid(derived_uid) == "missing",
+            timeout=5000,
+        )
+        manager.tree_view.deselect_all()
+        select_tools(manager, [2])
+        manager._update_info()
+        assert "recorded source file found" in metadata_detail_map(manager)["Inputs"]
+
+        manager.reload_selected()
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            data0 - data1,
+        )
+        rebuilt_spec = manager._imagetool_wrappers[2].provenance_spec
+        assert rebuilt_spec is not None
+        assert (
+            rebuilt_spec.script_inputs[0].node_uid == manager._imagetool_wrappers[0].uid
+        )
+        assert rebuilt_spec.script_inputs[1].node_uid is None
+        assert rebuilt_spec.script_inputs[1].parsed_provenance_spec() == file_spec
+
+
+def test_manager_reload_script_inputs_missing_parent_without_source_noops(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 1.0
+    errors: list[tuple[str, str, str, str]] = []
+
+    def _critical(
+        parent, title, text, informative_text="", detailed_text=None, buttons=None
+    ):
+        errors.append((title, text, informative_text, detailed_text or ""))
+        return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data0 - data1,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        original = manager.get_imagetool(2).slicer_area.data.copy()
+
+        manager.remove_imagetool(1)
+        manager.tree_view.deselect_all()
+        select_tools(manager, [2])
+        manager.reload_selected()
+
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
+        assert errors
+        assert errors[-1][1] == "Could not reload data."
+        assert "does not contain recorded source provenance" in errors[-1][3]
+
+
+def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        wrapper = manager._imagetool_wrappers[0]
+        wrapper.set_detached_provenance(
+            prov.script(
+                prov.ScriptCodeOperation(
+                    label="Run opaque code",
+                    code=None,
+                    copyable=False,
+                ),
+                start_label="Run opaque code",
+                active_name="derived",
+                script_inputs=(manager._script_input_for_node(wrapper),),
+            )
+        )
+
+        manager.tree_view.deselect_all()
+        select_tools(manager, [0])
+        manager._update_actions()
+
+        assert not manager.reload_action.isVisible()
 
 
 def test_manager_console_replacement_updates_provenance_and_descendants(
