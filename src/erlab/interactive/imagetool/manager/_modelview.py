@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
 _TOOL_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 129
 _RowBadgeKind = typing.Literal[
-    "dask", "link", "watched", "tool_type", "source_status", "lineage_status"
+    "dask", "link", "watched", "tool_type", "source_status", "dependency_status"
 ]
 
 
@@ -177,7 +177,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         right_edge=dask_rect.left() if dask_rect is not None else None,
                     )
                     if status_rect is None:
-                        status_rect, _, _ = self._compute_lineage_status_info(
+                        status_rect, _, _ = self._compute_dependency_status_info(
                             option,
                             child_node,
                             right_edge=(
@@ -371,12 +371,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         icon_rects = [
             rect for rect in (dask_rect, link_rect, watched_rect) if rect is not None
         ]
-        lineage_rect, lineage_text, lineage_color = self._compute_lineage_status_info(
-            option,
-            tool_wrapper,
-            right_edge=(
-                min(rect.left() for rect in icon_rects) if icon_rects else None
-            ),
+        dependency_rect, dependency_text, dependency_color = (
+            self._compute_dependency_status_info(
+                option,
+                tool_wrapper,
+                right_edge=(
+                    min(rect.left() for rect in icon_rects) if icon_rects else None
+                ),
+            )
         )
 
         # Draw label (skip while editing for inline editor)
@@ -397,14 +399,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             fm = QtGui.QFontMetrics(option.font)
             text = index.data(role=QtCore.Qt.ItemDataRole.DisplayRole)
             text_rect = QtCore.QRect(option.rect)
-            if lineage_rect is not None:
-                text_rect.setRight(lineage_rect.left() - self.icon_right_pad)
+            if dependency_rect is not None:
+                text_rect.setRight(dependency_rect.left() - self.icon_right_pad)
             elided = fm.elidedText(
                 text,
                 view.textElideMode(),
                 (
                     max(text_rect.width(), 0)
-                    if lineage_rect is not None
+                    if dependency_rect is not None
                     else option.rect.width() - self.icon_right_pad - icons_width
                 ),
             )
@@ -458,25 +460,27 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             )
             painter.restore()
 
-        if lineage_rect and lineage_text and lineage_color:
+        if dependency_rect and dependency_text and dependency_color:
             _fill_rounded_rect(
                 painter,
-                lineage_rect,
+                dependency_rect,
                 facecolor=option.palette.base(),
-                edgecolor=lineage_color,
+                edgecolor=dependency_color,
                 linewidth=self.icon_border_width,
                 radius=self.icon_corner_radius,
             )
-            lineage_font = QtGui.QFont(option.font)
-            lineage_font.setPointSizeF(self._font_size * self.child_status_font_scale)
+            dependency_font = QtGui.QFont(option.font)
+            dependency_font.setPointSizeF(
+                self._font_size * self.child_status_font_scale
+            )
             painter.save()
-            painter.setFont(lineage_font)
-            painter.setPen(lineage_color)
+            painter.setFont(dependency_font)
+            painter.setPen(dependency_color)
             painter.drawText(
-                lineage_rect,
+                dependency_rect,
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignCenter,
-                lineage_text,
+                dependency_text,
             )
             painter.restore()
 
@@ -528,7 +532,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             )
             if status_rect is None:
                 status_rect, status_text, status_color = (
-                    self._compute_lineage_status_info(
+                    self._compute_dependency_status_info(
                         option,
                         child_node,
                         right_edge=dask_rect.left() if dask_rect is not None else None,
@@ -715,18 +719,18 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         rect_x = right_edge - badge_width - self.icon_right_pad
         return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
 
-    def _compute_lineage_status_info(
+    def _compute_dependency_status_info(
         self,
         option: QtWidgets.QStyleOptionViewItem,
         node: _ImageToolWrapper | _ManagedWindowNode,
         *,
         right_edge: int | None = None,
     ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
-        text = self.manager.lineage_status_badge_for_uid(node.uid)
+        text = self.manager.dependency_status_badge_for_uid(node.uid)
         if text is None:
             return None, None, None
 
-        match self.manager.lineage_status_for_uid(node.uid):
+        match self.manager.dependency_status_for_uid(node.uid):
             case "changed":
                 color = QtGui.QColor("#8a6d00")
             case "missing":
@@ -792,7 +796,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 for rect in (dask_rect, link_rect, watched_rect)
                 if rect is not None
             ]
-            lineage_rect, _, _ = self._compute_lineage_status_info(
+            dependency_rect, _, _ = self._compute_dependency_status_info(
                 option,
                 node,
                 right_edge=(
@@ -833,10 +837,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     watched_rect,
                     tooltip,
                 )
-            if lineage_rect is not None and lineage_rect.contains(pos):
-                tooltip = self.manager.lineage_status_tooltip_for_uid(node.uid)
+            if dependency_rect is not None and dependency_rect.contains(pos):
+                tooltip = self.manager.dependency_status_tooltip_for_uid(node.uid)
                 if tooltip is not None:
-                    return _RowBadge("lineage_status", lineage_rect, tooltip)
+                    return _RowBadge("dependency_status", dependency_rect, tooltip)
             return None
 
         if not isinstance(node, str):
@@ -862,7 +866,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         )
         source_status = status_rect is not None
         if status_rect is None:
-            status_rect, _, _ = self._compute_lineage_status_info(
+            status_rect, _, _ = self._compute_dependency_status_info(
                 option,
                 child_node,
                 right_edge=dask_rect.left() if dask_rect is not None else None,
@@ -882,10 +886,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         if status_rect is None or not status_rect.contains(pos):
             return None
         if not source_status:
-            tooltip = self.manager.lineage_status_tooltip_for_uid(child_node.uid)
+            tooltip = self.manager.dependency_status_tooltip_for_uid(child_node.uid)
             if tooltip is None:
                 return None
-            return _RowBadge("lineage_status", status_rect, tooltip)
+            return _RowBadge("dependency_status", status_rect, tooltip)
 
         match child_node.source_state:
             case "stale":
@@ -1737,6 +1741,16 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                     except KeyError:
                         return
                     child_node.show_source_update_dialog(parent=self._model.manager)
+            case "dependency_status":
+                if isinstance(node, _ImageToolWrapper):
+                    target: int | str | None = node.index
+                elif isinstance(node, str):
+                    target = node
+                else:
+                    target = None
+                if target is None:
+                    return
+                self._model.manager._show_dependency_reload_dialog(target)
 
     def _show_dask_badge_menu(
         self,

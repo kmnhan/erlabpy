@@ -76,16 +76,16 @@ _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
 _RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
 _MAX_RECENT_WORKSPACES = 10
-_LINEAGE_STATUS_LABELS: dict[str, str] = {
-    "current": "Current inputs",
-    "changed": "Inputs changed",
-    "missing": "Inputs missing",
+_DEPENDENCY_STATUS_LABELS: dict[str, str] = {
+    "current": "Current",
+    "changed": "Changed",
+    "missing": "Missing",
 }
-_LINEAGE_STATUS_BADGES: dict[str, str] = {
-    "changed": "Inputs changed",
-    "missing": "Inputs missing",
+_DEPENDENCY_STATUS_BADGES: dict[str, str] = {
+    "changed": "Changed",
+    "missing": "Missing",
 }
-_LINEAGE_STATUS_TOOLTIPS: dict[str, str] = {
+_DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
     "current": "All recorded live inputs are still open and unchanged.",
     "changed": "At least one recorded live input has changed since this data was made.",
     "missing": "At least one recorded live input is no longer open.",
@@ -2062,7 +2062,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node = self._all_nodes.pop(uid, None)
         if node is None:
             return
-        self._refresh_lineage_dependents(uid)
+        self._refresh_dependency_dependents(uid)
         self._pending_source_refresh_targets.pop(uid, None)
         for blocker_uid, target_uids in list(
             self._pending_source_refresh_targets.items()
@@ -2085,20 +2085,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
             return self._imagetool_wrappers[target]
         return self._all_nodes[target]
 
-    def _lineage_refs_for_uid(
+    def _dependency_refs_for_uid(
         self, uid: str
-    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptInputLineageRef, ...]:
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptInputDependencyRef, ...]:
         node = self._all_nodes.get(uid)
         if node is None or node.provenance_spec is None:
             return ()
-        return erlab.interactive.imagetool.provenance.script_input_lineage_refs(
+        return erlab.interactive.imagetool.provenance.script_input_dependency_refs(
             node.provenance_spec
         )
 
-    def lineage_status_for_uid(
+    def dependency_status_for_uid(
         self, uid: str
     ) -> typing.Literal["current", "changed", "missing"] | None:
-        refs = self._lineage_refs_for_uid(uid)
+        refs = self._dependency_refs_for_uid(uid)
         if not refs:
             return None
 
@@ -2108,35 +2108,38 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if parent is None:
                 return "missing"
             if (
-                ref.node_lineage_token is not None
-                and parent.lineage_token != ref.node_lineage_token
+                ref.node_snapshot_token is not None
+                and parent.snapshot_token != ref.node_snapshot_token
             ):
                 changed = True
         return "changed" if changed else "current"
 
-    def lineage_status_label_for_uid(self, uid: str) -> str | None:
-        status = self.lineage_status_for_uid(uid)
+    def dependency_status_label_for_uid(self, uid: str) -> str | None:
+        status = self.dependency_status_for_uid(uid)
         if status is None:
             return None
-        return _LINEAGE_STATUS_LABELS[status]
+        return _DEPENDENCY_STATUS_LABELS[status]
 
-    def lineage_status_badge_for_uid(self, uid: str) -> str | None:
-        status = self.lineage_status_for_uid(uid)
+    def dependency_status_badge_for_uid(self, uid: str) -> str | None:
+        status = self.dependency_status_for_uid(uid)
         if status is None:
             return None
-        return _LINEAGE_STATUS_BADGES.get(status)
+        return _DEPENDENCY_STATUS_BADGES.get(status)
 
-    def lineage_status_tooltip_for_uid(self, uid: str) -> str | None:
-        status = self.lineage_status_for_uid(uid)
+    def dependency_status_tooltip_for_uid(self, uid: str) -> str | None:
+        status = self.dependency_status_for_uid(uid)
         if status is None:
             return None
-        tooltip = _LINEAGE_STATUS_TOOLTIPS[status]
-        if status == "missing" and self._missing_lineage_has_recorded_file(uid):
+        tooltip = _DEPENDENCY_STATUS_TOOLTIPS[status]
+        node = self._all_nodes.get(uid)
+        if node is not None and self._node_can_reload_script_inputs(node):
+            tooltip += " Click for Reload Data options."
+        if status == "missing" and self._missing_dependencies_have_recorded_file(uid):
             tooltip += " Recorded source files found for at least one missing input."
         return tooltip
 
-    def lineage_input_summary_for_uid(self, uid: str) -> str | None:
-        refs = self._lineage_refs_for_uid(uid)
+    def dependency_input_summary_for_uid(self, uid: str) -> str | None:
+        refs = self._dependency_refs_for_uid(uid)
         if not refs:
             return None
 
@@ -2145,7 +2148,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         parts: list[str] = []
         seen: set[tuple[str, str, str | None]] = set()
         for ref in refs:
-            key = (ref.name, ref.node_uid, ref.node_lineage_token)
+            key = (ref.name, ref.node_uid, ref.node_snapshot_token)
             if key in seen:
                 continue
             seen.add(key)
@@ -2156,10 +2159,51 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 current = f"currently {parent.display_text}"
             else:
                 current = "parent no longer open"
-                if self._lineage_ref_has_recorded_file(spec, ref):
+                if self._dependency_ref_has_recorded_file(spec, ref):
                     current += "; recorded source file found"
             parts.append(f"{ref.name}: {ref.label} ({current})")
         return "; ".join(parts)
+
+    def _show_dependency_reload_dialog(self, target: int | str) -> None:
+        node = self._node_for_target(target)
+        status = self.dependency_status_for_uid(node.uid)
+        if status is None:
+            return
+
+        details = self.dependency_input_summary_for_uid(node.uid)
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setWindowTitle("Reload Data")
+        if details:
+            msg_box.setDetailedText(details)
+
+        if not self._node_can_reload_script_inputs(node):
+            msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+            msg_box.setText("This result cannot be reloaded from its recorded inputs.")
+            msg_box.setInformativeText(
+                "The recorded provenance is not complete enough to replay."
+            )
+            msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Close)
+            msg_box.exec()
+            return
+
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        if status == "changed":
+            msg_box.setText("Reload this result from the current inputs?")
+        else:
+            msg_box.setText("Reload this result from its recorded inputs?")
+        msg_box.setInformativeText(
+            "The current ImageTool data will be replaced only if reload succeeds."
+        )
+        reload_button = msg_box.addButton(
+            "Reload Data", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", reload_button))
+        msg_box.exec()
+        if msg_box.clickedButton() is reload_button:
+            self._reload_script_derived_target(target)
+        elif msg_box.clickedButton() is cancel_button:
+            return
 
     @classmethod
     def _script_input_has_recorded_file(
@@ -2177,10 +2221,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return False
 
     @classmethod
-    def _lineage_ref_has_recorded_file(
+    def _dependency_ref_has_recorded_file(
         cls,
         spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
-        ref: erlab.interactive.imagetool.provenance.ScriptInputLineageRef,
+        ref: erlab.interactive.imagetool.provenance.ScriptInputDependencyRef,
     ) -> bool:
         if spec is None:
             return False
@@ -2188,35 +2232,37 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if (
                 script_input.name == ref.name
                 and script_input.node_uid == ref.node_uid
-                and script_input.node_lineage_token == ref.node_lineage_token
+                and script_input.node_snapshot_token == ref.node_snapshot_token
                 and cls._script_input_has_recorded_file(script_input)
             ):
                 return True
-            if cls._lineage_ref_has_recorded_file(
+            if cls._dependency_ref_has_recorded_file(
                 script_input.parsed_provenance_spec(), ref
             ):
                 return True
         return False
 
-    def _missing_lineage_has_recorded_file(self, uid: str) -> bool:
+    def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
         node = self._all_nodes.get(uid)
         spec = None if node is None else node.provenance_spec
         return any(
             self._all_nodes.get(ref.node_uid) is None
-            and self._lineage_ref_has_recorded_file(spec, ref)
-            for ref in self._lineage_refs_for_uid(uid)
+            and self._dependency_ref_has_recorded_file(spec, ref)
+            for ref in self._dependency_refs_for_uid(uid)
         )
 
-    def _lineage_dependent_uids(self, uid: str) -> list[str]:
+    def _dependency_dependent_uids(self, uid: str) -> list[str]:
         return [
             node_uid
             for node_uid in self._all_nodes
             if node_uid != uid
-            and any(ref.node_uid == uid for ref in self._lineage_refs_for_uid(node_uid))
+            and any(
+                ref.node_uid == uid for ref in self._dependency_refs_for_uid(node_uid)
+            )
         ]
 
-    def _refresh_lineage_dependents(self, uid: str) -> None:
-        for dependent_uid in self._lineage_dependent_uids(uid):
+    def _refresh_dependency_dependents(self, uid: str) -> None:
+        for dependent_uid in self._dependency_dependent_uids(uid):
             self.tree_view.refresh(dependent_uid)
             if self._metadata_node_uid == dependent_uid:
                 self._set_metadata_node(self._all_nodes[dependent_uid])
@@ -2252,7 +2298,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             name=self._script_input_name_for_node(node),
             label=label,
             node_uid=node.uid,
-            node_lineage_token=node.lineage_token,
+            node_snapshot_token=node.snapshot_token,
             provenance_spec=provenance_spec,
         )
 
@@ -2304,15 +2350,15 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _script_provenance_inputs_current(
         self, spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
     ) -> bool:
-        for ref in erlab.interactive.imagetool.provenance.script_input_lineage_refs(
+        for ref in erlab.interactive.imagetool.provenance.script_input_dependency_refs(
             spec
         ):
             parent = self._all_nodes.get(ref.node_uid)
             if parent is None:
                 return False
             if (
-                ref.node_lineage_token is not None
-                and parent.lineage_token != ref.node_lineage_token
+                ref.node_snapshot_token is not None
+                and parent.snapshot_token != ref.node_snapshot_token
             ):
                 return False
         return True
@@ -2323,14 +2369,19 @@ class ImageToolManager(QtWidgets.QMainWindow):
         spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
         *,
         depth: int,
+        replay_cache: dict[str, xr.DataArray],
     ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]:
-        rebuilt = self._rebuild_script_provenance(spec, depth=depth + 1)
+        rebuilt = self._rebuild_script_provenance(
+            spec,
+            depth=depth + 1,
+            replay_cache=replay_cache,
+        )
         return (
             rebuilt.data,
             script_input.model_copy(
                 update={
                     "node_uid": None,
-                    "node_lineage_token": None,
+                    "node_snapshot_token": None,
                     "provenance_spec": rebuilt.provenance_spec.model_dump(mode="json"),
                 }
             ),
@@ -2341,6 +2392,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         script_input: erlab.interactive.imagetool.provenance.ScriptInput,
         *,
         depth: int,
+        replay_cache: dict[str, xr.DataArray],
     ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]:
         if depth > 20:
             raise _ScriptRebuildError(
@@ -2361,6 +2413,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         script_input,
                         spec,
                         depth=depth,
+                        replay_cache=replay_cache,
                     )
                 return (
                     node.current_source_data(),
@@ -2381,7 +2434,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if spec.kind == "file":
             try:
                 data = erlab.interactive.imagetool.provenance.replay_file_provenance(
-                    spec
+                    spec,
+                    cache=replay_cache,
                 )
             except Exception as exc:
                 raise _ScriptRebuildError(
@@ -2393,7 +2447,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 script_input.model_copy(
                     update={
                         "node_uid": None,
-                        "node_lineage_token": None,
+                        "node_snapshot_token": None,
                         "provenance_spec": spec.model_dump(mode="json"),
                     }
                 ),
@@ -2404,6 +2458,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 script_input,
                 spec,
                 depth=depth,
+                replay_cache=replay_cache,
             )
 
         raise _ScriptRebuildError(
@@ -2419,6 +2474,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
         *,
         depth: int = 0,
+        replay_cache: dict[str, xr.DataArray] | None = None,
     ) -> _ScriptRebuildResult:
         if spec.kind != "script":
             raise _ScriptRebuildError(
@@ -2433,8 +2489,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 details="The recorded operation cannot be replayed automatically.",
             )
 
+        shared_replay_cache = {} if replay_cache is None else replay_cache
         resolved_inputs = tuple(
-            self._resolve_script_input_for_rebuild(script_input, depth=depth)
+            self._resolve_script_input_for_rebuild(
+                script_input,
+                depth=depth,
+                replay_cache=shared_replay_cache,
+            )
             for script_input in spec.script_inputs
         )
         input_data = {script_input.name: data for data, script_input in resolved_inputs}
@@ -2501,7 +2562,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 uid_map[saved_uid] = actual_uid
         return uid_map
 
-    def _rebase_loaded_workspace_lineage_refs(
+    def _rebase_loaded_workspace_dependency_refs(
         self, loaded_targets_by_uid: Mapping[str, int | str]
     ) -> None:
         uid_map = self._workspace_loaded_uid_map(loaded_targets_by_uid)
@@ -2522,7 +2583,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
             )
             if rebased != node.provenance_spec:
-                node.set_displayed_provenance(rebased, advance_lineage=False)
+                node.set_displayed_provenance(rebased, advance_snapshot=False)
 
     def _child_node(self, uid: str) -> _ManagedWindowNode:
         node = self._all_nodes[uid]
@@ -3074,7 +3135,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,
-        lineage_token: str | None = None,
+        snapshot_token: str | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
@@ -3121,7 +3182,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_binding=source_binding,
             source_auto_update=source_auto_update,
             source_state=source_state,
-            lineage_token=lineage_token,
+            snapshot_token=snapshot_token,
         )
         self._imagetool_wrappers[index] = wrapper
         self._register_root_wrapper(wrapper)
@@ -3536,7 +3597,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._imagetool_wrappers.pop(index)
         self._all_nodes.pop(wrapper.uid, None)
-        self._refresh_lineage_dependents(wrapper.uid)
+        self._refresh_dependency_dependents(wrapper.uid)
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -4077,7 +4138,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         created_time = node._created_time
         recent_geometry = node._recent_geometry
         provenance_spec = node.provenance_spec
-        lineage_token = node.lineage_token
+        snapshot_token = node.snapshot_token
 
         self.tree_view.childtool_removed(uid)
         self._unregister_node(uid)
@@ -4088,7 +4149,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 show=False,
                 uid=uid,
                 provenance_spec=provenance_spec,
-                lineage_token=lineage_token,
+                snapshot_token=snapshot_token,
             )
         wrapper = self._imagetool_wrappers[new_index]
         wrapper._created_time = created_time
@@ -4113,7 +4174,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.tree_view.setCurrentIndex(promoted_index)
         self.tree_view.scrollTo(promoted_index)
         self.tree_view.refresh(new_index)
-        self._refresh_lineage_dependents(uid)
+        self._refresh_dependency_dependents(uid)
         self._update_actions()
         self._mark_workspace_structure_dirty("Promoted child ImageTool")
         return new_index
@@ -4303,7 +4364,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> xr.Dataset:
         ds.attrs["manager_node_uid"] = node.uid
         ds.attrs["manager_node_kind"] = kind
-        ds.attrs["manager_node_lineage_token"] = node.lineage_token
+        ds.attrs["manager_node_snapshot_token"] = node.snapshot_token
         if node.provenance_spec is not None:
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
                 node.provenance_spec.model_dump(mode="json")
@@ -4486,7 +4547,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
         kwargs: dict[str, typing.Any] = {
             "uid": uid,
-            "lineage_token": ds.attrs.get("manager_node_lineage_token"),
+            "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
             "provenance_spec": parsed_provenance_spec,
             "source_spec": parsed_source_spec,
             "source_binding": parsed_source_binding,
@@ -4569,7 +4630,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             parent_target,
             show=ds.attrs.get("tool_visible", True),
             uid=ds.attrs.get("manager_node_uid"),
-            lineage_token=ds.attrs.get("manager_node_lineage_token"),
+            snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
         )
 
     @staticmethod
@@ -4914,7 +4975,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.remove_all_tools()
                 for root_path in root_paths:
                     _load_path(root_path)
-                self._rebase_loaded_workspace_lineage_refs(loaded_targets_by_uid)
+                self._rebase_loaded_workspace_dependency_refs(loaded_targets_by_uid)
                 self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if not mark_dirty:
                     self._drain_workspace_deferred_events()
@@ -5023,7 +5084,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         workspace_file_path=workspace_file_path,
                         loaded_targets_by_uid=loaded_targets_by_uid,
                     )
-                    self._rebase_loaded_workspace_lineage_refs(loaded_targets_by_uid)
+                    self._rebase_loaded_workspace_dependency_refs(loaded_targets_by_uid)
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                     if not mark_dirty:
                         self._drain_workspace_deferred_events()
@@ -7013,7 +7074,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         *,
         show: bool = True,
         uid: str | None = None,
-        lineage_token: str | None = None,
+        snapshot_token: str | None = None,
     ) -> str:
         """Register a child tool window.
 
@@ -7035,7 +7096,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._next_node_uid(uid),
             parent.uid,
             tool,
-            lineage_token=lineage_token,
+            snapshot_token=snapshot_token,
         )
         if not tool._tool_display_name:
             tool._tool_display_name = parent.name
@@ -7073,7 +7134,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
-        lineage_token: str | None = None,
+        snapshot_token: str | None = None,
     ) -> str:
         parent_node = self._node_for_target(parent)
         if source_spec is None and source_binding is not None:
@@ -7099,7 +7160,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_auto_update=source_auto_update,
             source_state=source_state,
             output_id=output_id,
-            lineage_token=lineage_token,
+            snapshot_token=snapshot_token,
         )
         self._register_child_node(node)
         if output_id is not None and parent_node.tool_window is not None:

@@ -1,5 +1,6 @@
 import ast
 import json
+import pathlib
 import typing
 
 import numpy as np
@@ -1510,7 +1511,7 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
         prov.require_live_source_spec(reparsed_script)
 
 
-def test_tool_replay_provenance_helpers_compose_parent_lineage() -> None:
+def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
     prov = erlab.interactive.imagetool.provenance
 
     parent = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
@@ -1880,11 +1881,138 @@ def test_script_provenance_supports_named_console_inputs() -> None:
     )
 
 
-def test_script_input_lineage_refs_recurse_and_rebase() -> None:
+def test_script_input_code_reuses_shared_file_replay_prefix(
+    tmp_path: pathlib.Path,
+) -> None:
     prov = erlab.interactive.imagetool.provenance
-    left_lineage_id = "left-lineage"
-    right_lineage_id = "right-lineage"
-    extra_lineage_id = "extra-lineage"
+    path = tmp_path / "polarization.nc"
+    source = xr.DataArray(
+        np.arange(12.0).reshape(2, 2, 3),
+        dims=("pol", "energy", "k"),
+        coords={"pol": ["LH", "LV"], "energy": [0.0, 1.0], "k": [0, 1, 2]},
+    )
+    source.to_netcdf(path)
+    file_spec = prov.file_load(
+        start_label="Load both polarizations",
+        seed_code=f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+    shared_stage = prov.full_data(prov.AverageOperation(dims=("k",)))
+    left_stage = prov.selection(
+        prov.SelOperation(kwargs={"pol": "LH"}),
+        prov.SqueezeOperation(),
+    )
+    right_stage = prov.selection(
+        prov.SelOperation(kwargs={"pol": "LV"}),
+        prov.SqueezeOperation(),
+    )
+    left_spec = prov.compose_full_provenance(
+        prov.compose_full_provenance(file_spec, shared_stage),
+        left_stage,
+    )
+    right_spec = prov.compose_full_provenance(
+        prov.compose_full_provenance(file_spec, shared_stage),
+        right_stage,
+    )
+    assert left_spec is not None
+    assert right_spec is not None
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Subtract polarizations",
+            code="derived = data_0 - data_1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="ImageTool 0: LH",
+                provenance_spec=left_spec,
+            ),
+            prov.ScriptInput(
+                name="data_1",
+                label="ImageTool 1: LV",
+                provenance_spec=right_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xarray.load_dataarray") == 1
+    assert code.count(".qsel.average") == 1
+    assert "data_0 =" in code
+    assert "data_1 =" in code
+    namespace = _exec_generated_code(code, {})
+    expected = left_stage.apply(shared_stage.apply(source)) - right_stage.apply(
+        shared_stage.apply(source)
+    )
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_script_input_code_keeps_distinct_structured_replay_nodes() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    first = prov.file_load(
+        start_label="Load first",
+        seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        file_load_source=_file_replay_source(
+            "scan.h5",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+    second = prov.file_load(
+        start_label="Load second",
+        seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        file_load_source=_file_replay_source(
+            "scan.h5",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=1,
+            ),
+        ),
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Subtract inputs",
+            code="derived = data_0 - data_1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="ImageTool 0", provenance_spec=first),
+            prov.ScriptInput(
+                name="data_1",
+                label="ImageTool 1",
+                provenance_spec=second,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+
+    assert code.count("xarray.load_dataarray") == 2
+
+
+def test_script_input_dependency_refs_recurse_and_rebase() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    left_snapshot_id = "left-snapshot"
+    right_snapshot_id = "right-snapshot"
+    extra_snapshot_id = "extra-snapshot"
     nested = prov.script(
         prov.ScriptCodeOperation(
             label="Subtract console inputs",
@@ -1897,13 +2025,13 @@ def test_script_input_lineage_refs_recurse_and_rebase() -> None:
                 name="data_0",
                 label="ImageTool 0",
                 node_uid="old-left",
-                node_lineage_token=left_lineage_id,
+                node_snapshot_token=left_snapshot_id,
             ),
             prov.ScriptInput(
                 name="data_1",
                 label="ImageTool 1",
                 node_uid="old-right",
-                node_lineage_token=right_lineage_id,
+                node_snapshot_token=right_snapshot_id,
             ),
         ),
     )
@@ -1924,16 +2052,16 @@ def test_script_input_lineage_refs_recurse_and_rebase() -> None:
                 name="data_2",
                 label="ImageTool 2",
                 node_uid="old-extra",
-                node_lineage_token=extra_lineage_id,
+                node_snapshot_token=extra_snapshot_id,
             ),
         ),
     )
 
-    refs = prov.script_input_lineage_refs(spec)
-    assert [(ref.name, ref.node_uid, ref.node_lineage_token) for ref in refs] == [
-        ("data_0", "old-left", left_lineage_id),
-        ("data_1", "old-right", right_lineage_id),
-        ("data_2", "old-extra", extra_lineage_id),
+    refs = prov.script_input_dependency_refs(spec)
+    assert [(ref.name, ref.node_uid, ref.node_snapshot_token) for ref in refs] == [
+        ("data_0", "old-left", left_snapshot_id),
+        ("data_1", "old-right", right_snapshot_id),
+        ("data_2", "old-extra", extra_snapshot_id),
     ]
 
     rebased = prov.rebase_script_input_node_uids(
@@ -1952,12 +2080,12 @@ def test_script_input_lineage_refs_recurse_and_rebase() -> None:
         "derived = diff + data_2"
     )
     assert [
-        (ref.name, ref.node_uid, ref.node_lineage_token)
-        for ref in prov.script_input_lineage_refs(rebased)
+        (ref.name, ref.node_uid, ref.node_snapshot_token)
+        for ref in prov.script_input_dependency_refs(rebased)
     ] == [
-        ("data_0", "new-left", left_lineage_id),
-        ("data_1", "new-right", right_lineage_id),
-        ("data_2", "new-extra", extra_lineage_id),
+        ("data_0", "new-left", left_snapshot_id),
+        ("data_1", "new-right", right_snapshot_id),
+        ("data_2", "new-extra", extra_snapshot_id),
     ]
 
 

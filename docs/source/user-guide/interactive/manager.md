@@ -138,9 +138,9 @@ reindexed, changed, or removed.
 The manager records the ImageTools that contributed to the result and shows their live
 relationship in the tree and side panel:
 
-- {guilabel}`Inputs changed` means every recorded live input is still open, but at
+- {guilabel}`Changed` means every recorded live input is still open, but at
   least one no longer matches the data or provenance that made the result.
-- {guilabel}`Inputs missing` means at least one recorded live input was removed from
+- {guilabel}`Missing` means at least one recorded live input was removed from
   the manager.
 
 These badges describe the relationship to the currently open inputs. They do not mean
@@ -318,7 +318,7 @@ chunked Dask arrays show the dask icon, watched variables display their variable
 rows opened from another row can show the {guilabel}`Stale`,
 {guilabel}`Unavailable`, or {guilabel}`Auto` badges described in
 {ref}`imagetool-manager-refresh`, and top-level results made from several ImageTools
-can show the {guilabel}`Inputs changed` or {guilabel}`Inputs missing` badges described
+can show the {guilabel}`Changed` or {guilabel}`Missing` badges described
 in {ref}`imagetool-manager-derived-data`.
 
 ## Data Explorer and Console

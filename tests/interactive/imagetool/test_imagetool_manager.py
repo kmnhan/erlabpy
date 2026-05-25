@@ -213,6 +213,25 @@ def child_status_badge(
     return badge_rect, badge_text, index
 
 
+def dependency_status_badge(
+    manager: ImageToolManager, target: int | str
+) -> tuple[QtCore.QRect, QtCore.QModelIndex]:
+    model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+    delegate = typing.cast(
+        "_ImageToolWrapperItemDelegate", manager.tree_view.itemDelegate()
+    )
+
+    index = model._row_index(target)
+    manager.tree_view.scrollTo(index)
+    option = delegate._option_for_index(manager.tree_view, index)
+    badge_rect, badge_text, _ = delegate._compute_dependency_status_info(
+        option, manager._node_for_target(target)
+    )
+    assert badge_rect is not None
+    assert badge_text is not None
+    return badge_rect, index
+
+
 def click_child_status_badge(
     manager: ImageToolManager,
     uid: str,
@@ -3870,7 +3889,7 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         assert ".transpose(" in copied
 
 
-def test_manager_nested_imagetool_refresh_updates_descendant_lineage(
+def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -15274,12 +15293,12 @@ def test_manager_console_bare_expression_opens_provenance_root(
             manager._imagetool_wrappers[0].uid,
             manager._imagetool_wrappers[1].uid,
         ]
-        assert [source.node_lineage_token for source in provenance.script_inputs] == [
-            manager._imagetool_wrappers[0].lineage_token,
-            manager._imagetool_wrappers[1].lineage_token,
+        assert [source.node_snapshot_token for source in provenance.script_inputs] == [
+            manager._imagetool_wrappers[0].snapshot_token,
+            manager._imagetool_wrappers[1].snapshot_token,
         ]
         assert (
-            manager.lineage_status_for_uid(manager._imagetool_wrappers[2].uid)
+            manager.dependency_status_for_uid(manager._imagetool_wrappers[2].uid)
             == "current"
         )
         assert provenance.operations
@@ -15306,12 +15325,12 @@ def test_manager_console_bare_expression_opens_provenance_root(
             "data_1",
         ]
         derived_uid = manager._imagetool_wrappers[2].uid
-        assert manager.lineage_status_for_uid(derived_uid) == "current"
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
 
         original_difference = manager.get_imagetool(2).slicer_area.data.copy()
         manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 10.0)
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
             timeout=5000,
         )
         xr.testing.assert_identical(
@@ -15321,7 +15340,7 @@ def test_manager_console_bare_expression_opens_provenance_root(
 
         manager.remove_imagetool(1)
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(derived_uid) == "missing",
+            lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
             timeout=5000,
         )
         xr.testing.assert_identical(
@@ -15396,11 +15415,11 @@ def test_manager_console_assignment_tracks_until_explicit_show(
             "data_0",
         ]
         nested_uid = manager._imagetool_wrappers[4].uid
-        assert manager.lineage_status_for_uid(nested_uid) == "current"
+        assert manager.dependency_status_for_uid(nested_uid) == "current"
         nested_data = manager.get_imagetool(4).slicer_area.data.copy()
         manager.get_imagetool(1).slicer_area.replace_source_data(data1 + 5.0)
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(nested_uid) == "changed",
+            lambda: manager.dependency_status_for_uid(nested_uid) == "changed",
             timeout=5000,
         )
         xr.testing.assert_identical(
@@ -15488,7 +15507,7 @@ def test_manager_console_derived_tool_reload_action_routes_to_manager(
         updated0 = data0 + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
             timeout=5000,
         )
 
@@ -15502,13 +15521,13 @@ def test_manager_console_derived_tool_reload_action_routes_to_manager(
             derived.slicer_area.data,
             updated0 - data1,
         )
-        assert manager.lineage_status_for_uid(derived_uid) == "current"
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
 
         manager.console._console_widget.shutdown_kernel()
         InteractiveShell.clear_instance()
 
 
-def test_manager_concat_records_lineage_and_handles_removed_inputs(
+def test_manager_concat_records_dependencies_and_handles_removed_inputs(
     qtbot,
     accept_dialog,
     manager_context: Callable[
@@ -15555,19 +15574,19 @@ def test_manager_concat_records_lineage_and_handles_removed_inputs(
             manager._imagetool_wrappers[0].uid,
             manager._imagetool_wrappers[1].uid,
         ]
-        assert [source.node_lineage_token for source in provenance.script_inputs] == [
-            manager._imagetool_wrappers[0].lineage_token,
-            manager._imagetool_wrappers[1].lineage_token,
+        assert [source.node_snapshot_token for source in provenance.script_inputs] == [
+            manager._imagetool_wrappers[0].snapshot_token,
+            manager._imagetool_wrappers[1].snapshot_token,
         ]
         operation_entry = provenance.operations[-1].derivation_entry()
         assert operation_entry.label == "Concatenate selected ImageTools"
         assert operation_entry.code is not None
         assert "xr.concat([data_0, data_1]" in operation_entry.code
-        assert manager.lineage_status_for_uid(concat_wrapper.uid) == "current"
+        assert manager.dependency_status_for_uid(concat_wrapper.uid) == "current"
 
         manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 1.0)
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(concat_wrapper.uid) == "changed",
+            lambda: manager.dependency_status_for_uid(concat_wrapper.uid) == "changed",
             timeout=5000,
         )
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
@@ -15595,7 +15614,9 @@ def test_manager_concat_records_lineage_and_handles_removed_inputs(
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
         removed_inputs_wrapper = manager._imagetool_wrappers[3]
-        assert manager.lineage_status_for_uid(removed_inputs_wrapper.uid) == "missing"
+        assert (
+            manager.dependency_status_for_uid(removed_inputs_wrapper.uid) == "missing"
+        )
         xr.testing.assert_identical(
             manager.get_imagetool(3).slicer_area.data,
             expected_removed_inputs,
@@ -15604,6 +15625,7 @@ def test_manager_concat_records_lineage_and_handles_removed_inputs(
 
 def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
     qtbot,
+    accept_dialog,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -15632,11 +15654,11 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
 
         derived = manager.get_imagetool(2)
         derived.slicer_area.array_slicer.set_indices(0, [2, 1], update=False)
-        before_token = manager._imagetool_wrappers[2].lineage_token
+        before_token = manager._imagetool_wrappers[2].snapshot_token
         manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 10.0)
         derived_uid = manager._imagetool_wrappers[2].uid
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
             timeout=5000,
         )
 
@@ -15647,7 +15669,40 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
         assert manager.reload_action.isEnabled()
         assert manager.tree_view._menu.actions().count(manager.reload_action) == 1
         assert not hasattr(manager, "rebuild_inputs_action")
-        manager.reload_selected()
+        badge_rect, badge_index = dependency_status_badge(manager, 2)
+        delegate = typing.cast(
+            "_ImageToolWrapperItemDelegate", manager.tree_view.itemDelegate()
+        )
+        badge = delegate._badge_at(
+            delegate._option_for_index(manager.tree_view, badge_index),
+            badge_index,
+            badge_rect.center(),
+        )
+        assert badge is not None
+        assert badge.kind == "dependency_status"
+        manager.tree_view.deselect_all()
+        select_tools(manager, [0])
+
+        def _cancel_reload(dialog: QtWidgets.QDialog) -> None:
+            assert isinstance(dialog, QtWidgets.QMessageBox)
+            cancel_button = dialog.button(QtWidgets.QMessageBox.StandardButton.Cancel)
+            assert cancel_button is not None
+            cancel_button.click()
+
+        accept_dialog(
+            lambda: click_tree_view_pos(manager.tree_view, badge_rect.center()),
+            accept_call=_cancel_reload,
+        )
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            data0 - data1,
+        )
+        assert manager.dependency_status_for_uid(derived_uid) == "changed"
+        assert manager._imagetool_wrappers[2].snapshot_token == before_token
+
+        accept_dialog(
+            lambda: click_tree_view_pos(manager.tree_view, badge_rect.center())
+        )
 
         xr.testing.assert_identical(
             manager.get_imagetool(2).slicer_area.data,
@@ -15657,8 +15712,8 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
             2,
             1,
         ]
-        assert manager.lineage_status_for_uid(derived_uid) == "current"
-        assert manager._imagetool_wrappers[2].lineage_token != before_token
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
+        assert manager._imagetool_wrappers[2].snapshot_token != before_token
 
 
 def test_manager_reload_script_inputs_rebuilds_live_nested_input(
@@ -15703,7 +15758,7 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
         updated0 = data0 + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(final_uid) == "changed",
+            lambda: manager.dependency_status_for_uid(final_uid) == "changed",
             timeout=5000,
         )
 
@@ -15715,7 +15770,7 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
             manager.get_imagetool(3).slicer_area.data,
             (updated0 - data1) + updated0,
         )
-        assert manager.lineage_status_for_uid(final_uid) == "current"
+        assert manager.dependency_status_for_uid(final_uid) == "current"
         rebuilt_spec = manager._imagetool_wrappers[3].provenance_spec
         assert rebuilt_spec is not None
         assert rebuilt_spec.script_inputs[0].node_uid is None
@@ -15776,19 +15831,19 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
             manager._imagetool_wrappers[0].uid,
             manager._imagetool_wrappers[1].uid,
         ]
-        assert manager.lineage_status_for_uid(derived_uid) == "current"
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
 
         updated0 = data0 + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(derived_uid) == "changed",
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
             timeout=5000,
         )
         xr.testing.assert_identical(
             manager.get_imagetool(2).slicer_area.data, loaded_result
         )
 
-        before_token = manager._imagetool_wrappers[2].lineage_token
+        before_token = manager._imagetool_wrappers[2].snapshot_token
         manager.tree_view.deselect_all()
         select_tools(manager, [2])
         manager._update_actions()
@@ -15800,8 +15855,8 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
             manager.get_imagetool(2).slicer_area.data,
             updated0 - data1,
         )
-        assert manager.lineage_status_for_uid(derived_uid) == "current"
-        assert manager._imagetool_wrappers[2].lineage_token != before_token
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
+        assert manager._imagetool_wrappers[2].snapshot_token != before_token
 
 
 def test_manager_reload_script_inputs_incompatible_prompt_paths(
@@ -15917,7 +15972,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         manager.remove_imagetool(1)
         derived_uid = manager._imagetool_wrappers[2].uid
         qtbot.wait_until(
-            lambda: manager.lineage_status_for_uid(derived_uid) == "missing",
+            lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
             timeout=5000,
         )
         manager.tree_view.deselect_all()
@@ -15938,6 +15993,117 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         )
         assert rebuilt_spec.script_inputs[1].node_uid is None
         assert rebuilt_spec.script_inputs[1].parsed_provenance_spec() == file_spec
+
+
+def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = xr.DataArray(
+        np.arange(24.0).reshape(2, 2, 3, 2),
+        dims=("pol", "energy", "k", "beta"),
+        coords={
+            "pol": ["LH", "LV"],
+            "energy": [0.0, 1.0],
+            "k": [0, 1, 2],
+            "beta": [10.0, 20.0],
+        },
+    )
+    path = tmp_path / "polarization.nc"
+    source.to_netcdf(path)
+    file_spec = prov.file_load(
+        start_label="Load both polarizations",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+    shared_stage = prov.full_data(prov.AverageOperation(dims=("k",)))
+    left_stage = prov.selection(
+        prov.SelOperation(kwargs={"pol": "LH"}),
+        prov.SqueezeOperation(),
+    )
+    right_stage = prov.selection(
+        prov.SelOperation(kwargs={"pol": "LV"}),
+        prov.SqueezeOperation(),
+    )
+    left_data = left_stage.apply(shared_stage.apply(source))
+    right_data = right_stage.apply(shared_stage.apply(source))
+    left_spec = prov.compose_full_provenance(
+        prov.compose_full_provenance(file_spec, shared_stage),
+        left_stage,
+    )
+    right_spec = prov.compose_full_provenance(
+        prov.compose_full_provenance(file_spec, shared_stage),
+        right_stage,
+    )
+    assert left_spec is not None
+    assert right_spec is not None
+    load_count = 0
+
+    def _load_shared_source(_load_source: typing.Any) -> xr.DataArray:
+        nonlocal load_count
+        load_count += 1
+        return source
+
+    monkeypatch.setattr(prov, "_load_file_source_data", _load_shared_source)
+
+    with manager_context() as manager:
+        manager.show()
+        itool([left_data, right_data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        manager._imagetool_wrappers[0].set_detached_provenance(left_spec)
+        manager._imagetool_wrappers[1].set_detached_provenance(right_spec)
+        assert (
+            manager._show_multi_input_script_result(
+                left_data - right_data,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        workspace_path = tmp_path / "shared-replay.itws"
+        manager._save_workspace_document(workspace_path, force_full=True)
+        assert manager._load_workspace_file(
+            workspace_path,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        load_count = 0
+
+        manager.remove_imagetool(1)
+        manager.remove_imagetool(0)
+        monkeypatch.setattr(
+            manager,
+            "_prompt_incompatible_reload_commit",
+            lambda _details: "replace",
+        )
+        assert manager._reload_script_derived_target(2)
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            left_data - right_data,
+        )
+        assert load_count == 1
 
 
 def test_manager_reload_script_inputs_missing_parent_without_source_noops(

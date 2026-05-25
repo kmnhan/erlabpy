@@ -91,7 +91,7 @@ __all__ = [
     "RotateOperation",
     "ScriptCodeOperation",
     "ScriptInput",
-    "ScriptInputLineageRef",
+    "ScriptInputDependencyRef",
     "SelOperation",
     "SelectCoordOperation",
     "SliceAlongPathOperation",
@@ -120,7 +120,7 @@ __all__ = [
     "replay_script_provenance",
     "require_live_source_spec",
     "script",
-    "script_input_lineage_refs",
+    "script_input_dependency_refs",
     "script_provenance_replayable",
     "selection",
     "to_replay_provenance_spec",
@@ -131,6 +131,7 @@ import ast
 import base64
 import contextlib
 import importlib
+import json
 import keyword
 import pathlib
 import typing
@@ -208,13 +209,13 @@ class DerivationEntry:
 
 
 @dataclass(frozen=True)
-class ScriptInputLineageRef:
-    """Live manager lineage captured by a script input."""
+class ScriptInputDependencyRef:
+    """Live manager dependency captured by a script input."""
 
     name: str
     label: str
     node_uid: str
-    node_lineage_token: str | None = None
+    node_snapshot_token: str | None = None
 
 
 def _encode_fit_dataset(value: xr.Dataset) -> str:
@@ -415,6 +416,31 @@ def _clone_expr(node: ast.expr) -> ast.expr:
 
 def _clone_stmt(node: ast.stmt) -> ast.stmt:
     return ast.parse(ast.unparse(node), mode="exec").body[0]
+
+
+class _IdentifierReplacer(ast.NodeTransformer):
+    def __init__(self, replacements: Mapping[str, str]) -> None:
+        self._replacements = dict(replacements)
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        replacement = self._replacements.get(node.id)
+        if replacement is None:
+            return node
+        return ast.copy_location(ast.Name(id=replacement, ctx=node.ctx), node)
+
+
+def _replace_code_identifiers(code: str, replacements: Mapping[str, str]) -> str:
+    module = ast.parse(code, mode="exec")
+    replaced = typing.cast(
+        "ast.Module",
+        _IdentifierReplacer(replacements).visit(module),
+    )
+    return ast.unparse(ast.fix_missing_locations(replaced))
+
+
+def _code_stores_name(code: str, name: str) -> bool:
+    module = ast.parse(code, mode="exec")
+    return any(_statement_store_count(stmt, name) > 0 for stmt in module.body)
 
 
 def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None) -> str:
@@ -941,7 +967,7 @@ class ScriptInput(pydantic.BaseModel):
     name: str
     label: str
     node_uid: str | None = None
-    node_lineage_token: str | None = None
+    node_snapshot_token: str | None = None
     provenance_spec: dict[str, typing.Any] | None = None
 
     model_config = pydantic.ConfigDict(
@@ -974,14 +1000,14 @@ class ScriptInput(pydantic.BaseModel):
             return None
         return str(value)
 
-    @pydantic.field_validator("node_lineage_token", mode="before")
+    @pydantic.field_validator("node_snapshot_token", mode="before")
     @classmethod
-    def _validate_node_lineage_token(cls, value: typing.Any) -> str | None:
+    def _validate_node_snapshot_token(cls, value: typing.Any) -> str | None:
         if value is None:
             return None
         token = str(value)
         if not token:
-            raise ValueError("script input lineage token must not be empty")
+            raise ValueError("script input snapshot token must not be empty")
         return token
 
     @pydantic.field_validator("provenance_spec", mode="before")
@@ -1017,7 +1043,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     .. versionchanged:: 3.23.0
        Script provenance can describe multiple manager inputs and records manager
-       lineage tokens so derived tools can show whether the live inputs still match
+       snapshot tokens so derived tools can show whether the live inputs still match
        the inputs used to create them.
     """
 
@@ -1289,8 +1315,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         """Normalize the spec into a replay-only script form.
 
         Replay specs are the canonical, composable form used for derivation metadata,
-        copy-code, save/load, and manager lineage. Structured file provenance remains
-        structured so runtime reloads can replay typed operations without ``exec``.
+        copy-code, save/load, and manager dependencies. Structured file provenance
+        remains structured so runtime reloads can replay typed operations without
+        ``exec``.
         Live updates from ImageTool use the original non-script spec via
         :func:`require_live_source_spec`.
         """
@@ -1357,6 +1384,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if not self.script_inputs:
             return None
 
+        planned = _planned_script_inputs_code(self.script_inputs, display=display)
+        if planned is not None:
+            return planned
+
         lines: list[str] = []
         for script_input in self.script_inputs:
             input_spec = script_input.parsed_provenance_spec()
@@ -1410,7 +1441,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         """Return streamlined derivation entries for UI and copy-code output.
 
         The display path hides internal ImageTool normalization steps while keeping the
-        raw replay lineage available through :meth:`derivation_entries`.
+        recorded replay steps available through :meth:`derivation_entries`.
         """
         entries = [self._start_entry()]
 
@@ -1488,9 +1519,185 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             return None
         if not step_codes and prefix == _DEFAULT_REPLAY_SEED_CODE:
             return None
-        return _simplify_display_code(
-            "\n".join(part for part in (prefix, *step_codes) if part)
+        inline_targets = (
+            {"derived"} if self.kind == "script" and self.script_inputs else None
         )
+        return _simplify_display_code(
+            "\n".join(part for part in (prefix, *step_codes) if part),
+            inline_targets=inline_targets,
+        )
+
+
+def _canonical_replay_key(kind: str, payload: Mapping[str, typing.Any]) -> str:
+    return json.dumps(
+        {"kind": kind, **dict(payload)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _file_load_replay_key(load_source: FileLoadSource) -> str:
+    return _canonical_replay_key(
+        "file_load",
+        {
+            "path": load_source.path,
+            "replay_call": (
+                None
+                if load_source.replay_call is None
+                else load_source.replay_call.model_dump(mode="json")
+            ),
+        },
+    )
+
+
+def _replay_stage_replay_key(parent_key: str, stage: ReplayStage) -> str:
+    return _canonical_replay_key(
+        "replay_stage",
+        {
+            "parent": parent_key,
+            "stage": stage.model_dump(mode="json"),
+        },
+    )
+
+
+def _stage_code_lines(
+    stage: ReplayStage,
+    *,
+    parent_name: str,
+    output_name: str,
+    display: bool,
+) -> tuple[str, ...] | None:
+    if stage.source_kind == "full_data":
+        lines = [f"{output_name} = {parent_name}"]
+    else:
+        lines = [
+            f"{output_name} = erlab.interactive.imagetool.slicer."
+            f"restore_nonuniform_dims({parent_name})"
+        ]
+
+    operations: Sequence[ToolProvenanceOperation] = stage.operations
+    if display:
+        operations = ToolProvenanceSpec._streamlined_operations(
+            stage.source_kind,
+            operations,
+        )
+
+    for operation in operations:
+        entry = operation.derivation_entry()
+        if entry is None:
+            continue
+        if entry.code is None:
+            return None
+        try:
+            lines.append(
+                _replace_code_identifiers(
+                    entry.code,
+                    {"data": parent_name, "derived": output_name},
+                )
+            )
+        except SyntaxError:
+            return None
+    return tuple(lines)
+
+
+def _planned_script_inputs_code(
+    script_inputs: Sequence[ScriptInput],
+    *,
+    display: bool,
+) -> str | None:
+    """Return DAG-emitted setup code for structured script inputs, if possible."""
+    used_names = {script_input.name for script_input in script_inputs}
+    node_names: dict[str, str] = {}
+    lines: list[str] = []
+    counter = 0
+
+    def _next_name() -> str:
+        nonlocal counter
+        while True:
+            name = f"_itool_replay_{counter}"
+            counter += 1
+            if name not in used_names:
+                used_names.add(name)
+                return name
+
+    def _add_node(
+        key: str,
+        build_lines: Callable[[str], tuple[str, ...] | None],
+    ) -> str | None:
+        existing = node_names.get(key)
+        if existing is not None:
+            return existing
+        name = _next_name()
+        built = build_lines(name)
+        if built is None:
+            return None
+        node_names[key] = name
+        lines.extend(built)
+        return name
+
+    def _file_chain(spec: ToolProvenanceSpec) -> tuple[str, str] | None:
+        if spec.kind != "file" or spec.file_load_source is None:
+            return None
+        active_name = spec.active_name
+        if active_name is None or spec.seed_code is None:
+            return None
+        seed_code = spec.seed_code
+
+        load_key = _file_load_replay_key(spec.file_load_source)
+
+        def _load_lines(name: str) -> tuple[str, ...] | None:
+            try:
+                code = _replace_code_identifiers(seed_code, {active_name: name})
+            except SyntaxError:
+                return None
+            if not _code_stores_name(code, name):
+                return None
+            return (code,)
+
+        parent_name = _add_node(load_key, _load_lines)
+        if parent_name is None:
+            return None
+        parent_key = load_key
+
+        for stage in spec.replay_stages:
+            stage_key = _replay_stage_replay_key(parent_key, stage)
+
+            def _build_stage_lines(
+                name: str,
+                *,
+                current_stage: ReplayStage = stage,
+                current_parent: str = parent_name,
+            ) -> tuple[str, ...] | None:
+                return _stage_code_lines(
+                    current_stage,
+                    parent_name=current_parent,
+                    output_name=name,
+                    display=display,
+                )
+
+            stage_name = _add_node(stage_key, _build_stage_lines)
+            if stage_name is None:
+                return None
+            parent_key = stage_key
+            parent_name = stage_name
+
+        return parent_key, parent_name
+
+    aliases: list[tuple[str, str]] = []
+    for script_input in script_inputs:
+        input_spec = script_input.parsed_provenance_spec()
+        if input_spec is None:
+            return None
+        planned = _file_chain(input_spec)
+        if planned is None:
+            return None
+        _key, input_name = planned
+        aliases.append((script_input.name, input_name))
+
+    for public_name, planned_name in aliases:
+        if public_name != planned_name:
+            lines.append(f"{public_name} = {planned_name}")
+    return "\n".join(lines)
 
 
 def parse_tool_provenance_spec(
@@ -1511,25 +1718,25 @@ def parse_tool_provenance_spec(
     return ToolProvenanceSpec.model_validate(value)
 
 
-def script_input_lineage_refs(
+def script_input_dependency_refs(
     value: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
-) -> tuple[ScriptInputLineageRef, ...]:
-    """Return all live manager lineage references stored in script inputs."""
+) -> tuple[ScriptInputDependencyRef, ...]:
+    """Return all live manager dependency references stored in script inputs."""
     spec = parse_tool_provenance_spec(value)
     if spec is None:
         return ()
 
-    refs: list[ScriptInputLineageRef] = []
+    refs: list[ScriptInputDependencyRef] = []
 
     def _collect(current: ToolProvenanceSpec) -> None:
         for script_input in current.script_inputs:
             if script_input.node_uid is not None:
                 refs.append(
-                    ScriptInputLineageRef(
+                    ScriptInputDependencyRef(
                         name=script_input.name,
                         label=script_input.label,
                         node_uid=script_input.node_uid,
-                        node_lineage_token=script_input.node_lineage_token,
+                        node_snapshot_token=script_input.node_snapshot_token,
                     )
                 )
             nested = script_input.parsed_provenance_spec()
@@ -1748,9 +1955,9 @@ def compose_full_provenance(
     parent: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
     local: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
 ) -> ToolProvenanceSpec | None:
-    """Compose canonical full provenance from parent and local lineage.
+    """Compose canonical full provenance from parent and local provenance.
 
-    ``parent`` represents the replay lineage for the current input data. ``local``
+    ``parent`` represents the replay provenance for the current input data. ``local``
     represents the additional steps performed by the current node. File-backed parents
     remain structured when composed with live-source specs so runtime reloads can avoid
     executing generated Python.
@@ -2106,15 +2313,30 @@ def _apply_replay_stage(stage: ReplayStage, parent_data: xr.DataArray) -> xr.Dat
 
 def replay_file_provenance(
     spec: ToolProvenanceSpec | Mapping[str, typing.Any],
+    *,
+    cache: dict[str, xr.DataArray] | None = None,
 ) -> xr.DataArray:
     """Replay structured file provenance without executing generated Python."""
     parsed = parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "file" or parsed.file_load_source is None:
         raise TypeError("Expected structured file provenance")
 
-    data = _load_file_source_data(parsed.file_load_source)
+    replay_cache = {} if cache is None else cache
+    load_key = _file_load_replay_key(parsed.file_load_source)
+    if load_key in replay_cache:
+        data = replay_cache[load_key].copy(deep=False)
+    else:
+        data = _load_file_source_data(parsed.file_load_source)
+        replay_cache[load_key] = data.copy(deep=False)
+    parent_key = load_key
     for stage in parsed.replay_stages:
-        data = _apply_replay_stage(stage, data)
+        stage_key = _replay_stage_replay_key(parent_key, stage)
+        if stage_key in replay_cache:
+            data = replay_cache[stage_key].copy(deep=False)
+        else:
+            data = _apply_replay_stage(stage, data)
+            replay_cache[stage_key] = data.copy(deep=False)
+        parent_key = stage_key
     return data
 
 

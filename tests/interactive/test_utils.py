@@ -1171,7 +1171,7 @@ def test_tool_script_provenance_rejects_invalid_expression(qtbot) -> None:
         tool.current_provenance_spec()
 
 
-def test_tool_window_dynamic_expression_provenance_uses_input_lineage(qtbot) -> None:
+def test_tool_window_dynamic_expression_provenance_uses_input_provenance(qtbot) -> None:
     prov = erlab.interactive.imagetool.provenance
 
     class _DynamicTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):

@@ -606,7 +606,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
             name=self._console_input_name,
             label=label,
             node_uid=self._wrapper.uid,
-            node_lineage_token=self._wrapper.lineage_token,
+            node_snapshot_token=self._wrapper.snapshot_token,
             provenance_spec=provenance_spec,
         )
 

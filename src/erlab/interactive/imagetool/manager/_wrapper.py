@@ -125,7 +125,7 @@ class _ManagedWindowNode(QtCore.QObject):
         source_auto_update: bool = False,
         source_state: _source_state_type = "fresh",
         output_id: str | None = None,
-        lineage_token: str | None = None,
+        snapshot_token: str | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
@@ -159,8 +159,10 @@ class _ManagedWindowNode(QtCore.QObject):
         self._source_auto_update: bool = False
         self._output_id: str | None = None
         self._suspend_descendant_signal_propagation: bool = False
-        self._lineage_token = str(lineage_token) if lineage_token else uuid.uuid4().hex
-        self._suspend_lineage_token_updates = True
+        self._snapshot_token = (
+            str(snapshot_token) if snapshot_token else uuid.uuid4().hex
+        )
+        self._suspend_snapshot_token_updates = True
 
         self.window = window
         try:
@@ -192,7 +194,7 @@ class _ManagedWindowNode(QtCore.QObject):
             elif isinstance(window, ImageTool) and window.provenance_spec is not None:
                 self.set_detached_provenance(window.provenance_spec)
         finally:
-            self._suspend_lineage_token_updates = False
+            self._suspend_snapshot_token_updates = False
 
     @property
     def manager(self) -> ImageToolManager:
@@ -477,12 +479,12 @@ class _ManagedWindowNode(QtCore.QObject):
                     details=load_source_details,
                 )
             )
-        lineage_label = self.manager.lineage_status_label_for_uid(self.uid)
-        if lineage_label is not None:
-            fields.append(_MetadataField("Lineage", lineage_label))
-        lineage_inputs = self.manager.lineage_input_summary_for_uid(self.uid)
-        if lineage_inputs is not None:
-            fields.append(_MetadataField("Inputs", lineage_inputs, wrap=True))
+        dependency_label = self.manager.dependency_status_label_for_uid(self.uid)
+        if dependency_label is not None:
+            fields.append(_MetadataField("Inputs", dependency_label))
+        dependency_inputs = self.manager.dependency_input_summary_for_uid(self.uid)
+        if dependency_inputs is not None:
+            fields.append(_MetadataField("Inputs", dependency_inputs, wrap=True))
         if data is not None and data.chunks is not None:
             fields.append(
                 _MetadataField(
@@ -524,16 +526,16 @@ class _ManagedWindowNode(QtCore.QObject):
         return self._source_spec
 
     @property
-    def lineage_token(self) -> str:
-        return self._lineage_token
+    def snapshot_token(self) -> str:
+        return self._snapshot_token
 
-    def _advance_lineage_token(self) -> None:
-        if self._suspend_lineage_token_updates:
+    def _advance_snapshot_token(self) -> None:
+        if self._suspend_snapshot_token_updates:
             return
-        self._lineage_token = uuid.uuid4().hex
+        self._snapshot_token = uuid.uuid4().hex
         self.manager.tree_view.refresh(self.uid)
         self.manager._update_info(uid=self.uid)
-        self.manager._refresh_lineage_dependents(self.uid)
+        self.manager._refresh_dependency_dependents(self.uid)
         self.manager._mark_node_state_dirty(self.uid)
 
     @property
@@ -567,7 +569,7 @@ class _ManagedWindowNode(QtCore.QObject):
         provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
         | None,
         *,
-        advance_lineage: bool = True,
+        advance_snapshot: bool = True,
     ) -> None:
         self._provenance_spec = (
             erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
@@ -576,8 +578,8 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
-        if advance_lineage:
-            self._advance_lineage_token()
+        if advance_snapshot:
+            self._advance_snapshot_token()
 
     @property
     def derivation_entries(
@@ -773,13 +775,13 @@ class _ManagedWindowNode(QtCore.QObject):
             self._suspend_descendant_signal_propagation = previous
 
     @contextlib.contextmanager
-    def _suspend_lineage_updates(self) -> Iterator[None]:
-        previous = self._suspend_lineage_token_updates
-        self._suspend_lineage_token_updates = True
+    def _suspend_snapshot_updates(self) -> Iterator[None]:
+        previous = self._suspend_snapshot_token_updates
+        self._suspend_snapshot_token_updates = True
         try:
             yield
         finally:
-            self._suspend_lineage_token_updates = previous
+            self._suspend_snapshot_token_updates = previous
 
     def _replace_imagetool_data(
         self,
@@ -790,10 +792,10 @@ class _ManagedWindowNode(QtCore.QObject):
         state: _source_state_type = "fresh",
         propagate_descendants: bool,
     ) -> None:
-        with self._suspend_descendant_propagation(), self._suspend_lineage_updates():
+        with self._suspend_descendant_propagation(), self._suspend_snapshot_updates():
             self.slicer_area.replace_source_data(data)
-        self.set_displayed_provenance(provenance_spec, advance_lineage=False)
-        self._advance_lineage_token()
+        self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
+        self._advance_snapshot_token()
         self._set_source_state(state)
         self.manager._mark_node_data_dirty(self.uid)
         if propagate_descendants:
@@ -823,7 +825,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _handle_tool_data_changed(self) -> None:
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_lineage_token()
+        self._advance_snapshot_token()
         if self._suspend_descendant_signal_propagation:
             return
         tool_window = self.tool_window
@@ -968,12 +970,12 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     def _handle_imagetool_data_edited(self) -> None:
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_lineage_token()
+        self._advance_snapshot_token()
 
     @QtCore.Slot()
     def _handle_imagetool_backing_changed(self) -> None:
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_lineage_token()
+        self._advance_snapshot_token()
         self._refresh_node_info()
 
     def _update_from_parent_source(self) -> bool:
@@ -1110,7 +1112,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot(object)
     def _handle_source_data_replaced(self, parent_data: object) -> None:
         self.manager._mark_node_data_dirty(self.uid)
-        self._advance_lineage_token()
+        self._advance_snapshot_token()
         if self._suspend_descendant_signal_propagation:
             return
         if not isinstance(parent_data, xr.DataArray):
@@ -1146,7 +1148,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
-        lineage_token: str | None = None,
+        snapshot_token: str | None = None,
     ) -> None:
         self._index = index
         self._watched_varname: str | None = None
@@ -1178,7 +1180,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             source_binding=source_binding,
             source_auto_update=source_auto_update,
             source_state=source_state,
-            lineage_token=lineage_token,
+            snapshot_token=snapshot_token,
         )
 
     @property

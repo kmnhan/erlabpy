@@ -3250,7 +3250,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         ]
         | None,
     ) -> None:
-        """Set the callback used to resolve lineage for future source refreshes."""
+        """Set the callback used to resolve provenance for future source refreshes."""
         self._input_provenance_parent_fetcher = fetcher
         if fetcher is not None and self._source_state == "fresh":
             self._sync_input_provenance_snapshot()
@@ -3287,7 +3287,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         )
 
     def _sync_input_provenance_snapshot(self) -> None:
-        """Refresh the stored input-lineage snapshot for the displayed tool data."""
+        """Refresh the stored input provenance snapshot for the displayed tool data."""
         self._input_provenance_spec = self._snapshot_input_provenance()
 
     def _effective_input_provenance_spec(
@@ -3551,8 +3551,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Return replay provenance for an unbound ImageTool opened from this tool.
 
         Override this only when an unbound ImageTool should display different replay
-        lineage from `current_provenance_spec()`. Standalone and managed detached
-        launches both preserve the returned lineage, so this hook must stay free of
+        provenance from `current_provenance_spec()`. Standalone and managed detached
+        launches both preserve the returned provenance, so this hook must stay free of
         blocking side effects such as warning dialogs.
         """
         del data, source
