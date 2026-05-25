@@ -1,3 +1,4 @@
+import collections.abc
 import copy
 import json
 import logging
@@ -19,6 +20,9 @@ from numpy.testing import assert_almost_equal
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool._itool as itool_mod
+import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
+import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
@@ -54,6 +58,7 @@ from erlab.interactive.imagetool.viewer import (
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
     _parse_input,
+    _SelectDataArraysDialog,
 )
 
 logger = logging.getLogger(__name__)
@@ -1648,6 +1653,126 @@ def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) 
     win.close()
 
 
+def test_itool_file_open_uses_selected_variable_source_index(
+    qtbot,
+    monkeypatch,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+) -> None:
+    first = xr.DataArray(np.zeros((2, 3)), dims=("x", "y"), name="first")
+    second = xr.DataArray(
+        np.ones((4, 5)),
+        dims=("u", "v"),
+        coords={"u": np.arange(4), "v": np.arange(5)},
+        name="second",
+    )
+    file_path = tmp_path / "multi.h5"
+    file_path.touch()
+
+    def _load_multi(_path: str) -> xr.Dataset:
+        return xr.Dataset({"first": first, "second": second})
+
+    def _select_second(data, parent=None):
+        assert parent is not None
+        return ((data["second"], 1),)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: {"Test xarray (*.h5)": (_load_multi, {})},
+    )
+    monkeypatch.setattr(
+        imagetool_mainwindow, "_select_input_dataarrays", _select_second
+    )
+
+    win = itool(np.zeros((2, 2)), execute=False)
+    qtbot.addWidget(win)
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog) -> None:
+        dialog.setDirectory(str(tmp_path))
+        dialog.selectFile(str(file_path))
+        dialog.selectNameFilter("Test xarray (*.h5)")
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText(file_path.name)
+
+    accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
+
+    assert isinstance(win, ImageTool)
+    xr.testing.assert_identical(win.slicer_area.data, second)
+    assert win.slicer_area._load_func is not None
+    assert win.slicer_area._load_func[2] == 1
+
+    win.close()
+
+
+@pytest.mark.parametrize("selection", ["all", "cancel"])
+def test_itool_file_open_selection_branches(
+    qtbot,
+    monkeypatch,
+    accept_dialog,
+    tmp_path: pathlib.Path,
+    selection: str,
+) -> None:
+    first = xr.DataArray(
+        np.zeros((2, 3)),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(3)},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.ones((4, 5)),
+        dims=("u", "v"),
+        coords={"u": np.arange(4), "v": np.arange(5)},
+        name="second",
+    )
+    file_path = tmp_path / "multi.h5"
+    file_path.touch()
+
+    def _load_multi(_path: str) -> xr.Dataset:
+        return xr.Dataset({"first": first, "second": second})
+
+    def _select_data(data, parent=None):
+        assert parent is not None
+        if selection == "cancel":
+            return None
+        return ((data["first"], 0), (data["second"], 1))
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "file_loaders",
+        lambda *_args: {"Test xarray (*.h5)": (_load_multi, {})},
+    )
+    monkeypatch.setattr(imagetool_mainwindow, "_select_input_dataarrays", _select_data)
+
+    win = itool(np.full((2, 2), -1.0), execute=False)
+    qtbot.addWidget(win)
+
+    def _go_to_file(dialog: QtWidgets.QFileDialog) -> None:
+        dialog.setDirectory(str(tmp_path))
+        dialog.selectFile(str(file_path))
+        dialog.selectNameFilter("Test xarray (*.h5)")
+        focused = dialog.focusWidget()
+        if isinstance(focused, QtWidgets.QLineEdit):
+            focused.setText(file_path.name)
+
+    accept_dialog(lambda: win._open_file(native=False), pre_call=_go_to_file)
+
+    if selection == "cancel":
+        np.testing.assert_array_equal(win.slicer_area.data.values, -1.0)
+    else:
+        xr.testing.assert_identical(win.slicer_area.data, first)
+        qtbot.wait_until(
+            lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000
+        )
+        child = next(iter(win.slicer_area._associated_tools.values()))
+        assert isinstance(child, ImageTool)
+        xr.testing.assert_identical(child.slicer_area.data, second)
+        child.close()
+
+    win.close()
+
+
 def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
     qtbot,
     tmp_path: pathlib.Path,
@@ -2289,6 +2414,328 @@ def test_parse_input() -> None:
         )
 
 
+def test_select_dataarrays_dialog_preserves_tree_source_indices(qtbot) -> None:
+    first = xr.DataArray(
+        np.zeros((2, 3), dtype=np.float32),
+        dims=("alpha", "eV"),
+        attrs={"long_name": "first map", "units": "counts"},
+    )
+    second = xr.DataArray(
+        np.ones((4, 5), dtype=np.float64),
+        dims=("alpha", "eV"),
+        attrs={"description": "second branch"},
+    )
+    tree = xr.DataTree.from_dict(
+        {
+            "branch_a": xr.Dataset({"signal": first}),
+            "branch_b": xr.Dataset({"signal": second, "scalar": xr.DataArray(1)}),
+        }
+    )
+
+    dialog = _SelectDataArraysDialog(None, tree)
+    qtbot.addWidget(dialog)
+    selected_data = dialog.selected_dataarrays()
+
+    assert [source_index for _data_array, source_index in selected_data] == [0, 1]
+    assert dialog._tree_widget.topLevelItem(0).text(1) == "branch_a"
+    assert dialog._tree_widget.topLevelItem(0).text(2) == "signal"
+    assert dialog._tree_widget.topLevelItem(1).text(1) == "branch_b"
+    assert dialog._tree_widget.topLevelItem(1).text(2) == "signal"
+    xr.testing.assert_identical(selected_data[0][0], tree["branch_a"].dataset["signal"])
+    xr.testing.assert_identical(selected_data[1][0], tree["branch_b"].dataset["signal"])
+
+
+def test_select_dataarrays_dialog_formats_selected_dataarray(
+    qtbot, monkeypatch
+) -> None:
+    ds = xr.Dataset(
+        {
+            "first": xr.DataArray(
+                np.zeros((2, 3)),
+                dims=("x", "y"),
+                attrs={"long_name": "first image"},
+            ),
+            "second": xr.DataArray(
+                np.ones((4, 5)),
+                dims=("u", "v"),
+                coords={"u": np.arange(4), "v": np.arange(5)},
+                attrs={"units": "arb."},
+            ),
+        }
+    )
+    formatted: list[tuple[xr.DataArray, bool, bool, tuple[str, ...]]] = []
+
+    def format_darr_html(
+        darr: xr.DataArray,
+        *,
+        show_size: bool = True,
+        show_summary: bool = True,
+        additional_info: collections.abc.Iterable[str] | None = None,
+    ) -> str:
+        formatted.append((darr, show_size, show_summary, tuple(additional_info or ())))
+        return f"<p>{darr.name}</p>"
+
+    monkeypatch.setattr(erlab.utils.formatting, "format_darr_html", format_darr_html)
+
+    dialog = _SelectDataArraysDialog(None, ds)
+    qtbot.addWidget(dialog)
+
+    first_item = dialog._tree_widget.topLevelItem(0)
+    second_item = dialog._tree_widget.topLevelItem(1)
+    assert first_item is not None
+    assert second_item is not None
+    assert not dialog._tree_widget.rootIsDecorated()
+    assert dialog._tree_widget.indentation() == 0
+    assert dialog._path_tree is None
+    assert isinstance(dialog._item_checkbox(second_item), QtWidgets.QCheckBox)
+    assert dialog._item_checkbox(second_item).isChecked()
+    assert second_item.text(1) == "second"
+    assert second_item.text(2) == "2"
+    second_label = dialog._tree_widget.itemWidget(second_item, 3)
+    assert isinstance(second_label, QtWidgets.QLabel)
+    assert "second" not in second_label.text()
+    assert "<b>u</b>: 4" in second_label.text()
+    assert "<b>v</b>: 5" in second_label.text()
+    assert "Size " not in second_label.text()
+    assert second_item.text(4) == "160 Bytes"
+
+    dialog._item_checkbox(first_item).setChecked(False)
+    dialog._tree_widget.setCurrentItem(second_item)
+
+    selected_data = dialog.selected_dataarrays()
+    assert [source_index for _data_array, source_index in selected_data] == [1]
+    xr.testing.assert_identical(selected_data[0][0], ds["second"])
+    xr.testing.assert_identical(formatted[-1][0], ds["second"])
+    assert formatted[-1][1] is False
+    assert formatted[-1][2] is False
+    assert formatted[-1][3] == ()
+
+    accepted_dialog = _SelectDataArraysDialog(None, ds)
+    qtbot.addWidget(accepted_dialog)
+    accepted_dialog.accept()
+    assert accepted_dialog.result() == QtWidgets.QDialog.DialogCode.Accepted
+
+    dialog._update_details(None)
+    assert not dialog._details.toPlainText()
+    dialog._update_details(QtWidgets.QTreeWidgetItem(["orphan"]))
+    assert not dialog._details.toPlainText()
+
+    dialog._item_checkbox(second_item).setChecked(False)
+    dialog.accept()
+
+    assert dialog.result() == QtWidgets.QDialog.DialogCode.Rejected
+
+    tree_dialog = _SelectDataArraysDialog(
+        None,
+        xr.DataTree.from_dict({"branch": ds}),
+    )
+    qtbot.addWidget(tree_dialog)
+
+    assert tree_dialog._path_tree is not None
+    tree_item = tree_dialog._path_tree.topLevelItem(0)
+    assert tree_item is not None
+    assert tree_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "/branch"
+    assert tree_item.childCount() == 0
+    assert tree_dialog._tree_widget.topLevelItemCount() == 2
+    first_tree_child = tree_dialog._tree_widget.topLevelItem(0)
+    assert first_tree_child is not None
+    assert first_tree_child.text(1) == "branch"
+    assert first_tree_child.text(2) == "first"
+    tree_label = tree_dialog._tree_widget.itemWidget(first_tree_child, 4)
+    assert isinstance(tree_label, QtWidgets.QLabel)
+    tree_dialog._tree_widget.setCurrentItem(first_tree_child)
+    assert formatted[-1][3] == ()
+
+
+def test_select_dataarrays_dialog_nests_datatree_paths(qtbot) -> None:
+    tree = xr.DataTree.from_dict(
+        {
+            "/branch_a/sweep_0": xr.Dataset(
+                {
+                    "signal": xr.DataArray(
+                        np.zeros((2, 3)),
+                        dims=("alpha", "eV"),
+                    )
+                }
+            ),
+            "/branch_a/sweep_1": xr.Dataset(
+                {
+                    "signal": xr.DataArray(
+                        np.ones((4, 5)),
+                        dims=("alpha", "eV"),
+                    )
+                }
+            ),
+        }
+    )
+
+    dialog = _SelectDataArraysDialog(None, tree)
+    qtbot.addWidget(dialog)
+
+    assert dialog._path_tree is not None
+    branch_item = dialog._path_tree.topLevelItem(0)
+    assert branch_item is not None
+    assert all(not item.isHidden() for item in dialog._items())
+    assert dialog._clear_path_filter_button is not None
+    assert not dialog._clear_path_filter_button.isEnabled()
+    assert branch_item.text(0) == "branch_a"
+    assert branch_item.childCount() == 2
+    assert branch_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "/branch_a"
+
+    sweep_item = branch_item.child(1)
+    assert sweep_item is not None
+    assert sweep_item.text(0) == "sweep_1"
+    assert sweep_item.childCount() == 0
+    assert sweep_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "/branch_a/sweep_1"
+
+    dialog._path_tree.setCurrentItem(sweep_item)
+    signal_item = next(item for item in dialog._items() if not item.isHidden())
+    assert signal_item is not None
+    assert signal_item.text(1) == "branch_a/sweep_1"
+    assert signal_item.text(2) == "signal"
+    assert dialog._item_checkbox(signal_item).isChecked()
+    assert dialog._clear_path_filter_button.isEnabled()
+
+    dialog._uncheck_all()
+    assert not dialog._item_checkbox(signal_item).isChecked()
+    dialog._check_all()
+    assert dialog._item_checkbox(signal_item).isChecked()
+
+    dialog._item_checkbox(signal_item).setChecked(False)
+
+    assert [
+        source_index for _data_array, source_index in dialog.selected_dataarrays()
+    ] == [0]
+
+    empty_item = QtWidgets.QTreeWidgetItem(["missing"])
+    empty_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, "/missing")
+    dialog._filter_for_path(empty_item)
+    assert all(item.isHidden() for item in dialog._items())
+    assert not dialog._details.toPlainText()
+
+    dialog._clear_path_filter()
+    assert all(not item.isHidden() for item in dialog._items())
+    assert not dialog._clear_path_filter_button.isEnabled()
+
+
+def test_select_dataarrays_dialog_collapses_single_child_datatree_paths(qtbot) -> None:
+    tree = xr.DataTree.from_dict(
+        {
+            "/cut_a": xr.Dataset(
+                {"spectrum": xr.DataArray(np.zeros((2, 3)), dims=("alpha", "eV"))}
+            ),
+            "/nested/cut_b": xr.Dataset(
+                {"spectrum": xr.DataArray(np.ones((4, 5)), dims=("beta", "eV"))}
+            ),
+        }
+    )
+
+    dialog = _SelectDataArraysDialog(None, tree)
+    qtbot.addWidget(dialog)
+
+    assert dialog._path_tree is not None
+    path_items = [
+        dialog._path_tree.topLevelItem(row)
+        for row in range(dialog._path_tree.topLevelItemCount())
+    ]
+    nested_item = next(item for item in path_items if item.text(0) == "nested/cut_b")
+
+    assert nested_item.childCount() == 0
+    assert nested_item.toolTip(0) == "/nested/cut_b"
+    dialog._path_tree.setCurrentItem(nested_item)
+    visible_items = [item for item in dialog._items() if not item.isHidden()]
+    assert len(visible_items) == 1
+    assert visible_items[0].text(1) == "nested/cut_b"
+    assert visible_items[0].text(2) == "spectrum"
+    assert visible_items[0].toolTip(0) == "/nested/cut_b"
+
+
+@pytest.mark.parametrize(
+    ("dialog_result", "selected", "expected"),
+    [
+        (False, ((xr.DataArray(np.ones((2, 2)), dims=("x", "y")), 0),), None),
+        (True, (), None),
+        (
+            True,
+            ((xr.DataArray(np.ones((3, 4)), dims=("u", "v")), 1),),
+            (1,),
+        ),
+    ],
+)
+def test_select_input_dataarrays_dialog_branches(
+    monkeypatch,
+    dialog_result: bool,
+    selected: tuple[tuple[xr.DataArray, int], ...],
+    expected: tuple[int, ...] | None,
+) -> None:
+    ds = xr.Dataset(
+        {
+            "first": xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
+            "second": xr.DataArray(np.ones((4, 5)), dims=("u", "v")),
+        }
+    )
+
+    class _Dialog:
+        def __init__(self, parent, data) -> None:
+            assert parent is None
+            assert data is ds
+
+        def exec(self) -> bool:
+            return dialog_result
+
+        def selected_dataarrays(self) -> tuple[tuple[xr.DataArray, int], ...]:
+            return selected
+
+    monkeypatch.setattr(imagetool_viewer, "_SelectDataArraysDialog", _Dialog)
+
+    result = imagetool_viewer._select_input_dataarrays(ds)
+
+    if expected is None:
+        assert result is None
+    else:
+        assert result is not None
+        assert [source_index for _data_array, source_index in result] == list(expected)
+
+
+def test_itool_dataset_selection_returns_selected_variable(qtbot, monkeypatch) -> None:
+    ds = xr.Dataset(
+        {
+            "first": xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
+            "second": xr.DataArray(
+                np.ones((4, 5)),
+                dims=("u", "v"),
+                coords={"u": np.arange(4), "v": np.arange(5)},
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        itool_mod, "_select_input_dataarrays", lambda _data: ((ds["second"], 1),)
+    )
+
+    win = itool(ds, execute=False)
+    qtbot.addWidget(win)
+
+    assert isinstance(win, ImageTool)
+    xr.testing.assert_identical(win.slicer_area.data, ds["second"])
+    win.close()
+
+
+def test_itool_dataset_selection_cancel(monkeypatch) -> None:
+    ds = xr.Dataset(
+        {
+            "first": xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
+            "second": xr.DataArray(
+                np.ones((4, 5)),
+                dims=("u", "v"),
+                coords={"u": np.arange(4), "v": np.arange(5)},
+            ),
+        }
+    )
+    monkeypatch.setattr(itool_mod, "_select_input_dataarrays", lambda _data: None)
+
+    assert itool(ds, execute=False) is None
+
+
 def test_itool_promotes_1d_input(qtbot) -> None:
     data = xr.DataArray(np.arange(5), dims=["x"], coords={"x": np.arange(5)})
     win = itool(data, execute=False)
@@ -2371,13 +2818,18 @@ def test_itool_squeezes_high_dim_input(qtbot) -> None:
     win.close()
 
 
-def test_itool_ds(qtbot) -> None:
+def test_itool_ds(qtbot, monkeypatch) -> None:
     data = xr.Dataset(
         {
             "data1d": xr.DataArray(np.arange(5), dims=["x"]),
             "a": xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]),
             "b": xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"]),
         }
+    )
+    monkeypatch.setattr(
+        itool_mod,
+        "_select_input_dataarrays",
+        lambda _data: tuple((darr, i) for i, darr in enumerate(_parse_input(_data))),
     )
     wins = itool(data, execute=False, link=True)
     assert isinstance(wins, list)

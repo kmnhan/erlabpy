@@ -20,8 +20,7 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 
 ## Launching ImageTool
 
-ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>`—with 2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform coordinates gain parallel `_idx` indices so you can still slice by position. Supported inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire {class}`DataTree <xarray.DataTree>` objects; Dataset and DataTree inputs open one ImageTool window per valid variable.
-
+ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>`—with 2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform coordinates gain parallel `_idx` indices so you can still slice by position. Supported inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire {class}`DataTree <xarray.DataTree>` objects.
 (imagetool-entry-points)=
 
 ### Entry points
@@ -40,7 +39,7 @@ ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataAr
   eri.itool(data, cmap="cividis")
   ```
 
-  Passing a list or dataset to {func}`itool <erlab.interactive.imagetool.itool>` spawns multiple windows; set `link=True` to synchronize their cursor positions and bins.
+  Passing a list to {func}`itool <erlab.interactive.imagetool.itool>` spawns multiple windows; set `link=True` to synchronize their cursor positions and bins. Passing a Dataset or DataTree with multiple valid variables first asks which variables to open.
 
 - Launch ImageTool from IPython or a notebook using the `%itool` line magic. Load the extension first:
 

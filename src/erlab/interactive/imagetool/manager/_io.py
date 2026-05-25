@@ -27,7 +27,7 @@ if typing.TYPE_CHECKING:
 
 
 class _DataLoaderSignals(QtCore.QObject):
-    sigLoaded = QtCore.Signal(pathlib.Path, list)
+    sigLoaded = QtCore.Signal(pathlib.Path, object)
     sigFailed = QtCore.Signal(pathlib.Path, str)
 
 
@@ -64,18 +64,14 @@ class _DataLoader(QtCore.QRunnable):
 
     def run(self) -> None:
         try:
-            data_list: list[xr.DataArray] = (
-                erlab.interactive.imagetool.viewer._parse_input(
-                    self._func(self._file_path, **self._kwargs)
-                )
-            )
+            data = self._func(self._file_path, **self._kwargs)
         except Exception:
             logger.debug(
                 "Error loading data from %s", self._file_path
             )  # Use debug level to avoid duplicate popup
             self.signals.sigFailed.emit(self._file_path, traceback.format_exc())
         else:
-            self.signals.sigLoaded.emit(self._file_path, data_list)
+            self.signals.sigLoaded.emit(self._file_path, data)
 
 
 class _MultiFileHandler(QtCore.QObject):
@@ -96,6 +92,8 @@ class _MultiFileHandler(QtCore.QObject):
     ----------
     loaded
         List of successfully loaded files.
+    canceled
+        List of files that were loaded but not opened.
     failed
         List of files that failed to load.
 
@@ -126,6 +124,7 @@ class _MultiFileHandler(QtCore.QObject):
         self._kwargs = kwargs
 
         self.loaded: list[pathlib.Path] = []
+        self.canceled: list[pathlib.Path] = []
         self.failed: list[pathlib.Path] = []
 
         self._abort: bool = False
@@ -157,7 +156,7 @@ class _MultiFileHandler(QtCore.QObject):
     def _load_next(self) -> None:
         """Load the next file in the queue."""
         if len(self._queue) == 0 or self._abort:
-            self.sigFinished.emit(self.loaded, self.queued, self.failed)
+            self.sigFinished.emit(self.loaded, self.canceled + self.queued, self.failed)
             return
 
         file_path = self._queue.popleft()
@@ -169,19 +168,35 @@ class _MultiFileHandler(QtCore.QObject):
         loader.signals.sigFailed.connect(self._on_failed)
         self._threadpool.start(loader)
 
-    @QtCore.Slot(pathlib.Path, list)
-    def _on_loaded(
-        self, file_path: pathlib.Path, data_list: list[xr.DataArray]
-    ) -> None:
+    @QtCore.Slot(pathlib.Path, object)
+    def _on_loaded(self, file_path: pathlib.Path, data: object) -> None:
         self.manager._status_bar.showMessage("")
-        self.loaded.append(file_path)
         self.manager._recent_directory = str(file_path.parent)
+        try:
+            selected_data = erlab.interactive.imagetool.viewer._select_input_dataarrays(
+                typing.cast(
+                    "xr.DataArray | xr.Dataset | xr.DataTree | list[xr.DataArray]",
+                    data,
+                ),
+                self.manager,
+            )
+        except Exception:
+            self._on_failed(file_path, traceback.format_exc())
+            return
+        if selected_data is None:
+            self.canceled.append(file_path)
+            erlab.interactive.utils.single_shot(self, 0, self._load_next)
+            return
+
+        self.loaded.append(file_path)
         erlab.interactive.utils.single_shot(
-            self, 0, lambda: self._deliver_and_queue(file_path, data_list)
+            self, 0, lambda: self._deliver_and_queue(file_path, selected_data)
         )
 
     def _deliver_and_queue(
-        self, file_path: pathlib.Path, data_list: list[xr.DataArray]
+        self,
+        file_path: pathlib.Path,
+        selected_data: tuple[tuple[xr.DataArray, int], ...],
     ) -> None:
         func: Callable | str = self._func
         func_instance = getattr(func, "__self__", None)
@@ -189,8 +204,14 @@ class _MultiFileHandler(QtCore.QObject):
             func = func_instance.name
 
         self.manager._data_recv(
-            data_list,
-            kwargs={"file_path": file_path, "load_func": (func, self._kwargs.copy())},
+            [data_array for data_array, _source_index in selected_data],
+            kwargs={
+                "file_path": file_path,
+                "load_func": (func, self._kwargs.copy()),
+                "load_indices": tuple(
+                    source_index for _data_array, source_index in selected_data
+                ),
+            },
             show=(self.n_total == 1),
         )
         erlab.interactive.utils.single_shot(self, 0, self._load_next)
@@ -214,7 +235,9 @@ class _MultiFileHandler(QtCore.QObject):
             case QtWidgets.QDialog.DialogCode.Accepted:
                 self._load_next()
             case _:
-                self.sigFinished.emit(self.loaded, self.queued, self.failed)
+                self.sigFinished.emit(
+                    self.loaded, self.canceled + self.queued, self.failed
+                )
 
     def abort(self) -> None:
         """Abort the loading process.

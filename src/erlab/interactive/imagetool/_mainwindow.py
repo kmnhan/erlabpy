@@ -21,6 +21,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
+from erlab.interactive.imagetool.viewer import _select_input_dataarrays
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -511,10 +512,24 @@ class ImageTool(BaseImageTool):
 
             try:
                 with erlab.interactive.utils.wait_dialog(self, "Loading..."):
-                    self.slicer_area.replace_source_data(
-                        fn(fname, **kargs),
+                    loaded_data = fn(fname, **kargs)
+                selected_data = _select_input_dataarrays(loaded_data, self)
+                if selected_data is None:
+                    return
+                first_data, first_source_index = selected_data[0]
+                self.slicer_area.replace_source_data(
+                    first_data,
+                    file_path=fname,
+                    load_func=(fn, kargs, first_source_index),
+                )
+                for data_array, source_index in selected_data[1:]:
+                    tool = ImageTool(
+                        data_array,
                         file_path=fname,
-                        load_func=(fn, kargs, 0),
+                        load_func=(fn, kargs, source_index),
+                    )
+                    self.slicer_area.add_tool_window(
+                        tool, update_title=False, transfer_to_manager=False
                     )
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
