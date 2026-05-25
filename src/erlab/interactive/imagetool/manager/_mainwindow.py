@@ -26,6 +26,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
+from erlab.interactive.imagetool import _replay_graph
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
@@ -2363,154 +2364,39 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 return False
         return True
 
-    def _rebuild_script_input_for_reload(
+    def _resolve_live_script_input_for_reload(
         self,
         script_input: erlab.interactive.imagetool.provenance.ScriptInput,
-        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
-        *,
-        depth: int,
-        replay_cache: dict[str, xr.DataArray],
-    ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]:
-        rebuilt = self._rebuild_script_provenance(
-            spec,
-            depth=depth + 1,
-            replay_cache=replay_cache,
-        )
-        return (
-            rebuilt.data,
-            script_input.model_copy(
-                update={
-                    "node_uid": None,
-                    "node_snapshot_token": None,
-                    "provenance_spec": rebuilt.provenance_spec.model_dump(mode="json"),
-                }
-            ),
-        )
-
-    def _resolve_script_input_for_rebuild(
-        self,
-        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
-        *,
-        depth: int,
-        replay_cache: dict[str, xr.DataArray],
-    ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]:
-        if depth > 20:
-            raise _ScriptRebuildError(
-                "Could not reload data.",
-                details="Nested script provenance exceeded the maximum reload depth.",
-            )
-
+    ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput] | None:
         spec = script_input.parsed_provenance_spec()
-        if script_input.node_uid is not None:
-            node = self._all_nodes.get(script_input.node_uid)
-            if node is not None:
-                if (
-                    spec is not None
-                    and spec.kind == "script"
-                    and not self._script_provenance_inputs_current(spec)
-                ):
-                    return self._rebuild_script_input_for_reload(
-                        script_input,
-                        spec,
-                        depth=depth,
-                        replay_cache=replay_cache,
-                    )
-                return (
-                    node.current_source_data(),
-                    self._script_input_for_node(node).model_copy(
-                        update={"name": script_input.name}
-                    ),
-                )
-
-        if spec is None:
-            raise _ScriptRebuildError(
-                "Could not reload data.",
-                details=(
-                    f"{script_input.name} from {script_input.label} is not open and "
-                    "does not contain recorded source provenance."
-                ),
-            )
-
-        if spec.kind == "file":
-            try:
-                data = erlab.interactive.imagetool.provenance.replay_file_provenance(
-                    spec,
-                    cache=replay_cache,
-                )
-            except Exception as exc:
-                raise _ScriptRebuildError(
-                    "Could not reload from recorded source files.",
-                    details=f"{script_input.name} from {script_input.label}: {exc}",
-                ) from exc
-            return (
-                data,
-                script_input.model_copy(
-                    update={
-                        "node_uid": None,
-                        "node_snapshot_token": None,
-                        "provenance_spec": spec.model_dump(mode="json"),
-                    }
-                ),
-            )
-
-        if spec.kind == "script":
-            return self._rebuild_script_input_for_reload(
-                script_input,
-                spec,
-                depth=depth,
-                replay_cache=replay_cache,
-            )
-
-        raise _ScriptRebuildError(
-            "Could not reload data.",
-            details=(
-                f"{script_input.name} from {script_input.label} is not open and "
-                "does not contain reloadable script or file provenance."
+        if script_input.node_uid is None:
+            return None
+        node = self._all_nodes.get(script_input.node_uid)
+        if node is None:
+            return None
+        if (
+            spec is not None
+            and spec.kind == "script"
+            and not self._script_provenance_inputs_current(spec)
+        ):
+            return None
+        return (
+            node.current_source_data(),
+            self._script_input_for_node(node).model_copy(
+                update={"name": script_input.name}
             ),
         )
 
     def _rebuild_script_provenance(
         self,
         spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
-        *,
-        depth: int = 0,
-        replay_cache: dict[str, xr.DataArray] | None = None,
     ) -> _ScriptRebuildResult:
-        if spec.kind != "script":
-            raise _ScriptRebuildError(
-                "Could not reload data.",
-                details="Selected provenance is not script-derived.",
-            )
-        if not erlab.interactive.imagetool.provenance.script_provenance_replayable(
-            spec
-        ):
-            raise _ScriptRebuildError(
-                "Could not reload data.",
-                details="The recorded operation cannot be replayed automatically.",
-            )
-
-        shared_replay_cache = {} if replay_cache is None else replay_cache
-        resolved_inputs = tuple(
-            self._resolve_script_input_for_rebuild(
-                script_input,
-                depth=depth,
-                replay_cache=shared_replay_cache,
-            )
-            for script_input in spec.script_inputs
-        )
-        input_data = {script_input.name: data for data, script_input in resolved_inputs}
-        rebuilt_spec = spec.model_copy(
-            update={
-                "script_inputs": tuple(
-                    script_input for _data, script_input in resolved_inputs
-                )
-            }
-        )
         try:
-            data = erlab.interactive.imagetool.provenance.replay_script_provenance(
-                rebuilt_spec, input_data
+            data, rebuilt_spec = _replay_graph.rebuild_script_provenance(
+                spec,
+                live_input_resolver=self._resolve_live_script_input_for_reload,
             )
-        except Exception as exc:
+        except _replay_graph.ReplayGraphError as exc:
             raise _ScriptRebuildError(
                 "Could not reload data.",
                 details=str(exc),

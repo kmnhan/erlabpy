@@ -131,7 +131,6 @@ import ast
 import base64
 import contextlib
 import importlib
-import json
 import keyword
 import pathlib
 import typing
@@ -143,6 +142,7 @@ import pydantic
 import xarray as xr
 
 import erlab
+from erlab.interactive.imagetool import _replay_graph
 
 _SLICE_MARKER = "__erlab_slice__"
 _DATASET_MARKER = "__erlab_xarray_dataset__"
@@ -1384,27 +1384,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if not self.script_inputs:
             return None
 
-        planned = _planned_script_inputs_code(self.script_inputs, display=display)
-        if planned is not None:
-            return planned
-
-        lines: list[str] = []
-        for script_input in self.script_inputs:
-            input_spec = script_input.parsed_provenance_spec()
-            if input_spec is None:
-                return None
-            code = (
-                input_spec.display_code() if display else input_spec.derivation_code()
-            )
-            if not code:
-                return None
-            lines.append(code)
-            active_name = replay_input_name(input_spec) or input_spec.active_name
-            if active_name is None:
-                return None
-            if active_name != script_input.name:
-                lines.append(f"{script_input.name} = {active_name}")
-        return "\n".join(lines)
+        try:
+            return _replay_graph.script_inputs_code(self.script_inputs, display=display)
+        except _replay_graph.ReplayGraphError:
+            return None
 
     def derivation_code(self) -> str | None:
         prefix: str | None = None
@@ -1526,178 +1509,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             "\n".join(part for part in (prefix, *step_codes) if part),
             inline_targets=inline_targets,
         )
-
-
-def _canonical_replay_key(kind: str, payload: Mapping[str, typing.Any]) -> str:
-    return json.dumps(
-        {"kind": kind, **dict(payload)},
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-
-
-def _file_load_replay_key(load_source: FileLoadSource) -> str:
-    return _canonical_replay_key(
-        "file_load",
-        {
-            "path": load_source.path,
-            "replay_call": (
-                None
-                if load_source.replay_call is None
-                else load_source.replay_call.model_dump(mode="json")
-            ),
-        },
-    )
-
-
-def _replay_stage_replay_key(parent_key: str, stage: ReplayStage) -> str:
-    return _canonical_replay_key(
-        "replay_stage",
-        {
-            "parent": parent_key,
-            "stage": stage.model_dump(mode="json"),
-        },
-    )
-
-
-def _stage_code_lines(
-    stage: ReplayStage,
-    *,
-    parent_name: str,
-    output_name: str,
-    display: bool,
-) -> tuple[str, ...] | None:
-    if stage.source_kind == "full_data":
-        lines = [f"{output_name} = {parent_name}"]
-    else:
-        lines = [
-            f"{output_name} = erlab.interactive.imagetool.slicer."
-            f"restore_nonuniform_dims({parent_name})"
-        ]
-
-    operations: Sequence[ToolProvenanceOperation] = stage.operations
-    if display:
-        operations = ToolProvenanceSpec._streamlined_operations(
-            stage.source_kind,
-            operations,
-        )
-
-    for operation in operations:
-        entry = operation.derivation_entry()
-        if entry is None:
-            continue
-        if entry.code is None:
-            return None
-        try:
-            lines.append(
-                _replace_code_identifiers(
-                    entry.code,
-                    {"data": parent_name, "derived": output_name},
-                )
-            )
-        except SyntaxError:
-            return None
-    return tuple(lines)
-
-
-def _planned_script_inputs_code(
-    script_inputs: Sequence[ScriptInput],
-    *,
-    display: bool,
-) -> str | None:
-    """Return DAG-emitted setup code for structured script inputs, if possible."""
-    used_names = {script_input.name for script_input in script_inputs}
-    node_names: dict[str, str] = {}
-    lines: list[str] = []
-    counter = 0
-
-    def _next_name() -> str:
-        nonlocal counter
-        while True:
-            name = f"_itool_replay_{counter}"
-            counter += 1
-            if name not in used_names:
-                used_names.add(name)
-                return name
-
-    def _add_node(
-        key: str,
-        build_lines: Callable[[str], tuple[str, ...] | None],
-    ) -> str | None:
-        existing = node_names.get(key)
-        if existing is not None:
-            return existing
-        name = _next_name()
-        built = build_lines(name)
-        if built is None:
-            return None
-        node_names[key] = name
-        lines.extend(built)
-        return name
-
-    def _file_chain(spec: ToolProvenanceSpec) -> tuple[str, str] | None:
-        if spec.kind != "file" or spec.file_load_source is None:
-            return None
-        active_name = spec.active_name
-        if active_name is None or spec.seed_code is None:
-            return None
-        seed_code = spec.seed_code
-
-        load_key = _file_load_replay_key(spec.file_load_source)
-
-        def _load_lines(name: str) -> tuple[str, ...] | None:
-            try:
-                code = _replace_code_identifiers(seed_code, {active_name: name})
-            except SyntaxError:
-                return None
-            if not _code_stores_name(code, name):
-                return None
-            return (code,)
-
-        parent_name = _add_node(load_key, _load_lines)
-        if parent_name is None:
-            return None
-        parent_key = load_key
-
-        for stage in spec.replay_stages:
-            stage_key = _replay_stage_replay_key(parent_key, stage)
-
-            def _build_stage_lines(
-                name: str,
-                *,
-                current_stage: ReplayStage = stage,
-                current_parent: str = parent_name,
-            ) -> tuple[str, ...] | None:
-                return _stage_code_lines(
-                    current_stage,
-                    parent_name=current_parent,
-                    output_name=name,
-                    display=display,
-                )
-
-            stage_name = _add_node(stage_key, _build_stage_lines)
-            if stage_name is None:
-                return None
-            parent_key = stage_key
-            parent_name = stage_name
-
-        return parent_key, parent_name
-
-    aliases: list[tuple[str, str]] = []
-    for script_input in script_inputs:
-        input_spec = script_input.parsed_provenance_spec()
-        if input_spec is None:
-            return None
-        planned = _file_chain(input_spec)
-        if planned is None:
-            return None
-        _key, input_name = planned
-        aliases.append((script_input.name, input_name))
-
-    for public_name, planned_name in aliases:
-        if public_name != planned_name:
-            lines.append(f"{public_name} = {planned_name}")
-    return "\n".join(lines)
 
 
 def parse_tool_provenance_spec(
@@ -2317,27 +2128,10 @@ def replay_file_provenance(
     cache: dict[str, xr.DataArray] | None = None,
 ) -> xr.DataArray:
     """Replay structured file provenance without executing generated Python."""
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None or parsed.kind != "file" or parsed.file_load_source is None:
-        raise TypeError("Expected structured file provenance")
-
-    replay_cache = {} if cache is None else cache
-    load_key = _file_load_replay_key(parsed.file_load_source)
-    if load_key in replay_cache:
-        data = replay_cache[load_key].copy(deep=False)
-    else:
-        data = _load_file_source_data(parsed.file_load_source)
-        replay_cache[load_key] = data.copy(deep=False)
-    parent_key = load_key
-    for stage in parsed.replay_stages:
-        stage_key = _replay_stage_replay_key(parent_key, stage)
-        if stage_key in replay_cache:
-            data = replay_cache[stage_key].copy(deep=False)
-        else:
-            data = _apply_replay_stage(stage, data)
-            replay_cache[stage_key] = data.copy(deep=False)
-        parent_key = stage_key
-    return data
+    try:
+        return _replay_graph.replay_file_provenance(spec, cache=cache)
+    except _replay_graph.ReplayGraphError as exc:
+        raise TypeError("Expected structured file provenance") from exc
 
 
 def _validate_script_replay_code(code: str) -> None:
@@ -2363,42 +2157,11 @@ def _validate_script_replay_code(code: str) -> None:
             raise ValueError(f"Script replay code cannot call {node.func.id!r}")
 
 
-def _script_replay_codes(spec: ToolProvenanceSpec) -> tuple[str, ...]:
-    if spec.kind != "script":
-        raise TypeError("Expected script provenance")
-    if spec.active_name is None:
-        raise ValueError("Script provenance cannot be replayed without active_name")
-
-    codes: list[str] = []
-    if spec.seed_code:
-        codes.append(spec.seed_code)
-    for operation in spec.operations:
-        if not isinstance(operation, ScriptCodeOperation):
-            raise TypeError(
-                "Only script_code operations can be replayed as script provenance"
-            )
-        if not operation.copyable or operation.code is None:
-            raise ValueError("Script provenance contains non-replayable code")
-        codes.append(operation.code)
-    if not codes:
-        raise ValueError("Script provenance has no replay code")
-    for code in codes:
-        _validate_script_replay_code(code)
-    return tuple(codes)
-
-
 def script_provenance_replayable(
     spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
 ) -> bool:
     """Return whether script provenance can be replayed from resolved inputs."""
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None:
-        return False
-    try:
-        _script_replay_codes(parsed)
-    except (TypeError, ValueError):
-        return False
-    return True
+    return _replay_graph.script_provenance_replayable(spec)
 
 
 def replay_script_provenance(
@@ -2406,34 +2169,12 @@ def replay_script_provenance(
     inputs: Mapping[str, xr.DataArray],
 ) -> xr.DataArray:
     """Execute trusted script provenance from already resolved input arrays."""
-    parsed = parse_tool_provenance_spec(spec)
-    if parsed is None:
-        raise TypeError("Expected script provenance")
-    codes = _script_replay_codes(parsed)
-    namespace: dict[str, typing.Any] = {
-        "__builtins__": _SCRIPT_REPLAY_ALLOWED_BUILTINS,
-        "erlab": erlab,
-        "np": np,
-        "numpy": np,
-        "xr": xr,
-        "xarray": xr,
-    }
-    namespace.update({name: data.copy(deep=True) for name, data in inputs.items()})
-    for code in codes:
-        compiled = compile(code, "<ImageTool script provenance>", "exec")
-        exec(compiled, namespace, namespace)  # noqa: S102
-
-    active_name = typing.cast("str", parsed.active_name)
-    if active_name not in namespace:
-        raise RuntimeError(
-            f"Script provenance did not create active variable {active_name!r}"
-        )
-    result = namespace[active_name]
-    if not isinstance(result, xr.DataArray):
-        raise TypeError(
-            f"Script provenance did not produce an xarray.DataArray for {active_name!r}"
-        )
-    return result
+    try:
+        return _replay_graph.replay_script_provenance(spec, inputs)
+    except _replay_graph.ReplayGraphError as exc:
+        if "non-replayable" in str(exc):
+            raise ValueError(str(exc)) from exc
+        raise TypeError(str(exc)) from exc
 
 
 class ScriptCodeOperation(ToolProvenanceOperation):

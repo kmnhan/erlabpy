@@ -65,6 +65,7 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `automatic updates`, `Auto`, `Changed`, `Missing`, `Reload Data`,
   `Concatenate`, `tools[0] - tools[1]`, `tools.selected`,
   `Refit after update`, `code for repeating steps`,
+  `reuses shared load and processing work`, `shared loader setup`,
   `ImageTool windows opened from tools`, or
   `workflow-bridge` for notebook and interactive-workflow questions.
 - Search `interactive-tool-authoring`, `ToolWindow`, `tool_status`,
