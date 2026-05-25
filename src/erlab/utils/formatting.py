@@ -432,6 +432,7 @@ def format_darr_html(
     darr: xr.DataArray,
     *,
     show_size: bool = True,
+    show_summary: bool = True,
     additional_info: Iterable[str] | None = None,
 ) -> str:
     """Make a simple HTML representation of a DataArray.
@@ -442,6 +443,9 @@ def format_darr_html(
         The DataArray to represent.
     show_size
         Whether to include the size of the DataArray in the representation.
+    show_summary
+        Whether to include the DataArray name, dimensions, and optional size before the
+        coordinates and attributes.
     additional_info
         Additional information to include in the representation. Each item in the list
         is added as a separate paragraph.
@@ -454,7 +458,9 @@ def format_darr_html(
     if additional_info is None:
         additional_info = []
 
-    out = format_darr_shape_html(darr, show_size=show_size)
+    out = ""
+    if show_summary:
+        out += format_darr_shape_html(darr, show_size=show_size)
 
     for info in additional_info:
         out += rf"<p>{info}</p>"

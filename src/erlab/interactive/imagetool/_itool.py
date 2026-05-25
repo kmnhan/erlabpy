@@ -7,7 +7,11 @@ import numpy.typing as npt
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool.viewer import SlicerLinkProxy, _parse_input
+from erlab.interactive.imagetool.viewer import (
+    SlicerLinkProxy,
+    _parse_input,
+    _select_input_dataarrays,
+)
 
 
 def itool(
@@ -52,13 +56,16 @@ def itool(
 
         - A `xarray.Dataset`
 
-          Every DataArray in the Dataset will be displayed across multiple ImageTool
-          windows. Data variables that have less than 2 dimensions or more than 4
-          dimensions are ignored. Dimensions with length 1 are automatically squeezed.
+          If the Dataset contains multiple displayable DataArrays, ImageTool asks which
+          variables to open. Data variables that have less than 2 dimensions or more
+          than 4 dimensions are ignored. Dimensions with length 1 are automatically
+          squeezed.
 
         - A `xarray.DataTree`
 
-          Every leaf node will be parsed as a `xarray.Dataset`.
+          Every leaf node will be parsed as a `xarray.Dataset`. If the DataTree
+          contains multiple displayable DataArrays, ImageTool asks which variables to
+          open, grouped by DataTree node path.
     link
         Whether to enable linking between multiple ImageTool windows when `data` is a
         sequence or a `xarray.Dataset`, by default `False`.
@@ -162,14 +169,24 @@ def itool(
         )
         use_manager = False
 
+    parsed = _parse_input(data)
+    if len(parsed) > 1 and isinstance(data, xr.Dataset | xr.DataTree):
+        with erlab.interactive.utils.setup_qapp(False):
+            selected_data = _select_input_dataarrays(data)
+        if selected_data is None:
+            return None
+        parsed = [darr for darr, _source_index in selected_data]
+
+    data_parsed = parsed
+
     if use_manager:
         if replace is not None:
             erlab.interactive.imagetool.manager.replace_data(
-                index=replace, data=data, target=manager_target
+                index=replace, data=data_parsed, target=manager_target
             )
         else:
             erlab.interactive.imagetool.manager.show_in_manager(
-                data,
+                data_parsed,
                 link=link,
                 link_colors=link_colors,
                 target=manager_target,
@@ -177,7 +194,6 @@ def itool(
             )
         return None
 
-    data_parsed = _parse_input(data)
     with erlab.interactive.utils.setup_qapp(execute) as execute:
         itool_list = [
             erlab.interactive.imagetool.ImageTool(d, **kwargs) for d in data_parsed

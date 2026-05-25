@@ -37,11 +37,13 @@ import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._server as manager_server
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.interactive.imagetool.manager._xarray as manager_xarray
+import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
@@ -14175,6 +14177,170 @@ def test_manager_open_files(
         xarray.testing.assert_identical(
             manager.get_imagetool(1).slicer_area.data, test_data
         )
+
+
+def test_manager_file_open_uses_selected_variable_source_index(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "multi.h5"
+    file_path.touch()
+    initial_second = xr.DataArray(
+        np.ones((4, 5)),
+        dims=("u", "v"),
+        coords={"u": np.arange(4), "v": np.arange(5)},
+        name="second",
+    )
+    updated_second = xr.DataArray(
+        np.full((4, 5), 2.0),
+        dims=("u", "v"),
+        coords={"u": np.arange(4), "v": np.arange(5)},
+        name="second",
+    )
+    datasets = {
+        "current": xr.Dataset(
+            {
+                "first": xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
+                "second": initial_second,
+            }
+        )
+    }
+
+    def _load_multi(_path: pathlib.Path) -> xr.Dataset:
+        return datasets["current"]
+
+    def _select_second(data, parent=None):
+        assert parent is not None
+        return ((data["second"], 1),)
+
+    monkeypatch.setattr(
+        imagetool_viewer,
+        "_select_input_dataarrays",
+        _select_second,
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        manager._add_from_multiple_files(
+            [],
+            [file_path],
+            [],
+            _load_multi,
+            {},
+            lambda _failed: None,
+        )
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        tool = manager.get_imagetool(0)
+
+        xr.testing.assert_identical(tool.slicer_area.data, initial_second)
+        assert tool.slicer_area._load_func is not None
+        assert tool.slicer_area._load_func[2] == 1
+
+        datasets["current"] = xr.Dataset(
+            {
+                "first": xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
+                "second": updated_second,
+            }
+        )
+        with qtbot.wait_signal(tool.slicer_area.sigDataChanged):
+            tool.slicer_area.reload()
+
+        xr.testing.assert_identical(tool.slicer_area.data, updated_second)
+
+
+@pytest.mark.parametrize("case", ["cancel", "selection_error", "failed_reject"])
+def test_manager_multifile_handler_selection_failure_branches(
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    case: str,
+) -> None:
+    file_path = tmp_path / "multi.h5"
+    queued_path = tmp_path / "queued.h5"
+    data = xr.Dataset({"signal": xr.DataArray(np.ones((2, 3)), dims=("x", "y"))})
+
+    class _StatusBar:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def showMessage(self, message: str) -> None:
+            self.messages.append(message)
+
+    class _Manager(QtCore.QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self._status_bar = _StatusBar()
+            self._recent_directory: str | None = None
+            self.received: list[
+                tuple[tuple[typing.Any, ...], dict[str, typing.Any]]
+            ] = []
+
+        def _data_recv(self, *args, **kwargs) -> None:
+            self.received.append((args, kwargs))
+
+    class _MessageDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+        def setDetailedText(self, text: str) -> None:
+            self.detail = text
+
+        def adjustSize(self) -> None:
+            self.adjusted = True
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            if case == "failed_reject":
+                return QtWidgets.QDialog.DialogCode.Rejected
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    manager = _Manager()
+    handler = manager_io._MultiFileHandler(
+        typing.cast("ImageToolManager", manager),
+        [queued_path] if case == "failed_reject" else [],
+        lambda _path: data,
+        {},
+    )
+    finished: list[
+        tuple[list[pathlib.Path], list[pathlib.Path], list[pathlib.Path]]
+    ] = []
+    handler.sigFinished.connect(
+        lambda loaded, aborted, failed: finished.append((loaded, aborted, failed))
+    )
+    monkeypatch.setattr(erlab.interactive.utils, "MessageDialog", _MessageDialog)
+    monkeypatch.setattr(
+        erlab.interactive.utils, "single_shot", lambda _obj, _ms, func: func()
+    )
+
+    if case == "cancel":
+        monkeypatch.setattr(
+            imagetool_viewer, "_select_input_dataarrays", lambda _data, _parent: None
+        )
+        handler._on_loaded(file_path, data)
+
+        assert handler.canceled == [file_path]
+        assert finished == [([], [file_path], [])]
+    elif case == "selection_error":
+
+        def _raise_selection_error(_data, _parent):
+            raise ValueError("bad selection")
+
+        monkeypatch.setattr(
+            imagetool_viewer, "_select_input_dataarrays", _raise_selection_error
+        )
+        handler._on_loaded(file_path, data)
+
+        assert handler.failed == [file_path]
+        assert finished == [([], [], [file_path])]
+    else:
+        handler._on_failed(file_path, "Traceback\nboom")
+
+        assert handler.failed == [file_path]
+        assert finished == [([], [queued_path], [file_path])]
 
 
 @pytest.mark.parametrize("case", ["loader_cancel", "non_loader"])

@@ -124,6 +124,400 @@ def _parse_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
     return tuple(d for d in ds.data_vars.values() if _supported_shape(d))
 
 
+class _SelectDataArraysDialog(QtWidgets.QDialog):
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None,
+        data: xr.Dataset | xr.DataTree,
+    ) -> None:
+        super().__init__(parent)
+        self._data_arrays: list[xr.DataArray] = []
+        self._source_paths: list[str] = []
+        variable_names: list[str] = []
+
+        if isinstance(data, xr.Dataset):
+            for variable_name, darr in data.data_vars.items():
+                if _supported_shape(darr):
+                    self._data_arrays.append(darr)
+                    self._source_paths.append("/")
+                    variable_names.append(str(variable_name))
+        else:
+            for leaf in data.leaves:
+                source_path = str(leaf.path)
+                for variable_name, darr in leaf.dataset.data_vars.items():
+                    if _supported_shape(darr):
+                        self._data_arrays.append(darr)
+                        self._source_paths.append(source_path)
+                        variable_names.append(str(variable_name))
+
+        self.setWindowTitle("Select Data Variables")
+        self.resize(820, 420)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        show_path_tree = any(source_path != "/" for source_path in self._source_paths)
+        name_column = 2 if show_path_tree else 1
+        ndim_column = 3 if show_path_tree else 2
+        shape_column = 4 if show_path_tree else 3
+        size_column = 5 if show_path_tree else 4
+
+        self._tree_widget = QtWidgets.QTreeWidget(self)
+        if show_path_tree:
+            self._tree_widget.setColumnCount(6)
+            self._tree_widget.setHeaderLabels(
+                ["", "Path", "Name", "ndim", "Shape", "Size"]
+            )
+        else:
+            self._tree_widget.setColumnCount(5)
+            self._tree_widget.setHeaderLabels(["", "Name", "ndim", "Shape", "Size"])
+        self._tree_widget.setRootIsDecorated(False)
+        self._tree_widget.setIndentation(0)
+        self._tree_widget.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._tree_widget.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        header = self._tree_widget.header()
+        if header is not None:
+            header.setStretchLastSection(False)
+        self._tree_widget.setAlternatingRowColors(True)
+        self._tree_widget.setUniformRowHeights(True)
+
+        self._path_tree: QtWidgets.QTreeWidget | None = None
+        if show_path_tree:
+            splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
+            self._path_tree = QtWidgets.QTreeWidget(splitter)
+            self._path_tree.setColumnCount(1)
+            self._path_tree.setHeaderHidden(True)
+            self._path_tree.setSelectionMode(
+                QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+            )
+            self._path_tree.setUniformRowHeights(True)
+            self._path_tree.setMinimumWidth(160)
+            splitter.addWidget(self._path_tree)
+            splitter.addWidget(self._tree_widget)
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+            splitter.setSizes([180, 640])
+            layout.addWidget(splitter)
+        else:
+            layout.addWidget(self._tree_widget)
+
+        for source_index, (darr, source_path, variable_name) in enumerate(
+            zip(self._data_arrays, self._source_paths, variable_names, strict=True)
+        ):
+            row_text = [""] * self._tree_widget.columnCount()
+            if show_path_tree:
+                row_text[1] = source_path.strip("/")
+            row_text[name_column] = variable_name
+            row_text[ndim_column] = str(darr.ndim)
+            row_text[size_column] = erlab.utils.formatting.format_nbytes(darr.nbytes)
+            item = QtWidgets.QTreeWidgetItem(row_text)
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, source_index)
+            item.setFlags(
+                item.flags()
+                | QtCore.Qt.ItemFlag.ItemIsEnabled
+                | QtCore.Qt.ItemFlag.ItemIsSelectable
+            )
+            item.setTextAlignment(
+                ndim_column,
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            )
+            item.setTextAlignment(
+                size_column,
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter,
+            )
+            item.setToolTip(0, source_path)
+            for column in range(1, self._tree_widget.columnCount()):
+                item.setToolTip(column, repr(darr))
+            self._tree_widget.addTopLevelItem(item)
+
+            checkbox_container = QtWidgets.QWidget(self._tree_widget)
+            checkbox_layout = QtWidgets.QHBoxLayout(checkbox_container)
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            checkbox_layout.setSpacing(0)
+            checkbox_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            checkbox = QtWidgets.QCheckBox(checkbox_container)
+            checkbox.setChecked(True)
+            checkbox.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+            checkbox.setToolTip("Load this variable")
+            checkbox.toggled.connect(self._update_ok_enabled)
+            checkbox.clicked.connect(
+                lambda _checked=False, item=item: self._tree_widget.setCurrentItem(item)
+            )
+            checkbox_layout.addWidget(checkbox)
+            item.setSizeHint(0, checkbox_container.sizeHint())
+            self._tree_widget.setItemWidget(item, 0, checkbox_container)
+
+            label = QtWidgets.QLabel(
+                erlab.interactive.utils._apply_qt_accent_color(
+                    erlab.utils.formatting.format_darr_shape_html(
+                        darr.rename(None),
+                        show_size=False,
+                    )
+                ),
+                self,
+            )
+            label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            label.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.NoTextInteraction
+            )
+            label.setToolTip(repr(darr))
+            label.setContentsMargins(4, 0, 4, 0)
+            item.setSizeHint(shape_column, label.sizeHint())
+            self._tree_widget.setItemWidget(item, shape_column, label)
+
+        if self._path_tree is not None:
+            self._populate_path_tree()
+        for column in range(self._tree_widget.columnCount()):
+            self._tree_widget.resizeColumnToContents(column)
+        header = self._tree_widget.header()
+        if header is not None:
+            header.setSectionResizeMode(
+                shape_column, QtWidgets.QHeaderView.ResizeMode.Stretch
+            )
+
+        self._details = QtWidgets.QTextBrowser(self)
+        self._details.setOpenExternalLinks(False)
+        self._details.setMinimumHeight(150)
+        self._details.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        self._tree_widget.currentItemChanged.connect(self._update_details)
+        layout.addWidget(self._details)
+
+        button_row = QtWidgets.QHBoxLayout()
+        self._clear_path_filter_button: QtWidgets.QPushButton | None = None
+        if self._path_tree is not None:
+            self._clear_path_filter_button = QtWidgets.QPushButton(
+                "Clear Path Filter", self
+            )
+            self._clear_path_filter_button.setEnabled(False)
+            self._clear_path_filter_button.clicked.connect(self._clear_path_filter)
+            button_row.addWidget(self._clear_path_filter_button)
+        select_all_button = QtWidgets.QPushButton("Select All", self)
+        deselect_all_button = QtWidgets.QPushButton("Deselect All", self)
+        select_all_button.clicked.connect(self._check_all)
+        deselect_all_button.clicked.connect(self._uncheck_all)
+        button_row.addWidget(select_all_button)
+        button_row.addWidget(deselect_all_button)
+        button_row.addStretch()
+
+        self._button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        self._button_box.accepted.connect(self.accept)
+        self._button_box.rejected.connect(self.reject)
+        button_row.addWidget(self._button_box)
+        layout.addLayout(button_row)
+
+        self._tree_widget.itemChanged.connect(self._update_ok_enabled)
+        if self._path_tree is not None:
+            self._path_tree.currentItemChanged.connect(self._filter_for_path)
+            self._tree_widget.setCurrentItem(next(self._items(), None))
+        else:
+            self._tree_widget.setCurrentItem(next(self._items(), None))
+        self._update_ok_enabled()
+
+    def _populate_path_tree(self) -> None:
+        if self._path_tree is None:  # pragma: no cover - guarded by caller
+            return
+
+        data_paths = {
+            source_path for source_path in self._source_paths if source_path != "/"
+        }
+        path_children: dict[str, set[str]] = {}
+        for source_path in data_paths:
+            parent_path = ""
+            for part in source_path.strip("/").split("/"):
+                path_children.setdefault(parent_path, set()).add(part)
+                parent_path = f"{parent_path}/{part}"
+
+        path_items: dict[str, QtWidgets.QTreeWidgetItem] = {}
+
+        def compressed_child_path(parent_path: str, part: str) -> tuple[str, str]:
+            label_parts = [part]
+            child_path = f"{parent_path}/{part}" if parent_path else f"/{part}"
+            while (
+                child_path not in data_paths
+                and len(path_children.get(child_path, ())) == 1
+            ):
+                next_part = sorted(path_children[child_path])[0]
+                label_parts.append(next_part)
+                child_path = f"{child_path}/{next_part}"
+            return child_path, "/".join(label_parts)
+
+        for source_path in sorted(data_paths):
+            parent_item: QtWidgets.QTreeWidgetItem | None = None
+            current_path = ""
+            while current_path != source_path:
+                remaining_path = source_path.removeprefix(current_path).strip("/")
+                part = remaining_path.split("/", maxsplit=1)[0]
+                current_path, label = compressed_child_path(current_path, part)
+                item = path_items.get(current_path)
+                if item is None:
+                    item = QtWidgets.QTreeWidgetItem([label])
+                    item.setData(0, QtCore.Qt.ItemDataRole.UserRole, current_path)
+                    item.setToolTip(0, current_path)
+                    path_items[current_path] = item
+                    if parent_item is None:
+                        self._path_tree.addTopLevelItem(item)
+                    else:
+                        parent_item.addChild(item)
+                parent_item = item
+
+        self._path_tree.expandAll()
+
+    def _item_checkbox(self, item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QCheckBox:
+        widget = self._tree_widget.itemWidget(item, 0)
+        checkbox = widget.findChild(QtWidgets.QCheckBox) if widget is not None else None
+        if checkbox is None:  # pragma: no cover - only possible if the widget is lost
+            raise RuntimeError("Missing variable selection checkbox")
+        return checkbox
+
+    def _items(self) -> collections.abc.Iterator[QtWidgets.QTreeWidgetItem]:
+        stack = [
+            self._tree_widget.topLevelItem(row)
+            for row in reversed(range(self._tree_widget.topLevelItemCount()))
+        ]
+        while stack:
+            item = stack.pop()
+            if item is None:  # pragma: no cover - only possible if Qt drops an item
+                continue
+            stack.extend(item.child(row) for row in reversed(range(item.childCount())))
+            if item.data(0, QtCore.Qt.ItemDataRole.UserRole) is not None:
+                yield item
+
+    @QtCore.Slot()
+    def _check_all(self) -> None:
+        for item in self._items():
+            if not item.isHidden():
+                self._item_checkbox(item).setChecked(True)
+
+    @QtCore.Slot()
+    def _uncheck_all(self) -> None:
+        for item in self._items():
+            if not item.isHidden():
+                self._item_checkbox(item).setChecked(False)
+
+    @QtCore.Slot()
+    def _clear_path_filter(self) -> None:
+        if self._path_tree is None:  # pragma: no cover - guarded by caller
+            return
+        self._path_tree.clearSelection()
+        self._path_tree.setCurrentIndex(QtCore.QModelIndex())
+        self._filter_for_path(None)
+
+    def selected_dataarrays(self) -> tuple[tuple[xr.DataArray, int], ...]:
+        selected: list[tuple[xr.DataArray, int]] = []
+        for item in self._items():
+            if self._item_checkbox(item).isChecked():
+                index = typing.cast(
+                    "int", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                )
+                selected.append((self._data_arrays[index], index))
+        return tuple(selected)
+
+    def _update_ok_enabled(self, *_args: object) -> None:
+        button = self._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if button is not None:  # pragma: no branch
+            button.setEnabled(bool(self.selected_dataarrays()))
+
+    def _filter_for_path(
+        self,
+        current: QtWidgets.QTreeWidgetItem | None,
+        _previous: QtWidgets.QTreeWidgetItem | None = None,
+    ) -> None:
+        selected_path = ""
+        if current is not None:
+            selected_path = typing.cast(
+                "str", current.data(0, QtCore.Qt.ItemDataRole.UserRole)
+            )
+
+        if self._clear_path_filter_button is not None:
+            self._clear_path_filter_button.setEnabled(selected_path != "")
+
+        first_visible: QtWidgets.QTreeWidgetItem | None = None
+        for item in self._items():
+            source_path = self._source_paths[
+                typing.cast("int", item.data(0, QtCore.Qt.ItemDataRole.UserRole))
+            ]
+            visible = (
+                selected_path == ""
+                or source_path == selected_path
+                or source_path.startswith(f"{selected_path}/")
+            )
+            item.setHidden(not visible)
+            if visible and first_visible is None:
+                first_visible = item
+
+        current_item = self._tree_widget.currentItem()
+        if first_visible is None:
+            self._tree_widget.setCurrentItem(None)
+            self._details.clear()
+        elif current_item is None or current_item.isHidden():
+            self._tree_widget.setCurrentItem(first_visible)
+        else:
+            self._update_details(current_item)
+
+    def _update_details(
+        self,
+        current: QtWidgets.QTreeWidgetItem | None,
+        _previous: QtWidgets.QTreeWidgetItem | None = None,
+    ) -> None:
+        if current is None:
+            self._details.clear()
+            return
+
+        candidate_index = current.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if candidate_index is None:
+            self._details.clear()
+            return
+
+        data_array = self._data_arrays[typing.cast("int", candidate_index)]
+        self._details.setHtml(
+            erlab.interactive.utils._apply_qt_accent_color(
+                erlab.utils.formatting.format_darr_html(
+                    data_array,
+                    show_size=False,
+                    show_summary=False,
+                )
+            )
+        )
+
+    def accept(self) -> None:
+        if not self.selected_dataarrays():
+            self.reject()
+            return
+        super().accept()
+
+
+def _select_input_dataarrays(
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset
+    | xr.DataTree,
+    parent: QtWidgets.QWidget | None = None,
+) -> tuple[tuple[xr.DataArray, int], ...] | None:
+    data_arrays = tuple(enumerate(_parse_input(data)))
+    if len(data_arrays) > 1 and isinstance(data, xr.Dataset | xr.DataTree):
+        dialog = _SelectDataArraysDialog(parent, data)
+        if not dialog.exec():
+            return None
+        selected = dialog.selected_dataarrays()
+        if not selected:
+            return None
+        return selected
+    return tuple((darr, source_index) for source_index, darr in data_arrays)
+
+
 def _make_cursor_colors(
     clr: QtGui.QColor,
 ) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor]:

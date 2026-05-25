@@ -55,7 +55,14 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
+    from collections.abc import (
+        Callable,
+        Hashable,
+        Iterable,
+        Iterator,
+        Mapping,
+        Sequence,
+    )
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
@@ -5740,6 +5747,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         kwargs["_in_manager"] = True
 
         load_func = kwargs.pop("load_func", None)
+        load_indices = kwargs.pop("load_indices", None)
         if show is None:
             show = len(data) == 1
         watched_metadata = dict(watched_metadata or {})
@@ -5748,7 +5756,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         for i, d in enumerate(data):
             # Set index-specific load function if provided
-            this_load_func = (*load_func[:2], i) if load_func else None
+            load_index = (
+                typing.cast("Sequence[int]", load_indices)[i]
+                if load_indices is not None
+                else i
+            )
+            this_load_func = (*load_func[:2], load_index) if load_func else None
             try:
                 indices.append(
                     self.add_imagetool(
