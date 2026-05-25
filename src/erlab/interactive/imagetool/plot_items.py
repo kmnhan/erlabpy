@@ -279,6 +279,15 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
         ItoolDisplayObject.__init__(self, axes=axes, cursor=cursor)
         self.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.CrossCursor))
 
+    @suppressnanwarning
+    def quickMinMax(self, *args, **kwargs):
+        return super().quickMinMax(*args, **kwargs)
+
+    @suppressnanwarning
+    def getHistogram(self, *args, **kwargs):
+        return super().getHistogram(*args, **kwargs)
+
+    @suppressnanwarning
     def updateImage(self, *args, **kargs):
         defaults = {"autoLevels": not self.slicer_area.levels_locked}
         defaults.update(kargs)
@@ -292,6 +301,7 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
     ]:
         return self.array_slicer.slice_with_coord(self.cursor_index, self.display_axis)
 
+    @suppressnanwarning
     def update_data(self, rect, img) -> None:
         self.setImage(
             image=img, rect=rect, autoLevels=not self.slicer_area.levels_locked
@@ -649,7 +659,9 @@ class ItoolPlotItem(pg.PlotItem):
     def disconnect_signals(self) -> None:
         self.slicer_area.sigIndexChanged.disconnect(self.refresh_items_data)
         self.slicer_area.sigBinChanged.disconnect(self.refresh_items_data)
-        self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
+        self.getViewBox().sigRangeChangedManually.disconnect(
+            self.range_changed_manually
+        )
         self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
         if self.is_image:
             self.slicer_area.sigIndexChanged.disconnect(

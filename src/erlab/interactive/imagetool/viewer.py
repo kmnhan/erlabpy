@@ -20,6 +20,7 @@ import pathlib
 import threading
 import typing
 import uuid
+import warnings
 import weakref
 
 import numpy as np
@@ -102,8 +103,26 @@ class ImageSlicerState(typing.TypedDict):
     plotitem_states: typing.NotRequired[list[PlotItemState]]
 
 
-suppressnanwarning = np.testing.suppress_warnings()
-suppressnanwarning.filter(RuntimeWarning, r"All-NaN (slice|axis) encountered")
+class _SuppressNanWarning(contextlib.ContextDecorator):
+    def __init__(self) -> None:
+        self._contexts: list[typing.Any] = []
+
+    def __enter__(self) -> typing.Self:
+        context = warnings.catch_warnings()
+        context.__enter__()
+        warnings.filterwarnings(
+            "ignore",
+            r"All-NaN (slice|axis) encountered",
+            RuntimeWarning,
+        )
+        self._contexts.append(context)
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool | None:
+        return self._contexts.pop().__exit__(*exc_info)
+
+
+suppressnanwarning = _SuppressNanWarning()
 
 
 def _processed_ndim(darr: xr.DataArray) -> int:
@@ -1064,10 +1083,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @property
     def levels_locked(self) -> bool:
+        if not erlab.interactive.utils.qt_is_valid(self.lock_levels_act):
+            return bool(self._colormap_properties["levels_locked"])
         return self.lock_levels_act.isChecked()
 
     @levels_locked.setter
     def levels_locked(self, value: bool) -> None:
+        self._colormap_properties["levels_locked"] = bool(value)
+        if not erlab.interactive.utils.qt_is_valid(self.lock_levels_act):
+            return
         self.lock_levels_act.setChecked(value)
 
     @property
@@ -1259,8 +1283,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @QtCore.Slot()
     def end_history_group(self) -> None:
         self.finalize_history_entry()
-        self._history_group_timer.stop()
+        if erlab.interactive.utils.qt_is_valid(self._history_group_timer):
+            self._history_group_timer.stop()
         self._history_group_active = False
+
+    def _discard_pending_history_entry(self) -> None:
+        self._pending_history_entry = None
+        self._pending_history_committed = False
+        self._history_group_active = False
+        if erlab.interactive.utils.qt_is_valid(self._history_group_timer):
+            self._history_group_timer.stop()
 
     def _history_state_snapshot(self) -> ImageSlicerState:
         state = copy.deepcopy(self.state)
@@ -1299,6 +1331,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def finalize_history_entry(self, *, keep_pending: bool = False) -> None:
         entry = self._pending_history_entry
         if entry is None:
+            return
+        if not erlab.interactive.utils.qt_is_valid(self, self.lock_levels_act):
+            self._discard_pending_history_entry()
             return
 
         after_state = self._history_state_snapshot()
@@ -1389,7 +1424,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return
 
         self.begin_history_entry(None)
-        QtCore.QTimer.singleShot(0, self.finalize_history_entry)
+        erlab.interactive.utils.single_shot(
+            self, 0, self.finalize_history_entry, self.lock_levels_act
+        )
 
     @QtCore.Slot()
     @suppress_history

@@ -17,6 +17,7 @@ from erlab.interactive.imagetool.viewer import (
     _associated_coord_color,
     _associated_coord_icon,
     _plotted_associated_coord_names,
+    suppressnanwarning,
 )
 
 if typing.TYPE_CHECKING:
@@ -307,7 +308,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         self._readout_source_indicator.hide()
         self.spin_dat.installEventFilter(self)
         try:
-            with np.errstate(divide="ignore"):
+            with np.errstate(divide="ignore"), suppressnanwarning:
                 approx_abs_max = np.nanmax(
                     np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )
@@ -636,7 +637,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
             self.spin_idx[i].blockSignals(False)
             self.spin_val[i].blockSignals(False)
         try:
-            with np.errstate(divide="ignore"):
+            with np.errstate(divide="ignore"), suppressnanwarning:
                 approx_abs_max = np.nanmax(
                     np.abs(next(iter(self.slicer_area._imageitems)).image)
                 )

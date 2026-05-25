@@ -2003,6 +2003,17 @@ class FittingParameterWidget(QtWidgets.QWidget):
         return {self.prefix() + self.param_name: param_info}
 
 
+@contextlib.contextmanager
+def _suppress_all_nan_image_warnings():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            r"All-NaN (slice|axis) encountered",
+            RuntimeWarning,
+        )
+        yield
+
+
 class xImageItem(erlab.interactive.colors.BetterImageItem):
     """:class:`pyqtgraph.ImageItem` with additional functionality.
 
@@ -2028,6 +2039,14 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
         super().__init__(image, **kwargs)
         self.cut_tolerance = [30, 30]
         self.data_array: xr.DataArray | None = None
+
+    def quickMinMax(self, *args, **kwargs):
+        with _suppress_all_nan_image_warnings():
+            return super().quickMinMax(*args, **kwargs)
+
+    def getHistogram(self, *args, **kwargs):
+        with _suppress_all_nan_image_warnings():
+            return super().getHistogram(*args, **kwargs)
 
     def set_cut_tolerance(self, cut_tolerance) -> None:
         try:
@@ -2062,7 +2081,8 @@ class xImageItem(erlab.interactive.colors.BetterImageItem):
     def setImage(self, image=None, autoLevels=None, cut_to_data=False, **kargs) -> None:
         if cut_to_data:
             kargs["levels"] = self.data_cut_levels(data=image)
-        super().setImage(image=image, autoLevels=autoLevels, **kargs)
+        with _suppress_all_nan_image_warnings():
+            super().setImage(image=image, autoLevels=autoLevels, **kargs)
 
         if image is not None and self.data_array is not None:
             self.data_array = None

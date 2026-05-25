@@ -169,6 +169,38 @@ def _assert_guideline_state(
     }
 
 
+def test_itool_all_nan_image_updates_do_not_warn(qtbot) -> None:
+    data = xr.DataArray(np.full((4, 4), np.nan), dims=["x", "y"])
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        win = itool(data, execute=False)
+        qtbot.addWidget(win)
+
+        image = win.slicer_area.main_image.slicer_data_items[0]
+        image.quickMinMax()
+        image.getHistogram()
+        image.updateImage()
+
+        controls = ItoolCrosshairControls(win.slicer_area)
+        qtbot.addWidget(controls)
+        controls.update_content()
+
+        win.slicer_area.refresh_all()
+
+        image_item = erlab.interactive.utils.xImageItem()
+        image_item.setDataArray(data)
+        image_item.quickMinMax()
+        image_item.getHistogram()
+
+    assert [
+        warning
+        for warning in caught
+        if issubclass(warning.category, RuntimeWarning)
+        and "All-NaN" in str(warning.message)
+    ] == []
+
+
 @pytest.mark.parametrize(
     "test_data_type", ["2D", "3D", "3D_nonuniform", "3D_const_nonuniform"]
 )
