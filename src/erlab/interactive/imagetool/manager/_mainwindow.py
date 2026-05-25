@@ -24,6 +24,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
@@ -89,6 +90,18 @@ _LINEAGE_STATUS_TOOLTIPS: dict[str, str] = {
     "changed": "At least one recorded live input has changed since this data was made.",
     "missing": "At least one recorded live input is no longer open.",
 }
+
+
+@dataclass(frozen=True)
+class _ScriptRebuildResult:
+    data: xr.DataArray
+    provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+
+
+class _ScriptRebuildError(RuntimeError):
+    def __init__(self, message: str, *, details: str = "") -> None:
+        super().__init__(message)
+        self.details = details
 
 
 def _manager_settings() -> QtCore.QSettings:
@@ -1206,7 +1219,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.reload_action = QtWidgets.QAction("Reload Data", self)
         self.reload_action.triggered.connect(self.reload_selected)
-        self.reload_action.setToolTip("Reload selected data and refresh child paths")
+        self.reload_action.setToolTip(
+            "Reload selected data from its saved files, parent, or inputs"
+        )
         self.reload_action.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
         self.reload_action.setVisible(False)
 
@@ -2115,13 +2130,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
         status = self.lineage_status_for_uid(uid)
         if status is None:
             return None
-        return _LINEAGE_STATUS_TOOLTIPS[status]
+        tooltip = _LINEAGE_STATUS_TOOLTIPS[status]
+        if status == "missing" and self._missing_lineage_has_recorded_file(uid):
+            tooltip += " Recorded source files found for at least one missing input."
+        return tooltip
 
     def lineage_input_summary_for_uid(self, uid: str) -> str | None:
         refs = self._lineage_refs_for_uid(uid)
         if not refs:
             return None
 
+        node = self._all_nodes.get(uid)
+        spec = None if node is None else node.provenance_spec
         parts: list[str] = []
         seen: set[tuple[str, str, str | None]] = set()
         for ref in refs:
@@ -2136,8 +2156,56 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 current = f"currently {parent.display_text}"
             else:
                 current = "parent no longer open"
+                if self._lineage_ref_has_recorded_file(spec, ref):
+                    current += "; recorded source file found"
             parts.append(f"{ref.name}: {ref.label} ({current})")
         return "; ".join(parts)
+
+    @classmethod
+    def _script_input_has_recorded_file(
+        cls,
+        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+    ) -> bool:
+        spec = script_input.parsed_provenance_spec()
+        if spec is None:
+            return False
+        if spec.kind == "file" and spec.file_load_source is not None:
+            return pathlib.Path(spec.file_load_source.path).exists()
+        for nested_input in spec.script_inputs:
+            if cls._script_input_has_recorded_file(nested_input):
+                return True
+        return False
+
+    @classmethod
+    def _lineage_ref_has_recorded_file(
+        cls,
+        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+        ref: erlab.interactive.imagetool.provenance.ScriptInputLineageRef,
+    ) -> bool:
+        if spec is None:
+            return False
+        for script_input in spec.script_inputs:
+            if (
+                script_input.name == ref.name
+                and script_input.node_uid == ref.node_uid
+                and script_input.node_lineage_token == ref.node_lineage_token
+                and cls._script_input_has_recorded_file(script_input)
+            ):
+                return True
+            if cls._lineage_ref_has_recorded_file(
+                script_input.parsed_provenance_spec(), ref
+            ):
+                return True
+        return False
+
+    def _missing_lineage_has_recorded_file(self, uid: str) -> bool:
+        node = self._all_nodes.get(uid)
+        spec = None if node is None else node.provenance_spec
+        return any(
+            self._all_nodes.get(ref.node_uid) is None
+            and self._lineage_ref_has_recorded_file(spec, ref)
+            for ref in self._lineage_refs_for_uid(uid)
+        )
 
     def _lineage_dependent_uids(self, uid: str) -> list[str]:
         return [
@@ -2232,6 +2300,193 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 operation_code=operation_code,
             ),
         )
+
+    def _script_provenance_inputs_current(
+        self, spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+    ) -> bool:
+        for ref in erlab.interactive.imagetool.provenance.script_input_lineage_refs(
+            spec
+        ):
+            parent = self._all_nodes.get(ref.node_uid)
+            if parent is None:
+                return False
+            if (
+                ref.node_lineage_token is not None
+                and parent.lineage_token != ref.node_lineage_token
+            ):
+                return False
+        return True
+
+    def _rebuild_script_input_for_reload(
+        self,
+        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        *,
+        depth: int,
+    ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]:
+        rebuilt = self._rebuild_script_provenance(spec, depth=depth + 1)
+        return (
+            rebuilt.data,
+            script_input.model_copy(
+                update={
+                    "node_uid": None,
+                    "node_lineage_token": None,
+                    "provenance_spec": rebuilt.provenance_spec.model_dump(mode="json"),
+                }
+            ),
+        )
+
+    def _resolve_script_input_for_rebuild(
+        self,
+        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        *,
+        depth: int,
+    ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]:
+        if depth > 20:
+            raise _ScriptRebuildError(
+                "Could not reload data.",
+                details="Nested script provenance exceeded the maximum reload depth.",
+            )
+
+        spec = script_input.parsed_provenance_spec()
+        if script_input.node_uid is not None:
+            node = self._all_nodes.get(script_input.node_uid)
+            if node is not None:
+                if (
+                    spec is not None
+                    and spec.kind == "script"
+                    and not self._script_provenance_inputs_current(spec)
+                ):
+                    return self._rebuild_script_input_for_reload(
+                        script_input,
+                        spec,
+                        depth=depth,
+                    )
+                return (
+                    node.current_source_data(),
+                    self._script_input_for_node(node).model_copy(
+                        update={"name": script_input.name}
+                    ),
+                )
+
+        if spec is None:
+            raise _ScriptRebuildError(
+                "Could not reload data.",
+                details=(
+                    f"{script_input.name} from {script_input.label} is not open and "
+                    "does not contain recorded source provenance."
+                ),
+            )
+
+        if spec.kind == "file":
+            try:
+                data = erlab.interactive.imagetool.provenance.replay_file_provenance(
+                    spec
+                )
+            except Exception as exc:
+                raise _ScriptRebuildError(
+                    "Could not reload from recorded source files.",
+                    details=f"{script_input.name} from {script_input.label}: {exc}",
+                ) from exc
+            return (
+                data,
+                script_input.model_copy(
+                    update={
+                        "node_uid": None,
+                        "node_lineage_token": None,
+                        "provenance_spec": spec.model_dump(mode="json"),
+                    }
+                ),
+            )
+
+        if spec.kind == "script":
+            return self._rebuild_script_input_for_reload(
+                script_input,
+                spec,
+                depth=depth,
+            )
+
+        raise _ScriptRebuildError(
+            "Could not reload data.",
+            details=(
+                f"{script_input.name} from {script_input.label} is not open and "
+                "does not contain reloadable script or file provenance."
+            ),
+        )
+
+    def _rebuild_script_provenance(
+        self,
+        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        *,
+        depth: int = 0,
+    ) -> _ScriptRebuildResult:
+        if spec.kind != "script":
+            raise _ScriptRebuildError(
+                "Could not reload data.",
+                details="Selected provenance is not script-derived.",
+            )
+        if not erlab.interactive.imagetool.provenance.script_provenance_replayable(
+            spec
+        ):
+            raise _ScriptRebuildError(
+                "Could not reload data.",
+                details="The recorded operation cannot be replayed automatically.",
+            )
+
+        resolved_inputs = tuple(
+            self._resolve_script_input_for_rebuild(script_input, depth=depth)
+            for script_input in spec.script_inputs
+        )
+        input_data = {script_input.name: data for data, script_input in resolved_inputs}
+        rebuilt_spec = spec.model_copy(
+            update={
+                "script_inputs": tuple(
+                    script_input for _data, script_input in resolved_inputs
+                )
+            }
+        )
+        try:
+            data = erlab.interactive.imagetool.provenance.replay_script_provenance(
+                rebuilt_spec, input_data
+            )
+        except Exception as exc:
+            raise _ScriptRebuildError(
+                "Could not reload data.",
+                details=str(exc),
+            ) from exc
+        return _ScriptRebuildResult(
+            data=data,
+            provenance_spec=rebuilt_spec,
+        )
+
+    def _node_can_reload_script_inputs(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> bool:
+        spec = node.provenance_spec
+        return (
+            node.is_imagetool
+            and node.imagetool is not None
+            and spec is not None
+            and spec.kind == "script"
+            and bool(spec.script_inputs)
+            and erlab.interactive.imagetool.provenance.script_provenance_replayable(
+                spec
+            )
+        )
+
+    def _script_reload_from_slicer_area(
+        self,
+        slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea,
+        *,
+        execute: bool,
+    ) -> bool:
+        """Check or reload script provenance for a managed slicer area."""
+        target = self.target_from_slicer_area(slicer_area)
+        if target is None:
+            return False
+        if not self._node_can_reload_script_inputs(self._node_for_target(target)):
+            return False
+        return not execute or self._reload_script_derived_target(target)
 
     def _workspace_loaded_uid_map(
         self, loaded_targets_by_uid: Mapping[str, int | str]
@@ -3230,7 +3485,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.store_action.setEnabled(bool(self.tree_view.selected_imagetool_indices))
 
-        self.reload_action.setVisible(reload_targets is not None)
+        reload_available = reload_targets is not None
+        self.reload_action.setVisible(reload_available)
+        self.reload_action.setEnabled(reload_available)
         self.unwatch_action.setVisible(
             bool(imagetool_targets)
             and len(selection_watched) == len(imagetool_targets)
@@ -3533,6 +3790,142 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 continue
             for uid in child_uids:
                 self._refresh_source_chain_to_uid(uid)
+
+    @staticmethod
+    def _reload_incompatibility_details(
+        current: xr.DataArray, rebuilt: xr.DataArray
+    ) -> str:
+        lines = [
+            f"Current dims: {tuple(current.dims)} shape {tuple(current.shape)}",
+            f"Reloaded dims: {tuple(rebuilt.dims)} shape {tuple(rebuilt.shape)}",
+        ]
+        current_dims = set(current.dims)
+        rebuilt_dims = set(rebuilt.dims)
+        missing_dims = tuple(dim for dim in current.dims if dim not in rebuilt_dims)
+        new_dims = tuple(dim for dim in rebuilt.dims if dim not in current_dims)
+        if missing_dims:
+            lines.append(f"Missing reloaded dimensions: {missing_dims}")
+        if new_dims:
+            lines.append(f"New reloaded dimensions: {new_dims}")
+        for dim in current.dims:
+            if dim not in rebuilt_dims:
+                continue
+            if current.sizes[dim] != rebuilt.sizes[dim]:
+                lines.append(
+                    f"{dim}: size changed from {current.sizes[dim]} to "
+                    f"{rebuilt.sizes[dim]}"
+                )
+            old_coord = current.coords.get(dim)
+            new_coord = rebuilt.coords.get(dim)
+            if old_coord is None or new_coord is None:
+                continue
+            old_values = old_coord.values
+            new_values = new_coord.values
+            missing_count = int(
+                np.count_nonzero(~np.isin(old_values, new_values, assume_unique=True))
+            )
+            if missing_count:
+                lines.append(
+                    f"{dim}: {missing_count} current coordinate value"
+                    f"{'' if missing_count == 1 else 's'} not found in reloaded data"
+                )
+        return "\n".join(lines)
+
+    def _prompt_incompatible_reload_commit(self, details: str) -> str:
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Reload Data")
+        msg_box.setText("The reloaded data has different coordinates.")
+        msg_box.setInformativeText(
+            "The current ImageTool view can only be preserved when the reloaded data "
+            "keeps the current cursor coordinates."
+        )
+        msg_box.setDetailedText(details)
+        replace_button = msg_box.addButton(
+            "Replace and Reset View", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        new_button = msg_box.addButton(
+            "Open as New", QtWidgets.QMessageBox.ButtonRole.ActionRole
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", new_button))
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        if clicked is replace_button:
+            return "replace"
+        if clicked is new_button:
+            return "new"
+        if clicked is cancel_button:
+            return "cancel"
+        return "cancel"
+
+    def _replace_script_reload_target(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        result: _ScriptRebuildResult,
+    ) -> None:
+        node.replace_with_detached_data(
+            result.data,
+            result.provenance_spec,
+            propagate_descendants=True,
+        )
+        self.tree_view.refresh(node.uid)
+        if self._metadata_node_uid == node.uid:
+            self._set_metadata_node(node)
+
+    def _reload_script_derived_target(self, target: int | str) -> bool:
+        """Reload a script-derived ImageTool from its recorded inputs."""
+        node = self._node_for_target(target)
+        spec = node.provenance_spec
+        if spec is None:
+            return False
+        try:
+            result = self._rebuild_script_provenance(spec)
+        except _ScriptRebuildError as exc:
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                "Error",
+                str(exc),
+                detailed_text=exc.details,
+            )
+            return False
+
+        current = node.current_source_data()
+        if erlab.interactive.imagetool.slicer.check_cursors_compatible(
+            current, result.data
+        ):
+            self._replace_script_reload_target(node, result)
+            self._status_bar.showMessage("Reloaded data from inputs", 5000)
+            return True
+
+        details = self._reload_incompatibility_details(current, result.data)
+        match self._prompt_incompatible_reload_commit(details):
+            case "replace":
+                self._replace_script_reload_target(node, result)
+                self._status_bar.showMessage("Reloaded data from inputs", 5000)
+                return True
+            case "new":
+                tool = erlab.interactive.itool(
+                    result.data, manager=False, execute=False
+                )
+                if not isinstance(tool, ImageTool):
+                    erlab.interactive.utils.MessageDialog.critical(
+                        self,
+                        "Error",
+                        "An error occurred while opening reloaded data.",
+                        detailed_text="",
+                    )
+                    return False
+                self.add_imagetool(
+                    tool,
+                    show=True,
+                    activate=True,
+                    provenance_spec=result.provenance_spec,
+                )
+                self._status_bar.showMessage("Opened reloaded data as a new tool", 5000)
+                return True
+            case _:
+                return False
 
     @QtCore.Slot()
     def remove_selected(self) -> None:

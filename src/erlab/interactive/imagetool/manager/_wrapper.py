@@ -802,6 +802,25 @@ class _ManagedWindowNode(QtCore.QObject):
             else:
                 self.manager._mark_descendants_source_state(self.uid, state)
 
+    def replace_with_detached_data(
+        self,
+        data: xr.DataArray,
+        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None,
+        *,
+        propagate_descendants: bool = True,
+    ) -> None:
+        """Replace displayed ImageTool data with detached provenance."""
+        self._source_spec = None
+        self._source_auto_update = False
+        self._output_id = None
+        self._replace_imagetool_data(
+            data,
+            provenance_spec,
+            state="fresh",
+            propagate_descendants=propagate_descendants,
+        )
+
     def _handle_tool_data_changed(self) -> None:
         self.manager._mark_node_data_dirty(self.uid)
         self._advance_lineage_token()

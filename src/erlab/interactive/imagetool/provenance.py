@@ -117,9 +117,11 @@ __all__ = [
     "rebase_default_replay_input",
     "rebase_script_input_node_uids",
     "replay_file_provenance",
+    "replay_script_provenance",
     "require_live_source_spec",
     "script",
     "script_input_lineage_refs",
+    "script_provenance_replayable",
     "selection",
     "to_replay_provenance_spec",
     "uses_default_replay_input",
@@ -153,6 +155,47 @@ _SORT_COORD_ORDER_DERIVATION_LABEL = "Sort coordinates to parent order"
 _SORT_COORD_ORDER_DERIVATION_CODE = (
     "derived = erlab.utils.array.sort_coord_order(derived, data.coords.keys())"
 )
+_SCRIPT_REPLAY_ALLOWED_BUILTINS = {
+    "abs": abs,
+    "bool": bool,
+    "complex": complex,
+    "dict": dict,
+    "float": float,
+    "int": int,
+    "len": len,
+    "list": list,
+    "max": max,
+    "min": min,
+    "range": range,
+    "set": set,
+    "slice": slice,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+}
+_SCRIPT_REPLAY_FORBIDDEN_NODES = (
+    ast.AsyncFor,
+    ast.AsyncFunctionDef,
+    ast.AsyncWith,
+    ast.Await,
+    ast.ClassDef,
+    ast.Delete,
+    ast.For,
+    ast.FunctionDef,
+    ast.Global,
+    ast.Import,
+    ast.ImportFrom,
+    ast.Lambda,
+    ast.Match,
+    ast.Nonlocal,
+    ast.Raise,
+    ast.Try,
+    ast.While,
+    ast.With,
+    ast.Yield,
+    ast.YieldFrom,
+)
+_SCRIPT_REPLAY_FORBIDDEN_CALLS = {"__import__", "compile", "eval", "exec", "open"}
 
 
 @dataclass(frozen=True)
@@ -2073,6 +2116,102 @@ def replay_file_provenance(
     for stage in parsed.replay_stages:
         data = _apply_replay_stage(stage, data)
     return data
+
+
+def _validate_script_replay_code(code: str) -> None:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        raise ValueError(f"Script replay code is not valid Python: {exc}") from exc
+
+    for node in ast.walk(module):
+        if isinstance(node, _SCRIPT_REPLAY_FORBIDDEN_NODES):
+            raise TypeError(
+                f"Script replay code contains unsupported {type(node).__name__}"
+            )
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            raise ValueError("Script replay code cannot access dunder names")
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
+            raise ValueError("Script replay code cannot access dunder attributes")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _SCRIPT_REPLAY_FORBIDDEN_CALLS
+        ):
+            raise ValueError(f"Script replay code cannot call {node.func.id!r}")
+
+
+def _script_replay_codes(spec: ToolProvenanceSpec) -> tuple[str, ...]:
+    if spec.kind != "script":
+        raise TypeError("Expected script provenance")
+    if spec.active_name is None:
+        raise ValueError("Script provenance cannot be replayed without active_name")
+
+    codes: list[str] = []
+    if spec.seed_code:
+        codes.append(spec.seed_code)
+    for operation in spec.operations:
+        if not isinstance(operation, ScriptCodeOperation):
+            raise TypeError(
+                "Only script_code operations can be replayed as script provenance"
+            )
+        if not operation.copyable or operation.code is None:
+            raise ValueError("Script provenance contains non-replayable code")
+        codes.append(operation.code)
+    if not codes:
+        raise ValueError("Script provenance has no replay code")
+    for code in codes:
+        _validate_script_replay_code(code)
+    return tuple(codes)
+
+
+def script_provenance_replayable(
+    spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+) -> bool:
+    """Return whether script provenance can be replayed from resolved inputs."""
+    parsed = parse_tool_provenance_spec(spec)
+    if parsed is None:
+        return False
+    try:
+        _script_replay_codes(parsed)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def replay_script_provenance(
+    spec: ToolProvenanceSpec | Mapping[str, typing.Any],
+    inputs: Mapping[str, xr.DataArray],
+) -> xr.DataArray:
+    """Execute trusted script provenance from already resolved input arrays."""
+    parsed = parse_tool_provenance_spec(spec)
+    if parsed is None:
+        raise TypeError("Expected script provenance")
+    codes = _script_replay_codes(parsed)
+    namespace: dict[str, typing.Any] = {
+        "__builtins__": _SCRIPT_REPLAY_ALLOWED_BUILTINS,
+        "erlab": erlab,
+        "np": np,
+        "numpy": np,
+        "xr": xr,
+        "xarray": xr,
+    }
+    namespace.update({name: data.copy(deep=True) for name, data in inputs.items()})
+    for code in codes:
+        compiled = compile(code, "<ImageTool script provenance>", "exec")
+        exec(compiled, namespace, namespace)  # noqa: S102
+
+    active_name = typing.cast("str", parsed.active_name)
+    if active_name not in namespace:
+        raise RuntimeError(
+            f"Script provenance did not create active variable {active_name!r}"
+        )
+    result = namespace[active_name]
+    if not isinstance(result, xr.DataArray):
+        raise TypeError(
+            f"Script provenance did not produce an xarray.DataArray for {active_name!r}"
+        )
+    return result
 
 
 class ScriptCodeOperation(ToolProvenanceOperation):

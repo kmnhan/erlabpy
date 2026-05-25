@@ -1966,7 +1966,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.reload_act = QtWidgets.QAction("&Reload Data", self)
         self.reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
         self.reload_act.triggered.connect(self.reload)
-        self.reload_act.setToolTip("Reload data from the original source")
+        self.reload_act.setToolTip(
+            "Reload data from its saved files, parent, or inputs"
+        )
         self.reload_act.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
 
         self.view_all_act = QtWidgets.QAction("View &All", self)
@@ -2581,13 +2583,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         Direct file-backed windows reload from their stored loader. Detached
         file-rooted provenance reloads by replaying its self-contained code.
+        Managed script-derived ImageTools reload through the manager from their
+        recorded inputs.
 
         Returns
         -------
         bool
             `True` if the data can be reloaded, `False` otherwise.
         """
-        return self._direct_reloadable() or self._provenance_reloadable()
+        if self._direct_reloadable() or self._provenance_reloadable():
+            return True
+        manager = self._manager_instance if self._in_manager else None
+        return manager is not None and manager._script_reload_from_slicer_area(
+            self, execute=False
+        )
 
     def _direct_reloadable(self) -> bool:
         """Return whether direct file metadata can reload the current source."""
@@ -2654,7 +2663,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _reload(self) -> bool:
         """Reload the displayed data and return whether the reload succeeded."""
-        if self.reloadable:  # pragma: no branch
+        if self._direct_reloadable() or self._provenance_reloadable():
             try:
                 data, kwargs = self._fetch_reload_data()
                 self.replace_source_data(data, **kwargs)
@@ -2664,11 +2673,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
                 return False
             return True
-        return False
+        manager = self._manager_instance if self._in_manager else None
+        return manager is not None and manager._script_reload_from_slicer_area(
+            self, execute=True
+        )
 
     @QtCore.Slot()
     def reload(self) -> None:
-        """Reload the displayed data from direct file state or file-rooted provenance.
+        """Reload the displayed data from recorded source information.
 
         Silently fails if the data cannot be reloaded. If an error occurs while
         reloading the data, a message is shown to the user.
