@@ -79,6 +79,9 @@ code for reproducibility and batch processing.
 - - Normalize interactively
   - {ref}`ImageTool normalization dialog <imagetool-editing>`
   - Expressions like `data / data.mean(...)`
+- - Combine manager ImageTools
+  - {guilabel}`Concatenate` in the {ref}`ImageTool manager <imagetool-manager-derived-data>`
+  - {func}`xarray.concat`
 - - Slice along an ROI path
   - {ref}`ROI context menu <imagetool-roi>`
   - {func}`erlab.analysis.interpolate.slice_along_path`

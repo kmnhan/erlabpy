@@ -63,10 +63,9 @@ status, whether there are unsaved changes, and the number of open ImageTool wind
 Use its buttons to copy the path or reveal the `.itws` file in your system file
 browser.
 
-Use {guilabel}`File → Offload to Workspace` to save the workspace if needed, free
-selected in-memory ImageTool data, and reconnect those rows to dask-backed data read
-from the `.itws` file. Use {guilabel}`Dask → Load Into Memory` in ImageTool to bring
-that data back into memory.
+Use {guilabel}`File → Offload to Workspace` to make the selected data lazy-loaded from
+the workspace file. This frees up memory but will slow down indexing and slicing. Use
+{guilabel}`Dask → Load Into Memory` in ImageTool to bring that data back into memory.
 
 If the workspace contains watched notebook variables, the watched rows reopen with
 their variable-name badges. The rows stay disconnected until a notebook defines the
@@ -126,6 +125,39 @@ and {guilabel}`restool` include {guilabel}`Refit after update`; when it is enabl
 the tool reruns the same fit after compatible data from the ImageTool that opened it is
 updated.
 
+(imagetool-manager-derived-data)=
+
+## Results from several ImageTools
+
+Some manager results are made from two or more top-level ImageTools instead of from one
+parent row. Examples include {guilabel}`Concatenate` and console expressions such as
+`tools[0] - tools[1]`. These results open as normal top-level ImageTools, not as child
+rows, and they remain valid saved data even if one of the inputs is later renamed,
+reindexed, changed, or removed.
+
+The manager records the ImageTools that contributed to the result and shows their live
+relationship in the tree and side panel:
+
+- {guilabel}`Inputs changed` means every recorded live input is still open, but at
+  least one no longer matches the data or provenance that made the result.
+- {guilabel}`Inputs missing` means at least one recorded live input was removed from
+  the manager.
+
+These badges describe the relationship to the currently open inputs. They do not mean
+the displayed result is invalid, and they do not change the result data automatically.
+
+Select a derived result and choose {guilabel}`Reload Data` to recompute it from its
+recorded inputs. If the live inputs are open, the manager uses their current data. If an
+input was removed but its recorded file source is still available, the manager reloads
+that input from the file before recomputing the result. When the new result is
+compatible with the current ImageTool view, the manager replaces the data in place so
+cursor positions, bins, dimension order, and display settings are kept. If the reloaded
+data has incompatible coordinates or dimensions, the manager lets you replace and reset
+the view, open the reloaded result as a new ImageTool, or cancel.
+
+For script-derived results, {guilabel}`Reload Data` replays code recorded by the
+manager. Only reload derived results from workspaces you trust.
+
 (imagetool-manager-replay-code)=
 
 ## Operation history
@@ -133,17 +165,17 @@ updated.
 Selecting a row fills the side panel with details about that item. For an ImageTool
 window created from another row, the panel can show:
 
-- the file or data that started the workflow;
-- the steps used to create the selected ImageTool window;
-- code that can be pasted into a notebook or script to repeat those steps.
+- The file(s) or data required to create the window
+- The steps used to create the selected ImageTool window
+- Code that can be pasted into a notebook or script to repeat those steps
 
-Use the steps list to copy exactly what you need. Select one or more steps and copy the
-selected code, or use {guilabel}`Copy Full Code` to copy the whole workflow from the
-data that started the workflow to the selected ImageTool window. For [watched
-variables](working-with-notebooks), copied code contains the watched variable name.
-File-backed workflows also include a snippet that loads the data in the copied code.
-Otherwise, you will be prompted to enter the name of the variable to use as the source
-when you copy code.
+Right-click on the steps list to copy code that rebuilds the data shown in the selected
+ImageTool window.
+
+For [watched variables](working-with-notebooks), copied code contains the watched
+variable name. File-backed workflows also include a snippet that loads the data in the
+copied code. Otherwise, you will be prompted to enter the name of the variable to use as
+the source when you copy code.
 
 (imagetool-manager-start)=
 
@@ -170,13 +202,6 @@ manager `#0`, and later managers receive 0-based indexes in the order they start
 
 To start a new manager instance, choose {guilabel}`File → New Manager Window` from an
 existing manager window.
-
-Indexes are not reused while a higher-index manager is live or starting. If managers
-`#0`, `#1`, and `#2` are running, then `#1` closes, the next manager starts as `#3`.
-After all managers close or become stale, the next manager starts again as `#0`.
-
-When one manager is running, notebook and script calls can use `manager=True` without
-choosing an index.
 
 When more than one manager is running, either pass the index like `manager=2` or set a
 default for the current Python process or notebook kernel:
@@ -283,13 +308,18 @@ The following lists common actions included in the {guilabel}`File`, {guilabel}`
 - {guilabel}`Link` / {guilabel}`Unlink` – {kbd}`Ctrl+L` links the selected windows so they share cursors and slices; {kbd}`Ctrl+Shift+L` removes the links.
 - {guilabel}`Offload to Workspace` – Reloads the data as dask-backed data from the workspace file, freeing up memory but slowing down indexing. Use {guilabel}`Dask → Load Into Memory` in ImageTool to load it back into memory when needed.
 - {guilabel}`Concatenate` – Combine selected data with {func}`xarray.concat` and open the result in a new ImageTool window.
-- {guilabel}`Reload Data` – Re-fetches data from disk using the original loader function. When a source-bound child row is selected, reloads the reloadable ancestor ImageTool and refreshes the selected child path. Handy when data is updated during acquisition.
+- {guilabel}`Reload Data` – Recomputes selected data from its recorded source. For
+  file-backed ImageTools, this re-fetches data from disk and reapplies any recorded
+  operations. This is useful when conducting experiments, where you can repeat analysis
+  on a continually updated file source with a single click.
 
 Icons next to each entry indicate special states: linked windows share a colored badge,
 chunked Dask arrays show the dask icon, watched variables display their variable name,
-and rows opened from another row can show the {guilabel}`Stale`,
+rows opened from another row can show the {guilabel}`Stale`,
 {guilabel}`Unavailable`, or {guilabel}`Auto` badges described in
-{ref}`imagetool-manager-refresh`.
+{ref}`imagetool-manager-refresh`, and top-level results made from several ImageTools
+can show the {guilabel}`Inputs changed` or {guilabel}`Inputs missing` badges described
+in {ref}`imagetool-manager-derived-data`.
 
 ## Data Explorer and Console
 
@@ -325,19 +355,27 @@ For the standalone tool page, see {ref}`guide-ptable`.
 
 ### Console
 
-Toggle the embedded IPython console with {kbd}`Ctrl+J` or via the {guilabel}`View`
-menu. The console exposes a `tools` list containing wrappers for every ImageTool. For
-example:
+For quick calculations and data exploration without leaving the manager, the embedded
+IPython console is useful.
+
+Toggle the embedded IPython console with {kbd}`Ctrl+J` or via the {guilabel}`View` menu.
+The console exposes a `tools` list containing a provenance-aware handle for every
+ImageTool. These handles are not {class}`xarray.DataArray` objects, but they support
+many of the same operations and keep track of the manager history. For example:
 
   ```python
-  # List names of all windows
-  [tool.name for tool in tools]
-
   # Access the underlying DataArray of the first window
   tools[0].data
 
+  # Create an ImageTool containing the difference of the first two windows
+  tools[0] - tools[1]
+
+  # Keep the result in the console, then open it later
+  diff = tools[0] - tools[1]
+  diff.qshow(manager=True)
+
   # Replace data in the first window
-  tools[0].data = new_data
+  tools[0].data = tools[0].assign_coords(time=tools[1].time)
   ```
 
 Run standard Python, `%magic` commands, or inspect objects with `?` exactly as you would
