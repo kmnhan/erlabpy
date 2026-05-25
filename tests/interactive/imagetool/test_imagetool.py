@@ -4350,6 +4350,51 @@ def test_selection_dialog_seeds_4d_cursor_slice(qtbot) -> None:
     win.close()
 
 
+def test_selection_dialog_dimension_checkbox_label_toggles_row(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+    row = dialog.rows[0]
+    ok_button = dialog.buttonBox.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+
+    assert not row.use_check.isChecked()
+    assert dialog.source_operations() == []
+    assert not ok_button.isEnabled()
+
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    option = QtWidgets.QStyleOptionButton()
+    row.use_check.initStyleOption(option)
+    indicator_rect = row.use_check.style().subElementRect(
+        QtWidgets.QStyle.SubElement.SE_CheckBoxIndicator,
+        option,
+        row.use_check,
+    )
+    contents_rect = row.use_check.style().subElementRect(
+        QtWidgets.QStyle.SubElement.SE_CheckBoxContents,
+        option,
+        row.use_check,
+    )
+    click_pos = contents_rect.center()
+    assert contents_rect.isValid()
+    assert not indicator_rect.contains(click_pos)
+
+    qtbot.mouseClick(
+        row.use_check,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=click_pos,
+    )
+
+    assert row.use_check.isChecked()
+    assert dialog.source_operations()
+    assert ok_button.isEnabled()
+
+    win.close()
+
+
 def test_selection_dialog_accept_replaces_current_data(qtbot) -> None:
     data = _selection_4d_data()
     win = itool(data, execute=False)

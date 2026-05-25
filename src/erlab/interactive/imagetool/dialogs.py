@@ -779,15 +779,17 @@ class _SelectionRow:
             axis
         ]
 
-        self.use_check = QtWidgets.QCheckBox()
+        self.use_check = QtWidgets.QCheckBox(str(dim))
         self.use_check.setObjectName(f"selection_use_{axis}")
         self.use_check.setChecked(active)
 
-        self.dim_label = QtWidgets.QLabel(str(dim))
-        self.cursor_label = QtWidgets.QLabel(f"{current_value:.6g}")
-
         self.method_combo = QtWidgets.QComboBox()
         self.method_combo.setObjectName(f"selection_method_{axis}")
+        self.method_combo.setToolTip(
+            "Choose how this dimension is selected: qsel selects the nearest "
+            "coordinate value, sel uses coordinate labels, and isel uses "
+            "integer indices."
+        )
         for method in ("qsel", "sel", "isel"):
             self.method_combo.addItem(method, method)
 
@@ -837,11 +839,16 @@ class _SelectionRow:
         self.stop_stack.addWidget(self.index_stop_spin)
 
         self.width_widget = QtWidgets.QWidget()
+        self.width_widget.setToolTip(
+            "For point qsel selections, include nearby coordinate values within "
+            "this width. Ignored for range selections and for sel/isel."
+        )
         width_layout = QtWidgets.QHBoxLayout(self.width_widget)
         width_layout.setContentsMargins(0, 0, 0, 0)
         width_layout.setSpacing(3)
         self.width_check = QtWidgets.QCheckBox()
         self.width_check.setObjectName(f"selection_width_enabled_{axis}")
+        self.width_check.setToolTip(self.width_widget.toolTip())
         self.width_spin = erlab.interactive.utils.BetterSpinBox(
             compact=False,
             decimals=6,
@@ -850,14 +857,13 @@ class _SelectionRow:
             value=0.0 if bin_value is None else float(bin_value),
         )
         self.width_spin.setObjectName(f"selection_width_{axis}")
+        self.width_spin.setToolTip(self.width_widget.toolTip())
         self.width_check.setChecked(is_binned and bin_value is not None)
         width_layout.addWidget(self.width_check)
         width_layout.addWidget(self.width_spin)
 
         widgets: tuple[QtWidgets.QWidget, ...] = (
             self.use_check,
-            self.dim_label,
-            self.cursor_label,
             self.method_combo,
             self.kind_combo,
             self.start_stack,
@@ -965,8 +971,6 @@ class SelectionDialog(DataTransformDialog):
         for column, label in enumerate(
             (
                 "Use",
-                "Dimension",
-                "Cursor",
                 "Method",
                 "Selection",
                 "Start",
