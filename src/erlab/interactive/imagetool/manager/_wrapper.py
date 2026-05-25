@@ -262,6 +262,8 @@ class _ManagedWindowNode(QtCore.QObject):
         manager = self._manager()
         if manager is None:
             return
+        if manager._all_nodes.get(self.uid) is not self:
+            return
         manager._remove_childtool(self.uid)
 
     def _detach_imagetool(

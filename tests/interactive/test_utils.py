@@ -1487,6 +1487,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
+            self._all_nodes: dict[str, object] = {}
 
         def _update_info(self, *, uid: str) -> None:
             self.updated.append(uid)
@@ -1509,6 +1510,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
+            self._all_nodes.pop(uid, None)
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
@@ -1529,6 +1531,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         None,
         tool,
     )
+    manager._all_nodes["child"] = node
 
     with pytest.raises(TypeError, match="source_spec must be"):
         node.set_source_binding(typing.cast("object", {"kind": "full_data"}))
@@ -1599,6 +1602,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         None,
         unbound_tool,
     )
+    manager._all_nodes["unbound"] = unbound_node
     assert not unbound_node.handle_parent_source_replaced(tool.tool_data)
 
     updated = xr.DataArray(np.arange(4.0) + 10.0, dims=("x",), name="updated")
@@ -1679,6 +1683,7 @@ def test_managed_tool_window_node_detached_update_branches(
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
+            self._all_nodes: dict[str, object] = {}
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
                 provenance_spec=None,
@@ -1710,6 +1715,7 @@ def test_managed_tool_window_node_detached_update_branches(
 
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
+            self._all_nodes.pop(uid, None)
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
@@ -1732,6 +1738,7 @@ def test_managed_tool_window_node_detached_update_branches(
         "parent",
         tool,
     )
+    manager._all_nodes["child"] = node
     with pytest.raises(RuntimeError, match="not bound"):
         node._materialized_source_spec(parent_data)
 
@@ -1748,6 +1755,7 @@ def test_managed_tool_window_node_detached_update_branches(
         bound_tool,
         source_binding=source_binding,
     )
+    manager._all_nodes["bound"] = bound_node
     assert bound_node._source_binding == source_binding
     assert bound_node._source_spec == source_binding.materialize(parent_data)
 
@@ -1885,6 +1893,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
+            self._all_nodes.pop(uid, None)
 
         def _child_node(self, uid: str) -> _ManagedWindowNode:
             return typing.cast("_ManagedWindowNode", self._all_nodes[uid])

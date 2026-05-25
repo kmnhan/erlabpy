@@ -359,6 +359,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         return super().eventFilter(obj, event)
 
     def closeEvent(self, evt: QtGui.QCloseEvent | None) -> None:
+        self.slicer_area._discard_pending_history_entry()
         self.slicer_area.close_associated_windows()
         super().closeEvent(evt)
 
