@@ -7,6 +7,13 @@ from erlab.interactive.imagetool._dialog_widgets import (
 )
 
 
+def _set_spinbox_text(spin, text: str) -> None:
+    line = spin.lineEdit()
+    assert line is not None
+    line.setText(text)
+    spin.editingFinishedEvent()
+
+
 def _affine_preview_values(widget: CoordinateEditorWidget) -> np.ndarray:
     return np.array(
         [
@@ -50,6 +57,45 @@ def test_coordinate_widget_update_table(qtbot):
     for i in range(3):
         item = widget.table.item(i, 0)
         assert float(item.text()) == pytest.approx(vals[i])
+
+
+def test_coordinate_widget_grid_exact_start_end(qtbot):
+    arr = np.linspace(0, 1, 3)
+    widget = CoordinateEditorWidget(arr)
+    qtbot.addWidget(widget)
+
+    start_literal = "0.123456789012345"
+    stop_literal = "0.987654321098765"
+    _set_spinbox_text(widget.spin0, start_literal)
+    _set_spinbox_text(widget.spin1, stop_literal)
+
+    expected = np.linspace(float(start_literal), float(stop_literal), arr.size)
+    assert widget.spin0.text() == start_literal
+    assert widget.spin1.text() == stop_literal
+    np.testing.assert_allclose(widget._current_values_end, expected, rtol=0, atol=0)
+    np.testing.assert_allclose(widget.new_coord, expected, rtol=0, atol=0)
+
+
+def test_coordinate_widget_grid_exact_delta(qtbot):
+    arr = np.linspace(0, 1, 4)
+    widget = CoordinateEditorWidget(arr)
+    qtbot.addWidget(widget)
+
+    start_literal = "1.23456789012345"
+    step_literal = "0.0000001234567890123"
+    widget.mode_combo.setCurrentText("Delta")
+    _set_spinbox_text(widget.spin0, start_literal)
+    _set_spinbox_text(widget.spin1, step_literal)
+
+    expected = np.linspace(
+        float(start_literal),
+        float(start_literal) + float(step_literal) * (arr.size - 1),
+        arr.size,
+    )
+    assert widget.spin0.text() == start_literal
+    assert widget.spin1.text() == step_literal
+    np.testing.assert_allclose(widget._current_values_delta, expected, rtol=0, atol=0)
+    np.testing.assert_allclose(widget.new_coord, expected, rtol=0, atol=0)
 
 
 def test_coordinate_widget_reset(qtbot):
@@ -106,6 +152,30 @@ def test_coordinate_widget_affine_scale_offset(qtbot):
     widget.offset_spin.setValue(-0.5)
     assert np.allclose(widget.affine_coord, [1.5, 3.5, 7.5])
     assert np.allclose(_affine_preview_values(widget), [1.5, 3.5, 7.5])
+
+
+def test_coordinate_widget_affine_exact_scale_offset(qtbot):
+    arr = np.array([1.0, 2.0, 4.0])
+    widget = CoordinateEditorWidget(arr)
+    qtbot.addWidget(widget)
+    widget.edit_mode_tabs.setCurrentIndex(1)
+
+    scale_literal = "1.23456789012345"
+    offset_literal = "-0.000000000000123"
+    _set_spinbox_text(widget.scale_spin, scale_literal)
+    _set_spinbox_text(widget.offset_spin, offset_literal)
+
+    expected = float(scale_literal) * arr + float(offset_literal)
+    assert widget.scale_spin.text() == scale_literal
+    assert widget.offset_spin.text() == offset_literal
+    np.testing.assert_allclose(widget.affine_coord, expected, rtol=0, atol=0)
+    np.testing.assert_allclose(_affine_preview_values(widget), expected, rtol=0, atol=0)
+
+    widget.reset()
+    assert widget.affine_scale == 1.0
+    assert widget.affine_offset == 0.0
+    assert widget.scale_spin.text() == "1.0"
+    assert widget.offset_spin.text() == "0.0"
 
 
 def test_coordinate_widget_affine_offset_only(qtbot):

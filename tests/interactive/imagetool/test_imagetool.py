@@ -5252,6 +5252,39 @@ def test_selection_dialog_qsel_width_executes_code(qtbot) -> None:
     win.close()
 
 
+def test_selection_dialog_qsel_exact_value_and_width(qtbot) -> None:
+    data = _selection_4d_data()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = SelectionDialog(win.slicer_area)
+    _clear_selection_dialog(dialog)
+
+    value_literal = "2.000000000000001"
+    width_literal = "2.000000000000001"
+    row = dialog.rows[2]
+    row.use_check.setChecked(True)
+    _set_combo_data(row.method_combo, "qsel")
+    _set_combo_data(row.kind_combo, "point")
+    _set_spinbox_text(row.value_start_spin, value_literal)
+    row.width_check.setChecked(True)
+    _set_spinbox_text(row.width_spin, width_literal)
+
+    assert row.value_start_spin.text() == value_literal
+    assert row.width_spin.text() == width_literal
+    _, _, qsel_kwargs = dialog._selection_kwargs()
+    assert qsel_kwargs["beta"] == float(value_literal)
+    assert qsel_kwargs["beta_width"] == float(width_literal)
+
+    expected = data.qsel(beta=float(value_literal), beta_width=float(width_literal))
+    xarray.testing.assert_identical(dialog.process_data(dialog.public_data), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, dialog.make_code()), expected
+    )
+
+    dialog.close()
+    win.close()
+
+
 def test_selection_dialog_uses_public_nonuniform_dimensions(qtbot) -> None:
     data = xr.DataArray(
         np.arange(3 * 4 * 5).reshape((3, 4, 5)).astype(float),
@@ -5531,6 +5564,40 @@ def test_itool_interpolate_nearest(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None),
         data.interp({"x": target}, method="nearest").rename(None),
+    )
+
+    win.close()
+
+
+def test_itool_interpolate_exact_generated_coordinates(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(6).reshape((3, 2)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(3, dtype=float), "y": [10.0, 20.0]},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    start_literal = "0.123456789012345"
+    step_literal = "0.123456789012345"
+    target = np.linspace(
+        float(start_literal),
+        float(start_literal) + 2 * float(step_literal),
+        3,
+    )
+
+    def _set_dialog_params(dialog: InterpolationDialog) -> None:
+        dialog.coord_widget.mode_combo.setCurrentText("Delta")
+        _set_spinbox_text(dialog.coord_widget.spin0, start_literal)
+        _set_spinbox_text(dialog.coord_widget.spin1, step_literal)
+        assert dialog.coord_widget.spin0.text() == start_literal
+        assert dialog.coord_widget.spin1.text() == step_literal
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._interpolate, pre_call=_set_dialog_params)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None),
+        data.interp({"x": target}, method="linear").rename(None),
     )
 
     win.close()
@@ -6171,12 +6238,17 @@ def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
         dialog._coord_combo.setCurrentText("y")
         dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
-        dialog.coord_widget.scale_spin.setValue(2.0)
-        dialog.coord_widget.offset_spin.setValue(0.5)
+        _set_spinbox_text(dialog.coord_widget.scale_spin, "2.000000000000001")
+        _set_spinbox_text(dialog.coord_widget.offset_spin, "0.5000000000000001")
         dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
-    np.testing.assert_allclose(win.slicer_area._data.y.values, 2.0 * np.arange(4) + 0.5)
+    np.testing.assert_allclose(
+        win.slicer_area._data.y.values,
+        float("2.000000000000001") * np.arange(4) + float("0.5000000000000001"),
+        rtol=0,
+        atol=0,
+    )
 
 
 def _combo_index_for_data(combo: QtWidgets.QComboBox, data: object) -> int:
@@ -7235,7 +7307,7 @@ def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -
     win.close()
 
 
-def test_itool_gaussian_filter_sigma_path(qtbot, accept_dialog) -> None:
+def test_itool_gaussian_filter_sigma_path(qtbot, accept_dialog, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["x", "y"],
@@ -7243,6 +7315,11 @@ def test_itool_gaussian_filter_sigma_path(qtbot, accept_dialog) -> None:
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "data"),
+    )
 
     def _set_normalize_params(dialog: NormalizeDialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
@@ -7250,13 +7327,26 @@ def test_itool_gaussian_filter_sigma_path(qtbot, accept_dialog) -> None:
     accept_dialog(win.mnb._normalize, pre_call=_set_normalize_params)
     xarray.testing.assert_identical(win.slicer_area.data, normalize(data, ("x",), 0))
 
-    sigma_literal = "0.015"
+    sigma_literal = "0.0151234567890123"
 
     def _set_gaussian_params(dialog: GaussianFilterDialog) -> None:
         dialog.dim_checks["x"].setChecked(True)
         _set_spinbox_text(dialog.sigma_spins["x"], sigma_literal)
         assert dialog.sigma_spins["x"].text() == sigma_literal
-        assert dialog.fwhm_spins["x"].text() == "0.035"
+        code = dialog.make_code()
+        assert f'sigma={{"x": {sigma_literal}}}' in code
+        namespace = _exec_generated_code(
+            f"result = {code}",
+            {"data": data.copy(deep=True)},
+        )
+        result = namespace["result"]
+        assert isinstance(result, xr.DataArray)
+        xarray.testing.assert_identical(
+            result,
+            erlab.analysis.image.gaussian_filter(
+                data, sigma={"x": float(sigma_literal)}
+            ),
+        )
         dialog._preview()
 
     accept_dialog(win.mnb._gaussian_filter, pre_call=_set_gaussian_params)
@@ -7279,7 +7369,7 @@ def test_itool_gaussian_filter_sigma_path(qtbot, accept_dialog) -> None:
     win.close()
 
 
-def test_itool_gaussian_filter_fwhm_path_and_code(qtbot) -> None:
+def test_itool_gaussian_filter_fwhm_path_and_code(qtbot, monkeypatch) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["x", "y"],
@@ -7287,23 +7377,39 @@ def test_itool_gaussian_filter_fwhm_path_and_code(qtbot) -> None:
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "data"),
+    )
 
     dialog = GaussianFilterDialog(win.slicer_area)
     qtbot.addWidget(dialog)
 
+    fwhm_literal = "0.0351234567890123"
+    expected_sigma = float(fwhm_literal) / (2 * np.sqrt(2 * np.log(2)))
     dialog.dim_checks["x"].setChecked(True)
-    _set_spinbox_text(dialog.fwhm_spins["x"], "0.035")
+    _set_spinbox_text(dialog.fwhm_spins["x"], fwhm_literal)
 
     sigma_literal = dialog.sigma_spins["x"].text()
-    assert sigma_literal == "0.015"
-    assert dialog.fwhm_spins["x"].text() == "0.035"
+    assert sigma_literal == str(expected_sigma)
+    assert dialog.fwhm_spins["x"].text() == fwhm_literal
 
     code = dialog.make_code()
-    assert 'sigma={"x": 0.015}' in code
+    namespace = _exec_generated_code(
+        f"result = {code}",
+        {"data": data.copy(deep=True)},
+    )
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xarray.testing.assert_identical(
+        result,
+        erlab.analysis.image.gaussian_filter(data, sigma={"x": expected_sigma}),
+    )
 
     xarray.testing.assert_identical(
         dialog.process_data(data),
-        erlab.analysis.image.gaussian_filter(data, sigma={"x": float(sigma_literal)}),
+        erlab.analysis.image.gaussian_filter(data, sigma={"x": expected_sigma}),
     )
 
     dialog.close()

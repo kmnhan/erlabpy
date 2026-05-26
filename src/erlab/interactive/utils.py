@@ -1510,6 +1510,11 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         When `integer` or `scientific` is `True`, this argument is ignored.
     scientific
         Whether to print in scientific notation.
+    exact_float
+        If `True`, floating-point text entered by the user is kept as the accepted
+        display text and parsed directly with :class:`float` instead of being
+        reformatted to ``decimals`` on commit. Programmatic value changes still use
+        the normal formatting rules.
     value
         Initial value of the spinbox.
 
@@ -1528,6 +1533,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         decimals: int = 3,
         significant: bool = False,
         scientific: bool = False,
+        exact_float: bool = False,
         value: float = 0.0,
         prefix: str = "",
         trim: typing.Literal["k", ".", "0", "-"] = "k",
@@ -1537,11 +1543,13 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         self._is_compact = compact
         self._is_discrete = discrete
         self._is_scientific = scientific
+        self._exact_float = exact_float
         self._decimal_significant = significant
         self._decimals = decimals
 
         self._value = value
         self._lastvalue: float | None = None
+        self._exact_text: str | None = None
         self._min = -np.inf
         self._max = np.inf
         self._step = 1 if self._only_int else 0.01
@@ -1640,6 +1648,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
         return self._value
 
     def text(self) -> str:
+        if self._exact_float and self._exact_text is not None:
+            return self._exact_text
         return self.textFromValue(self.value())
 
     def textFromValue(self, value) -> str:
@@ -1718,6 +1728,7 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
             val = round(val)
 
         self._lastvalue, self._value = self._value, val
+        self._exact_text = None
 
         self.valueChanged.emit(self.value())
         line = self.lineEdit()
@@ -1727,6 +1738,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
 
     def fixup(self, _):
         # Called when the spinbox loses focus with an invalid or intermediate string
+        if self._exact_float:
+            return self.textFromValue(self.value())
         return self.textFromValue(self._lastvalue)
 
     def validate(self, strn, pos):
@@ -1749,7 +1762,27 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def editingFinishedEvent(self) -> None:
         line = self.lineEdit()
         if line is not None:
-            self.setValue(self.valueFromText(line.text()))
+            text = line.text()
+            try:
+                value = self.valueFromText(text)
+            except ValueError:
+                if self._exact_float:
+                    self.setValue(self.value())
+                    return
+                raise
+            if (
+                self._exact_float
+                and not self._only_int
+                and value >= self.minimum()
+                and value <= self.maximum()
+            ):
+                self._lastvalue, self._value = self._value, value
+                self._exact_text = text
+                self.valueChanged.emit(self.value())
+                line.setText(text)
+                self.textChanged.emit(self.text())
+            else:
+                self.setValue(value)
 
     def keyPressEvent(self, evt) -> None:
         line = self.lineEdit()
