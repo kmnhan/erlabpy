@@ -5110,7 +5110,7 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
 
         manager._update_info()
         derivation = metadata_derivation_texts(manager)
-        assert any("Average" in line for line in derivation)
+        assert any("Aggregate" in line for line in derivation)
 
         updated = data.copy(deep=True)
         updated.data = np.asarray(updated.data) + 10
@@ -5155,11 +5155,11 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
         assert root.source_spec is None
         assert root.provenance_spec is not None
         assert root.provenance_spec.derivation_code() == (
-            'derived = data\nderived = derived.qsel.average("x")'
+            'derived = data\nderived = derived.qsel.mean("x")'
         )
         xr.testing.assert_identical(
             root_tool.slicer_area._data.rename(None),
-            data.qsel.average("x").rename(None),
+            data.qsel.mean("x").rename(None),
         )
 
         manager.tree_view.clearSelection()
@@ -5168,8 +5168,63 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
         derivation = metadata_derivation_texts(manager)
         assert derivation == [
             "Start from current parent ImageTool data",
-            'Average(dims=("x",))',
+            'Aggregate(dims=("x",), func="mean")',
         ]
+
+
+def test_manager_aggregate_child_refreshes_from_parent(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+
+        def _nest_sum(dialog) -> None:
+            dialog.dim_checks["x"].setChecked(True)
+            dialog.reducer_combo.setCurrentText("Sum")
+            set_transform_launch_mode(dialog, "nest")
+
+        accept_dialog(parent_tool.mnb._aggregate, pre_call=_nest_sum)
+
+        parent = manager._imagetool_wrappers[0]
+        qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
+        child_uid = parent._childtool_indices[0]
+        child_node = manager._child_node(child_uid)
+
+        assert child_node.source_spec is not None
+        assert [op.op for op in child_node.source_spec.operations] == [
+            "qsel_aggregate",
+            "rename",
+        ]
+        xr.testing.assert_identical(
+            fetch(child_uid).rename(None), data.qsel.sum("x").rename(None)
+        )
+
+        updated = data + 10
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(lambda: child_node.source_state == "stale", timeout=5000)
+        assert child_node._update_from_parent_source() is True
+        xr.testing.assert_identical(
+            fetch(child_uid).rename(None), updated.qsel.sum("x").rename(None)
+        )
 
 
 def test_manager_file_backed_replace_current_keeps_file_provenance(
@@ -5215,12 +5270,12 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         assert len(root.provenance_spec.replay_stages) == 1
         assert root.provenance_spec.replay_stages[0].source_kind == "full_data"
         assert [op.op for op in root.provenance_spec.replay_stages[0].operations] == [
-            "average",
+            "qsel_aggregate",
             "rename",
         ]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
-        assert any("Average" in entry.label for entry in entries)
+        assert any("Aggregate" in entry.label for entry in entries)
 
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
@@ -5251,7 +5306,7 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
             derived.rename(None),
             xr.load_dataarray(file_path, engine="h5netcdf")
             .astype(np.float64)
-            .qsel.average("alpha")
+            .qsel.mean("alpha")
             .rename(None),
         )
 
@@ -5301,7 +5356,7 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         assert [
             operation["op"]
             for operation in provenance_payload["replay_stages"][0]["operations"]
-        ] == ["average", "rename"]
+        ] == ["qsel_aggregate", "rename"]
         assert (
             provenance_payload["file_load_source"]["replay_call"]["target"]
             == "xarray.load_dataarray"
@@ -5344,7 +5399,7 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         assert detached_tool.slicer_area._file_path is None
         xr.testing.assert_identical(
             fetch(1).rename(None),
-            updated.astype(np.float64).qsel.average("alpha").rename(None),
+            updated.astype(np.float64).qsel.mean("alpha").rename(None),
         )
 
         file_path.unlink()
@@ -5623,7 +5678,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         child_tool = manager.get_imagetool(child_uid)
         xr.testing.assert_identical(
             child_tool.slicer_area._data.rename(None),
-            data.qsel.average("x").rename(None),
+            data.qsel.mean("x").rename(None),
         )
 
         manager.tree_view.clearSelection()
@@ -5633,7 +5688,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert details["Kind"] == "ImageTool"
         assert "Added" in details
         derivation = metadata_derivation_texts(manager)
-        assert any("Average" in line for line in derivation)
+        assert any("Aggregate" in line for line in derivation)
         assert all("rename(" not in line for line in derivation)
 
         copied: list[str] = []
@@ -5655,12 +5710,12 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
                 "erlab.interactive.imagetool.provenance.ToolProvenanceSpec",
                 child_node.source_spec,
             ).operations
-            if op.op == "average"
+            if op.op == "qsel_aggregate"
         ]
-        assert [op.op for op in transforms] == ["average", "average"]
+        assert [op.op for op in transforms] == ["qsel_aggregate", "qsel_aggregate"]
         xr.testing.assert_identical(
             child_tool.slicer_area._data.rename(None),
-            data.qsel.average("x").qsel.average("y").rename(None),
+            data.qsel.mean("x").qsel.mean("y").rename(None),
         )
 
         manager.tree_view.clearSelection()
@@ -5669,9 +5724,9 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         derivation = metadata_derivation_texts(manager)
         assert derivation[0] == "Start from current parent ImageTool data"
         assert len(derivation) == 3
-        assert "Average" in derivation[1]
+        assert "Aggregate" in derivation[1]
         assert "dims=" in derivation[1]
-        assert "Average" in derivation[2]
+        assert "Aggregate" in derivation[2]
         assert "dims=" in derivation[2]
         manager.metadata_derivation_list.setFocus()
         select_metadata_rows(manager, [0])
@@ -5696,7 +5751,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert isinstance(selected_result, xr.DataArray)
         xr.testing.assert_identical(
             selected_result.rename(None),
-            data.qsel.average("x").qsel.average("y").rename(None),
+            data.qsel.mean("x").qsel.mean("y").rename(None),
         )
 
         menu = manager._build_metadata_derivation_menu()
@@ -5710,7 +5765,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert isinstance(selected_result, xr.DataArray)
         xr.testing.assert_identical(
             selected_result.rename(None),
-            data.qsel.average("x").qsel.average("y").rename(None),
+            data.qsel.mean("x").qsel.mean("y").rename(None),
         )
 
         monkeypatch.setattr(
@@ -5730,7 +5785,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert isinstance(full_result, xr.DataArray)
         xr.testing.assert_identical(
             full_result.rename(None),
-            data.qsel.average("x").qsel.average("y").rename(None),
+            data.qsel.mean("x").qsel.mean("y").rename(None),
         )
         assert ".rename(" not in copied[-1]
 
@@ -5754,7 +5809,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert child_node._update_from_parent_source() is True
         xr.testing.assert_identical(
             child_tool.slicer_area._data.rename(None),
-            updated.qsel.average("x").qsel.average("y").rename(None),
+            updated.qsel.mean("x").qsel.mean("y").rename(None),
         )
 
         def _detach_average(dialog) -> None:
@@ -5778,18 +5833,23 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
         detached_transforms = [
-            op for op in detached.provenance_spec.operations if op.op == "average"
+            op
+            for op in detached.provenance_spec.operations
+            if op.op == "qsel_aggregate"
         ]
-        assert [op.op for op in detached_transforms] == ["average", "average"]
+        assert [op.op for op in detached_transforms] == [
+            "qsel_aggregate",
+            "qsel_aggregate",
+        ]
         assert detached.provenance_spec.derivation_code() == (
             "derived = data\n"
-            'derived = derived.qsel.average("x")\n'
-            'derived = derived.qsel.average("y")'
+            'derived = derived.qsel.mean("x")\n'
+            'derived = derived.qsel.mean("y")'
         )
         assert detached.provenance_spec.derivation_code() != detached_derivation_before
         xr.testing.assert_identical(
             detached_tool.slicer_area._data.rename(None),
-            updated.qsel.average("x").qsel.average("y").rename(None),
+            updated.qsel.mean("x").qsel.mean("y").rename(None),
         )
         detached_before = detached_tool.slicer_area._data.copy(deep=True)
 
@@ -5799,8 +5859,8 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         detached_derivation = metadata_derivation_texts(manager)
         assert detached_derivation[0] == "Start from current parent ImageTool data"
         assert len(detached_derivation) == 3
-        assert "Average" in detached_derivation[1]
-        assert "Average" in detached_derivation[2]
+        assert "Aggregate" in detached_derivation[1]
+        assert "Aggregate" in detached_derivation[2]
 
         duplicated_detached_index = typing.cast("int", manager.duplicate_imagetool(1))
         duplicated_detached = manager._imagetool_wrappers[duplicated_detached_index]
@@ -6477,9 +6537,7 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
         namespace = _exec_generated_code(
             copied[-1], {"source_data": test_data.copy(deep=True)}
         )
-        xr.testing.assert_identical(
-            namespace["derived"], test_data.qsel.average("alpha")
-        )
+        xr.testing.assert_identical(namespace["derived"], test_data.qsel.mean("alpha"))
 
 
 def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
@@ -6575,9 +6633,7 @@ def test_manager_file_backed_full_code_uses_load_code(
             copied[-1]
         )
         namespace = _exec_generated_code(copied[-1], {})
-        xr.testing.assert_identical(
-            namespace["derived"], test_data.qsel.average("alpha")
-        )
+        xr.testing.assert_identical(namespace["derived"], test_data.qsel.mean("alpha"))
 
 
 def test_manager_file_backed_full_code_prefers_scan_number_loader(
@@ -6632,7 +6688,7 @@ def test_manager_file_backed_full_code_prefers_scan_number_loader(
         assert copied
         assert f"erlab.io.load(2, data_dir={str(example_data_dir)!r})" in copied[-1]
         namespace = _exec_generated_code(copied[-1], {})
-        xr.testing.assert_identical(namespace["derived"], data.qsel.average("alpha"))
+        xr.testing.assert_identical(namespace["derived"], data.qsel.mean("alpha"))
 
 
 def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
@@ -13579,7 +13635,7 @@ def test_manager_workspace_roundtrip_recursive_nested_imagetools(
         assert loaded_child._update_from_parent_source() is True
         xr.testing.assert_identical(
             manager.get_imagetool(child_uid).slicer_area._data.rename(None),
-            updated.qsel.average("x").rename(None),
+            updated.qsel.mean("x").rename(None),
         )
 
 

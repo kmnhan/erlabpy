@@ -686,10 +686,24 @@ class RotationDialog(DataTransformDialog):
         )
 
 
-class AverageDialog(DataTransformDialog):
-    title = "Average Over Dimensions"
-    suffix = "_avg"
+class AggregateDialog(DataTransformDialog):
+    title = "Aggregate Over Dimensions"
     enable_copy = True
+
+    _REDUCERS: typing.ClassVar[dict[str, tuple[str, str]]] = {
+        "mean": ("Mean", "_avg"),
+        "min": ("Minimum", "_min"),
+        "max": ("Maximum", "_max"),
+        "sum": ("Sum", "_sum"),
+    }
+
+    @property
+    def suffix(self) -> str:
+        return self._REDUCERS[self._reducer][1]
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        pass
 
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Dimensions")
@@ -704,15 +718,28 @@ class AverageDialog(DataTransformDialog):
 
         self.layout_.addRow(dim_group)
 
+        self.reducer_combo = QtWidgets.QComboBox()
+        for reducer, (label, _) in self._REDUCERS.items():
+            self.reducer_combo.addItem(label, userData=reducer)
+        self.layout_.addRow("Reducer", self.reducer_combo)
+
     @property
     def _target_dims(self) -> tuple[Hashable, ...]:
         return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
 
+    @property
+    def _reducer(self) -> typing.Literal["mean", "min", "max", "sum"]:
+        return typing.cast(
+            "typing.Literal['mean', 'min', 'max', 'sum']",
+            self.reducer_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.AverageOperation(
-            dims=self._target_dims
+        return erlab.interactive.imagetool.provenance.QSelAggregationOperation(
+            dims=self._target_dims,
+            func=self._reducer,
         )
 
     @QtCore.Slot()
@@ -729,7 +756,8 @@ class AverageDialog(DataTransformDialog):
             QtWidgets.QMessageBox.warning(
                 self,
                 "Not Enough Dimensions Left",
-                "Data must have at least 1 dimension after averaging to be displayed.",
+                "Data must have at least 1 dimension after aggregation to be "
+                "displayed.",
             )
             return
 
@@ -742,7 +770,10 @@ class AverageDialog(DataTransformDialog):
             if len(self._target_dims) == 1 and isinstance(self._target_dims[0], str)
             else erlab.interactive.utils._parse_single_arg(self._target_dims)
         )
-        return f"{placeholder}.qsel.average({arg})"
+        return f"{placeholder}.qsel.{self._reducer}({arg})"
+
+
+AverageDialog = AggregateDialog
 
 
 class _SelectionRow:

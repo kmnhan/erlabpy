@@ -1611,7 +1611,7 @@ class ItoolPlotItem(pg.PlotItem):
         Non-uniform non-display axes are selected with ``isel`` while uniform
         non-display axes are selected with ``qsel`` (including width terms for binned
         selections). Binned non-uniform non-display axes are averaged via
-        ``qsel.average`` after indexing.
+        ``qsel.mean`` after indexing.
 
         Returns
         -------
@@ -1655,7 +1655,7 @@ class ItoolPlotItem(pg.PlotItem):
                     tuple(avg_nonuniform_dims)
                 )
             )
-            selected += f".qsel.average({avg_arg})"
+            selected += f".qsel.mean({avg_arg})"
         return selected
 
     def _plot_code_multicursor(self, *, placeholder_name: str | None = None) -> str:

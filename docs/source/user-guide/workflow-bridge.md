@@ -40,9 +40,10 @@ code for reproducibility and batch processing.
   - {guilabel}`Edit → Select Data…` or the right-click context menu of each plot
   - {meth}`xarray.DataArray.qsel`, {meth}`xarray.DataArray.sel`, and
     {meth}`xarray.DataArray.isel`
-- - Average over dimensions
-  - {ref}`Averaging dialog <imagetool-editing>`
-  - {meth}`xarray.DataArray.qsel.average`
+- - Aggregate over dimensions
+  - {ref}`Aggregation dialog <imagetool-editing>`
+  - {meth}`xarray.DataArray.qsel.mean`, {meth}`~xarray.DataArray.qsel.min`,
+    {meth}`~xarray.DataArray.qsel.max`, and {meth}`~xarray.DataArray.qsel.sum`
 - - Interpolate along a dimension
   - {ref}`Interpolation dialog <imagetool-editing>`
   - {meth}`xarray.DataArray.interp`
