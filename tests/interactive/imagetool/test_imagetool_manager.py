@@ -9467,6 +9467,154 @@ def test_workspace_window_title_placeholder_non_macos(monkeypatch) -> None:
     )
 
 
+def test_manager_workspace_window_title_sets_file_path_normally(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "normal.itws"
+        manager._workspace_path = workspace
+        manager._workspace_structure_modified = True
+        file_path_calls: list[str] = []
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
+            manager._update_workspace_window_title()
+
+        assert file_path_calls == [str(workspace)]
+        assert workspace.name in manager.windowTitle()
+        assert manager.isWindowModified()
+
+
+def test_manager_workspace_window_title_skips_file_path_during_macos_close(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "close-save.itws"
+        manager._workspace_path = workspace
+        manager._workspace_structure_modified = True
+        previous_closing = manager._closing_workspace_document
+        manager._closing_workspace_document = True
+
+        def _fail_if_called(_manager, _path: str) -> None:
+            raise AssertionError("setWindowFilePath should be skipped")
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+                patch.setattr(ImageToolManager, "setWindowFilePath", _fail_if_called)
+                manager._update_workspace_window_title()
+        finally:
+            manager._closing_workspace_document = previous_closing
+
+        assert workspace.name in manager.windowTitle()
+        assert manager.isWindowModified()
+
+
+def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "linux-close.itws"
+        manager._workspace_path = workspace
+        previous_closing = manager._closing_workspace_document
+        manager._closing_workspace_document = True
+        file_path_calls: list[str] = []
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(manager_mainwindow.sys, "platform", "linux")
+                patch.setattr(
+                    ImageToolManager,
+                    "setWindowFilePath",
+                    lambda _manager, path: file_path_calls.append(path),
+                )
+                manager._update_workspace_window_title()
+        finally:
+            manager._closing_workspace_document = previous_closing
+
+        assert file_path_calls == [str(workspace)]
+
+
+def test_manager_close_cancel_restores_workspace_document_closing_state(
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._workspace_structure_modified = True
+        manager._application_quit_requested = True
+        manager._closing_workspace_document = False
+        event = QtGui.QCloseEvent()
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager, "_confirm_save_dirty_workspace", lambda _message: False
+            )
+            manager.closeEvent(event)
+
+        assert not event.isAccepted()
+        assert not manager._closing_workspace_document
+        assert not manager._application_quit_requested
+
+
+def test_manager_close_save_path_skips_macos_file_path_update(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager._workspace_path = tmp_path / "close-save.itws"
+        manager._workspace_structure_modified = True
+        save_closing_states: list[bool] = []
+
+        def _fail_during_close_file_path_update(
+            window: ImageToolManager, _path: str
+        ) -> None:
+            if window._closing_workspace_document:
+                raise AssertionError("setWindowFilePath should be skipped")
+
+        def _save(*, native: bool = True) -> bool:
+            save_closing_states.append(manager._closing_workspace_document)
+            manager._mark_workspace_clean()
+            return True
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                _fail_during_close_file_path_update,
+            )
+            patch.setattr(
+                QtWidgets.QMessageBox,
+                "exec",
+                lambda _msg_box: QtWidgets.QMessageBox.StandardButton.Save,
+            )
+            patch.setattr(manager, "save", _save)
+            assert manager.close()
+
+        assert save_closing_states == [True]
+        assert not manager._closing_workspace_document
+
+
 def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> None:
     fname = tmp_path / "busy-message.itws"
     calls: list[dict[str, object]] = []
