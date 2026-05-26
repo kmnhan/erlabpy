@@ -1513,8 +1513,8 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     exact_float
         If `True`, floating-point text entered by the user is kept as the accepted
         display text and parsed directly with :class:`float` instead of being
-        reformatted to ``decimals`` on commit. Programmatic value changes still use
-        the normal formatting rules.
+        reformatted to ``decimals`` on commit. Programmatic value changes use the
+        shortest round-tripping float representation.
     value
         Initial value of the spinbox.
 
@@ -1655,12 +1655,25 @@ class BetterSpinBox(QtWidgets.QAbstractSpinBox):
     def textFromValue(self, value) -> str:
         if (not self._only_int) or (not np.isfinite(value)):
             if self._is_scientific:
+                if self._exact_float and not self._only_int:
+                    return self.prefix() + np.format_float_scientific(
+                        value,
+                        unique=True,
+                        trim=self._trim,
+                        exp_digits=1,
+                    )
                 return self.prefix() + np.format_float_scientific(
                     value,
                     precision=self.decimals(),
                     unique=False,
                     trim=self._trim,
                     exp_digits=1,
+                )
+            if self._exact_float and not self._only_int:
+                return self.prefix() + np.format_float_positional(
+                    value,
+                    unique=True,
+                    trim=self._trim,
                 )
             return self.prefix() + np.format_float_positional(
                 value,

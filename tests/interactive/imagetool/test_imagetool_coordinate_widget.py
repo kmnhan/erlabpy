@@ -45,6 +45,23 @@ def test_coordinate_widget_mode_switch(qtbot):
     assert widget.spin1.value() == 5.0
 
 
+def test_coordinate_widget_delta_mode_preserves_round_trip_display(qtbot):
+    arr = np.linspace(-18.290462493896484, 19.133707046508789, 800)
+    widget = CoordinateEditorWidget(arr)
+    qtbot.addWidget(widget)
+
+    widget.mode_combo.setCurrentText("Delta")
+    delta_text = "0.04683876037597656"
+
+    assert widget.spin1.text() == delta_text
+    assert widget.spin1.value() == float(arr[1] - arr[0])
+
+    _set_spinbox_text(widget.spin1, widget.spin1.text())
+
+    assert widget.spin1.value() == float(arr[1] - arr[0])
+    np.testing.assert_allclose(widget._current_values_delta, arr, rtol=0, atol=0)
+
+
 def test_coordinate_widget_update_table(qtbot):
     arr = np.linspace(2, 4, 3)
     widget = CoordinateEditorWidget(arr)

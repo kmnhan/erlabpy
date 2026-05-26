@@ -145,18 +145,53 @@ def test_better_spinbox_exact_float_programmatic_paths_format(qtbot) -> None:
 
     _commit_spin_text(spin, "1.23456789012345")
     spin.setValue(2.34567)
-    assert spin.text() == np.format_float_positional(
-        2.34567, precision=3, unique=False, fractional=True, trim="0"
-    )
+    assert spin.text() == np.format_float_positional(2.34567, unique=True, trim="0")
 
     _commit_spin_text(spin, "1.23456789012345")
     spin.stepBy(1)
     assert spin.text() == np.format_float_positional(
         float("1.23456789012345") + spin.singleStep(),
-        precision=3,
-        unique=False,
-        fractional=True,
+        unique=True,
         trim="0",
+    )
+
+
+def test_better_spinbox_exact_float_programmatic_paths_round_trip(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(decimals=3, exact_float=True, trim="0")
+    qtbot.addWidget(spin)
+
+    value = 0.04683876037597656
+    spin.setValue(value)
+
+    assert spin.text() == "0.04683876037597656"
+    assert float(spin.text()) == value
+
+
+def test_better_spinbox_exact_float_scientific_programmatic_paths_format(
+    qtbot,
+) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(
+        decimals=3, exact_float=True, scientific=True, trim="0"
+    )
+    qtbot.addWidget(spin)
+
+    value = 0.04683876037597656
+    spin.setValue(value)
+
+    assert spin.text() == np.format_float_scientific(
+        value, unique=True, trim="0", exp_digits=1
+    )
+    assert float(spin.text()) == value
+
+
+def test_better_spinbox_non_exact_programmatic_paths_format(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(decimals=3, trim="0")
+    qtbot.addWidget(spin)
+
+    spin.setValue(2.34567)
+
+    assert spin.text() == np.format_float_positional(
+        2.34567, precision=3, unique=False, fractional=True, trim="0"
     )
 
 
@@ -170,7 +205,7 @@ def test_better_spinbox_exact_float_invalid_input_uses_formatted_value(qtbot) ->
 
     assert spin.value() == float(literal)
     assert spin.text() == np.format_float_positional(
-        float(literal), precision=3, unique=False, fractional=True, trim="0"
+        float(literal), unique=True, trim="0"
     )
 
 
@@ -182,7 +217,7 @@ def test_better_spinbox_exact_float_fixup_uses_formatted_value(qtbot) -> None:
     _commit_spin_text(spin, literal)
 
     assert spin.fixup("") == np.format_float_positional(
-        float(literal), precision=3, unique=False, fractional=True, trim="0"
+        float(literal), unique=True, trim="0"
     )
 
     regular_spin = erlab.interactive.utils.BetterSpinBox(decimals=3, trim="0")
@@ -202,9 +237,7 @@ def test_better_spinbox_exact_float_out_of_range_formats_correction(qtbot) -> No
     _commit_spin_text(spin, "1.23456789012345")
 
     assert spin.value() == 1.0
-    assert spin.text() == np.format_float_positional(
-        1.0, precision=3, unique=False, fractional=True, trim="0"
-    )
+    assert spin.text() == np.format_float_positional(1.0, unique=True, trim="0")
 
 
 def test_better_spinbox_non_exact_invalid_input_raises(qtbot) -> None:
