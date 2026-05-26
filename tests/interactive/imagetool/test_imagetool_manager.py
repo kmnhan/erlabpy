@@ -15898,6 +15898,70 @@ def test_open_multiple_files_locked_workspace_does_not_fall_through_to_loaders(
     assert lock_calls == [fname]
 
 
+@pytest.mark.parametrize("suffix", [".ITWS", ".ItWs"])
+def test_handle_dropped_files_treats_itws_suffix_case_insensitively(
+    monkeypatch,
+    tmp_path,
+    suffix: str,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    calls: list[tuple[list[pathlib.Path], bool]] = []
+    fname = tmp_path / f"workspace{suffix}"
+    fname.write_bytes(b"")
+
+    def _record_open(paths, try_workspace: bool = False) -> None:
+        calls.append((paths, try_workspace))
+
+    with manager_context() as manager:
+        monkeypatch.setattr(manager, "open_multiple_files", _record_open)
+        manager._handle_dropped_files([fname])
+
+    assert calls == [([fname], True)]
+
+
+def test_open_multiple_files_dropped_itws_error_does_not_fall_through_to_loaders(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    critical_calls: list[tuple[typing.Any, ...]] = []
+    fname = tmp_path / "broken.itws"
+    fname.write_text("not a workspace", encoding="utf-8")
+
+    def _fake_critical(*args, **kwargs):
+        critical_calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    def _raise_open_datatree(*args, **kwargs):
+        raise RuntimeError("cannot read workspace")
+
+    def _file_loaders_should_not_run(*args, **kwargs):
+        raise AssertionError("broken .itws should not fall through to loaders")
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_fake_critical),
+    )
+    monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_open_datatree)
+    monkeypatch.setattr(
+        erlab.interactive.utils, "file_loaders", _file_loaders_should_not_run
+    )
+
+    with manager_context() as manager:
+        manager.open_multiple_files([fname], try_workspace=True)
+
+    assert len(critical_calls) == 1
+    assert critical_calls[0][0][2] == (
+        "An error occurred while loading the workspace file."
+    )
+    assert "cannot read workspace" in critical_calls[0][1]["detailed_text"]
+
+
 def test_open_retry_preserves_non_native_dialog(
     qtbot,
     monkeypatch,
