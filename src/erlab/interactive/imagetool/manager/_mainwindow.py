@@ -2181,7 +2181,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 if self._dependency_ref_has_recorded_file(spec, ref):
                     current += "; recorded source file found"
             parts.append(f"{ref.name}: {ref.label} ({current})")
-        return "; ".join(parts)
+        return "\n".join(parts)
 
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
         node = self._node_for_target(target)
@@ -3190,6 +3190,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             key_label = QtWidgets.QLabel(field.label, self.metadata_details_widget)
             key_label.setForegroundRole(QtGui.QPalette.ColorRole.Text)
             key_label.setEnabled(False)
+            key_label.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+            )
             value_label: QtWidgets.QLabel
             if field.details is not None:
                 value_label = _ElidedInteractiveLabel(
@@ -3211,6 +3214,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 value_label.setWordWrap(field.wrap)
                 value_label.setToolTip(field.value)
                 value_label.setMinimumWidth(0)
+                value_label.setAlignment(
+                    QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+                )
+                if field.wrap:
+                    value_label.setSizePolicy(
+                        QtWidgets.QSizePolicy.Policy.Expanding,
+                        QtWidgets.QSizePolicy.Policy.Minimum,
+                    )
             if field.monospace:
                 value_label.setFont(self._metadata_monospace_font)
             self.metadata_details_layout.addWidget(key_label, row, 0)

@@ -479,9 +479,6 @@ class _ManagedWindowNode(QtCore.QObject):
                     details=load_source_details,
                 )
             )
-        dependency_label = self.manager.dependency_status_label_for_uid(self.uid)
-        if dependency_label is not None:
-            fields.append(_MetadataField("Inputs", dependency_label))
         dependency_inputs = self.manager.dependency_input_summary_for_uid(self.uid)
         if dependency_inputs is not None:
             fields.append(_MetadataField("Inputs", dependency_inputs, wrap=True))

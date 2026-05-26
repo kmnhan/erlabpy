@@ -413,6 +413,16 @@ def metadata_detail_map(manager: ImageToolManager) -> dict[str, str]:
     return details
 
 
+def metadata_detail_labels(manager: ImageToolManager) -> list[str]:
+    labels: list[str] = []
+    for row in range(manager.metadata_details_layout.rowCount()):
+        item = manager.metadata_details_layout.itemAtPosition(row, 0)
+        widget = None if item is None else item.widget()
+        if isinstance(widget, QtWidgets.QLabel):
+            labels.append(widget.text())
+    return labels
+
+
 def select_metadata_rows(
     manager: ImageToolManager, rows: list[int], clear: bool = True
 ) -> None:
@@ -16391,7 +16401,11 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         manager.tree_view.deselect_all()
         select_tools(manager, [2])
         manager._update_info()
-        assert "recorded source file found" in metadata_detail_map(manager)["Inputs"]
+        details = metadata_detail_map(manager)
+        assert metadata_detail_labels(manager).count("Inputs") == 1
+        assert manager._metadata_detail_labels["Inputs"].wordWrap()
+        assert "\n" in details["Inputs"]
+        assert "recorded source file found" in details["Inputs"]
 
         manager.reload_selected()
 
