@@ -253,6 +253,10 @@ script or notebook for reproducibility.
 - {guilabel}`Edit → Interpolate…` opens the {guilabel}`Interpolate` dialog. Choose one
   dimension, enter the target coordinate values, and interpolate with
   {meth}`xarray.DataArray.interp` using `linear` or `nearest`.
+- {guilabel}`Edit → Leading Edge…` opens the {guilabel}`Leading Edge` dialog. Choose the
+  dimension to extract the leading edge from, set the fraction of the curve maximum, and
+  choose whether the edge is searched toward larger or smaller coordinate values with
+  {func}`erlab.analysis.interpolate.leading_edge`.
 - {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes
   for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction
   function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`,

@@ -80,6 +80,7 @@ __all__ = [
     "ImageToolSelectionSourceBinding",
     "InterpolationOperation",
     "IselOperation",
+    "LeadingEdgeOperation",
     "MaskWithPolygonOperation",
     "QSelAggregationOperation",
     "QSelOperation",
@@ -2160,6 +2161,40 @@ class InterpolationOperation(ToolProvenanceOperation):
         }
         return DerivationEntry(
             f"Interpolate({_format_derivation_value(label_kwargs)})",
+            self.code("derived", assign="derived"),
+            True,
+        )
+
+
+class LeadingEdgeOperation(ToolProvenanceOperation):
+    op: typing.Literal["leading_edge"] = "leading_edge"
+    fraction: float = pydantic.Field(default=0.5, gt=0.0, le=1.0)
+    dim: ProvenanceHashable = "eV"
+    direction: typing.Literal["positive", "negative"] = "positive"
+
+    @property
+    def kwargs(self) -> dict[str, typing.Any]:
+        return {
+            "fraction": self.fraction,
+            "dim": self.dim,
+            "direction": self.direction,
+        }
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.interpolate.leading_edge(data, **self.kwargs)
+
+    def code(self, data_name: str, *, assign: str | None = None) -> str:
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.interpolate.leading_edge,
+            [f"|{data_name}|"],
+            self.kwargs,
+            module="era.interpolate",
+            assign=assign,
+        )
+
+    def derivation_entry(self) -> DerivationEntry:
+        return DerivationEntry(
+            f"Leading Edge({_format_derivation_value(self.kwargs)})",
             self.code("derived", assign="derived"),
             True,
         )

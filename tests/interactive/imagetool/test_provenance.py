@@ -451,6 +451,47 @@ def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
     xr.testing.assert_identical(namespace["derived"], expected)
 
 
+def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    ev = np.linspace(0.0, 4.0, 5)
+    data = xr.DataArray(
+        np.vstack([4.0 - ev, 8.0 - 2.0 * ev, 2.0 - 0.5 * ev]),
+        dims=("x", "eV"),
+        coords={"x": np.arange(3), "eV": ev},
+        name="data",
+    )
+    operation = prov.LeadingEdgeOperation(
+        fraction=0.5,
+        dim="eV",
+        direction="positive",
+    )
+    expected = erlab.analysis.interpolate.leading_edge(data)
+
+    xr.testing.assert_identical(operation.apply(data, parent_data=data), expected)
+    parsed = prov.parse_tool_provenance_operation(operation.model_dump(mode="json"))
+    assert parsed == operation
+    xr.testing.assert_identical(parsed.apply(data, parent_data=data), expected)
+
+    payload = prov.full_data(operation).model_dump(mode="json")
+    json.dumps(payload)
+    reparsed_spec = prov.parse_tool_provenance_spec(payload)
+    assert reparsed_spec is not None
+    xr.testing.assert_identical(reparsed_spec.apply(data), expected)
+
+    entry = operation.derivation_entry()
+    assert entry.copyable is True
+    assert entry.code is not None
+    assert "leading_edge" in entry.code
+    namespace = _exec_generated_code(entry.code, {"derived": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+    code = prov.full_data(operation).to_replay_spec().display_code(parent_data=data)
+    assert code is not None
+    assert any(call.endswith(".leading_edge") for call in _generated_call_names(code))
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
 @pytest.mark.parametrize(
     ("values", "expected_call"),
     [

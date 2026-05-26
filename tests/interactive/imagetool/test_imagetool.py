@@ -42,6 +42,7 @@ from erlab.interactive.imagetool.dialogs import (
     EdgeCorrectionDialog,
     GaussianFilterDialog,
     InterpolationDialog,
+    LeadingEdgeDialog,
     NormalizeDialog,
     RenameDimsCoordsDialog,
     ROIMaskDialog,
@@ -5570,6 +5571,178 @@ def test_itool_interpolate_nonuniform_public_dims(qtbot, accept_dialog) -> None:
     assert isinstance(derived, xr.DataArray)
     xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
 
+    win.close()
+
+
+def test_itool_leading_edge(qtbot, accept_dialog) -> None:
+    ev = np.linspace(0.0, 4.0, 5)
+    data = xr.DataArray(
+        np.vstack([4.0 - ev, 8.0 - 2.0 * ev, 2.0 - 0.5 * ev]),
+        dims=["x", "eV"],
+        coords={"x": np.arange(3), "eV": ev},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert "leadingEdgeAct" in win.mnb.action_dict
+
+    def _set_dialog_params(dialog: LeadingEdgeDialog) -> None:
+        assert dialog.dim_combo.currentData(QtCore.Qt.ItemDataRole.UserRole) == "eV"
+        dialog.fraction_spin.setValue(0.5)
+        dialog.direction_combo.setCurrentIndex(
+            dialog.direction_combo.findData("positive", QtCore.Qt.ItemDataRole.UserRole)
+        )
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._leading_edge, pre_call=_set_dialog_params)
+
+    expected = erlab.analysis.interpolate.leading_edge(data)
+    xarray.testing.assert_identical(
+        win.slicer_area._data.rename(None), expected.rename(None)
+    )
+    assert win.slicer_area._data.name == "scan_leading_edge_eV"
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()), expected
+    )
+
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
+    derived = namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
+
+    win.close()
+
+
+def test_leading_edge_dialog_rejects_no_dimension(qtbot, monkeypatch) -> None:
+    ev = np.linspace(0.0, 4.0, 5)
+    data = xr.DataArray(
+        np.vstack([4.0 - ev, 8.0 - 2.0 * ev]),
+        dims=["x", "eV"],
+        coords={"x": np.arange(2), "eV": ev},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = LeadingEdgeDialog(win.slicer_area)
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
+    dialog.dim_combo.setCurrentIndex(-1)
+
+    warning_calls: list[tuple[object, ...]] = []
+
+    def _record_warning(*args, **kwargs):
+        warning_calls.append(args)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+    assert dialog.suffix == "_leading_edge_coord"
+    dialog.suffix = "ignored"
+    assert dialog.make_code() == ""
+    with pytest.raises(ValueError, match="No dimension selected"):
+        dialog.source_transform_operation()
+    dialog.accept()
+
+    assert len(warning_calls) == 1
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+def test_leading_edge_dialog_defaults_and_suffix(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=["1 axis", "energy"],
+        coords={"1 axis": np.arange(2), "energy": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = LeadingEdgeDialog(win.slicer_area)
+
+    assert dialog.dim_combo.currentData(QtCore.Qt.ItemDataRole.UserRole) == "1 axis"
+    assert dialog.suffix == "_leading_edge_coord_1_axis"
+
+    dialog.close()
+    win.close()
+
+
+@pytest.mark.parametrize(
+    "coord",
+    [
+        np.zeros((2, 2)),
+        np.array(["a", "b"]),
+        np.array([0.0, np.nan]),
+        np.array([0.0, 0.0]),
+    ],
+)
+def test_leading_edge_dialog_source_coord_validation(qtbot, coord) -> None:
+    data = xr.DataArray(
+        np.arange(6, dtype=float).reshape((2, 3)),
+        dims=["x", "eV"],
+        coords={"x": np.arange(2), "eV": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = LeadingEdgeDialog(win.slicer_area)
+    dialog._source_data = {"eV": types.SimpleNamespace(values=coord)}
+
+    assert dialog._source_coord_error("eV") is not None
+
+    dialog.close()
+    win.close()
+
+
+def test_leading_edge_dialog_rejects_invalid_source_coord(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(10, dtype=float).reshape((2, 5)),
+        dims=["x", "eV"],
+        coords={"x": np.arange(2), "eV": np.array([0.0, 1.0, 1.0, 2.0, 3.0])},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = LeadingEdgeDialog(win.slicer_area)
+    dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    warning_calls: list[tuple[object, ...]] = []
+
+    def _record_warning(*args, **kwargs):
+        warning_calls.append(args)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
+    assert dialog.make_code() == ""
+    dialog.accept()
+
+    assert len(warning_calls) == 1
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), data)
+
+    dialog.close()
+    win.close()
+
+
+def test_leading_edge_dialog_make_code_suppresses_operation_errors(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(10, dtype=float).reshape((2, 5)),
+        dims=["x", "eV"],
+        coords={"x": np.arange(2), "eV": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = LeadingEdgeDialog(win.slicer_area)
+
+    def _raise_operation_error():
+        raise RuntimeError
+
+    monkeypatch.setattr(dialog, "source_transform_operation", _raise_operation_error)
+    assert dialog.make_code() == ""
+
+    dialog.close()
     win.close()
 
 
