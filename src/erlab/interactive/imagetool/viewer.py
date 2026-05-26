@@ -38,7 +38,7 @@ from erlab.interactive.imagetool._viewer_dialogs import (
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Callable, Collection, Hashable, Iterable
+    from collections.abc import Callable, Collection, Hashable, Iterable, Mapping
 
     import qtawesome
 
@@ -81,8 +81,8 @@ class PlotItemState(typing.TypedDict):
     """A dictionary containing the state of a `PlotItem` instance."""
 
     vb_aspect_locked: bool | float
-    vb_x_inverted: bool
-    vb_y_inverted: bool
+    vb_x_inverted: typing.NotRequired[bool]
+    vb_y_inverted: typing.NotRequired[bool]
     vb_autorange: typing.NotRequired[tuple[bool, bool]]
     roi_states: typing.NotRequired[list[dict[str, typing.Any]]]
     guideline_state: typing.NotRequired[GuidelineState]
@@ -95,6 +95,7 @@ class ImageSlicerState(typing.TypedDict):
     slice: ArraySlicerState
     current_cursor: int
     manual_limits: dict[str, list[float]]
+    axis_inversions: typing.NotRequired[dict[str, bool]]
     cursor_colors: list[str]
     controls_visible: typing.NotRequired[bool]
     file_path: typing.NotRequired[str | None]
@@ -1195,6 +1196,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.manual_limits: dict[str, list[float]] = {}
         # Dictionary of current axes limits for each data dimension to ensure all plots
         # show the same range for a given dimension. The keys are the dimension names.
+        self.axis_inversions: dict[str, bool] = {}
+        # Dictionary of inverted view state for each plotted data dimension.
 
         pkw = {"image_cls": image_cls, "plotdata_cls": plotdata_cls}
         self._plots: tuple[ItoolGraphicsLayoutWidget, ...] = (
@@ -1364,6 +1367,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "slice": self.array_slicer.state,
             "current_cursor": int(self.current_cursor),
             "manual_limits": copy.deepcopy(self.manual_limits),
+            "axis_inversions": copy.deepcopy(self.axis_inversions),
             "splitter_sizes": self.splitter_sizes,
             "file_path": str(self._file_path) if self._file_path is not None else None,
             "load_func": load_func,
@@ -1408,6 +1412,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if ax.is_image:
                 ax.sync_guidelines_to_active_cursor()
         logger.debug("Restored array slicer state")
+
+        axis_inversions = state.get("axis_inversions", None)
+        if axis_inversions is None:
+            axis_inversions = self._axis_inversions_from_plotitem_states(
+                plotitem_states
+            )
+        self.axis_inversions = self._normalized_axis_inversions(axis_inversions)
+        self.apply_axis_inversions()
+        logger.debug("Restored axis inversions")
 
         file_path = state.get("file_path", None)
         if file_path is not None:
@@ -2308,6 +2321,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             for ax in self.axes:
                 ax.refresh_labels()
                 ax.update_manual_range()  # Handle axis limits (in case of transpose)
+                ax.update_axis_inversions()
 
     @QtCore.Slot(tuple)
     @link_slicer
@@ -2490,6 +2504,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.array_slicer.add_cursor(update=False)
 
         self.connect_signals()
+        self.axis_inversions = self._normalized_axis_inversions(self.axis_inversions)
 
         if ndim_changed:
             self.adjust_layout()
@@ -2786,6 +2801,51 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.manual_limits = copy.deepcopy(manual_limits)
         for ax in self.axes:
             ax.update_manual_range()
+
+    def _normalized_axis_inversions(
+        self, axis_inversions: Mapping[str, bool] | None
+    ) -> dict[str, bool]:
+        if axis_inversions is None:
+            return {}
+        valid_dims = {str(dim) for dim in self.data.dims}
+        return {
+            str(dim): True
+            for dim, inverted in axis_inversions.items()
+            if bool(inverted) and str(dim) in valid_dims
+        }
+
+    def _axis_inversions_from_plotitem_states(
+        self, plotitem_states: list[PlotItemState] | None
+    ) -> dict[str, bool]:
+        if plotitem_states is None:
+            return {}
+        axis_inversions: dict[str, bool] = {}
+        for ax, plotitem_state in zip(self.axes, plotitem_states, strict=False):
+            for dim, key in zip(
+                ax.axis_dims_uniform, ("vb_x_inverted", "vb_y_inverted"), strict=True
+            ):
+                if dim is not None and bool(plotitem_state.get(key, False)):
+                    axis_inversions[dim] = True
+        return axis_inversions
+
+    def apply_axis_inversions(self) -> None:
+        for ax in self.axes:
+            ax.update_axis_inversions()
+
+    @link_slicer
+    @record_history
+    def set_axis_inverted(self, dim: str, inverted: bool) -> None:
+        valid_dims = {str(dim_name) for dim_name in self.data.dims}
+        if dim not in valid_dims:
+            return
+        if bool(self.axis_inversions.get(dim, False)) == inverted:
+            return
+
+        if inverted:
+            self.axis_inversions[dim] = True
+        else:
+            self.axis_inversions.pop(dim, None)
+        self.apply_axis_inversions()
 
     def propagate_limit_change(self, axes: ItoolPlotItem) -> None:
         """Propagate manual limits changes to all linked slicers.

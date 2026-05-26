@@ -720,6 +720,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                 "actions": {
                     "viewAllAct": self.slicer_area.view_all_act,
                     "transposeAct": self.slicer_area.transpose_act,
+                    "invertAxisMenu": {"title": "Invert Axis", "actions": {}},
                     "toggleControlsAct": self.image_tool.toggle_controls_act,
                     "sep0": {"separator": True},
                     "associatedAct": self.slicer_area.associated_coords_act,
@@ -839,6 +840,11 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         # Disable/Enable menus based on context
         self.menu_dict["fileMenu"].aboutToShow.connect(self._file_menu_visibility)
         self.menu_dict["viewMenu"].aboutToShow.connect(self._view_menu_visibility)
+        self.menu_dict["invertAxisMenu"].setObjectName("itool_invert_axis_menu")
+        self.menu_dict["invertAxisMenu"].aboutToShow.connect(
+            self._populate_invert_axis_menu
+        )
+        self._populate_invert_axis_menu()
 
     @QtCore.Slot()
     def _file_menu_visibility(self) -> None:
@@ -860,6 +866,25 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         self.action_dict["resetAct"].setEnabled(
             self.slicer_area._applied_func is not None
         )
+        self._populate_invert_axis_menu()
+
+    @QtCore.Slot()
+    def _populate_invert_axis_menu(self) -> None:
+        menu = self.menu_dict["invertAxisMenu"]
+        menu.clear()
+        for i, dim in enumerate(self.slicer_area.data.dims):
+            dim_name = str(dim)
+            action = QtGui.QAction(dim_name, menu)
+            action.setObjectName(f"itool_invert_axis_{i}_action")
+            action.setData(dim_name)
+            action.setCheckable(True)
+            action.setChecked(bool(self.slicer_area.axis_inversions.get(dim_name)))
+            action.toggled.connect(
+                lambda checked, *, name=dim_name: self.slicer_area.set_axis_inverted(
+                    name, checked
+                )
+            )
+            menu.addAction(action)
 
     def execute_dialog(self, dialog_cls: type[QtWidgets.QDialog]) -> None:
         dialog = dialog_cls(self.slicer_area)

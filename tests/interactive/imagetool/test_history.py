@@ -39,14 +39,13 @@ def _base_state() -> dict:
             "cursor_color_params": None,
         },
         "manual_limits": {},
+        "axis_inversions": {},
         "file_path": None,
         "load_func": None,
         "controls_visible": True,
         "plotitem_states": [
             {
                 "vb_aspect_locked": False,
-                "vb_x_inverted": False,
-                "vb_y_inverted": False,
                 "vb_autorange": (True, True),
                 "roi_states": [],
             }
@@ -396,6 +395,17 @@ def test_describe_state_change_reports_manual_view_limits():
 
     assert label == "View limits changed"
     assert details == ("Manual view limits changed",)
+
+
+def test_describe_state_change_reports_axis_inversions():
+    prev = _base_state()
+    curr = copy.deepcopy(prev)
+    curr["axis_inversions"] = {"x": True}
+
+    label, details = _history.describe_state_change(prev, curr)
+
+    assert label == "Axis inversion changed"
+    assert details == ("Axis inversion changed",)
 
 
 def test_describe_state_change_reports_added_keys_and_generic_fallback():
