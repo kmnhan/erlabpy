@@ -968,6 +968,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self._workspace_lock: QtCore.QLockFile | None = None
         self._application_quit_requested: bool = False
+        self._closing_workspace_document: bool = False
         self._update_workspace_window_title()
 
         qapp = QtWidgets.QApplication.instance()
@@ -1672,7 +1673,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
             window_file_path = ""
         else:
             window_file_path = typing.cast("str", self.workspace_path)
-        self.setWindowFilePath(window_file_path)
+        # Work around a macOS Qt/Cocoa crash observed during close-time workspace
+        # saves in QWidget.setWindowFilePath() -> QImage.toCGImage(). The window is
+        # closing, so the document proxy icon update is unnecessary here. Add the
+        # QTBUG ID once a reproducible report exists and remove this guard once fixed.
+        if not (sys.platform == "darwin" and self._closing_workspace_document):
+            self.setWindowFilePath(window_file_path)
         workspace_display_name = (
             "Untitled" if self._workspace_path is None else self._workspace_path.name
         )
@@ -6692,76 +6698,81 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
         logger.debug("Closing ImageTool Manager...")
-        if not self._confirm_save_dirty_workspace(
-            "Closing this manager will discard unsaved workspace changes."
-        ):
-            self._application_quit_requested = False
-            if event:
-                event.ignore()
-            return
-
-        logger.debug("Waiting for file handlers to finish...")
-        if len(self._file_handlers) > 0:  # pragma: no cover
-            with erlab.interactive.utils.wait_dialog(
-                self, "Waiting for file operations to finish..."
+        previous_closing_workspace_document = self._closing_workspace_document
+        self._closing_workspace_document = True
+        try:
+            if not self._confirm_save_dirty_workspace(
+                "Closing this manager will discard unsaved workspace changes."
             ):
-                for handler in list(self._file_handlers):
-                    handler.wait()
+                self._application_quit_requested = False
+                if event:
+                    event.ignore()
+                return
 
-        self._compact_workspace_before_shutdown()
+            logger.debug("Waiting for file handlers to finish...")
+            if len(self._file_handlers) > 0:  # pragma: no cover
+                with erlab.interactive.utils.wait_dialog(
+                    self, "Waiting for file operations to finish..."
+                ):
+                    for handler in list(self._file_handlers):
+                        handler.wait()
 
-        logger.debug("Removing all ImageTool windows...")
-        with self._workspace_load_context():
-            self.remove_all_tools()
+            self._compact_workspace_before_shutdown()
 
-        logger.debug("Closing additional windows...")
-        for widget in dict(self._additional_windows).values():
-            widget.close()
-            widget.deleteLater()
+            logger.debug("Removing all ImageTool windows...")
+            with self._workspace_load_context():
+                self.remove_all_tools()
 
-        logger.debug("Removing event filters...")
-        qapp = QtWidgets.QApplication.instance()
-        if (
-            isinstance(qapp, QtWidgets.QApplication)
-            and self._application_quit_filter is not None
-        ):
-            qapp.removeEventFilter(self._application_quit_filter)
-            self._application_quit_filter = None
-        for widget in (
-            self.text_box,
-            self.metadata_derivation_list,
-        ):
-            widget.removeEventFilter(self._kb_filter)
-        self.tree_view._delegate._cleanup_filter()
+            logger.debug("Closing additional windows...")
+            for widget in dict(self._additional_windows).values():
+                widget.close()
+                widget.deleteLater()
 
-        if hasattr(self, "console"):
-            logger.debug("Shutting down console kernel...")
-            self.console._console_widget.shutdown_kernel()
-            self.console.close()
-            self.console.deleteLater()
+            logger.debug("Removing event filters...")
+            qapp = QtWidgets.QApplication.instance()
+            if (
+                isinstance(qapp, QtWidgets.QApplication)
+                and self._application_quit_filter is not None
+            ):
+                qapp.removeEventFilter(self._application_quit_filter)
+                self._application_quit_filter = None
+            for widget in (
+                self.text_box,
+                self.metadata_derivation_list,
+            ):
+                widget.removeEventFilter(self._kb_filter)
+            self.tree_view._delegate._cleanup_filter()
 
-        if self._standalone_app_windows:
-            logger.debug("Closing standalone apps...")
-            self._close_standalone_apps()
+            if hasattr(self, "console"):
+                logger.debug("Shutting down console kernel...")
+                self.console._console_widget.shutdown_kernel()
+                self.console.close()
+                self.console.deleteLater()
 
-        logger.debug("Releasing workspace lock...")
-        self._release_workspace_lock()
+            if self._standalone_app_windows:
+                logger.debug("Closing standalone apps...")
+                self._close_standalone_apps()
 
-        logger.debug("Stopping servers...")
-        self._registry_heartbeat_timer.stop()
-        self._stop_servers()
-        unregister_manager_record(self._manager_record.internal_id)
+            logger.debug("Releasing workspace lock...")
+            self._release_workspace_lock()
 
-        logger.debug("Closing dask client (if any)...")
-        self._dask_menu.close_client()
+            logger.debug("Stopping servers...")
+            self._registry_heartbeat_timer.stop()
+            self._stop_servers()
+            unregister_manager_record(self._manager_record.internal_id)
 
-        root_logger = logging.getLogger()
-        if self._warning_handler in root_logger.handlers:  # pragma: no branch
-            root_logger.removeHandler(self._warning_handler)
+            logger.debug("Closing dask client (if any)...")
+            self._dask_menu.close_client()
 
-        self._clear_all_alerts()
+            root_logger = logging.getLogger()
+            if self._warning_handler in root_logger.handlers:  # pragma: no branch
+                root_logger.removeHandler(self._warning_handler)
 
-        if sys.excepthook == self._handle_uncaught_exception:
-            sys.excepthook = self._previous_excepthook
+            self._clear_all_alerts()
 
-        super().closeEvent(event)
+            if sys.excepthook == self._handle_uncaught_exception:
+                sys.excepthook = self._previous_excepthook
+
+            super().closeEvent(event)
+        finally:
+            self._closing_workspace_document = previous_closing_workspace_document
