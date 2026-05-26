@@ -404,13 +404,11 @@ class Fit2DTool(Fit1DTool):
         self._params_from_coord_full[self._current_idx] = self._params_from_coord
         self._update_param_plot()
 
-    def _update_ds_full(self) -> None:
+    def _sync_fit_result_state(self) -> None:
+        self._params_full[self._current_idx] = self._params
+        self._params_from_coord_full[self._current_idx] = self._params_from_coord
         self._result_ds_full[self._current_idx] = self._last_result_ds
-
-    def _ensure_fit_finished_connections(self) -> None:
-        super()._ensure_fit_finished_connections()
-        self._connect_fit_finished_once(self._update_params_full)
-        self._connect_fit_finished_once(self._update_ds_full)
+        self._update_param_plot()
 
     def _build_ui(self) -> None:
         super()._build_ui()
@@ -1440,6 +1438,23 @@ class Fit2DTool(Fit1DTool):
         self.fit_down_button.setDisabled(running)
         self.fit_up_button.setDisabled(running)
 
+    def _fit_step_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
+        widgets = list(super()._fit_step_paint_widgets())
+        for widget in (
+            self.param_plot_widget.viewport(),
+            self.y_index_spin,
+            self.y_value_spin,
+            self.fit_down_button,
+            self.fit_up_button,
+        ):
+            if (
+                isinstance(widget, QtWidgets.QWidget)
+                and erlab.interactive.utils.qt_is_valid(widget)
+                and not any(widget is existing for existing in widgets)
+            ):
+                widgets.append(widget)
+        return tuple(widgets)
+
     def _fit_cancelled(self) -> None:
         if self._fit_2d_total > 0 or self._fit_2d_indices:
             self._finish_fit_2d_sequence()
@@ -1517,7 +1532,7 @@ class Fit2DTool(Fit1DTool):
                 )
                 self._finish_fit_2d_sequence()
                 return
-            erlab.interactive.utils.single_shot(self, 0, self._start_next_fit_2d)
+            self._defer_next_fit_step(self._start_next_fit_2d)
 
         def _on_timeout() -> None:
             if self._fit_start_time is None:
@@ -1757,6 +1772,8 @@ class Fit2DTool(Fit1DTool):
 
         param_entries: list[str] = []
 
+        y_coord_expr = f"{data_name}.coords[{self._y_dim_name!r}]"
+
         for name in param_names_all:
             if name in params_expr:
                 param_entries.append(f'"{name}": dict(expr="{params_expr[name]}"),')
@@ -1784,9 +1801,7 @@ class Fit2DTool(Fit1DTool):
                     continue
                 entry_kwargs_lines.append(f"value={values[0]!r}")
             else:
-                darr_line = (
-                    f"xr.DataArray({values!r}, coords=[{data_name}.{self._y_dim_name}])"
-                )
+                darr_line = f"xr.DataArray({values!r}, coords=[{y_coord_expr}])"
                 if (
                     single_min
                     and single_max
@@ -1803,7 +1818,7 @@ class Fit2DTool(Fit1DTool):
                     entry_kwargs_lines.append(f"min={mins[0]!r}")
             else:
                 entry_kwargs_lines.append(
-                    f"xr.DataArray({mins!r}, coords=[{data_name}.{self._y_dim_name}])"
+                    f"xr.DataArray({mins!r}, coords=[{y_coord_expr}])"
                 )
 
             if single_max:
@@ -1811,7 +1826,7 @@ class Fit2DTool(Fit1DTool):
                     entry_kwargs_lines.append(f"max={maxs[0]!r}")
             else:
                 entry_kwargs_lines.append(
-                    f"xr.DataArray({maxs!r}, coords=[{data_name}.{self._y_dim_name}])"
+                    f"xr.DataArray({maxs!r}, coords=[{y_coord_expr}])"
                 )
 
             if not vary:

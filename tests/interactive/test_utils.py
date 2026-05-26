@@ -328,6 +328,24 @@ def test_save_fit_ui(qtbot, accept_dialog, fit_result_ds):
     tmp_dir.cleanup()
 
 
+def test_fit_dataset_private_coord_data_name_edge_cases() -> None:
+    utils = erlab.interactive.utils
+
+    assert utils._fit_dataset_private_coord_data_name(xr.Dataset()) is None
+    result_only = xr.Dataset({"modelfit_results": xr.DataArray("serialized")})
+    assert utils._fit_dataset_private_coord_data_name(result_only) == "modelfit_results"
+
+
+def test_empty_fit_dataset_blob_roundtrip_has_no_private_coord_data() -> None:
+    utils = erlab.interactive.utils
+    empty = xr.Dataset()
+
+    blob = utils._serialize_fit_dataset_blob(empty)
+    restored = utils._deserialize_fit_dataset_blob(blob)
+
+    xr.testing.assert_identical(restored, empty)
+
+
 def test_load_ui_temporarily_disables_autoconnect(monkeypatch) -> None:
     restored_calls: list[object] = []
 

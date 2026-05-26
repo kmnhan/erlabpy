@@ -8295,6 +8295,39 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
     assert coordinates == "temperature"
 
 
+def test_workspace_writer_encodes_saved_tool_spaced_associated_coord(
+    tmp_path,
+) -> None:
+    data_name = imagetool_serialization.SAVED_TOOL_DATA_NAME
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={
+            "x": np.arange(2.0),
+            "y": np.arange(3.0),
+            "Fake Motor": ("x", np.linspace(10.0, 20.0, 2)),
+        },
+        name=data_name,
+    )
+    fname = tmp_path / "saved-tool-spaced-coord.itws"
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        manager_workspace._write_workspace_dataset_group_to_file(
+            fname, "0/tool", data.to_dataset()
+        )
+
+    assert not any("space in its name" in str(item.message) for item in caught)
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname, "0/tool", preferred_data_name=data_name
+    )
+
+    assert loaded is not None
+    xr.testing.assert_equal(
+        loaded[data_name].coords["Fake Motor"], data.coords["Fake Motor"]
+    )
+
+
 def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
     tmp_path,
 ) -> None:
@@ -13546,6 +13579,78 @@ def test_manager_workspace_roundtrip_fit2d_child(
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
         assert "modelfit" in copied
         assert not warnings
+
+
+def test_manager_workspace_roundtrip_fit2d_child_with_spaced_axis(
+    qtbot,
+    exp_decay_model,
+    test_data,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+
+        itool(test_data, link=False, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        t = np.linspace(0.0, 4.0, 25)
+        motor = np.arange(3.0)
+        data = xr.DataArray(
+            np.stack(
+                [((1.0 + 0.5 * idx) * np.exp(-t / 2.0)) for idx in motor],
+                axis=0,
+            ),
+            dims=("Fake Motor", "t"),
+            coords={
+                "Fake Motor": motor,
+                "t": t,
+                "Sample Motor": ("Fake Motor", motor + 10.0),
+            },
+            name="decay2d",
+        )
+        params = exp_decay_model.make_params(n0=1.0, tau=1.0)
+        child = erlab.interactive.ftool(
+            data, model=exp_decay_model, params=params, execute=False
+        )
+        assert isinstance(child, Fit2DTool)
+        child_uid = manager.add_childtool(child, 0, show=False)
+        child.timeout_spin.setValue(30.0)
+        child.nfev_spin.setValue(0)
+        child.y_index_spin.setValue(child.y_min_spin.value())
+        child._run_fit_2d("up")
+        qtbot.wait_until(
+            lambda: all(ds is not None for ds in child._result_ds_full),
+            timeout=10000,
+        )
+        assert child.current_provenance_spec() is not None
+
+        fname = tmp_path / "fit2d-spaced-axis.itws"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            manager._save_workspace_document(fname, force_full=True)
+
+        assert not any("space in its name" in str(item.message) for item in caught)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        loaded_child = manager.get_childtool(child_uid)
+        assert isinstance(loaded_child, Fit2DTool)
+        assert loaded_child.tool_data.dims[0] == "Fake Motor"
+        xr.testing.assert_equal(
+            loaded_child.tool_data.coords["Fake Motor"], data.coords["Fake Motor"]
+        )
+        xr.testing.assert_equal(
+            loaded_child.tool_data.coords["Sample Motor"], data.coords["Sample Motor"]
+        )
+        assert loaded_child.current_provenance_spec() is not None
 
 
 def test_manager_workspace_roundtrip_recursive_nested_imagetools(

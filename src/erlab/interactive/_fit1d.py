@@ -335,14 +335,19 @@ class _ParameterTableModel(QtCore.QAbstractTableModel):
         return self._params
 
     def set_params(
-        self, params: lmfit.Parameters, params_from_coord: dict[str, str]
+        self,
+        params: lmfit.Parameters,
+        params_from_coord: dict[str, str],
+        *,
+        emit_changed: bool = True,
     ) -> None:
         self.beginResetModel()
         self._params = params
         self._params_from_coord = params_from_coord
         self._param_names = list(params.keys()) if params is not None else []
         self.endResetModel()
-        self.sigParamsChanged.emit()
+        if emit_changed:
+            self.sigParamsChanged.emit()
 
     def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
         if parent is not None and parent.isValid():
@@ -2604,15 +2609,51 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             if self._legend_has_name(name):
                 self.legend.removeItem(name)
 
+    def _fit_step_paint_widgets(self) -> tuple[QtWidgets.QWidget, ...]:
+        widgets: list[QtWidgets.QWidget] = []
+        for widget in (
+            self.plot_widget.viewport(),
+            self.param_view.viewport(),
+            self.elapsed_value,
+            self.nfev_out_value,
+            self.redchi_value,
+            self.rsq_value,
+            self.aic_value,
+            self.bic_value,
+            self.fit_multi_button,
+        ):
+            if (
+                isinstance(widget, QtWidgets.QWidget)
+                and erlab.interactive.utils.qt_is_valid(widget)
+                and not any(widget is existing for existing in widgets)
+            ):
+                widgets.append(widget)
+        return tuple(widgets)
+
+    def _request_fit_step_paint(self) -> None:
+        for widget in self._fit_step_paint_widgets():
+            if widget.isVisible():
+                widget.repaint()
+
+    def _defer_next_fit_step(self, callback: Callable[[], None]) -> None:
+        self._request_fit_step_paint()
+        erlab.interactive.utils.single_shot(self, 0, callback)
+
+    def _sync_fit_result_state(self) -> None:
+        pass
+
     def _set_fit_ds(self, result_ds: xr.Dataset, t0: float) -> lmfit.Parameters:
         self._last_result_ds = result_ds.copy()
         result = self._last_result_ds.modelfit_results.compute().item()
         self._params = result.params.copy()
-        self.param_model.set_params(self._params, self._params_from_coord)
+        self.param_model.set_params(
+            self._params, self._params_from_coord, emit_changed=False
+        )
         self._update_fit_curve()
         self._refresh_slider_from_model()
         elapsed = time.perf_counter() - t0
         self._set_fit_stats(result, elapsed=elapsed)
+        self._sync_fit_result_state()
         self._mark_fit_fresh()
         self.sigFitFinished.emit(self._params.copy())
         if self._source_refresh_deferred:
@@ -2901,7 +2942,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             if self._fit_multi_step >= (self._fit_multi_total or 0):
                 self._finish_multi_fit()
             else:
-                erlab.interactive.utils.single_shot(self, 0, self._start_next_multi_fit)
+                self._defer_next_fit_step(self._start_next_multi_fit)
 
         def _on_timeout() -> None:
             if self._fit_start_time is None:

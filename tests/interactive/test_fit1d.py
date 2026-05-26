@@ -44,6 +44,19 @@ def _assert_fit_result_dataset_equivalent(
         assert actual_param.vary == expected_param.vary
 
 
+def _fit_result_dataset(params: lmfit.Parameters, *, nfev: int = 1) -> xr.Dataset:
+    class _Result:
+        def __init__(self) -> None:
+            self.params = params.copy()
+            self.nfev = nfev
+            self.redchi = 1.0
+            self.rsquared = 0.9
+            self.aic = 1.0
+            self.bic = 2.0
+
+    return xr.Dataset({"modelfit_results": xr.DataArray(_Result(), dims=())})
+
+
 def test_fit1d_fit_domain_descending_coords(qtbot) -> None:
     x = np.linspace(1.0, -1.0, 21)
     data = xr.DataArray(np.exp(-(x**2)), dims=("x",), coords={"x": x})
@@ -655,6 +668,143 @@ def test_fit1d_next_multi_step_is_deferred(qtbot, monkeypatch) -> None:
 
     assert started_steps == [1]
     qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
+
+
+def test_fit1d_multi_step_requests_paint_before_deferred_next_step(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    events: list[str] = []
+
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        events.append(f"start-{step}")
+        win._fit_start_time = 0.0
+        if step == 1:
+            on_success(_fit_result_dataset(win._params))
+            return True
+        return False
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win._run_fit_multiple(2)
+
+    assert events == ["start-1", "paint"]
+    qtbot.waitUntil(lambda: events == ["start-1", "paint", "start-2"], timeout=1000)
+
+
+def test_fit1d_fit_step_paint_repaints_targets_without_queued_update(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    events: list[str] = []
+
+    class _PaintWidget(QtWidgets.QWidget):
+        def __init__(self, name: str, *, visible: bool = True) -> None:
+            super().__init__()
+            self._name = name
+            self._visible = visible
+
+        def update(self) -> None:
+            events.append(f"update-{self._name}")
+
+        def repaint(self) -> None:
+            events.append(f"repaint-{self._name}")
+
+        def isVisible(self) -> bool:
+            return self._visible
+
+    widgets = (
+        _PaintWidget("plot"),
+        _PaintWidget("hidden", visible=False),
+        _PaintWidget("params"),
+    )
+    for widget in widgets:
+        qtbot.addWidget(widget)
+    monkeypatch.setattr(win, "_fit_step_paint_widgets", lambda: widgets)
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "processEvents",
+        lambda *args, **kwargs: events.append("process"),
+    )
+
+    win._request_fit_step_paint()
+
+    assert events == [
+        "repaint-plot",
+        "repaint-params",
+    ]
+
+
+def test_fit1d_fit_step_paint_widgets_skip_invalid_entries(qtbot) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    win.aic_value = object()
+    duplicate = win.bic_value
+    win.fit_multi_button = duplicate
+
+    widgets = win._fit_step_paint_widgets()
+
+    assert all(isinstance(widget, QtWidgets.QWidget) for widget in widgets)
+    assert sum(widget is duplicate for widget in widgets) == 1
+
+
+def test_fit1d_set_fit_ds_updates_without_param_changed_signal(
+    qtbot, monkeypatch
+) -> None:
+    win = erlab.interactive.ftool(_make_1d_data(), execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit1DTool)
+
+    param_name = next(iter(win._params))
+    params = win._params.copy()
+    expected_value = params[param_name].value + 0.25
+    params[param_name].set(value=expected_value)
+    result_ds = _fit_result_dataset(params, nfev=7)
+
+    param_changed: list[None] = []
+    events: list[str] = []
+    stats_nfev: list[int] = []
+    win.param_model.sigParamsChanged.connect(lambda: param_changed.append(None))
+    monkeypatch.setattr(win, "_update_fit_curve", lambda: events.append("curve"))
+    monkeypatch.setattr(
+        win, "_refresh_slider_from_model", lambda: events.append("slider")
+    )
+
+    def _set_fit_stats(result, *, elapsed=None) -> None:
+        del elapsed
+        stats_nfev.append(result.nfev)
+
+    monkeypatch.setattr(win, "_set_fit_stats", _set_fit_stats)
+
+    win._set_fit_ds(result_ds, 0.0)
+
+    assert param_changed == []
+    assert win.param_model.params[param_name].value == pytest.approx(expected_value)
+    assert events == ["curve", "slider"]
+    assert stats_nfev == [7]
 
 
 def test_fit1d_cancelled_before_deferred_multi_step_stops_sequence(

@@ -2,6 +2,7 @@ import contextlib
 import os
 import re
 import types
+import warnings
 
 import numpy as np
 import pyqtgraph as pg
@@ -48,6 +49,19 @@ def _assert_fit_result_dataset_equivalent(
             assert actual_param.stderr == pytest.approx(expected_param.stderr)
         assert actual_param.expr == expected_param.expr
         assert actual_param.vary == expected_param.vary
+
+
+def _fit_result_dataset(params, *, nfev: int = 1) -> xr.Dataset:
+    class _Result:
+        def __init__(self) -> None:
+            self.params = params.copy()
+            self.nfev = nfev
+            self.redchi = 1.0
+            self.rsquared = 0.9
+            self.aic = 1.0
+            self.bic = 2.0
+
+    return xr.Dataset({"modelfit_results": xr.DataArray(_Result(), dims=())})
 
 
 def _assert_fit_result_list_equivalent(
@@ -311,6 +325,77 @@ def test_fit2d_run_fit(qtbot, exp_decay_model, monkeypatch) -> None:
     code = win._copy_code_full()
     assert "modelfit" in code
     assert ".isel(" in code
+
+
+def test_fit2d_full_provenance_handles_spaced_fit_axis(qtbot) -> None:
+    x = np.linspace(-1.0, 1.0, 5)
+    motor = np.array([10.0, 11.0, 12.0])
+    data = xr.DataArray(
+        np.ones((3, 5)),
+        dims=("Fake Motor", "x"),
+        coords={"Fake Motor": motor, "x": x},
+        name="derived_crop",
+    )
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    centers = [0.1, 0.2, 0.3]
+    params_full = []
+    for value in centers:
+        params = win._params.copy()
+        params["p0_center"].set(value=value)
+        params_full.append(params)
+    win._params_full = params_full
+    win._result_ds_full = [xr.Dataset() for _ in params_full]
+    win.y_min_spin.setValue(0)
+    win.y_max_spin.setValue(len(params_full) - 1)
+
+    assert win.current_provenance_spec() is not None
+    prelude = win._detached_full_copy_prelude(input_name="derived_crop")
+    assert prelude is not None
+
+    namespace = {"derived_crop": data}
+    exec(  # noqa: S102
+        prelude,
+        {
+            "__builtins__": {"dict": dict, "slice": slice},
+            "era": erlab.analysis,
+            "xr": xr,
+        },
+        namespace,
+    )
+    center_param = namespace["params"]["p0_center"]
+    assert isinstance(center_param, xr.DataArray)
+    assert center_param.dims == ("Fake Motor",)
+    np.testing.assert_allclose(center_param.values, centers)
+    xr.testing.assert_equal(
+        center_param.coords["Fake Motor"], data.coords["Fake Motor"]
+    )
+
+
+def test_fit2d_file_roundtrip_preserves_spaced_associated_coord(
+    qtbot, tmp_path
+) -> None:
+    data = _make_2d_data().assign_coords(
+        {"Fake Motor": ("y", np.linspace(10.0, 12.0, 3))}
+    )
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    fname = tmp_path / "fit2d-spaced-associated-coord.h5"
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        win.to_file(fname)
+
+    assert not any("space in its name" in str(item.message) for item in caught)
+    restored = erlab.interactive.utils.ToolWindow.from_file(fname)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, Fit2DTool)
+    xr.testing.assert_equal(
+        restored.tool_data.coords["Fake Motor"], data.coords["Fake Motor"]
+    )
 
 
 def test_fit2d_update_data_preserves_state_and_refit(
@@ -616,6 +701,141 @@ def test_fit2d_next_step_is_deferred(qtbot, monkeypatch) -> None:
 
     assert started_steps == [1]
     qtbot.waitUntil(lambda: started_steps == [1, 2], timeout=1000)
+
+
+def test_fit2d_next_step_requests_paint_before_deferred_next_step(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    events: list[str] = []
+
+    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        events.append(f"start-{step}")
+        win._fit_start_time = 0.0
+        if step == 1:
+            on_success(_fit_result_dataset(win._params))
+            return True
+        return False
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    events.clear()
+    win._run_fit_2d("up")
+
+    assert events == ["start-1", "plot", "paint"]
+    qtbot.waitUntil(lambda: "start-2" in events, timeout=1000)
+    paint_after_first_start = events.index("paint", events.index("start-1"))
+    assert paint_after_first_start < events.index("start-2")
+
+
+def test_fit2d_paints_once_between_finished_step_and_next_worker(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    events: list[str] = []
+
+    monkeypatch.setattr(win, "_request_fit_step_paint", lambda: events.append("paint"))
+    monkeypatch.setattr(win, "_fill_params_from", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_warning", lambda *args, **kwargs: None)
+    monkeypatch.setattr(win, "_show_error", lambda *args, **kwargs: None)
+
+    def _start_fit_worker(
+        fit_data,
+        params,
+        *,
+        multi,
+        step=0,
+        total=0,
+        on_success,
+        on_timeout,
+        on_error,
+    ) -> bool:
+        del fit_data, params, multi, total, on_timeout, on_error
+        events.append(f"start-{step}")
+        win._fit_start_time = 0.0
+        if step == 1:
+            on_success(_fit_result_dataset(win._params))
+            return True
+        return False
+
+    monkeypatch.setattr(win, "_start_fit_worker", _start_fit_worker)
+
+    win.y_index_spin.setValue(win.y_min_spin.value())
+    win._run_fit_2d("up")
+    qtbot.waitUntil(lambda: events[-1:] == ["start-2"], timeout=1000)
+
+    assert events == ["start-1", "paint", "start-2"]
+
+
+def test_fit2d_set_fit_ds_updates_slice_state_before_fit_finished(
+    qtbot, monkeypatch
+) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    idx = win._current_idx
+    param_name = next(iter(win._params))
+    params = win._params.copy()
+    expected_value = params[param_name].value + 0.25
+    params[param_name].set(value=expected_value)
+    result_ds = _fit_result_dataset(params)
+
+    param_changed: list[None] = []
+    events: list[str] = []
+    win.param_model.sigParamsChanged.connect(lambda: param_changed.append(None))
+    win.sigFitFinished.connect(lambda params: events.append("finished"))
+    monkeypatch.setattr(win, "_update_param_plot", lambda: events.append("plot"))
+
+    win._set_fit_ds(result_ds, 0.0)
+
+    assert param_changed == []
+    assert events == ["plot", "finished"]
+    assert win._params_full[idx][param_name].value == pytest.approx(expected_value)
+    assert win._result_ds_full[idx] is win._last_result_ds
+
+
+def test_fit2d_fit_step_paint_widgets_skip_invalid_entries(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.y_value_spin = object()
+    duplicate = win.fit_down_button
+    win.fit_up_button = duplicate
+
+    widgets = win._fit_step_paint_widgets()
+
+    assert all(isinstance(widget, QtWidgets.QWidget) for widget in widgets)
+    assert sum(widget is duplicate for widget in widgets) == 1
 
 
 def test_fit2d_cancelled_before_deferred_next_step_stops_sequence(
