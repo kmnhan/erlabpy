@@ -31,6 +31,7 @@ from erlab.interactive.imagetool.controls import (
     ItoolCrosshairControls,
 )
 from erlab.interactive.imagetool.dialogs import (
+    AggregateDialog,
     AssignAttrsDialog,
     AssignCoordsDialog,
     AverageDialog,
@@ -662,10 +663,10 @@ def test_plot_code_multicursor_image_supports_nonuniform_hidden_axis(
     assert "plot_slices" in code
     assert ".isel(alpha=" in code
     if bin_value == 1:
-        assert ".qsel.average(" not in code
+        assert ".qsel.mean(" not in code
     else:
-        assert ".qsel.average(" in code
-        assert '.qsel.average("alpha")' in code
+        assert ".qsel.mean(" in code
+        assert '.qsel.mean("alpha")' in code
 
     win.close()
 
@@ -728,7 +729,7 @@ def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> N
     win.array_slicer.set_bin(0, axis=2, value=3, update=True)
 
     expr = image_plot._selection_expr_for_cursor("data", 0, (0, 2))
-    assert ".qsel.average((" in expr
+    assert ".qsel.mean((" in expr
     assert "'a\"b'" in expr
     assert '"c"' in expr
 
@@ -787,10 +788,10 @@ def test_plot_code_multicursor_line_supports_nonuniform_hidden_axis(
     assert ".isel(alpha=" in code
     assert ".qsel(" in code
     if bin_value == 1:
-        assert ".qsel.average(" not in code
+        assert ".qsel.mean(" not in code
     else:
-        assert ".qsel.average(" in code
-        assert '.qsel.average("alpha")' in code
+        assert ".qsel.mean(" in code
+        assert '.qsel.mean("alpha")' in code
 
     win.close()
 
@@ -1614,7 +1615,12 @@ def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) 
         assert win.provenance_spec is not None
         entries = win.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'data.h5'"
-        assert any("Average" in entry.label for entry in entries)
+        assert win.provenance_spec.replay_stages is not None
+        assert any(
+            op.op == "qsel_aggregate"
+            for stage in win.provenance_spec.replay_stages
+            for op in stage.operations
+        )
 
         display_code = win.provenance_spec.display_code()
         assert display_code is not None
@@ -1624,7 +1630,7 @@ def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) 
         assert isinstance(derived, xr.DataArray)
         xarray.testing.assert_identical(
             derived.rename(None),
-            data.astype(np.float64).qsel.average("x").rename(None),
+            data.astype(np.float64).qsel.mean("x").rename(None),
         )
 
         assert win.slicer_area._file_path is None
@@ -1647,7 +1653,7 @@ def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) 
         assert win.slicer_area._file_path is None
         xarray.testing.assert_identical(
             win.slicer_area._data.rename(None),
-            updated.astype(np.float64).qsel.average("x").rename(None),
+            updated.astype(np.float64).qsel.mean("x").rename(None),
         )
 
     win.close()
@@ -4792,12 +4798,12 @@ def test_itool_average(qtbot, accept_dialog) -> None:
 
     accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
     xarray.testing.assert_identical(
-        win.slicer_area._data.rename(None), data.qsel.average("x")
+        win.slicer_area._data.rename(None), data.qsel.mean("x")
     )
 
     xarray.testing.assert_identical(
         _exec_data_fragment(data, pyperclip.paste()),
-        data.qsel.average("x"),
+        data.qsel.mean("x"),
     )
     assert win.provenance_spec is not None
     display_code = win.provenance_spec.display_code()
@@ -4808,7 +4814,60 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    xarray.testing.assert_identical(derived, data.qsel.average("x"))
+    xarray.testing.assert_identical(derived, data.qsel.mean("x"))
+    win.close()
+
+
+def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
+    data = xr.DataArray(
+        np.arange(60).reshape((3, 4, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={
+            "x": np.arange(3),
+            "y": np.arange(4),
+            "z": np.arange(5),
+            "t": ("x", np.arange(3)),
+        },
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    def _set_dialog_params(dialog: AggregateDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        _set_combo_data(dialog.reducer_combo, "sum")
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+        dialog.launch_mode_combo.setCurrentText("Replace Current")
+
+    accept_dialog(win.mnb._aggregate, pre_call=_set_dialog_params)
+
+    expected = data.qsel.sum("x")
+    xarray.testing.assert_identical(win.slicer_area._data.rename(None), expected)
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()), expected
+    )
+
+    assert win.provenance_spec is not None
+    assert [op.op for op in win.provenance_spec.operations] == [
+        "qsel_aggregate",
+        "rename",
+    ]
+    aggregate_op = win.provenance_spec.operations[0]
+    assert isinstance(
+        aggregate_op, erlab.interactive.imagetool.provenance.QSelAggregationOperation
+    )
+    assert aggregate_op.func == "sum"
+
+    display_code = win.provenance_spec.display_code()
+    assert display_code is not None
+    display_namespace = _exec_generated_code(
+        display_code,
+        {"data": data.copy(deep=True)},
+    )
+    derived = display_namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(derived, expected)
+
     win.close()
 
 
@@ -4835,7 +4894,7 @@ def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> No
 
     assert spec.kind == "full_data"
     assert [op.op for op in spec.operations] == [
-        "average",
+        "qsel_aggregate",
         "restore_nonuniform_dims",
         "rename",
     ]
@@ -4850,6 +4909,51 @@ def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> No
         {"data": win.slicer_area.data.copy(deep=True)},
     )
     derived = display_namespace["derived"]
+    assert isinstance(derived, xr.DataArray)
+    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
+
+    dialog.close()
+    win.close()
+
+
+def test_aggregate_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(20).reshape((5, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": [0.0, 0.2, 0.8, 1.4, 2.0], "y": np.arange(4)},
+        name="scan",
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    assert win.slicer_area.data.dims == ("x_idx", "y")
+    dialog = AggregateDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["y"].setChecked(True)
+    _set_combo_data(dialog.reducer_combo, "sum")
+
+    spec = dialog.source_spec("scan_sum")
+    expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+        dialog.process_data(win.slicer_area.data)
+    ).rename("scan_sum")
+    refreshed = spec.apply(win.slicer_area.data)
+
+    assert spec.kind == "full_data"
+    assert [op.op for op in spec.operations] == [
+        "qsel_aggregate",
+        "restore_nonuniform_dims",
+        "rename",
+    ]
+    assert refreshed.dims == ("x",)
+    xarray.testing.assert_identical(refreshed, expected)
+
+    display_code = spec.display_code(parent_data=win.slicer_area.data)
+    assert display_code is not None
+    namespace = _exec_generated_code(
+        display_code,
+        {"data": win.slicer_area.data.copy(deep=True)},
+    )
+    derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
     xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
 
@@ -4877,7 +4981,7 @@ def test_itool_average_marks_incompatible_child_tools_unavailable(
         accept_dialog(win.mnb._average, pre_call=_set_dialog_params)
 
     xarray.testing.assert_identical(
-        win.slicer_area._data.rename(None), data.qsel.average("alpha")
+        win.slicer_area._data.rename(None), data.qsel.mean("alpha")
     )
     qtbot.wait_until(lambda: child.source_state == "unavailable", timeout=5000)
 
@@ -4899,7 +5003,7 @@ def test_average_dialog_make_code_preserves_nonstring_dim(qtbot) -> None:
 
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()),
-        data.qsel.average("k-space"),
+        data.qsel.mean("k-space"),
     )
 
     dialog.close()
@@ -5309,14 +5413,14 @@ def test_transform_replace_composes_after_script_active_name(qtbot) -> None:
 
     assert win.provenance_spec is not None
     code = win.provenance_spec.derivation_code()
-    assert code == (
-        'result = data + 1\nderived = result\nderived = derived.qsel.average("x")'
+    assert (
+        code == 'result = data + 1\nderived = result\nderived = derived.qsel.mean("x")'
     )
     namespace = _exec_generated_code(code, {"data": source.copy(deep=True)})
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
     xarray.testing.assert_identical(
-        derived.rename(None), displayed.qsel.average("x").rename(None)
+        derived.rename(None), displayed.qsel.mean("x").rename(None)
     )
 
     dialog.close()
@@ -5348,7 +5452,7 @@ def test_average_dialog_launch_modes_for_standalone(qtbot, monkeypatch) -> None:
     )
     dialog.dim_checks["x"].setChecked(True)
     dialog.accept()
-    xarray.testing.assert_identical(launched[0].rename(None), data.qsel.average("x"))
+    xarray.testing.assert_identical(launched[0].rename(None), data.qsel.mean("x"))
 
     dialog_replace = AverageDialog(win.slicer_area)
     qtbot.addWidget(dialog_replace)
@@ -5356,7 +5460,7 @@ def test_average_dialog_launch_modes_for_standalone(qtbot, monkeypatch) -> None:
     dialog_replace.launch_mode_combo.setCurrentText("Replace Current")
     dialog_replace.accept()
     xarray.testing.assert_identical(
-        win.slicer_area._data.rename(None), data.qsel.average("y")
+        win.slicer_area._data.rename(None), data.qsel.mean("y")
     )
 
     win.close()

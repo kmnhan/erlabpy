@@ -233,6 +233,74 @@ def test_qsel_associated_dim() -> None:
     xr.testing.assert_identical(dat.qsel(x=2, x_width=3), expected)
 
 
+def test_qsel_reducer_preserves_associated_coords() -> None:
+    dat = xr.DataArray(
+        np.arange(5 * 4 * 3).reshape(5, 4, 3).astype(float),
+        dims=("x", "y", "z"),
+        coords={
+            "x": np.arange(5),
+            "y": np.arange(4),
+            "z": np.arange(3),
+            "w": (["x", "y"], np.arange(5 * 4).reshape(5, 4)),
+        },
+    )
+
+    expected = xr.DataArray(
+        np.array(
+            [
+                [72.0, 75.0, 78.0],
+                [81.0, 84.0, 87.0],
+                [90.0, 93.0, 96.0],
+                [99.0, 102.0, 105.0],
+            ]
+        ),
+        dims=("y", "z"),
+        coords={
+            "y": np.arange(4),
+            "z": np.arange(3),
+            "x": 2.0,
+            "w": (["y"], np.array([8.0, 9.0, 10.0, 11.0])),
+        },
+    )
+
+    xr.testing.assert_identical(dat.qsel(x=2, x_width=3, func="sum"), expected)
+
+
+@pytest.mark.parametrize("func", ["min", "max", "sum"])
+def test_qsel_reducer_matches_descending_coordinates(func) -> None:
+    dat = xr.DataArray(
+        np.arange(25).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    result = dat.qsel(x=2.0, x_width=3.0, func=func)
+    result_rev = dat.sortby("x", ascending=False).qsel(x=2.0, x_width=3.0, func=func)
+
+    xr.testing.assert_identical(result, result_rev)
+
+
+def test_qsel_invalid_reducer() -> None:
+    dat = xr.DataArray(
+        np.arange(25).reshape(5, 5),
+        dims=("x", "y"),
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+
+    with pytest.raises(ValueError, match="func must be one of"):
+        dat.qsel(x=2.0, x_width=3.0, func="median")
+
+
+def test_qsel_func_dimension_uses_mapping_form() -> None:
+    dat = xr.DataArray(
+        np.arange(6).reshape(3, 2),
+        dims=("func", "y"),
+        coords={"func": np.arange(3, dtype=float), "y": np.arange(2)},
+    )
+
+    xr.testing.assert_identical(dat.qsel({"func": 1.0}), dat.sel(func=1.0))
+
+
 def test_qsel_value_outside_bounds() -> None:
     dat = xr.DataArray(
         np.arange(25).reshape(5, 5),
@@ -276,7 +344,7 @@ def test_qsel_around() -> None:
     )
 
 
-def test_qsel_average_single_dim() -> None:
+def test_qsel_mean_single_dim() -> None:
     # Create a simple 2D DataArray with dims 'x' and 'y'
 
     x = np.array([10, 20])
@@ -284,11 +352,11 @@ def test_qsel_average_single_dim() -> None:
     data = np.array([[1, 2, 3], [4, 5, 6]])
     da = xr.DataArray(data, dims=("x", "y"), coords={"x": x, "y": y})
 
-    # Average over the 'x' dimension using qsel.average.
+    # Average over the 'x' dimension using qsel.mean.
     # The expected result is the mean along 'x' and retaining the averaged coordinate.
     # Expected mean data: [[(1+4)/2, (2+5)/2, (3+6)/2]] = [[2.5, 3.5, 4.5]]
     expected = data.mean(axis=0)
-    result = da.qsel.average("x")
+    result = da.qsel.mean("x")
 
     # After averaging, 'x' should not be a dimension; it is stored as a coordinate.
     assert "x" not in result.dims
@@ -296,10 +364,54 @@ def test_qsel_average_single_dim() -> None:
     np.testing.assert_allclose(result.data, expected)
     # Check that the coordinate 'x' is the mean of the original x-values.
     np.testing.assert_allclose(result.coords["x"].data, x.mean())
+    xr.testing.assert_identical(da.qsel.average("x"), result)
+
+
+@pytest.mark.parametrize(
+    ("method", "expected_values"),
+    [
+        ("min", np.array([1, 2, 3])),
+        ("max", np.array([4, 5, 6])),
+        ("sum", np.array([5, 7, 9])),
+    ],
+)
+def test_qsel_reducer_helpers_single_dim(method, expected_values) -> None:
+    x = np.array([10, 20])
+    y = np.array([30, 40, 50])
+    data = np.array([[1, 2, 3], [4, 5, 6]])
+    da = xr.DataArray(data, dims=("x", "y"), coords={"x": x, "y": y})
+
+    result = getattr(da.qsel, method)("x")
+
+    assert "x" not in result.dims
+    np.testing.assert_allclose(result.data, expected_values)
+    np.testing.assert_allclose(result.coords["x"].data, x.mean())
+
+
+@pytest.mark.parametrize(
+    ("method", "expected_value"),
+    [
+        ("min", 1),
+        ("max", 8),
+        ("sum", 27),
+    ],
+)
+def test_qsel_reducer_helpers_all_dims(method, expected_value) -> None:
+    x = np.array([0, 10, 20])
+    y = np.array([100, 200])
+    data = np.array([[1, 2], [4, 5], [7, 8]])
+    da = xr.DataArray(data, dims=("x", "y"), coords={"x": x, "y": y})
+
+    result = getattr(da.qsel, method)()
+
+    assert not result.dims
+    np.testing.assert_allclose(result.data, expected_value)
+    np.testing.assert_allclose(result.coords["x"].data, x.mean())
+    np.testing.assert_allclose(result.coords["y"].data, y.mean())
 
 
 @pytest.mark.parametrize("avg_args", [(["x", "y"],), ()])
-def test_qsel_average_multiple_dim(avg_args) -> None:
+def test_qsel_mean_multiple_dim(avg_args) -> None:
     # Create a simple 2D DataArray with dims 'x' and 'y'
 
     x = np.array([0, 10, 20])
@@ -310,7 +422,7 @@ def test_qsel_average_multiple_dim(avg_args) -> None:
     # Average over both 'x' and 'y'
     # Expected result is a scalar value: mean of all data.
     expected = data.mean()
-    result = da.qsel.average(*avg_args)
+    result = da.qsel.mean(*avg_args)
 
     # The resulting DataArray should have no dimensions.
     assert not result.dims
@@ -321,7 +433,7 @@ def test_qsel_average_multiple_dim(avg_args) -> None:
     np.testing.assert_allclose(result.coords["y"].data, y.mean())
 
 
-def test_qsel_average_invalid_dim() -> None:
+def test_qsel_mean_invalid_dim() -> None:
     # Create a simple 1D DataArray
 
     x = np.array([0, 1, 2])
@@ -330,4 +442,4 @@ def test_qsel_average_invalid_dim() -> None:
 
     # Averaging over an invalid dimension should raise a ValueError
     with pytest.raises(KeyError, match="No variable named 'z'"):
-        _ = da.qsel.average("z")
+        _ = da.qsel.mean("z")

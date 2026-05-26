@@ -160,7 +160,7 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
   :::{hint}
 
-  To reduce the underlying data instead of displaying binned slices, use the {guilabel}`Edit → Average` dialog or the {guilabel}`Coarsen` dialog for more options.
+  To reduce the underlying data instead of displaying binned slices, use the {guilabel}`Edit → Aggregate…` dialog or the {guilabel}`Coarsen` dialog for more options.
 
   :::
 
@@ -234,27 +234,53 @@ Editing dialogs live under the {guilabel}`Edit` and {guilabel}`View` menus. Most
 transforms are destructive, but they let you keep the data as it was before the edit by
 opening the result separately. When the current ImageTool is open in the manager, use
 {guilabel}`Result Placement` to choose whether the new data opens as a child row of the
-current ImageTool, opens as a separate top-level window, or replaces the current ImageTool; see
-{ref}`imagetool-manager-result-placement`. When {guilabel}`Copy Code` is available, the
-generated snippet is placed on your clipboard, ready to paste into a script or notebook
-for reproducibility.
+current ImageTool, opens as a separate top-level window, or replaces the current
+ImageTool; see {ref}`imagetool-manager-result-placement`. When {guilabel}`Copy Code` is
+available, the generated snippet is placed on your clipboard, ready to paste into a
+script or notebook for reproducibility.
 
-- {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle, center, interpolation order, and whether to reshape the image. If a rotation guideline is active, the dialog pre-fills the angle and center from the guideline.
+- {guilabel}`Edit → Rotate` opens the {guilabel}`Rotate` dialog. Enter the angle,
+  center, interpolation order, and whether to reshape the image. If a rotation guideline
+  is active, the dialog pre-fills the angle and center from the guideline.
 - {guilabel}`Edit → Select Data…` opens the {guilabel}`Select Data` dialog. Use it to
-  build {meth}`~xarray.DataArray.qsel`, {meth}`~xarray.DataArray.sel`, and
-  {meth}`~xarray.DataArray.isel` selections from a table of dimensions. Each row can select a scalar point or a contiguous range.
-- {guilabel}`Edit → Average` opens the {guilabel}`Average Over Dimensions` dialog. Select any set of dimensions to average via {meth}`xarray.DataArray.qsel.average`.
-- {guilabel}`Edit → Interpolate…` opens the {guilabel}`Interpolate` dialog. Choose one dimension, enter the target coordinate values, and interpolate with {meth}`xarray.DataArray.interp` using `linear` or `nearest`.
-- {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`, `sum`, or `median`.
-- {guilabel}`Edit → Thin` opens the {guilabel}`Thin Data` dialog which uses {meth}`xarray.DataArray.thin`.
-- {guilabel}`Edit → Symmetrize → Mirror…` opens the {guilabel}`Symmetrize` dialog. Mirror a selected dimension about a specified center with additive or subtractive symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
-- {guilabel}`Edit → Symmetrize → Rotational…` opens the rotational symmetrization dialog. If a rotation guideline is visible, the dialog pre-fills the center and fold count based on the guideline.
-- {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
-- {guilabel}`Edit → Correct With Edge…` opens the {guilabel}`Edge Correction` dialog. If your data exposes an `eV` axis, ImageTool can import a previously fitted edge via {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
-- {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, which applies a non-destructive filter that supports area normalization, min-max scaling, and baseline subtraction.
-- {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, which applies a non-destructive filter that applies coordinate-aware Gaussian broadening along selected dimensions.
+  build {meth}`xarray.DataArray.qsel`, {meth}`xarray.DataArray.sel`, and
+  {meth}`xarray.DataArray.isel` selections from a table of dimensions. Each row can
+  select a scalar point or a contiguous range.
+- {guilabel}`Edit → Aggregate…` opens the {guilabel}`Aggregate Over Dimensions` dialog.
+  Select any set of dimensions and reduce them with mean, minimum, maximum, or sum via
+  {meth}`xarray.DataArray.qsel.mean`, {meth}`xarray.DataArray.qsel.min`,
+  {meth}`xarray.DataArray.qsel.max`, or {meth}`xarray.DataArray.qsel.sum`.
+- {guilabel}`Edit → Interpolate…` opens the {guilabel}`Interpolate` dialog. Choose one
+  dimension, enter the target coordinate values, and interpolate with
+  {meth}`xarray.DataArray.interp` using `linear` or `nearest`.
+- {guilabel}`Edit → Coarsen` opens the {guilabel}`Coarsen` dialog. Select window sizes
+  for one or more dimensions, choose the `boundary`, `side`, and coordinate reduction
+  function for {meth}`xarray.DataArray.coarsen`, then apply a reducer such as `mean`,
+  `sum`, or `median`.
+- {guilabel}`Edit → Thin` opens the {guilabel}`Thin Data` dialog which uses
+  {meth}`xarray.DataArray.thin`.
+- {guilabel}`Edit → Symmetrize → Mirror…` opens the {guilabel}`Symmetrize` dialog.
+  Mirror a selected dimension about a specified center with additive or subtractive
+  symmetry, `valid` or `full` overlap, and one-sided or two-sided output.
+- {guilabel}`Edit → Symmetrize → Rotational…` opens the rotational symmetrization
+  dialog. If a rotation guideline is visible, the dialog pre-fills the center and fold
+  count based on the guideline.
+- {guilabel}`Edit → Crop` opens the {guilabel}`Crop Between Cursors` dialog, while
+  {guilabel}`Edit → Crop to View` opens the {guilabel}`Crop to View` dialog.
+- {guilabel}`Edit → Correct With Edge…` opens the {guilabel}`Edge Correction` dialog. If
+  your data exposes an `eV` axis, ImageTool can import a previously fitted edge via
+  {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
+- {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, which applies a
+  non-destructive filter that supports area normalization, min-max scaling, and baseline
+  subtraction.
+- {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, which
+  applies a non-destructive filter that applies coordinate-aware Gaussian broadening
+  along selected dimensions.
 
-Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and {guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also keeps track of additional tool windows opened from the context menus, so everything is closed cleanly when the main window exits.
+Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and
+{guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also
+keeps track of additional tool windows opened from the context menus, so everything is
+closed cleanly when the main window exits.
 
 (imagetool-roi)=
 

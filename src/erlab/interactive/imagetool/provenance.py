@@ -81,6 +81,7 @@ __all__ = [
     "InterpolationOperation",
     "IselOperation",
     "MaskWithPolygonOperation",
+    "QSelAggregationOperation",
     "QSelOperation",
     "RenameDimsCoordsOperation",
     "RenameOperation",
@@ -2057,23 +2058,45 @@ class RotateOperation(ToolProvenanceOperation):
         )
 
 
+def _format_qsel_dims_arg(dims: ProvenanceHashableTuple) -> str:
+    return (
+        erlab.interactive.utils._parse_single_arg(dims[0])
+        if len(dims) == 1 and isinstance(dims[0], str)
+        else erlab.interactive.utils._parse_single_arg(dims)
+    )
+
+
 class AverageOperation(ToolProvenanceOperation):
     op: typing.Literal["average"] = "average"
     dims: ProvenanceHashableTuple
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
-        return data.qsel.average(self.dims)
+        return data.qsel.mean(self.dims)
 
     def derivation_entry(self) -> DerivationEntry:
-        arg = (
-            erlab.interactive.utils._parse_single_arg(self.dims[0])
-            if len(self.dims) == 1 and isinstance(self.dims[0], str)
-            else erlab.interactive.utils._parse_single_arg(self.dims)
-        )
+        arg = _format_qsel_dims_arg(self.dims)
         label_kwargs = {"dims": self.dims}
         return DerivationEntry(
             f"Average({_format_derivation_value(label_kwargs)})",
-            f"derived = derived.qsel.average({arg})",
+            f"derived = derived.qsel.mean({arg})",
+            True,
+        )
+
+
+class QSelAggregationOperation(ToolProvenanceOperation):
+    op: typing.Literal["qsel_aggregate"] = "qsel_aggregate"
+    dims: ProvenanceHashableTuple
+    func: typing.Literal["mean", "min", "max", "sum"] = "mean"
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return typing.cast("xr.DataArray", getattr(data.qsel, self.func)(self.dims))
+
+    def derivation_entry(self) -> DerivationEntry:
+        arg = _format_qsel_dims_arg(self.dims)
+        label_kwargs = {"dims": self.dims, "func": self.func}
+        return DerivationEntry(
+            f"Aggregate({_format_derivation_value(label_kwargs)})",
+            f"derived = derived.qsel.{self.func}({arg})",
             True,
         )
 

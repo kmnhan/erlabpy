@@ -24,6 +24,9 @@ from erlab.accessors.utils import (
     either_dict_or_kwargs,
 )
 
+QSelReducer: typing.TypeAlias = typing.Literal["mean", "min", "max", "sum"]
+_QSEL_REDUCERS: tuple[QSelReducer, ...] = ("mean", "min", "max", "sum")
+
 if typing.TYPE_CHECKING:
     import lmfit
 
@@ -451,7 +454,7 @@ class InteractiveDatasetAccessor(ERLabDatasetAccessor):
 
 @xr.register_dataarray_accessor("qsel")
 class SelectionAccessor(ERLabDataArrayAccessor):
-    """`xarray.DataArray.qsel` accessor for convenient selection and averaging."""
+    """`xarray.DataArray.qsel` accessor for convenient selection and aggregation."""
 
     @staticmethod
     def _qsel_scalar(
@@ -460,6 +463,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         slices: dict[Hashable, slice],
         avg_dims: list[Hashable],
         lost_dims: list[Hashable],
+        func: QSelReducer,
     ) -> xr.DataArray:
         unindexed_dims: list[Hashable] = [
             k for k in slices | scalars if k not in obj.indexes
@@ -517,7 +521,8 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                             dim=set(avg_dims).intersection(out[k].dims), keep_attrs=True
                         )
 
-            out = out.mean(dim=avg_dims, keep_attrs=True)
+            if avg_dims:
+                out = getattr(out, func)(dim=avg_dims, keep_attrs=True)
             out = out.assign_coords(lost_coords)
 
         return out.drop_vars(unindexed_dims, errors="ignore")
@@ -525,9 +530,11 @@ class SelectionAccessor(ERLabDataArrayAccessor):
     def __call__(
         self,
         indexers: Mapping[Hashable, float | slice] | None = None,
+        *,
+        func: QSelReducer = "mean",
         **indexers_kwargs,
     ):
-        """Select and average data along specified dimensions.
+        """Select and aggregate data along specified dimensions.
 
         Parameters
         ----------
@@ -546,8 +553,8 @@ class SelectionAccessor(ERLabDataArrayAccessor):
 
             - As a value and width: ``alpha=5, alpha_width=0.5``
 
-              The data is *averaged* over a slice of width ``alpha_width``, centered at
-              ``alpha``. If ``alpha`` is a collection, the data is averaged over
+              The data is aggregated over a slice of width ``alpha_width``, centered at
+              ``alpha``. If ``alpha`` is a collection, the data is aggregated over
               multiple slices and concatenated along the dimension.
 
             - As a slice: ``alpha=slice(-10, 10)``
@@ -559,11 +566,16 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         **indexers_kwargs
             The keyword arguments form of ``indexers``. One of ``indexers`` or
             ``indexers_kwargs`` must be provided.
+        func : {"mean", "min", "max", "sum"}, optional
+            Function used when qsel aggregates over width-based selections. Must be one
+            of ``"mean"``, ``"min"``, ``"max"``, or ``"sum"``. ``"mean"`` by default.
+            This argument only affects reduced data; reduced numeric coordinates are
+            still represented by their mean.
 
         Returns
         -------
         DataArray
-            The selected and averaged data.
+            The selected and aggregated data.
 
         Note
         ----
@@ -582,6 +594,10 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             da.qsel(x=slice(2.0, 3.0))  # This works
 
         """
+        if func not in _QSEL_REDUCERS:
+            allowed = ", ".join(repr(item) for item in _QSEL_REDUCERS)
+            raise ValueError(f"func must be one of {allowed}; got {func!r}")
+
         indexers = either_dict_or_kwargs(indexers, indexers_kwargs, "qsel")
 
         coord_order = list(self._obj.coords.keys())
@@ -686,6 +702,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                             slices=slices | {dim: s},
                             avg_dims=[*avg_dims, dim],
                             lost_dims=lost_dims + lost_dims_extend,
+                            func=func,
                         )
                         for s in slice_list
                     ],
@@ -697,20 +714,19 @@ class SelectionAccessor(ERLabDataArrayAccessor):
                 )
         else:
             out = self._qsel_scalar(
-                self._obj.copy(), scalars, slices, avg_dims, lost_dims
+                self._obj.copy(), scalars, slices, avg_dims, lost_dims, func
             )
 
         return erlab.utils.array.sort_coord_order(
             out, keys=coord_order, dims_first=True
         )
 
-    def average(self, dim: str | Sequence[Hashable] | None = None) -> xr.DataArray:
-        """Average the data along the specified dimension(s).
+    def mean(self, dim: str | Sequence[Hashable] | None = None) -> xr.DataArray:
+        """Return the mean over dimensions while keeping their coordinates.
 
-        The difference between this method and :meth:`xarray.DataArray.mean` is that
-        this method averages the data along the specified dimension(s) and retains the
-        averaged coordinate. This method also implicitly averages all coordinates that
-        depend on the averaged dimension(s) instead of dropping them.
+        Dimensions removed from the data are retained as scalar coordinates with the
+        mean of their coordinate values. Numeric coordinates that depend on reduced
+        dimensions are averaged as well.
 
         Parameters
         ----------
@@ -723,6 +739,48 @@ class SelectionAccessor(ERLabDataArrayAccessor):
         DataArray
             The data averaged along the specified dimension(s).
         """
+        return self._reduce_dims(dim, "mean")
+
+    def average(self, dim: str | Sequence[Hashable] | None = None) -> xr.DataArray:
+        """Alias for :meth:`qsel.mean <xarray.DataArray.qsel.mean>`.
+
+        New code should use :meth:`qsel.mean <SelectionAccessor.mean>`.
+        """
+        return self.mean(dim)
+
+    def min(self, dim: str | Sequence[Hashable] | None = None) -> xr.DataArray:
+        """Return the minimum over dimensions while keeping their coordinates.
+
+        Data values are reduced with :meth:`xarray.DataArray.min`. Dimensions removed
+        from the data are retained as scalar coordinates with the mean of their
+        coordinate values. Numeric coordinates that depend on reduced dimensions are
+        averaged as well.
+        """
+        return self._reduce_dims(dim, "min")
+
+    def max(self, dim: str | Sequence[Hashable] | None = None) -> xr.DataArray:
+        """Return the maximum over dimensions while keeping their coordinates.
+
+        Data values are reduced with :meth:`xarray.DataArray.max`. Dimensions removed
+        from the data are retained as scalar coordinates with the mean of their
+        coordinate values. Numeric coordinates that depend on reduced dimensions are
+        averaged as well.
+        """
+        return self._reduce_dims(dim, "max")
+
+    def sum(self, dim: str | Sequence[Hashable] | None = None) -> xr.DataArray:
+        """Return the sum over dimensions while keeping their coordinates.
+
+        Data values are reduced with :meth:`xarray.DataArray.sum`. Dimensions removed
+        from the data are retained as scalar coordinates with the mean of their
+        coordinate values. Numeric coordinates that depend on reduced dimensions are
+        averaged as well.
+        """
+        return self._reduce_dims(dim, "sum")
+
+    def _reduce_dims(
+        self, dim: str | Sequence[Hashable] | None, func: QSelReducer
+    ) -> xr.DataArray:
         if dim is None:
             dim = list(self._obj.dims)
         if isinstance(dim, str):
@@ -733,7 +791,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             qsel_kwargs[d] = 0.0
             qsel_kwargs[f"{d}_width"] = np.inf
 
-        return self._obj.sortby(list(dim)).qsel(qsel_kwargs)
+        return self._obj.sortby(list(dim)).qsel(qsel_kwargs, func=func)
 
     def around(
         self,
@@ -799,7 +857,7 @@ class SelectionAccessor(ERLabDataArrayAccessor):
             self._obj, radius, boundary=boundary, invert=invert, drop=drop, **sel_kw
         )
         if average:
-            return masked.qsel.average(sel_kw.keys())
+            return masked.qsel.mean(sel_kw.keys())
         return masked
 
 

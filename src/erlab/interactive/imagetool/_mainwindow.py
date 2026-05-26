@@ -686,7 +686,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "text": "Select Data…",
                         "triggered": self._select_data,
                     },
-                    "Average": {"triggered": self._average},
+                    "aggregateAct": {
+                        "text": "Aggregate…",
+                        "triggered": self._aggregate,
+                    },
                     "interpolateAct": {
                         "text": "Interpolate…",
                         "triggered": self._interpolate,
@@ -906,8 +909,12 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
         self.execute_dialog(erlab.interactive.imagetool.dialogs.CropDialog)
 
     @QtCore.Slot()
+    def _aggregate(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.AggregateDialog)
+
+    @QtCore.Slot()
     def _average(self) -> None:
-        self.execute_dialog(erlab.interactive.imagetool.dialogs.AverageDialog)
+        self._aggregate()
 
     @QtCore.Slot()
     def _interpolate(self) -> None:

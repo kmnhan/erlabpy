@@ -181,9 +181,7 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         "Start from current parent ImageTool data",
         'Average(dims=("x",))',
     ]
-    assert (
-        spec.derivation_code() == 'derived = data\nderived = derived.qsel.average("x")'
-    )
+    assert spec.derivation_code() == 'derived = data\nderived = derived.qsel.mean("x")'
 
     dumped = spec.model_dump(mode="json")
     assert dumped["schema_version"] == 2
@@ -320,7 +318,16 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         erlab.interactive.imagetool.provenance.full_data(
             erlab.interactive.imagetool.provenance.AverageOperation(dims=("y",))
         ).apply(data),
-        data.qsel.average("y"),
+        data.qsel.mean("y"),
+    )
+    xr.testing.assert_identical(
+        erlab.interactive.imagetool.provenance.full_data(
+            erlab.interactive.imagetool.provenance.QSelAggregationOperation(
+                dims=("y",),
+                func="sum",
+            )
+        ).apply(data),
+        data.qsel.sum("y"),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance.full_data(
@@ -743,7 +750,7 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
     assert reparsed_restored is not None
     xr.testing.assert_identical(
         reparsed_restored.apply(uniform),
-        public.qsel.average("y"),
+        public.qsel.mean("y"),
     )
     restored_code = reparsed_restored.display_code(parent_data=uniform)
     assert restored_code is not None
@@ -785,17 +792,44 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
     average_spec = prov.full_data(prov.AverageOperation(dims=("k-space",)))
     assert (
         average_spec.derivation_code()
-        == 'derived = data\nderived = derived.qsel.average("k-space")'
+        == 'derived = data\nderived = derived.qsel.mean("k-space")'
     )
     xr.testing.assert_identical(
-        average_spec.apply(string_key_data), string_key_data.qsel.average("k-space")
+        average_spec.apply(string_key_data), string_key_data.qsel.mean("k-space")
     )
 
     tuple_average_spec = prov.full_data(prov.AverageOperation(dims=(("beta", 0),)))
     assert (
         tuple_average_spec.derivation_code()
-        == 'derived = data\nderived = derived.qsel.average((("beta", 0),))'
+        == 'derived = data\nderived = derived.qsel.mean((("beta", 0),))'
     )
+
+    aggregate_spec = prov.full_data(
+        prov.QSelAggregationOperation(dims=("k-space",), func="sum")
+    )
+    assert (
+        aggregate_spec.derivation_code()
+        == 'derived = data\nderived = derived.qsel.sum("k-space")'
+    )
+    xr.testing.assert_identical(
+        aggregate_spec.apply(string_key_data), string_key_data.qsel.sum("k-space")
+    )
+
+    mean_aggregate_spec = prov.full_data(
+        prov.QSelAggregationOperation(dims=(("beta", 0),), func="mean")
+    )
+    assert mean_aggregate_spec.derivation_code() == (
+        'derived = data\nderived = derived.qsel.mean((("beta", 0),))'
+    )
+
+    dumped = aggregate_spec.model_dump(mode="json")
+    assert dumped["operations"][0] == {
+        "op": "qsel_aggregate",
+        "dims": {prov._TUPLE_MARKER: ["k-space"]},
+        "func": "sum",
+    }
+    reparsed = prov.parse_tool_provenance_spec(dumped)
+    assert reparsed.operations[0] == aggregate_spec.operations[0]
 
     coarsen_spec = prov.full_data(
         prov.CoarsenOperation(
@@ -1481,12 +1515,12 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
     assert composed is not None
     code = composed.derivation_code()
     assert code == (
-        'result = data + 1\nderived = result\nderived = derived.qsel.average("x")'
+        'result = data + 1\nderived = result\nderived = derived.qsel.mean("x")'
     )
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     derived = namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    xr.testing.assert_identical(derived, (data + 1).qsel.average("x"))
+    xr.testing.assert_identical(derived, (data + 1).qsel.mean("x"))
 
 
 def test_file_load_source_replay_call_round_trips() -> None:

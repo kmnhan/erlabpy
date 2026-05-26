@@ -48,8 +48,9 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
 
 - Search `erlab.io.load`, `loader_context`, `set_loader`, `set_data_dir`,
   `plugins`, or `data explorer` for loading and plugin questions.
-- Search `xarray.DataArray.qsel`, `qsel.average`, `qsel.around`, or
-  `workflow-bridge` for slicing and indexing questions.
+- Search `xarray.DataArray.qsel`, `qsel.mean`, `qsel.min`,
+  `qsel.max`, `qsel.sum`, `qsel.around`, `Aggregate`, or `workflow-bridge` for
+  slicing and indexing questions.
 - Search `kspace.convert`, `kspace.convert_coords`, `ktool`, `work function`,
   `inner potential`, or `offsets` for momentum-conversion questions.
 - Search `xlm.modelfit`, `MultiPeakModel`, `FermiEdgeModel`, `gold`, `ftool`,

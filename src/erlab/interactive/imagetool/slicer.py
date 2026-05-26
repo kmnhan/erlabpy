@@ -1262,7 +1262,7 @@ class ArraySlicer(QtCore.QObject):
             for k, v in zip(self._obj.dims, self.get_binned(cursor), strict=True)
             if (v and (k in isel_kw))
         ]  # Select only relevant binned dimensions
-        sliced = self._obj.isel(isel_kw).qsel.average(binned_dims)
+        sliced = self._obj.isel(isel_kw).qsel.mean(binned_dims)
         if self._nonuniform_axes:
             return restore_nonuniform_dims(sliced)
         return sliced

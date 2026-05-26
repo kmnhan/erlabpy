@@ -594,9 +594,9 @@ which ImageTool data and selection opened it:
   array should be used again during an update.
 - Use the operation models in ``erlab.interactive.imagetool.provenance`` such as
   ``QSelOperation(...)``, ``IselOperation(...)``, ``SelOperation(...)``,
-  ``AverageOperation(...)``, and ``TransposeOperation(...)`` when a tool needs to
-  write or modify the saved operation list explicitly. Pass those operation instances to
-  ``selection(...)`` or ``full_data(...)``.
+  ``QSelAggregationOperation(...)``, and ``TransposeOperation(...)`` when a tool
+  needs to write or modify the saved operation list explicitly. Pass those operation
+  instances to ``selection(...)`` or ``full_data(...)``.
 - When implementing a custom ``ToolProvenanceOperation.derivation_entry()``, return a
   ``DerivationEntry`` for steps that should appear in the manager derivation list or
   copied code. Return ``None`` only for operations that must still run during an update
