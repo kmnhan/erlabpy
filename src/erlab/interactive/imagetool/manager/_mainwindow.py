@@ -1432,6 +1432,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.metadata_details_layout.setVerticalSpacing(2)
         self.metadata_details_layout.setColumnStretch(1, 1)
         self.metadata_details_widget.setLayout(self.metadata_details_layout)
+        self.metadata_details_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
         self.metadata_details_widget.setVisible(False)
         metadata_layout.addWidget(self.metadata_details_widget)
         self._metadata_detail_labels: dict[str, QtWidgets.QLabel] = {}
@@ -3226,7 +3230,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 if field.wrap:
                     value_label.setSizePolicy(
                         QtWidgets.QSizePolicy.Policy.Expanding,
-                        QtWidgets.QSizePolicy.Policy.Minimum,
+                        QtWidgets.QSizePolicy.Policy.Preferred,
                     )
             if field.monospace:
                 value_label.setFont(self._metadata_monospace_font)

@@ -16404,6 +16404,14 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         details = metadata_detail_map(manager)
         assert metadata_detail_labels(manager).count("Inputs") == 1
         assert manager._metadata_detail_labels["Inputs"].wordWrap()
+        assert (
+            manager.metadata_details_widget.sizePolicy().verticalPolicy()
+            == QtWidgets.QSizePolicy.Policy.Maximum
+        )
+        assert (
+            manager._metadata_detail_labels["Inputs"].sizePolicy().verticalPolicy()
+            == QtWidgets.QSizePolicy.Policy.Preferred
+        )
         assert "\n" in details["Inputs"]
         assert "\n\n" not in details["Inputs"]
         assert all(line.strip() for line in details["Inputs"].splitlines())
