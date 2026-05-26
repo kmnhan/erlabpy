@@ -1,23 +1,36 @@
-"""Helpers for recording and replaying actions in ImageTool windows.
+"""Helpers for recording, displaying, and replaying ImageTool provenance.
 
-The provenance model stores how a tool's data should be reconstructed from a parent
-ImageTool window. A :class:`ToolProvenanceSpec` answers two questions:
+The saved provenance model stores enough history to explain or rebuild an ImageTool
+without persisting runtime-only replay state. :class:`ToolProvenanceSpec` has a small
+set of source forms:
 
-1. What should be used as the starting point?
+1. Live single-parent source specs.
 
-   - Use :func:`full_data` when the derived tool should begin from the parent's current
-     array exactly as shown to the caller.
+   - Use :func:`full_data` when the derived tool should begin from the parent
+     ImageTool's current array exactly as shown to the caller.
 
-   - Use :func:`public_data` when the derived tool should begin from the parent's
-     public data model, including restoration of non-uniform dimensions.
+   - Use :func:`public_data` when the derived tool should begin from the parent
+     ImageTool's public data model, including restoration of non-uniform dimensions.
 
-   - Use :func:`selection` when the derived tool should begin from the public ImageTool
-     selection model, including restoration of non-uniform dimensions.
+   - Use :func:`selection` when the derived tool should begin from the public
+     ImageTool selection model, including restoration of non-uniform dimensions.
 
-2. Which operations should be replayed on that starting point?
+2. Durable replay specs.
 
-   - Each operation is represented by an immutable :class:`ToolProvenanceOperation`
-     subclass whose serialized fields are safe to persist in JSON.
+   - Use :func:`file_load` for data that can be reloaded from a recorded file source
+     and replayed through structured :class:`ReplayStage` operations.
+
+   - Use :func:`script` for console-derived and other multi-input results. Script
+     specs may reference any number of :class:`ScriptInput` records. Each input stores
+     an immutable replay name, a historical display label, optional live manager node
+     identity and ``node_snapshot_token``, and an optional nested provenance snapshot.
+
+Each transformation is represented by an immutable
+:class:`ToolProvenanceOperation` subclass whose serialized fields are safe to persist
+in JSON. Persisted specs are the source of truth for workspace save/load. Runtime
+reload, copied code, and shared-input deduplication compile those specs on demand
+through :mod:`erlab.interactive.imagetool._replay_graph`; the graph itself is not
+saved.
 
 Manager children opened from an ImageTool cursor or bin selection do not keep the
 first generated ``qsel`` arguments as their refresh state. They store the selected
@@ -27,7 +40,8 @@ parent indices in :class:`ImageToolSelectionSourceBinding` and rebuild ``qsel`` 
 Adding a new provenance-carrying operation follows the same pattern every time:
 
 1. Define a new :class:`ToolProvenanceOperation` subclass with a unique ``op``
-   discriminator literal.
+   discriminator literal. Subclasses register themselves automatically so serialized
+   payloads can dispatch to the right model.
 
 2. Prefer the annotated provenance field aliases defined in this module for hashable
    dimension identifiers and dim-keyed mappings so runtime values stay decoded while
@@ -43,23 +57,31 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    access to parent coordinates or ordering.
 
 5. Implement :meth:`ToolProvenanceOperation.derivation_entry` so the manager can display
-   a user-facing summary and optional copyable code. Return ``None`` only when the
-   operation should be omitted from the derivation list and copied provenance code while
-   still being replayed at runtime.
+   a user-facing summary and optional copyable code. Return a :class:`DerivationEntry`
+   for every concrete operation; use ``code=None`` when the step should be visible but
+   copied/replay code cannot be emitted safely.
 
-6. Give the class a unique ``op`` discriminator literal. Subclasses register themselves
-   automatically so serialized payloads can dispatch to the right model.
+6. If the operation maps cleanly from manager-console calls, declare
+   :attr:`ToolProvenanceOperation.console_patterns` or implement
+   :meth:`ToolProvenanceOperation.from_console_call`. Unsupported or ambiguous console
+   calls should return ``None`` so they remain valid script provenance instead of being
+   recorded as lossy structured operations.
 
-7. Export the operation class from this module so runtime call sites can instantiate
+7. Make generated code executable in the replay namespace. Use the literal helpers in
+   this module for persisted values and make sure code assigns the ``derived`` replay
+   variable; the replay graph may rebase ``data`` and ``derived`` to internal names.
+
+8. Export the operation class from this module so runtime call sites can instantiate
    it directly.
 
-8. Add tests that cover round-trip validation, :meth:`apply`, and derivation text/code,
-   plus any save/load path that persists the new operation.
+9. Add tests that cover round-trip validation, :meth:`apply`, derivation text/code,
+   console matching when supported, and any save/load or reload path that persists the
+   new operation.
 
 Parsing of serialized payloads happens only through :func:`parse_tool_provenance_spec`
 and :func:`parse_tool_provenance_operation`. Runtime authoring code should create specs
-with :func:`full_data`, :func:`public_data`, or :func:`selection`, then instantiate
-operation models from this module directly.
+with :func:`full_data`, :func:`public_data`, :func:`selection`, :func:`file_load`, or
+:func:`script`, then instantiate operation models from this module directly.
 """
 
 from __future__ import annotations
@@ -131,7 +153,9 @@ import ast
 import base64
 import contextlib
 import importlib
+import inspect
 import keyword
+import math
 import pathlib
 import typing
 from collections.abc import Callable, Hashable, Mapping, Sequence
@@ -182,7 +206,6 @@ _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.ClassDef,
     ast.Delete,
     ast.For,
-    ast.FunctionDef,
     ast.Global,
     ast.Import,
     ast.ImportFrom,
@@ -314,6 +337,57 @@ def decode_provenance_value(value: typing.Any) -> typing.Any:
     return erlab.utils.misc._convert_to_native(value)
 
 
+def _provenance_value_code(value: typing.Any) -> str:
+    value = erlab.utils.misc._convert_to_native(value)
+    if isinstance(value, np.ndarray):
+        return f"np.array({_provenance_value_code(value.tolist())})"
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "np.nan"
+        if math.isinf(value):
+            return "np.inf" if value > 0 else "-np.inf"
+        return repr(value)
+    if isinstance(value, complex):
+        return (
+            f"complex({_provenance_value_code(float(value.real))}, "
+            f"{_provenance_value_code(float(value.imag))})"
+        )
+    if value is None or isinstance(value, (bool, int, str, bytes)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_provenance_value_code(item) for item in value) + "]"
+    if isinstance(value, tuple):
+        suffix = "," if len(value) == 1 else ""
+        return (
+            "("
+            + ", ".join(_provenance_value_code(item) for item in value)
+            + suffix
+            + ")"
+        )
+    if isinstance(value, Mapping):
+        return (
+            "{"
+            + ", ".join(
+                f"{_provenance_value_code(key)}: {_provenance_value_code(item)}"
+                for key, item in value.items()
+            )
+            + "}"
+        )
+    raise TypeError(f"Cannot generate replay code for {type(value).__name__!r}")
+
+
+def _provenance_numeric_array_code(values: typing.Any) -> str:
+    values = np.asarray(values)
+    if (
+        values.ndim == 1
+        and np.issubdtype(values.dtype, np.number)
+        and not np.issubdtype(values.dtype, np.complexfloating)
+        and np.all(np.isfinite(values.astype(np.float64, copy=False)))
+    ):
+        return erlab.interactive.utils.format_1d_numeric_array_code(values)
+    return _provenance_value_code(values)
+
+
 def _normalize_provenance_hashable(value: typing.Any) -> Hashable:
     value = erlab.utils.misc._convert_to_native(value)
     if isinstance(value, tuple):
@@ -383,23 +457,65 @@ def _validate_active_name(value: typing.Any) -> str | None:
     return value
 
 
-def _statement_load_count(stmt: ast.stmt, target: str) -> int:
-    count = 0
-    for node in ast.walk(stmt):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            count += node.id == target
-    return count
+class _CurrentScopeNameCounter(ast.NodeVisitor):
+    def __init__(
+        self,
+        target: str,
+        contexts: tuple[type[ast.expr_context], ...],
+        *,
+        count_definition_names: bool = True,
+    ) -> None:
+        self.target = target
+        self.contexts = contexts
+        self.count_definition_names = count_definition_names
+        self.count = 0
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if node.id == self.target and isinstance(node.ctx, self.contexts):
+            self.count += 1
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if self.count_definition_names and ast.Store in self.contexts:
+            self.count += node.name == self.target
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self._visit_argument_expressions(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_FunctionDef(typing.cast("ast.FunctionDef", node))
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._visit_argument_expressions(node.args)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        if self.count_definition_names and ast.Store in self.contexts:
+            self.count += node.name == self.target
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword_arg in node.keywords:
+            self.visit(keyword_arg)
+
+    def _visit_argument_expressions(self, args: ast.arguments) -> None:
+        for default in args.defaults:
+            self.visit(default)
+        for default in args.kw_defaults:
+            if default is not None:
+                self.visit(default)
+        for arg in (
+            *args.posonlyargs,
+            *args.args,
+            *args.kwonlyargs,
+            *(arg for arg in (args.vararg, args.kwarg) if arg is not None),
+        ):
+            if arg.annotation is not None:
+                self.visit(arg.annotation)
 
 
-def _statement_store_count(stmt: ast.stmt, target: str) -> int:
-    count = 0
-    for node in ast.walk(stmt):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            count += node.id == target
-    return count
-
-
-class _NameReplacer(ast.NodeTransformer):
+class _ScopedNameReplacer(ast.NodeTransformer):
     def __init__(self, target: str, replacement: ast.expr) -> None:
         self._target = target
         self._replacement = replacement
@@ -408,6 +524,75 @@ class _NameReplacer(ast.NodeTransformer):
         if isinstance(node.ctx, ast.Load) and node.id == self._target:
             return _clone_expr(self._replacement)
         return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        node.decorator_list = [
+            typing.cast("ast.expr", self.visit(decorator))
+            for decorator in node.decorator_list
+        ]
+        self._visit_argument_expressions(node.args)
+        if node.returns is not None:
+            node.returns = typing.cast("ast.expr", self.visit(node.returns))
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        return self.visit_FunctionDef(typing.cast("ast.FunctionDef", node))
+
+    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
+        self._visit_argument_expressions(node.args)
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        node.decorator_list = [
+            typing.cast("ast.expr", self.visit(decorator))
+            for decorator in node.decorator_list
+        ]
+        node.bases = [typing.cast("ast.expr", self.visit(base)) for base in node.bases]
+        node.keywords = [
+            typing.cast("ast.keyword", self.visit(keyword_arg))
+            for keyword_arg in node.keywords
+        ]
+        return node
+
+    def _visit_argument_expressions(self, args: ast.arguments) -> None:
+        args.defaults = [
+            typing.cast("ast.expr", self.visit(default)) for default in args.defaults
+        ]
+        args.kw_defaults = [
+            None if default is None else typing.cast("ast.expr", self.visit(default))
+            for default in args.kw_defaults
+        ]
+        for arg in (
+            *args.posonlyargs,
+            *args.args,
+            *args.kwonlyargs,
+            *(arg for arg in (args.vararg, args.kwarg) if arg is not None),
+        ):
+            if arg.annotation is not None:
+                arg.annotation = typing.cast("ast.expr", self.visit(arg.annotation))
+
+
+def _statement_load_count(stmt: ast.stmt, target: str) -> int:
+    counter = _CurrentScopeNameCounter(target, (ast.Load,))
+    counter.visit(stmt)
+    return counter.count
+
+
+def _statement_store_count(
+    stmt: ast.stmt, target: str, *, count_definition_names: bool = False
+) -> int:
+    counter = _CurrentScopeNameCounter(
+        target,
+        (ast.Store, ast.Del),
+        count_definition_names=count_definition_names,
+    )
+    counter.visit(stmt)
+    return counter.count
+
+
+class _NameReplacer(_ScopedNameReplacer):
+    def __init__(self, target: str, replacement: ast.expr) -> None:
+        super().__init__(target, replacement)
 
 
 def _clone_expr(node: ast.expr) -> ast.expr:
@@ -427,6 +612,55 @@ class _IdentifierReplacer(ast.NodeTransformer):
         if replacement is None:
             return node
         return ast.copy_location(ast.Name(id=replacement, ctx=node.ctx), node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        node.decorator_list = [
+            typing.cast("ast.expr", self.visit(decorator))
+            for decorator in node.decorator_list
+        ]
+        _visit_argument_expressions_with_transformer(node.args, self)
+        if node.returns is not None:
+            node.returns = typing.cast("ast.expr", self.visit(node.returns))
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        return self.visit_FunctionDef(typing.cast("ast.FunctionDef", node))
+
+    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
+        _visit_argument_expressions_with_transformer(node.args, self)
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        node.decorator_list = [
+            typing.cast("ast.expr", self.visit(decorator))
+            for decorator in node.decorator_list
+        ]
+        node.bases = [typing.cast("ast.expr", self.visit(base)) for base in node.bases]
+        node.keywords = [
+            typing.cast("ast.keyword", self.visit(keyword_arg))
+            for keyword_arg in node.keywords
+        ]
+        return node
+
+
+def _visit_argument_expressions_with_transformer(
+    args: ast.arguments, transformer: ast.NodeTransformer
+) -> None:
+    args.defaults = [
+        typing.cast("ast.expr", transformer.visit(default)) for default in args.defaults
+    ]
+    args.kw_defaults = [
+        None if default is None else typing.cast("ast.expr", transformer.visit(default))
+        for default in args.kw_defaults
+    ]
+    for arg in (
+        *args.posonlyargs,
+        *args.args,
+        *args.kwonlyargs,
+        *(arg for arg in (args.vararg, args.kwarg) if arg is not None),
+    ):
+        if arg.annotation is not None:
+            arg.annotation = typing.cast("ast.expr", transformer.visit(arg.annotation))
 
 
 def _replace_code_identifiers(code: str, replacements: Mapping[str, str]) -> str:
@@ -526,12 +760,7 @@ def _code_uses_name(code: str, name: str) -> bool:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return False
-    return any(
-        isinstance(node, ast.Name)
-        and isinstance(node.ctx, ast.Load)
-        and node.id == name
-        for node in ast.walk(module)
-    )
+    return any(_statement_load_count(stmt, name) > 0 for stmt in module.body)
 
 
 def rebase_default_replay_input(code: str, input_name: str) -> str:
@@ -565,22 +794,232 @@ def uses_default_replay_input(code: str) -> bool:
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 
+def _callable_paths(func: Callable[..., typing.Any]) -> set[str]:
+    paths: set[str] = set()
+    for value in (func, inspect.unwrap(func)):
+        module = getattr(value, "__module__", None)
+        if not isinstance(module, str):
+            continue
+        for attr in ("__qualname__", "__name__"):
+            name = getattr(value, attr, None)
+            if isinstance(name, str):
+                paths.add(f"{module}.{name}")
+    return paths
+
+
+class ConsoleCall:
+    """Normalized runtime call observed by the ImageTool manager console.
+
+    Console proxies create this descriptor after unwrapping provenance-aware tool
+    handles to raw :class:`xarray.DataArray` arguments. Operation classes inspect the
+    invoked callable, DataArray method/accessor context, and raw arguments to decide
+    whether the call can be represented as structured provenance.
+    """
+
+    __slots__ = (
+        "accessor_path",
+        "args",
+        "dataarray_method",
+        "display_code",
+        "func",
+        "has_extra_tracked_inputs",
+        "kwargs",
+        "receiver_data",
+    )
+
+    def __init__(
+        self,
+        *,
+        func: Callable[..., typing.Any] | None = None,
+        dataarray_method: str | None = None,
+        accessor_path: Sequence[str] = (),
+        args: Sequence[typing.Any] = (),
+        kwargs: Mapping[str, typing.Any] | None = None,
+        display_code: str,
+        has_extra_tracked_inputs: bool,
+        receiver_data: xr.DataArray | None = None,
+    ) -> None:
+        self.func = func
+        self.dataarray_method = dataarray_method
+        self.accessor_path = tuple(accessor_path)
+        self.args = tuple(args)
+        self.kwargs = dict(kwargs or {})
+        self.display_code = display_code
+        self.has_extra_tracked_inputs = has_extra_tracked_inputs
+        self.receiver_data = receiver_data
+
+
+class ConsoleOperationPattern:
+    """Declarative matcher for direct console-to-operation mappings.
+
+    Use this for calls where public arguments map directly onto operation model
+    fields. Store module-function targets as strings so importing this module does not
+    resolve lazy ERLab analysis modules; the matcher compares those strings with the
+    callable that the console actually invoked. More complex calls should implement
+    :meth:`ToolProvenanceOperation.from_console_call`.
+    """
+
+    __slots__ = (
+        "accessor_path",
+        "dataarray_method",
+        "defaults",
+        "field_aliases",
+        "fields",
+        "ignored_defaults",
+        "kwargs_field",
+        "mapping_kwargs",
+        "targets",
+    )
+
+    def __init__(
+        self,
+        *,
+        target: Callable[..., typing.Any] | str | None = None,
+        dataarray_method: str | None = None,
+        accessor_path: Sequence[str] = (),
+        fields: Sequence[str] = (),
+        field_aliases: Mapping[str, str] | None = None,
+        kwargs_field: str | None = None,
+        mapping_kwarg: str | Sequence[str] | None = None,
+        defaults: Mapping[str, typing.Any] | None = None,
+        ignored_defaults: Mapping[str, typing.Any] | None = None,
+    ) -> None:
+        self.targets = () if target is None else (target,)
+        self.dataarray_method = dataarray_method
+        self.accessor_path = tuple(accessor_path)
+        self.fields = tuple(fields)
+        self.field_aliases = dict(field_aliases or {})
+        self.kwargs_field = kwargs_field
+        mapping_kwargs: tuple[str, ...]
+        if isinstance(mapping_kwarg, str):
+            mapping_kwargs = (mapping_kwarg,)
+        else:
+            mapping_kwargs = tuple(mapping_kwarg or ())
+        self.mapping_kwargs = mapping_kwargs
+        self.defaults = dict(defaults or {})
+        self.ignored_defaults = dict(ignored_defaults or {})
+
+    def match(self, call: ConsoleCall) -> dict[str, typing.Any] | None:
+        if call.has_extra_tracked_inputs:
+            return None
+        if self.targets:
+            if call.func is None:
+                return None
+            call_paths = _callable_paths(call.func)
+            if not any(
+                target in call_paths
+                if isinstance(target, str)
+                else inspect.unwrap(call.func) is inspect.unwrap(target)
+                for target in self.targets
+            ):
+                return None
+        if self.dataarray_method is not None:
+            if call.dataarray_method != self.dataarray_method:
+                return None
+        elif call.dataarray_method is not None:
+            return None
+        if self.accessor_path != call.accessor_path:
+            return None
+
+        kwargs = dict(call.kwargs)
+        for public_name, field_name in self.field_aliases.items():
+            if public_name not in kwargs:
+                continue
+            if field_name in kwargs:
+                return None
+            kwargs[field_name] = kwargs.pop(public_name)
+        for key, default in self.ignored_defaults.items():
+            if key not in kwargs:
+                continue
+            if not _console_values_equal(kwargs[key], default):
+                return None
+            kwargs.pop(key)
+
+        if self.kwargs_field is not None:
+            mapped = _console_mapping_values(
+                call.args, kwargs, mapping_kwargs=self.mapping_kwargs
+            )
+            if mapped is None:
+                return None
+            return {self.kwargs_field: mapped}
+
+        if len(call.args) > len(self.fields):
+            return None
+        values: dict[str, typing.Any] = dict(zip(self.fields, call.args, strict=False))
+        for field in self.fields[len(call.args) :]:
+            if field in kwargs:
+                values[field] = kwargs.pop(field)
+            elif field in self.defaults:
+                values[field] = self.defaults[field]
+            else:
+                return None
+        for key, value in kwargs.items():
+            if key not in self.defaults:
+                return None
+            values[key] = value
+        for key, value in self.defaults.items():
+            values.setdefault(key, value)
+        return values
+
+
+def _console_values_equal(value: typing.Any, default: typing.Any) -> bool:
+    if (
+        isinstance(value, float)
+        and isinstance(default, float)
+        and np.isnan(value)
+        and np.isnan(default)
+    ):
+        return True
+    return value == default
+
+
+def _console_mapping_values(
+    args: Sequence[typing.Any],
+    kwargs: Mapping[str, typing.Any],
+    *,
+    mapping_kwargs: Sequence[str] = (),
+) -> dict[typing.Any, typing.Any] | None:
+    if len(args) > 1:
+        return None
+    mapped: dict[typing.Any, typing.Any] = {}
+    remaining = dict(kwargs)
+    if args:
+        if args[0] is None:
+            pass
+        elif not isinstance(args[0], Mapping):
+            return None
+        else:
+            mapped.update(args[0])
+    for mapping_kwarg in mapping_kwargs:
+        if mapping_kwarg not in remaining:
+            continue
+        value = remaining.pop(mapping_kwarg)
+        if value is None:
+            continue
+        if not isinstance(value, Mapping):
+            return None
+        mapped.update(value)
+    mapped.update(remaining)
+    return mapped
+
+
 class ToolProvenanceOperation(pydantic.BaseModel):
-    """Base class for operations stored in :class:`ToolProvenanceSpec`.
+    """Base class for typed operations stored in :class:`ToolProvenanceSpec`.
 
     New operations should keep runtime fields in their decoded Python form, prefer the
     annotated provenance field aliases in this module for lossless JSON serialization,
     implement :meth:`apply` to replay the transformation, and implement
     :meth:`derivation_entry` to describe the step in manager UI.
 
-    Operation instances store the exact arguments used by replay, copied code, and
-    derivation display. For ImageTool cursor or bin children that refresh after parent
-    coordinate edits, store the selected indices in
-    :class:`ImageToolSelectionSourceBinding` and rebuild ``qsel`` operations before
-    applying the spec.
+    Operation instances store the exact arguments used by live refresh, replay graph
+    execution, copied code, and derivation display. If a public console call maps
+    exactly to an operation, expose it with ``console_patterns`` or
+    :meth:`from_console_call`; ambiguous calls should return ``None`` so script
+    provenance records the original code instead.
     """
 
     live_applicable: typing.ClassVar[bool] = True
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = ()
 
     model_config = pydantic.ConfigDict(
         frozen=True,
@@ -683,24 +1122,58 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         """
         raise NotImplementedError
 
-    def derivation_entry(self) -> DerivationEntry | None:
+    def derivation_entry(self) -> DerivationEntry:
         """Return the user-visible derivation entry for this operation.
 
-        Return a :class:`DerivationEntry` when the operation should appear in derivation
-        listings and contribute code to :meth:`ToolProvenanceSpec.derivation_code` or
-        :meth:`ToolProvenanceSpec.display_code`.
-
-        Return ``None`` only for replayed operations that should stay hidden from the
-        derivation UI and copied provenance code. Hidden operations are still kept in
-        the spec and still run through :meth:`apply`; they are simply omitted from the
-        rendered derivation list. In the current implementation this is used for
-        internal bookkeeping steps such as a final rename.
+        Every concrete operation returns a :class:`DerivationEntry` so the manager can
+        display it and copied provenance code has a single replay contract.
 
         Use ``DerivationEntry(..., code=None)`` instead when the step should remain
         visible in the derivation list but code generation should stop and return
         ``None``.
         """
         raise NotImplementedError
+
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        for pattern in cls.console_patterns:
+            values = pattern.match(call)
+            if values is None:
+                continue
+            with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+                return cls(**values)
+        return None
+
+
+def operation_from_console_call(call: ConsoleCall) -> ToolProvenanceOperation | None:
+    """Return the structured operation represented by a console call, if known."""
+    for operation_type in _OPERATION_TYPES.values():
+        operation = operation_type.from_console_call(call)
+        if operation is not None:
+            return operation
+    return None
+
+
+def _single_assign_coord(call: ConsoleCall) -> tuple[typing.Any, typing.Any] | None:
+    if (
+        call.has_extra_tracked_inputs
+        or call.dataarray_method != "assign_coords"
+        or call.accessor_path
+        or len(call.args) > 1
+    ):
+        return None
+    coords = _console_mapping_values(call.args, call.kwargs, mapping_kwargs=("coords",))
+    if coords is None:
+        return None
+    if len(coords) != 1:
+        return None
+    return next(iter(coords.items()))
+
+
+def _scalar_coord_value(value: typing.Any) -> bool:
+    encoded = encode_provenance_value(value)
+    decoded = decode_provenance_value(encoded)
+    return not isinstance(decoded, (Mapping, Sequence)) or isinstance(decoded, str)
 
 
 def _coerce_nullable_hashable_tuple_field(
@@ -940,7 +1413,7 @@ class ReplayStage(pydantic.BaseModel):
 
 
 class FileLoadSource(pydantic.BaseModel):
-    """Serializable file origin used by replay-only ImageTool provenance."""
+    """Serializable file origin used by saved file-backed provenance."""
 
     path: str
     loader_label: str
@@ -962,7 +1435,13 @@ class FileLoadSource(pydantic.BaseModel):
 
 
 class ScriptInput(pydantic.BaseModel):
-    """One named input used by replay-only script provenance."""
+    """Named input captured by script or multi-tool provenance.
+
+    ``name`` is the immutable replay variable, ``label`` is the historical display
+    label, ``node_uid`` and ``node_snapshot_token`` identify the live manager input
+    that was used, and ``provenance_spec`` stores the historical replay source used
+    when that live input is unavailable.
+    """
 
     name: str
     label: str
@@ -1030,16 +1509,19 @@ class ScriptInput(pydantic.BaseModel):
 
 
 class ToolProvenanceSpec(pydantic.BaseModel):
-    """Immutable provenance recipe for rebuilding tool data from a parent ImageTool.
+    """Saved provenance recipe for ImageTool data.
 
-    Author new specs with :func:`full_data`, :func:`public_data`, or :func:`selection`
-    plus concrete operation instances from this module. Deserialize saved payloads
-    with :func:`parse_tool_provenance_spec`.
+    Live child-tool refresh uses single-parent specs from :func:`full_data`,
+    :func:`public_data`, or :func:`selection`. Durable reload and copied code use
+    ``file`` and ``script`` specs, including multi-input ``script_inputs`` for console
+    or UI actions that combine several ImageTools. Deserialize saved payloads with
+    :func:`parse_tool_provenance_spec`.
 
-    A spec records the exact operation arguments used for replay, copied code, and
-    derivation display. Manager children opened from ImageTool cursor or bin selections
-    should keep :class:`ImageToolSelectionSourceBinding` as their refresh state; that
-    binding builds a spec before refresh so edited parent coordinates are used.
+    A spec records exact operation arguments for live refresh, runtime replay, copied
+    code, and derivation display. Manager children opened from ImageTool cursor or bin
+    selections should keep :class:`ImageToolSelectionSourceBinding` as their refresh
+    state; that binding builds a spec before refresh so edited parent coordinates are
+    used.
 
     .. versionchanged:: 3.23.0
        Script provenance can describe multiple manager inputs and records manager
@@ -1312,13 +1794,13 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         )
 
     def to_replay_spec(self) -> ToolProvenanceSpec:
-        """Normalize the spec into a replay-only script form.
+        """Return the durable replay form for this spec.
 
         Replay specs are the canonical, composable form used for derivation metadata,
-        copy-code, save/load, and manager dependencies. Structured file provenance
-        remains structured so runtime reloads can replay typed operations without
-        ``exec``.
-        Live updates from ImageTool use the original non-script spec via
+        copied code, workspace save/load, and manager dependency status. Structured
+        file provenance remains structured so runtime reloads can replay typed
+        operations without ``exec``. Live ImageTool refresh uses the original
+        single-parent spec via
         :func:`require_live_source_spec`.
         """
         if self.kind in {"script", "file"}:
@@ -1376,40 +1858,41 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             operations = self.operations
         for operation in operations:
             entry = operation.derivation_entry()
-            if entry is not None:
-                entries.append(entry)
+            entries.append(entry)
         return entries
 
-    def _script_inputs_code(self, *, display: bool) -> str | None:
+    def _script_graph_code(self, *, display: bool) -> str | None:
         if not self.script_inputs:
             return None
 
         try:
-            return _replay_graph.script_inputs_code(self.script_inputs, display=display)
+            graph = _replay_graph.compile_replay_graph(self, display=display)
+            return _replay_graph.emit_replay_code(
+                graph,
+                output_name=typing.cast("str", self.active_name),
+            )
         except _replay_graph.ReplayGraphError:
             return None
+
+    def _code_lines_from_entries(
+        self, entries: Sequence[DerivationEntry]
+    ) -> list[str] | None:
+        codes = []
+        for entry in entries:
+            if entry.code is None:
+                return None
+            codes.append(entry.code)
+        return codes
 
     def derivation_code(self) -> str | None:
         prefix: str | None = None
         if self.kind == "script" and self.script_inputs:
-            input_code = self._script_inputs_code(display=False)
-            if input_code is None:
-                return None
-            prefix = "\n".join(part for part in (input_code, self.seed_code) if part)
-        elif self.kind in {"script", "file"}:
+            return self._script_graph_code(display=False)
+        if self.kind in {"script", "file"}:
             prefix = self.seed_code
-        step_codes: list[str] = []
-        code_entries = self.derivation_entries()[1:]
-        if self.kind == "script" and self.script_inputs:
-            code_entries = [
-                entry
-                for operation in self.operations
-                if (entry := operation.derivation_entry()) is not None
-            ]
-        for entry in code_entries:
-            if entry.code is None:
-                return None
-            step_codes.append(entry.code)
+        step_codes = self._code_lines_from_entries(self.derivation_entries()[1:])
+        if step_codes is None:
+            return None
         if prefix is None and self.kind != "script":
             if not step_codes:
                 return None
@@ -1451,8 +1934,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     parent_data=current_data,
                 ):
                     operation_entry = operation.derivation_entry()
-                    if operation_entry is not None:
-                        entries.append(operation_entry)
+                    entries.append(operation_entry)
                 if current_data is not None:
                     try:
                         current_data = _apply_replay_stage(stage, current_data)
@@ -1460,10 +1942,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                         current_data = None
             return entries
 
-        for operation in self._display_operations(parent_data=parent_data):
-            e = operation.derivation_entry()
-            if e is not None:
-                entries.append(e)
+        entries.extend(
+            operation.derivation_entry()
+            for operation in self._display_operations(parent_data=parent_data)
+        )
         return entries
 
     def display_code(self, *, parent_data: xr.DataArray | None = None) -> str | None:
@@ -1474,25 +1956,15 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         """
         prefix: str | None = None
         if self.kind == "script" and self.script_inputs:
-            input_code = self._script_inputs_code(display=True)
-            if input_code is None:
-                return None
-            prefix = "\n".join(part for part in (input_code, self.seed_code) if part)
-        elif self.kind in {"script", "file"}:
+            return self._script_graph_code(display=True)
+        if self.kind in {"script", "file"}:
             prefix = self.seed_code
 
-        step_codes: list[str] = []
-        code_entries = self.display_entries(parent_data=parent_data)[1:]
-        if self.kind == "script" and self.script_inputs:
-            code_entries = [
-                entry
-                for operation in self.operations
-                if (entry := operation.derivation_entry()) is not None
-            ]
-        for entry in code_entries:
-            if entry.code is None:
-                return None
-            step_codes.append(entry.code)
+        step_codes = self._code_lines_from_entries(
+            self.display_entries(parent_data=parent_data)[1:]
+        )
+        if step_codes is None:
+            return None
 
         if prefix is None and self.kind != "script":
             if not step_codes:
@@ -1991,7 +2463,7 @@ def script(
     file_load_source: FileLoadSource | None = None,
     script_inputs: Sequence[ScriptInput] = (),
 ) -> ToolProvenanceSpec:
-    """Build a replay-only provenance spec for generated code."""
+    """Build script provenance from code, structured steps, and named inputs."""
     return ToolProvenanceSpec(
         kind="script",
         start_label=start_label,
@@ -2160,7 +2632,11 @@ def _validate_script_replay_code(code: str) -> None:
 def script_provenance_replayable(
     spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
 ) -> bool:
-    """Return whether script provenance can be replayed from resolved inputs."""
+    """Return whether script provenance is self-contained enough to execute.
+
+    This checks the saved code and structured operations. It does not mean live
+    manager inputs are present; callers still need to resolve ``script_inputs``.
+    """
     return _replay_graph.script_provenance_replayable(spec)
 
 
@@ -2168,7 +2644,12 @@ def replay_script_provenance(
     spec: ToolProvenanceSpec | Mapping[str, typing.Any],
     inputs: Mapping[str, xr.DataArray],
 ) -> xr.DataArray:
-    """Execute trusted script provenance from already resolved input arrays."""
+    """Execute script provenance from already resolved input arrays.
+
+    The caller is responsible for trust and input resolution. This function only
+    validates the provenance shape, compiles it through the replay graph, and returns
+    the replayed :class:`xarray.DataArray`.
+    """
     try:
         return _replay_graph.replay_script_provenance(spec, inputs)
     except _replay_graph.ReplayGraphError as exc:
@@ -2196,6 +2677,13 @@ class ScriptCodeOperation(ToolProvenanceOperation):
 
 class QSelOperation(ToolProvenanceOperation):
     op: typing.Literal["qsel"] = "qsel"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            accessor_path=("qsel",),
+            kwargs_field="kwargs",
+            mapping_kwarg="indexers",
+        ),
+    )
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
     @property
@@ -2216,6 +2704,14 @@ class QSelOperation(ToolProvenanceOperation):
 
 class IselOperation(ToolProvenanceOperation):
     op: typing.Literal["isel"] = "isel"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            dataarray_method="isel",
+            kwargs_field="kwargs",
+            mapping_kwarg="indexers",
+            ignored_defaults={"drop": False, "missing_dims": "raise"},
+        ),
+    )
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
     @property
@@ -2236,6 +2732,14 @@ class IselOperation(ToolProvenanceOperation):
 
 class SelOperation(ToolProvenanceOperation):
     op: typing.Literal["sel"] = "sel"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            dataarray_method="sel",
+            kwargs_field="kwargs",
+            mapping_kwarg="indexers",
+            ignored_defaults={"method": None, "tolerance": None, "drop": False},
+        ),
+    )
     kwargs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
     @property
@@ -2289,6 +2793,27 @@ class TransposeOperation(ToolProvenanceOperation):
     op: typing.Literal["transpose"] = "transpose"
     dims: NullableProvenanceHashableTuple = None
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "transpose"
+            or call.accessor_path
+        ):
+            return None
+        kwargs = dict(call.kwargs)
+        for key, default in {"transpose_coords": True, "missing_dims": "raise"}.items():
+            if key not in kwargs:
+                continue
+            if not _console_values_equal(kwargs[key], default):
+                return None
+            kwargs.pop(key)
+        if kwargs:
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(dims=tuple(call.args) or None)
+        return None
+
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         if self.dims:
             return data.transpose(*self.dims)
@@ -2313,6 +2838,24 @@ class TransposeOperation(ToolProvenanceOperation):
 class SqueezeOperation(ToolProvenanceOperation):
     op: typing.Literal["squeeze"] = "squeeze"
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "squeeze"
+            or call.accessor_path
+            or call.args
+        ):
+            return None
+        for key, default in {"dim": None, "axis": None, "drop": False}.items():
+            if key not in call.kwargs:
+                continue
+            if not _console_values_equal(call.kwargs[key], default):
+                return None
+        if set(call.kwargs).difference({"dim", "axis", "drop"}):
+            return None
+        return cls()
+
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.squeeze()
 
@@ -2324,11 +2867,31 @@ class RenameOperation(ToolProvenanceOperation):
     op: typing.Literal["rename"] = "rename"
     name: str
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "rename"
+            or call.accessor_path
+            or call.kwargs
+            or len(call.args) != 1
+            or isinstance(call.args[0], Mapping)
+        ):
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(name=call.args[0])
+        return None
+
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.rename(self.name)
 
-    def derivation_entry(self) -> None:
-        return None
+    def derivation_entry(self) -> DerivationEntry:
+        name_code = erlab.interactive.utils._parse_single_arg(self.name)
+        return DerivationEntry(
+            f"rename({_format_derivation_value(self.name)})",
+            f"derived = derived.rename({name_code})",
+            True,
+        )
 
 
 class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
@@ -2348,6 +2911,19 @@ class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
 
 class RotateOperation(ToolProvenanceOperation):
     op: typing.Literal["rotate"] = "rotate"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.transform.rotate",
+            fields=("angle", "axes", "center"),
+            defaults={
+                "axes": (0, 1),
+                "center": (0.0, 0.0),
+                "reshape": True,
+                "order": 1,
+            },
+            ignored_defaults={"mode": "constant", "cval": np.nan, "prefilter": True},
+        ),
+    )
     angle: float
     axes: ProvenanceHashablePair
     center: tuple[float, float]
@@ -2404,6 +2980,29 @@ class AverageOperation(ToolProvenanceOperation):
     op: typing.Literal["average"] = "average"
     dims: ProvenanceHashableTuple
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method is not None
+            or call.accessor_path != ("qsel", "average")
+            or len(call.args) > 1
+        ):
+            return None
+        kwargs = dict(call.kwargs)
+        if call.args:
+            if "dim" in kwargs:
+                return None
+            dim = call.args[0]
+        else:
+            dim = kwargs.pop("dim", None)
+        if kwargs or dim is None:
+            return None
+        dims = (dim,) if isinstance(dim, str) or not isinstance(dim, Sequence) else dim
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(dims=typing.cast("tuple[Hashable, ...]", dims))
+        return None
+
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.qsel.mean(self.dims)
 
@@ -2421,6 +3020,36 @@ class QSelAggregationOperation(ToolProvenanceOperation):
     op: typing.Literal["qsel_aggregate"] = "qsel_aggregate"
     dims: ProvenanceHashableTuple
     func: typing.Literal["mean", "min", "max", "sum"] = "mean"
+
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        func = call.accessor_path[1] if len(call.accessor_path) == 2 else None
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method is not None
+            or len(call.accessor_path) != 2
+            or call.accessor_path[0] != "qsel"
+            or func not in {"mean", "min", "max", "sum"}
+            or len(call.args) > 1
+        ):
+            return None
+        kwargs = dict(call.kwargs)
+        if call.args:
+            if "dim" in kwargs:
+                return None
+            dim = call.args[0]
+        else:
+            dim = kwargs.pop("dim", None)
+        if kwargs or dim is None:
+            return None
+        dims = (dim,) if isinstance(dim, str) or not isinstance(dim, Sequence) else dim
+        func = typing.cast("typing.Literal['mean', 'min', 'max', 'sum']", func)
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(
+                dims=typing.cast("tuple[Hashable, ...]", dims),
+                func=func,
+            )
+        return None
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return typing.cast("xr.DataArray", getattr(data.qsel, self.func)(self.dims))
@@ -2440,6 +3069,36 @@ class InterpolationOperation(ToolProvenanceOperation):
     dim: ProvenanceHashable
     values: typing.Any
     method: typing.Literal["linear", "nearest"] = "linear"
+
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "interp"
+            or call.accessor_path
+        ):
+            return None
+        kwargs = dict(call.kwargs)
+        method = kwargs.pop("method", "linear")
+        if method not in {"linear", "nearest"}:
+            return None
+        for key, default in {"assume_sorted": False, "kwargs": None}.items():
+            if key not in kwargs:
+                continue
+            if not _console_values_equal(kwargs[key], default):
+                return None
+            kwargs.pop(key)
+        coords = _console_mapping_values(call.args, kwargs, mapping_kwargs=("coords",))
+        if coords is None:
+            return None
+        if len(coords) != 1:
+            return None
+        ((dim, values),) = coords.items()
+        if not isinstance(dim, Hashable):
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(dim=dim, values=values, method=method)
+        return None
 
     @pydantic.field_validator("values", mode="before")
     @classmethod
@@ -2501,6 +3160,17 @@ class InterpolationOperation(ToolProvenanceOperation):
 
 class LeadingEdgeOperation(ToolProvenanceOperation):
     op: typing.Literal["leading_edge"] = "leading_edge"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.interpolate.leading_edge",
+            fields=("fraction", "dim", "direction"),
+            defaults={
+                "fraction": 0.5,
+                "dim": "eV",
+                "direction": "positive",
+            },
+        ),
+    )
     fraction: float = pydantic.Field(default=0.5, gt=0.0, le=1.0)
     dim: ProvenanceHashable = "eV"
     direction: typing.Literal["positive", "negative"] = "positive"
@@ -2576,6 +3246,45 @@ class CoarsenOperation(ToolProvenanceOperation):
     coord_func: str
     reducer: str
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "coarsen"
+            or call.accessor_path
+            or len(call.args) > 1
+        ):
+            return None
+        kwargs = dict(call.kwargs)
+        reducer = kwargs.pop("_reducer", None)
+        if not isinstance(reducer, str):
+            return None
+        dim: dict[typing.Any, typing.Any] = {}
+        if call.args:
+            if not isinstance(call.args[0], Mapping):
+                return None
+            dim.update(call.args[0])
+        dim.update(kwargs.pop("dim", {}) or {})
+        dim.update(
+            {
+                key: kwargs.pop(key)
+                for key in list(kwargs)
+                if key not in {"boundary", "side", "coord_func"}
+            }
+        )
+        values = {
+            "dim": dim,
+            "boundary": kwargs.pop("boundary", "exact"),
+            "side": kwargs.pop("side", "left"),
+            "coord_func": kwargs.pop("coord_func", "mean"),
+            "reducer": reducer,
+        }
+        if kwargs:
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(**values)
+        return None
+
     @property
     def coarsen_kwargs(self) -> dict[str, typing.Any]:
         return {
@@ -2619,6 +3328,36 @@ class ThinOperation(ToolProvenanceOperation):
     factor: int | None = None
     factors: ProvenanceIntMapping = pydantic.Field(default_factory=dict)
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "thin"
+            or call.accessor_path
+        ):
+            return None
+        if (
+            len(call.args) == 1
+            and not call.kwargs
+            and not isinstance(call.args[0], Mapping)
+        ):
+            with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+                return cls(mode="global", factor=call.args[0])
+            return None
+        if len(call.args) > 1:
+            return None
+        factors: typing.Any = dict(call.kwargs)
+        if call.args:
+            if call.args[0] is None:
+                pass
+            elif isinstance(call.args[0], Mapping):
+                factors = {**call.args[0], **factors}
+            else:
+                return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(mode="per_dim", factors=factors)
+        return None
+
     @pydantic.model_validator(mode="after")
     def _check_mode(self) -> typing.Self:
         if self.mode == "global" and self.factor is None:
@@ -2655,6 +3394,19 @@ class ThinOperation(ToolProvenanceOperation):
 
 class SymmetrizeOperation(ToolProvenanceOperation):
     op: typing.Literal["symmetrize"] = "symmetrize"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.transform.symmetrize",
+            fields=("dim",),
+            defaults={
+                "center": 0.0,
+                "subtract": False,
+                "mode": "full",
+                "part": "both",
+            },
+            ignored_defaults={"interp_kw": None},
+        ),
+    )
     dim: ProvenanceHashable
     center: float
     subtract: bool = False
@@ -2691,11 +3443,38 @@ class SymmetrizeOperation(ToolProvenanceOperation):
 
 class SymmetrizeNfoldOperation(ToolProvenanceOperation):
     op: typing.Literal["symmetrize_nfold"] = "symmetrize_nfold"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.transform.symmetrize_nfold",
+            fields=("fold", "axes", "center"),
+            defaults={
+                "axes": (0, 1),
+                "center": (0.0, 0.0),
+                "reshape": True,
+                "order": 1,
+            },
+            ignored_defaults={"mode": "constant", "cval": np.nan, "prefilter": True},
+        ),
+    )
     fold: int
     axes: ProvenanceHashablePair
-    center: ProvenanceFloatMapping = pydantic.Field(default_factory=dict)
+    center: typing.Any = (0.0, 0.0)
     reshape: bool = True
     order: int = 1
+
+    @pydantic.field_validator("center", mode="before")
+    @classmethod
+    def _validate_center(cls, value: typing.Any) -> typing.Any:
+        decoded = decode_provenance_value(value)
+        if isinstance(decoded, Mapping):
+            return _coerce_float_mapping_field(decoded)
+        return _ensure_float_tuple(
+            typing.cast("Sequence[typing.Any]", decoded), expected_len=2
+        )
+
+    @pydantic.field_serializer("center", when_used="json")
+    def _serialize_center(self, value: typing.Any) -> typing.Any:
+        return encode_provenance_value(value)
 
     @property
     def kwargs(self) -> dict[str, typing.Any]:
@@ -2727,6 +3506,14 @@ class SymmetrizeNfoldOperation(ToolProvenanceOperation):
 
 class CorrectWithEdgeOperation(ToolProvenanceOperation):
     op: typing.Literal["correct_with_edge"] = "correct_with_edge"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.gold.correct_with_edge",
+            fields=("edge_fit",),
+            field_aliases={"modelresult": "edge_fit"},
+            defaults={"shift_coords": True},
+        ),
+    )
     edge_fit: typing.Any
     shift_coords: bool = True
 
@@ -2762,15 +3549,35 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
             "edge_fit": self.edge_fit,
             "shift_coords": self.shift_coords,
         }
+        edge_fit_code = _provenance_value_code(self.edge_fit)
+        edge_fit_expr = (
+            "erlab.interactive.imagetool.provenance.decode_provenance_value("
+            f"{edge_fit_code})"
+        )
+        code = erlab.interactive.utils.generate_code(
+            erlab.analysis.gold.correct_with_edge,
+            ["|derived|", f"|{edge_fit_expr}|"],
+            {"shift_coords": self.shift_coords},
+            module="era.gold",
+            name="correct_with_edge",
+            assign="derived",
+        )
         return DerivationEntry(
             f"Edge Correction({_format_derivation_value(label_kwargs)})",
-            None,
-            False,
+            code,
+            True,
         )
 
 
 class SwapDimsOperation(ToolProvenanceOperation):
     op: typing.Literal["swap_dims"] = "swap_dims"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            dataarray_method="swap_dims",
+            kwargs_field="mapping",
+            mapping_kwarg="dims_dict",
+        ),
+    )
     mapping: ProvenanceHashableMapping = pydantic.Field(default_factory=dict)
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
@@ -2788,6 +3595,26 @@ class SwapDimsOperation(ToolProvenanceOperation):
 class RenameDimsCoordsOperation(ToolProvenanceOperation):
     op: typing.Literal["rename_dims_coords"] = "rename_dims_coords"
     mapping: ProvenanceHashableMapping = pydantic.Field(default_factory=dict)
+
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        if (
+            call.has_extra_tracked_inputs
+            or call.dataarray_method != "rename"
+            or call.accessor_path
+            or len(call.args) > 1
+        ):
+            return None
+        mapping = _console_mapping_values(
+            call.args, call.kwargs, mapping_kwargs=("new_name_or_name_dict",)
+        )
+        if mapping is None:
+            return None
+        if not mapping:
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(mapping=mapping)
+        return None
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.rename(self.mapping)
@@ -2847,6 +3674,30 @@ class AssignCoordsOperation(ToolProvenanceOperation):
     coord_name: str
     values: typing.Any
 
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        coord = _single_assign_coord(call)
+        if coord is None or call.receiver_data is None:
+            return None
+        coord_name, values = coord
+        if (
+            not isinstance(coord_name, str)
+            or coord_name not in call.receiver_data.coords
+        ):
+            return None
+        if (
+            isinstance(values, Sequence)
+            and not isinstance(values, str)
+            and len(values) == 2
+            and isinstance(values[0], Hashable)
+        ):
+            return None
+        if _scalar_coord_value(values):
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(coord_name=coord_name, values=values)
+        return None
+
     @pydantic.field_validator("values", mode="before")
     @classmethod
     def _validate_values(cls, value: typing.Any) -> typing.Any:
@@ -2875,7 +3726,7 @@ class AssignCoordsOperation(ToolProvenanceOperation):
     def derivation_entry(self) -> DerivationEntry:
         coord_name_code = repr(self.coord_name)
         values = self.decoded_values
-        values_code = erlab.interactive.utils.format_1d_numeric_array_code(values)
+        values_code = _provenance_numeric_array_code(values)
         code = (
             f"derived = derived.assign_coords({{{coord_name_code}: "
             f"derived[{coord_name_code}].copy(data={values_code})}})"
@@ -2895,6 +3746,18 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
     op: typing.Literal["assign_scalar_coord"] = "assign_scalar_coord"
     coord_name: ProvenanceHashable
     value: typing.Any
+
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        coord = _single_assign_coord(call)
+        if coord is None:
+            return None
+        coord_name, value = coord
+        if not _scalar_coord_value(value):
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(coord_name=coord_name, value=value)
+        return None
 
     @pydantic.field_validator("value", mode="before")
     @classmethod
@@ -2918,7 +3781,7 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
 
     def derivation_entry(self) -> DerivationEntry:
         coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
-        value_code = erlab.interactive.utils._parse_single_arg(self.decoded_value)
+        value_code = _provenance_value_code(self.decoded_value)
         code = f"derived = derived.assign_coords({{{coord_name_code}: {value_code}}})"
         label_kwargs = {
             "coord_name": self.coord_name,
@@ -2936,6 +3799,28 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
     coord_name: ProvenanceHashable
     dim: ProvenanceHashable
     values: typing.Any
+
+    @classmethod
+    def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        coord = _single_assign_coord(call)
+        if coord is None:
+            return None
+        coord_name, value = coord
+        if not isinstance(value, Sequence) or isinstance(value, str) or len(value) != 2:
+            return None
+        dim, values = value
+        if not isinstance(dim, Hashable) or (
+            isinstance(dim, Sequence) and not isinstance(dim, str)
+        ):
+            return None
+        try:
+            if np.asarray(values).ndim != 1:
+                return None
+        except (TypeError, ValueError):
+            return None
+        with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
+            return cls(coord_name=coord_name, dim=dim, values=values)
+        return None
 
     @pydantic.field_validator("values", mode="before")
     @classmethod
@@ -2973,7 +3858,7 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
     def derivation_entry(self) -> DerivationEntry:
         coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
         dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
-        values_code = erlab.interactive.utils._parse_single_arg(self.decoded_values)
+        values_code = _provenance_numeric_array_code(self.decoded_values)
         code = (
             f"derived = derived.assign_coords({{{coord_name_code}: "
             f"({dim_code}, {values_code})}})"
@@ -2992,22 +3877,33 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
 
 class AssignAttrsOperation(ToolProvenanceOperation):
     op: typing.Literal["assign_attrs"] = "assign_attrs"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(dataarray_method="assign_attrs", kwargs_field="attrs"),
+    )
     attrs: ProvenanceMapping = pydantic.Field(default_factory=dict)
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.assign_attrs(self.attrs)
 
     def derivation_entry(self) -> DerivationEntry:
-        kwargs = erlab.interactive.utils.format_call_kwargs(self.attrs)
+        attrs_code = _provenance_value_code(self.attrs)
         return DerivationEntry(
             f"Assign Attributes({_format_derivation_value(self.attrs)})",
-            f"derived = derived.assign_attrs({kwargs})",
+            f"derived = derived.assign_attrs({attrs_code})",
             True,
         )
 
 
 class SliceAlongPathOperation(ToolProvenanceOperation):
     op: typing.Literal["slice_along_path"] = "slice_along_path"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.interpolate.slice_along_path",
+            fields=("vertices", "step_size", "dim_name"),
+            defaults={"dim_name": "path"},
+            ignored_defaults={"interp_kwargs": None},
+        ),
+    )
     vertices: ProvenanceFloatSequenceMapping = pydantic.Field(default_factory=dict)
     step_size: float
     dim_name: str
@@ -3040,6 +3936,13 @@ class SliceAlongPathOperation(ToolProvenanceOperation):
 
 class MaskWithPolygonOperation(ToolProvenanceOperation):
     op: typing.Literal["mask_with_polygon"] = "mask_with_polygon"
+    console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
+        ConsoleOperationPattern(
+            target="erlab.analysis.mask.mask_with_polygon",
+            fields=("vertices", "dims"),
+            defaults={"invert": False, "drop": False},
+        ),
+    )
     vertices: typing.Any
     dims: ProvenanceHashableTuple
     invert: bool = False

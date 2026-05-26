@@ -108,7 +108,6 @@ class _ResolvedLoadFunc:
         call_args = self._call_args(file_path)
         call_expr = f"{self.loader_expr}({', '.join(call_args)})"
         if self.selected_index != 0:
-            imports.append("import erlab")
             call_expr = (
                 "erlab.interactive.imagetool.viewer._parse_input("
                 f"{call_expr})[{self.selected_index}]"
@@ -116,14 +115,12 @@ class _ResolvedLoadFunc:
         if self.cast_float64:
             call_expr = f'{call_expr}.astype("float64")'
 
-        return "\n".join(
-            [
-                *list(dict.fromkeys(imports)),
-                "",
-                *self.setup_lines,
-                f"{assign} = {call_expr}",
-            ]
-        )
+        lines = list(dict.fromkeys(imports))
+        if lines:
+            lines.append("")
+        lines.extend(self.setup_lines)
+        lines.append(f"{assign} = {call_expr}")
+        return "\n".join(lines)
 
     def _call_args(self, file_path: Path) -> list[str]:
         """Return loader call arguments, using compact scan-number syntax when safe."""
@@ -287,7 +284,7 @@ def _resolve_load_func(
             loader_label="Loader",
             loader_text=loader,
             loader_expr="erlab.io.load",
-            imports=("import erlab",),
+            imports=(),
             setup_lines=(f"erlab.io.set_loader({loader!r})",),
             loader_name=loader,
             kwargs=kwargs,
@@ -304,7 +301,7 @@ def _resolve_load_func(
             loader_label="Loader",
             loader_text=loader_name,
             loader_expr="erlab.io.load",
-            imports=("import erlab",),
+            imports=(),
             setup_lines=(f"erlab.io.set_loader({loader_name!r})",),
             loader_name=loader_name,
             kwargs=kwargs,

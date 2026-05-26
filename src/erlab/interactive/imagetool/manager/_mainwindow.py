@@ -1007,6 +1007,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._all_nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
+        self._dependency_ref_cache: dict[
+            str,
+            tuple[
+                int,
+                tuple[
+                    erlab.interactive.imagetool.provenance.ScriptInputDependencyRef,
+                    ...,
+                ],
+            ],
+        ] = {}
         self._pending_source_refresh_targets: dict[str, set[str]] = {}
         self._displayed_indices: list[int] = []
         self._node_uid_counter: int = 0
@@ -1465,7 +1475,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
         self._recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = {}
-        self._metadata_full_code: str | None = None
+        self._metadata_full_code_available = False
         self._metadata_node_uid: str | None = None
         self._metadata_copy_selected_action = QtGui.QAction("Copy Selected Code", self)
         self._metadata_copy_selected_action.setObjectName(
@@ -2063,6 +2073,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node = self._all_nodes.pop(uid, None)
         if node is None:
             return
+        self._dependency_ref_cache.pop(uid, None)
         self._refresh_dependency_dependents(uid)
         self._pending_source_refresh_targets.pop(uid, None)
         for blocker_uid, target_uids in list(
@@ -2091,10 +2102,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> tuple[erlab.interactive.imagetool.provenance.ScriptInputDependencyRef, ...]:
         node = self._all_nodes.get(uid)
         if node is None or node.provenance_spec is None:
+            self._dependency_ref_cache.pop(uid, None)
             return ()
-        return erlab.interactive.imagetool.provenance.script_input_dependency_refs(
+        spec_id = id(node.provenance_spec)
+        cached = self._dependency_ref_cache.get(uid)
+        if cached is not None and cached[0] == spec_id:
+            return cached[1]
+        refs = erlab.interactive.imagetool.provenance.script_input_dependency_refs(
             node.provenance_spec
         )
+        self._dependency_ref_cache[uid] = (spec_id, refs)
+        return refs
 
     def dependency_status_for_uid(
         self, uid: str
@@ -2387,6 +2405,35 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ),
         )
 
+    def _script_input_can_reload(
+        self,
+        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+    ) -> bool:
+        spec = script_input.parsed_provenance_spec()
+        if script_input.node_uid is not None:
+            node = self._all_nodes.get(script_input.node_uid)
+            if node is not None and (
+                spec is None
+                or spec.kind != "script"
+                or self._script_provenance_inputs_current(spec)
+            ):
+                return True
+        if spec is None:
+            return False
+        if spec.kind == "file":
+            return (
+                spec.file_load_source is not None
+                and pathlib.Path(spec.file_load_source.path).exists()
+            )
+        if spec.kind != "script":
+            return False
+        return erlab.interactive.imagetool.provenance.script_provenance_replayable(
+            spec
+        ) and all(
+            self._script_input_can_reload(nested_input)
+            for nested_input in spec.script_inputs
+        )
+
     def _rebuild_script_provenance(
         self,
         spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
@@ -2418,6 +2465,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
             and bool(spec.script_inputs)
             and erlab.interactive.imagetool.provenance.script_provenance_replayable(
                 spec
+            )
+            and all(
+                self._script_input_can_reload(script_input)
+                for script_input in spec.script_inputs
             )
         )
 
@@ -3094,7 +3145,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return node.info_text
 
     def _clear_metadata(self) -> None:
-        self._metadata_full_code = None
+        self._metadata_full_code_available = False
         self._metadata_node_uid = None
         with QtCore.QSignalBlocker(self.metadata_derivation_list):
             self.metadata_derivation_list.clear()
@@ -3102,7 +3153,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._update_metadata_pane()
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
-        self._metadata_full_code = node.derivation_code
+        self._metadata_full_code_available = node.provenance_spec is not None
         self._metadata_node_uid = node.uid
         self._set_metadata_fields(node.metadata_fields)
 
@@ -3264,7 +3315,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         selected_code = self._selected_derivation_code()
         self._metadata_copy_selected_action.setEnabled(bool(selected_code))
         menu.addAction(self._metadata_copy_selected_action)
-        if self._metadata_full_code:
+        if self._metadata_full_code_available:
             self._metadata_copy_full_action.setEnabled(True)
             menu.addAction(self._metadata_copy_full_action)
         return menu
@@ -3289,16 +3340,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _copy_full_derivation_code(self) -> None:
-        if not self._metadata_full_code:
-            return
-        code = self._metadata_full_code
         node = (
             None
             if self._metadata_node_uid is None
             else self._all_nodes.get(self._metadata_node_uid)
         )
+        if node is None or not self._metadata_full_code_available:
+            return
+        code = node.derivation_code
+        if not code:
+            self._status_bar.showMessage(
+                "Replay code is unavailable for this result", 5000
+            )
+            return
         provenance = erlab.interactive.imagetool.provenance
-        if node is not None and provenance.uses_default_replay_input(code):
+        if provenance.uses_default_replay_input(code):
             load_source = self._load_source_for_replay(node)
             if load_source is None:
                 source_name = self._prompt_replay_input_name(node)

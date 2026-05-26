@@ -726,14 +726,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         *,
         right_edge: int | None = None,
     ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
-        text = self.manager.dependency_status_badge_for_uid(node.uid)
-        if text is None:
-            return None, None, None
-
         match self.manager.dependency_status_for_uid(node.uid):
             case "changed":
+                text = "Changed"
                 color = QtGui.QColor("#8a6d00")
             case "missing":
+                text = "Missing"
                 color = QtGui.QColor("#59636e")
             case _:
                 return None, None, None

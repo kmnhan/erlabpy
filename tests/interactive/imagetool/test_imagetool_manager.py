@@ -591,6 +591,51 @@ def copy_full_code_for_uid(
     return copied[-1]
 
 
+def test_manager_metadata_full_code_generated_only_when_copied(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    calls: list[str] = []
+    copied: list[str] = []
+
+    def fake_derivation_code(wrapper):
+        calls.append(wrapper.uid)
+        return "derived = xr.DataArray([1.0])"
+
+    monkeypatch.setattr(
+        erlab.interactive.utils,
+        "copy_to_clipboard",
+        lambda text: copied.append(text) or text,
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool(xr.DataArray([1.0], dims=("x",)), manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        wrapper = manager._imagetool_wrappers[0]
+        wrapper.set_detached_provenance(
+            prov.full_data(prov.RenameOperation(name="renamed")).to_replay_spec()
+        )
+
+        monkeypatch.setattr(
+            type(wrapper),
+            "derivation_code",
+            property(fake_derivation_code),
+        )
+        manager._set_metadata_node(wrapper)
+
+        assert not calls
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
+        assert calls == [wrapper.uid]
+        assert copied == ["derived = xr.DataArray([1.0])"]
+
+
 def test_load_source_details_dialog_kwargs_editor_wraps_and_highlights(
     qtbot, tmp_path
 ) -> None:
@@ -2614,7 +2659,6 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     )
 
     expected = (
-        "import erlab\n\n"
         "erlab.io.set_loader('merlin')\n"
         f"data = erlab.io.load({str(file_path)!r}, "
         '**{"bad-key": 1, "single": True})'
@@ -2638,7 +2682,6 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
         ),
     )
     assert extension_code == (
-        "import erlab\n\n"
         "erlab.io.set_loader('example')\n"
         f"data = erlab.io.load({str(file_path)!r}, "
         'loader_extensions={"additional_coords": {"gui_extra": 7.0}})'
@@ -2652,7 +2695,6 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
     file_path = example_data_dir / "data_002.h5"
     code = _load_code_from_file_details(file_path, ("example", {}, 0))
     assert code == (
-        "import erlab\n\n"
         "erlab.io.set_loader('example')\n"
         f"data = erlab.io.load(2, data_dir={str(example_data_dir)!r})"
     )
@@ -2661,7 +2703,6 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
         example_data_dir / "data_001_S001.h5", ("example", {}, 0)
     )
     assert multi_file_code == (
-        "import erlab\n\n"
         "erlab.io.set_loader('example')\n"
         f"data = erlab.io.load(1, data_dir={str(example_data_dir)!r})"
     )
@@ -2670,7 +2711,6 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
         file_path, ("example", {"single": True}, 0)
     )
     assert single_file_code == (
-        "import erlab\n\n"
         "erlab.io.set_loader('example')\n"
         f"data = erlab.io.load({str(file_path)!r}, single=True)"
     )
@@ -2684,7 +2724,6 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
         ),
     )
     assert extension_code == (
-        "import erlab\n\n"
         "erlab.io.set_loader('example')\n"
         f"data = erlab.io.load(2, data_dir={str(example_data_dir)!r}, "
         'loader_extensions={"additional_coords": {"gui_extra": 7.0}})'
@@ -3601,7 +3640,6 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
     assert provenance.file_load_source.replay_call.target == "xarray.load_dataarray"
     selected_code = _load_code_from_file_details(file_path, ("example", {}, 1))
     assert selected_code == (
-        "import erlab\n\n"
         "erlab.io.set_loader('example')\n"
         "data = erlab.interactive.imagetool.viewer._parse_input("
         f"erlab.io.load({str(file_path)!r}))[1]"
@@ -5703,7 +5741,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert "Added" in details
         derivation = metadata_derivation_texts(manager)
         assert any("Aggregate" in line for line in derivation)
-        assert all("rename(" not in line for line in derivation)
+        assert any("rename(" in line for line in derivation)
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -5737,11 +5775,12 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         manager._update_info(uid=child_uid)
         derivation = metadata_derivation_texts(manager)
         assert derivation[0] == "Start from current parent ImageTool data"
-        assert len(derivation) == 3
+        assert len(derivation) == 4
         assert "Aggregate" in derivation[1]
         assert "dims=" in derivation[1]
         assert "Aggregate" in derivation[2]
         assert "dims=" in derivation[2]
+        assert "rename(" in derivation[3]
         manager.metadata_derivation_list.setFocus()
         select_metadata_rows(manager, [0])
         qtbot.keyClick(
@@ -5801,7 +5840,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             full_result.rename(None),
             data.qsel.mean("x").qsel.mean("y").rename(None),
         )
-        assert ".rename(" not in copied[-1]
+        assert ".rename(" in copied[-1]
 
         manual = xr.DataArray(
             np.arange(5, dtype=float) + 100.0,
@@ -5858,7 +5897,8 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert detached.provenance_spec.derivation_code() == (
             "derived = data\n"
             'derived = derived.qsel.mean("x")\n'
-            'derived = derived.qsel.mean("y")'
+            'derived = derived.qsel.mean("y")\n'
+            'derived = derived.rename("scan_avg_avg")'
         )
         assert detached.provenance_spec.derivation_code() != detached_derivation_before
         xr.testing.assert_identical(
@@ -5872,9 +5912,10 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         manager._update_info()
         detached_derivation = metadata_derivation_texts(manager)
         assert detached_derivation[0] == "Start from current parent ImageTool data"
-        assert len(detached_derivation) == 3
+        assert len(detached_derivation) == 4
         assert "Aggregate" in detached_derivation[1]
         assert "Aggregate" in detached_derivation[2]
+        assert "rename(" in detached_derivation[3]
 
         duplicated_detached_index = typing.cast("int", manager.duplicate_imagetool(1))
         duplicated_detached = manager._imagetool_wrappers[duplicated_detached_index]
@@ -6855,7 +6896,7 @@ def test_manager_selecting_unfit_ftool_child_does_not_warn(
         assert manager.preview_widget.isVisible()
         assert not manager_preview_pixmap(manager).isNull()
         assert metadata_detail_map(manager)["Kind"] == "ftool_2d"
-        assert "modelfit" not in (manager._metadata_full_code or "")
+        assert not manager._metadata_full_code_available
         assert not warnings
 
 
@@ -15583,6 +15624,273 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         InteractiveShell.clear_instance()
 
 
+def test_manager_console_structures_erlab_and_xarray_calls(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(12.0).reshape(3, 4),
+        dims=("alpha", "eV"),
+        coords={"alpha": np.arange(3.0), "eV": np.linspace(-1.0, 1.0, 4)},
+    )
+    data1 = data0 + 10.0
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        shell = manager.console._console_widget.kernel_manager.kernel.shell
+
+        manager.console._console_widget.execute("tools[0].qsel(alpha=slice(0.0, 1.0))")
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        qsel_spec = manager._imagetool_wrappers[2].provenance_spec
+        assert qsel_spec is not None
+        assert [operation.op for operation in qsel_spec.operations] == ["qsel"]
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            data0.qsel(alpha=slice(0.0, 1.0)),
+        )
+
+        manager.console._console_widget.execute("avg = tools[0].qsel.average('alpha')")
+        assert manager.ntools == 3
+        manager.console._console_widget.execute(
+            "itool(avg, manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
+        avg_spec = manager._imagetool_wrappers[3].provenance_spec
+        assert avg_spec is not None
+        assert [operation.op for operation in avg_spec.operations] == ["average"]
+        avg_data = manager.get_imagetool(3).slicer_area.data
+        xr.testing.assert_identical(
+            avg_data.isel(stack_dim=0, drop=True),
+            data0.qsel.average("alpha"),
+        )
+
+        manager.console._console_widget.execute("summed = tools[0].qsel.sum('alpha')")
+        summed = shell.user_ns["summed"]
+        assert [operation.op for operation in summed._operations] == ["qsel_aggregate"]
+        assert summed._operations[0].func == "sum"
+        xr.testing.assert_identical(summed.data, data0.qsel.sum("alpha"))
+
+        manager.console._console_widget.execute(
+            "rot = era.transform.rotate("
+            "tools[0], 5.0, axes=('alpha', 'eV'), center=(1.0, 0.0), "
+            "reshape=False)"
+        )
+        manager.console._console_widget.execute(
+            "itool(rot, manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 5, timeout=5000)
+        rotate_spec = manager._imagetool_wrappers[4].provenance_spec
+        assert rotate_spec is not None
+        assert [operation.op for operation in rotate_spec.operations] == ["rotate"]
+        xr.testing.assert_identical(
+            manager.get_imagetool(4).slicer_area.data,
+            erlab.analysis.transform.rotate(
+                data0,
+                5.0,
+                axes=("alpha", "eV"),
+                center=(1.0, 0.0),
+                reshape=False,
+            ),
+        )
+
+        manager.console._console_widget.execute(
+            "rot_kw = era.transform.rotate("
+            "darr=tools[0], angle=0.0, axes=('alpha', 'eV'), "
+            "center=(1.0, 0.0), reshape=False)"
+        )
+        manager.console._console_widget.execute(
+            "itool(rot_kw, manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 6, timeout=5000)
+        rotate_kw_spec = manager._imagetool_wrappers[5].provenance_spec
+        assert rotate_kw_spec is not None
+        assert [operation.op for operation in rotate_kw_spec.operations] == ["rotate"]
+        xr.testing.assert_identical(
+            manager.get_imagetool(5).slicer_area.data,
+            erlab.analysis.transform.rotate(
+                data0,
+                0.0,
+                axes=("alpha", "eV"),
+                center=(1.0, 0.0),
+                reshape=False,
+            ),
+        )
+
+        manager.console._console_widget.execute(
+            "cat = xr.concat([tools[0], tools[1]], dim='source')"
+        )
+        assert manager.ntools == 6
+        manager.console._console_widget.execute(
+            "itool(cat, manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 7, timeout=5000)
+        concat_spec = manager._imagetool_wrappers[6].provenance_spec
+        assert concat_spec is not None
+        assert [source.name for source in concat_spec.script_inputs] == [
+            "data_0",
+            "data_1",
+        ]
+        assert [operation.op for operation in concat_spec.operations] == ["script_code"]
+        xr.testing.assert_identical(
+            manager.get_imagetool(6).slicer_area.data,
+            xr.concat([data0, data1], dim=xr.IndexVariable("source", [0, 1])),
+        )
+
+        manager.console._console_widget.execute(
+            "chain = tools[0].interp(eV=np.array([-0.5, 0.5])).transpose('eV', 'alpha')"
+        )
+        manager.console._console_widget.execute(
+            "itool(chain, manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 8, timeout=5000)
+        chain_spec = manager._imagetool_wrappers[7].provenance_spec
+        assert chain_spec is not None
+        assert chain_spec.seed_code == "chain = data_0"
+        assert [operation.op for operation in chain_spec.operations] == [
+            "interpolate",
+            "transpose",
+        ]
+        expected_chain = data0.interp(eV=np.array([-0.5, 0.5])).transpose("eV", "alpha")
+        xr.testing.assert_identical(
+            manager.get_imagetool(7).slicer_area.data,
+            expected_chain,
+        )
+        xr.testing.assert_identical(
+            erlab.interactive.imagetool.provenance.replay_script_provenance(
+                chain_spec, {"data_0": data0}
+            ),
+            expected_chain,
+        )
+
+        manager.console._console_widget.execute(
+            "import importlib, inspect\n"
+            "real_rotate = importlib.import_module("
+            "'erlab.analysis.transform').rotate\n"
+            "signature_ok = str(inspect.signature(era.transform.rotate)) "
+            "== str(inspect.signature(real_rotate))\n"
+            "wrapped_ok = era.transform.rotate.__wrapped__ is real_rotate\n"
+            "dir_ok = 'rotate' in dir(era.transform)\n"
+            "qsel_signature_ok = str(inspect.signature(tools[0].qsel)) "
+            "== str(inspect.signature(tools[0].data.qsel))\n"
+            "qsel_wrapped_signature_ok = str("
+            "inspect.signature(tools[0].qsel.__wrapped__)) "
+            "== str(inspect.signature(tools[0].data.qsel))\n"
+            "qsel_doc_ok = tools[0].qsel.__doc__ == tools[0].data.qsel.__doc__\n"
+            "interp_signature_ok = str(inspect.signature(tools[0].interp)) "
+            "== str(inspect.signature(tools[0].data.interp))\n"
+            "interp_wrapped_signature_ok = str("
+            "inspect.signature(tools[0].interp.__wrapped__)) "
+            "== str(inspect.signature(tools[0].data.interp))\n"
+            "interp_doc_ok = tools[0].interp.__doc__ == tools[0].data.interp.__doc__\n"
+            "interp_dir_ok = 'interp' in dir(tools[0])\n"
+            "assign_coords_dir_ok = 'assign_coords' in dir(tools[0])\n"
+            "qsel_dir_ok = 'average' in dir(tools[0].qsel)\n"
+            "qsel_sum_dir_ok = 'sum' in dir(tools[0].qsel)\n"
+            "leading_edge_dir_ok = 'leading_edge' in dir(era.interpolate)"
+        )
+        assert shell.user_ns["signature_ok"]
+        assert shell.user_ns["wrapped_ok"]
+        assert shell.user_ns["dir_ok"]
+        assert shell.user_ns["qsel_signature_ok"]
+        assert shell.user_ns["qsel_wrapped_signature_ok"]
+        assert shell.user_ns["qsel_doc_ok"]
+        assert shell.user_ns["interp_signature_ok"]
+        assert shell.user_ns["interp_wrapped_signature_ok"]
+        assert shell.user_ns["interp_doc_ok"]
+        assert shell.user_ns["interp_dir_ok"]
+        assert shell.user_ns["assign_coords_dir_ok"]
+        assert shell.user_ns["qsel_dir_ok"]
+        assert shell.user_ns["qsel_sum_dir_ok"]
+        assert shell.user_ns["leading_edge_dir_ok"]
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
+def test_manager_console_captures_self_contained_function_source(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        shell = manager.console._console_widget.kernel_manager.kernel.shell
+
+        manager.console._console_widget.execute(
+            "scale = 2.0\n"
+            "def add_scale(data):\n"
+            "    return data + scale\n"
+            "\n"
+            "def offset_data(data):\n"
+            "    return add_scale(data)\n"
+        )
+        manager.console._console_widget.execute(
+            "import inspect\n"
+            "function_help_ok = offset_data.__wrapped__.__name__ == 'offset_data'\n"
+            "function_signature_ok = str(inspect.signature(offset_data)) == '(data)'"
+        )
+        assert shell.user_ns["function_help_ok"]
+        assert shell.user_ns["function_signature_ok"]
+
+        manager.console._console_widget.execute("shifted = offset_data(tools[0])")
+        shifted = shell.user_ns["shifted"]
+        assert shifted._copyable is True
+
+        manager.console._console_widget.execute(
+            "itool(shifted, manager=True, execute=False)"
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        shifted_spec = manager._imagetool_wrappers[1].provenance_spec
+        assert shifted_spec is not None
+        shifted_code = shifted_spec.derivation_entries()[-1].code
+        assert shifted_code is not None
+        assert "def add_scale(data):" in shifted_code
+        assert "def offset_data(data):" in shifted_code
+        xr.testing.assert_identical(
+            erlab.interactive.imagetool.provenance.replay_script_provenance(
+                shifted_spec, {"data_0": data}
+            ),
+            data + 2.0,
+        )
+        manager.console._console_widget.execute("piped = tools[0].pipe(offset_data)")
+        piped = shell.user_ns["piped"]
+        assert piped._copyable is True
+
+        manager.console._console_widget.execute(
+            "runtime_object = object()\n"
+            "def uses_runtime_object(data):\n"
+            "    _ = runtime_object\n"
+            "    return data\n"
+        )
+        manager.console._console_widget.execute(
+            "opaque = tools[0].pipe(uses_runtime_object)"
+        )
+        opaque = shell.user_ns["opaque"]
+        assert opaque._copyable is False
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
 def test_manager_console_derived_tool_reload_action_routes_to_manager(
     qtbot,
     manager_context: Callable[
@@ -16253,16 +16561,18 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
         manager.remove_imagetool(1)
         manager.tree_view.deselect_all()
         select_tools(manager, [2])
+        manager._update_actions()
+
+        assert not manager.reload_action.isVisible()
         manager.reload_selected()
 
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
-        assert errors
-        assert errors[-1][1] == "Could not reload data."
-        assert "does not contain recorded source provenance" in errors[-1][3]
+        assert not errors
 
 
 def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
     qtbot,
+    monkeypatch,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -16297,6 +16607,12 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         manager._update_actions()
 
         assert not manager.reload_action.isVisible()
+        copied: list[str] = []
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        manager._set_metadata_node(wrapper)
+        manager._copy_full_derivation_code()
+        assert not copied
+        assert manager._status_bar.currentMessage()
 
 
 def test_manager_console_replacement_updates_provenance_and_descendants(

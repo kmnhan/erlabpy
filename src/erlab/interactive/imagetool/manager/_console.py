@@ -4,10 +4,17 @@ from __future__ import annotations
 
 __all__ = ["ToolNamespace", "ToolsNamespace", "_ImageToolManagerJupyterConsole"]
 
+import ast
 import contextlib
+import functools
 import importlib
+import inspect
+import keyword
 import operator
+import symtable
 import sys
+import textwrap
+import types
 import typing
 import weakref
 from dataclasses import dataclass
@@ -64,10 +71,15 @@ def _resolve_console_namespace(
     namespace: dict[str, typing.Any],
 ) -> dict[str, typing.Any]:
     _patch_packaged_macos_matplotlib_qt_cursor()
-    return {
-        name: importlib.import_module(module) if isinstance(module, str) else module
-        for name, module in namespace.items()
-    }
+    resolved = {}
+    for name, module in namespace.items():
+        value = importlib.import_module(module) if isinstance(module, str) else module
+        if name in {"erlab", "era", "eri", "xr"} and isinstance(
+            value, types.ModuleType
+        ):
+            value = _ConsoleModuleProxy(value, name)
+        resolved[name] = value
+    return resolved
 
 
 def _tool_data_name(index: int) -> str:
@@ -87,17 +99,167 @@ def _dedupe_script_inputs(
     return tuple(deduped)
 
 
+def _dedupe_code_preludes(*groups: Sequence[str]) -> tuple[str, ...]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for code in group:
+            if code in seen:
+                continue
+            seen.add(code)
+            output.append(code)
+    return tuple(output)
+
+
+def _script_code(prelude: Sequence[str], code: str) -> str:
+    return "\n\n".join((*prelude, code)) if prelude else code
+
+
+def _replay_name_reserved(name: str) -> bool:
+    return name in {"data", "derived", "tools"} or name.startswith("data_")
+
+
+def _function_global_names(source: str, function_name: str) -> set[str] | None:
+    try:
+        table = symtable.symtable(source, "<ImageTool console function>", "exec")
+    except SyntaxError:
+        return None
+
+    names = {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.get_name() != function_name
+        and symbol.is_referenced()
+        and symbol.is_global()
+    }
+    for child in table.get_children():
+        if child.get_name() != function_name:
+            continue
+        names.update(
+            symbol.get_name()
+            for symbol in child.get_symbols()
+            if symbol.get_name() != function_name
+            and symbol.is_referenced()
+            and (symbol.is_global() or symbol.is_free())
+        )
+        return names
+    return None
+
+
+def _callable_operand(
+    value: typing.Any, seen: set[int] | None = None
+) -> _ConsoleOperand | None:
+    if getattr(value, "_erlab_console_function_proxy", False):
+        value = value.__wrapped__
+    if (
+        not inspect.isfunction(value)
+        or value.__module__ != "__main__"
+        or value.__qualname__ != value.__name__
+        or value.__closure__ is not None
+    ):
+        return None
+
+    name = value.__name__
+    if (
+        not name.isidentifier()
+        or keyword.iskeyword(name)
+        or _replay_name_reserved(name)
+    ):
+        return None
+    if seen is None:
+        seen = set()
+    value_id = id(value)
+    if value_id in seen:
+        return None
+    seen.add(value_id)
+
+    try:
+        source = textwrap.dedent(inspect.getsource(value)).strip()
+        module = ast.parse(source)
+    except (OSError, TypeError, SyntaxError):
+        return None
+    if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
+        return None
+    function_node = module.body[0]
+    if function_node.name != name or function_node.decorator_list:
+        return None
+
+    global_names = _function_global_names(source, name)
+    if global_names is None:
+        return None
+
+    prelude: list[str] = []
+    allowed_globals = {
+        "np",
+        "numpy",
+        "xr",
+        "xarray",
+        "erlab",
+        "era",
+        "eri",
+        "eplt",
+        *erlab.interactive.imagetool.provenance._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+    }
+    for global_name in sorted(global_names):
+        if global_name in allowed_globals:
+            continue
+        if _replay_name_reserved(global_name) or global_name.startswith("__"):
+            return None
+        try:
+            global_value = value.__globals__[global_name]
+        except KeyError:
+            return None
+        if inspect.isfunction(global_value) or getattr(
+            global_value, "_erlab_console_function_proxy", False
+        ):
+            dependency = _callable_operand(global_value, seen)
+            if dependency is None:
+                return None
+            prelude.extend(dependency.code_prelude)
+            if dependency.code != global_name:
+                prelude.append(f"{global_name} = {dependency.code}")
+            continue
+        global_code, copyable = _literal_code(global_value)
+        if not copyable:
+            return None
+        prelude.append(f"{global_name} = {global_code}")
+
+    code_prelude = _dedupe_code_preludes(prelude, (source,))
+    try:
+        erlab.interactive.imagetool.provenance._validate_script_replay_code(
+            _script_code(code_prelude, "derived = data")
+        )
+    except (TypeError, ValueError):
+        return None
+    return _ConsoleOperand(value, name, copyable=True, code_prelude=code_prelude)
+
+
 @dataclass(frozen=True)
 class _ConsoleOperand:
     value: typing.Any
     code: str
     script_inputs: tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...] = ()
     copyable: bool = True
+    code_prelude: tuple[str, ...] = ()
+    seed_expression: str | None = None
+    operations: tuple[
+        erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...
+    ] = ()
 
 
 def _literal_code(value: typing.Any) -> tuple[str, bool]:
     value = erlab.utils.misc._convert_to_native(value)
-    if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
+    if isinstance(value, float):
+        if np.isnan(value):
+            return "np.nan", True
+        if np.isinf(value):
+            return ("np.inf" if value > 0 else "-np.inf"), True
+        return repr(value), True
+    if isinstance(value, complex):
+        real_code, _ = _literal_code(float(value.real))
+        imag_code, _ = _literal_code(float(value.imag))
+        return f"complex({real_code}, {imag_code})", True
+    if value is None or isinstance(value, (bool, int, str, bytes)):
         return repr(value), True
     if isinstance(value, slice):
         start, start_copyable = _literal_code(value.start)
@@ -134,7 +296,11 @@ def _literal_code(value: typing.Any) -> tuple[str, bool]:
 
 def _merge_operands(
     *operands: _ConsoleOperand,
-) -> tuple[tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...], bool]:
+) -> tuple[
+    tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...],
+    bool,
+    tuple[str, ...],
+]:
     return (
         _dedupe_script_inputs(
             tuple(
@@ -144,6 +310,7 @@ def _merge_operands(
             )
         ),
         all(operand.copyable for operand in operands),
+        _dedupe_code_preludes(*(operand.code_prelude for operand in operands)),
     )
 
 
@@ -175,27 +342,45 @@ def _unwrap_console_value(value: typing.Any) -> typing.Any:
     return value
 
 
+def _first_console_handle(value: typing.Any) -> _ConsoleDataHandleMixin | None:
+    if isinstance(value, _ConsoleDataHandleMixin):
+        return value
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            if (handle := _first_console_handle(item)) is not None:
+                return handle
+    if isinstance(value, dict):
+        for item in (*value.keys(), *value.values()):
+            if (handle := _first_console_handle(item)) is not None:
+                return handle
+    return None
+
+
 def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
     if isinstance(value, _ConsoleDataHandleMixin):
         return value._console_operand()
+    if (callable_operand := _callable_operand(value)) is not None:
+        return callable_operand
     if isinstance(value, tuple):
         item_operands = tuple(_operand_from_value(item) for item in value)
         suffix = "," if len(item_operands) == 1 else ""
-        inputs, copyable = _merge_operands(*item_operands)
+        inputs, copyable, code_prelude = _merge_operands(*item_operands)
         return _ConsoleOperand(
             tuple(operand.value for operand in item_operands),
             f"({', '.join(operand.code for operand in item_operands)}{suffix})",
             inputs,
             copyable,
+            code_prelude,
         )
     if isinstance(value, list):
         item_operands = tuple(_operand_from_value(item) for item in value)
-        inputs, copyable = _merge_operands(*item_operands)
+        inputs, copyable, code_prelude = _merge_operands(*item_operands)
         return _ConsoleOperand(
             [operand.value for operand in item_operands],
             f"[{', '.join(operand.code for operand in item_operands)}]",
             inputs,
             copyable,
+            code_prelude,
         )
     if isinstance(value, dict):
         key_operands = tuple(_operand_from_value(key) for key in value)
@@ -205,7 +390,7 @@ def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
             for pair in zip(key_operands, value_operands, strict=True)
             for operand in pair
         )
-        inputs, copyable = _merge_operands(*pair_operands)
+        inputs, copyable, code_prelude = _merge_operands(*pair_operands)
         return _ConsoleOperand(
             {
                 key_operand.value: value_operand.value
@@ -223,6 +408,7 @@ def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
             + "}",
             inputs,
             copyable,
+            code_prelude,
         )
     code, copyable = _literal_code(value)
     return _ConsoleOperand(value, code, copyable=copyable)
@@ -236,10 +422,13 @@ def _format_call_code(
     tuple[typing.Any, ...],
     dict[str, typing.Any],
     bool,
+    tuple[str, ...],
 ]:
     arg_operands = tuple(_operand_from_value(arg) for arg in args)
     kwarg_operands = {key: _operand_from_value(value) for key, value in kwargs.items()}
-    inputs, copyable = _merge_operands(*arg_operands, *tuple(kwarg_operands.values()))
+    inputs, copyable, code_prelude = _merge_operands(
+        *arg_operands, *tuple(kwarg_operands.values())
+    )
     parts = [operand.code for operand in arg_operands]
     parts.extend(f"{key}={operand.code}" for key, operand in kwarg_operands.items())
     return (
@@ -248,7 +437,365 @@ def _format_call_code(
         tuple(operand.value for operand in arg_operands),
         {key: operand.value for key, operand in kwarg_operands.items()},
         copyable,
+        code_prelude,
     )
+
+
+def _structured_operation_from_call(
+    call: erlab.interactive.imagetool.provenance.ConsoleCall,
+) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+    with contextlib.suppress(Exception):
+        return erlab.interactive.imagetool.provenance.operation_from_console_call(call)
+    return None
+
+
+def _structured_seed_and_operations(
+    source: _ConsoleOperand,
+    operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None,
+) -> tuple[
+    str | None,
+    tuple[erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...],
+]:
+    if operation is None or (source.seed_expression is None and not source.copyable):
+        return None, ()
+    return source.seed_expression or source.code, (*source.operations, operation)
+
+
+class _ConsoleAccessorProxy:
+    def __init__(
+        self,
+        owner: _ConsoleDataHandleMixin,
+        accessor: typing.Any,
+        path: tuple[str, ...],
+        expression: str,
+    ) -> None:
+        self._owner = owner
+        self._accessor = accessor
+        self._path = path
+        self._expression = expression
+        self.__wrapped__ = accessor
+        for attr in ("__doc__", "__module__", "__name__", "__qualname__"):
+            with contextlib.suppress(Exception):
+                value = getattr(accessor, attr)
+                if value is not None:
+                    setattr(self, attr, value)
+        with contextlib.suppress(TypeError, ValueError):
+            self.__signature__ = inspect.signature(accessor)
+
+    def _call(
+        self,
+        func: Callable[..., typing.Any],
+        expression: str,
+        path: tuple[str, ...],
+        *args: typing.Any,
+        **kwargs: typing.Any,
+    ) -> typing.Any:
+        (
+            call_code,
+            call_inputs,
+            raw_args,
+            raw_kwargs,
+            args_copyable,
+            call_prelude,
+        ) = _format_call_code(args, kwargs)
+        source_operand = self._owner._console_operand()
+        result = func(*raw_args, **raw_kwargs)
+        inputs, copyable, code_prelude = _merge_operands(
+            source_operand,
+            _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
+        )
+        call = erlab.interactive.imagetool.provenance.ConsoleCall(
+            func=func,
+            accessor_path=path,
+            args=raw_args,
+            kwargs=raw_kwargs,
+            display_code=f"{expression}({call_code})",
+            has_extra_tracked_inputs=bool(call_inputs),
+            receiver_data=source_operand.value,
+        )
+        seed_expression, operations = _structured_seed_and_operations(
+            source_operand, _structured_operation_from_call(call)
+        )
+        return self._owner._wrap_console_result(
+            result,
+            call.display_code,
+            inputs,
+            copyable=copyable,
+            code_prelude=code_prelude,
+            operations=operations,
+            seed_expression=seed_expression,
+        )
+
+    def __call__(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        if not callable(self._accessor):
+            raise TypeError(f"{self._expression} is not callable")
+        return self._call(
+            self._accessor,
+            self._expression,
+            self._path,
+            *args,
+            **kwargs,
+        )
+
+    def __getattr__(self, attr: str) -> typing.Any:
+        value = getattr(self._accessor, attr)
+        expression = f"{self._expression}.{attr}"
+        path = (*self._path, attr)
+        if not callable(value):
+            if isinstance(value, xr.DataArray):
+                operand = self._owner._console_operand()
+                return self._owner._wrap_console_result(
+                    value,
+                    expression,
+                    operand.script_inputs,
+                    copyable=operand.copyable,
+                    code_prelude=operand.code_prelude,
+                )
+            return value
+
+        @functools.wraps(value)
+        def _method(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+            return self._call(value, expression, path, *args, **kwargs)
+
+        return _method
+
+    def __dir__(self) -> list[str]:
+        return sorted(set(dir(self._accessor)))
+
+
+class _ConsoleCoarsenProxy:
+    def __init__(
+        self,
+        owner: _ConsoleDataHandleMixin,
+        coarsened: typing.Any,
+        source_operand: _ConsoleOperand,
+        expression: str,
+        raw_args: tuple[typing.Any, ...],
+        raw_kwargs: dict[str, typing.Any],
+        script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
+        *,
+        copyable: bool,
+        code_prelude: Sequence[str],
+    ) -> None:
+        self._owner = owner
+        self._coarsened = coarsened
+        self._source_operand = source_operand
+        self._expression = expression
+        self._raw_args = raw_args
+        self._raw_kwargs = raw_kwargs
+        self._script_inputs = tuple(script_inputs)
+        self._copyable = copyable
+        self._code_prelude = tuple(code_prelude)
+
+    def __getattr__(self, attr: str) -> typing.Any:
+        value = getattr(self._coarsened, attr)
+        if not callable(value):
+            return value
+
+        @functools.wraps(value)
+        def _method(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+            (
+                call_code,
+                call_inputs,
+                raw_args,
+                raw_kwargs,
+                args_copyable,
+                call_prelude,
+            ) = _format_call_code(args, kwargs)
+            result = value(*raw_args, **raw_kwargs)
+            inputs, copyable, code_prelude = _merge_operands(
+                _ConsoleOperand(
+                    None,
+                    "",
+                    self._script_inputs,
+                    self._copyable,
+                    self._code_prelude,
+                ),
+                _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
+            )
+            expression = f"{self._expression}.{attr}({call_code})"
+            operation = None
+            if not raw_args and not raw_kwargs:
+                source_names = {
+                    script_input.name
+                    for script_input in self._source_operand.script_inputs
+                }
+                call = erlab.interactive.imagetool.provenance.ConsoleCall(
+                    dataarray_method="coarsen",
+                    args=self._raw_args,
+                    kwargs={**self._raw_kwargs, "_reducer": attr},
+                    display_code=expression,
+                    has_extra_tracked_inputs=any(
+                        script_input.name not in source_names for script_input in inputs
+                    ),
+                    receiver_data=self._source_operand.value,
+                )
+                operation = _structured_operation_from_call(call)
+            seed_expression, operations = _structured_seed_and_operations(
+                self._source_operand, operation
+            )
+            return self._owner._wrap_console_result(
+                result,
+                expression,
+                inputs,
+                copyable=copyable,
+                code_prelude=code_prelude,
+                operations=operations,
+                seed_expression=seed_expression,
+            )
+
+        with contextlib.suppress(TypeError, ValueError):
+            typing.cast("typing.Any", _method).__signature__ = inspect.signature(value)
+        return _method
+
+    def __dir__(self) -> list[str]:
+        return sorted(set(dir(self._coarsened)))
+
+
+class _ConsoleModuleProxy(types.ModuleType):
+    def __init__(self, module: types.ModuleType, alias: str) -> None:
+        super().__init__(module.__name__, module.__doc__)
+        self._module = module
+        self._alias = alias
+        for attr in ("__file__", "__package__", "__spec__", "__all__"):
+            if hasattr(module, attr):
+                setattr(self, attr, getattr(module, attr))
+
+    def __getattr__(self, attr: str) -> typing.Any:
+        value = getattr(self._module, attr)
+        expression = f"{self._alias}.{attr}"
+        if isinstance(value, types.ModuleType):
+            return _ConsoleModuleProxy(value, expression)
+        if isinstance(value, type):
+            return value
+        if not callable(value):
+            return value
+
+        @functools.wraps(value)
+        def _function(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+            (
+                call_code,
+                call_inputs,
+                raw_args,
+                raw_kwargs,
+                args_copyable,
+                call_prelude,
+            ) = _format_call_code(args, kwargs)
+            result = value(*raw_args, **raw_kwargs)
+            if not call_inputs:
+                return result
+            source_operand = None
+            call_args = raw_args
+            call_kwargs = raw_kwargs
+            with contextlib.suppress(TypeError, ValueError):
+                signature = inspect.signature(value)
+                bound_args = signature.bind_partial(*args, **kwargs).arguments
+                raw_bound_args = signature.bind_partial(
+                    *raw_args, **raw_kwargs
+                ).arguments
+                source_param = next(
+                    (
+                        name
+                        for name, arg in bound_args.items()
+                        if isinstance(arg, _ConsoleDataHandleMixin)
+                    ),
+                    None,
+                )
+                if source_param is not None:
+                    source = bound_args[source_param]
+                    if isinstance(source, _ConsoleDataHandleMixin):
+                        source_operand = source._console_operand()
+                        call_args = ()
+                        call_kwargs = {
+                            key: arg
+                            for key, arg in raw_bound_args.items()
+                            if key != source_param
+                        }
+            operation = None
+            seed_expression = None
+            operations: tuple[
+                erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...
+            ] = ()
+            if source_operand is not None:
+                source_inputs = source_operand.script_inputs
+                source_names = {script_input.name for script_input in source_inputs}
+                call = erlab.interactive.imagetool.provenance.ConsoleCall(
+                    func=value,
+                    args=call_args,
+                    kwargs=call_kwargs,
+                    display_code=f"{expression}({call_code})",
+                    has_extra_tracked_inputs=any(
+                        script_input.name not in source_names
+                        for script_input in call_inputs
+                    ),
+                    receiver_data=source_operand.value,
+                )
+                operation = _structured_operation_from_call(call)
+                seed_expression, operations = _structured_seed_and_operations(
+                    source_operand, operation
+                )
+            owner = _first_console_handle(args)
+            if owner is None:
+                owner = _first_console_handle(kwargs)
+            if owner is None:
+                return result
+            return owner._wrap_console_result(
+                result,
+                f"{expression}({call_code})",
+                call_inputs,
+                copyable=args_copyable,
+                code_prelude=call_prelude,
+                operations=operations,
+                seed_expression=seed_expression,
+            )
+
+        return _function
+
+    def __dir__(self) -> list[str]:
+        return sorted(set(dir(self._module)))
+
+
+class _ConsoleFunctionProxy:
+    _erlab_console_function_proxy = True
+
+    def __init__(self, function: typing.Any) -> None:
+        self._function = function
+        functools.update_wrapper(self, function)
+
+    def __call__(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
+        (
+            call_code,
+            call_inputs,
+            raw_args,
+            raw_kwargs,
+            args_copyable,
+            call_prelude,
+        ) = _format_call_code(args, kwargs)
+        result = self._function(*raw_args, **raw_kwargs)
+        owner = _first_console_handle(args)
+        if owner is None:
+            owner = _first_console_handle(kwargs)
+        if owner is None:
+            return result
+
+        function_operand = _callable_operand(self)
+        function_code = typing.cast("str", getattr(self, "__name__", ""))
+        if not function_code:
+            function_code = typing.cast("str", self._function.__name__)
+        function_copyable = False
+        function_prelude: tuple[str, ...] = ()
+        if function_operand is not None:
+            function_code = function_operand.code
+            function_copyable = function_operand.copyable
+            function_prelude = function_operand.code_prelude
+
+        return owner._wrap_console_result(
+            result,
+            f"{function_code}({call_code})",
+            call_inputs,
+            copyable=function_copyable and args_copyable,
+            code_prelude=_dedupe_code_preludes(function_prelude, call_prelude),
+        )
 
 
 class _ConsoleDataHandleMixin:
@@ -281,6 +828,11 @@ class _ConsoleDataHandleMixin:
         script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
         *,
         copyable: bool,
+        code_prelude: Sequence[str] = (),
+        operations: Sequence[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        ] = (),
+        seed_expression: str | None = None,
     ) -> typing.Any:
         if not isinstance(value, xr.DataArray):
             return value
@@ -290,6 +842,9 @@ class _ConsoleDataHandleMixin:
             expression,
             _dedupe_script_inputs(script_inputs),
             copyable=copyable,
+            code_prelude=_dedupe_code_preludes(code_prelude),
+            operations=operations,
+            seed_expression=seed_expression,
         )
 
     def _binary_operation(
@@ -306,10 +861,16 @@ class _ConsoleDataHandleMixin:
         right_operand = (
             self._console_operand() if reflected else _operand_from_value(other)
         )
-        inputs, copyable = _merge_operands(left_operand, right_operand)
+        inputs, copyable, code_prelude = _merge_operands(left_operand, right_operand)
         result = operation(left_operand.value, right_operand.value)
         expression = f"{left_operand.code} {symbol} {right_operand.code}"
-        return self._wrap_console_result(result, expression, inputs, copyable=copyable)
+        return self._wrap_console_result(
+            result,
+            expression,
+            inputs,
+            copyable=copyable,
+            code_prelude=code_prelude,
+        )
 
     def _unary_operation(
         self, symbol: str, operation: Callable[[typing.Any], typing.Any]
@@ -321,6 +882,7 @@ class _ConsoleDataHandleMixin:
             f"{symbol}{operand.code}",
             operand.script_inputs,
             copyable=operand.copyable,
+            code_prelude=operand.code_prelude,
         )
 
     def __add__(self, other: typing.Any) -> typing.Any:
@@ -420,6 +982,7 @@ class _ConsoleDataHandleMixin:
             f"abs({operand.code})",
             operand.script_inputs,
             copyable=operand.copyable,
+            code_prelude=operand.code_prelude,
         )
 
     def __invert__(self) -> typing.Any:
@@ -447,7 +1010,7 @@ class _ConsoleDataHandleMixin:
         kwarg_operands = {
             key: _operand_from_value(value) for key, value in kwargs.items()
         }
-        script_inputs, copyable = _merge_operands(
+        script_inputs, copyable, code_prelude = _merge_operands(
             *input_operands, *tuple(kwarg_operands.values())
         )
         raw_kwargs = {key: operand.value for key, operand in kwarg_operands.items()}
@@ -463,18 +1026,20 @@ class _ConsoleDataHandleMixin:
             f"np.{ufunc.__name__}({arg_code})",
             script_inputs,
             copyable=copyable,
+            code_prelude=code_prelude,
         )
 
     def __getitem__(self, key: typing.Any) -> typing.Any:
         key_operand = _operand_from_value(key)
         self_operand = self._console_operand()
         result = self.data[key_operand.value]
-        inputs, copyable = _merge_operands(self_operand, key_operand)
+        inputs, copyable, code_prelude = _merge_operands(self_operand, key_operand)
         return self._wrap_console_result(
             result,
             f"{self_operand.code}[{key_operand.code}]",
             inputs,
             copyable=copyable,
+            code_prelude=code_prelude,
         )
 
     def qshow(self, *args: typing.Any, **kwargs: typing.Any) -> typing.Any:
@@ -485,6 +1050,14 @@ class _ConsoleDataHandleMixin:
 
     def __getattr__(self, attr: str) -> typing.Any:
         data_attr = getattr(self.data, attr)
+        if attr in {"qsel", "qshow", "qplot", "qinfo", "kspace", "xlm", "modelfit"}:
+            operand = self._console_operand()
+            return _ConsoleAccessorProxy(
+                self,
+                data_attr,
+                (attr,),
+                f"{operand.code}.{attr}",
+            )
         if not callable(data_attr):
             if isinstance(data_attr, xr.DataArray):
                 operand = self._console_operand()
@@ -493,39 +1066,91 @@ class _ConsoleDataHandleMixin:
                     f"{operand.code}.{attr}",
                     operand.script_inputs,
                     copyable=operand.copyable,
+                    code_prelude=operand.code_prelude,
                 )
             return data_attr
 
+        @functools.wraps(data_attr)
         def _method(*args: typing.Any, **kwargs: typing.Any) -> typing.Any:
-            call_code, call_inputs, raw_args, raw_kwargs, args_copyable = (
-                _format_call_code(args, kwargs)
-            )
+            (
+                call_code,
+                call_inputs,
+                raw_args,
+                raw_kwargs,
+                args_copyable,
+                call_prelude,
+            ) = _format_call_code(args, kwargs)
             self_operand = self._console_operand()
             result = data_attr(*raw_args, **raw_kwargs)
-            inputs, copyable = _merge_operands(
+            inputs, copyable, code_prelude = _merge_operands(
                 self_operand,
-                _ConsoleOperand(None, "", call_inputs, args_copyable),
+                _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
+            )
+            expression = f"{self_operand.code}.{attr}({call_code})"
+            if attr == "coarsen" and not isinstance(result, xr.DataArray):
+                return _ConsoleCoarsenProxy(
+                    self,
+                    result,
+                    self_operand,
+                    expression,
+                    raw_args,
+                    raw_kwargs,
+                    inputs,
+                    copyable=copyable,
+                    code_prelude=code_prelude,
+                )
+            call = erlab.interactive.imagetool.provenance.ConsoleCall(
+                func=data_attr,
+                dataarray_method=attr,
+                args=raw_args,
+                kwargs=raw_kwargs,
+                display_code=expression,
+                has_extra_tracked_inputs=bool(call_inputs),
+                receiver_data=self_operand.value,
+            )
+            seed_expression, operations = _structured_seed_and_operations(
+                self_operand, _structured_operation_from_call(call)
             )
             return self._wrap_console_result(
                 result,
-                f"{self_operand.code}.{attr}({call_code})",
+                expression,
                 inputs,
                 copyable=copyable,
+                code_prelude=code_prelude,
+                operations=operations,
+                seed_expression=seed_expression,
             )
 
+        with contextlib.suppress(TypeError, ValueError):
+            typing.cast("typing.Any", _method).__signature__ = inspect.signature(
+                data_attr
+            )
         return _method
+
+    def __dir__(self) -> list[str]:
+        names = set(super().__dir__())
+        with contextlib.suppress(Exception):
+            names.update(dir(self.data))
+        return sorted(names)
 
 
 class ToolNamespace(_ConsoleDataHandleMixin):
-    """A console interface that represents a single ImageTool object.
+    """Provenance-aware console handle for one managed ImageTool.
 
-    In the manager console, this namespace can be accessed with the variable
-    ``tools[idx]``, where ``idx`` is the index of a top-level ImageTool to access.
-    Child ImageTools are available through ``tools[idx].children``.
+    In the manager console, ``tools[idx]`` accesses a top-level ImageTool, and
+    ``tools[idx].children[j]`` accesses a child ImageTool in manager tree order. The
+    handle delegates DataArray attributes, methods, operators, and supported ERLab
+    calls to the underlying array while preserving provenance for derived results.
+    ``.data`` remains exact raw :class:`xarray.DataArray` access for compatibility and
+    is not provenance-aware.
 
     Examples
     --------
-    - Access the underlying DataArray of an ImageTool:
+    - Build a provenance-backed result:
+
+      >>> tools[0] - tools[1]
+
+    - Access the raw underlying DataArray of an ImageTool:
 
       >>> tools[1].data
 
@@ -557,7 +1182,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
     @property
     def data(self) -> xr.DataArray:
-        """The DataArray associated with the ImageTool."""
+        """Raw :class:`xarray.DataArray` displayed by the ImageTool."""
         return self.tool.slicer_area._data
 
     @data.setter
@@ -647,15 +1272,17 @@ class ToolNamespace(_ConsoleDataHandleMixin):
         key_operand = _operand_from_value(key)
         value_operand = _operand_from_value(value)
         self_operand = self._console_operand()
-        script_inputs, copyable = _merge_operands(
+        script_inputs, copyable, code_prelude = _merge_operands(
             self_operand, key_operand, value_operand
+        )
+        code = _script_code(
+            code_prelude,
+            f"{self_operand.code}[{key_operand.code}] = {value_operand.code}",
         )
         provenance_spec = erlab.interactive.imagetool.provenance.script(
             erlab.interactive.imagetool.provenance.ScriptCodeOperation(
                 label=f"Set {self._console_label} data item from console",
-                code=(
-                    f"{self_operand.code}[{key_operand.code}] = {value_operand.code}"
-                ),
+                code=code,
                 copyable=copyable,
             ),
             start_label="Run ImageTool manager console code",
@@ -733,12 +1360,20 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
         script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
         *,
         copyable: bool,
+        code_prelude: Sequence[str] = (),
+        operations: Sequence[
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+        ] = (),
+        seed_expression: str | None = None,
     ) -> None:
         self._tools_ref = weakref.ref(tools) if tools is not None else None
         self._data = data
         self._expression = expression
         self._script_inputs = _dedupe_script_inputs(script_inputs)
         self._copyable = copyable
+        self._code_prelude = _dedupe_code_preludes(code_prelude)
+        self._operations = tuple(operations)
+        self._seed_expression = seed_expression
         self._console_name: str | None = None
 
     @property
@@ -761,6 +1396,9 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
                 _derived_operand_code(self._expression),
                 self._script_inputs,
                 self._copyable,
+                self._code_prelude,
+                self._seed_expression,
+                self._operations,
             )
         provenance_spec = self._console_provenance_spec(
             active_name=self._console_name,
@@ -789,10 +1427,23 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
         if not self._script_inputs:
             return None
+        if self._operations and self._seed_expression is not None:
+            seed_code = _script_code(
+                self._code_prelude,
+                f"{active_name} = {self._seed_expression}",
+            )
+            return erlab.interactive.imagetool.provenance.script(
+                *self._operations,
+                start_label="Run ImageTool manager console code",
+                seed_code=seed_code,
+                active_name=active_name,
+                script_inputs=self._script_inputs,
+            )
+        code = _script_code(self._code_prelude, f"{active_name} = {self._expression}")
         return erlab.interactive.imagetool.provenance.script(
             erlab.interactive.imagetool.provenance.ScriptCodeOperation(
                 label=label,
-                code=f"{active_name} = {self._expression}",
+                code=code,
                 copyable=self._copyable,
             ),
             start_label="Run ImageTool manager console code",
@@ -807,7 +1458,10 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
 class ToolsNamespace:
     """A console interface that represents the ImageToolManager and its tools.
 
-    In the manager console, this namespace can be accessed with the variable `tools`.
+    In the manager console, this namespace can be accessed with the variable ``tools``.
+    Integer indexing returns provenance-aware top-level ImageTool handles; selected
+    child ImageTools are available through :attr:`selected`, and raw arrays through
+    :attr:`selected_data`.
 
     Examples
     --------
@@ -836,7 +1490,7 @@ class ToolsNamespace:
 
     @property
     def selected_data(self) -> list[xr.DataArray]:
-        """Get a list of DataArrays from the selected windows."""
+        """Raw DataArrays from selected root or child ImageTools."""
         return [
             self._manager.get_imagetool(target).slicer_area._data
             for target in self._manager._selected_imagetool_targets()
@@ -844,14 +1498,14 @@ class ToolsNamespace:
 
     @property
     def selected(self) -> list[ToolNamespace]:
-        """Get provenance-aware handles for the selected windows."""
+        """Provenance-aware handles for selected root or child ImageTools."""
         return [
             ToolNamespace(self._manager._node_for_target(target), self)
             for target in self._manager._selected_imagetool_targets()
         ]
 
     def __getitem__(self, index: int) -> ToolNamespace | None:
-        """Access a specific ImageTool object by its index."""
+        """Access a top-level ImageTool by manager index."""
         if index not in self._manager._imagetool_wrappers:
             print(f"Tool {index} not found")
             return None
@@ -960,11 +1614,19 @@ class ToolsNamespace:
             return
         if self._shell_ref is not None and (shell := self._shell_ref()) is not None:
             for name, value in shell.user_ns.items():
-                if (
-                    name.startswith("_")
-                    or self._namespace_snapshot.get(name) == id(value)
-                    or not isinstance(value, _DerivedDataNamespace)
+                if name.startswith("_") or self._namespace_snapshot.get(name) == id(
+                    value
                 ):
+                    continue
+                if (
+                    inspect.isfunction(value)
+                    and value.__module__ == "__main__"
+                    and value.__qualname__ == value.__name__ == name
+                    and not inspect.iscoroutinefunction(value)
+                ):
+                    shell.user_ns[name] = _ConsoleFunctionProxy(value)
+                    continue
+                if not isinstance(value, _DerivedDataNamespace):
                     continue
                 value._set_console_name(name)
         if result is None or not isinstance(result.result, _DerivedDataNamespace):

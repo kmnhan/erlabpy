@@ -12,6 +12,7 @@ from erlab.interactive.imagetool import _replay_graph
 def _exec_generated_code(code: str) -> dict[str, typing.Any]:
     namespace: dict[str, typing.Any] = {
         "erlab": erlab,
+        "era": erlab.analysis,
         "np": np,
         "numpy": np,
         "xr": xr,
@@ -50,9 +51,7 @@ def _erlab_file_spec(path: pathlib.Path | str, loader: str):
     return prov.file_load(
         start_label=f"Load {path}",
         seed_code=(
-            "import erlab\n\n"
-            f"erlab.io.set_loader({loader!r})\n"
-            f"derived = erlab.io.load({str(path)!r})"
+            f"erlab.io.set_loader({loader!r})\nderived = erlab.io.load({str(path)!r})"
         ),
         file_load_source=prov.FileLoadSource(
             path=str(path),
@@ -117,12 +116,396 @@ def test_replay_graph_emits_shared_file_and_operation_prefix(
     code = typing.cast("str", spec.display_code())
 
     assert code.count("xr.load_dataarray") == 1
-    assert code.count(".qsel.average") == 1
+    assert code.count(".qsel.mean") == 1
     namespace = _exec_generated_code(code)
     expected = left_stage.apply(shared_stage.apply(source)) - right_stage.apply(
         shared_stage.apply(source)
     )
     xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_replay_graph_handles_structured_script_operations(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("alpha", "eV"),
+        coords={"alpha": [0.0, 1.0], "eV": [0.0, 1.0, 2.0]},
+    )
+    data.to_netcdf(path)
+    spec = prov.script(
+        prov.AverageOperation(dims=("alpha",)),
+        start_label="Run script",
+        seed_code="avg = data_0",
+        active_name="avg",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Scan",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    assert ".qsel.mean" in code
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["avg"], data.qsel.mean("alpha"))
+
+    graph = _replay_graph.compile_replay_graph(spec)
+    xr.testing.assert_identical(
+        _replay_graph.execute_replay_graph(graph),
+        data.qsel.mean("alpha"),
+    )
+
+
+def test_replay_graph_emits_structured_script_operation_without_identity_relays(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("polarization", "eV"),
+        coords={"polarization": [-1, 1], "eV": [0.0, 1.0]},
+    )
+    data.to_netcdf(path)
+    spec = prov.script(
+        prov.SelOperation(kwargs={"polarization": -1}),
+        start_label="Run script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Scan",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    lines = code.splitlines()
+
+    assert not any(line.startswith("_itool_replay_") for line in lines)
+    assert "derived = xr.load_dataarray" in code
+    assert ".sel(polarization=-1)" in code
+    xr.testing.assert_identical(
+        _exec_generated_code(code)["derived"],
+        data.sel(polarization=-1),
+    )
+
+
+def test_replay_graph_preserves_script_inputs_after_structured_operation() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    spec = prov.script(
+        prov.AverageOperation(dims=("x",)),
+        prov.ScriptCodeOperation(
+            label="Use original input",
+            code="derived = derived + data_0.qsel.average('x')",
+        ),
+        start_label="Run script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+    )
+
+    graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
+    script_nodes = [node for node in graph.nodes if node.kind == "script"]
+
+    assert script_nodes
+    assert any(
+        input_name == "data_0"
+        for node in script_nodes
+        for input_name, _key in node.payload["bindings"]
+    )
+    xr.testing.assert_identical(
+        _replay_graph.execute_replay_graph(graph),
+        data.qsel.average("x") + data.qsel.average("x"),
+    )
+
+
+def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    spec = prov.script(
+        prov.AverageOperation(dims=("x",)),
+        prov.ScriptCodeOperation(
+            label="Use temp",
+            code="derived = derived + tmp.qsel.average('x') + data_0.qsel.average('x')",
+        ),
+        start_label="Run script",
+        seed_code="tmp = data_0 + 1\nderived = tmp",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+    )
+
+    graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
+    script_nodes = [node for node in graph.nodes if node.kind == "script"]
+
+    assert len(script_nodes) == 1
+    assert not any(node.kind == "operation" for node in graph.nodes)
+    assert any(
+        "derived = derived.qsel.mean(" in code
+        for code in script_nodes[0].payload["codes"]
+    )
+    xr.testing.assert_identical(
+        _replay_graph.execute_replay_graph(graph),
+        (data + 1).qsel.average("x")
+        + (data + 1).qsel.average("x")
+        + data.qsel.average("x"),
+    )
+
+
+def test_replay_graph_rebases_context_for_inlined_operation() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
+    )
+    spec = prov.script(
+        prov.SortCoordOrderOperation(),
+        start_label="Run script",
+        seed_code="tmp = data_0 + 1\nderived = tmp",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+    )
+
+    graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
+    script_nodes = [node for node in graph.nodes if node.kind == "script"]
+    inlined_code = "\n".join(script_nodes[0].payload["codes"])
+
+    assert prov.script_provenance_replayable(spec)
+    assert "data.coords" not in inlined_code
+    assert "derived.coords.keys()" in inlined_code
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(spec, {"data_0": data}),
+        erlab.utils.array.sort_coord_order(data + 1, (data + 1).coords.keys()),
+    )
+
+
+def test_replay_graph_rebases_context_in_script_input_code(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
+    )
+    data.to_netcdf(path)
+    spec = prov.script(
+        prov.SortCoordOrderOperation(),
+        start_label="Run script",
+        seed_code="tmp = data_0 + 1\nderived = tmp",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Input",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+
+    assert "data.coords" not in code
+    assert "derived.coords.keys()" in code
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(
+        namespace["derived"],
+        erlab.utils.array.sort_coord_order(data + 1, (data + 1).coords.keys()),
+    )
+
+
+def test_replay_graph_shares_structured_console_alias_prefixes(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "polarization.nc"
+    source = _polarization_source(path)
+    averaged = prov.script(
+        prov.AverageOperation(dims=("k",)),
+        start_label="Run script",
+        seed_code="avg = data_0",
+        active_name="avg",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Scan",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(label="Subtract", code="derived = data_0 - data_1"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="LH", provenance_spec=averaged),
+            prov.ScriptInput(name="data_1", label="LV", provenance_spec=averaged),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    graph = _replay_graph.compile_replay_graph(spec)
+
+    assert code.count("xr.load_dataarray") == 1
+    assert code.count(".qsel.mean") == 1
+    assert ".copy(" not in code
+    assert (
+        sum(
+            node.kind == "operation" and node.payload["operation"].op == "average"
+            for node in graph.nodes
+        )
+        == 1
+    )
+    expected = source.qsel.mean("k") - source.qsel.mean("k")
+    xr.testing.assert_identical(_exec_generated_code(code)["derived"], expected)
+    xr.testing.assert_identical(_replay_graph.execute_replay_graph(graph), expected)
+
+
+@pytest.mark.parametrize(
+    ("seed_code", "active_name"),
+    [
+        ("derived = data_0", "derived"),
+        (None, "data_0"),
+    ],
+)
+def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
+    seed_code: str | None,
+    active_name: str,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    spec = prov.script(
+        prov.RenameOperation(name="renamed"),
+        start_label="Run script",
+        seed_code=seed_code,
+        active_name=active_name,
+        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+    )
+
+    graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
+    replayed = _replay_graph.execute_replay_graph(graph)
+
+    assert any(node.kind == "relay" for node in graph.nodes)
+    assert replayed.name == "renamed"
+    assert not np.shares_memory(replayed.data, data.data)
+
+
+def test_script_replayability_does_not_generate_structured_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    spec = prov.script(
+        prov.RenameOperation(name="renamed"),
+        start_label="Run script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+    )
+
+    def fail_derivation_entry(self):
+        raise AssertionError("replayability checks must not generate copied code")
+
+    monkeypatch.setattr(prov.RenameOperation, "derivation_entry", fail_derivation_entry)
+
+    assert prov.script_provenance_replayable(spec)
+
+
+def test_replay_graph_uses_existing_console_alias_for_script_code(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+    data.to_netcdf(path)
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Rotate",
+            code=(
+                "derived = era.transform.rotate("
+                "data_0, 0.0, axes=('x', 'y'), reshape=False)"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Scan",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code)
+
+    assert "era = erlab.analysis" not in code
+    xr.testing.assert_identical(
+        namespace["derived"],
+        erlab.analysis.transform.rotate(data, 0.0, axes=("x", "y"), reshape=False),
+    )
+
+
+def test_replay_graph_uses_existing_console_alias_for_structured_code(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+    data.to_netcdf(path)
+    spec = prov.script(
+        prov.RotateOperation(
+            angle=123.456,
+            axes=("x", "y"),
+            center=(1.234, 5.678),
+            reshape=False,
+            order=3,
+        ),
+        start_label="Run script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Scan",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code)
+
+    assert "era = erlab.analysis" not in code
+    xr.testing.assert_identical(
+        namespace["derived"],
+        erlab.analysis.transform.rotate(
+            data,
+            123.456,
+            axes=("x", "y"),
+            center=(1.234, 5.678),
+            reshape=False,
+            order=3,
+        ),
+    )
 
 
 def test_replay_graph_keeps_structurally_distinct_file_loads() -> None:
@@ -169,6 +552,7 @@ def test_replay_graph_reuses_shared_loader_setup() -> None:
 
     code = typing.cast("str", spec.derivation_code())
 
+    assert "import erlab" not in code
     assert code.count("erlab.io.set_loader('example')") == 1
     assert code.count("erlab.io.load") == 2
 
@@ -205,6 +589,9 @@ def test_replay_graph_reemits_stateful_setup_after_loader_change() -> None:
 
     assert code.count("erlab.io.set_loader('alpha')") == 2
     assert code.count("erlab.io.set_loader('beta')") == 1
+    assert code.index("erlab.io.load('alpha0.h5')") < code.index(
+        "erlab.io.set_loader('beta')"
+    )
 
 
 def test_replay_graph_does_not_merge_operations_with_different_contexts() -> None:
@@ -284,18 +671,35 @@ def test_replay_graph_raises_typed_errors_for_unsupported_script() -> None:
         _replay_graph.compile_replay_graph(spec, external_inputs={"data": data})
 
 
-def test_replay_graph_rejects_operations_without_replay_code() -> None:
+def test_replay_graph_emits_correct_with_edge_operation_code(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
+    data.to_netcdf(path)
+    edge_fit = xr.Dataset({"center": ("x", [0.0, 1.0])})
+
+    def correct_with_edge(data_arg, edge_fit_arg, *, shift_coords=True):
+        xr.testing.assert_identical(edge_fit_arg, edge_fit)
+        return data_arg.assign_attrs(shift_coords=shift_coords)
+
+    monkeypatch.setattr(erlab.analysis.gold, "correct_with_edge", correct_with_edge)
     spec = prov.compose_full_provenance(
-        _file_spec("scan.h5"),
-        prov.full_data(prov.RenameOperation(name="renamed")),
+        _file_spec(path),
+        prov.full_data(
+            prov.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
+        ),
     )
     assert spec is not None
 
     graph = _replay_graph.compile_replay_graph(spec)
+    code = _replay_graph.emit_replay_code(graph, output_name="derived")
+    namespace = _exec_generated_code(code)
 
-    with pytest.raises(_replay_graph.ReplayGraphError, match="replay code"):
-        _replay_graph.emit_replay_code(graph)
+    assert namespace["derived"].attrs["shift_coords"] is False
+    assert _replay_graph.execute_replay_graph(graph).attrs["shift_coords"] is False
 
 
 def test_replay_graph_execution_matches_emitted_code(tmp_path: pathlib.Path) -> None:

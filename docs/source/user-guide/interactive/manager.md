@@ -131,9 +131,7 @@ updated.
 
 Some manager results are made from two or more top-level ImageTools instead of from one
 parent row. Examples include {guilabel}`Concatenate` and console expressions such as
-`tools[0] - tools[1]`. These results open as normal top-level ImageTools, not as child
-rows, and they remain valid saved data even if one of the inputs is later renamed,
-reindexed, changed, or removed.
+`tools[0] - tools[1]`.
 
 The manager records the ImageTools that contributed to the result and shows their live
 relationship in the tree and side panel:
@@ -146,17 +144,13 @@ relationship in the tree and side panel:
 These badges describe the relationship to the currently open inputs. They do not mean
 the displayed result is invalid, and they do not change the result data automatically.
 
-Select a derived result and choose {guilabel}`Reload Data` to recompute it from its
-recorded inputs. If the live inputs are open, the manager uses their current data. If an
-input was removed but its recorded file source is still available, the manager reloads
-that input from the file before recomputing the result. When the new result is
-compatible with the current ImageTool view, the manager replaces the data in place so
-cursor positions, bins, dimension order, and display settings are kept. If the reloaded
-data has incompatible coordinates or dimensions, the manager lets you replace and reset
-the view, open the reloaded result as a new ImageTool, or cancel.
+{guilabel}`Reload Data` also works on these results. If the live inputs are open, the
+manager uses their current data. If an input was removed but its recorded file source is
+still available, the manager reloads that input from the file before recomputing the
+result.
 
-For script-derived results, {guilabel}`Reload Data` replays code recorded by the
-manager. Only reload derived results from workspaces you trust.
+For results from console scripts, {guilabel}`Reload Data` replays the recorded code in
+the console if possible. Only reload derived results from workspaces you trust.
 
 (imagetool-manager-replay-code)=
 
@@ -373,8 +367,21 @@ many of the same operations and keep track of the manager history. For example:
   # Create an ImageTool containing the difference of the first two windows
   tools[0] - tools[1]
 
+  # Use complicated expressions
+  tools[0].qsel(alpha=slice(-1, 1)).qsel.average("eV")
+  era.transform.rotate(tools[0], 2.0, axes=("alpha", "eV"), reshape=False)
+
   # Use a child ImageTool in a similar calculation
   tools[0].children[0] - tools[1]
+
+  # xarray module calls also keep manager inputs when they receive tool handles
+  xr.concat([tools[0], tools[1]], dim="scan")
+
+  # Simple helper functions defined in the console can receive tool handles directly
+  def normalize(data):
+      return data / data.max()
+
+  normalize(tools[0])
 
   # Keep the result in the console, then open it later
   diff = tools[0] - tools[1]
