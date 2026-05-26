@@ -15478,6 +15478,111 @@ def test_manager_console_selected_expression_opens_provenance_root(
         InteractiveShell.clear_instance()
 
 
+def test_manager_console_child_imagetool_access_tracks_provenance(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+        name="parent",
+    )
+    data1 = data0 + 2.0
+    data1.name = "right"
+    child_data = data0 + 10.0
+    child_data.name = "child"
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        intermediate_uid = manager.add_childtool(
+            erlab.interactive.utils.ToolWindow(), 0, show=False
+        )
+        child_tool = itool(child_data, manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool, intermediate_uid, show=False
+        )
+        child_node = manager._child_node(child_uid)
+
+        shell = manager.console._console_widget.kernel_manager.kernel.shell
+
+        manager.console._console_widget.execute("child_handles = tools[0].children")
+        child_handles = shell.user_ns["child_handles"]
+        assert len(child_handles) == 1
+        assert "[0]" in repr(child_handles)
+        assert child_node.name in repr(child_handles)
+
+        manager.console._console_widget.execute(
+            "isinstance(tools[0].children[0].data, xr.DataArray)"
+        )
+        assert shell.user_ns["_"] is True
+        xr.testing.assert_identical(child_handles[0].data, child_data)
+
+        manager.console._console_widget.execute("tools[0].children[0] - tools[1]")
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            child_data - data1,
+        )
+        provenance = manager._imagetool_wrappers[2].provenance_spec
+        assert provenance is not None
+        assert [source.name for source in provenance.script_inputs] == [
+            "data_0_0",
+            "data_1",
+        ]
+        assert [source.node_uid for source in provenance.script_inputs] == [
+            child_uid,
+            manager._imagetool_wrappers[1].uid,
+        ]
+        assert [source.node_snapshot_token for source in provenance.script_inputs] == [
+            child_node.snapshot_token,
+            manager._imagetool_wrappers[1].snapshot_token,
+        ]
+
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, child_uid)
+        manager.console._console_widget.execute("tools.selected[0].data")
+        xr.testing.assert_identical(shell.user_ns["_"], child_data)
+        manager.console._console_widget.execute("tools.selected_data")
+        assert len(shell.user_ns["_"]) == 1
+        xr.testing.assert_identical(shell.user_ns["_"][0], child_data)
+
+        derived_uid = manager._imagetool_wrappers[2].uid
+        updated_child = child_data + 5.0
+        child_tool.slicer_area.replace_source_data(updated_child)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+
+        manager.tree_view.clearSelection()
+        select_tools(manager, [2])
+        manager.reload_selected()
+        xr.testing.assert_identical(
+            manager.get_imagetool(2).slicer_area.data,
+            updated_child - data1,
+        )
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
+
+        manager._remove_childtool(child_uid)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
+            timeout=5000,
+        )
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
 def test_manager_console_derived_tool_reload_action_routes_to_manager(
     qtbot,
     manager_context: Callable[

@@ -30,7 +30,10 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool import ImageTool
     from erlab.interactive.imagetool.manager import ImageToolManager
-    from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
+    from erlab.interactive.imagetool.manager._wrapper import (
+        _ImageToolWrapper,
+        _ManagedWindowNode,
+    )
 
 
 _MPL_QT_CURSOR_PATCH_ATTR = "_erlab_original_set_cursor"
@@ -517,7 +520,8 @@ class ToolNamespace(_ConsoleDataHandleMixin):
     """A console interface that represents a single ImageTool object.
 
     In the manager console, this namespace can be accessed with the variable
-    ``tools[idx]``, where ``idx`` is the index of the ImageTool to access.
+    ``tools[idx]``, where ``idx`` is the index of a top-level ImageTool to access.
+    Child ImageTools are available through ``tools[idx].children``.
 
     Examples
     --------
@@ -532,13 +536,15 @@ class ToolNamespace(_ConsoleDataHandleMixin):
     """
 
     def __init__(
-        self, wrapper: _ImageToolWrapper, tools: ToolsNamespace | None = None
+        self,
+        wrapper: _ImageToolWrapper | _ManagedWindowNode,
+        tools: ToolsNamespace | None = None,
     ) -> None:
         self._wrapper_ref = weakref.ref(wrapper)
         self._tools_ref = weakref.ref(tools) if tools is not None else None
 
     @property
-    def _wrapper(self) -> _ImageToolWrapper:
+    def _wrapper(self) -> _ImageToolWrapper | _ManagedWindowNode:
         wrapper = self._wrapper_ref()
         if wrapper:
             return wrapper
@@ -561,13 +567,18 @@ class ToolNamespace(_ConsoleDataHandleMixin):
             raw_value = value.data
             provenance_spec = value._console_provenance_spec(
                 active_name=self._console_input_name,
-                label=f"Replace ImageTool {self._wrapper.index} data from console",
+                label=f"Replace {self._console_label} data from console",
             )
         else:
             raw_value = value
         if provenance_spec is not None:
             self._wrapper.set_detached_provenance(provenance_spec)
         self.tool.slicer_area.replace_source_data(raw_value, emit_edited=True)
+
+    @property
+    def children(self) -> _ToolChildren:
+        """Child ImageTools displayed under this ImageTool in manager tree order."""
+        return _ToolChildren(self)
 
     def _get_data_item(self, key):
         """Return a subset of the tool data."""
@@ -589,12 +600,22 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
     @property
     def _console_input_name(self) -> str:
-        return _tool_data_name(self._wrapper.index)
+        tools = self._console_tools
+        if tools is not None:
+            return tools._node_data_name(self._wrapper)
+        return _tool_data_name(typing.cast("_ImageToolWrapper", self._wrapper).index)
+
+    @property
+    def _console_label(self) -> str:
+        tools = self._console_tools
+        if tools is not None:
+            return tools._node_label(self._wrapper, include_name=False)
+        return f"ImageTool {typing.cast('_ImageToolWrapper', self._wrapper).index}"
 
     def _script_input(
         self,
     ) -> erlab.interactive.imagetool.provenance.ScriptInput:
-        label = f"ImageTool {self._wrapper.index}"
+        label = self._console_label
         if self._wrapper.name:
             label += f": {self._wrapper.name}"
         provenance_spec = (
@@ -631,7 +652,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
         )
         provenance_spec = erlab.interactive.imagetool.provenance.script(
             erlab.interactive.imagetool.provenance.ScriptCodeOperation(
-                label=f"Set ImageTool {self._wrapper.index} data item from console",
+                label=f"Set {self._console_label} data item from console",
                 code=(
                     f"{self_operand.code}[{key_operand.code}] = {value_operand.code}"
                 ),
@@ -653,10 +674,54 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
     def __repr__(self) -> str:
         time_repr = self._wrapper._created_time.isoformat(sep=" ", timespec="seconds")
-        out = f"ImageTool {self._wrapper.index}: {self._wrapper.name}\n"
+        label = self._console_label
+        if self._wrapper.name:
+            label += f": {self._wrapper.name}"
+        out = f"{label}\n"
         out += f"  Added: {time_repr}\n"
         out += f"  Linked: {self.tool.slicer_area.is_linked}\n"
         return out
+
+
+class _ToolChildren:
+    def __init__(self, parent: ToolNamespace) -> None:
+        self._parent = parent
+
+    def _nodes(self) -> list[_ManagedWindowNode]:
+        tools = self._parent._console_tools
+        if tools is None:
+            return []
+        return tools._child_imagetool_nodes(self._parent._wrapper)
+
+    def __getitem__(self, index: int | slice) -> ToolNamespace | list[ToolNamespace]:
+        tools = self._parent._console_tools
+        if tools is None:
+            raise LookupError("Parent was destroyed")
+        nodes = self._nodes()
+        if isinstance(index, slice):
+            return [ToolNamespace(node, tools) for node in nodes[index]]
+        return ToolNamespace(nodes[index], tools)
+
+    def __iter__(self):
+        tools = self._parent._console_tools
+        if tools is None:
+            return iter(())
+        return (ToolNamespace(node, tools) for node in self._nodes())
+
+    def __len__(self) -> int:
+        return len(self._nodes())
+
+    def __repr__(self) -> str:
+        tools = self._parent._console_tools
+        if tools is None:
+            return "No child ImageTools"
+        nodes = self._nodes()
+        if not nodes:
+            return f"No child ImageTools for {self._parent._console_label}"
+        lines = [f"Child ImageTools for {self._parent._console_label}:"]
+        for index, node in enumerate(nodes):
+            lines.append(f"[{index}] {tools._node_label(node, include_name=True)}")
+        return "\n".join(lines)
 
 
 class _DerivedDataNamespace(_ConsoleDataHandleMixin):
@@ -773,19 +838,17 @@ class ToolsNamespace:
     def selected_data(self) -> list[xr.DataArray]:
         """Get a list of DataArrays from the selected windows."""
         return [
-            self._manager.get_imagetool(idx).slicer_area._data
-            for idx in self._manager.tree_view.selected_imagetool_indices
+            self._manager.get_imagetool(target).slicer_area._data
+            for target in self._manager._selected_imagetool_targets()
         ]
 
     @property
     def selected(self) -> list[ToolNamespace]:
         """Get provenance-aware handles for the selected windows."""
-        output: list[ToolNamespace] = []
-        for idx in self._manager.tree_view.selected_imagetool_indices:
-            namespace = self[idx]
-            if namespace is not None:
-                output.append(namespace)
-        return output
+        return [
+            ToolNamespace(self._manager._node_for_target(target), self)
+            for target in self._manager._selected_imagetool_targets()
+        ]
 
     def __getitem__(self, index: int) -> ToolNamespace | None:
         """Access a specific ImageTool object by its index."""
@@ -794,6 +857,75 @@ class ToolsNamespace:
             return None
 
         return ToolNamespace(self._manager._imagetool_wrappers[index], self)
+
+    def _node_path(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> list[int] | None:
+        path: list[int] = []
+        current = node
+        while current.parent_uid is not None:
+            image_parent = self._image_parent_node(current)
+            if image_parent is None:
+                return None
+            child_nodes = self._child_imagetool_nodes(image_parent)
+            child_uids = [child.uid for child in child_nodes]
+            if current.uid not in child_uids:
+                return None
+            child_index = child_uids.index(current.uid)
+            path.append(child_index)
+            current = image_parent
+        for root_index, wrapper in self._manager._imagetool_wrappers.items():
+            if wrapper.uid == current.uid:
+                return [root_index, *reversed(path)]
+        return None
+
+    def _child_imagetool_nodes(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> list[_ManagedWindowNode]:
+        output: list[_ManagedWindowNode] = []
+
+        def collect(parent: _ImageToolWrapper | _ManagedWindowNode) -> None:
+            for child_uid in parent._childtool_indices:
+                child = self._manager._all_nodes.get(child_uid)
+                if child is None:
+                    continue
+                if child.is_imagetool:
+                    output.append(child)
+                    continue
+                collect(child)
+
+        collect(node)
+        return output
+
+    def _image_parent_node(
+        self, node: _ManagedWindowNode
+    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        parent_uid = node.parent_uid
+        while parent_uid is not None:
+            parent = self._manager._all_nodes.get(parent_uid)
+            if parent is None:
+                return None
+            if parent.is_imagetool:
+                return parent
+            parent_uid = parent.parent_uid
+        return None
+
+    def _node_data_name(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
+        path = self._node_path(node)
+        if path is not None:
+            return "data_" + "_".join(str(index) for index in path)
+        uid_name = "".join(char if char.isalnum() else "_" for char in node.uid)
+        return f"data_{uid_name[:8]}"
+
+    def _node_label(
+        self, node: _ImageToolWrapper | _ManagedWindowNode, *, include_name: bool
+    ) -> str:
+        path = self._node_path(node)
+        display_index = ".".join(str(index) for index in path) if path else node.uid[:8]
+        label = f"ImageTool {display_index}"
+        if include_name and node.name:
+            label += f": {node.name}"
+        return label
 
     def bind_shell(self, shell: InteractiveShell) -> None:
         self._shell_ref = weakref.ref(shell)
@@ -1095,11 +1227,21 @@ class _JupyterConsoleWidget(qtconsole.inprocess.QtInProcessRichJupyterWidget):
 
         info_str = (
             _command_ansi(
-                "Access raw data", ["tools[<index>].data", "tools.selected_data"]
+                "Access raw data",
+                [
+                    "tools[<index>].data",
+                    "tools[<index>].children[0].data",
+                    "tools.selected_data",
+                ],
             )
             + "\n"
             + _command_ansi(
-                "Track provenance", ["tools[0] - tools[1]", "tools.selected[0]"]
+                "Track provenance",
+                [
+                    "tools[0] - tools[1]",
+                    "tools[0].children[0] - tools[1]",
+                    "tools.selected[0]",
+                ],
             )
             + "\n"
             + _command_ansi("Change data", ["tools[<index>].data = <value>"])

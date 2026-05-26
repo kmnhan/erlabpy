@@ -367,8 +367,14 @@ many of the same operations and keep track of the manager history. For example:
   # Access the underlying DataArray of the first window
   tools[0].data
 
+  # Inspect and access ImageTool children under the first window
+  tools[0].children
+
   # Create an ImageTool containing the difference of the first two windows
   tools[0] - tools[1]
+
+  # Use a child ImageTool in a similar calculation
+  tools[0].children[0] - tools[1]
 
   # Keep the result in the console, then open it later
   diff = tools[0] - tools[1]

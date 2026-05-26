@@ -63,7 +63,8 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `Reconnect Watched Variables`, `.itws`, `standalone application`,
   `recent documents`, `Jump List`, `Dock menu`, `Result Placement`, `stale`,
   `automatic updates`, `Auto`, `Changed`, `Missing`, `Reload Data`,
-  `Concatenate`, `tools[0] - tools[1]`, `tools.selected`,
+  `Concatenate`, `tools[0] - tools[1]`, `tools[0].children`,
+  `tools.selected`,
   `Refit after update`, `code for repeating steps`,
   `reuses shared load and processing work`, `shared loader setup`,
   `ImageTool windows opened from tools`, or
