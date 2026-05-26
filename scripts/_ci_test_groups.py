@@ -52,7 +52,21 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/test_lattice.py",
     ),
     "cov-io": ("tests/io",),
-    "cov-qt-imagetool": ("tests/interactive/imagetool",),
+    "cov-qt-imagetool": (
+        "tests/interactive/imagetool/test_history.py",
+        "tests/interactive/imagetool/test_imagetool.py",
+        "tests/interactive/imagetool/test_imagetool_coordinate_widget.py",
+        "tests/interactive/imagetool/test_manager_warnings.py",
+        "tests/interactive/imagetool/test_module_split.py",
+        "tests/interactive/imagetool/test_provenance.py",
+        "tests/interactive/imagetool/test_replay_graph.py",
+        "tests/interactive/imagetool/test_server_multipart.py",
+        "tests/interactive/imagetool/test_slicer.py",
+        "tests/interactive/imagetool/test_watcher.py",
+    ),
+    "cov-qt-imagetool-manager": (
+        "tests/interactive/imagetool/test_imagetool_manager.py",
+    ),
     "cov-qt-tools": (
         "tests/interactive/test_bzplot.py",
         "tests/interactive/test_dask.py",

@@ -56,6 +56,9 @@ jobs:
           - group: "cov-qt-imagetool"
             timeout-minutes: 30
             use-xdist: false
+          - group: "cov-qt-imagetool-manager"
+            timeout-minutes: 30
+            use-xdist: false
           - group: "cov-qt-tools"
             timeout-minutes: 25
             use-xdist: false
