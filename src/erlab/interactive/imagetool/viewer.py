@@ -2674,10 +2674,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 return False
             return True
         manager = self._manager_instance if self._in_manager else None
-        if manager is not None and manager._script_reload_from_slicer_area(
-            self, execute=True
-        ):
-            return True
+        if manager is not None:
+            return manager._script_reload_from_slicer_area(self, execute=True)
         if not self.reloadable:
             return False
         try:
