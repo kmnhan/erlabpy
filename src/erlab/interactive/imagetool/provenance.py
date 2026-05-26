@@ -263,6 +263,46 @@ def _is_internal_sort_coord_order_entry(entry: DerivationEntry) -> bool:
     )
 
 
+def _is_whole_array_rename_entry(entry: DerivationEntry) -> bool:
+    code = entry.code
+    if code is None:
+        return False
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return False
+    match module.body:
+        case [
+            ast.Assign(
+                targets=[ast.Name(id=target_name, ctx=ast.Store())],
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id=receiver_name, ctx=ast.Load()),
+                        attr="rename",
+                    ),
+                    args=args,
+                    keywords=keywords,
+                ),
+            )
+        ] if target_name == receiver_name:
+            pass
+        case _:
+            return False
+
+    if len(args) == 1 and not keywords:
+        return isinstance(args[0], ast.Constant) and isinstance(
+            args[0].value, (str, type(None))
+        )
+    if args or len(keywords) != 1:
+        return False
+    keyword = keywords[0]
+    return (
+        keyword.arg == "new_name_or_name_dict"
+        and isinstance(keyword.value, ast.Constant)
+        and isinstance(keyword.value.value, (str, type(None)))
+    )
+
+
 def encode_provenance_value(value: typing.Any) -> typing.Any:
     """Encode non-JSON provenance values into a JSON-safe representation."""
     if isinstance(value, xr.Dataset):
@@ -1740,6 +1780,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     "derived = derived.qsel()",
                     "derived = derived.sel()",
                 } or _is_internal_sort_coord_order_entry(entry)
+                if not hide_operation and _is_whole_array_rename_entry(entry):
+                    hide_operation = not any(
+                        isinstance(later_operation, ScriptCodeOperation)
+                        for later_operation in operations[index + 1 :]
+                    )
             # Rule 1: drop empty selection operations.
             elif isinstance(operation, (QSelOperation, IselOperation, SelOperation)):
                 hide_operation = not operation.decoded_kwargs
@@ -1904,10 +1949,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     def derivation_code(self) -> str | None:
         prefix: str | None = None
         if self.kind == "script" and self.script_inputs:
-            return self._script_graph_code(display=False)
+            return self._script_graph_code(display=True)
         if self.kind in {"script", "file"}:
             prefix = self.seed_code
-        step_codes = self._code_lines_from_entries(self.derivation_entries()[1:])
+        step_codes = self._code_lines_from_entries(self.display_entries()[1:])
         if step_codes is None:
             return None
         if prefix is None and self.kind != "script":

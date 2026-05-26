@@ -5906,8 +5906,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert detached.provenance_spec.derivation_code() == (
             "derived = data\n"
             'derived = derived.qsel.mean("x")\n'
-            'derived = derived.qsel.mean("y")\n'
-            'derived = derived.rename("scan_avg_avg")'
+            'derived = derived.qsel.mean("y")'
         )
         assert detached.provenance_spec.derivation_code() != detached_derivation_before
         xr.testing.assert_identical(
@@ -14183,6 +14182,7 @@ def test_remove_imagetool_removes_childtools() -> None:
         _all_nodes={wrapper.uid: wrapper},
         _mark_removed_subtree_dirty=lambda _uid: None,
         _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
+        _refresh_dependency_dependents=lambda _uid: None,
         tree_view=types.SimpleNamespace(
             imagetool_removed=lambda index: removed_rows.append(index)
         ),

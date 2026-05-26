@@ -8,7 +8,6 @@ shared file loads and shared structured operations are emitted or replayed once.
 from __future__ import annotations
 
 import ast
-import copy
 import json
 import symtable
 import typing
@@ -380,8 +379,7 @@ def _file_seed_code_parts(seed_code: str, active_name: str) -> tuple[str | None,
                         if alias.name != "erlab" or alias.asname not in {None, "erlab"}
                     ]
                     if names:
-                        stmt = copy.copy(stmt)
-                        stmt.names = names
+                        stmt = ast.Import(names=names)
                         filtered_body.append(stmt)
                     continue
                 filtered_body.append(stmt)
@@ -682,6 +680,11 @@ def _compile_spec(
                     "derived = derived.sel()",
                 } or prov._is_internal_sort_coord_order_entry(entry):
                     continue
+                if prov._is_whole_array_rename_entry(entry) and not any(
+                    isinstance(later_operation, prov.ScriptCodeOperation)
+                    for later_operation in operations[index + 1 :]
+                ):
+                    continue
             if isinstance(operation, prov.ScriptCodeOperation):
                 if not operation.copyable or operation.code is None:
                     raise ReplayGraphError(
@@ -827,6 +830,10 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
 
     prov = _prov()
     changed = False
+
+    def clone_expr(expr: ast.expr) -> ast.expr:
+        return ast.parse(ast.unparse(expr), mode="eval").body
+
     while True:
         for idx, stmt in enumerate(module.body[:-1]):
             if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
@@ -848,7 +855,7 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
                 continue
 
             inline_target = target.id
-            inline_value = copy.deepcopy(stmt.value)
+            inline_value = clone_expr(stmt.value)
 
             class ReplayNameInliner(ast.NodeTransformer):
                 def __init__(self, target_name: str, value: ast.expr) -> None:
@@ -857,7 +864,7 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
 
                 def visit_Name(self, node: ast.Name) -> ast.expr:
                     if node.id == self.target_name and isinstance(node.ctx, ast.Load):
-                        return ast.copy_location(copy.deepcopy(self.value), node)
+                        return ast.copy_location(clone_expr(self.value), node)
                     return node
 
             module.body[idx + 1] = ast.fix_missing_locations(

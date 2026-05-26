@@ -247,10 +247,7 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         "Start from current parent ImageTool data",
         'Average(dims=("x",))',
     ]
-    assert (
-        spec.derivation_code() == 'derived = data\nderived = derived.qsel.mean("x")\n'
-        'derived = derived.rename("avg")'
-    )
+    assert spec.derivation_code() == 'derived = data\nderived = derived.qsel.mean("x")'
     display_code = typing.cast("str", spec.display_code())
     assert ".rename(" not in display_code
     namespace = _exec_generated_code(display_code, {"data": _base_data()})

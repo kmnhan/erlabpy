@@ -754,6 +754,14 @@ class _ConsoleModuleProxy(types.ModuleType):
     def __dir__(self) -> list[str]:
         return sorted(set(dir(self._module)))
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _ConsoleModuleProxy):
+            other = other._module
+        return self._module == other
+
+    def __hash__(self) -> int:
+        return hash(self._module)
+
 
 class _ConsoleFunctionProxy:
     _erlab_console_function_proxy = True

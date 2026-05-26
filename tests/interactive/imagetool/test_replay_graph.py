@@ -313,7 +313,8 @@ def test_replay_graph_rebases_context_in_script_input_code(
         ),
     )
 
-    code = typing.cast("str", spec.derivation_code())
+    graph = _replay_graph.compile_replay_graph(spec, display=False)
+    code = _replay_graph.emit_replay_code(graph, output_name="derived")
 
     assert "data.coords" not in code
     assert "derived.coords.keys()" in code

@@ -3501,7 +3501,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if input_provenance is None:
                 raise RuntimeError("Direct replay input requires input provenance.")
             if local_spec is None:
-                return input_provenance
+                return None
             replay_spec = (
                 erlab.interactive.imagetool.provenance.to_replay_provenance_spec(
                     local_spec

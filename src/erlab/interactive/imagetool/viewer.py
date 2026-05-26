@@ -2674,9 +2674,21 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 return False
             return True
         manager = self._manager_instance if self._in_manager else None
-        return manager is not None and manager._script_reload_from_slicer_area(
+        if manager is not None and manager._script_reload_from_slicer_area(
             self, execute=True
-        )
+        ):
+            return True
+        if not self.reloadable:
+            return False
+        try:
+            data, kwargs = self._fetch_reload_data()
+            self.replace_source_data(data, **kwargs)
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self, "Error", "An error occurred while reloading data."
+            )
+            return False
+        return True
 
     @QtCore.Slot()
     def reload(self) -> None:
