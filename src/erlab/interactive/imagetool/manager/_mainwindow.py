@@ -6065,7 +6065,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _handle_dropped_files(self, file_paths: list[pathlib.Path]) -> None:
         """Handle files dropped into the window."""
         if file_paths:  # pragma: no branch
-            extensions: set[str] = {file_path.suffix for file_path in file_paths}
+            extensions: set[str] = {
+                file_path.suffix.lower() for file_path in file_paths
+            }
             if len(extensions) != 1:
                 QtWidgets.QMessageBox.critical(
                     self,
@@ -6160,6 +6162,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         if try_workspace:
             for p in list(queued):
+                explicit_workspace = p.suffix.lower() == ".itws"
                 try:
                     dt = _manager_xarray.open_workspace_datatree(p, chunks=None)
                 except Exception as exc:
@@ -6171,8 +6174,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         )
                         _show_workspace_file_lock_error(self, p)
                         queued.remove(p)
+                    elif explicit_workspace:
+                        self._show_operation_error(
+                            "Error while loading workspace",
+                            "An error occurred while loading the workspace file.",
+                        )
+                        queued.remove(p)
                     else:
-                        logger.debug("Failed to open %s as datatree workspace", p)
+                        logger.debug(
+                            "Failed to open %s as datatree workspace", p, exc_info=True
+                        )
                 else:
                     if self._is_datatree_workspace(dt):
                         dt.close()
@@ -6224,13 +6235,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                                 )
                                 _show_workspace_file_lock_error(self, p)
                             else:
-                                logger.exception(
+                                self._show_operation_error(
                                     "Error while loading workspace",
-                                    extra={"suppress_ui_alert": True},
-                                )
-                                erlab.interactive.utils.MessageDialog.critical(
-                                    self,
-                                    "Error",
                                     "An error occurred while loading the workspace "
                                     "file.",
                                 )
@@ -6239,6 +6245,20 @@ class ImageToolManager(QtWidgets.QMainWindow):
                             loaded.append(p)
                     else:
                         dt.close()
+                        if explicit_workspace:
+                            logger.error(
+                                "File with .itws extension is not an ImageTool "
+                                "workspace: %s",
+                                p,
+                                extra={"suppress_ui_alert": True},
+                            )
+                            erlab.interactive.utils.MessageDialog.critical(
+                                self,
+                                "Error",
+                                "An error occurred while loading the workspace file.",
+                                f"{p.name} is not a valid ImageTool workspace file.",
+                            )
+                            queued.remove(p)
 
         if len(queued) == 0:
             return
