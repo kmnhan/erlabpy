@@ -5751,7 +5751,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert "Added" in details
         derivation = metadata_derivation_texts(manager)
         assert any("Aggregate" in line for line in derivation)
-        assert any("rename(" in line for line in derivation)
+        assert not any("rename(" in line for line in derivation)
 
         copied: list[str] = []
         monkeypatch.setattr(
@@ -5785,12 +5785,11 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         manager._update_info(uid=child_uid)
         derivation = metadata_derivation_texts(manager)
         assert derivation[0] == "Start from current parent ImageTool data"
-        assert len(derivation) == 4
+        assert len(derivation) == 3
         assert "Aggregate" in derivation[1]
         assert "dims=" in derivation[1]
         assert "Aggregate" in derivation[2]
         assert "dims=" in derivation[2]
-        assert "rename(" in derivation[3]
         manager.metadata_derivation_list.setFocus()
         select_metadata_rows(manager, [0])
         qtbot.keyClick(
@@ -5850,7 +5849,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             full_result.rename(None),
             data.qsel.mean("x").qsel.mean("y").rename(None),
         )
-        assert ".rename(" in copied[-1]
+        assert ".rename(" not in copied[-1]
 
         manual = xr.DataArray(
             np.arange(5, dtype=float) + 100.0,
@@ -5922,10 +5921,9 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         manager._update_info()
         detached_derivation = metadata_derivation_texts(manager)
         assert detached_derivation[0] == "Start from current parent ImageTool data"
-        assert len(detached_derivation) == 4
+        assert len(detached_derivation) == 3
         assert "Aggregate" in detached_derivation[1]
         assert "Aggregate" in detached_derivation[2]
-        assert "rename(" in detached_derivation[3]
 
         duplicated_detached_index = typing.cast("int", manager.duplicate_imagetool(1))
         duplicated_detached = manager._imagetool_wrappers[duplicated_detached_index]

@@ -4815,7 +4815,10 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    xarray.testing.assert_identical(derived, data.qsel.mean("x").rename("avg"))
+    assert ".rename(" not in display_code
+    xarray.testing.assert_identical(
+        derived.rename(None), data.qsel.mean("x").rename(None)
+    )
     win.close()
 
 
@@ -4867,7 +4870,8 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    xarray.testing.assert_identical(derived, expected.rename("sum"))
+    assert ".rename(" not in display_code
+    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
 
     win.close()
 

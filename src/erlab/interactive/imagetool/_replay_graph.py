@@ -667,8 +667,14 @@ def _compile_spec(
 
         if parsed.seed_code and not apply_simple_alias(parsed.seed_code):
             pending_codes.append(parsed.seed_code)
-        for operation in parsed.operations:
+        operations = tuple(parsed.operations)
+        for index, operation in enumerate(operations):
             if display:
+                if isinstance(operation, prov.RenameOperation) and not any(
+                    isinstance(later_operation, prov.ScriptCodeOperation)
+                    for later_operation in operations[index + 1 :]
+                ):
+                    continue
                 entry = operation.derivation_entry()
                 if entry.code in {
                     "derived = derived.isel()",
@@ -718,7 +724,10 @@ def _compile_spec(
 
         flush_script()
         if script_current_key is None:
-            raise ReplayGraphError("Script provenance has no replay code")
+            matching_inputs = [key for name, key in bindings if name == active_name]
+            if len(matching_inputs) != 1:
+                raise ReplayGraphError("Script provenance has no replay code")
+            script_current_key = relay_key(matching_inputs[0])
         return script_current_key
 
     raise ReplayGraphError(f"{parsed.kind!r} provenance is not self-contained")

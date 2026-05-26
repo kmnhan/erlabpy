@@ -400,6 +400,74 @@ def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
     assert not np.shares_memory(replayed.data, data.data)
 
 
+def test_replay_graph_display_skips_whole_array_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path)
+    spec = prov.script(
+        prov.RenameOperation(name="renamed"),
+        start_label="Run script",
+        active_name="data_0",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Input",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+
+    graph = _replay_graph.compile_replay_graph(
+        spec,
+        display=True,
+    )
+    code = _replay_graph.emit_replay_code(graph, output_name="derived")
+
+    assert ".rename(" not in code
+    xr.testing.assert_identical(_exec_generated_code(code)["derived"], data)
+
+
+def test_replay_graph_display_keeps_name_rename_before_script_code(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path)
+    spec = prov.script(
+        prov.RenameOperation(name="renamed"),
+        prov.ScriptCodeOperation(
+            label="Use DataArray name",
+            code="derived = derived.rename(derived.name + '_used')",
+        ),
+        start_label="Run script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Input",
+                provenance_spec=_file_spec(path),
+            ),
+        ),
+    )
+
+    graph = _replay_graph.compile_replay_graph(
+        spec,
+        display=True,
+    )
+    code = _replay_graph.emit_replay_code(graph, output_name="derived")
+
+    assert ".rename(" in code
+    xr.testing.assert_identical(
+        _exec_generated_code(code)["derived"],
+        data.rename("renamed_used"),
+    )
+
+
 def test_script_replayability_does_not_generate_structured_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

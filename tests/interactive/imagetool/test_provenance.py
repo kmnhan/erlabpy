@@ -243,9 +243,20 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         'Average(dims=("x",))',
         "rename('avg')",
     ]
+    assert [entry.label for entry in spec.display_entries()] == [
+        "Start from current parent ImageTool data",
+        'Average(dims=("x",))',
+    ]
     assert (
         spec.derivation_code() == 'derived = data\nderived = derived.qsel.mean("x")\n'
         'derived = derived.rename("avg")'
+    )
+    display_code = typing.cast("str", spec.display_code())
+    assert ".rename(" not in display_code
+    namespace = _exec_generated_code(display_code, {"data": _base_data()})
+    xr.testing.assert_identical(
+        namespace["derived"].rename(None),
+        _base_data().qsel.mean("x").rename(None),
     )
 
     dumped = spec.model_dump(mode="json")
@@ -1116,6 +1127,27 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
         derived,
         _base_data().transpose(*("x", "y", "z")).squeeze(),
     )
+
+
+def test_tool_provenance_display_keeps_name_rename_before_script_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().rename("source")
+    spec = prov.script(
+        prov.RenameOperation(name="renamed"),
+        prov.ScriptCodeOperation(
+            label="Use DataArray name",
+            code="derived = derived.rename(derived.name + '_used')",
+        ),
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert ".rename(" in code
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], data.rename("renamed_used"))
 
 
 def test_imagetool_selection_source_binding_materializes_current_coordinates() -> None:
@@ -2853,6 +2885,8 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
     assert code is not None
     assert "import xarray" in code
     assert "xarray.load_dataarray" in code
+    assert '.rename("avg")' not in code
+    assert ".rename(y=" in code
     assert "data =" not in code
     namespace = _exec_generated_code(code, {})
     assert isinstance(namespace["derived"], xr.DataArray)

@@ -1730,11 +1730,18 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             )
 
         streamlined: list[ToolProvenanceOperation] = []
-        for operation in operations:
+        for index, operation in enumerate(operations):
             hide_operation = False
 
+            if isinstance(operation, ScriptCodeOperation):
+                entry = operation.derivation_entry()
+                hide_operation = entry.code in {
+                    "derived = derived.isel()",
+                    "derived = derived.qsel()",
+                    "derived = derived.sel()",
+                } or _is_internal_sort_coord_order_entry(entry)
             # Rule 1: drop empty selection operations.
-            if isinstance(operation, (QSelOperation, IselOperation, SelOperation)):
+            elif isinstance(operation, (QSelOperation, IselOperation, SelOperation)):
                 hide_operation = not operation.decoded_kwargs
             # Rule 2: hide internal coordinate-order normalization.
             elif isinstance(operation, SortCoordOrderOperation):
@@ -1761,11 +1768,20 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     ).dims
                     == current_data.dims
                 )
+            # Rule 6: drop whole-array name changes. ImageTool appends names such as
+            # ``_avg`` to keep displayed tools distinct, but the DataArray name is not
+            # an analysis step. Dimension and coordinate renames use
+            # RenameDimsCoordsOperation and remain visible.
+            elif isinstance(operation, RenameOperation):
+                hide_operation = not any(
+                    isinstance(later_operation, ScriptCodeOperation)
+                    for later_operation in operations[index + 1 :]
+                )
 
             if not hide_operation:
                 streamlined.append(operation)
 
-            # Rule 6: keep anything ambiguous. If replaying an operation fails while
+            # Rule 7: keep anything ambiguous. If replaying an operation fails while
             # building the heuristic context, stop making data-dependent decisions for
             # later steps and preserve them verbatim.
             if current_data is None or parent_data is None:
@@ -1913,18 +1929,21 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         entries = [self._start_entry()]
 
         if self.kind == "script":
-            for entry in self.derivation_entries()[1:]:
-                # Rule 1: drop empty selection operations.
-                if entry.code in {
-                    "derived = derived.isel()",
-                    "derived = derived.qsel()",
-                    "derived = derived.sel()",
-                }:
-                    continue
-                # Rule 2: hide internal coordinate-order normalization.
-                if _is_internal_sort_coord_order_entry(entry):
-                    continue
-                entries.append(entry)
+            entries.extend(
+                DerivationEntry(
+                    f"Use {script_input.name} from {script_input.label}",
+                    None,
+                    False,
+                )
+                for script_input in self.script_inputs
+            )
+            entries.extend(
+                operation.derivation_entry()
+                for operation in self._streamlined_operations(
+                    "full_data",
+                    self.operations,
+                )
+            )
             return entries
         if self.kind == "file":
             current_data = parent_data
