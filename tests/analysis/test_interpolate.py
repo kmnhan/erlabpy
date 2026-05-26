@@ -274,6 +274,48 @@ def test_leading_edge_vectorized_over_other_dims() -> None:
     np.testing.assert_allclose(out.values, edges, atol=1e-3)
 
 
+def test_leading_edge_along_custom_dim() -> None:
+    kx = np.linspace(-1.0, 1.0, 501)
+    edges = np.array([-0.25, 0.35])
+    width = 0.02
+
+    ee, kk = np.meshgrid(edges, kx, indexing="ij")
+    values = 1.0 / (1.0 + np.exp((kk - ee) / width))
+    darr = xr.DataArray(values, dims=("idx", "kx"), coords={"idx": [0, 1], "kx": kx})
+
+    out = leading_edge(darr, fraction=0.5, dim="kx")
+    assert out.dims == ("idx",)
+    np.testing.assert_allclose(out.values, edges, atol=1e-3)
+
+
+def test_leading_edge_direction() -> None:
+    eV = np.linspace(-1.0, 1.0, 801)
+    width = 0.2
+    values = np.exp(-((eV / width) ** 2))
+    darr = xr.DataArray(values, dims=("eV",), coords={"eV": eV}, name="edc")
+    expected_offset = width * np.sqrt(np.log(2.0))
+
+    out_positive = leading_edge(darr, fraction=0.5, direction="positive")
+    out_negative = leading_edge(darr, fraction=0.5, direction="negative")
+
+    assert float(out_positive) == pytest.approx(expected_offset, abs=1e-3)
+    assert float(out_negative) == pytest.approx(-expected_offset, abs=1e-3)
+
+
+def test_leading_edge_invalid_direction_raises() -> None:
+    darr = xr.DataArray(np.zeros(3), dims=("eV",), coords={"eV": [-1.0, 0.0, 1.0]})
+
+    with pytest.raises(ValueError, match="direction"):
+        leading_edge(darr, direction="left")
+
+
+def test_leading_edge_invalid_dim_raises() -> None:
+    darr = xr.DataArray(np.zeros(3), dims=("eV",), coords={"eV": [-1.0, 0.0, 1.0]})
+
+    with pytest.raises(ValueError, match="Dimension"):
+        leading_edge(darr, dim="kx")
+
+
 def test_leading_edge_dask_parallelized() -> None:
     pytest.importorskip("dask.array")
 

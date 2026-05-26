@@ -548,50 +548,76 @@ def slice_along_vector(
     return slice_along_path(data, vertices=vert, **kwargs)
 
 
-def _minimize_func(edc_values: npt.NDArray, energy_coord: npt.NDArray) -> float:
-    spl = scipy.interpolate.make_interp_spline(energy_coord, edc_values)
+def _minimize_func(
+    edc_values: npt.NDArray,
+    coord: npt.NDArray,
+    direction: typing.Literal["positive", "negative"],
+) -> float:
+    order = np.argsort(coord)
+    coord = coord[order]
+    edc_values = edc_values[order]
+
+    spl = scipy.interpolate.make_interp_spline(coord, edc_values)
+    peak_coord = coord[np.argmax(edc_values)]
+    endpoint = coord.max() if direction == "positive" else coord.min()
     rs = scipy.optimize.root_scalar(
         spl,
-        bracket=[energy_coord[np.argmax(edc_values)], energy_coord.max()],
+        bracket=sorted([peak_coord, endpoint]),
     )
     return rs.root
 
 
-def leading_edge(darr: xr.DataArray, fraction: float = 0.5) -> xr.DataArray:
-    """Calculate the leading edge of EDCs in a DataArray with subpixel precision.
+def leading_edge(
+    darr: xr.DataArray,
+    fraction: float = 0.5,
+    *,
+    dim: Hashable = "eV",
+    direction: typing.Literal["positive", "negative"] = "positive",
+) -> xr.DataArray:
+    """Calculate leading edges in a DataArray with subpixel precision.
 
-    The leading edge is defined as the energy where the intensity reaches a given
-    fraction of the maximum intensity in the EDC, by default 50%.
+    The leading edge is defined as the coordinate where the intensity reaches a given
+    fraction of the maximum intensity along `dim`, by default 50%.
 
-    It is calculated by interpolating the EDC with a spline and finding the root of the
-    function defined as the difference between the EDC and the target intensity.
+    It is calculated by interpolating each curve with a spline and finding the root of
+    the function defined as the difference between the curve and the target intensity.
 
     Parameters
     ----------
     darr : xr.DataArray
-        The input DataArray containing EDCs along the 'eV' dimension. It can be of any
-        shape, as long as one dimension is named 'eV'.
+        The input DataArray containing curves along `dim`.
     fraction : float, optional
         The fraction of the maximum intensity to define the leading edge, by default
         0.5.
+    dim : Hashable, optional
+        The dimension along which to solve for the leading edge, by default ``"eV"``.
+    direction : {"positive", "negative"}, optional
+        Direction from the curve maximum in which to solve. ``"positive"`` solves
+        toward larger coordinate values, while ``"negative"`` solves toward smaller
+        coordinate values.
 
     Returns
     -------
     leading_edge : xr.DataArray
-        A DataArray containing the leading edge energies for each EDC in the input
-        DataArray. The shape will be the same as the input DataArray, but without the
-        'eV' dimension.
+        A DataArray containing the leading edge coordinate for each curve in the input
+        DataArray. The shape will be the same as the input DataArray, but without
+        `dim`.
     """
-    half_max = darr.max("eV") * fraction
+    if dim not in darr.dims:
+        raise ValueError(f"Dimension {dim!r} not found in input DataArray")
+    if direction not in {"positive", "negative"}:
+        raise ValueError("direction must be 'positive' or 'negative'")
+
+    half_max = darr.max(dim=[dim]) * fraction
 
     return xr.apply_ufunc(
         _minimize_func,
         darr - half_max,
-        input_core_dims=[["eV"]],
+        input_core_dims=[[dim]],
         dask="parallelized",
         output_dtypes=[float],
         vectorize=True,
-        kwargs={"energy_coord": darr.eV.values},
+        kwargs={"coord": darr[dim].values, "direction": direction},
     )
 
 
