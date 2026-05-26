@@ -752,6 +752,7 @@ _TOOL_SOURCE_BINDING_ATTR = "tool_source_binding"
 _TOOL_SOURCE_STATE_ATTR = "tool_source_state"
 _TOOL_SOURCE_AUTO_UPDATE_ATTR = "tool_source_auto_update"
 _TOOL_INPUT_PROVENANCE_SPEC_ATTR = "tool_input_provenance_spec"
+_SAVED_TOOL_DATA_NAME = "<saved-tool-data>"
 
 
 class _ToolWindowMeta(type(QtWidgets.QMainWindow)):  # type: ignore[misc]
@@ -1392,6 +1393,8 @@ def load_fit_ui(*, parent: QtWidgets.QWidget | None = None) -> xr.Dataset | None
 def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
     from xarray_lmfit._io import _dumps_result, _patch_encode4js
 
+    from erlab.interactive.imagetool import _serialization
+
     serialized = ds.copy()
     with _patch_encode4js():
         for var in serialized.data_vars:
@@ -1402,6 +1405,11 @@ def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
                     vectorize=True,
                     output_dtypes=[str],
                 )
+    private_coord_data_name = _fit_dataset_private_coord_data_name(serialized)
+    if private_coord_data_name is not None:
+        serialized = _serialization.encode_private_coords(
+            serialized, private_coord_data_name
+        )
     blob = serialized.to_netcdf(path=None, engine="h5netcdf", invalid_netcdf=True)
     return np.frombuffer(blob, dtype=np.uint8).copy()
 
@@ -1409,10 +1417,17 @@ def _serialize_fit_dataset_blob(ds: xr.Dataset) -> np.ndarray:
 def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
     from xarray_lmfit._io import _loads_result
 
+    from erlab.interactive.imagetool import _serialization
+
     restored = xr.load_dataset(
         memoryview(np.asarray(blob, dtype=np.uint8).tobytes()),
         engine="h5netcdf",
     )
+    private_coord_data_name = _fit_dataset_private_coord_data_name(restored)
+    if private_coord_data_name is not None:
+        restored = _serialization.restore_private_coords(
+            restored, private_coord_data_name
+        )
     for var in restored.data_vars:
         if str(var).endswith("modelfit_results"):
             restored[var] = xr.apply_ufunc(
@@ -1422,6 +1437,17 @@ def _deserialize_fit_dataset_blob(blob: npt.ArrayLike) -> xr.Dataset:
                 output_dtypes=[object],
             )
     return restored
+
+
+def _fit_dataset_private_coord_data_name(ds: xr.Dataset) -> Hashable | None:
+    candidates = [
+        name for name in ds.data_vars if not str(name).endswith("modelfit_results")
+    ]
+    if not candidates:
+        candidates = list(ds.data_vars)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda name: ds[name].ndim)
 
 
 def make_help_actions(parent: QtCore.QObject) -> tuple[QtGui.QAction, ...]:
@@ -4174,7 +4200,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
         """
         ds = self.tool_data.to_dataset(
-            name="<saved-tool-data>", promote_attrs=False
+            name=_SAVED_TOOL_DATA_NAME, promote_attrs=False
         ).assign_attrs(self._saved_tool_attrs)
         return self._append_persistence_payload(ds)
 
@@ -4190,6 +4216,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         **kwargs
             Additional keyword arguments passed to the constructor.
         """
+        from erlab.interactive.imagetool import _serialization
+
+        ds = _serialization.restore_private_coords(ds, _SAVED_TOOL_DATA_NAME)
+
         saved_version = ds.attrs.get("erlab_version", "0.0.0")
         if erlab.utils.misc.is_newer_version(saved_version):  # pragma: no cover
             erlab.utils.misc.emit_user_level_warning(
@@ -4210,7 +4240,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         tool_data_name: str | None = ds.attrs.get("tool_data_name", "<none-value>")
         if tool_data_name == "<none-value>":
             tool_data_name = None
-        tool = cls_obj(ds["<saved-tool-data>"].rename(tool_data_name), **kwargs)
+        tool = cls_obj(ds[_SAVED_TOOL_DATA_NAME].rename(tool_data_name), **kwargs)
         tool.tool_status = cls_obj.StateModel.model_validate_json(
             ds.attrs["tool_state"]
         )
@@ -4296,7 +4326,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             The name of the target netcdf file.
 
         """
-        self.to_dataset().to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
+        from erlab.interactive.imagetool import _serialization
+
+        _serialization.encode_private_coords(
+            self.to_dataset(), _SAVED_TOOL_DATA_NAME
+        ).to_netcdf(filename, engine="h5netcdf", invalid_netcdf=True)
 
     @classmethod
     def from_file(cls, filename: str | os.PathLike, **kwargs) -> typing.Self:

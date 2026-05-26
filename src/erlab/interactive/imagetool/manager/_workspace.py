@@ -979,6 +979,8 @@ def _read_workspace_dataset_group_h5py(
 def _workspace_h5py_data_name(ds: xr.Dataset) -> typing.Hashable | None:
     if _serialization.ITOOL_DATA_NAME in ds.data_vars:
         return _serialization.ITOOL_DATA_NAME
+    if _serialization.SAVED_TOOL_DATA_NAME in ds.data_vars:
+        return _serialization.SAVED_TOOL_DATA_NAME
     if len(ds.data_vars) == 1:
         return next(iter(ds.data_vars))
     return None
@@ -1167,7 +1169,9 @@ def _write_workspace_dataset_group_to_file(
         ):
             ds = ds.load()
 
-    ds = _serialization.encode_private_coords(ds, _serialization.ITOOL_DATA_NAME)
+    data_name = _workspace_h5py_data_name(ds)
+    if data_name is not None:
+        ds = _serialization.encode_private_coords(ds, data_name)
     ds = ds.copy(deep=False)
     stale_encoding_keys = {
         "chunksizes",

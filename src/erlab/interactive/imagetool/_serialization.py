@@ -12,6 +12,7 @@ if typing.TYPE_CHECKING:
     from collections.abc import Hashable, Mapping
 
 ITOOL_DATA_NAME: str = "<erlab-itool-data>"
+SAVED_TOOL_DATA_NAME: str = "<saved-tool-data>"
 
 # NetCDF stores non-dimension coordinate names in a whitespace-delimited
 # ``coordinates`` attribute.  A coord named "Fake Motor" cannot round-trip there,
