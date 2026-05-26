@@ -1333,6 +1333,127 @@ class InterpolationDialog(DataTransformDialog):
         return operation.code(placeholder)
 
 
+class LeadingEdgeDialog(DataTransformDialog):
+    title = "Leading Edge"
+    enable_copy = True
+    apply_on_nonuniform_data = True
+
+    def setup_widgets(self) -> None:
+        self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+            self.slicer_area.data
+        )
+
+        self.dim_combo = QtWidgets.QComboBox()
+        for dim in self._source_data.dims:
+            self.dim_combo.addItem(str(dim), userData=dim)
+        ev_index = self.dim_combo.findData("eV", QtCore.Qt.ItemDataRole.UserRole)
+        if ev_index >= 0:
+            self.dim_combo.setCurrentIndex(ev_index)
+        self.layout_.addRow("Dimension", self.dim_combo)
+
+        self.fraction_spin = QtWidgets.QDoubleSpinBox()
+        self.fraction_spin.setDecimals(6)
+        self.fraction_spin.setRange(0.000001, 1.0)
+        self.fraction_spin.setSingleStep(0.05)
+        self.fraction_spin.setValue(0.5)
+        self.layout_.addRow("Fraction", self.fraction_spin)
+
+        self.direction_combo = QtWidgets.QComboBox()
+        self.direction_combo.addItem("Positive", userData="positive")
+        self.direction_combo.addItem("Negative", userData="negative")
+        self.layout_.addRow("Direction", self.direction_combo)
+
+    @property
+    def _selected_dim(self) -> Hashable | None:
+        if self.dim_combo.currentIndex() < 0:
+            return None
+        return typing.cast(
+            "Hashable",
+            self.dim_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def _direction(self) -> typing.Literal["positive", "negative"]:
+        return typing.cast(
+            "typing.Literal['positive', 'negative']",
+            self.direction_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
+        )
+
+    @property
+    def suffix(self) -> str:
+        dim = self._selected_dim
+        suffix = "" if dim is None else str(dim)
+        suffix = re.sub(r"[^0-9A-Za-z_]+", "_", suffix).strip("_")
+        if not suffix:
+            suffix = "coord"
+        elif suffix[0].isdigit():
+            suffix = f"coord_{suffix}"
+        return f"_leading_edge_{suffix}"
+
+    @suffix.setter
+    def suffix(self, value: str) -> None:
+        # To satisfy mypy
+        pass
+
+    def _source_coord_error(self, dim: Hashable) -> str | None:
+        coord = np.asarray(self._source_data[dim].values)
+        if coord.ndim != 1:
+            return "The selected dimension coordinate must be one-dimensional."
+        if not np.issubdtype(coord.dtype, np.number) or np.issubdtype(
+            coord.dtype, np.complexfloating
+        ):
+            return "The selected dimension coordinate must contain real numbers."
+        numeric = coord.astype(np.float64, copy=False)
+        if not np.all(np.isfinite(numeric)):
+            return "The selected dimension coordinate must be finite."
+        if np.unique(numeric).size != numeric.size:
+            return "The selected dimension coordinate values must be unique."
+        return None
+
+    def source_transform_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.LeadingEdgeOperation:
+        dim = self._selected_dim
+        if dim is None:
+            raise ValueError("No dimension selected")
+        return erlab.interactive.imagetool.provenance.LeadingEdgeOperation(
+            fraction=float(self.fraction_spin.value()),
+            dim=dim,
+            direction=self._direction,
+        )
+
+    @QtCore.Slot()
+    def accept(self) -> None:
+        dim = self._selected_dim
+        if dim is None:
+            QtWidgets.QMessageBox.warning(
+                self, "No Dimension Selected", "Choose a dimension to process."
+            )
+            return
+
+        source_error = self._source_coord_error(dim)
+        if source_error is not None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Source Coordinate",
+                source_error,
+            )
+            return
+
+        super().accept()
+
+    def make_code(self) -> str:
+        dim = self._selected_dim
+        if dim is None or self._source_coord_error(dim) is not None:
+            return ""
+        try:
+            operation = self.source_transform_operation()
+        except Exception:
+            return ""
+        placeholder = self.slicer_area.watched_data_name or "data"
+        return operation.code(placeholder)
+
+
 class CoarsenDialog(DataTransformDialog):
     title = "Coarsen"
     enable_copy = True

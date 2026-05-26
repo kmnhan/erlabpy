@@ -694,6 +694,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
                         "text": "Interpolate…",
                         "triggered": self._interpolate,
                     },
+                    "leadingEdgeAct": {
+                        "text": "Leading Edge…",
+                        "triggered": self._leading_edge,
+                    },
                     "divideByCoordinateAct": {
                         "text": "Divide by Coordinate…",
                         "triggered": self._divide_by_coord,
@@ -919,6 +923,10 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _interpolate(self) -> None:
         self.execute_dialog(erlab.interactive.imagetool.dialogs.InterpolationDialog)
+
+    @QtCore.Slot()
+    def _leading_edge(self) -> None:
+        self.execute_dialog(erlab.interactive.imagetool.dialogs.LeadingEdgeDialog)
 
     @QtCore.Slot()
     def _divide_by_coord(self) -> None:
