@@ -2181,7 +2181,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 if self._dependency_ref_has_recorded_file(spec, ref):
                     current += "; recorded source file found"
             parts.append(f"{ref.name}: {ref.label} ({current})")
-        return "\n".join(parts)
+        return "; ".join(parts)
 
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
         node = self._node_for_target(target)
