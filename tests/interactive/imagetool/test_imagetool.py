@@ -2038,6 +2038,7 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
         },
         "current_cursor": 1,
         "manual_limits": {},
+        "axis_inversions": {},
         "splitter_sizes": list(old_state["splitter_sizes"]),
         "file_path": None,
         "load_func": None,
@@ -2048,22 +2049,16 @@ def test_itool_general(qtbot, move_and_compare_values, use_dask) -> None:
                 "roi_states": [],
                 "vb_aspect_locked": False,
                 "vb_autorange": (True, True),
-                "vb_x_inverted": False,
-                "vb_y_inverted": False,
             },
             {
                 "roi_states": [],
                 "vb_aspect_locked": False,
                 "vb_autorange": (True, True),
-                "vb_x_inverted": False,
-                "vb_y_inverted": False,
             },
             {
                 "roi_states": [],
                 "vb_aspect_locked": False,
                 "vb_autorange": (True, True),
-                "vb_x_inverted": False,
-                "vb_y_inverted": False,
             },
         ],
     }
@@ -2889,6 +2884,98 @@ def _cursor_line_values(image, cursor: int) -> tuple[float, ...]:
     return tuple(line.value() for line in image.cursor_lines[cursor].values())
 
 
+def _plot_axis_inverted(plot_item, axis: int) -> bool:
+    key = "xInverted" if axis == 0 else "yInverted"
+    return bool(plot_item.getViewBox().state[key])
+
+
+def _assert_dimension_inverted(area: ImageSlicerArea, dim: str, inverted: bool) -> None:
+    matched = False
+    for plot_item in area.axes:
+        for axis, axis_dim in enumerate(plot_item.axis_dims_uniform):
+            if axis_dim == dim:
+                matched = True
+                assert _plot_axis_inverted(plot_item, axis) is inverted
+    assert matched
+
+
+def test_axis_inversion_viewbox_shared_undo_redo_and_roundtrip(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    area = win.slicer_area
+
+    area.main_image.getViewBox().invertX(True)
+
+    assert area.axis_inversions == {"x": True}
+    _assert_dimension_inverted(area, "x", True)
+    _assert_dimension_inverted(area, "y", False)
+    assert area.undoable
+
+    area.undo()
+    assert area.axis_inversions == {}
+    _assert_dimension_inverted(area, "x", False)
+
+    area.redo()
+    assert area.axis_inversions == {"x": True}
+    _assert_dimension_inverted(area, "x", True)
+
+    restored = ImageTool.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    assert restored.slicer_area.axis_inversions == {"x": True}
+    _assert_dimension_inverted(restored.slicer_area, "x", True)
+
+    restored.close()
+    win.close()
+
+
+def test_axis_inversion_view_menu_toggles_shared_state(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    menu = win.mnb.menu_dict["invertAxisMenu"]
+    win.mnb._populate_invert_axis_menu()
+    actions = {action.data(): action for action in menu.actions()}
+
+    y_action = actions["y"]
+    assert y_action.objectName() == "itool_invert_axis_1_action"
+    assert y_action.isCheckable()
+
+    y_action.trigger()
+    assert win.slicer_area.axis_inversions == {"y": True}
+    _assert_dimension_inverted(win.slicer_area, "y", True)
+
+    y_action.trigger()
+    assert win.slicer_area.axis_inversions == {}
+    _assert_dimension_inverted(win.slicer_area, "y", False)
+
+    win.close()
+
+
+def test_axis_inversion_legacy_plotitem_state_migrates(qtbot) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    ds = win.to_dataset()
+    state = json.loads(ds.attrs["itool_state"])
+    state.pop("axis_inversions")
+    state["plotitem_states"][0]["vb_x_inverted"] = True
+    state["plotitem_states"][2]["vb_y_inverted"] = True
+    ds.attrs["itool_state"] = json.dumps(state)
+
+    restored = ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+
+    assert restored.slicer_area.axis_inversions == {"x": True, "y": True}
+    _assert_dimension_inverted(restored.slicer_area, "x", True)
+    _assert_dimension_inverted(restored.slicer_area, "y", True)
+
+    restored.close()
+    win.close()
+
+
 def test_linked_command_option_image_drag_refreshes_linked_cursors(qtbot) -> None:
     win0, win1 = _linked_pair(qtbot)
     win0.slicer_area.add_cursor()
@@ -2980,6 +3067,32 @@ def test_linked_cursor_undo_redo_propagates(qtbot) -> None:
     win0.slicer_area.redo()
     assert win0.array_slicer.get_indices(0) == [4, 2]
     assert win1.array_slicer.get_indices(0) == [4, 2]
+
+    win0.slicer_area.unlink()
+    win0.close()
+    win1.close()
+
+
+def test_linked_axis_inversion_undo_redo_propagates(qtbot) -> None:
+    win0, win1 = _linked_pair(qtbot)
+
+    win0.slicer_area.set_axis_inverted("x", True)
+    assert win0.slicer_area.axis_inversions == {"x": True}
+    assert win1.slicer_area.axis_inversions == {"x": True}
+    _assert_dimension_inverted(win0.slicer_area, "x", True)
+    _assert_dimension_inverted(win1.slicer_area, "x", True)
+
+    win0.slicer_area.undo()
+    assert win0.slicer_area.axis_inversions == {}
+    assert win1.slicer_area.axis_inversions == {}
+    _assert_dimension_inverted(win0.slicer_area, "x", False)
+    _assert_dimension_inverted(win1.slicer_area, "x", False)
+
+    win0.slicer_area.redo()
+    assert win0.slicer_area.axis_inversions == {"x": True}
+    assert win1.slicer_area.axis_inversions == {"x": True}
+    _assert_dimension_inverted(win0.slicer_area, "x", True)
+    _assert_dimension_inverted(win1.slicer_area, "x", True)
 
     win0.slicer_area.unlink()
     win0.close()

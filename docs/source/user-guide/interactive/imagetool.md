@@ -184,6 +184,12 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
   On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`, {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
 
+  :::{versionchanged} 3.23.0
+  Axis inversion is shared by dimension across plots. Use the plot context menu or
+  {guilabel}`View → Invert Axis` to flip every visible plot showing that
+  dimension; the setting is saved with the ImageTool state and follows undo and redo.
+  :::
+
   Tools opened from ImageTool remember the slice or selection that opened them. If that
   ImageTool is updated with compatible data, the tool shows a {guilabel}`Stale` badge
   instead of silently keeping old input. Click the badge inside the tool window to

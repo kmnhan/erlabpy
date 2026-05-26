@@ -494,6 +494,8 @@ class ItoolPlotItem(pg.PlotItem):
         self._twin_visible: bool = False
 
         self._roi_list: list[ItoolPolyLineROI] = []
+        self._applying_shared_axis_inversions = False
+        self._last_axis_inversions = self._viewbox_axis_inversions()
 
     def setup_actions(self) -> None:
         self._associated_coord_menu: QtWidgets.QMenu | None = None
@@ -646,6 +648,7 @@ class ItoolPlotItem(pg.PlotItem):
         self.slicer_area.sigBinChanged.connect(self.refresh_items_data)
         self.getViewBox().sigRangeChangedManually.connect(self.range_changed_manually)
         self.getViewBox().sigStateChanged.connect(self.refresh_manual_range)
+        self.getViewBox().sigStateChanged.connect(self._handle_axis_inversion_change)
         if self.is_image:
             self.slicer_area.sigIndexChanged.connect(
                 self._follow_guidelines_on_index_change
@@ -670,6 +673,7 @@ class ItoolPlotItem(pg.PlotItem):
             self.range_changed_manually
         )
         self.getViewBox().sigStateChanged.disconnect(self.refresh_manual_range)
+        self.getViewBox().sigStateChanged.disconnect(self._handle_axis_inversion_change)
         if self.is_image:
             self.slicer_area.sigIndexChanged.disconnect(
                 self._follow_guidelines_on_index_change
@@ -932,8 +936,6 @@ class ItoolPlotItem(pg.PlotItem):
         vb_state = self.getViewBox().getState()
         state: PlotItemState = {
             "vb_aspect_locked": vb_state["aspectLocked"],
-            "vb_x_inverted": vb_state["xInverted"],
-            "vb_y_inverted": vb_state["yInverted"],
             "vb_autorange": tuple(vb_state["autoRange"]),
             "roi_states": [roi.saveState() for roi in self._roi_list],
         }
@@ -955,13 +957,11 @@ class ItoolPlotItem(pg.PlotItem):
         vb = self.getViewBox()
         state_dict: dict[str, typing.Any] = {
             "aspectLocked": state["vb_aspect_locked"],
-            "xInverted": state["vb_x_inverted"],
-            "yInverted": state["vb_y_inverted"],
         }
         autorange = state.get("vb_autorange", None)
         if autorange:
             state_dict["autoRange"] = list(autorange)
-        vb.state.update()
+        vb.state.update(state_dict)
 
         with self.slicer_area.history_suppressed():
             self._restore_guideline_state(state.get("guideline_state", None))
@@ -2282,6 +2282,40 @@ class ItoolPlotItem(pg.PlotItem):
     def update_manual_range(self) -> None:
         """Update view range from values stored in the parent slicer area."""
         self.set_range_from(self.slicer_area.manual_limits)
+
+    def _viewbox_axis_inversions(self) -> tuple[bool, bool]:
+        vb_state = self.getViewBox().state
+        return bool(vb_state["xInverted"]), bool(vb_state["yInverted"])
+
+    def update_axis_inversions(self) -> None:
+        vb = self.getViewBox()
+        self._applying_shared_axis_inversions = True
+        try:
+            for i, dim in enumerate(self.axis_dims_uniform):
+                if dim is None:
+                    continue
+                inverted = bool(self.slicer_area.axis_inversions.get(dim, False))
+                if i == 0:
+                    vb.invertX(inverted)
+                else:
+                    vb.invertY(inverted)
+        finally:
+            self._applying_shared_axis_inversions = False
+            self._last_axis_inversions = self._viewbox_axis_inversions()
+
+    @QtCore.Slot()
+    def _handle_axis_inversion_change(self) -> None:
+        current = self._viewbox_axis_inversions()
+        previous = self._last_axis_inversions
+        self._last_axis_inversions = current
+        if self._applying_shared_axis_inversions or current == previous:
+            return
+
+        for dim, old, new in zip(
+            self.axis_dims_uniform, previous, current, strict=True
+        ):
+            if dim is not None and old != new:
+                self.slicer_area.set_axis_inverted(dim, new)
 
     def set_range_from(self, limits: dict[str, list[float]], **kwargs) -> None:
         for i, (dim, key) in enumerate(

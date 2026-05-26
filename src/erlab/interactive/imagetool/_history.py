@@ -359,8 +359,6 @@ def _plot_state_changes(
 
         view_keys = {
             "vb_aspect_locked",
-            "vb_x_inverted",
-            "vb_y_inverted",
             "vb_autorange",
         }
         view_changed = view_changed or any(
@@ -550,6 +548,14 @@ def _describe_state_change_rows(
         summaries.append("View limits changed")
         details.append(_detail_note("Manual view limits changed"))
         _consume(changes, "manual_limits", prefixes=("manual_limits",))
+
+    if any(
+        path == "axis_inversions" or path.startswith("axis_inversions.")
+        for path in changes
+    ):
+        summaries.append("Axis inversion changed")
+        details.append(_detail_note("Axis inversion changed"))
+        _consume(changes, "axis_inversions", prefixes=("axis_inversions",))
 
     if "plotitem_states" in changes:
         plot_summaries, plot_details = _plot_state_changes(
