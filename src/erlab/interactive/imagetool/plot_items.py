@@ -256,10 +256,15 @@ class ItoolPlotDataItem(ItoolDisplayObject, pg.PlotDataItem):
         return self.array_slicer.slice_with_coord(self.cursor_index, self.display_axis)
 
     def update_data(self, coord, vals) -> None:
+        mask_display = not self.array_slicer.display_values_known_safe
+        if mask_display:
+            vals = erlab.interactive.imagetool.slicer._display_safe_values(vals)
         if self.normalize:
-            avg = np.nanmean(vals)
+            avg = np.nan if np.isnan(np.asarray(vals)).all() else np.nanmean(vals)
             if not np.isnan(avg):  # pragma: no branch
-                vals = vals / avg
+                with np.errstate(all="ignore"):
+                    vals = vals / avg
+            vals = erlab.interactive.imagetool.slicer._display_safe_values(vals)
 
         coord, vals = _pad_1d_plot(coord, vals)
 
@@ -303,6 +308,8 @@ class ItoolImageItem(ItoolDisplayObject, erlab.interactive.colors.BetterImageIte
 
     @suppressnanwarning
     def update_data(self, rect, img) -> None:
+        if not self.array_slicer.display_values_known_safe:
+            img = erlab.interactive.imagetool.slicer._display_safe_values(img)
         self.setImage(
             image=img, rect=rect, autoLevels=not self.slicer_area.levels_locked
         )
@@ -2216,8 +2223,10 @@ class ItoolPlotItem(pg.PlotItem):
         """
         if self.is_image:  # pragma: no branch
             self.slicer_area.lock_levels(True)
-            self.slicer_area.levels = erlab.utils.array.minmax_darr(
-                self._current_data_cropped
+            self.slicer_area.levels = (
+                erlab.interactive.imagetool.slicer._display_safe_minmax(
+                    self._current_data_cropped
+                )
             )
 
     @QtCore.Slot()

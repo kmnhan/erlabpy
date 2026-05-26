@@ -2084,6 +2084,7 @@ class CropDialog(_BaseCropDialog):
 class NormalizeDialog(DataFilterDialog):
     title = "Normalize"
     enable_copy = False
+    denominator_rtol: float = 1e-12
 
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Dimensions")
@@ -2113,6 +2114,19 @@ class NormalizeDialog(DataFilterDialog):
         self.layout_.addRow(dim_group)
         self.layout_.addRow(option_group)
 
+    def _safe_denominator(
+        self, denominator: xr.DataArray, scale: xr.DataArray
+    ) -> xr.DataArray:
+        threshold = np.maximum(
+            scale * self.denominator_rtol,
+            np.finfo(np.float64).tiny,
+        )
+        return denominator.where(
+            np.isfinite(denominator)
+            & np.isfinite(scale)
+            & (np.abs(denominator) > threshold)
+        )
+
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         norm_dims = tuple(k for k, v in self.dim_checks.items() if v.isChecked())
         if len(norm_dims) == 0:
@@ -2121,9 +2135,13 @@ class NormalizeDialog(DataFilterDialog):
         calc_area: bool = self.opts[0].isChecked() or self.opts[3].isChecked()
         calc_minimum: bool = not self.opts[0].isChecked()
         calc_maximum: bool = self.opts[1].isChecked()
+        if calc_area:
+            finite_abs_scale = (
+                abs(data).where(np.isfinite(data)).max(norm_dims, skipna=True)
+            )
 
         if calc_area:
-            area = data.mean(norm_dims)
+            area = self._safe_denominator(data.mean(norm_dims), finite_abs_scale)
 
         if calc_minimum:
             minimum = data.min(norm_dims)
@@ -2135,7 +2153,10 @@ class NormalizeDialog(DataFilterDialog):
             return data / area
 
         if self.opts[1].isChecked():
-            return (data - minimum) / (maximum - minimum)
+            finite_abs_scale = np.maximum(np.abs(minimum), np.abs(maximum))
+            return (data - minimum) / self._safe_denominator(
+                maximum - minimum, finite_abs_scale
+            )
 
         if self.opts[2].isChecked():
             return data - minimum

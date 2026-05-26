@@ -3,7 +3,13 @@ import pytest
 import xarray as xr
 from qtpy import QtCore
 
-from erlab.interactive.imagetool.slicer import ArraySlicer, qsel_args_from_indexers
+from erlab.interactive.imagetool.slicer import (
+    ArraySlicer,
+    _display_safe_float,
+    _display_safe_minmax,
+    _display_safe_values,
+    qsel_args_from_indexers,
+)
 
 
 def test_nonuniform_axes_ignores_user_idx_dim(qtbot) -> None:
@@ -92,6 +98,51 @@ def test_validate_array_copy_values_detaches_values_buffer(qtbot) -> None:
     validated.values[0, 0] = -1.0
 
     assert float(data.values[0, 0]) == 0.0
+
+
+def test_array_slicer_limits_ignore_values_unsafe_for_display(qtbot) -> None:
+    data = xr.DataArray(
+        np.array([[0.0, np.inf], [1e15, 1e300]]),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+
+    assert slicer.limits == (0.0, 1e15)
+    assert np.isinf(slicer._obj.values[0, 1])
+    assert slicer._obj.values[1, 1] == 1e300
+
+
+def test_display_safe_values_returns_original_safe_array() -> None:
+    values = np.array([[0.0, 1e15], [2.0, np.nan]])
+
+    assert _display_safe_values(values) is values
+
+
+def test_display_safe_helpers_handle_degenerate_values() -> None:
+    empty = np.array([], dtype=float)
+    strings = np.array(["a", "b"])
+    complex_values = np.array([1.0 + 1.0j])
+
+    assert _display_safe_values(empty) is empty
+    assert _display_safe_values(strings) is strings
+    assert _display_safe_values(complex_values) is complex_values
+    assert np.isnan(_display_safe_float(empty))
+    assert _display_safe_float(np.array([1.0, np.nan, 3.0])) == 2.0
+    assert _display_safe_minmax(
+        xr.DataArray(np.array([[np.nan]])), raw_limits=(np.nan, np.nan)
+    ) == (0.0, 1.0)
+    assert _display_safe_minmax(xr.DataArray(np.array([[np.inf, 1e300]]))) == (0.0, 1.0)
+
+
+def test_display_safe_minmax_masks_dask_values() -> None:
+    data = xr.DataArray(
+        np.array([[0.0, np.inf], [1e15, 1e300]]),
+        dims=("x", "y"),
+    ).chunk({"x": 1})
+
+    assert _display_safe_minmax(data, raw_limits=(0.0, np.inf)) == (0.0, 1e15)
 
 
 def test_refresh_array_layout_cache_ignores_invalid_generated_idx_coord(qtbot) -> None:
