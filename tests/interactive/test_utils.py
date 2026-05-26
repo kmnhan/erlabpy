@@ -120,6 +120,104 @@ def test_icon_action_button_click(qtbot, action) -> None:
     assert action.isChecked()
 
 
+def _commit_spin_text(spin: erlab.interactive.utils.BetterSpinBox, text: str) -> None:
+    line = spin.lineEdit()
+    assert line is not None
+    line.setText(text)
+    spin.editingFinishedEvent()
+
+
+def test_better_spinbox_exact_float_preserves_user_literal(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(decimals=3, exact_float=True, trim="0")
+    qtbot.addWidget(spin)
+
+    literal = "1.23456789012345"
+    _commit_spin_text(spin, literal)
+
+    assert spin.value() == float(literal)
+    assert spin.text() == literal
+    assert spin.lineEdit().text() == literal
+
+
+def test_better_spinbox_exact_float_programmatic_paths_format(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(decimals=3, exact_float=True, trim="0")
+    qtbot.addWidget(spin)
+
+    _commit_spin_text(spin, "1.23456789012345")
+    spin.setValue(2.34567)
+    assert spin.text() == np.format_float_positional(
+        2.34567, precision=3, unique=False, fractional=True, trim="0"
+    )
+
+    _commit_spin_text(spin, "1.23456789012345")
+    spin.stepBy(1)
+    assert spin.text() == np.format_float_positional(
+        float("1.23456789012345") + spin.singleStep(),
+        precision=3,
+        unique=False,
+        fractional=True,
+        trim="0",
+    )
+
+
+def test_better_spinbox_exact_float_invalid_input_uses_formatted_value(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(decimals=3, exact_float=True, trim="0")
+    qtbot.addWidget(spin)
+
+    literal = "1.23456789012345"
+    _commit_spin_text(spin, literal)
+    _commit_spin_text(spin, "not-a-number")
+
+    assert spin.value() == float(literal)
+    assert spin.text() == np.format_float_positional(
+        float(literal), precision=3, unique=False, fractional=True, trim="0"
+    )
+
+
+def test_better_spinbox_exact_float_fixup_uses_formatted_value(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(decimals=3, exact_float=True, trim="0")
+    qtbot.addWidget(spin)
+
+    literal = "1.23456789012345"
+    _commit_spin_text(spin, literal)
+
+    assert spin.fixup("") == np.format_float_positional(
+        float(literal), precision=3, unique=False, fractional=True, trim="0"
+    )
+
+    regular_spin = erlab.interactive.utils.BetterSpinBox(decimals=3, trim="0")
+    qtbot.addWidget(regular_spin)
+    assert regular_spin.fixup("") == regular_spin.text()
+
+
+def test_better_spinbox_exact_float_out_of_range_formats_correction(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(
+        decimals=3,
+        exact_float=True,
+        maximum=1.0,
+        trim="0",
+    )
+    qtbot.addWidget(spin)
+
+    _commit_spin_text(spin, "1.23456789012345")
+
+    assert spin.value() == 1.0
+    assert spin.text() == np.format_float_positional(
+        1.0, precision=3, unique=False, fractional=True, trim="0"
+    )
+
+
+def test_better_spinbox_non_exact_invalid_input_raises(qtbot) -> None:
+    spin = erlab.interactive.utils.BetterSpinBox(decimals=3, trim="0")
+    qtbot.addWidget(spin)
+    line = spin.lineEdit()
+    assert line is not None
+
+    line.setText("not-a-number")
+    with pytest.raises(ValueError, match="could not convert string to float"):
+        spin.editingFinishedEvent()
+
+
 def test_icon_action_button_toggle(qtbot, action) -> None:
     button = IconActionButton(action, on="mdi6.plus", off="mdi6.minus")
     qtbot.addWidget(button)

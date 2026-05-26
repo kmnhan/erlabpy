@@ -816,6 +816,7 @@ class _SelectionRow:
         self.value_start_spin = erlab.interactive.utils.BetterSpinBox(
             compact=False,
             decimals=6,
+            exact_float=True,
             significant=True,
             minimum=float(np.nanmin(coord)),
             maximum=float(np.nanmax(coord)),
@@ -824,6 +825,7 @@ class _SelectionRow:
         self.value_stop_spin = erlab.interactive.utils.BetterSpinBox(
             compact=False,
             decimals=6,
+            exact_float=True,
             significant=True,
             minimum=float(np.nanmin(coord)),
             maximum=float(np.nanmax(coord)),
@@ -852,6 +854,7 @@ class _SelectionRow:
         self.width_spin = erlab.interactive.utils.BetterSpinBox(
             compact=False,
             decimals=6,
+            exact_float=True,
             significant=True,
             minimum=0.0,
             value=0.0 if bin_value is None else float(bin_value),
@@ -2283,8 +2286,12 @@ class GaussianFilterDialog(DataFilterDialog):
 
         for row, dim in enumerate(self._source_data.dims, start=1):
             check = QtWidgets.QCheckBox(str(dim))
-            sigma_spin = erlab.interactive.utils.BetterSpinBox(compact=False)
-            fwhm_spin = erlab.interactive.utils.BetterSpinBox(compact=False)
+            sigma_spin = erlab.interactive.utils.BetterSpinBox(
+                compact=False, exact_float=True
+            )
+            fwhm_spin = erlab.interactive.utils.BetterSpinBox(
+                compact=False, exact_float=True
+            )
 
             sigma_spin.setMinimum(0.0)
             fwhm_spin.setMinimum(0.0)
@@ -2385,6 +2392,18 @@ class GaussianFilterDialog(DataFilterDialog):
     def _spin_value(self, spin: erlab.interactive.utils.BetterSpinBox) -> float:
         return float(self._spin_literal(spin))
 
+    def _set_synced_exact_value(
+        self, spin: erlab.interactive.utils.BetterSpinBox, value: float
+    ) -> None:
+        with QtCore.QSignalBlocker(spin):
+            spin.setValue(value)
+            line = spin.lineEdit()
+            if line is None:
+                return
+            line.setText(str(float(value)))
+            spin.editingFinishedEvent()
+            line.setModified(False)
+
     def _commit_numeric_inputs(self) -> None:
         for spin in (*self.sigma_spins.values(), *self.fwhm_spins.values()):
             line = spin.lineEdit()
@@ -2402,8 +2421,7 @@ class GaussianFilterDialog(DataFilterDialog):
     @QtCore.Slot()
     def _sync_from_fwhm(self, dim: Hashable) -> None:
         value = self._spin_value(self.fwhm_spins[dim]) / _GAUSSIAN_FWHM_FACTOR
-        with QtCore.QSignalBlocker(self.sigma_spins[dim]):
-            self.sigma_spins[dim].setValue(value)
+        self._set_synced_exact_value(self.sigma_spins[dim], value)
 
     def _sigma_values(self) -> tuple[dict[Hashable, float], dict[Hashable, str]]:
         self._commit_numeric_inputs()

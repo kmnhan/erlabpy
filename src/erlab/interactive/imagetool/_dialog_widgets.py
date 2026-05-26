@@ -79,11 +79,15 @@ class CoordinateGridWidget(QtWidgets.QWidget):
     def init_ui(self, *, connect_reset_button: bool) -> None:
         layout = QtWidgets.QFormLayout(self)
 
-        self.spin0 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
+        self.spin0 = erlab.interactive.utils.BetterSpinBox(
+            compact=False, exact_float=True, trim="0"
+        )
         self.spin0.valueChanged.connect(self.update_table)
         layout.addRow("Start", self.spin0)
 
-        self.spin1 = erlab.interactive.utils.BetterSpinBox(compact=False, trim="0")
+        self.spin1 = erlab.interactive.utils.BetterSpinBox(
+            compact=False, exact_float=True, trim="0"
+        )
         self.spin1.valueChanged.connect(self.update_table)
 
         self.mode_combo = QtWidgets.QComboBox()
@@ -307,13 +311,13 @@ class CoordinateEditorWidget(QtWidgets.QWidget):
         affine_layout = QtWidgets.QFormLayout(affine_widget)
 
         self.scale_spin = erlab.interactive.utils.BetterSpinBox(
-            compact=False, trim="0", value=1.0
+            compact=False, exact_float=True, trim="0", value=1.0
         )
         self.scale_spin.valueChanged.connect(self.update_affine_preview)
         affine_layout.addRow("Scale", self.scale_spin)
 
         self.offset_spin = erlab.interactive.utils.BetterSpinBox(
-            compact=False, trim="0"
+            compact=False, exact_float=True, trim="0"
         )
         self.offset_spin.valueChanged.connect(self.update_affine_preview)
         affine_layout.addRow("Offset", self.offset_spin)
