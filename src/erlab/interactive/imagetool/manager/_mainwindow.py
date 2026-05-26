@@ -2180,8 +2180,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 current = "parent no longer open"
                 if self._dependency_ref_has_recorded_file(spec, ref):
                     current += "; recorded source file found"
-            parts.append(f"{ref.name}: {ref.label} ({current})")
-        return "; ".join(parts)
+            name = " ".join(ref.name.split())
+            label = " ".join(ref.label.split())
+            current = " ".join(current.split())
+            if name and label and current:
+                parts.append(f"{name}: {label} ({current})")
+        if not parts:
+            return None
+        return "\n".join(parts)
 
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
         node = self._node_for_target(target)

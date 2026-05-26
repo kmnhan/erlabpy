@@ -1468,9 +1468,10 @@ class ScriptInput(pydantic.BaseModel):
     def _validate_label(cls, value: typing.Any) -> str:
         if not isinstance(value, str):
             raise TypeError("script input label must be a string")
-        if not value:
+        label = " ".join(value.split())
+        if not label:
             raise ValueError("script input label must not be empty")
-        return value
+        return label
 
     @pydantic.field_validator("node_uid", mode="before")
     @classmethod

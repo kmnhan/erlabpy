@@ -2272,6 +2272,19 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
     ]
 
 
+def test_script_input_label_is_single_line_display_text() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    script_input = prov.ScriptInput(
+        name="data_0",
+        label="  ImageTool 0:\n\n  processed data  ",
+    )
+
+    assert script_input.label == "ImageTool 0: processed data"
+    with pytest.raises(ValidationError):
+        prov.ScriptInput(name="data_0", label="\n  \t")
+
+
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
     prov = erlab.interactive.imagetool.provenance
     left = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]})
