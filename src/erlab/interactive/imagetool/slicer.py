@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import functools
 import typing
+import warnings
 
 import numpy as np
 import numpy.typing as npt
@@ -129,6 +130,97 @@ def _get_inc(coord):
     except IndexError:
         # Coord size is 1, assume increment of 1
         return 1
+
+
+def _display_value_abs_limit() -> float:
+    return float(
+        erlab.interactive.options.qsettings.value("colors/max_rendered_abs_value", 1e30)
+    )
+
+
+def _limits_require_display_mask(mn: float, mx: float, limit: float) -> bool:
+    return np.isinf(mn) or np.isinf(mx) or mn < -limit or mx > limit
+
+
+def _display_safe_values(values, limit: float | None = None):
+    """Return values safe for Qt rendering without modifying the source array."""
+    arr = np.asarray(values)
+    if (
+        arr.size == 0
+        or not np.issubdtype(arr.dtype, np.number)
+        or np.issubdtype(arr.dtype, np.complexfloating)
+    ):
+        return values
+
+    if limit is None:
+        limit = _display_value_abs_limit()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
+        mn, mx = float(np.nanmin(arr)), float(np.nanmax(arr))
+    if not _limits_require_display_mask(mn, mx, limit):
+        return values
+
+    with np.errstate(all="ignore"):
+        return np.where(np.isfinite(arr) & (np.abs(arr) <= limit), arr, np.nan)
+
+
+def _display_safe_float(value) -> float:
+    """Return a scalar display value after applying ImageTool display masking."""
+    arr = np.asarray(value)
+    if arr.size == 0:
+        return np.nan
+    if arr.size == 1:
+        out = float(arr.reshape(()))
+        if np.isfinite(out) and abs(out) <= _display_value_abs_limit():
+            return out
+        return np.nan
+
+    arr = np.asarray(_display_safe_values(arr))
+    if np.isnan(arr).all():
+        return np.nan
+    return float(np.nanmean(arr))
+
+
+def _display_safe_minmax(
+    data: xr.DataArray, raw_limits: tuple[float, float] | None = None
+) -> tuple[float, float]:
+    """Return display-safe finite limits for an ImageTool DataArray."""
+    limit = _display_value_abs_limit()
+    mn, mx = raw_limits if raw_limits is not None else _minmax_darr_quiet(data)
+    if _limits_require_display_mask(mn, mx, limit):
+        if data.chunks is None:
+            return _display_safe_minmax_eager(data.values, limit)
+        with np.errstate(all="ignore"):
+            mn, mx = _minmax_darr_quiet(
+                data.where(np.isfinite(data) & (np.abs(data) <= limit))
+            )
+    if np.isfinite(mn) and np.isfinite(mx):
+        return mn, mx
+    return 0.0, 1.0
+
+
+def _display_safe_minmax_eager(values, limit: float) -> tuple[float, float]:
+    mn, mx = np.inf, -np.inf
+    chunks = (values,) if values.ndim <= 2 else values
+    for chunk in chunks:
+        chunk = _display_safe_values(chunk, limit)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
+            chunk_mn = float(np.nanmin(chunk))
+            chunk_mx = float(np.nanmax(chunk))
+        if np.isfinite(chunk_mn):
+            mn = min(mn, chunk_mn)
+        if np.isfinite(chunk_mx):
+            mx = max(mx, chunk_mx)
+    if np.isfinite(mn) and np.isfinite(mx):
+        return mn, mx
+    return 0.0, 1.0
+
+
+def _minmax_darr_quiet(data: xr.DataArray) -> tuple[float, float]:
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
+        return erlab.utils.array.minmax_darr(data)
 
 
 def qsel_args_from_indexers(
@@ -553,9 +645,22 @@ class ArraySlicer(QtCore.QObject):
         return self.limits[0]
 
     @functools.cached_property
+    def _raw_limits(self) -> tuple[float, float]:
+        return _minmax_darr_quiet(self._obj)
+
+    @property
+    def display_values_known_safe(self) -> bool:
+        if self._obj.chunks is not None:
+            return False
+        raw_limits = self.__dict__.get("_raw_limits")
+        return raw_limits is not None and not _limits_require_display_mask(
+            raw_limits[0], raw_limits[1], _display_value_abs_limit()
+        )
+
+    @functools.cached_property
     def limits(self) -> tuple[float, float]:
-        """Return the global minimum and maximum of the data."""
-        return erlab.utils.array.minmax_darr(self._obj, skipna=True)
+        """Return the display-safe global minimum and maximum of the data."""
+        return _display_safe_minmax(self._obj, self._raw_limits)
 
     @property
     def n_cursors(self) -> int:
@@ -747,6 +852,7 @@ class ArraySlicer(QtCore.QObject):
         This method clears the cached properties that depend on the data values, such as
         the global minima and maxima.
         """
+        self._reset_property_cache("_raw_limits")
         self._reset_property_cache("limits")
 
     def clear_cache(self) -> None:

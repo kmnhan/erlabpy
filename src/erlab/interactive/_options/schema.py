@@ -302,6 +302,18 @@ class ColorOptions(BaseModel):
     """Top-level grouping of color-related options."""
 
     cmap: ColorMapOptions = Field(default_factory=ColorMapOptions, title="Colormap")
+    max_rendered_abs_value: float = Field(
+        default=1e30,
+        title="Max display value",
+        description=(
+            "Largest finite absolute data value ImageTool will send to Qt rendering. "
+            "Larger finite values and infinities are treated as missing for display "
+            "only; source data is not modified."
+        ),
+        ge=1.0,
+        le=1e308,
+        json_schema_extra={"ui_step": 1e30},
+    )
     cursors: list[str] = Field(
         default=[
             "#cccccc",

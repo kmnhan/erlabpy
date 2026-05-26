@@ -6203,6 +6203,155 @@ def test_itool_normalize(qtbot, accept_dialog, option) -> None:
     win.close()
 
 
+@pytest.mark.parametrize(
+    ("option", "expected_valid"),
+    [
+        (0, [1.0, 1.0]),
+        (3, [0.0, 0.0]),
+    ],
+)
+def test_itool_normalize_masks_unsafe_area_denominators(
+    qtbot, option, expected_valid
+) -> None:
+    data = xr.DataArray(
+        np.array(
+            [
+                [1.0, 1.0, np.inf, np.nan, 1e15],
+                [-1.0, -1.0 + 1e-14, np.inf, np.nan, 1e15],
+            ]
+        ),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = NormalizeDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.opts[option].setChecked(True)
+
+    result = dialog.process_data(data)
+
+    assert np.isnan(result.isel(y=slice(0, 4)).values).all()
+    np.testing.assert_allclose(result.isel(y=4).values, expected_valid)
+
+    dialog.close()
+    win.close()
+
+
+def test_itool_normalize_masks_unsafe_range_denominators(qtbot) -> None:
+    data = xr.DataArray(
+        np.array(
+            [
+                [2.0, 1.0, np.inf, np.nan, 0.0],
+                [2.0, 1.0 + 1e-14, np.inf, np.nan, 1e15],
+            ]
+        ),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = NormalizeDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+    dialog.dim_checks["x"].setChecked(True)
+    dialog.opts[1].setChecked(True)
+
+    result = dialog.process_data(data)
+
+    assert np.isnan(result.isel(y=slice(0, 4)).values).all()
+    np.testing.assert_allclose(result.isel(y=4).values, [0.0, 1.0])
+
+    dialog.close()
+    win.close()
+
+
+def test_itool_masks_unsafe_values_for_display_only(qtbot) -> None:
+    data = xr.DataArray(
+        np.array([[0.0, 1e15], [np.inf, 1e300]]),
+        dims=["x", "y"],
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    displayed = win.slicer_area._imageitems[0].image
+
+    assert displayed is not None
+    assert np.nanmax(displayed) == 1e15
+    assert np.isnan(displayed).sum() == 2
+    assert np.isinf(win.slicer_area.data.values[1, 0])
+    assert win.slicer_area.data.values[1, 1] == 1e300
+
+    control = win.docks[0].widget().findChild(ItoolCrosshairControls)
+    assert control is not None
+    assert np.isnan(control._readout_value_to_float(np.array([np.inf, 1e300])))
+
+    win.slicer_area.lock_levels(True)
+    np.testing.assert_allclose(win.slicer_area.levels, (0.0, 1e15))
+
+    win.close()
+
+
+def test_itool_normalize_to_view_ignores_unsafe_display_values(qtbot) -> None:
+    values = np.arange(25, dtype=float).reshape((5, 5))
+    values[2, 1] = 1e300
+    values[2, 2] = np.inf
+    values[3, 1] = 1e15
+    data = xr.DataArray(
+        values,
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    with qtbot.wait_exposed(win):
+        win.show()
+        win.activateWindow()
+
+    set_vb_range(
+        win.slicer_area.main_image.getViewBox(), x_range=(1, 4), y_range=(0, 3)
+    )
+    win.slicer_area.main_image.normalize_to_current_view()
+
+    np.testing.assert_allclose(win.slicer_area.levels, (5.0, 1e15))
+    assert win.slicer_area.data.values[2, 1] == 1e300
+    assert np.isinf(win.slicer_area.data.values[2, 2])
+
+    win.close()
+
+
+def test_itool_skips_display_mask_when_global_limits_are_safe(qtbot, monkeypatch):
+    data = xr.DataArray(
+        np.arange(27, dtype=float).reshape((3, 3, 3)),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(3), "y": np.arange(3), "z": np.arange(3)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.lock_levels(True)
+    assert win.slicer_area.array_slicer.display_values_known_safe
+
+    calls = []
+
+    def record_display_mask(values, limit=None):
+        calls.append(values)
+        return values
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.slicer,
+        "_display_safe_values",
+        record_display_mask,
+    )
+
+    win.slicer_area.refresh_all(only_plots=True)
+
+    assert calls == []
+
+    win.close()
+
+
 def test_itool_divide_by_coord(qtbot, accept_dialog) -> None:
     data = xr.DataArray(
         np.arange(12, dtype=float).reshape((3, 4)) + 1.0,

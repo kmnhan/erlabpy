@@ -1839,7 +1839,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 obj.update_data(coord_or_rect, next(arrays_it))
             ax.vb.blockSignals(False)
 
-        self.sigPointValueChanged.emit(float(next(arrays_it)))
+        self.sigPointValueChanged.emit(
+            erlab.interactive.imagetool.slicer._display_safe_float(next(arrays_it))
+        )
 
     def link(self, proxy: SlicerLinkProxy) -> None:
         proxy.add(self)

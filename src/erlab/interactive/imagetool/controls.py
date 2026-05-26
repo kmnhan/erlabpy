@@ -507,10 +507,7 @@ class ItoolCrosshairControls(ItoolControlsBase):
         arr = np.asarray(value)
         if arr.size == 0:
             return None
-        if arr.size != 1:
-            with np.errstate(all="ignore"):
-                return float(np.nanmean(arr))
-        return float(arr.reshape(()))
+        return erlab.interactive.imagetool.slicer._display_safe_float(arr)
 
     def _set_spin_dat_value(self, value: object) -> None:
         readout_value = self._readout_value_to_float(value)
