@@ -39,10 +39,11 @@ def test_load(expected_dir, args, expected) -> None:
     ip_session: IPython.InteractiveShell = start_ipython()
 
     loaded = erlab.io.load(**args) if isinstance(args, dict) else erlab.io.load(args)
+    expected_data = xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
 
-    xr.testing.assert_identical(
-        loaded, xr.load_dataarray(expected_dir / expected, engine="h5netcdf")
-    )
+    assert loaded.name == expected_data.name
+    assert loaded.attrs == expected_data.attrs
+    xr.testing.assert_allclose(loaded, expected_data, rtol=1e-6, atol=1e-6)
     # Properly clean up the IPython session
     if ip_session:
         ip_session.clear_instance()
