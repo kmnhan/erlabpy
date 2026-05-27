@@ -1671,26 +1671,11 @@ class Fit2DTool(Fit1DTool):
             {self._y_dim_name: self._y_range_slice()}
         )
 
-        fit_domain = self._fit_domain()
-        if fit_domain is not None:
-            sel_kw = erlab.interactive.utils.format_kwargs(
-                {self._coord_name: slice(*fit_domain)}
-            )
-            lines.append(
-                f"{data_name}_crop = {data_name}.sel({sel_kw}).isel({isel_kw})"
-            )
-        else:
-            lines.append(f"{data_name}_crop = {data_name}.isel({isel_kw})")
-        data_name = f"{data_name}_crop"
-
-        if self.normalize_check.isChecked():
-            lines.append(
-                f"{data_name}_norm = "
-                f'{data_name} / {data_name}.mean("{self._coord_name}")'
-            )
-            data_name = f"{data_name}_norm"
-
-        lines.append(f"_fit_data = {data_name}")
+        data_name = self._full_copy_fit_data_name(
+            data_name,
+            isel_kw=isel_kw,
+            lines=lines,
+        )
 
         param_names: list[str] = []
         param_names_all: list[str] = []
@@ -1837,13 +1822,52 @@ class Fit2DTool(Fit1DTool):
         lines.extend(["params = {", "\n    ".join(param_entries), "}\n"])
         return "\n".join(lines)
 
+    def _full_copy_fit_data_name(
+        self,
+        data_name: str,
+        *,
+        isel_kw: str | None = None,
+        lines: list[str] | None = None,
+    ) -> str:
+        if isel_kw is None:
+            isel_kw = erlab.interactive.utils.format_kwargs(
+                {self._y_dim_name: self._y_range_slice()}
+            )
+
+        fit_domain = self._fit_domain()
+        if fit_domain is not None:
+            sel_kw = erlab.interactive.utils.format_kwargs(
+                {self._coord_name: slice(*fit_domain)}
+            )
+            if lines is not None:
+                lines.append(
+                    f"{data_name}_crop = {data_name}.sel({sel_kw}).isel({isel_kw})"
+                )
+        else:
+            if lines is not None:
+                lines.append(f"{data_name}_crop = {data_name}.isel({isel_kw})")
+        data_name = f"{data_name}_crop"
+
+        if self.normalize_check.isChecked():
+            if lines is not None:
+                lines.append(
+                    f"{data_name}_norm = "
+                    f'{data_name} / {data_name}.mean("{self._coord_name}")'
+                )
+            data_name = f"{data_name}_norm"
+
+        return data_name
+
     def _full_fit_expression(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        _, model_name, _ = self._make_model_code(input_name or self._data_name_full)
+        data_name, model_name, _ = self._make_model_code(
+            input_name or self._data_name_full
+        )
+        data_name = self._full_copy_fit_data_name(data_name)
         return erlab.interactive.utils.generate_code(
             self._data_full.xlm.modelfit,
             args=[self._coord_name],
@@ -1853,7 +1877,7 @@ class Fit2DTool(Fit1DTool):
                 "method": self.method_combo.currentText(),
             },
             name="modelfit",
-            module="_fit_data.xlm",
+            module=f"{data_name}.xlm",
         )
 
     def _checked_full_copy_prelude(

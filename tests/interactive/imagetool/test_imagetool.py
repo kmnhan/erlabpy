@@ -22,6 +22,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
+import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
@@ -154,6 +155,19 @@ def _clear_selection_dialog(dialog: SelectionDialog) -> None:
     for row in dialog.rows:
         row.use_check.setChecked(False)
         row.width_check.setChecked(False)
+
+
+def test_operation_backed_transform_dialogs_use_base_make_code() -> None:
+    custom_make_code_dialogs = [
+        name
+        for name, value in vars(imagetool_dialogs).items()
+        if isinstance(value, type)
+        and issubclass(value, imagetool_dialogs.DataTransformDialog)
+        and value is not imagetool_dialogs.DataTransformDialog
+        and "make_code" in value.__dict__
+    ]
+
+    assert custom_make_code_dialogs == []
 
 
 def _assert_guideline_state(
@@ -3807,7 +3821,7 @@ def test_itool_rotate(qtbot, accept_dialog) -> None:
     )
 
     # Test copy button
-    assert pyperclip.paste().startswith("era.transform.rotate")
+    assert pyperclip.paste().startswith("era.transform.rotate(data")
 
     # Transpose should remove guidelines
     win.slicer_area.swap_axes(0, 1)
@@ -5215,7 +5229,7 @@ def test_selection_dialog_formats_non_identifier_dim_as_mapping(qtbot) -> None:
     row.index_start_spin.setValue(1)
 
     expected = data.isel({"Fake Motor": 1})
-    assert dialog.make_code() == '.isel({"Fake Motor": 1})'
+    assert dialog.make_code() == 'data.isel({"Fake Motor": 1})'
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
     )
@@ -6005,8 +6019,9 @@ def test_itool_coarsen(qtbot, accept_dialog) -> None:
     )
 
     assert (
-        pyperclip.paste()
-        == '.coarsen(x=2, y=4, boundary="trim", side="right", coord_func="min").sum()'
+        pyperclip.paste() == "data.coarsen("
+        'x=2, y=4, boundary="trim", side="right", coord_func="min"'
+        ").sum()"
     )
     win.close()
 
@@ -6901,7 +6916,7 @@ def test_itool_swap_dims_multiple_and_code(qtbot, accept_dialog) -> None:
     )
 
     code = pyperclip.paste()
-    assert code == '.swap_dims(x="u", y="v")'
+    assert code == 'data.swap_dims(x="u", y="v")'
     assert "z=" not in code
     assert '"z"' not in code
 

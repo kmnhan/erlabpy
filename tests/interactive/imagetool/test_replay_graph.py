@@ -1,5 +1,6 @@
 import ast
 import pathlib
+import re
 import types
 import typing
 
@@ -11,7 +12,9 @@ import erlab
 from erlab.interactive.imagetool import _replay_graph
 
 
-def _exec_generated_code(code: str) -> dict[str, typing.Any]:
+def _exec_generated_code(
+    code: str, namespace_items: dict[str, typing.Any] | None = None
+) -> dict[str, typing.Any]:
     namespace: dict[str, typing.Any] = {
         "erlab": erlab,
         "era": erlab.analysis,
@@ -20,6 +23,8 @@ def _exec_generated_code(code: str) -> dict[str, typing.Any]:
         "xr": xr,
         "xarray": xr,
     }
+    if namespace_items is not None:
+        namespace.update(namespace_items)
     exec(code, namespace, namespace)  # noqa: S102
     return namespace
 
@@ -77,6 +82,14 @@ def _polarization_source(path: pathlib.Path) -> xr.DataArray:
     )
     source.to_netcdf(path)
     return source
+
+
+def _assert_dense_replay_temps(code: str) -> None:
+    temp_ids = sorted(
+        {int(value) for value in re.findall(r"_itool_replay_(\d+)", code)}
+    )
+    if temp_ids:
+        assert temp_ids == list(range(temp_ids[-1] + 1))
 
 
 def test_replay_graph_low_level_validation_helpers() -> None:
@@ -423,16 +436,35 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
 
 
 def test_replay_graph_operation_code_error_edges() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    class MissingReplayOperation:
+        pass
+
+    class MissingExpressionOperation:
+        def replay_code(
+            self,
+            input_name: str,
+            *,
+            output_name: str | None = None,
+            source_name: str | None = None,
+        ) -> str:
+            raise NotImplementedError
 
     class Operation:
         def __init__(self, code: str | None) -> None:
             self._code = code
 
-        def derivation_entry(self) -> prov.DerivationEntry:
-            return prov.DerivationEntry("Operation", self._code, True)
+        def replay_code(
+            self,
+            input_name: str,
+            *,
+            output_name: str | None = None,
+            source_name: str | None = None,
+        ) -> str | None:
+            return self._code
 
     for operation, message in (
+        (MissingReplayOperation(), "does not provide"),
+        (MissingExpressionOperation(), "does not provide"),
         (Operation(None), "does not provide"),
         (Operation("derived ="), "not valid Python"),
         (Operation("other = data"), "does not assign"),
@@ -443,6 +475,30 @@ def test_replay_graph_operation_code_error_edges() -> None:
                 active_name="derived",
                 context_name="data",
             )
+
+
+def test_replay_graph_operation_code_uses_parameterized_names() -> None:
+    class Operation:
+        def replay_code(
+            self,
+            input_name: str,
+            *,
+            output_name: str | None = None,
+            source_name: str | None = None,
+        ) -> str:
+            assert input_name == "parent_data"
+            assert output_name == "active_data"
+            assert source_name == "source_data"
+            return f"{output_name} = {input_name} + {source_name}"
+
+    code = _replay_graph._operation_replay_code(
+        Operation(),
+        active_name="active_data",
+        context_name="source_data",
+        parent_name="parent_data",
+    )
+
+    assert code == "active_data = parent_data + source_data"
 
 
 def test_replay_graph_emits_shared_file_and_operation_prefix(
@@ -738,6 +794,320 @@ def test_replay_graph_shares_structured_console_alias_prefixes(
     expected = source.qsel.mean("k") - source.qsel.mean("k")
     xr.testing.assert_identical(_exec_generated_code(code)["derived"], expected)
     xr.testing.assert_identical(_replay_graph.execute_replay_graph(graph), expected)
+
+
+def test_replay_graph_display_normalizes_nested_derived_console_code(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "cd_map.nc"
+    source = xr.DataArray(
+        np.arange(2 * 6 * 10, dtype=float).reshape(2, 6, 10) + 1.0,
+        dims=("polarization", "alpha", "eV"),
+        coords={
+            "polarization": [-1, 1],
+            "alpha": np.linspace(-1.0, 1.0, 6),
+            "eV": np.linspace(-0.5, 0.5, 10),
+            "mesh_current": (
+                ("alpha", "eV"),
+                np.linspace(1.0, 2.0, 60).reshape(6, 10),
+            ),
+        },
+    )
+    source.to_netcdf(path)
+    processed = prov.compose_full_provenance(
+        _file_spec(path),
+        prov.public_data(
+            prov.DivideByCoordOperation(coord_name="mesh_current"),
+            prov.CoarsenOperation(
+                dim={"alpha": 3, "eV": 5},
+                boundary="trim",
+                side="left",
+                coord_func="mean",
+                reducer="mean",
+            ),
+        ),
+    )
+    assert processed is not None
+
+    rc = prov.script(
+        prov.SelOperation(kwargs={"polarization": -1}),
+        start_label="Run ImageTool manager console code",
+        seed_code="rc = data_0",
+        active_name="rc",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Processed map",
+                provenance_spec=processed,
+            ),
+        ),
+    )
+    lc = prov.script(
+        prov.SelOperation(kwargs={"polarization": 1}),
+        start_label="Run ImageTool manager console code",
+        seed_code="lc = data_0",
+        active_name="lc",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Processed map",
+                provenance_spec=processed,
+            ),
+        ),
+    )
+    diff = prov.script(
+        prov.ScriptCodeOperation(
+            label="Evaluate console expression",
+            code="derived = rc - lc",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="rc", label="console variable 'rc'", provenance_spec=rc
+            ),
+            prov.ScriptInput(
+                name="lc", label="console variable 'lc'", provenance_spec=lc
+            ),
+        ),
+    )
+    total = prov.script(
+        prov.ScriptCodeOperation(
+            label="Evaluate console expression",
+            code="derived = rc + lc",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="rc", label="console variable 'rc'", provenance_spec=rc
+            ),
+            prov.ScriptInput(
+                name="lc", label="console variable 'lc'", provenance_spec=lc
+            ),
+        ),
+    )
+    ncd = prov.script(
+        prov.ScriptCodeOperation(
+            label="Evaluate console expression",
+            code="ncd = data_1 / data_2",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="ncd",
+        script_inputs=(
+            prov.ScriptInput(name="data_1", label="ImageTool 1", provenance_spec=diff),
+            prov.ScriptInput(name="data_2", label="ImageTool 2", provenance_spec=total),
+        ),
+    )
+
+    code = typing.cast("str", ncd.display_code())
+    namespace = _exec_generated_code(code)
+    processed_data = (
+        (source / source.mesh_current).coarsen(alpha=3, eV=5, boundary="trim").mean()
+    )
+    expected = (
+        processed_data.sel(polarization=-1) - processed_data.sel(polarization=1)
+    ) / (processed_data.sel(polarization=-1) + processed_data.sel(polarization=1))
+
+    assert code.count("xr.load_dataarray") == 1
+    assert "restore_nonuniform_dims" not in code
+    assert len(re.findall(r"^rc =", code, flags=re.MULTILINE)) == 1
+    assert len(re.findall(r"^lc =", code, flags=re.MULTILINE)) == 1
+    assert "data_1 =" not in code
+    assert "data_2 =" not in code
+    assert "derived" not in code
+    assert "ncd = (rc - lc) / (rc + lc)" in code
+    _assert_dense_replay_temps(code)
+    xr.testing.assert_identical(namespace["ncd"], expected)
+
+
+def test_replay_graph_display_promotes_ui_style_script_input_names(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    source = _polarization_source(path)
+    left = prov.compose_full_provenance(
+        _file_spec(path),
+        prov.full_data(prov.SelOperation(kwargs={"pol": "LH"})),
+    )
+    right = prov.compose_full_provenance(
+        _file_spec(path),
+        prov.full_data(prov.SelOperation(kwargs={"pol": "LV"})),
+    )
+    assert left is not None
+    assert right is not None
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Concatenate selected inputs",
+            code="combined = xr.concat([left, right], dim='pol')",
+        ),
+        start_label="Run ImageTool manager UI action",
+        active_name="combined",
+        script_inputs=(
+            prov.ScriptInput(name="left", label="Selected left", provenance_spec=left),
+            prov.ScriptInput(
+                name="right", label="Selected right", provenance_spec=right
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code)
+
+    assert code.count("xr.load_dataarray") == 1
+    assert "data_0 =" not in code
+    assert "data_1 =" not in code
+    assert len(re.findall(r"^left =", code, flags=re.MULTILINE)) == 1
+    assert len(re.findall(r"^right =", code, flags=re.MULTILINE)) == 1
+    assert "combined = xr.concat([left, right], dim='pol')" in code
+    _assert_dense_replay_temps(code)
+    xr.testing.assert_identical(
+        namespace["combined"],
+        xr.concat(
+            [source.sel(pol="LH"), source.sel(pol="LV")],
+            dim="pol",
+        ),
+    )
+
+
+def test_replay_graph_display_uses_watched_roots_as_raw_inputs() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    rc_data = xr.DataArray(np.arange(3.0), dims=("x",))
+    lc_data = xr.DataArray(np.arange(3.0) + 10.0, dims=("x",))
+    rc = prov.script(
+        start_label="Start from watched variable 'rc'",
+        seed_code="derived = rc",
+        active_name="derived",
+    )
+    lc = prov.script(
+        start_label="Start from watched variable 'lc'",
+        seed_code="derived = lc",
+        active_name="derived",
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Subtract selected inputs",
+            code="derived = data_0 - data_1",
+        ),
+        start_label="Run ImageTool manager action",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="ImageTool 0", provenance_spec=rc),
+            prov.ScriptInput(name="data_1", label="ImageTool 1", provenance_spec=lc),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"rc": rc_data, "lc": lc_data})
+
+    assert code == "derived = rc - lc"
+    xr.testing.assert_identical(namespace["derived"], rc_data - lc_data)
+
+
+def test_replay_graph_display_keeps_helpers_from_raw_seed_inputs() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    raw_data = xr.DataArray(np.arange(1.0, 4.0), dims=("x",))
+    root = prov.script(
+        start_label="Start from watched variable 'raw'",
+        seed_code="def normalize():\n    return raw / raw.max()\nderived = normalize()",
+        active_name="derived",
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Average normalized input",
+            code="result = data_0.mean()",
+        ),
+        start_label="Run ImageTool manager action",
+        active_name="result",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="ImageTool 0", provenance_spec=root),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+    namespace = _exec_generated_code(code, {"raw": raw_data})
+
+    assert "def normalize():" in code
+    assert "raw / raw.max()" in code
+    xr.testing.assert_identical(namespace["result"], (raw_data / raw_data.max()).mean())
+
+
+def test_replay_graph_display_hides_internal_source_view_restore_only(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "nonuniform.nc"
+    source = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
+    )
+    source.to_netcdf(path)
+    public_spec = prov.compose_full_provenance(
+        _file_spec(path),
+        prov.public_data(prov.SelOperation(kwargs={"x": 0.2})),
+    )
+    assert public_spec is not None
+    script_input = prov.ScriptInput(
+        name="selected",
+        label="Selected nonuniform data",
+        provenance_spec=public_spec,
+    )
+
+    replay_code = _replay_graph.script_inputs_code((script_input,), display=False)
+    display_code = _replay_graph.script_inputs_code((script_input,), display=True)
+
+    assert "restore_nonuniform_dims" in replay_code
+    assert "restore_nonuniform_dims" not in display_code
+    xr.testing.assert_identical(
+        _exec_generated_code(display_code)["selected"],
+        source.sel(x=0.2),
+    )
+
+
+def test_replay_graph_display_keeps_bindings_for_scoped_or_rebound_inputs(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "scan.nc"
+    source = xr.DataArray(np.arange(3.0), dims=("x",))
+    source.to_netcdf(path)
+    script_input = prov.ScriptInput(
+        name="data_0",
+        label="ImageTool 0",
+        provenance_spec=_file_spec(path),
+    )
+    helper_spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Use helper",
+            code="def offset():\n    return data_0 + 1\nresult = offset()",
+        ),
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(script_input,),
+    )
+    rebound_spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Rebind input",
+            code="data_0 = data_0 + 1\nresult = data_0 * 2",
+        ),
+        start_label="Run script",
+        active_name="result",
+        script_inputs=(script_input,),
+    )
+
+    helper_code = typing.cast("str", helper_spec.display_code())
+    rebound_code = typing.cast("str", rebound_spec.display_code())
+
+    assert len(re.findall(r"^data_0 =", helper_code, flags=re.MULTILINE)) == 1
+    assert len(re.findall(r"^data_0 =", rebound_code, flags=re.MULTILINE)) == 2
+    xr.testing.assert_identical(_exec_generated_code(helper_code)["result"], source + 1)
+    xr.testing.assert_identical(
+        _exec_generated_code(rebound_code)["result"],
+        (source + 1) * 2,
+    )
 
 
 @pytest.mark.parametrize(

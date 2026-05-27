@@ -1034,7 +1034,7 @@ class KspaceTool(KspaceToolGUI):
         input_ref = self._copy_input_reference(input_name)
         if erlab.interactive.utils._is_kwarg_name(input_ref):
             return input_ref
-        return "target"
+        return "input_data"
 
     def _copy_prelude(
         self,

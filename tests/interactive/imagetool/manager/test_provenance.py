@@ -813,10 +813,12 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
         copied = copy_full_code_for_uid(monkeypatch, manager, nested_uid)
         assert "corrected, mesh =" in copied
         assert "era.mesh.remove_mesh(" in copied
-        assert f"derived = {expected_name}" in copied
+        assert not any(
+            line == f"derived = {expected_name}" for line in copied.splitlines()
+        )
         assert ")[0]" not in copied
         assert ")[1]" not in copied
-        assert "derived = derived.qsel(alpha=1, alpha_width=1)" in copied
+        assert f"derived = {expected_name}.qsel(alpha=1, alpha_width=1)" in copied
 
 
 def test_manager_fit2d_output_itools_use_distinct_output_ids(

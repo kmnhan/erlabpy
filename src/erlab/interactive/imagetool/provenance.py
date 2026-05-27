@@ -56,10 +56,11 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    using the recorded parameters. ``parent_data`` is provided when the operation needs
    access to parent coordinates or ordering.
 
-5. Implement :meth:`ToolProvenanceOperation.derivation_entry` so the manager can display
-   a user-facing summary and optional copyable code. Return a :class:`DerivationEntry`
-   for every concrete operation; use ``code=None`` when the step should be visible but
-   copied/replay code cannot be emitted safely.
+5. Implement :meth:`ToolProvenanceOperation.expression_code` and
+   :meth:`ToolProvenanceOperation.derivation_label` so copied code and manager
+   derivation entries come from the same operation metadata. Override
+   :meth:`ToolProvenanceOperation.derivation_entry` only when the operation is not a
+   structured transform, such as free-form script code.
 
 6. If the operation maps cleanly from manager-console calls, declare
    :attr:`ToolProvenanceOperation.console_patterns` or implement
@@ -68,8 +69,9 @@ Adding a new provenance-carrying operation follows the same pattern every time:
    recorded as lossy structured operations.
 
 7. Make generated code executable in the replay namespace. Use the literal helpers in
-   this module for persisted values and make sure code assigns the ``derived`` replay
-   variable; the replay graph may rebase ``data`` and ``derived`` to internal names.
+   this module for persisted values, and make ``expression_code`` honor the input name
+   it is given. The base ``replay_code`` wrapper assigns the caller-selected output
+   name.
 
 8. Export the operation class from this module so runtime call sites can instantiate
    it directly.
@@ -135,6 +137,7 @@ __all__ = [
     "file_load",
     "full_data",
     "mark_promoted_1d_source",
+    "operations_expression_code",
     "parse_tool_provenance_spec",
     "public_data",
     "rebase_default_replay_input",
@@ -481,11 +484,17 @@ def _coerce_float_sequence(value: typing.Any) -> list[float]:
     return [float(item) for item in value]
 
 
-def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -> str:
+def _format_selection_expr(
+    input_name: str, method: str, kwargs: Mapping[Hashable, typing.Any]
+) -> str:
     if not kwargs:
-        return f"derived = derived.{method}()"
+        return f"{input_name}.{method}()"
     args = erlab.interactive.utils.format_kwargs(dict(kwargs))
-    return f"derived = derived.{method}({args})"
+    return f"{input_name}.{method}({args})"
+
+
+def _format_selection_step(method: str, kwargs: Mapping[Hashable, typing.Any]) -> str:
+    return f"derived = {_format_selection_expr('derived', method, kwargs)}"
 
 
 def _validate_active_name(value: typing.Any) -> str | None:
@@ -728,23 +737,54 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
     if not body:
         return code
 
+    changed = False
+
+    def current_code() -> str:
+        if not changed:
+            return code
+        return ast.unparse(ast.fix_missing_locations(module))
+
+    def drop_unused_inline_targets() -> None:
+        nonlocal changed
+        if inline_targets is None:
+            return
+
+        idx = 0
+        while idx < len(body) - 1:
+            stmt = body[idx]
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                idx += 1
+                continue
+            target_expr = stmt.targets[0]
+            if (
+                isinstance(target_expr, ast.Name)
+                and target_expr.id in inline_targets
+                and not any(
+                    _statement_load_count(later, target_expr.id) > 0
+                    for later in body[idx + 1 :]
+                )
+            ):
+                del body[idx]
+                changed = True
+                continue
+            idx += 1
+
+    drop_unused_inline_targets()
+
     for stmt in body:
         if not isinstance(stmt, (ast.Assign, ast.Expr, ast.Import, ast.ImportFrom)):
-            return code
-        if isinstance(stmt, ast.Assign) and (
-            len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name)
-        ):
-            return code
+            return current_code()
 
-    changed = False
     while True:
         for idx, stmt in enumerate(body[:-1]):
             if not isinstance(stmt, ast.Assign):
                 continue
+            if len(stmt.targets) != 1:
+                continue
 
             target_expr = stmt.targets[0]
             if not isinstance(target_expr, ast.Name):
-                return code
+                continue
             target = target_expr.id
             if inline_targets is not None and target not in inline_targets:
                 continue
@@ -765,6 +805,13 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
             }
             if (
                 not isinstance(next_stmt, (ast.Assign, ast.Expr))
+                or (
+                    isinstance(next_stmt, ast.Assign)
+                    and (
+                        len(next_stmt.targets) != 1
+                        or not isinstance(next_stmt.targets[0], ast.Name)
+                    )
+                )
                 or _statement_load_count(next_stmt, target) != 1
                 or any(
                     _statement_store_count(intervening, target)
@@ -790,6 +837,8 @@ def _simplify_display_code(code: str, *, inline_targets: set[str] | None = None)
             break
         else:
             break
+
+    drop_unused_inline_targets()
 
     if not changed:
         return code
@@ -1049,8 +1098,10 @@ class ToolProvenanceOperation(pydantic.BaseModel):
 
     New operations should keep runtime fields in their decoded Python form, prefer the
     annotated provenance field aliases in this module for lossless JSON serialization,
-    implement :meth:`apply` to replay the transformation, and implement
-    :meth:`derivation_entry` to describe the step in manager UI.
+    implement :meth:`apply` to replay the transformation, implement
+    :meth:`expression_code` to emit the public Python expression for the same
+    transformation, and implement :meth:`derivation_label` to describe the step in
+    manager UI.
 
     Operation instances store the exact arguments used by live refresh, replay graph
     execution, copied code, and derivation display. If a public console call maps
@@ -1166,14 +1217,41 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     def derivation_entry(self) -> DerivationEntry:
         """Return the user-visible derivation entry for this operation.
 
-        Every concrete operation returns a :class:`DerivationEntry` so the manager can
-        display it and copied provenance code has a single replay contract.
+        The base implementation keeps the legacy ``derived`` replay contract while
+        letting concrete operations emit expression code for any input variable.
 
         Use ``DerivationEntry(..., code=None)`` instead when the step should remain
         visible in the derivation list but code generation should stop and return
         ``None``.
         """
+        return DerivationEntry(
+            self.derivation_label(),
+            self.replay_code("derived", output_name="derived", source_name="data"),
+            True,
+        )
+
+    def derivation_label(self) -> str:
+        """Return the derivation-list label for this operation."""
         raise NotImplementedError
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        """Return a Python expression applying this operation to ``input_name``."""
+        raise NotImplementedError
+
+    def replay_code(
+        self,
+        input_name: str,
+        *,
+        output_name: str | None = None,
+        source_name: str | None = None,
+    ) -> str:
+        """Return replay code for this operation with caller-selected names."""
+        expression = self.expression_code(input_name, source_name=source_name)
+        if output_name is None:
+            return expression
+        return f"{output_name} = {expression}"
 
     @classmethod
     def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
@@ -1184,6 +1262,43 @@ class ToolProvenanceOperation(pydantic.BaseModel):
             with contextlib.suppress(TypeError, ValueError, pydantic.ValidationError):
                 return cls(**values)
         return None
+
+
+def _expression_receiver_code(expression: str) -> str:
+    """Return ``expression`` in a form that can safely receive another operation."""
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return f"({expression})"
+    if isinstance(
+        parsed.body,
+        ast.Name | ast.Attribute | ast.Subscript | ast.Call,
+    ):
+        return expression
+    return f"({expression})"
+
+
+def operations_expression_code(
+    operations: Sequence[ToolProvenanceOperation],
+    input_name: str,
+    *,
+    source_name: str | None = None,
+) -> str:
+    """Return chained expression code for structured operations.
+
+    ``source_name`` is the public/source array name passed to operations that need
+    context beyond the transformed input, such as coordinate-order restoration.
+    """
+    if not operations:
+        return ""
+    source_name = input_name if source_name is None else source_name
+    expression = input_name
+    for operation in operations:
+        expression = operation.expression_code(
+            _expression_receiver_code(expression),
+            source_name=source_name,
+        )
+    return expression
 
 
 def operation_from_console_call(call: ConsoleCall) -> ToolProvenanceOperation | None:
@@ -2118,7 +2233,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if not step_codes and prefix == _DEFAULT_REPLAY_SEED_CODE:
             return None
         inline_targets = (
-            {"derived"} if self.kind == "script" and self.script_inputs else None
+            {"derived"}
+            if self.kind == "script" and self.active_name != "derived"
+            else None
         )
         return _simplify_display_code(
             "\n".join(part for part in (prefix, *step_codes) if part),
@@ -2415,7 +2532,7 @@ def compose_full_provenance(
         seed_code: str | None = local_spec.seed_code
         if seed_code == _DEFAULT_REPLAY_SEED_CODE:
             parent_input = replay_input_name(parent_spec)
-            if parent_input == "derived":
+            if parent_input == "derived" or parent_spec.active_name == "derived":
                 seed_code = None
             elif parent_input is not None:
                 seed_code = f"derived = {parent_input}"
@@ -2885,13 +3002,13 @@ class QSelOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.qsel(self.decoded_kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        kwargs = self.decoded_kwargs
-        return DerivationEntry(
-            f"qsel({_format_derivation_value(self.kwargs)})",
-            _format_selection_step("qsel", kwargs),
-            True,
-        )
+    def derivation_label(self) -> str:
+        return f"qsel({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return _format_selection_expr(input_name, "qsel", self.decoded_kwargs)
 
 
 class IselOperation(ToolProvenanceOperation):
@@ -2913,13 +3030,13 @@ class IselOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.isel(self.decoded_kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        kwargs = self.decoded_kwargs
-        return DerivationEntry(
-            f"isel({_format_derivation_value(self.kwargs)})",
-            _format_selection_step("isel", kwargs),
-            True,
-        )
+    def derivation_label(self) -> str:
+        return f"isel({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return _format_selection_expr(input_name, "isel", self.decoded_kwargs)
 
 
 class SelOperation(ToolProvenanceOperation):
@@ -2941,13 +3058,13 @@ class SelOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.sel(self.decoded_kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        kwargs = self.decoded_kwargs
-        return DerivationEntry(
-            f"sel({_format_derivation_value(self.kwargs)})",
-            _format_selection_step("sel", kwargs),
-            True,
-        )
+    def derivation_label(self) -> str:
+        return f"sel({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return _format_selection_expr(input_name, "sel", self.decoded_kwargs)
 
 
 class SortCoordOrderOperation(ToolProvenanceOperation):
@@ -2956,11 +3073,16 @@ class SortCoordOrderOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.utils.array.sort_coord_order(data, parent_data.coords.keys())
 
-    def derivation_entry(self) -> DerivationEntry:
-        return DerivationEntry(
-            _SORT_COORD_ORDER_DERIVATION_LABEL,
-            _SORT_COORD_ORDER_DERIVATION_CODE,
-            True,
+    def derivation_label(self) -> str:
+        return _SORT_COORD_ORDER_DERIVATION_LABEL
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        source_name = input_name if source_name is None else source_name
+        return (
+            "erlab.utils.array.sort_coord_order("
+            f"{input_name}, {source_name}.coords.keys())"
         )
 
 
@@ -2971,14 +3093,15 @@ class SelectCoordOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.coords[self.coord_name].copy(deep=False)
 
-    def derivation_entry(self) -> DerivationEntry:
-        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+    def derivation_label(self) -> str:
         label_kwargs = {"coord_name": self.coord_name}
-        return DerivationEntry(
-            f"Select Coordinate({_format_derivation_value(label_kwargs)})",
-            f"derived = derived.coords[{coord_name_code}]",
-            True,
-        )
+        return f"Select Coordinate({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        return f"{input_name}.coords[{coord_name_code}]"
 
 
 class TransposeOperation(ToolProvenanceOperation):
@@ -3011,20 +3134,22 @@ class TransposeOperation(ToolProvenanceOperation):
             return data.transpose(*self.dims)
         return data.transpose(*reversed(data.dims))
 
-    def derivation_entry(self) -> DerivationEntry:
+    def derivation_label(self) -> str:
         if self.dims:
             dims_tuple = tuple(self.dims)
-            return DerivationEntry(
-                f"transpose({_format_derivation_value(dims_tuple)})",
-                "derived = derived.transpose(*"
-                f"{erlab.interactive.utils._parse_single_arg(dims_tuple)})",
-                True,
+            return f"transpose({_format_derivation_value(dims_tuple)})"
+        return "transpose()"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        if self.dims:
+            dims_tuple = tuple(self.dims)
+            return (
+                f"{input_name}.transpose(*"
+                f"{erlab.interactive.utils._parse_single_arg(dims_tuple)})"
             )
-        return DerivationEntry(
-            "transpose()",
-            "derived = derived.transpose(*reversed(derived.dims))",
-            True,
-        )
+        return f"{input_name}.transpose(*reversed({input_name}.dims))"
 
 
 class SqueezeOperation(ToolProvenanceOperation):
@@ -3051,8 +3176,13 @@ class SqueezeOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.squeeze()
 
-    def derivation_entry(self) -> DerivationEntry:
-        return DerivationEntry("squeeze()", "derived = derived.squeeze()", True)
+    def derivation_label(self) -> str:
+        return "squeeze()"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return f"{input_name}.squeeze()"
 
 
 class RenameOperation(ToolProvenanceOperation):
@@ -3077,13 +3207,14 @@ class RenameOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.rename(self.name)
 
-    def derivation_entry(self) -> DerivationEntry:
+    def derivation_label(self) -> str:
+        return f"rename({_format_derivation_value(self.name)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
         name_code = erlab.interactive.utils._parse_single_arg(self.name)
-        return DerivationEntry(
-            f"rename({_format_derivation_value(self.name)})",
-            f"derived = derived.rename({name_code})",
-            True,
-        )
+        return f"{input_name}.rename({name_code})"
 
 
 class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
@@ -3092,12 +3223,14 @@ class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
 
-    def derivation_entry(self) -> DerivationEntry:
-        return DerivationEntry(
-            "Restore nonuniform dimensions",
-            "derived = erlab.interactive.imagetool.slicer."
-            "restore_nonuniform_dims(derived)",
-            True,
+    def derivation_label(self) -> str:
+        return "Restore nonuniform dimensions"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return (
+            f"erlab.interactive.imagetool.slicer.restore_nonuniform_dims({input_name})"
         )
 
 
@@ -3145,18 +3278,17 @@ class RotateOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.rotate(data, **self.kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        code = erlab.interactive.utils.generate_code(
+    def derivation_label(self) -> str:
+        return f"Rotate({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.rotate,
-            ["|derived|"],
+            [f"|{input_name}|"],
             self.kwargs,
             module="era.transform",
-            assign="derived",
-        )
-        return DerivationEntry(
-            f"Rotate({_format_derivation_value(self.kwargs)})",
-            code,
-            True,
         )
 
 
@@ -3198,14 +3330,15 @@ class AverageOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.qsel.mean(self.dims)
 
-    def derivation_entry(self) -> DerivationEntry:
-        arg = _format_qsel_dims_arg(self.dims)
+    def derivation_label(self) -> str:
         label_kwargs = {"dims": self.dims}
-        return DerivationEntry(
-            f"Average({_format_derivation_value(label_kwargs)})",
-            f"derived = derived.qsel.mean({arg})",
-            True,
-        )
+        return f"Average({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        arg = _format_qsel_dims_arg(self.dims)
+        return f"{input_name}.qsel.mean({arg})"
 
 
 class QSelAggregationOperation(ToolProvenanceOperation):
@@ -3246,14 +3379,15 @@ class QSelAggregationOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return typing.cast("xr.DataArray", getattr(data.qsel, self.func)(self.dims))
 
-    def derivation_entry(self) -> DerivationEntry:
-        arg = _format_qsel_dims_arg(self.dims)
+    def derivation_label(self) -> str:
         label_kwargs = {"dims": self.dims, "func": self.func}
-        return DerivationEntry(
-            f"Aggregate({_format_derivation_value(label_kwargs)})",
-            f"derived = derived.qsel.{self.func}({arg})",
-            True,
-        )
+        return f"Aggregate({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        arg = _format_qsel_dims_arg(self.dims)
+        return f"{input_name}.qsel.{self.func}({arg})"
 
 
 class InterpolationOperation(ToolProvenanceOperation):
@@ -3324,30 +3458,25 @@ class InterpolationOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.interp({self.dim: self.decoded_values}, method=self.method)
 
-    def code(self, data_name: str, *, assign: str | None = None) -> str:
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
         dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
         values_code = erlab.interactive.utils.format_1d_numeric_array_code(
             self.decoded_values
         )
         method_code = erlab.interactive.utils._parse_single_arg(self.method)
-        code = (
-            f"{data_name}.interp({{{dim_code}: {values_code}}}, method={method_code})"
+        return (
+            f"{input_name}.interp({{{dim_code}: {values_code}}}, method={method_code})"
         )
-        if assign is not None:
-            return f"{assign} = {code}"
-        return code
 
-    def derivation_entry(self) -> DerivationEntry:
+    def derivation_label(self) -> str:
         label_kwargs = {
             "dim": self.dim,
             "values": self.values,
             "method": self.method,
         }
-        return DerivationEntry(
-            f"Interpolate({_format_derivation_value(label_kwargs)})",
-            self.code("derived", assign="derived"),
-            True,
-        )
+        return f"Interpolate({_format_derivation_value(label_kwargs)})"
 
 
 class LeadingEdgeOperation(ToolProvenanceOperation):
@@ -3378,20 +3507,17 @@ class LeadingEdgeOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.interpolate.leading_edge(data, **self.kwargs)
 
-    def code(self, data_name: str, *, assign: str | None = None) -> str:
+    def derivation_label(self) -> str:
+        return f"Leading Edge({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
         return erlab.interactive.utils.generate_code(
             erlab.analysis.interpolate.leading_edge,
-            [f"|{data_name}|"],
+            [f"|{input_name}|"],
             self.kwargs,
             module="era.interpolate",
-            assign=assign,
-        )
-
-    def derivation_entry(self) -> DerivationEntry:
-        return DerivationEntry(
-            f"Leading Edge({_format_derivation_value(self.kwargs)})",
-            self.code("derived", assign="derived"),
-            True,
         )
 
 
@@ -3421,13 +3547,14 @@ class DivideByCoordOperation(ToolProvenanceOperation):
         self._raise_if_zero(coord)
         return data / coord
 
-    def derivation_entry(self) -> DerivationEntry:
+    def derivation_label(self) -> str:
         label_kwargs = {"coord_name": self.coord_name}
-        return DerivationEntry(
-            f"Divide by Coordinate({_format_derivation_value(label_kwargs)})",
-            f"derived = derived / {self.divisor_code('derived')}",
-            True,
-        )
+        return f"Divide by Coordinate({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return f"{input_name} / {self.divisor_code(input_name)}"
 
 
 class CoarsenOperation(ToolProvenanceOperation):
@@ -3490,7 +3617,7 @@ class CoarsenOperation(ToolProvenanceOperation):
         coarsened = data.coarsen(**self.coarsen_kwargs)
         return typing.cast("xr.DataArray", getattr(coarsened, self.reducer)())
 
-    def derivation_entry(self) -> DerivationEntry:
+    def _code_coarsen_kwargs(self) -> Mapping[typing.Any, typing.Any]:
         coarsen_kwargs: Mapping[typing.Any, typing.Any]
         if _is_identifier_string_mapping(self.dim):
             coarsen_kwargs = {
@@ -3504,14 +3631,19 @@ class CoarsenOperation(ToolProvenanceOperation):
         coarsen_kwargs = erlab.interactive.utils._remove_default_kwargs(
             xr.DataArray.coarsen, dict(coarsen_kwargs)
         )
-        formatted_kwargs = erlab.interactive.utils.format_kwargs(coarsen_kwargs)
-        code = f"derived = derived.coarsen({formatted_kwargs}).{self.reducer}()"
+        return coarsen_kwargs
+
+    def derivation_label(self) -> str:
         label_kwargs = {"coarsen_kwargs": self.coarsen_kwargs, "reducer": self.reducer}
-        return DerivationEntry(
-            f"Coarsen({_format_derivation_value(label_kwargs)})",
-            code,
-            True,
+        return f"Coarsen({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        formatted_kwargs = erlab.interactive.utils.format_kwargs(
+            self._code_coarsen_kwargs()
         )
+        return f"{input_name}.coarsen({formatted_kwargs}).{self.reducer}()"
 
 
 class ThinOperation(ToolProvenanceOperation):
@@ -3569,18 +3701,17 @@ class ThinOperation(ToolProvenanceOperation):
             return data.thin(int(typing.cast("int", self.factor)))
         return data.thin(self.factors)
 
-    def derivation_entry(self) -> DerivationEntry:
+    def derivation_label(self) -> str:
+        return f"Thin({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
         if self.mode == "global":
-            code = f"derived = derived.thin({int(typing.cast('int', self.factor))})"
-        else:
-            code = (
-                "derived = derived.thin("
-                f"{erlab.interactive.utils.format_call_kwargs(self.factors)})"
-            )
-        return DerivationEntry(
-            f"Thin({_format_derivation_value(self.kwargs)})",
-            code,
-            True,
+            return f"{input_name}.thin({int(typing.cast('int', self.factor))})"
+        return (
+            f"{input_name}.thin("
+            f"{erlab.interactive.utils.format_call_kwargs(self.factors)})"
         )
 
 
@@ -3618,18 +3749,17 @@ class SymmetrizeOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.symmetrize(data, **self.kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        code = erlab.interactive.utils.generate_code(
+    def derivation_label(self) -> str:
+        return f"Symmetrize({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.symmetrize,
-            ["|derived|"],
+            [f"|{input_name}|"],
             self.kwargs,
             module="era.transform",
-            assign="derived",
-        )
-        return DerivationEntry(
-            f"Symmetrize({_format_derivation_value(self.kwargs)})",
-            code,
-            True,
         )
 
 
@@ -3681,18 +3811,17 @@ class SymmetrizeNfoldOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.transform.symmetrize_nfold(data, **self.kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        code = erlab.interactive.utils.generate_code(
+    def derivation_label(self) -> str:
+        return f"Rotational Symmetrize({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.transform.symmetrize_nfold,
-            ["|derived|"],
+            [f"|{input_name}|"],
             self.kwargs,
             module="era.transform",
-            assign="derived",
-        )
-        return DerivationEntry(
-            f"Rotational Symmetrize({_format_derivation_value(self.kwargs)})",
-            code,
-            True,
         )
 
 
@@ -3736,28 +3865,27 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
             shift_coords=self.shift_coords,
         )
 
-    def derivation_entry(self) -> DerivationEntry:
+    def derivation_label(self) -> str:
         label_kwargs = {
             "edge_fit": self.edge_fit,
             "shift_coords": self.shift_coords,
         }
+        return f"Edge Correction({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
         edge_fit_code = _provenance_value_code(self.edge_fit)
         edge_fit_expr = (
             "erlab.interactive.imagetool.provenance.decode_provenance_value("
             f"{edge_fit_code})"
         )
-        code = erlab.interactive.utils.generate_code(
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.gold.correct_with_edge,
-            ["|derived|", f"|{edge_fit_expr}|"],
+            [f"|{input_name}|", f"|{edge_fit_expr}|"],
             {"shift_coords": self.shift_coords},
             module="era.gold",
             name="correct_with_edge",
-            assign="derived",
-        )
-        return DerivationEntry(
-            f"Edge Correction({_format_derivation_value(label_kwargs)})",
-            code,
-            True,
         )
 
 
@@ -3775,12 +3903,15 @@ class SwapDimsOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.swap_dims(self.mapping)
 
-    def derivation_entry(self) -> DerivationEntry:
-        return DerivationEntry(
-            f"Swap Dimensions({_format_derivation_value(self.mapping)})",
-            "derived = derived.swap_dims("
-            f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})",
-            True,
+    def derivation_label(self) -> str:
+        return f"Swap Dimensions({_format_derivation_value(self.mapping)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return (
+            f"{input_name}.swap_dims("
+            f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})"
         )
 
 
@@ -3811,12 +3942,15 @@ class RenameDimsCoordsOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.rename(self.mapping)
 
-    def derivation_entry(self) -> DerivationEntry:
-        return DerivationEntry(
-            f"Rename({_format_derivation_value(self.mapping)})",
-            "derived = derived.rename("
-            f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})",
-            True,
+    def derivation_label(self) -> str:
+        return f"Rename({_format_derivation_value(self.mapping)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return (
+            f"{input_name}.rename("
+            f"{erlab.interactive.utils.format_call_kwargs(self.mapping)})"
         )
 
 
@@ -3840,24 +3974,24 @@ class AffineCoordOperation(ToolProvenanceOperation):
             dims_first=False,
         )
 
-    def derivation_entry(self) -> DerivationEntry:
-        coord_name_code = repr(self.coord_name)
-        scale_code = erlab.interactive.utils._parse_single_arg(float(self.scale))
-        offset_code = erlab.interactive.utils._parse_single_arg(float(self.offset))
-        code = (
-            f"derived = derived.assign_coords({{{coord_name_code}: "
-            f"derived[{coord_name_code}].copy(data={scale_code} * "
-            f"derived[{coord_name_code}].values + {offset_code})}})"
-        )
+    def derivation_label(self) -> str:
         label_kwargs = {
             "coord_name": self.coord_name,
             "scale": self.scale,
             "offset": self.offset,
         }
-        return DerivationEntry(
-            f"Scale/Offset Coordinate({_format_derivation_value(label_kwargs)})",
-            code,
-            True,
+        return f"Scale/Offset Coordinate({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        coord_name_code = repr(self.coord_name)
+        scale_code = erlab.interactive.utils._parse_single_arg(float(self.scale))
+        offset_code = erlab.interactive.utils._parse_single_arg(float(self.offset))
+        return (
+            f"{input_name}.assign_coords({{{coord_name_code}: "
+            f"{input_name}[{coord_name_code}].copy(data={scale_code} * "
+            f"{input_name}[{coord_name_code}].values + {offset_code})}})"
         )
 
 
@@ -3915,22 +4049,22 @@ class AssignCoordsOperation(ToolProvenanceOperation):
             dims_first=False,
         )
 
-    def derivation_entry(self) -> DerivationEntry:
-        coord_name_code = repr(self.coord_name)
-        values = self.decoded_values
-        values_code = _provenance_numeric_array_code(values)
-        code = (
-            f"derived = derived.assign_coords({{{coord_name_code}: "
-            f"derived[{coord_name_code}].copy(data={values_code})}})"
-        )
+    def derivation_label(self) -> str:
         label_kwargs = {
             "coord_name": self.coord_name,
             "values": self.values,
         }
-        return DerivationEntry(
-            f"Assign Coordinates({_format_derivation_value(label_kwargs)})",
-            code,
-            True,
+        return f"Assign Coordinates({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        coord_name_code = repr(self.coord_name)
+        values = self.decoded_values
+        values_code = _provenance_numeric_array_code(values)
+        return (
+            f"{input_name}.assign_coords({{{coord_name_code}: "
+            f"{input_name}[{coord_name_code}].copy(data={values_code})}})"
         )
 
 
@@ -3971,19 +4105,19 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
             dims_first=False,
         )
 
-    def derivation_entry(self) -> DerivationEntry:
-        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
-        value_code = _provenance_value_code(self.decoded_value)
-        code = f"derived = derived.assign_coords({{{coord_name_code}: {value_code}}})"
+    def derivation_label(self) -> str:
         label_kwargs = {
             "coord_name": self.coord_name,
             "value": self.value,
         }
-        return DerivationEntry(
-            f"Assign Scalar Coordinate({_format_derivation_value(label_kwargs)})",
-            code,
-            True,
-        )
+        return f"Assign Scalar Coordinate({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        value_code = _provenance_value_code(self.decoded_value)
+        return f"{input_name}.assign_coords({{{coord_name_code}: {value_code}}})"
 
 
 class AssignCoord1DOperation(ToolProvenanceOperation):
@@ -4047,23 +4181,23 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
             dims_first=False,
         )
 
-    def derivation_entry(self) -> DerivationEntry:
-        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
-        dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
-        values_code = _provenance_numeric_array_code(self.decoded_values)
-        code = (
-            f"derived = derived.assign_coords({{{coord_name_code}: "
-            f"({dim_code}, {values_code})}})"
-        )
+    def derivation_label(self) -> str:
         label_kwargs = {
             "coord_name": self.coord_name,
             "dim": self.dim,
             "values": self.values,
         }
-        return DerivationEntry(
-            f"Assign 1D Coordinate({_format_derivation_value(label_kwargs)})",
-            code,
-            True,
+        return f"Assign 1D Coordinate({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        coord_name_code = erlab.interactive.utils._parse_single_arg(self.coord_name)
+        dim_code = erlab.interactive.utils._parse_single_arg(self.dim)
+        values_code = _provenance_numeric_array_code(self.decoded_values)
+        return (
+            f"{input_name}.assign_coords({{{coord_name_code}: "
+            f"({dim_code}, {values_code})}})"
         )
 
 
@@ -4077,13 +4211,14 @@ class AssignAttrsOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return data.assign_attrs(self.attrs)
 
-    def derivation_entry(self) -> DerivationEntry:
+    def derivation_label(self) -> str:
+        return f"Assign Attributes({_format_derivation_value(self.attrs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
         attrs_code = _provenance_value_code(self.attrs)
-        return DerivationEntry(
-            f"Assign Attributes({_format_derivation_value(self.attrs)})",
-            f"derived = derived.assign_attrs({attrs_code})",
-            True,
-        )
+        return f"{input_name}.assign_attrs({attrs_code})"
 
 
 class SliceAlongPathOperation(ToolProvenanceOperation):
@@ -4111,18 +4246,17 @@ class SliceAlongPathOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.interpolate.slice_along_path(data, **self.kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        code = erlab.interactive.utils.generate_code(
+    def derivation_label(self) -> str:
+        return f"Slice Along ROI Path({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.interpolate.slice_along_path,
-            ["|derived|"],
+            [f"|{input_name}|"],
             self.kwargs,
             module="era.interpolate",
-            assign="derived",
-        )
-        return DerivationEntry(
-            f"Slice Along ROI Path({_format_derivation_value(self.kwargs)})",
-            code,
-            True,
         )
 
 
@@ -4164,16 +4298,15 @@ class MaskWithPolygonOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.analysis.mask.mask_with_polygon(data, **self.kwargs)
 
-    def derivation_entry(self) -> DerivationEntry:
-        code = erlab.interactive.utils.generate_code(
+    def derivation_label(self) -> str:
+        return f"Mask with ROI({_format_derivation_value(self.kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
             erlab.analysis.mask.mask_with_polygon,
-            ["|derived|"],
+            [f"|{input_name}|"],
             self.kwargs,
             module="era.mask",
-            assign="derived",
-        )
-        return DerivationEntry(
-            f"Mask with ROI({_format_derivation_value(self.kwargs)})",
-            code,
-            True,
         )

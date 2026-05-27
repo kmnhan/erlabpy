@@ -3002,8 +3002,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         data_name = str(data_name)
         if not erlab.interactive.utils._is_kwarg_name(data_name):
-            lines.append(f"target = {data_name}")
-            data_name = "target"
+            lines.append(f"input_data = {data_name}")
+            data_name = "input_data"
         model_name = str(self._model_name)
         if not erlab.interactive.utils._is_kwarg_name(model_name):
             model_name = "model"
@@ -3040,6 +3040,28 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
 
         return data_name, model_name, lines
 
+    def _copy_fit_data_name(
+        self,
+        data_name: str,
+        *,
+        lines: list[str] | None = None,
+    ) -> str:
+        fit_domain = self._fit_domain()
+        if fit_domain is not None:
+            sel_kw = erlab.interactive.utils.format_kwargs(
+                {self._coord_name: slice(*fit_domain)}
+            )
+            if lines is not None:
+                lines.append(f"{data_name}_crop = {data_name}.sel({sel_kw})")
+            data_name = f"{data_name}_crop"
+
+        if self.normalize_check.isChecked():
+            if lines is not None:
+                lines.append(f"{data_name}_norm = {data_name} / {data_name}.mean()")
+            data_name = f"{data_name}_norm"
+
+        return data_name
+
     def _copy_prelude(
         self,
         *,
@@ -3050,19 +3072,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
             input_name or self._data_name
         )
 
-        fit_domain = self._fit_domain()
-        if fit_domain is not None:
-            sel_kw = erlab.interactive.utils.format_kwargs(
-                {self._coord_name: slice(*fit_domain)}
-            )
-            lines.append(f"{data_name}_crop = {data_name}.sel({sel_kw})")
-            data_name = f"{data_name}_crop"
-
-        if self.normalize_check.isChecked():
-            lines.append(f"{data_name}_norm = {data_name} / {data_name}.mean()")
-            data_name = f"{data_name}_norm"
-
-        lines.append(f"_fit_data = {data_name}")
+        self._copy_fit_data_name(data_name, lines=lines)
 
         param_entries: list[str] = []
         param_kwargs: dict[str, typing.Any] = {}
@@ -3113,7 +3123,8 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        _, model_name, _ = self._make_model_code(input_name or self._data_name)
+        data_name, model_name, _ = self._make_model_code(input_name or self._data_name)
+        data_name = self._copy_fit_data_name(data_name)
         return erlab.interactive.utils.generate_code(
             self._data.xlm.modelfit,
             args=[self._coord_name],
@@ -3123,7 +3134,7 @@ class Fit1DTool(erlab.interactive.utils.ToolWindow):
                 "method": self.method_combo.currentText(),
             },
             name="modelfit",
-            module="_fit_data.xlm",
+            module=f"{data_name}.xlm",
         )
 
     @QtCore.Slot()
