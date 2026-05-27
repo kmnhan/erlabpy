@@ -332,6 +332,13 @@ def test_registered_provenance_operations_define_operation_code_api() -> None:
         erlab.interactive.imagetool.provenance.DivideByCoordOperation(
             coord_name="scale"
         ),
+        erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+            sigma={"x": 0.5}
+        ),
+        erlab.interactive.imagetool.provenance.NormalizeOperation(
+            dims=("x",),
+            mode="minmax",
+        ),
         erlab.interactive.imagetool.provenance.CoarsenOperation(
             dim={"x": 2},
             boundary="trim",

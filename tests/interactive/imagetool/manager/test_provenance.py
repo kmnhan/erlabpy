@@ -2,6 +2,55 @@
 from ._shared import *
 
 
+def test_manager_childtool_from_filtered_parent_uses_display_provenance(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={"alpha": 1.0}
+    )
+    expected = operation.apply(data, parent_data=data)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.apply_func(
+            lambda darr: operation.apply(darr, parent_data=darr),
+            operation=operation,
+        )
+        parent_tool.slicer_area.open_in_meshtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1,
+            timeout=5000,
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = manager.get_childtool(child_uid)
+        assert child.input_provenance_spec is not None
+        display_code = child.input_provenance_spec.display_code()
+        assert display_code is not None
+        assert "gaussian_filter" in display_code
+        namespace = {"data": data.copy(deep=True)}
+        exec(  # noqa: S102
+            display_code,
+            {"np": np, "xr": xr, "erlab": erlab, "era": erlab.analysis},
+            namespace,
+        )
+        xr.testing.assert_identical(namespace["derived"], expected)
+
+
 def test_manager_goldtool_output_itool_stales_when_fit_results_change(
     qtbot,
     gold,

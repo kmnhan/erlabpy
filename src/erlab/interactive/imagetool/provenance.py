@@ -102,11 +102,13 @@ __all__ = [
     "FileDataSelection",
     "FileLoadSource",
     "FileReplayCall",
+    "GaussianFilterOperation",
     "ImageToolSelectionSourceBinding",
     "InterpolationOperation",
     "IselOperation",
     "LeadingEdgeOperation",
     "MaskWithPolygonOperation",
+    "NormalizeOperation",
     "QSelAggregationOperation",
     "QSelOperation",
     "RenameDimsCoordsOperation",
@@ -3555,6 +3557,121 @@ class DivideByCoordOperation(ToolProvenanceOperation):
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
         return f"{input_name} / {self.divisor_code(input_name)}"
+
+
+class GaussianFilterOperation(ToolProvenanceOperation):
+    op: typing.Literal["gaussian_filter"] = "gaussian_filter"
+    sigma: ProvenanceFloatMapping = pydantic.Field(default_factory=dict)
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        return erlab.analysis.image.gaussian_filter(data, sigma=self.sigma)
+
+    def derivation_label(self) -> str:
+        label_kwargs = {"sigma": self.sigma}
+        return f"Gaussian Filter({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        return erlab.interactive.utils.generate_code(
+            erlab.analysis.image.gaussian_filter,
+            [f"|{input_name}|"],
+            {"sigma": self.sigma},
+            module="era.image",
+        )
+
+
+class NormalizeOperation(ToolProvenanceOperation):
+    op: typing.Literal["normalize"] = "normalize"
+    dims: ProvenanceHashableTuple = ()
+    mode: typing.Literal["area", "minmax", "min", "min_area"] = "area"
+    denominator_rtol: float = 1e-12
+
+    @staticmethod
+    def _safe_denominator(
+        denominator: xr.DataArray, scale: xr.DataArray, rtol: float
+    ) -> xr.DataArray:
+        threshold = np.maximum(
+            scale * rtol,
+            np.finfo(np.float64).tiny,
+        )
+        return denominator.where(
+            np.isfinite(denominator)
+            & np.isfinite(scale)
+            & (np.abs(denominator) > threshold)
+        )
+
+    @staticmethod
+    def _dims_code(dims: tuple[Hashable, ...]) -> str:
+        return _format_qsel_dims_arg(dims)
+
+    def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
+        if not self.dims:
+            return data
+
+        if self.mode == "area":
+            finite_abs_scale = (
+                abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
+            )
+            area = self._safe_denominator(
+                data.mean(self.dims),
+                finite_abs_scale,
+                self.denominator_rtol,
+            )
+            return data / area
+
+        if self.mode == "minmax":
+            minimum = data.min(self.dims)
+            maximum = data.max(self.dims)
+            finite_abs_scale = xr.where(
+                abs(minimum) > abs(maximum),
+                abs(minimum),
+                abs(maximum),
+            )
+            denominator = self._safe_denominator(
+                maximum - minimum,
+                finite_abs_scale,
+                self.denominator_rtol,
+            )
+            return (data - minimum) / denominator
+
+        if self.mode == "min":
+            minimum = data.min(self.dims)
+            return data - minimum
+
+        minimum = data.min(self.dims)
+        finite_abs_scale = (
+            abs(data).where(np.isfinite(data)).max(self.dims, skipna=True)
+        )
+        area = self._safe_denominator(
+            data.mean(self.dims),
+            finite_abs_scale,
+            self.denominator_rtol,
+        )
+        return (data - minimum) / area
+
+    def derivation_label(self) -> str:
+        label_kwargs = {
+            "dims": self.dims,
+            "mode": self.mode,
+            "denominator_rtol": self.denominator_rtol,
+        }
+        return f"Normalize({_format_derivation_value(label_kwargs)})"
+
+    def expression_code(
+        self, input_name: str, *, source_name: str | None = None
+    ) -> str:
+        dims_code = self._dims_code(self.dims)
+        if self.mode == "area":
+            return f"{input_name} / {input_name}.mean({dims_code})"
+        if self.mode == "minmax":
+            minimum: str = f"{input_name}.min({dims_code})"
+            maximum: str = f"{input_name}.max({dims_code})"
+            return f"({input_name} - {minimum}) / ({maximum} - {minimum})"
+        if self.mode == "min":
+            return f"{input_name} - {input_name}.min({dims_code})"
+        minimum = f"{input_name}.min({dims_code})"
+        return f"({input_name} - {minimum}) / {input_name}.mean({dims_code})"
 
 
 class CoarsenOperation(ToolProvenanceOperation):

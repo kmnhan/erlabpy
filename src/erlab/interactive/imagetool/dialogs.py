@@ -564,7 +564,8 @@ class DataFilterDialog(_DataManipulationDialog):
     - Override method `process_data` to implement the filter. The output must be a new
       DataArray with the same shape as the input.
 
-    - Override method `make_code` to generate code that can be copied to the clipboard.
+    - Override `filter_operation` to generate operation-backed copy code and provenance
+      for the displayed filtered data.
 
     - Override attribute `title` to set the title of the dialog window.
 
@@ -591,7 +592,10 @@ class DataFilterDialog(_DataManipulationDialog):
     @QtCore.Slot()
     def _preview(self):
         self._previewed = True
-        self.slicer_area.apply_func(self.process_data)
+        self.slicer_area.apply_func(
+            self.process_data,
+            operation=self.filter_operation(),
+        )
 
     @QtCore.Slot()
     def reject(self) -> None:
@@ -602,13 +606,36 @@ class DataFilterDialog(_DataManipulationDialog):
     @QtCore.Slot()
     def accept(self) -> None:
         try:
-            self.slicer_area.apply_func(self.process_data)
+            self.slicer_area.apply_func(
+                self.process_data,
+                operation=self.filter_operation(),
+            )
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while processing data."
             )
             return
         super().accept()
+
+    def filter_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+        return None
+
+    def filter_operations(
+        self,
+    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+        operation = self.filter_operation()
+        return [] if operation is None else [operation]
+
+    def make_code(self) -> str:
+        try:
+            return erlab.interactive.imagetool.provenance.operations_expression_code(
+                self.filter_operations(),
+                self._copy_data_name(),
+            )
+        except Exception:
+            return ""
 
 
 class RotationDialog(DataTransformDialog):
@@ -2135,8 +2162,11 @@ class CropDialog(_BaseCropDialog):
 
 class NormalizeDialog(DataFilterDialog):
     title = "Normalize"
-    enable_copy = False
+    enable_copy = True
     denominator_rtol: float = 1e-12
+    _MODES: typing.ClassVar[
+        tuple[typing.Literal["area", "minmax", "min", "min_area"], ...]
+    ] = ("area", "minmax", "min", "min_area")
 
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Dimensions")
@@ -2166,54 +2196,33 @@ class NormalizeDialog(DataFilterDialog):
         self.layout_.addRow(dim_group)
         self.layout_.addRow(option_group)
 
-    def _safe_denominator(
-        self, denominator: xr.DataArray, scale: xr.DataArray
-    ) -> xr.DataArray:
-        threshold = np.maximum(
-            scale * self.denominator_rtol,
-            np.finfo(np.float64).tiny,
-        )
-        return denominator.where(
-            np.isfinite(denominator)
-            & np.isfinite(scale)
-            & (np.abs(denominator) > threshold)
-        )
+    @property
+    def _norm_dims(self) -> tuple[Hashable, ...]:
+        return tuple(k for k, v in self.dim_checks.items() if v.isChecked())
+
+    @property
+    def _mode(self) -> typing.Literal["area", "minmax", "min", "min_area"]:
+        return self._MODES[
+            next(i for i, opt in enumerate(self.opts) if opt.isChecked())
+        ]
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
-        norm_dims = tuple(k for k, v in self.dim_checks.items() if v.isChecked())
-        if len(norm_dims) == 0:
+        operation = self.filter_operation()
+        if operation is None:
             return data
+        return operation.apply(data, parent_data=data)
 
-        calc_area: bool = self.opts[0].isChecked() or self.opts[3].isChecked()
-        calc_minimum: bool = not self.opts[0].isChecked()
-        calc_maximum: bool = self.opts[1].isChecked()
-        if calc_area:
-            finite_abs_scale = (
-                abs(data).where(np.isfinite(data)).max(norm_dims, skipna=True)
-            )
-
-        if calc_area:
-            area = self._safe_denominator(data.mean(norm_dims), finite_abs_scale)
-
-        if calc_minimum:
-            minimum = data.min(norm_dims)
-
-        if calc_maximum:
-            maximum = data.max(norm_dims)
-
-        if self.opts[0].isChecked():
-            return data / area
-
-        if self.opts[1].isChecked():
-            finite_abs_scale = np.maximum(np.abs(minimum), np.abs(maximum))
-            return (data - minimum) / self._safe_denominator(
-                maximum - minimum, finite_abs_scale
-            )
-
-        if self.opts[2].isChecked():
-            return data - minimum
-
-        return (data - minimum) / area
+    def filter_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+        norm_dims = self._norm_dims
+        if not norm_dims:
+            return None
+        return erlab.interactive.imagetool.provenance.NormalizeOperation(
+            dims=norm_dims,
+            mode=self._mode,
+            denominator_rtol=self.denominator_rtol,
+        )
 
 
 class DivideByCoordDialog(DataTransformDialog):
@@ -2502,16 +2511,14 @@ class GaussianFilterDialog(DataFilterDialog):
             return data
         return erlab.analysis.image.gaussian_filter(data, sigma=sigma_values)
 
-    def make_code(self) -> str:
-        _, sigma_literals = self._sigma_values()
-        if not sigma_literals:
-            return ""
-
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.image.gaussian_filter,
-            [f"|{self._copy_data_name()}|"],
-            {"sigma": {dim: f"|{literal}|" for dim, literal in sigma_literals.items()}},
-            module="era.image",
+    def filter_operation(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+        sigma_values, _ = self._sigma_values()
+        if not sigma_values:
+            return None
+        return erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+            sigma=sigma_values
         )
 
 

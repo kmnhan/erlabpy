@@ -1189,6 +1189,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         # Applied filter function
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
+        self._applied_provenance_operation: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+        ) = None
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
         # validated view used for slicing. The two share values by default and detach
         # only when a write needs isolation.
@@ -1702,6 +1705,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._applied_func is not None or not self._obj_shares_data_values
         )
         self._applied_func = None
+        self._applied_provenance_operation = None
         restored_obj = False
 
         if self._data_shares_external_values:
@@ -2551,6 +2555,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._data_shares_external_values = shares_external_values
         self._obj_shares_data_values = True
         self._applied_func = None
+        self._applied_provenance_operation = None
 
         # Save color limits so we may restore them later
         cached_levels: tuple[float, float] | None = None
@@ -2841,8 +2846,31 @@ class ImageSlicerArea(QtWidgets.QWidget):
             # This will update colorbar limits if visible
             self.lock_levels(self.levels_locked)
 
+    def displayed_provenance_spec(
+        self,
+        base_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        | None = None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return provenance for the currently displayed data values."""
+        if base_spec is None:
+            base_spec = self.provenance_spec
+        operation = self._applied_provenance_operation
+        if operation is None:
+            return base_spec
+        return erlab.interactive.imagetool.provenance.compose_display_provenance(
+            base_spec,
+            erlab.interactive.imagetool.provenance.full_data(operation),
+            parent_data=self._data,
+        )
+
     def apply_func(
-        self, func: Callable[[xr.DataArray], xr.DataArray] | None, update: bool = True
+        self,
+        func: Callable[[xr.DataArray], xr.DataArray] | None,
+        update: bool = True,
+        *,
+        operation: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+        ) = None,
     ) -> None:
         """Apply a function to the data.
 
@@ -2861,18 +2889,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
             If `True`, the plots are updated after setting the new values.
 
         """
-        # `self._data` is the public/source array, while `self.data` is the current
-        # validated slicer view. Temporary filters only detach the slicer view so the
-        # source array remains unchanged and can be restored cheaply.
-        self._applied_func = func
-
         if func is None:
+            self._applied_func = None
+            self._applied_provenance_operation = None
             self._restore_obj_from_source(update=update)
             return
 
+        # `self._data` is the public/source array, while `self.data` is the current
+        # validated slicer view. Temporary filters only detach the slicer view so the
+        # source array remains unchanged and can be restored cheaply.
         filtered = func(self._data)
         if filtered.chunks is None:
             self.update_values(filtered, update=update)
+            self._applied_func = func
+            self._applied_provenance_operation = operation
             return
 
         if self.data.ndim != filtered.ndim:
@@ -2896,6 +2926,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.array_slicer.clear_val_cache()
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
+        self._applied_func = func
+        self._applied_provenance_operation = operation
 
     def set_manual_limits(self, manual_limits: dict[str, list[float]]) -> None:
         """Set manual limits for the axes.
@@ -3451,7 +3483,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if isinstance(widget, erlab.interactive.utils.ToolWindow):
             widget.set_source_parent_fetcher(lambda: self._tool_source_parent_data())
             self.sigSourceDataReplaced.connect(widget.handle_parent_source_replaced)
-            widget.set_input_provenance_parent_fetcher(lambda: self.provenance_spec)
+            widget.set_input_provenance_parent_fetcher(self.displayed_provenance_spec)
 
         uid: str = str(uuid.uuid4())
         with self._assoc_tools_lock:
