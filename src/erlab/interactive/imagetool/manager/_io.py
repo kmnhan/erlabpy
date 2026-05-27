@@ -196,7 +196,13 @@ class _MultiFileHandler(QtCore.QObject):
     def _deliver_and_queue(
         self,
         file_path: pathlib.Path,
-        selected_data: tuple[tuple[xr.DataArray, int], ...],
+        selected_data: tuple[
+            tuple[
+                xr.DataArray,
+                erlab.interactive.imagetool.provenance.FileDataSelection,
+            ],
+            ...,
+        ],
     ) -> None:
         func: Callable | str = self._func
         func_instance = getattr(func, "__self__", None)
@@ -209,7 +215,7 @@ class _MultiFileHandler(QtCore.QObject):
                 "file_path": file_path,
                 "load_func": (func, self._kwargs.copy()),
                 "load_indices": tuple(
-                    source_index for _data_array, source_index in selected_data
+                    selection for _data_array, selection in selected_data
                 ),
             },
             show=(self.n_total == 1),

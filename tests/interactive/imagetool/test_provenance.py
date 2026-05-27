@@ -1792,7 +1792,7 @@ def test_file_load_source_replay_call_round_trips() -> None:
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={"engine": "h5netcdf"},
-            selected_index=0,
+            selection=prov.FileDataSelection(kind="dataarray"),
             cast_float64=True,
         ),
         load_code='import xarray\n\ndata = xarray.load_dataarray("/tmp/scan.h5")',
@@ -1804,7 +1804,20 @@ def test_file_load_source_replay_call_round_trips() -> None:
     assert parsed_xarray.replay_call.kind == "callable"
     assert parsed_xarray.replay_call.target == "xarray.load_dataarray"
     assert parsed_xarray.replay_call.kwargs == {"engine": "h5netcdf"}
+    assert parsed_xarray.replay_call.selection == prov.FileDataSelection(
+        kind="dataarray"
+    )
     assert parsed_xarray.replay_call.cast_float64 is True
+
+    legacy_call = prov.FileReplayCall.model_validate(
+        {
+            "kind": "callable",
+            "target": "xarray.load_dataarray",
+            "selected_index": 2,
+        }
+    )
+    assert legacy_call.selection == prov.FileDataSelection(kind="parsed_index", value=2)
+    assert "selected_index" not in legacy_call.model_dump(mode="json")
 
     erlab_source = prov.FileLoadSource(
         path="data_002.h5",
@@ -1815,7 +1828,7 @@ def test_file_load_source_replay_call_round_trips() -> None:
             kind="erlab_loader",
             target="example",
             kwargs={},
-            selected_index=0,
+            selection=prov.FileDataSelection(kind="dataarray"),
         ),
         load_code="erlab.io.set_loader('example')\ndata = erlab.io.load(2)",
     )
@@ -1832,7 +1845,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     replay_stage = prov.ReplayStage(source_kind="full_data")
     file_source = _file_replay_source()
 
-    with pytest.raises(ValidationError, match="selected_index"):
+    with pytest.raises(ValidationError, match="parsed file selection index"):
         prov.FileReplayCall(
             kind="callable", target="xarray.load_dataarray", selected_index=-1
         )
@@ -1843,7 +1856,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         kind="callable",
         target="xarray.load_dataarray",
         kwargs={1: "bad"},
-        selected_index=0,
+        selection=prov.FileDataSelection(kind="dataarray"),
     )
     with pytest.raises(TypeError, match="string keys"):
         bad_kwargs_call._validate_replay_call()
@@ -3218,6 +3231,22 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
 
     tree = xr.DataTree.from_dict({"leaf": xr.Dataset({"image": image})})
     assert [darr.name for darr in prov._parse_replay_input(tree)] == ["image"]
+    xr.testing.assert_identical(
+        prov._select_replay_input(
+            dataset, prov.FileDataSelection(kind="dataset_variable", value="image")
+        ),
+        image,
+    )
+    xr.testing.assert_identical(
+        prov._select_replay_input(
+            tree, prov.FileDataSelection(kind="datatree_path", value="/leaf/image")
+        ),
+        image,
+    )
+    assert prov._select_replay_input(
+        np.arange(6).reshape((2, 3)),
+        prov.FileDataSelection(kind="dataarray"),
+    ).shape == (2, 3)
 
     with pytest.raises(ValueError, match="No valid data"):
         prov._parse_replay_input([])
@@ -3225,6 +3254,14 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
         prov._parse_replay_input(xr.Dataset({"scalar": xr.DataArray(1.0)}))
     with pytest.raises(TypeError, match="Unsupported input type list"):
         prov._parse_replay_input([object()])
+    with pytest.raises(KeyError, match="Selected file variable"):
+        prov._select_replay_input(
+            dataset, prov.FileDataSelection(kind="dataset_variable", value="missing")
+        )
+    with pytest.raises(KeyError, match="Selected file DataTree path"):
+        prov._select_replay_input(
+            tree, prov.FileDataSelection(kind="datatree_path", value="/missing/image")
+        )
 
     assert (
         prov._resolve_importable_callable("xarray.load_dataarray") is xr.load_dataarray
@@ -3249,6 +3286,44 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
 
     source_file = tmp_path / "source.h5"
     image.to_netcdf(source_file, engine="h5netcdf")
+    dataset_file = tmp_path / "dataset.h5"
+    dataset.to_netcdf(dataset_file, engine="h5netcdf")
+    xr.testing.assert_identical(
+        prov._load_file_source_data(
+            _file_replay_source(
+                dataset_file,
+                replay_call=prov.FileReplayCall(
+                    kind="callable",
+                    target="xarray.load_dataset",
+                    kwargs={"engine": "h5netcdf"},
+                    selection=prov.FileDataSelection(
+                        kind="dataset_variable",
+                        value="image",
+                    ),
+                ),
+            )
+        ),
+        image,
+    )
+    datatree_file = tmp_path / "tree.h5"
+    tree.to_netcdf(datatree_file, engine="h5netcdf")
+    xr.testing.assert_identical(
+        prov._load_file_source_data(
+            _file_replay_source(
+                datatree_file,
+                replay_call=prov.FileReplayCall(
+                    kind="callable",
+                    target="xarray.load_datatree",
+                    kwargs={"engine": "h5netcdf"},
+                    selection=prov.FileDataSelection(
+                        kind="datatree_path",
+                        value="/leaf/image",
+                    ),
+                ),
+            )
+        ),
+        image,
+    )
     with pytest.raises(IndexError, match="out of range"):
         prov._load_file_source_data(
             _file_replay_source(

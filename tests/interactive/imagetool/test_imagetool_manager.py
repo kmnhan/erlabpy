@@ -2674,9 +2674,12 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     example_loader,
 ) -> None:
     file_path = tmp_path / "example.pxt"
+    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataarray"
+    )
     code = _load_code_from_file_details(
         file_path,
-        ("merlin", {"bad-key": 1, "single": True}, 0),
+        ("merlin", {"bad-key": 1, "single": True}, dataarray_selection),
     )
 
     expected = (
@@ -2687,19 +2690,21 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     assert code == expected
     assigned_code = _load_code_from_file_details(
         file_path,
-        ("merlin", {"bad-key": 1, "single": True}, 0),
+        ("merlin", {"bad-key": 1, "single": True}, dataarray_selection),
         assign="source_scan",
     )
     assert assigned_code == expected.replace("data = ", "source_scan = ")
     with pytest.raises(ValueError, match="assign"):
-        _load_code_from_file_details(file_path, ("merlin", {}, 0), assign="bad-name")
+        _load_code_from_file_details(
+            file_path, ("merlin", {}, dataarray_selection), assign="bad-name"
+        )
 
     extension_code = _load_code_from_file_details(
         file_path,
         (
             "example",
             {"loader_extensions": {"additional_coords": {"gui_extra": 7.0}}},
-            0,
+            dataarray_selection,
         ),
     )
     assert extension_code == (
@@ -2709,19 +2714,78 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     )
 
 
+def test_load_code_from_file_details_uses_stable_file_selectors(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    file_path = tmp_path / "scan.h5"
+
+    dataset_code = _load_code_from_file_details(
+        file_path,
+        (
+            xr.load_dataset,
+            {"engine": "h5netcdf"},
+            prov.FileDataSelection(kind="dataset_variable", value="second"),
+        ),
+    )
+    assert dataset_code == (
+        "import xarray\n\n"
+        f'data = xarray.load_dataset({str(file_path)!r}, engine="h5netcdf")'
+        "['second']"
+    )
+    assert "_parse_input" not in dataset_code
+
+    datatree_code = _load_code_from_file_details(
+        file_path,
+        (
+            xr.load_datatree,
+            {"engine": "h5netcdf"},
+            prov.FileDataSelection(kind="datatree_path", value="/diag/image"),
+        ),
+    )
+    assert datatree_code == (
+        "import xarray\n\n"
+        f'data = xarray.load_datatree({str(file_path)!r}, engine="h5netcdf")'
+        "['/diag/image']"
+    )
+    assert "_parse_input" not in datatree_code
+
+
+def test_load_code_from_file_details_uses_public_merlin_bcs_import(
+    tmp_path: pathlib.Path,
+) -> None:
+    from erlab.io.plugins.merlin import load_bcs
+
+    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataarray"
+    )
+    file_path = tmp_path / "scan.txt"
+
+    code = _load_code_from_file_details(file_path, (load_bcs, {}, dataarray_selection))
+
+    assert code == (
+        "import erlab.io.plugins.merlin\n\n"
+        f"data = erlab.io.plugins.merlin.load_bcs({str(file_path)!r})"
+    )
+    assert "_merlin_bcs" not in code
+
+
 def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
     example_loader,
     example_data_dir: pathlib.Path,
 ) -> None:
     file_path = example_data_dir / "data_002.h5"
-    code = _load_code_from_file_details(file_path, ("example", {}, 0))
+    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataarray"
+    )
+    code = _load_code_from_file_details(file_path, ("example", {}, dataarray_selection))
     assert code == (
         "erlab.io.set_loader('example')\n"
         f"data = erlab.io.load(2, data_dir={str(example_data_dir)!r})"
     )
 
     multi_file_code = _load_code_from_file_details(
-        example_data_dir / "data_001_S001.h5", ("example", {}, 0)
+        example_data_dir / "data_001_S001.h5", ("example", {}, dataarray_selection)
     )
     assert multi_file_code == (
         "erlab.io.set_loader('example')\n"
@@ -2729,7 +2793,7 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
     )
 
     single_file_code = _load_code_from_file_details(
-        file_path, ("example", {"single": True}, 0)
+        file_path, ("example", {"single": True}, dataarray_selection)
     )
     assert single_file_code == (
         "erlab.io.set_loader('example')\n"
@@ -2741,7 +2805,7 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
         (
             "example",
             {"loader_extensions": {"additional_coords": {"gui_extra": 7.0}}},
-            0,
+            dataarray_selection,
         ),
     )
     assert extension_code == (
@@ -2752,7 +2816,7 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
 
     del example_loader
     bound_loader_code = _load_code_from_file_details(
-        file_path, (erlab.io.loaders["example"].load, {}, 0)
+        file_path, (erlab.io.loaders["example"].load, {}, dataarray_selection)
     )
     assert bound_loader_code == code
 
@@ -3647,6 +3711,9 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
 
     _missing_attr_loader.__module__ = "math"
     _missing_attr_loader.__qualname__ = "missing_loader"
+    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataarray"
+    )
 
     assert _load_code_from_file_details(file_path, None) is None
     assert _load_provenance_from_file_details(file_path, None) is None
@@ -3681,7 +3748,7 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
 
     math_code = _load_code_from_file_details(
         file_path,
-        (math.sqrt, {"bad-key": 1}, 0),
+        (math.sqrt, {"bad-key": 1}, dataarray_selection),
     )
     assert math_code == (
         f'import math\n\ndata = math.sqrt({str(file_path)!r}, **{{"bad-key": 1}})'
@@ -3689,7 +3756,7 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
 
     missing_module_code = _load_code_from_file_details(
         file_path,
-        (_missing_module_loader, {}, 0),
+        (_missing_module_loader, {}, dataarray_selection),
     )
     assert missing_module_code == (
         "import missing_erlab_loader_module\n\n"
@@ -14556,7 +14623,7 @@ def test_manager_open_files(
         )
 
 
-def test_manager_file_open_uses_selected_variable_source_index(
+def test_manager_file_open_uses_selected_dataset_variable(
     qtbot,
     monkeypatch,
     tmp_path: pathlib.Path,
@@ -14578,6 +14645,10 @@ def test_manager_file_open_uses_selected_variable_source_index(
         coords={"u": np.arange(4), "v": np.arange(5)},
         name="second",
     )
+    selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataset_variable",
+        value="second",
+    )
     datasets = {
         "current": xr.Dataset(
             {
@@ -14592,7 +14663,7 @@ def test_manager_file_open_uses_selected_variable_source_index(
 
     def _select_second(data, parent=None):
         assert parent is not None
-        return ((data["second"], 1),)
+        return ((data["second"], selection),)
 
     monkeypatch.setattr(
         imagetool_viewer,
@@ -14616,12 +14687,13 @@ def test_manager_file_open_uses_selected_variable_source_index(
 
         xr.testing.assert_identical(tool.slicer_area.data, initial_second)
         assert tool.slicer_area._load_func is not None
-        assert tool.slicer_area._load_func[2] == 1
+        assert tool.slicer_area._load_func[2] == selection
 
         datasets["current"] = xr.Dataset(
             {
-                "first": xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
+                "inserted": xr.DataArray(np.full((2, 3), 5.0), dims=("x", "y")),
                 "second": updated_second,
+                "first": xr.DataArray(np.zeros((2, 3)), dims=("x", "y")),
             }
         )
         with qtbot.wait_signal(tool.slicer_area.sigDataChanged):

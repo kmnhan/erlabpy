@@ -97,6 +97,7 @@ __all__ = [
     "CorrectWithEdgeOperation",
     "DerivationEntry",
     "DivideByCoordOperation",
+    "FileDataSelection",
     "FileLoadSource",
     "FileReplayCall",
     "ImageToolSelectionSourceBinding",
@@ -1378,13 +1379,78 @@ def parse_tool_provenance_operation(
     return operation_type.model_validate(value)
 
 
+class FileDataSelection(pydantic.BaseModel):
+    """Serializable selection of one displayable array from a loaded file object.
+
+    New provenance stores stable Dataset variable names and DataTree data paths instead
+    of the positional parsed-array index used by older workspaces.
+
+    .. versionchanged:: 3.23.0
+       Added Dataset variable and DataTree path selectors for file-backed ImageTool
+       provenance. Older ``selected_index`` replay payloads remain readable as
+       ``parsed_index`` selections.
+    """
+
+    kind: typing.Literal[
+        "dataarray",
+        "dataset_variable",
+        "datatree_path",
+        "parsed_index",
+    ]
+    value: typing.Any = None
+
+    model_config = pydantic.ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _validate_serialized_shape(cls, value: typing.Any) -> typing.Any:
+        if isinstance(value, np.integer):
+            return {"kind": "parsed_index", "value": int(value)}
+        if isinstance(value, int) and not isinstance(value, bool):
+            return {"kind": "parsed_index", "value": value}
+        return value
+
+    @pydantic.model_validator(mode="after")
+    def _validate_value(self) -> typing.Self:
+        if self.kind == "dataarray":
+            if self.value is not None:
+                raise ValueError("dataarray file selections must not define a value")
+            return self
+        if self.kind == "dataset_variable":
+            value = _normalize_provenance_hashable(decode_provenance_value(self.value))
+            if value != self.value:
+                return self.model_copy(update={"value": value})
+            return self
+        if self.kind == "datatree_path":
+            if not isinstance(self.value, str) or not self.value.startswith("/"):
+                raise ValueError("datatree file selections must use an absolute path")
+            return self
+
+        value = int(self.value) if isinstance(self.value, np.integer) else self.value
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("parsed file selection index must be non-negative")
+        if value != self.value:
+            return self.model_copy(update={"value": value})
+        return self
+
+    @pydantic.field_serializer("value", when_used="json")
+    def _serialize_value(self, value: typing.Any) -> typing.Any:
+        if self.kind == "dataset_variable":
+            return _encode_provenance_hashable(value)
+        return value
+
+
 class FileReplayCall(pydantic.BaseModel):
     """Serializable call information used to reload file-backed provenance."""
 
     kind: typing.Literal["erlab_loader", "callable"]
     target: str
     kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    selected_index: int
+    selection: FileDataSelection
     cast_float64: bool = False
 
     model_config = pydantic.ConfigDict(
@@ -1393,10 +1459,22 @@ class FileReplayCall(pydantic.BaseModel):
         extra="forbid",
     )
 
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _validate_serialized_shape(cls, value: typing.Any) -> typing.Any:
+        if not isinstance(value, Mapping):
+            return value
+        payload = dict(value)
+        selected_index = payload.pop("selected_index", None)
+        if "selection" not in payload and selected_index is not None:
+            payload["selection"] = {
+                "kind": "parsed_index",
+                "value": selected_index,
+            }
+        return payload
+
     @pydantic.model_validator(mode="after")
     def _validate_replay_call(self) -> typing.Self:
-        if self.selected_index < 0:
-            raise ValueError("selected_index must be non-negative")
         if not self.target:
             raise ValueError("target must not be empty")
         if any(not isinstance(key, str) for key in self.kwargs):
@@ -2601,6 +2679,61 @@ def _parse_replay_input(data: typing.Any) -> list[xr.DataArray]:
     ]
 
 
+def _require_replay_dataarray(data: typing.Any) -> xr.DataArray:
+    if isinstance(data, np.ndarray):
+        data = xr.DataArray(data)
+    if not isinstance(data, xr.DataArray):
+        raise TypeError(
+            f"Selected file data must be a DataArray, got {type(data).__name__!r}"
+        )
+    if not _supported_replay_shape(data):
+        raise ValueError("Selected file data is not valid for ImageTool")
+    return data
+
+
+def _select_replay_input(
+    data: typing.Any,
+    selection: FileDataSelection | Mapping[str, typing.Any] | int,
+) -> xr.DataArray:
+    selection = FileDataSelection.model_validate(selection)
+    if selection.kind == "dataarray":
+        return _require_replay_dataarray(data)
+    if selection.kind == "dataset_variable":
+        if not isinstance(data, xr.Dataset):
+            raise TypeError(
+                "Dataset variable file selections require the loader to return "
+                "a Dataset"
+            )
+        try:
+            selected = data[selection.value]
+        except KeyError as err:
+            raise KeyError(
+                f"Selected file variable {selection.value!r} was not found"
+            ) from err
+        return _require_replay_dataarray(selected)
+    if selection.kind == "datatree_path":
+        if not isinstance(data, xr.DataTree):
+            raise TypeError(
+                "DataTree path file selections require the loader to return a DataTree"
+            )
+        try:
+            selected = data[selection.value]
+        except KeyError as err:
+            raise KeyError(
+                f"Selected file DataTree path {selection.value!r} was not found"
+            ) from err
+        return _require_replay_dataarray(selected)
+
+    parsed = _parse_replay_input(data)
+    index = typing.cast("int", selection.value)
+    if index >= len(parsed):
+        raise IndexError(
+            f"Selected file replay index {index} is out of range for "
+            f"{len(parsed)} parsed arrays"
+        )
+    return parsed[index]
+
+
 def _resolve_importable_callable(target: str) -> Callable[..., typing.Any]:
     parts = target.split(".")
     if len(parts) < 2:
@@ -2640,13 +2773,7 @@ def _load_file_source_data(load_source: FileLoadSource) -> xr.DataArray:
         func = _resolve_importable_callable(call.target)
 
     loaded = func(file_path, **dict(call.kwargs))
-    parsed = _parse_replay_input(loaded)
-    if call.selected_index >= len(parsed):
-        raise IndexError(
-            f"Selected file replay index {call.selected_index} is out of range for "
-            f"{len(parsed)} parsed arrays"
-        )
-    data = parsed[call.selected_index]
+    data = _select_replay_input(loaded, call.selection)
     if call.cast_float64:
         data = data.astype(np.float64)
     return data

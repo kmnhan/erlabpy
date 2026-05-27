@@ -18,6 +18,8 @@ import erlab
 from erlab.io.dataloader import LoaderBase
 from erlab.io.plugins._merlin_bcs import load_bcs
 
+load_bcs.__module__ = __name__
+
 
 def _format_polarization(val) -> str:
     val = round(float(val))

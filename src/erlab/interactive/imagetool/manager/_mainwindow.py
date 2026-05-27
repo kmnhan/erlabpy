@@ -6480,13 +6480,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
             watched_metadata.setdefault("workspace_link_id", self._workspace_link_id)
 
         for i, d in enumerate(data):
-            # Set index-specific load function if provided
-            load_index = (
-                typing.cast("Sequence[int]", load_indices)[i]
+            # Set selection-specific load function if provided
+            load_selection = (
+                typing.cast("Sequence[typing.Any]", load_indices)[i]
                 if load_indices is not None
                 else i
             )
-            this_load_func = (*load_func[:2], load_index) if load_func else None
+            this_load_func = (*load_func[:2], load_selection) if load_func else None
             try:
                 indices.append(
                     self.add_imagetool(

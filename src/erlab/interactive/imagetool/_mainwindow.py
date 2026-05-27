@@ -516,17 +516,17 @@ class ImageTool(BaseImageTool):
                 selected_data = _select_input_dataarrays(loaded_data, self)
                 if selected_data is None:
                     return
-                first_data, first_source_index = selected_data[0]
+                first_data, first_selection = selected_data[0]
                 self.slicer_area.replace_source_data(
                     first_data,
                     file_path=fname,
-                    load_func=(fn, kargs, first_source_index),
+                    load_func=(fn, kargs, first_selection),
                 )
-                for data_array, source_index in selected_data[1:]:
+                for data_array, selection in selected_data[1:]:
                     tool = ImageTool(
                         data_array,
                         file_path=fname,
-                        load_func=(fn, kargs, source_index),
+                        load_func=(fn, kargs, selection),
                     )
                     self.slicer_area.add_tool_window(
                         tool, update_title=False, transfer_to_manager=False
