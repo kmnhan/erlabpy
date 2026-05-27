@@ -16618,6 +16618,127 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
         assert manager._imagetool_wrappers[2].snapshot_token != before_token
 
 
+def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3.0), "y": np.arange(3.0)},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data.mean("y"),
+                (0,),
+                operation_label="Average input",
+                operation_code='derived = data_0.mean("y")',
+            )
+            == 1
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        derived = manager.get_imagetool(1)
+        assert derived.slicer_area.data.dims == ("x", "stack_dim")
+        derived.slicer_area.array_slicer.set_indices(0, [2, 0], update=False)
+        before_token = manager._imagetool_wrappers[1].snapshot_token
+        updated = data + 10.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(updated)
+        derived_uid = manager._imagetool_wrappers[1].uid
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+
+        monkeypatch.setattr(
+            manager,
+            "_prompt_incompatible_reload_commit",
+            lambda _details: pytest.fail("compatible 1D reload prompted"),
+        )
+        manager.tree_view.deselect_all()
+        select_tools(manager, [1])
+        manager.reload_selected()
+
+        xr.testing.assert_identical(
+            manager.get_imagetool(1).slicer_area.data.squeeze("stack_dim", drop=True),
+            updated.mean("y"),
+        )
+        assert manager.get_imagetool(1).slicer_area.array_slicer.get_indices(0) == [
+            2,
+            0,
+        ]
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
+        assert manager._imagetool_wrappers[1].snapshot_token != before_token
+
+
+def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(4, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.5], "y": np.arange(3.0)},
+    )
+    operation_code = (
+        "derived = "
+        "erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data_0) + 1"
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager.get_imagetool(0).slicer_area.data.dims == ("x_idx", "y")
+        assert (
+            manager._show_multi_input_script_result(
+                data + 1.0,
+                (0,),
+                operation_label="Offset restored input",
+                operation_code=operation_code,
+            )
+            == 1
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert manager.get_imagetool(1).slicer_area.data.dims == ("x_idx", "y")
+
+        updated = data + 10.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(updated)
+        derived_uid = manager._imagetool_wrappers[1].uid
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+
+        monkeypatch.setattr(
+            manager,
+            "_prompt_incompatible_reload_commit",
+            lambda _details: pytest.fail("compatible nonuniform reload prompted"),
+        )
+        manager.tree_view.deselect_all()
+        select_tools(manager, [1])
+        manager.reload_selected()
+
+        xr.testing.assert_identical(
+            erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                manager.get_imagetool(1).slicer_area.data
+            ),
+            updated + 1.0,
+        )
+        assert manager.dependency_status_for_uid(derived_uid) == "current"
+
+
 def test_manager_reload_script_inputs_rebuilds_live_nested_input(
     qtbot,
     manager_context: Callable[

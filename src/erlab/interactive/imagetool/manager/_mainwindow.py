@@ -3882,6 +3882,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _reload_incompatibility_details(
         current: xr.DataArray, rebuilt: xr.DataArray
     ) -> str:
+        current, rebuilt = (
+            erlab.interactive.imagetool.slicer._cursor_compatibility_pair(
+                current, rebuilt
+            )
+        )
         lines = [
             f"Current dims: {tuple(current.dims)} shape {tuple(current.shape)}",
             f"Reloaded dims: {tuple(rebuilt.dims)} shape {tuple(rebuilt.shape)}",
