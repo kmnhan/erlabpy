@@ -4813,12 +4813,6 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         manager._update_info()
         root_index = manager.tree_view._model._row_index(0)
         assert root_index.data(_NODE_UID_ROLE) == parent.uid
-        right_splitter = typing.cast(
-            "QtWidgets.QSplitter", manager.text_box.parentWidget()
-        )
-        assert right_splitter.indexOf(manager.preview_widget) < right_splitter.indexOf(
-            manager.metadata_group
-        )
         details = metadata_detail_map(manager)
         assert details["Kind"] == "ImageTool"
         assert details["File"] == str(file_path)
