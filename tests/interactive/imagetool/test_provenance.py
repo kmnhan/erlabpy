@@ -304,14 +304,112 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         )
 
 
-def test_registered_provenance_operations_define_derivation_entries() -> None:
+def test_registered_provenance_operations_define_operation_code_api() -> None:
     prov = erlab.interactive.imagetool.provenance
 
-    assert [
-        op
+    structured_operation_types = [
+        operation_type
         for op, operation_type in prov._OPERATION_TYPES.items()
-        if "derivation_entry" not in operation_type.__dict__
+        if op != "script_code"
+    ]
+    assert [
+        operation_type
+        for operation_type in structured_operation_types
+        if "derivation_label" not in operation_type.__dict__
     ] == []
+    assert [
+        operation_type
+        for operation_type in structured_operation_types
+        if "expression_code" not in operation_type.__dict__
+    ] == []
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"x": slice(0, 2)}),
+        erlab.interactive.imagetool.provenance.SelOperation(kwargs={"y": 11.0}),
+        erlab.interactive.imagetool.provenance.DivideByCoordOperation(
+            coord_name="scale"
+        ),
+        erlab.interactive.imagetool.provenance.CoarsenOperation(
+            dim={"x": 2},
+            boundary="trim",
+            side="left",
+            coord_func="mean",
+            reducer="mean",
+        ),
+        erlab.interactive.imagetool.provenance.ThinOperation(
+            mode="per_dim",
+            factors={"y": 2},
+        ),
+    ],
+)
+def test_operation_replay_code_uses_requested_names(
+    operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+) -> None:
+    data = _base_data().drop_vars("x_alt").assign_coords(scale=("x", [1.0, 2.0, 3.0]))
+
+    code = operation.replay_code("data", output_name="result", source_name="source")
+    assert "derived" not in code
+
+    namespace = _exec_generated_code(
+        code,
+        {
+            "data": data.copy(deep=True),
+            "source": data.copy(deep=True),
+        },
+    )
+    xr.testing.assert_identical(
+        namespace["result"],
+        operation.apply(data, parent_data=data),
+    )
+
+
+def test_operation_replay_code_passes_source_context() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    parent = _base_data()
+    child = parent.transpose("z", "x", "y")
+    operation = prov.SortCoordOrderOperation()
+
+    code = operation.replay_code("child", output_name="result", source_name="parent")
+    assert "parent.coords.keys()" in code
+    assert "derived" not in code
+
+    namespace = _exec_generated_code(
+        code,
+        {
+            "child": child.copy(deep=True),
+            "parent": parent.copy(deep=True),
+        },
+    )
+    xr.testing.assert_identical(
+        namespace["result"],
+        operation.apply(child, parent_data=parent),
+    )
+
+
+def test_operations_expression_code_chains_without_relay_assignments() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().assign_coords(scale=("x", [1.0, 2.0, 3.0]))
+    operations = (
+        prov.DivideByCoordOperation(coord_name="scale"),
+        prov.IselOperation(kwargs={"x": slice(0, 2)}),
+    )
+
+    code = prov.operations_expression_code(operations, "data")
+    assert code.startswith("(data / data.scale).isel(")
+    assert "derived" not in code
+
+    namespace = _exec_generated_code(
+        f"result = {code}",
+        {"data": data.copy(deep=True)},
+    )
+    expected = operations[1].apply(
+        operations[0].apply(data, parent_data=data),
+        parent_data=data,
+    )
+    xr.testing.assert_identical(namespace["result"], expected)
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
@@ -1276,6 +1374,21 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     simplified_namespace = _exec_generated_code(simplified, {"data": 3})
     assert simplified_namespace["result"] == 5
     assert "derived" not in simplified_namespace
+    assert (
+        prov._simplify_display_code(
+            "derived = data\nscale = 2\nleft, right = (data * scale, data + 1)",
+            inline_targets={"derived"},
+        )
+        == "scale = 2\nleft, right = (data * scale, data + 1)"
+    )
+    assert (
+        prov._simplify_display_code(
+            "left, right = (data - 1, data + 1)\n"
+            "derived = left\n"
+            "derived = derived.sel(x=0)"
+        )
+        == "left, right = (data - 1, data + 1)\nderived = left.sel(x=0)"
+    )
     invalidated_namespace = _exec_generated_code(
         prov._simplify_display_code(
             "derived = data + 1\ndata = other\nresult = derived"
@@ -1426,7 +1539,9 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
     monkeypatch.setattr(
         erlab.interactive.utils,
         "generate_code",
-        lambda *_args, assign=None, **_kwargs: f"{assign} = generated()",
+        lambda *_args, assign=None, **_kwargs: (
+            "generated()" if assign is None else f"{assign} = generated()"
+        ),
     )
     assert (
         prov.RotateOperation(angle=45.0, axes=("x", "y"), center=(0.0, 0.0))
@@ -2019,8 +2134,9 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     watched_composed = prov.compose_full_provenance(watched_parent, default_seed_local)
     assert watched_composed is not None
     assert watched_composed.derivation_code() == (
-        "derived = watched_data\nderived = watched_data\nresult = derived.mean()"
+        "derived = watched_data\nresult = derived.mean()"
     )
+    assert watched_composed.display_code() == "result = watched_data.mean()"
 
     result_parent = prov.script(
         prov.ScriptCodeOperation(
@@ -2177,8 +2293,9 @@ def test_script_input_code_reuses_shared_file_replay_prefix(
 
     assert code.count("xarray.load_dataarray") == 1
     assert code.count(".qsel.mean") == 1
-    assert "data_0 =" in code
-    assert "data_1 =" in code
+    assert "data_0 =" not in code
+    assert "data_1 =" not in code
+    assert "restore_nonuniform_dims" not in code
     namespace = _exec_generated_code(code, {})
     expected = left_stage.apply(shared_stage.apply(source)) - right_stage.apply(
         shared_stage.apply(source)

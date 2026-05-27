@@ -153,6 +153,9 @@ class _DataManipulationDialog(QtWidgets.QDialog):
         # Overridden by subclasses
         return ""
 
+    def _copy_data_name(self) -> str:
+        return self.slicer_area.watched_data_name or "data"
+
 
 class DataTransformDialog(_DataManipulationDialog):
     """Parent class for implementing data changes that affect both shape and values.
@@ -164,7 +167,8 @@ class DataTransformDialog(_DataManipulationDialog):
 
     - Override method `process_data` to implement the data transformation.
 
-    - Override method `make_code` to generate code that can be copied to the clipboard.
+    - Override `source_transform_operation` or `source_operations` to generate
+      operation-backed copy code, or override `make_code` only for non-operation code.
 
     - Override attribute `title` to set the title of the dialog window.
 
@@ -392,6 +396,15 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return self._apply_source_transform(data)
+
+    def make_code(self) -> str:
+        try:
+            return erlab.interactive.imagetool.provenance.operations_expression_code(
+                self.source_operations(),
+                self._copy_data_name(),
+            )
+        except Exception:
+            return ""
 
     def _itool_kwargs(self, processed) -> dict[str, typing.Any]:
         itool_kw: dict[str, typing.Any] = {
@@ -676,15 +689,6 @@ class RotationDialog(DataTransformDialog):
             **self._rotate_params
         )
 
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or " "
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.transform.rotate,
-            [f"|{placeholder}|"],
-            self._rotate_params,
-            module="era.transform",
-        )
-
 
 class AggregateDialog(DataTransformDialog):
     title = "Aggregate Over Dimensions"
@@ -737,6 +741,8 @@ class AggregateDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        if not self._target_dims:
+            raise ValueError("No dimensions selected")
         return erlab.interactive.imagetool.provenance.QSelAggregationOperation(
             dims=self._target_dims,
             func=self._reducer,
@@ -762,15 +768,6 @@ class AggregateDialog(DataTransformDialog):
             return
 
         super().accept()
-
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or ""
-        arg = (
-            erlab.interactive.utils._parse_single_arg(self._target_dims[0])
-            if len(self._target_dims) == 1 and isinstance(self._target_dims[0], str)
-            else erlab.interactive.utils._parse_single_arg(self._target_dims)
-        )
-        return f"{placeholder}.qsel.{self._reducer}({arg})"
 
 
 AverageDialog = AggregateDialog
@@ -1103,18 +1100,6 @@ class SelectionDialog(DataTransformDialog):
             data = data.qsel(qsel_kwargs)
         return data
 
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or ""
-        code = placeholder
-        for method, kwargs in zip(
-            ("isel", "sel", "qsel"),
-            self._selection_kwargs(),
-            strict=True,
-        ):
-            if kwargs:
-                code += f".{method}({erlab.interactive.utils.format_kwargs(kwargs)})"
-        return code
-
     @QtCore.Slot()
     @QtCore.Slot(int)
     @QtCore.Slot(bool)
@@ -1282,6 +1267,9 @@ class InterpolationDialog(DataTransformDialog):
         dim = self._selected_dim
         if dim is None:
             raise ValueError("No dimension selected")
+        source_error = self._source_coord_error(dim)
+        if source_error is not None:
+            raise ValueError(source_error)
         return erlab.interactive.imagetool.provenance.InterpolationOperation(
             dim=dim,
             values=self._target_values(),
@@ -1320,17 +1308,6 @@ class InterpolationDialog(DataTransformDialog):
             return
 
         super().accept()
-
-    def make_code(self) -> str:
-        dim = self._selected_dim
-        if dim is None or self._source_coord_error(dim) is not None:
-            return ""
-        try:
-            operation = self.source_transform_operation()
-        except Exception:
-            return ""
-        placeholder = self.slicer_area.watched_data_name or ""
-        return operation.code(placeholder)
 
 
 class LeadingEdgeDialog(DataTransformDialog):
@@ -1416,6 +1393,9 @@ class LeadingEdgeDialog(DataTransformDialog):
         dim = self._selected_dim
         if dim is None:
             raise ValueError("No dimension selected")
+        source_error = self._source_coord_error(dim)
+        if source_error is not None:
+            raise ValueError(source_error)
         return erlab.interactive.imagetool.provenance.LeadingEdgeOperation(
             fraction=float(self.fraction_spin.value()),
             dim=dim,
@@ -1441,17 +1421,6 @@ class LeadingEdgeDialog(DataTransformDialog):
             return
 
         super().accept()
-
-    def make_code(self) -> str:
-        dim = self._selected_dim
-        if dim is None or self._source_coord_error(dim) is not None:
-            return ""
-        try:
-            operation = self.source_transform_operation()
-        except Exception:
-            return ""
-        placeholder = self.slicer_area.watched_data_name or "data"
-        return operation.code(placeholder)
 
 
 class CoarsenDialog(DataTransformDialog):
@@ -1555,18 +1524,11 @@ class CoarsenDialog(DataTransformDialog):
     def _reducer(self) -> str:
         return self.reducer_combo.currentText()
 
-    @property
-    def _coarsen_kwargs(self) -> dict[str, typing.Any]:
-        kwargs: dict[str, typing.Any] = {}
-        kwargs["dim"] = self._selected_windows
-        kwargs["boundary"] = self.boundary_combo.currentText()
-        kwargs["side"] = self.side_combo.currentText()
-        kwargs["coord_func"] = self._coord_func
-        return kwargs
-
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        if not self._selected_windows:
+            raise ValueError("No dimensions selected")
         return erlab.interactive.imagetool.provenance.CoarsenOperation(
             dim=self._selected_windows,
             boundary=self.boundary_combo.currentText(),
@@ -1617,29 +1579,6 @@ class CoarsenDialog(DataTransformDialog):
                 return
 
         super().accept()
-
-    def make_code(self) -> str:
-        if not self._selected_windows:
-            return ""
-        placeholder = self.slicer_area.watched_data_name or ""
-
-        kwargs = self._coarsen_kwargs.copy()
-        if all(
-            erlab.interactive.utils._is_kwarg_name(k)
-            for k in self._coarsen_kwargs["dim"]
-        ):  # pragma: no branch
-            window_kwargs = kwargs.pop("dim")
-            kwargs = dict(**window_kwargs, **kwargs)
-
-        return (
-            erlab.interactive.utils.generate_code(
-                type(self._source_data).coarsen,
-                args=[],
-                kwargs=kwargs,
-                module=placeholder,
-            )
-            + f".{self._reducer}()"
-        )
 
 
 class ThinDialog(DataTransformDialog):
@@ -1744,9 +1683,13 @@ class ThinDialog(DataTransformDialog):
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
         if self._use_global_mode:
+            if self.global_spin.value() <= 1:
+                raise ValueError("No thinning requested")
             return erlab.interactive.imagetool.provenance.ThinOperation(
                 mode="global", factor=self.global_spin.value()
             )
+        if not self._effective_factors:
+            raise ValueError("No thinning requested")
         return erlab.interactive.imagetool.provenance.ThinOperation(
             mode="per_dim", factors=self._effective_factors
         )
@@ -1770,18 +1713,6 @@ class ThinDialog(DataTransformDialog):
             return
 
         super().accept()
-
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or ""
-        if self._use_global_mode:
-            if self.global_spin.value() <= 1:
-                return ""
-            return f"{placeholder}.thin({self.global_spin.value()})"
-
-        if not self._effective_factors:
-            return ""
-        kwargs = erlab.interactive.utils.format_call_kwargs(self._effective_factors)
-        return f"{placeholder}.thin({kwargs})"
 
 
 class SymmetrizeDialog(DataTransformDialog):
@@ -1887,15 +1818,6 @@ class SymmetrizeDialog(DataTransformDialog):
             **self._params
         )
 
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or " "
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.transform.symmetrize,
-            [f"|{placeholder}|"],
-            self._params,
-            module="era.transform",
-        )
-
 
 class SymmetrizeNfoldDialog(DataTransformDialog):
     title = "Rotational Symmetrize"
@@ -1984,15 +1906,6 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
             **self._params
         )
 
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or " "
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.transform.symmetrize_nfold,
-            [f"|{placeholder}|"],
-            self._params,
-            module="era.transform",
-        )
-
 
 class EdgeCorrectionDialog(DataTransformDialog):
     title = "Edge Correction"
@@ -2065,22 +1978,6 @@ class _BaseCropDialog(DataTransformDialog):
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
         return data.sel(self._slice_kwargs)
-
-    def make_code(self) -> str:
-        sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
-        isel_kwargs: dict[Hashable, slice] = {}
-
-        for k in list(sel_kwargs.keys()):
-            if isinstance(k, str) and k.endswith("_idx"):
-                isel_kwargs[k.removesuffix("_idx")] = sel_kwargs.pop(k)
-
-        out: str = self.slicer_area.watched_data_name or ""
-        if sel_kwargs:
-            out += f".sel({erlab.interactive.utils.format_kwargs(sel_kwargs)})"
-        if isel_kwargs:
-            out += f".isel({erlab.interactive.utils.format_kwargs(isel_kwargs)})"
-
-        return out
 
 
 class CropToViewDialog(_BaseCropDialog):
@@ -2428,16 +2325,6 @@ class DivideByCoordDialog(DataTransformDialog):
             coord_name=coord_name
         )
 
-    def make_code(self) -> str:
-        coord_name = self._selected_coord_name
-        if coord_name is None:
-            return ""
-        placeholder = self.slicer_area.watched_data_name or "data"
-        operation = erlab.interactive.imagetool.provenance.DivideByCoordOperation(
-            coord_name=coord_name
-        )
-        return f"{placeholder} / {operation.divisor_code(placeholder)}"
-
 
 class GaussianFilterDialog(DataFilterDialog):
     title = "Gaussian Filter"
@@ -2620,10 +2507,9 @@ class GaussianFilterDialog(DataFilterDialog):
         if not sigma_literals:
             return ""
 
-        placeholder = self.slicer_area.watched_data_name or " "
         return erlab.interactive.utils.generate_code(
             erlab.analysis.image.gaussian_filter,
-            [f"|{placeholder}|"],
+            [f"|{self._copy_data_name()}|"],
             {"sigma": {dim: f"|{literal}|" for dim, literal in sigma_literals.items()}},
             module="era.image",
         )
@@ -2729,17 +2615,11 @@ class SwapDimsDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        if not self._swap_mapping:
+            raise ValueError("No dimensions changed")
         return erlab.interactive.imagetool.provenance.SwapDimsOperation(
             mapping=self._swap_mapping
         )
-
-    def make_code(self) -> str:
-        if not self._swap_mapping:
-            return ""
-
-        placeholder = self.slicer_area.watched_data_name or ""
-        kwargs = erlab.interactive.utils.format_call_kwargs(self._swap_mapping)
-        return f"{placeholder}.swap_dims({kwargs})"
 
 
 class RenameDimsCoordsDialog(DataTransformDialog):
@@ -2866,17 +2746,11 @@ class RenameDimsCoordsDialog(DataTransformDialog):
     def source_transform_operation(
         self,
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+        if not self._rename_mapping:
+            raise ValueError("No names changed")
         return erlab.interactive.imagetool.provenance.RenameDimsCoordsOperation(
             mapping=typing.cast("dict[Hashable, Hashable]", self._rename_mapping)
         )
-
-    def make_code(self) -> str:
-        if not self._rename_mapping:
-            return ""
-
-        placeholder = self.slicer_area.watched_data_name or ""
-        kwargs = erlab.interactive.utils.format_call_kwargs(self._rename_mapping)
-        return f"{placeholder}.rename({kwargs})"
 
 
 class AssignCoordsDialog(DataTransformDialog):
@@ -3377,15 +3251,6 @@ class ROIPathDialog(DataTransformDialog):
             **self._params
         )
 
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or " "
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.interpolate.slice_along_path,
-            [f"|{placeholder}|"],
-            self._params,
-            module="era.interpolate",
-        )
-
 
 class ROIMaskDialog(DataTransformDialog):
     title = "Mask with ROI"
@@ -3433,13 +3298,4 @@ class ROIMaskDialog(DataTransformDialog):
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
         return erlab.interactive.imagetool.provenance.MaskWithPolygonOperation(
             **self._params
-        )
-
-    def make_code(self) -> str:
-        placeholder = self.slicer_area.watched_data_name or " "
-        return erlab.interactive.utils.generate_code(
-            erlab.analysis.mask.mask_with_polygon,
-            [f"|{placeholder}|"],
-            self._params,
-            module="era.mask",
         )

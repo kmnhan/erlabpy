@@ -539,13 +539,13 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
 
     code = win.copy_code()
 
-    assert "target = my_data.astype(np.float64)" in code
-    assert "target.kspace.set_normal(" in code
-    assert "target_kconv = target.kspace.convert(" in code
+    assert "input_data = my_data.astype(np.float64)" in code
+    assert "input_data.kspace.set_normal(" in code
+    assert "input_data_kconv = input_data.kspace.convert(" in code
     assert "astype(np.float64)_kconv" not in code
     namespace = {"my_data": data.copy(deep=True), "np": np}
     exec(code, {"__builtins__": {}, "np": np}, namespace)  # noqa: S102
-    assert "target_kconv" in namespace
+    assert "input_data_kconv" in namespace
 
 
 def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:

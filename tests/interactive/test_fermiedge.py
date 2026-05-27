@@ -108,7 +108,7 @@ def test_goldtool(
 
         xr.testing.assert_identical(
             w.result.drop_vars("modelfit_results"),
-            namespace["modelresult"].drop_vars("modelfit_results"),
+            namespace["model_result"].drop_vars("modelfit_results"),
         )
         xr.testing.assert_identical(
             w.result.drop_vars("modelfit_results"),
@@ -233,9 +233,9 @@ def test_goldtool_copy_code_includes_separate_data_corr(qtbot, gold) -> None:
 
     code = win.current_provenance_spec().display_code()
     assert code is not None
-    assert code.startswith(
-        "corrected = era.gold.correct_with_edge(corr_data, era.gold.poly(gold_data, "
-    )
+    assert "model_result = era.gold.poly(" in code
+    assert "corrected = era.gold.correct_with_edge(corr_data, model_result)" in code
+    assert "modelresult" not in code
 
 
 def test_goldtool_roi_limits_descending_coords(qtbot, gold) -> None:

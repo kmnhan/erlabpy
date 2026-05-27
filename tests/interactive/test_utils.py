@@ -1281,7 +1281,7 @@ def test_tool_window_dynamic_expression_provenance_uses_input_provenance(qtbot) 
     assert spec.active_name == "right"
     code = spec.display_code()
     assert code is not None
-    assert "derived = watched" in code
+    assert "derived = watched" not in code
     assert "scale = 2" in code
     assert "left, right = (watched * scale, watched + 1)" in code
 

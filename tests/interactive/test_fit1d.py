@@ -104,6 +104,7 @@ def test_ftool_1d_param_edit_and_state(qtbot) -> None:
     code = win.copy_code()
     assert "modelfit" in code
     assert "MultiPeakModel" in code
+    assert "fit_data" not in code
 
 
 def test_fit1d_undo_redo(qtbot, exp_decay_model) -> None:

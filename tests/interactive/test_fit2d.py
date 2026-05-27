@@ -354,6 +354,12 @@ def test_fit2d_full_provenance_handles_spaced_fit_axis(qtbot) -> None:
     assert win.current_provenance_spec() is not None
     prelude = win._detached_full_copy_prelude(input_name="derived_crop")
     assert prelude is not None
+    assert "fit_data" not in prelude
+
+    display_code = win.current_provenance_spec().display_code()
+    assert display_code is not None
+    assert "fit_data" not in display_code
+    assert ".xlm.modelfit" in display_code
 
     namespace = {"derived_crop": data}
     exec(  # noqa: S102

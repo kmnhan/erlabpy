@@ -1189,7 +1189,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         )
         return erlab.interactive.utils.generate_code(
             erlab.analysis.gold.correct_with_edge,
-            args=[f"|{corrected_target}|", "|modelresult|"],
+            args=[f"|{corrected_target}|", "|model_result|"],
             kwargs={"along": self._along_dim, "shift_coords": p1["Shift coords"]},
             module="era.gold",
         )
@@ -1226,7 +1226,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        return "corrected" if self.data_corr is not None else "modelresult"
+        return "corrected" if self.data_corr is not None else "model_result"
 
     def _current_mode_corrected_label(
         self,
@@ -1260,7 +1260,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
     ) -> str:
         if self.data_corr is None:
             return ""
-        return "modelresult = " + self._fit_expression(
+        return "model_result = " + self._fit_expression(
             self._current_fit_mode(),
             input_name=input_name,
         )
@@ -1271,7 +1271,7 @@ class GoldTool(erlab.interactive.utils.AnalysisWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> str:
-        return "modelresult = " + self._fit_expression(
+        return "model_result = " + self._fit_expression(
             self._current_fit_mode(),
             input_name=input_name,
         )

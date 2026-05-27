@@ -116,7 +116,7 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     win.sn_spin.setValue(2)
     code = win.copy_code()
     assert "\t" not in code
-    assert "for _ in range(2):\n    _processed = era.image.gaussian_filter(" in code
+    assert "for _ in range(2):\n    processed = era.image.gaussian_filter(" in code
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     assert isinstance(namespace["result"], xr.DataArray)
     xr.testing.assert_identical(win.result, namespace["result"])

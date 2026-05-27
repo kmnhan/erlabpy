@@ -46,6 +46,12 @@ Pytest enforces strict markers and `xfail_strict`; name files `test_<feature>.py
 - Tests and monkeypatched stubs must implement the current runtime contract. Do not add production fallbacks or compatibility branches only to accommodate outdated fake objects in tests.
 - Do not assert user-facing text label content in tests; prefer stable metadata, object names, roles, or behavioral state. When testing generated or copied code, execute the code with `exec()` in an explicit namespace and assert the produced object/value exactly matches the expected result. Do not compare copied code strings or formatting unless the exact text is the behavior under test.
 
+## Generated Code & Provenance
+
+User-facing generated/copied/replay code must be as clean and direct as possible. Treat readability of generated code as product behavior, not a cosmetic afterthought. Copied code is also teaching material for users moving between scripts and the GUI, so prefer public APIs, semantic variable names, complete expressions, and best-practice examples. Avoid meaningless relay assignments, repeated scratch variables, reused generic names such as `derived` across unrelated subexpressions, leaked internal manager helpers, and temporaries that do not carry semantic value. Prefer semantic names from watched variables, console assignments, provenance inputs, or visible actions, and inline one-use aliases when it is safe to do so.
+
+When changing provenance or code-generation paths, scan the emitted code for redundant reassignments and internal implementation details. Add property-style tests for cleanliness when it is the behavior under test, while still executing the generated code and asserting the resulting object/value exactly.
+
 ## Interactive Qt Notes
 
 - All Qt-facing runtime code and tests must behave the same under both PyQt6 and PySide6. Prefer `qtpy` APIs that are binding-neutral, avoid binding-specific signal/metaobject assumptions, and when lower-level Qt behavior is unavoidable, add a compatibility helper and validate the touched path under both bindings.

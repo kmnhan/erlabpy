@@ -513,11 +513,11 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
                     args=[],
                     kwargs=arg_dict,
                     module=data_name,
-                    assign="_processed",
+                    assign="processed",
                 )
             )
 
-            data_name = "_processed"
+            data_name = "processed"
 
         if self.smooth_group.isChecked():
             match self.smooth_combo.currentIndex():
@@ -537,17 +537,17 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
                     [f"|{data_name}|"],
                     smooth_kwargs,
                     module="era.image",
-                    assign="_processed",
+                    assign="processed",
                 )
                 lines.append(smooth_func_code)
             else:
-                lines.append(f"_processed = {data_name}.copy()")
+                lines.append(f"processed = {data_name}.copy()")
                 smooth_func_code = erlab.interactive.utils.generate_code(
                     smooth_func,
-                    ["|_processed|"],
+                    ["|processed|"],
                     smooth_kwargs,
                     module="era.image",
-                    assign="_processed",
+                    assign="processed",
                 )
                 lines.extend(
                     (
@@ -555,7 +555,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
                         textwrap.indent(smooth_func_code, "    "),
                     )
                 )
-            data_name = "_processed"
+            data_name = "processed"
 
         lines.append(
             erlab.interactive.utils.generate_code(
