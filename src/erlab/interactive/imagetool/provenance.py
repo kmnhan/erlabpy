@@ -1196,6 +1196,11 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         """Apply this operation to the current derived array.
 
+        Subclasses that participate in live refresh or executable provenance replay
+        should reimplement this method. The implementation must be deterministic for
+        the operation's stored model fields and must not mutate ``data`` or
+        ``parent_data`` in place.
+
         Parameters
         ----------
         data
@@ -1219,6 +1224,20 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     def derivation_entry(self) -> DerivationEntry:
         """Return the user-visible derivation entry for this operation.
 
+        Structured transform subclasses should normally reimplement
+        :meth:`derivation_label` and :meth:`expression_code` instead of overriding this
+        method. Override this method only for operations whose display entry cannot be
+        represented as a label plus parameterized operation code, such as stored
+        free-form script code.
+
+        Returns
+        -------
+        DerivationEntry
+            Label, replay code, and copyability flag shown in derivation UI and used by
+            legacy derivation-code paths.
+
+        Notes
+        -----
         The base implementation keeps the legacy ``derived`` replay contract while
         letting concrete operations emit expression code for any input variable.
 
@@ -1233,13 +1252,47 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         )
 
     def derivation_label(self) -> str:
-        """Return the derivation-list label for this operation."""
+        """Return the derivation-list label for this operation.
+
+        Subclasses should reimplement this for every structured operation that uses
+        the base :meth:`derivation_entry` implementation.
+
+        Returns
+        -------
+        str
+            Human-readable operation label for derivation/history UI. Include the
+            operation's meaningful parameters when they help explain the produced
+            data.
+        """
         raise NotImplementedError
 
     def expression_code(
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
-        """Return a Python expression applying this operation to ``input_name``."""
+        """Return a Python expression applying this operation to an input name.
+
+        Subclasses should reimplement this for every structured operation that can be
+        represented as ordinary user-facing Python code. The emitted expression should
+        be complete, public-API-based, and free of assignment to hardcoded temporary
+        names.
+
+        Parameters
+        ----------
+        input_name
+            Python expression or identifier for the array produced by the previous
+            replay step. Use this exact value as the operation receiver/input instead
+            of assuming a variable name such as ``derived``.
+        source_name
+            Python expression or identifier for the original public input array for
+            the enclosing replay sequence. Operations that need parent/source context,
+            such as coordinate-order restoration, should use this name for that
+            context. Operations that only transform ``input_name`` may ignore it.
+
+        Returns
+        -------
+        str
+            Python expression that evaluates to the transformed DataArray.
+        """
         raise NotImplementedError
 
     def replay_code(
@@ -1249,7 +1302,30 @@ class ToolProvenanceOperation(pydantic.BaseModel):
         output_name: str | None = None,
         source_name: str | None = None,
     ) -> str:
-        """Return replay code for this operation with caller-selected names."""
+        """Return replay code for this operation with caller-selected names.
+
+        This method usually should not be reimplemented by subclasses. Implement
+        :meth:`expression_code` instead so replay graph emission, dialog copy code, and
+        derivation entries all share the same operation expression.
+
+        Parameters
+        ----------
+        input_name
+            Python expression or identifier for the array produced by the previous
+            replay step.
+        output_name
+            Variable name to assign the transformed value to. If ``None``, return only
+            the expression from :meth:`expression_code`.
+        source_name
+            Python expression or identifier for the original public input array for
+            the enclosing replay sequence. Passed through to :meth:`expression_code`.
+
+        Returns
+        -------
+        str
+            Either an assignment statement when ``output_name`` is provided, or a bare
+            expression when it is ``None``.
+        """
         expression = self.expression_code(input_name, source_name=source_name)
         if output_name is None:
             return expression
@@ -1257,6 +1333,26 @@ class ToolProvenanceOperation(pydantic.BaseModel):
 
     @classmethod
     def from_console_call(cls, call: ConsoleCall) -> ToolProvenanceOperation | None:
+        """Build an operation from a normalized manager-console call.
+
+        Subclasses should reimplement this when a console call maps cleanly to the
+        operation but cannot be expressed with declarative ``console_patterns`` alone.
+        Return ``None`` for unsupported, ambiguous, or lossy calls so the original
+        console code remains recorded as script provenance.
+
+        Parameters
+        ----------
+        call
+            Normalized descriptor for the function, method, or accessor call observed
+            by the ImageTool manager console, including unwrapped arguments, keyword
+            arguments, display code, and receiver data when available.
+
+        Returns
+        -------
+        ToolProvenanceOperation or None
+            Operation instance when the call is exactly representable by this
+            operation class; otherwise ``None``.
+        """
         for pattern in cls.console_patterns:
             values = pattern.match(call)
             if values is None:
