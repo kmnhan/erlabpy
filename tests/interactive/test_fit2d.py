@@ -1169,6 +1169,27 @@ def test_fit2d_reset_params_all(qtbot, monkeypatch) -> None:
     assert all(not mapping for mapping in win._params_from_coord_full)
 
 
+def test_fit2d_full_copy_fit_data_name_with_domain_and_normalization(qtbot) -> None:
+    data = _make_2d_data()
+    win = erlab.interactive.ftool(data, execute=False)
+    qtbot.addWidget(win)
+    assert isinstance(win, Fit2DTool)
+
+    win.domain_min_line.setValue(-0.5)
+    win.domain_max_line.setValue(0.5)
+    win.normalize_check.setChecked(True)
+
+    lines: list[str] = []
+    result_name = win._full_copy_fit_data_name("data", lines=lines)
+
+    assert result_name == "data_crop_norm"
+    assert len(lines) == 2
+    assert lines[0].startswith("data_crop = data.sel(")
+    assert ".isel(" in lines[0]
+    assert lines[1] == 'data_crop_norm = data_crop / data_crop.mean("x")'
+    assert win._full_copy_fit_data_name("data") == "data_crop_norm"
+
+
 def test_fit2d_copy_code_full_inconsistent_expr_warning(qtbot, monkeypatch) -> None:
     data = _make_2d_data()
     win = erlab.interactive.ftool(data, execute=False)

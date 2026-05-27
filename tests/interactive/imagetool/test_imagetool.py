@@ -172,6 +172,76 @@ def test_operation_backed_transform_dialogs_use_base_make_code() -> None:
     assert "make_code" not in NormalizeDialog.__dict__
 
 
+def test_operation_backed_dialog_empty_operation_edges(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    filter_dialog = imagetool_dialogs.DataFilterDialog(win.slicer_area)
+    qtbot.addWidget(filter_dialog)
+    assert filter_dialog.filter_operation() is None
+    assert filter_dialog.filter_operations() == []
+
+    def _raise_expression_code(*_args, **_kwargs) -> str:
+        raise RuntimeError("cannot emit")
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.provenance,
+        "operations_expression_code",
+        _raise_expression_code,
+    )
+    assert filter_dialog.make_code() == ""
+
+    aggregate_dialog = AggregateDialog(win.slicer_area)
+    qtbot.addWidget(aggregate_dialog)
+    for check in aggregate_dialog.dim_checks.values():
+        check.setChecked(False)
+    with pytest.raises(ValueError, match="No dimensions selected"):
+        aggregate_dialog.source_transform_operation()
+
+    coarsen_dialog = CoarsenDialog(win.slicer_area)
+    qtbot.addWidget(coarsen_dialog)
+    with pytest.raises(ValueError, match="No dimensions selected"):
+        coarsen_dialog.source_transform_operation()
+
+    thin_dialog = ThinDialog(win.slicer_area)
+    qtbot.addWidget(thin_dialog)
+    thin_dialog.global_radio.setChecked(True)
+    thin_dialog.global_spin.setValue(1)
+    with pytest.raises(ValueError, match="No thinning requested"):
+        thin_dialog.source_transform_operation()
+    thin_dialog.per_dim_radio.setChecked(True)
+    for spin in thin_dialog.factor_spins.values():
+        spin.setValue(1)
+    with pytest.raises(ValueError, match="No thinning requested"):
+        thin_dialog.source_transform_operation()
+
+    normalize_dialog = NormalizeDialog(win.slicer_area)
+    qtbot.addWidget(normalize_dialog)
+    assert normalize_dialog.filter_operation() is None
+    xr.testing.assert_identical(normalize_dialog.process_data(data), data)
+
+    gaussian_dialog = GaussianFilterDialog(win.slicer_area)
+    qtbot.addWidget(gaussian_dialog)
+    assert gaussian_dialog.filter_operation() is None
+
+    swap_dialog = SwapDimsDialog(win.slicer_area)
+    qtbot.addWidget(swap_dialog)
+    with pytest.raises(ValueError, match="No dimensions changed"):
+        swap_dialog.source_transform_operation()
+
+    rename_dialog = RenameDimsCoordsDialog(win.slicer_area)
+    qtbot.addWidget(rename_dialog)
+    with pytest.raises(ValueError, match="No names changed"):
+        rename_dialog.source_transform_operation()
+
+    win.close()
+
+
 def _assert_guideline_state(
     plot_item,
     *,

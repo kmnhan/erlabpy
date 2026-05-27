@@ -51,6 +51,78 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
         xr.testing.assert_identical(namespace["derived"], expected)
 
 
+def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class _StaticToolState(pydantic.BaseModel):
+        value: int = 0
+
+    class _StaticTool(erlab.interactive.utils.ToolWindow[_StaticToolState]):
+        StateModel = _StaticToolState
+        tool_name = "static-dummy"
+
+        def __init__(
+            self,
+            data: xr.DataArray,
+            provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        ) -> None:
+            super().__init__()
+            self._data = data
+            self._status = _StaticToolState()
+            self._provenance_spec = provenance_spec
+
+        @property
+        def tool_status(self) -> _StaticToolState:
+            return self._status
+
+        @tool_status.setter
+        def tool_status(self, status: _StaticToolState) -> None:
+            self._status = status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> bool:
+            self._data = new_data
+            return True
+
+        def current_provenance_spec(
+            self,
+        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+            return self._provenance_spec
+
+    data = xr.DataArray(np.arange(4.0), dims=("x",))
+    provenance_spec = prov.script(
+        prov.ScriptCodeOperation(label="Double data", code="result = data * 2"),
+        start_label="Start from data",
+        seed_code="data = source",
+        active_name="result",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_uid = manager.add_childtool(
+            _StaticTool(data, provenance_spec),
+            0,
+            show=False,
+        )
+        child_node = manager._child_node(child_uid)
+
+        assert child_node.displayed_provenance_spec == provenance_spec
+
+
 def test_manager_goldtool_output_itool_stales_when_fit_results_change(
     qtbot,
     gold,
