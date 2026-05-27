@@ -165,6 +165,28 @@ class _MetadataDerivationListWidget(QtWidgets.QListWidget):
         super().keyPressEvent(event)
 
 
+class _HeightForWidthFrame(QtWidgets.QFrame):
+    def sync_height_for_width(self) -> None:
+        if self.isVisible() and self.hasHeightForWidth() and self.width() > 0:
+            height = self.heightForWidth(self.width())
+            self.setMinimumHeight(height)
+            self.setMaximumHeight(height)
+        else:
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(QtWidgets.QWIDGETSIZE_MAX)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QtCore.QSize:
+        hint = super().sizeHint()
+        if self.hasHeightForWidth() and self.width() > 0:
+            hint.setHeight(self.heightForWidth(self.width()))
+        return hint
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self.sync_height_for_width()
+
+
 class _ElidedInteractiveLabel(QtWidgets.QLabel):
     clicked = QtCore.Signal()
 
@@ -1402,8 +1424,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         left_layout.addWidget(self.tree_view)
 
         # Construct right side of splitter
+        right_panel = QtWidgets.QWidget(self)
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+        main_splitter.addWidget(right_panel)
+
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        main_splitter.addWidget(right_splitter)
+        right_layout.addWidget(right_splitter, 1)
 
         self.text_box = QtWidgets.QTextEdit(self)
         self.text_box.setReadOnly(True)
@@ -1412,7 +1440,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.preview_widget = _SingleImagePreview(self)
         right_splitter.addWidget(self.preview_widget)
 
-        self.metadata_group = QtWidgets.QFrame(self)
+        self.metadata_group = _HeightForWidthFrame(self)
         self.metadata_group.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.metadata_group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -1423,7 +1451,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         metadata_layout.setSpacing(4)
         self.metadata_group.setLayout(metadata_layout)
 
-        self.metadata_details_widget = QtWidgets.QWidget(self.metadata_group)
+        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_group)
         self.metadata_details_layout = QtWidgets.QGridLayout(
             self.metadata_details_widget
         )
@@ -1469,10 +1497,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.metadata_derivation_list.setVisible(False)
         metadata_layout.addWidget(self.metadata_derivation_list)
-        right_splitter.addWidget(self.metadata_group)
+        right_layout.addWidget(self.metadata_group, 0)
 
         # Set initial splitter sizes
-        right_splitter.setSizes([280, 140, 96])
+        right_splitter.setSizes([280, 140])
         main_splitter.setSizes([100, 150])
 
         # Store most recent name filter and directory for new windows
@@ -3228,10 +3256,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
                 )
                 if field.wrap:
-                    value_label.setSizePolicy(
+                    size_policy = QtWidgets.QSizePolicy(
                         QtWidgets.QSizePolicy.Policy.Expanding,
                         QtWidgets.QSizePolicy.Policy.Preferred,
                     )
+                    size_policy.setHeightForWidth(True)
+                    value_label.setSizePolicy(size_policy)
             if field.monospace:
                 value_label.setFont(self._metadata_monospace_font)
             self.metadata_details_layout.addWidget(key_label, row, 0)
@@ -3297,16 +3327,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if derivation_count == 0:
             self.metadata_derivation_list.setMinimumHeight(0)
             self.metadata_derivation_list.setMaximumHeight(0)
-            return
+        else:
+            row_height = self.metadata_derivation_list.sizeHintForRow(0)
+            if row_height <= 0:
+                row_height = self.fontMetrics().height() + 8
+            visible_rows = min(derivation_count, 4)
+            frame = self.metadata_derivation_list.frameWidth() * 2
+            height = visible_rows * row_height + frame + 4
+            self.metadata_derivation_list.setMinimumHeight(height)
+            self.metadata_derivation_list.setMaximumHeight(height)
 
-        row_height = self.metadata_derivation_list.sizeHintForRow(0)
-        if row_height <= 0:
-            row_height = self.fontMetrics().height() + 8
-        visible_rows = min(derivation_count, 4)
-        frame = self.metadata_derivation_list.frameWidth() * 2
-        height = visible_rows * row_height + frame + 4
-        self.metadata_derivation_list.setMinimumHeight(height)
-        self.metadata_derivation_list.setMaximumHeight(height)
+        self.metadata_details_widget.updateGeometry()
+        self.metadata_derivation_list.updateGeometry()
+        self.metadata_details_widget.sync_height_for_width()
+        self.metadata_group.sync_height_for_width()
+        self.metadata_group.updateGeometry()
 
     def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
         items = list(self.metadata_derivation_list.selectedItems())

@@ -16410,6 +16410,28 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
             manager._metadata_detail_labels["Inputs"].sizePolicy().verticalPolicy()
             == QtWidgets.QSizePolicy.Policy.Preferred
         )
+        assert (
+            manager.metadata_group.sizePolicy().verticalPolicy()
+            == QtWidgets.QSizePolicy.Policy.Maximum
+        )
+        assert not isinstance(
+            manager.metadata_group.parentWidget(), QtWidgets.QSplitter
+        )
+        metadata_layout = manager.metadata_group.layout()
+        assert metadata_layout is not None
+        assert (
+            manager.metadata_derivation_list.y()
+            == manager.metadata_details_widget.y()
+            + manager.metadata_details_widget.height()
+            + metadata_layout.spacing()
+        )
+        qtbot.wait_until(
+            lambda: (
+                manager.metadata_group.height()
+                <= manager.metadata_group.sizeHint().height() + 1
+            ),
+            timeout=5000,
+        )
         assert "\n" in details["Inputs"]
         assert "\n\n" not in details["Inputs"]
         assert all(line.strip() for line in details["Inputs"].splitlines())
