@@ -616,13 +616,22 @@ class LoaderBase(metaclass=_Loader):
             This argument is only used when `single` is `False`.
         load_kwargs
             Additional keyword arguments to be passed to :meth:`load_single
-            <erlab.io.dataloader.LoaderBase.load_single>`.
+            <erlab.io.dataloader.LoaderBase.load_single>`. You can also pass additional
+            keyword arguments directly to ``load``, and they will be dispatched to
+            either :meth:`identify <erlab.io.dataloader.LoaderBase.identify>` or
+            :meth:`load_single <erlab.io.dataloader.LoaderBase.load_single>` based on
+            their signatures. See the `**kwargs` argument for details.
         loader_extensions
             Temporary extensions to loader attributes, with the same keys accepted by
             :meth:`extend_loader <erlab.io.dataloader.LoaderBase.extend_loader>`.
         **kwargs
             Additional keyword arguments are passed to :meth:`identify
-            <erlab.io.dataloader.LoaderBase.identify>`.
+            <erlab.io.dataloader.LoaderBase.identify>` and :meth:`load_single
+            <erlab.io.dataloader.LoaderBase.load_single>` based on their signatures. If
+            a keyword argument is accepted by both methods, it is passed to
+            :meth:`identify <erlab.io.dataloader.LoaderBase.identify>`. Use the
+            ``load_kwargs`` argument to pass an ambiguous keyword argument to
+            :meth:`load_single <erlab.io.dataloader.LoaderBase.load_single>`.
 
         Returns
         -------
@@ -692,6 +701,24 @@ class LoaderBase(metaclass=_Loader):
         if load_kwargs is None:
             load_kwargs = {}
 
+        identify_kwargs: dict[str, typing.Any] = {}
+        identify_func = getattr(self, "_original_identify", self.identify)
+        load_single_func = getattr(self, "_original_load_single", self.load_single)
+        for key, value in kwargs.items():
+            if key in load_kwargs:
+                raise TypeError(
+                    f"Loader '{self.name}' got keyword argument {key!r} both as a "
+                    "top-level argument and in `load_kwargs`"
+                )
+            if erlab.utils.misc.accepts_kwarg(identify_func, key):
+                identify_kwargs[key] = value
+            elif erlab.utils.misc.accepts_kwarg(load_single_func, key):
+                load_kwargs[key] = value
+            else:
+                raise TypeError(
+                    f"Loader '{self.name}' does not accept keyword argument {key!r}"
+                )
+
         if chunks is not None:
             if hasattr(
                 self, "_original_load_single"
@@ -713,7 +740,7 @@ class LoaderBase(metaclass=_Loader):
             # Identify all files corresponding to the scan number
             file_paths, coord_dict = typing.cast(
                 "tuple[list[str], dict[str, Sequence]]",
-                self.identify(identifier, data_dir, **kwargs),
+                self.identify(identifier, data_dir, **identify_kwargs),
             )  # Return type enforced by metaclass, cast to avoid mypy error
 
             # file_paths is a list of file paths with at least one element and
@@ -775,7 +802,7 @@ class LoaderBase(metaclass=_Loader):
                     # On success, load with the index
                     new_dir: str = os.path.dirname(identifier)
 
-                    new_kwargs = kwargs | additional_kwargs
+                    new_kwargs = identify_kwargs | additional_kwargs
                     new_kwargs.setdefault("single", single)
                     new_kwargs.setdefault("combine", combine)
                     new_kwargs.setdefault("parallel", parallel)

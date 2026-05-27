@@ -9,9 +9,56 @@ import typing
 
 import numpy as np
 import pytest
+import xarray as xr
 
 import erlab
-from erlab.io.dataloader import LoaderNotFoundError, UnsupportedFileError
+from erlab.io.dataloader import LoaderBase, LoaderNotFoundError, UnsupportedFileError
+
+
+class _SignatureRoutingLoader(LoaderBase):
+    name = "_signature_routing"
+    description = "Loader used to test load keyword routing"
+    extensions: typing.ClassVar[set[str]] = {".h5"}
+    skip_validate = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, dict[str, typing.Any]]] = []
+
+    def identify(
+        self,
+        num: int,
+        data_dir: str | os.PathLike,
+        *,
+        identify_only: str | None = None,
+        shared: str | None = None,
+    ):
+        self.calls.append(
+            ("identify", {"identify_only": identify_only, "shared": shared})
+        )
+        return [pathlib.Path(data_dir) / f"data_{num:03}.h5"], {}
+
+    def load_single(
+        self,
+        file_path: str | os.PathLike,
+        *,
+        without_values: bool = False,
+        load_only: str | None = None,
+        shared: str | None = None,
+        chunks: int | None = None,
+    ) -> xr.DataArray:
+        self.calls.append(
+            (
+                "load_single",
+                {
+                    "without_values": without_values,
+                    "load_only": load_only,
+                    "shared": shared,
+                    "chunks": chunks,
+                },
+            )
+        )
+        return xr.DataArray(np.array(1), name=pathlib.Path(file_path).stem)
 
 
 def test_loader(example_loader, example_data_dir: pathlib.Path, monkeypatch) -> None:
@@ -170,6 +217,106 @@ def test_lazy_namespace_exports_shared_loader_registry() -> None:
     assert namespace.extend_loader.__self__ is namespace.loaders
     assert namespace.summarize.__self__ is namespace.loaders
     assert namespace.loaders._lock is namespace.loaders._state.lock
+
+
+def test_top_level_load_keyword_routes_to_load_single(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "data_001.h5").touch()
+    loader = _SignatureRoutingLoader()
+
+    with erlab.io.loader_context(loader, tmp_path):
+        erlab.io.load(1, load_only="loader value")
+
+    assert loader.calls == [
+        ("identify", {"identify_only": None, "shared": None}),
+        (
+            "load_single",
+            {
+                "without_values": False,
+                "load_only": "loader value",
+                "shared": None,
+                "chunks": None,
+            },
+        ),
+    ]
+
+
+def test_top_level_identify_keyword_stays_with_identify(
+    tmp_path: pathlib.Path,
+) -> None:
+    (tmp_path / "data_001.h5").touch()
+    loader = _SignatureRoutingLoader()
+
+    with erlab.io.loader_context(loader, tmp_path):
+        erlab.io.load(1, identify_only="identify value")
+
+    assert loader.calls[0] == (
+        "identify",
+        {"identify_only": "identify value", "shared": None},
+    )
+    assert loader.calls[1][1]["load_only"] is None
+
+
+def test_ambiguous_top_level_keyword_prefers_identify(
+    tmp_path: pathlib.Path,
+) -> None:
+    (tmp_path / "data_001.h5").touch()
+    loader = _SignatureRoutingLoader()
+
+    with erlab.io.loader_context(loader, tmp_path):
+        erlab.io.load(1, shared="identify value")
+
+    assert loader.calls[0] == (
+        "identify",
+        {"identify_only": None, "shared": "identify value"},
+    )
+    assert loader.calls[1][1]["shared"] is None
+
+
+def test_load_kwargs_can_target_ambiguous_keyword(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "data_001.h5").touch()
+    loader = _SignatureRoutingLoader()
+
+    with erlab.io.loader_context(loader, tmp_path):
+        erlab.io.load(1, load_kwargs={"shared": "load value"})
+
+    assert loader.calls[0] == ("identify", {"identify_only": None, "shared": None})
+    assert loader.calls[1][1]["shared"] == "load value"
+
+
+def test_duplicate_top_level_and_load_kwargs_keyword_raises(
+    tmp_path: pathlib.Path,
+) -> None:
+    loader = _SignatureRoutingLoader()
+
+    with (
+        erlab.io.loader_context(loader, tmp_path),
+        pytest.raises(TypeError, match="both as a top-level argument"),
+    ):
+        erlab.io.load(1, load_only="top", load_kwargs={"load_only": "load"})
+
+
+def test_unsupported_top_level_loader_keyword_raises(tmp_path: pathlib.Path) -> None:
+    loader = _SignatureRoutingLoader()
+
+    with (
+        erlab.io.loader_context(loader, tmp_path),
+        pytest.raises(
+            TypeError, match="does not accept keyword argument 'unsupported'"
+        ),
+    ):
+        erlab.io.load(1, unsupported="value")
+
+
+def test_chunks_still_routes_to_load_single(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "data_001.h5").touch()
+    loader = _SignatureRoutingLoader()
+
+    with erlab.io.loader_context(loader, tmp_path):
+        erlab.io.load(1, chunks=4, load_only="loader value")
+
+    assert loader.calls[0] == ("identify", {"identify_only": None, "shared": None})
+    assert loader.calls[1][1]["load_only"] == "loader value"
+    assert loader.calls[1][1]["chunks"] == 4
 
 
 def test_loader_extensions_keyword_matches_context(
