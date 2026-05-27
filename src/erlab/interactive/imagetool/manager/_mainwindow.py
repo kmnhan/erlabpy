@@ -2423,9 +2423,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _resolve_live_script_input_for_reload(
         self,
         script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        *,
+        target_node_uid: str | None = None,
     ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput] | None:
         spec = script_input.parsed_provenance_spec()
         if script_input.node_uid is None:
+            return None
+        if target_node_uid is not None and script_input.node_uid == target_node_uid:
             return None
         node = self._all_nodes.get(script_input.node_uid)
         if node is None:
@@ -2446,9 +2450,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _script_input_can_reload(
         self,
         script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        *,
+        target_node_uid: str | None = None,
     ) -> bool:
         spec = script_input.parsed_provenance_spec()
-        if script_input.node_uid is not None:
+        is_target_input = (
+            target_node_uid is not None and script_input.node_uid == target_node_uid
+        )
+        if script_input.node_uid is not None and not is_target_input:
             node = self._all_nodes.get(script_input.node_uid)
             if node is not None and (
                 spec is None
@@ -2468,18 +2477,34 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return erlab.interactive.imagetool.provenance.script_provenance_replayable(
             spec
         ) and all(
-            self._script_input_can_reload(nested_input)
+            self._script_input_can_reload(
+                nested_input,
+                target_node_uid=target_node_uid,
+            )
             for nested_input in spec.script_inputs
         )
 
     def _rebuild_script_provenance(
         self,
         spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        *,
+        target_node_uid: str | None = None,
     ) -> _ScriptRebuildResult:
+        def _resolve_live_input(
+            script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        ) -> (
+            tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]
+            | None
+        ):
+            return self._resolve_live_script_input_for_reload(
+                script_input,
+                target_node_uid=target_node_uid,
+            )
+
         try:
             data, rebuilt_spec = _replay_graph.rebuild_script_provenance(
                 spec,
-                live_input_resolver=self._resolve_live_script_input_for_reload,
+                live_input_resolver=_resolve_live_input,
             )
         except _replay_graph.ReplayGraphError as exc:
             raise _ScriptRebuildError(
@@ -2505,7 +2530,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 spec
             )
             and all(
-                self._script_input_can_reload(script_input)
+                self._script_input_can_reload(
+                    script_input,
+                    target_node_uid=node.uid,
+                )
                 for script_input in spec.script_inputs
             )
         )
@@ -3939,7 +3967,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if spec is None:
             return False
         try:
-            result = self._rebuild_script_provenance(spec)
+            result = self._rebuild_script_provenance(
+                spec,
+                target_node_uid=node.uid,
+            )
         except _ScriptRebuildError as exc:
             erlab.interactive.utils.MessageDialog.critical(
                 self,

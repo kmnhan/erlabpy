@@ -16614,6 +16614,108 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
         assert not errors
 
 
+def test_manager_reload_self_replacement_uses_recorded_source(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+        name="source",
+    )
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path)
+    file_spec = prov.file_load(
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        wrapper = manager._imagetool_wrappers[0]
+        wrapper.set_detached_provenance(file_spec)
+
+        manager.console._console_widget.execute("tools[0].data = tools[0] + 1.0")
+        expected = data + 1.0
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+
+        manager.tree_view.deselect_all()
+        select_tools(manager, [0])
+        manager._update_actions()
+        assert manager.reload_action.isVisible()
+        assert manager.reload_action.isEnabled()
+
+        manager.reload_selected()
+
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+        rebuilt_spec = wrapper.provenance_spec
+        assert rebuilt_spec is not None
+        assert rebuilt_spec.script_inputs[0].node_uid is None
+        assert rebuilt_spec.script_inputs[0].node_snapshot_token is None
+        assert rebuilt_spec.script_inputs[0].parsed_provenance_spec() == file_spec
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
+def test_manager_reload_raw_self_replacement_unavailable(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        manager.console._console_widget.execute("tools[0].data = tools[0] + 1.0")
+        expected = data + 1.0
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+
+        wrapper = manager._imagetool_wrappers[0]
+        manager.tree_view.deselect_all()
+        select_tools(manager, [0])
+        manager._update_actions()
+        assert not manager._node_can_reload_script_inputs(wrapper)
+        assert not manager.reload_action.isVisible()
+
+        manager.reload_selected()
+
+        xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
 def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
     qtbot,
     monkeypatch,
