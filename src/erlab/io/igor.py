@@ -631,11 +631,6 @@ def load_text(
     -------
     DataArray
         The loaded data.
-
-    .. versionchanged:: 3.22.0
-
-       Empty-unit ``SetScale`` axes are named with Igor axis letters, and ``X Note``
-       key-value metadata is parsed into attributes.
     """
     comments: dict[str, str] = {}
     note_lines: list[str] = []

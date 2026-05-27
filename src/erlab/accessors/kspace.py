@@ -1394,10 +1394,6 @@ class MomentumAccessor(ERLabDataArrayAccessor):
 
         - 3D data with dimensions including `alpha` and `eV` (including maps and
           hv-dependent cuts)
-
-        .. versionchanged:: 3.22.0
-            Added support for 2D angle-energy cuts with `alpha` and `eV` dimensions.
-
         """
         if not self._interactive_compatible:
             raise ValueError("Data is not compatible with the interactive tool.")

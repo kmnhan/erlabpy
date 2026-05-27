@@ -800,11 +800,6 @@ def watch(
         unavailable (for example, non-IPython environments). Must be greater than 0.
         This value is ignored when a post-run callback is successfully registered.
 
-    .. versionchanged:: 3.22.0
-
-       Added ``restore`` and stable workspace-linked watched variables so saved
-       manager workspaces can reconnect to notebook variables by name.
-
     Returns
     -------
     tuple of str

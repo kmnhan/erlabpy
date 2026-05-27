@@ -1128,10 +1128,6 @@ def replace_data(
     -------
     Response
         Manager response.
-
-    .. versionchanged:: 3.22.0
-
-       Added the ``target`` argument for selecting a manager by index.
     """
     data_list = erlab.interactive.imagetool.viewer._parse_input(data)
 
@@ -1336,10 +1332,6 @@ def fetch(index: int | str, *, target: int | None = None) -> xr.DataArray | None
     xr.DataArray or None
         The data in the ImageTool window at the given index, or `None` if the index is
         invalid or the data cannot be retrieved.
-
-    .. versionchanged:: 3.22.0
-
-       Added the ``target`` argument for selecting a manager by index.
     """
     direct_manager = _direct_manager_for_target(target)
     if direct_manager is not None:

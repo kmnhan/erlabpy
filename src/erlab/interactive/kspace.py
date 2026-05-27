@@ -1503,10 +1503,6 @@ def ktool(
         seed the normal emission controls and derived angle offsets.
     initial_delta
         Optional delta value to apply alongside ``initial_normal_emission``.
-
-    .. versionchanged:: 3.22.0
-        Added support for 2D angle-energy cuts with ``alpha`` and ``eV`` dimensions.
-
     """
     if data_name is None:
         try:

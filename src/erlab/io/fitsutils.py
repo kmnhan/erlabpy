@@ -216,11 +216,6 @@ def process_fits_dataset(ds: xr.Dataset) -> xr.Dataset:
 
     Assumes a format used by beamlines 10.0.1 and 7.0.1 at ALS, and possibly others.
     Roughly corresponds to ``RedimAndScaleData`` in ``LoadFits7.ipf``.
-
-    .. versionchanged:: 3.22.0
-
-       Single-motor scan axes use nominal scan metadata instead of motor readback
-       values, matching the Igor Pro FITS loader behavior.
     """
     # Make all auxiliary coordinates dependent on time
     coords_to_update: list[Hashable] = [
