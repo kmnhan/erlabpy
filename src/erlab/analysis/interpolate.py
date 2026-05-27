@@ -552,18 +552,50 @@ def _minimize_func(
     edc_values: npt.NDArray,
     coord: npt.NDArray,
     direction: typing.Literal["positive", "negative"],
+    on_failure: typing.Literal["nan", "raise"],
 ) -> float:
     order = np.argsort(coord)
     coord = coord[order]
     edc_values = edc_values[order]
 
-    spl = scipy.interpolate.make_interp_spline(coord, edc_values)
+    if not np.all(np.isfinite(coord)) or not np.all(np.isfinite(edc_values)):
+        if on_failure == "nan":
+            return np.nan
+        raise ValueError("coordinate and intensity values must be finite")
+
+    try:
+        spl = scipy.interpolate.make_interp_spline(coord, edc_values)
+    except ValueError:
+        if on_failure == "nan":
+            return np.nan
+        raise
+
     peak_coord = coord[np.argmax(edc_values)]
     endpoint = coord.max() if direction == "positive" else coord.min()
-    rs = scipy.optimize.root_scalar(
-        spl,
-        bracket=sorted([peak_coord, endpoint]),
-    )
+    f_peak = float(spl(peak_coord))
+    f_endpoint = float(spl(endpoint))
+    if f_peak == 0 and f_endpoint == 0:
+        if on_failure == "nan":
+            return np.nan
+        raise ValueError("root bracket endpoints must define a single crossing")
+    if f_peak == 0:
+        return float(peak_coord)
+    if f_endpoint == 0:
+        return float(endpoint)
+    if np.signbit(f_peak) == np.signbit(f_endpoint):
+        if on_failure == "nan":
+            return np.nan
+        raise ValueError("root bracket endpoints must have different signs")
+
+    try:
+        rs = scipy.optimize.root_scalar(
+            spl,
+            bracket=sorted([peak_coord, endpoint]),
+        )
+    except ValueError:
+        if on_failure == "nan":
+            return np.nan
+        raise
     return rs.root
 
 
@@ -573,6 +605,7 @@ def leading_edge(
     *,
     dim: Hashable = "eV",
     direction: typing.Literal["positive", "negative"] = "positive",
+    on_failure: typing.Literal["nan", "raise"] = "nan",
 ) -> xr.DataArray:
     """Calculate leading edges in a DataArray with subpixel precision.
 
@@ -595,6 +628,10 @@ def leading_edge(
         Direction from the curve maximum in which to solve. ``"positive"`` solves
         toward larger coordinate values, while ``"negative"`` solves toward smaller
         coordinate values.
+    on_failure : {"nan", "raise"}, optional
+        How to handle curves where the requested edge cannot be estimated.
+        ``"nan"`` returns ``NaN`` for those curves, while ``"raise"`` propagates
+        the failure as a ``ValueError``.
 
     Returns
     -------
@@ -607,6 +644,8 @@ def leading_edge(
         raise ValueError(f"Dimension {dim!r} not found in input DataArray")
     if direction not in {"positive", "negative"}:
         raise ValueError("direction must be 'positive' or 'negative'")
+    if on_failure not in {"nan", "raise"}:
+        raise ValueError("on_failure must be 'nan' or 'raise'")
 
     half_max = darr.max(dim=[dim]) * fraction
 
@@ -617,7 +656,11 @@ def leading_edge(
         dask="parallelized",
         output_dtypes=[float],
         vectorize=True,
-        kwargs={"coord": darr[dim].values, "direction": direction},
+        kwargs={
+            "coord": darr[dim].values,
+            "direction": direction,
+            "on_failure": on_failure,
+        },
     )
 
 
