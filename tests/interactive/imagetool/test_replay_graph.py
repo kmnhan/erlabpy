@@ -922,6 +922,115 @@ def test_replay_graph_display_normalizes_nested_derived_console_code(
     xr.testing.assert_identical(namespace["ncd"], expected)
 
 
+def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
+    assert _replay_graph._inline_single_use_replay_expressions("bad =") == "bad ="
+    assert _replay_graph._compact_replay_temp_names("bad =") == "bad ="
+    assert _replay_graph._code_has_scoped_definition("bad =")
+
+    assert (
+        _replay_graph._inline_single_use_replay_expressions(
+            "_itool_replay_1 = source.attr\nresult = _itool_replay_1 + 1"
+        )
+        == "result = source.attr + 1"
+    )
+    assert (
+        _replay_graph._inline_single_use_replay_expressions(
+            "_itool_replay_1 = source\nresult = 0"
+        )
+        == "_itool_replay_1 = source\nresult = 0"
+    )
+    assert (
+        _replay_graph._inline_single_use_replay_expressions(
+            "_itool_replay_1 = source\nresult = _itool_replay_1 + _itool_replay_1"
+        )
+        == "_itool_replay_1 = source\nresult = _itool_replay_1 + _itool_replay_1"
+    )
+    assert (
+        _replay_graph._inline_single_use_replay_expressions(
+            "_itool_replay_1 = source\n"
+            "_itool_replay_1 = other\n"
+            "result = _itool_replay_1"
+        )
+        == "_itool_replay_1 = source\nresult = other"
+    )
+    assert (
+        _replay_graph._inline_single_use_replay_expressions(
+            "_itool_replay_1 = source\nsource = other\nresult = _itool_replay_1"
+        )
+        == "_itool_replay_1 = source\nsource = other\nresult = _itool_replay_1"
+    )
+    assert (
+        _replay_graph._inline_single_use_replay_expressions(
+            "_itool_replay_1 = source.method()\nresult = _itool_replay_1"
+        )
+        == "_itool_replay_1 = source.method()\nresult = _itool_replay_1"
+    )
+
+    assert (
+        _replay_graph._compact_replay_temp_names(
+            "_itool_replay_4 = data\n_itool_replay_8 = _itool_replay_4 + 1"
+        )
+        == "_itool_replay_0 = data\n_itool_replay_1 = _itool_replay_0 + 1"
+    )
+    assert (
+        _replay_graph._compact_replay_temp_names(
+            "_itool_replay_0 = 'reserved'\n"
+            "_itool_replay_4 = data\n"
+            "result = _itool_replay_4"
+        )
+        == "_itool_replay_0 = 'reserved'\n"
+        "_itool_replay_1 = data\n"
+        "result = _itool_replay_1"
+    )
+
+
+def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    graph = _replay_graph.ReplayGraph(display=True)
+    source_key = graph.add_node(
+        "source",
+        "file_load",
+        payload={"active_name": "loaded", "load_code": "loaded = data"},
+    )
+    graph.output_key = graph.add_node(
+        "script",
+        "script",
+        parents=(source_key,),
+        payload={
+            "codes": ("result = data_0",),
+            "active_name": "result",
+            "bindings": (("data_0", source_key),),
+        },
+    )
+
+    original_replace = prov._replace_code_identifiers
+
+    def _raise_on_input_replacement(
+        code: str, replacements: typing.Mapping[str, str]
+    ) -> str:
+        if "data_0" in replacements:
+            raise SyntaxError("bad script input")
+        return original_replace(code, replacements)
+
+    monkeypatch.setattr(prov, "_replace_code_identifiers", _raise_on_input_replacement)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="Script replay code"):
+        _replay_graph.emit_replay_code(graph)
+
+    graph = _replay_graph.ReplayGraph(display=True)
+    graph.output_key = graph.add_node(
+        "script",
+        "script",
+        payload={
+            "codes": ("bad =",),
+            "active_name": "derived",
+            "bindings": (),
+        },
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="Script replay code"):
+        _replay_graph.emit_replay_code(graph, output_name="result")
+
+
 def test_replay_graph_display_promotes_ui_style_script_input_names(
     tmp_path: pathlib.Path,
 ) -> None:

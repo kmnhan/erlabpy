@@ -396,6 +396,79 @@ def test_operation_replay_code_passes_source_context() -> None:
     )
 
 
+def test_operation_code_base_edges() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(4.0), dims=("x",))
+
+    with pytest.raises(NotImplementedError):
+        prov.ToolProvenanceOperation().expression_code("data")
+
+    assert (
+        prov.IselOperation(kwargs={"x": 0}).replay_code("data", output_name=None)
+        == "data.isel(x=0)"
+    )
+    assert prov._expression_receiver_code("data +") == "(data +)"
+    assert (
+        prov._simplify_display_code(
+            "derived = data\nfor item in []:\n    pass",
+            inline_targets={"derived"},
+        )
+        == "for item in []:\n    pass"
+    )
+    xr.testing.assert_identical(
+        prov.NormalizeOperation(dims=()).apply(data, parent_data=data),
+        data,
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    [
+        (
+            erlab.interactive.imagetool.provenance.NormalizeOperation(
+                dims=("x",), mode="area"
+            ),
+            'data / data.mean("x")',
+        ),
+        (
+            erlab.interactive.imagetool.provenance.NormalizeOperation(
+                dims=("x",), mode="min"
+            ),
+            'data - data.min("x")',
+        ),
+        (
+            erlab.interactive.imagetool.provenance.NormalizeOperation(
+                dims=("x",), mode="min_area"
+            ),
+            '(data - data.min("x")) / data.mean("x")',
+        ),
+    ],
+)
+def test_normalize_operation_expression_modes(
+    operation: erlab.interactive.imagetool.provenance.NormalizeOperation,
+    expected: str,
+) -> None:
+    assert operation.expression_code("data") == expected
+
+
+def test_roi_operation_derivation_labels() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    vertices = np.array([[0.0, 0.0], [1.0, 1.0]])
+
+    path_operation = prov.SliceAlongPathOperation(
+        vertices={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+        step_size=0.1,
+        dim_name="s",
+    )
+    mask_operation = prov.MaskWithPolygonOperation(
+        vertices=vertices,
+        dims=("x", "y"),
+    )
+
+    assert path_operation.derivation_label().startswith("Slice Along ROI Path(")
+    assert mask_operation.derivation_label().startswith("Mask with ROI(")
+
+
 def test_operations_expression_code_chains_without_relay_assignments() -> None:
     prov = erlab.interactive.imagetool.provenance
     data = _base_data().assign_coords(scale=("x", [1.0, 2.0, 3.0]))
