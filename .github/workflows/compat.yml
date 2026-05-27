@@ -18,7 +18,7 @@ env:
 
 jobs:
   compat:
-    name: Compat Python ${{ matrix.python-version }} [${{ matrix.qt-api }}]
+    name: Compat Python ${{ matrix.python-version }} [${{ matrix.qt-api }}] ${{ matrix.group }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -28,6 +28,11 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
         qt-api: ["pyqt6", "pyside6"]
+        group:
+          - "compat-rest"
+          - "compat-manager-mainwindow"
+          - "compat-manager-workspace"
+          - "compat-manager-provenance-console"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -48,19 +53,26 @@ jobs:
       - name: Install project with upgraded dependencies
         run: uv sync --all-extras --dev --group ${{ matrix.qt-api }} --upgrade
 
+      - name: Resolve compatibility targets
+        run: uv run python -m scripts.ci_test_groups ${{ matrix.group }} > "$RUNNER_TEMP/targets.txt"
+
       - name: Run compatibility suite
+        shell: bash
         run: |
+          set -euo pipefail
+          mapfile -t targets < "$RUNNER_TEMP/targets.txt"
           PYTEST_QT_API=${{ matrix.qt-api }} QT_API=${{ matrix.qt-api }} \
             uv run pytest \
             -v \
             -o faulthandler_timeout=300 \
-            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml" \
-            -o junit_family=legacy
+            --junitxml "junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-${{ matrix.group }}.xml" \
+            -o junit_family=legacy \
+            "${targets[@]}"
 
       - name: Upload compatibility JUnit artifact
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: compat-${{ matrix.python-version }}-${{ matrix.qt-api }}
-          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}.xml
+          name: compat-${{ matrix.python-version }}-${{ matrix.qt-api }}-${{ matrix.group }}
+          path: junit-${{ matrix.python-version }}-${{ matrix.qt-api }}-${{ matrix.group }}.xml
           if-no-files-found: error
