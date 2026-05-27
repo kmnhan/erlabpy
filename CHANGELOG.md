@@ -1,6 +1,18 @@
-## Unreleased
+## v3.23.0 (2026-05-27)
 
 ### ✨ Features
+
+- **io:** allow keyword arguments to be dispatched to `identify` or `load_single` based on their signatures ([645fa61](https://github.com/kmnhan/erlabpy/commit/645fa612d7564d38455e309ad2d0189ed2e57ae8))
+
+  The previous behavior of the `load` function was to pass all additional keyword arguments to the `identify` method of the active loader. Keyword arguments to `load_single` had to be passed through the `load_kwargs` argument. To provide more flexibility and allow for more intuitive usage, `load` now automatically detects which keyword arguments are accepted by `identify` and `load_single` and dispatches them accordingly. If a keyword argument is accepted by both methods, it is passed to `identify` by default, but can still be forced to go to `load_single` using the  `load_kwargs` argument.
+
+- **manager:** improve general quality of generated code ([6db3932](https://github.com/kmnhan/erlabpy/commit/6db3932020e75a71b07c69878abbfee0e5e4830d))
+
+  Cleaned up useless intermediate variables and relay assignments in generated code across multiple tools.
+
+- **io.plugins.hers:** add angle conversion and B-field correction (#361) ([81d3fbe](https://github.com/kmnhan/erlabpy/commit/81d3fbe4117eca5d38855a1277f99dec51b27e3e))
+
+  ALS BL10.0.0.1 data is now automatically converted to angles upon loading. The loader also tries to automatically correct warping due to small magnetic fields for maps.
 
 - **manager:** add provenance-aware operations in console (#357) ([b0b6959](https://github.com/kmnhan/erlabpy/commit/b0b6959f7851093ba45b9bac26ba90bfe5087469))
 
@@ -59,6 +71,8 @@
   Replace the old Archive/Unarchive workflow with `Offload to Workspace` in the ImageTool manager. The new action saves the workspace when needed, frees selected in-memory ImageTool data, and reconnects it as dask-backed data from the `.itws` workspace file. Dask-backed data can be loaded in to memory with `Load Into Memory`. Additionally, user-configured chunk size edits are now saved into the workspace file so reloaded data keeps the intended chunk layout.
 
 ### 🐞 Bug Fixes
+
+- **imagetool:** ensure filter dialogs generate provenance and copy code ([1ae87e2](https://github.com/kmnhan/erlabpy/commit/1ae87e23e9fab03b4e4efe869477283f8f58fab2))
 
 - **ftool:** properly handle coordinates with spaces (#358) ([eff9b96](https://github.com/kmnhan/erlabpy/commit/eff9b96a07355e855afac808c015691be1322844))
 
@@ -125,6 +139,8 @@
   Retains the chunked state of each ImageTool's data when saving a workspace, and ensures that non-dask data remains non-dask after saving and reloading a workspace.
 
 ### ⚡️ Performance
+
+- **manager:** improve saving performance on network drives (#360) ([fef14e7](https://github.com/kmnhan/erlabpy/commit/fef14e7c8bd94bae1f69746487444823a9c63317))
 
 - **imagetool:** remove redundant computations for dask-backed data ([25e1e4e](https://github.com/kmnhan/erlabpy/commit/25e1e4ecdb26f20688195474f1b14b038fb275d4))
 
