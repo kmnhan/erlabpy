@@ -1840,6 +1840,87 @@ def test_write_full_workspace_tree_file_replaces_stale_root_attrs(tmp_path) -> N
         assert manifest == {"schema_version": 4, "root_order": [0], "nodes": []}
 
 
+def test_write_full_workspace_tree_file_local_path_uses_destination_temp(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "local.itws"
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(1.0, title="local")}
+    )
+    write_targets: list[pathlib.Path] = []
+    original_write = manager_workspace._write_workspace_dataset_group_to_file
+
+    def _record_write(target, *args, **kwargs):
+        write_targets.append(pathlib.Path(target))
+        return original_write(target, *args, **kwargs)
+
+    monkeypatch.setattr(
+        manager_workspace, "_write_workspace_dataset_group_to_file", _record_write
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: False
+    )
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    assert write_targets
+    assert all(target.parent == fname.parent for target in write_targets)
+    assert all(target.name.startswith(f"{fname.name}.tmp-") for target in write_targets)
+
+
+def test_write_full_workspace_tree_file_cloud_path_uses_scratch_and_replace_first(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "Dropbox" / "cloud.itws"
+    fname.parent.mkdir()
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(2.0, title="cloud")}
+    )
+    write_targets: list[pathlib.Path] = []
+    replace_calls: list[tuple[pathlib.Path, pathlib.Path]] = []
+    original_write = manager_workspace._write_workspace_dataset_group_to_file
+
+    def _record_write(target, *args, **kwargs):
+        write_targets.append(pathlib.Path(target))
+        return original_write(target, *args, **kwargs)
+
+    def _replace_by_copy(src, dst):
+        src_path = pathlib.Path(src)
+        dst_path = pathlib.Path(dst)
+        replace_calls.append((src_path, dst_path))
+        dst_path.write_bytes(src_path.read_bytes())
+        src_path.unlink()
+
+    monkeypatch.setattr(
+        manager_workspace, "_write_workspace_dataset_group_to_file", _record_write
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+    )
+    monkeypatch.setattr(manager_workspace.os, "replace", _replace_by_copy)
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    assert write_targets
+    assert all(target.parent != fname.parent for target in write_targets)
+    assert replace_calls == [(write_targets[0], fname)]
+    assert _read_transaction_test_value(fname) == 2.0
+
+
 def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
     monkeypatch,
     tmp_path,
@@ -1903,6 +1984,178 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
             group[manager_mainwindow._ITOOL_DATA_NAME][...],
             np.arange(12, dtype=np.float64).reshape(3, 4),
         )
+
+
+def test_write_full_workspace_tree_file_network_scratch_skips_copy_reuse(
+    monkeypatch, tmp_path
+) -> None:
+    import shutil
+
+    fname = tmp_path / "network-copy-reuse.itws"
+    _write_transaction_test_workspace(fname)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(3.0, title="rewritten")}
+    )
+
+    def _fail_copyfile(*_args, **_kwargs):
+        raise AssertionError("network scratch save should not copy old workspace")
+
+    def _replace_by_copy(src, dst):
+        src_path = pathlib.Path(src)
+        dst_path = pathlib.Path(dst)
+        dst_path.write_bytes(src_path.read_bytes())
+        src_path.unlink()
+
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: True
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: False
+    )
+    monkeypatch.setattr(shutil, "copyfile", _fail_copyfile)
+    monkeypatch.setattr(manager_workspace.os, "replace", _replace_by_copy)
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname,
+            tree,
+            _transaction_test_root_attrs(),
+            copy_source=fname,
+            copy_groups=(("0/imagetool", "0/imagetool", None),),
+        )
+    finally:
+        tree.close()
+
+    assert _read_transaction_test_value(fname) == 3.0
+
+
+def test_write_full_workspace_tree_file_scratch_exdev_fallback(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "fallback.itws"
+    _write_transaction_test_workspace(fname)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(4.0, title="fallback")}
+    )
+    original_replace = manager_workspace.os.replace
+    replace_calls: list[tuple[pathlib.Path, pathlib.Path]] = []
+    scratch_path: pathlib.Path | None = None
+
+    def _replace_with_exdev(src, dst):
+        nonlocal scratch_path
+        src_path = pathlib.Path(src)
+        dst_path = pathlib.Path(dst)
+        replace_calls.append((src_path, dst_path))
+        if dst_path == fname and src_path.parent != fname.parent:
+            scratch_path = src_path
+            raise OSError(errno.EXDEV, "cross-device link")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+    )
+    monkeypatch.setattr(manager_workspace.os, "replace", _replace_with_exdev)
+    try:
+        manager_workspace._write_full_workspace_tree_file(
+            fname, tree, _transaction_test_root_attrs()
+        )
+    finally:
+        tree.close()
+
+    assert _read_transaction_test_value(fname) == 4.0
+    assert scratch_path is not None
+    assert not scratch_path.exists()
+    assert len(replace_calls) == 2
+    assert replace_calls[0] == (scratch_path, fname)
+    assert replace_calls[1][0].parent == fname.parent
+    assert replace_calls[1][1] == fname
+    assert not list(fname.parent.glob(f"{fname.name}.tmp-*"))
+
+
+def test_write_full_workspace_tree_file_scratch_replace_failure_preserves_old(
+    monkeypatch, tmp_path
+) -> None:
+    fname = tmp_path / "replace-failure.itws"
+    _write_transaction_test_workspace(fname)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(5.0, title="failure")}
+    )
+    scratch_paths: list[pathlib.Path] = []
+
+    def _fail_replace(src, dst):
+        src_path = pathlib.Path(src)
+        if pathlib.Path(dst) == fname:
+            scratch_paths.append(src_path)
+        raise OSError(errno.EPERM, "replace failed")
+
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+    )
+    monkeypatch.setattr(manager_workspace.os, "replace", _fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        try:
+            manager_workspace._write_full_workspace_tree_file(
+                fname, tree, _transaction_test_root_attrs()
+            )
+        finally:
+            tree.close()
+
+    assert _read_transaction_test_value(fname) == 1.0
+    assert scratch_paths
+    assert all(not scratch_path.exists() for scratch_path in scratch_paths)
+    assert not list(fname.parent.glob(f"{fname.name}.tmp-*"))
+
+
+def test_write_full_workspace_tree_file_scratch_copy_failure_cleans_destination_tmp(
+    monkeypatch, tmp_path
+) -> None:
+    import shutil
+
+    fname = tmp_path / "copy-failure.itws"
+    _write_transaction_test_workspace(fname)
+    tree = xr.DataTree.from_dict(
+        {"0/imagetool": _transaction_test_dataset(6.0, title="failure")}
+    )
+    original_replace = manager_workspace.os.replace
+    scratch_paths: list[pathlib.Path] = []
+
+    def _replace_with_exdev(src, dst):
+        src_path = pathlib.Path(src)
+        dst_path = pathlib.Path(dst)
+        if dst_path == fname and src_path.parent != fname.parent:
+            scratch_paths.append(src_path)
+            raise OSError(errno.EXDEV, "cross-device link")
+        return original_replace(src, dst)
+
+    def _fail_copyfile(src, dst):
+        pathlib.Path(dst).write_bytes(b"partial")
+        raise OSError(errno.EIO, "copy failed")
+
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_network_path", lambda _path: False
+    )
+    monkeypatch.setattr(
+        manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
+    )
+    monkeypatch.setattr(manager_workspace.os, "replace", _replace_with_exdev)
+    monkeypatch.setattr(shutil, "copyfile", _fail_copyfile)
+    with pytest.raises(OSError, match="copy failed"):
+        try:
+            manager_workspace._write_full_workspace_tree_file(
+                fname, tree, _transaction_test_root_attrs()
+            )
+        finally:
+            tree.close()
+
+    assert _read_transaction_test_value(fname) == 1.0
+    assert scratch_paths
+    assert all(not scratch_path.exists() for scratch_path in scratch_paths)
+    assert not list(fname.parent.glob(f"{fname.name}.tmp-*"))
 
 
 def test_workspace_recovery_discards_pending_only_transaction(tmp_path) -> None:
