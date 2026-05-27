@@ -302,6 +302,46 @@ def test_leading_edge_direction() -> None:
     assert float(out_negative) == pytest.approx(-expected_offset, abs=1e-3)
 
 
+def test_leading_edge_unbracketed_curve_returns_nan() -> None:
+    eV = np.linspace(-1.0, 1.0, 801)
+    values = np.exp(-((eV / 0.2) ** 2))
+    values[-1] = 0.75
+    darr = xr.DataArray(values, dims=("eV",), coords={"eV": eV})
+
+    out = leading_edge(darr)
+
+    assert np.isnan(float(out))
+
+
+def test_leading_edge_unbracketed_curve_can_raise() -> None:
+    eV = np.linspace(-1.0, 1.0, 801)
+    values = np.exp(-((eV / 0.2) ** 2))
+    values[-1] = 0.75
+    darr = xr.DataArray(values, dims=("eV",), coords={"eV": eV})
+
+    with pytest.raises(ValueError, match="root bracket"):
+        leading_edge(darr, on_failure="raise")
+
+
+def test_leading_edge_vectorized_mixes_valid_and_nan_edges() -> None:
+    eV = np.linspace(-1.0, 1.0, 801)
+    width = 0.2
+    good = np.exp(-((eV / width) ** 2))
+    bad = good.copy()
+    bad[-1] = 0.75
+    darr = xr.DataArray(
+        np.stack([good, bad]),
+        dims=("idx", "eV"),
+        coords={"idx": [0, 1], "eV": eV},
+    )
+
+    out = leading_edge(darr)
+
+    assert out.dims == ("idx",)
+    assert out.sel(idx=0).item() == pytest.approx(width * np.sqrt(np.log(2.0)))
+    assert np.isnan(out.sel(idx=1).item())
+
+
 def test_leading_edge_invalid_direction_raises() -> None:
     darr = xr.DataArray(np.zeros(3), dims=("eV",), coords={"eV": [-1.0, 0.0, 1.0]})
 
@@ -314,6 +354,13 @@ def test_leading_edge_invalid_dim_raises() -> None:
 
     with pytest.raises(ValueError, match="Dimension"):
         leading_edge(darr, dim="kx")
+
+
+def test_leading_edge_invalid_on_failure_raises() -> None:
+    darr = xr.DataArray(np.zeros(3), dims=("eV",), coords={"eV": [-1.0, 0.0, 1.0]})
+
+    with pytest.raises(ValueError, match="on_failure"):
+        leading_edge(darr, on_failure="ignore")
 
 
 def test_leading_edge_dask_parallelized() -> None:
