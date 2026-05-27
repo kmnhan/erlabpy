@@ -15395,6 +15395,62 @@ def test_manager_console_bare_expression_opens_provenance_root(
         InteractiveShell.clear_instance()
 
 
+@pytest.mark.parametrize("reserved_name", ["data", "derived", "tools", "data_0"])
+def test_manager_console_rejects_reserved_result_names_for_provenance(
+    reserved_name: str,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(2.0), dims=("x",))
+    result = manager_console._DerivedDataNamespace(
+        None,
+        data + 1.0,
+        "data_1 + 1.0",
+        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        copyable=True,
+    )
+
+    result._set_console_name(reserved_name)
+
+    operand = result._console_operand()
+    assert [script_input.name for script_input in operand.script_inputs] == ["data_1"]
+
+
+def test_manager_console_reserved_result_name_replays_without_shadowing() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data0 = xr.DataArray(np.array([10.0]), dims=("x",))
+    data1 = xr.DataArray(np.array([1.0]), dims=("x",))
+    source = manager_console._DerivedDataNamespace(
+        None,
+        data0,
+        "data_0",
+        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        copyable=True,
+    )
+    result = manager_console._DerivedDataNamespace(
+        None,
+        data1 + 1.0,
+        "data_1 + 1.0",
+        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        copyable=True,
+    )
+    result._set_console_name("data_0")
+
+    combined = result + source
+    spec = combined._console_provenance_spec(
+        active_name="derived", label="Evaluate console expression"
+    )
+
+    assert spec is not None
+    assert [script_input.name for script_input in spec.script_inputs] == [
+        "data_1",
+        "data_0",
+    ]
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(spec, {"data_0": data0, "data_1": data1}),
+        combined.data,
+    )
+
+
 def test_manager_console_assignment_tracks_until_explicit_show(
     qtbot,
     manager_context: Callable[

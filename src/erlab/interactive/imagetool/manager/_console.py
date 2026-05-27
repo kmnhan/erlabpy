@@ -1395,6 +1395,8 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
         return self._tools_ref()
 
     def _set_console_name(self, name: str) -> None:
+        if _replay_name_reserved(name):
+            return
         self._console_name = name
 
     def _console_operand(self) -> _ConsoleOperand:
