@@ -2,6 +2,38 @@
 
 ### ✨ Features
 
+- **manager:** add provenance-aware operations in console (#357) ([b0b6959](https://github.com/kmnhan/erlabpy/commit/b0b6959f7851093ba45b9bac26ba90bfe5087469))
+
+  ImageTool Manager now supports provenance-aware operations between multiple tools from both the console and UI actions. With this addition, users can conduct complex analysis within the GUI and still keep provenance of the exact steps required to reproduce results from raw data.
+
+  In the console, `tools[i]` now acts similar to a DataArray, so just typing expressions like `tools[0] - tools[1]` can create ImageTools with preserved parent history. Complex expressions that use xarray and numpy methods are also supported.
+
+  ImageTools created this way records each input’s history and the code used to create the new tool. One use case would be assigning coordinates from one tool to another, e.g. `tools[0].assign_coords(tools[1].eV)`, which creates a new tool with the same data but updated coordinates and provenance. These tools are also reloadable, enabling complex real-time data analysis without external scripts.
+
+  Concatenation also uses the same provenance path as console-derived results, so that where the concatenated data came from is recorded in the provenance of the resulting tool.
+
+  Also enables access to child ImageTools from the console using `tools[i].children[j]`. Nested children can be accessed by chaining `children`, like `tools[i].children[j].children[k]`. Type `tools[i].children` to see a summary of children.
+
+- **imagetool:** add leading edge extraction dialog (#355) ([a28de00](https://github.com/kmnhan/erlabpy/commit/a28de00d2b3a0a5212886eb0781700392fe32ef5))
+
+  ImageTool now includes an `Edit → Leading Edge…` dialog for calculating leading-edge positions with `erlab.analysis.interpolate.leading_edge`. Users can choose the dimension, fraction of the maximum, and search direction.
+
+- **analysis.interpolate:** support leading edge axis selection (#353) ([458c703](https://github.com/kmnhan/erlabpy/commit/458c7038212c7b28e6dc84a25d10a2b35d8bc8d2))
+
+  Allows selecting dimension and direction for leading edge extraction.
+
+- **qsel:** add min/max/sum aggregation (#351) ([3a27026](https://github.com/kmnhan/erlabpy/commit/3a270265bc0c9bba091fd98c16199a88305dadeb))
+
+  The `xarray.DataArray.qsel` accessor now supports mean, minimum, maximum, and sum reductions through `qsel.mean/min/max/sum` helpers. `qsel.average` remains available as an alias for `qsel.mean`. They can also be selected with the `func` argument to `qsel`.
+
+- **imagetool:** share axis inversion by dimension (#350) ([1c915d6](https://github.com/kmnhan/erlabpy/commit/1c915d622976488176543cc55862add3bef98000))
+
+  ImageTool now treats axis inversion as shared state for each data dimension, matching shared manual limits. Inverting an axis from a plot context menu or from `View → Invert Axis` updates every plot showing that dimension. It is now also undo/redoable.
+
+- **imagetool:** select variables from Datasets and DataTrees (#346) ([45cc30e](https://github.com/kmnhan/erlabpy/commit/45cc30ed017495db225b62cc73837ed9a719a989))
+
+  When opening data structures containing multiple DataArrays, ImageTool now prompts the user to select which of the data variables to open.
+
 - **imagetool:** better history entries ([cc7b2b0](https://github.com/kmnhan/erlabpy/commit/cc7b2b017c4c3e04d40f8020aaadffd20b21e830))
 
   History entries are more descriptive. Also combines multiple operations into one entry if they are performed in quick succession.
@@ -27,6 +59,36 @@
   Replace the old Archive/Unarchive workflow with `Offload to Workspace` in the ImageTool manager. The new action saves the workspace when needed, frees selected in-memory ImageTool data, and reconnects it as dask-backed data from the `.itws` workspace file. Dask-backed data can be loaded in to memory with `Load Into Memory`. Additionally, user-configured chunk size edits are now saved into the workspace file so reloaded data keeps the intended chunk layout.
 
 ### 🐞 Bug Fixes
+
+- **ftool:** properly handle coordinates with spaces (#358) ([eff9b96](https://github.com/kmnhan/erlabpy/commit/eff9b96a07355e855afac808c015691be1322844))
+
+- **interactive:** preserve exact float spinbox display (#356) ([aeae172](https://github.com/kmnhan/erlabpy/commit/aeae17217fbb55dec602f37dad09bdb7c52bfd05))
+
+  Some spinboxes were rounded to 15 significant digits, which may have reduced precision in some cases.
+
+- **imagetool:** handle dropped workspace load failures (#354) ([3a0e7ee](https://github.com/kmnhan/erlabpy/commit/3a0e7eeffe34fd4a92468a90840828298e669eef))
+
+  Fixes an issue where drag-and-dropping a `.itws` file into the manager window would sometimes fail.
+
+- **imagetool:** preserve full precision in numeric entries (#352) ([cd38fa1](https://github.com/kmnhan/erlabpy/commit/cd38fa1d5a8376785a22457b0fea70dd0c570963))
+
+  Fixed an issue where coordinate data or selection argument inputs were rounded to the spinbox display precision.
+
+- **imagetool:** guard unsafe normalize and display values (#349) ([0ae5b24](https://github.com/kmnhan/erlabpy/commit/0ae5b24802f7f16c937162c0ed5f6b19f3fe8cc1))
+
+  ImageTool now treats invalid or rendering-unsafe values as missing. Infinite values and extreme finite display outliers no longer blow up colormap generation or crash rendering.
+
+  Normalize now returns NaN where area or range denominators are non-finite or effectively zero, instead of dividing by those values and producing unusably large results.
+
+- **manager:** fixes an issue where the manager would sometimes crash after saving (#348) ([2ff502b](https://github.com/kmnhan/erlabpy/commit/2ff502bfe66f67e7fecc0979005ebba45c61891d))
+
+- **imagetool:** fix all-NaN selections after ImageTool coordinate edits (#344) ([d38a398](https://github.com/kmnhan/erlabpy/commit/d38a39891b52c54fa2ed887c9ad131057e47d0b1))
+
+  Tools and ImageTool windows opened from cursor, bin, or crop selections now refresh using the same selected positions on the current source data. This fixes cases where refreshing or extracting selected data returned all-NaN values after `Edit → Edit Coordinates`, even when no crop was applied.
+
+- **manager:** group watched badges by source (#343) ([a320b59](https://github.com/kmnhan/erlabpy/commit/a320b5983c8c92ae01c549c19ce06f0513b1e2fa))
+
+  Fixes a regression where watched variables from the same notebook will appear in different colors.
 
 - **imagetool:** properly link multiple cursor drag ([0cb8982](https://github.com/kmnhan/erlabpy/commit/0cb8982b745d3bd5d313b4e3325c0d9a55f63e41))
 
@@ -69,6 +131,8 @@
 - **manager:** greatly speed up saving and loading `.itws` files ([c4c9914](https://github.com/kmnhan/erlabpy/commit/c4c99141d23a70ef1838be402c388a3f615b962e))
 
 ### ♻️ Code Refactor
+
+- **imagetool:** simplify Select Data row controls (#345) ([ce2b0b0](https://github.com/kmnhan/erlabpy/commit/ce2b0b0f79b4ecb284873f901613868ab297b991))
 
 - **imagetool:** move rotation guidelines to `View` menu ([b955ee9](https://github.com/kmnhan/erlabpy/commit/b955ee944106dc597c552bedd5185e69f6023f0c))
 
