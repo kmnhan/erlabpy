@@ -342,6 +342,98 @@ def test_leading_edge_vectorized_mixes_valid_and_nan_edges() -> None:
     assert np.isnan(out.sel(idx=1).item())
 
 
+@pytest.mark.parametrize("on_failure", ["nan", "raise"])
+def test_leading_edge_nonfinite_values_handle_failure(on_failure) -> None:
+    coord = np.array([0.0, 1.0, 2.0, 3.0])
+    values = np.array([1.0, np.nan, -1.0, -2.0])
+
+    if on_failure == "nan":
+        out = erlab.analysis.interpolate._minimize_func(
+            values, coord, "positive", on_failure
+        )
+        assert np.isnan(out)
+    else:
+        with pytest.raises(ValueError, match="finite"):
+            erlab.analysis.interpolate._minimize_func(
+                values, coord, "positive", on_failure
+            )
+
+
+@pytest.mark.parametrize("on_failure", ["nan", "raise"])
+def test_leading_edge_spline_errors_handle_failure(on_failure) -> None:
+    coord = np.array([0.0, 0.0, 1.0, 2.0])
+    values = np.array([1.0, 0.5, -1.0, -2.0])
+
+    if on_failure == "nan":
+        out = erlab.analysis.interpolate._minimize_func(
+            values, coord, "positive", on_failure
+        )
+        assert np.isnan(out)
+    else:
+        with pytest.raises(ValueError, match="duplicates"):
+            erlab.analysis.interpolate._minimize_func(
+                values, coord, "positive", on_failure
+            )
+
+
+def test_leading_edge_zero_peak_returns_peak_coord() -> None:
+    coord = np.array([0.0, 1.0, 2.0, 3.0])
+    values = np.array([0.0, -1.0, -1.0, -1.0])
+
+    out = erlab.analysis.interpolate._minimize_func(values, coord, "positive", "raise")
+
+    assert out == 0.0
+
+
+def test_leading_edge_zero_endpoint_returns_endpoint() -> None:
+    coord = np.array([0.0, 1.0, 2.0, 3.0])
+    values = np.array([1.0, 0.5, 0.2, 0.0])
+
+    out = erlab.analysis.interpolate._minimize_func(values, coord, "positive", "raise")
+
+    assert out == 3.0
+
+
+@pytest.mark.parametrize("on_failure", ["nan", "raise"])
+def test_leading_edge_zero_peak_and_endpoint_handle_failure(on_failure) -> None:
+    coord = np.array([0.0, 1.0, 2.0, 3.0])
+    values = np.array([0.0, -1.0, -1.0, 0.0])
+
+    if on_failure == "nan":
+        out = erlab.analysis.interpolate._minimize_func(
+            values, coord, "positive", on_failure
+        )
+        assert np.isnan(out)
+    else:
+        with pytest.raises(ValueError, match="single crossing"):
+            erlab.analysis.interpolate._minimize_func(
+                values, coord, "positive", on_failure
+            )
+
+
+@pytest.mark.parametrize("on_failure", ["nan", "raise"])
+def test_leading_edge_root_solver_errors_handle_failure(
+    monkeypatch, on_failure
+) -> None:
+    def raise_value_error(*args, **kwargs):
+        raise ValueError("solver failed")
+
+    monkeypatch.setattr(scipy.optimize, "root_scalar", raise_value_error)
+    coord = np.array([0.0, 1.0, 2.0, 3.0])
+    values = np.array([1.0, 0.5, -0.5, -1.0])
+
+    if on_failure == "nan":
+        out = erlab.analysis.interpolate._minimize_func(
+            values, coord, "positive", on_failure
+        )
+        assert np.isnan(out)
+    else:
+        with pytest.raises(ValueError, match="solver failed"):
+            erlab.analysis.interpolate._minimize_func(
+                values, coord, "positive", on_failure
+            )
+
+
 def test_leading_edge_invalid_direction_raises() -> None:
     darr = xr.DataArray(np.zeros(3), dims=("eV",), coords={"eV": [-1.0, 0.0, 1.0]})
 
