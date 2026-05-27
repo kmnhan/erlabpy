@@ -168,6 +168,8 @@ def test_operation_backed_transform_dialogs_use_base_make_code() -> None:
     ]
 
     assert custom_make_code_dialogs == []
+    assert "make_code" not in GaussianFilterDialog.__dict__
+    assert "make_code" not in NormalizeDialog.__dict__
 
 
 def _assert_guideline_state(
@@ -2275,6 +2277,41 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     assert child.source_state == "fresh"
 
 
+def test_child_tool_from_gaussian_filtered_itool_keeps_display_provenance(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={"alpha": 1.0}
+    )
+    expected = operation.apply(data, parent_data=data)
+
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.apply_func(
+        lambda darr: operation.apply(darr, parent_data=darr),
+        operation=operation,
+    )
+
+    win.slicer_area.open_in_meshtool()
+    qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
+    child = next(iter(win.slicer_area._associated_tools.values()))
+
+    xarray.testing.assert_identical(child.tool_data, expected)
+    assert child.input_provenance_spec is not None
+    display_code = child.input_provenance_spec.display_code()
+    assert display_code is not None
+    assert "gaussian_filter" in display_code
+    namespace = _exec_generated_code(display_code, {"data": data.copy(deep=True)})
+    xarray.testing.assert_identical(namespace["derived"], expected)
+
+    win.close()
+
+
 def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
     prov = erlab.interactive.imagetool.provenance
     win = itool(_TEST_DATA["2D"].copy(), execute=False)
@@ -3581,6 +3618,47 @@ def test_apply_func_preserves_source_data(qtbot) -> None:
 
     win.slicer_area.apply_func(None)
     xarray.testing.assert_identical(win.slicer_area.data, data)
+    win.close()
+
+
+def test_apply_func_keeps_display_provenance_after_failed_filter(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={"x": 1.0}
+    )
+
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    win.slicer_area.apply_func(
+        lambda darr: operation.apply(darr, parent_data=darr),
+        operation=operation,
+    )
+    expected = win.slicer_area.data.copy(deep=True)
+    before = win.slicer_area.displayed_provenance_spec()
+    assert before is not None
+
+    def _raise_filter(_data: xr.DataArray) -> xr.DataArray:
+        raise RuntimeError("failed preview")
+
+    with pytest.raises(RuntimeError, match="failed preview"):
+        win.slicer_area.apply_func(
+            _raise_filter,
+            operation=erlab.interactive.imagetool.provenance.NormalizeOperation(
+                dims=("x",),
+                mode="area",
+            ),
+        )
+
+    xarray.testing.assert_identical(win.slicer_area.data, expected)
+    after = win.slicer_area.displayed_provenance_spec()
+    assert after is not None
+    assert after.display_code() == before.display_code()
+
     win.close()
 
 
@@ -7605,6 +7683,51 @@ def test_itool_gaussian_filter_sigma_path(qtbot, accept_dialog, monkeypatch) -> 
         accept_call=lambda d: d.reject(),
     )
     xarray.testing.assert_identical(win.slicer_area.data, data)
+
+    win.close()
+
+
+def test_itool_normalize_filter_copies_code_and_records_display_provenance(
+    qtbot, accept_dialog, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    monkeypatch.setattr(
+        type(win.slicer_area),
+        "watched_data_name",
+        property(lambda _self: "data"),
+    )
+
+    def _set_normalize_params(dialog: NormalizeDialog) -> None:
+        dialog.dim_checks["x"].setChecked(True)
+        dialog.opts[1].setChecked(True)
+        with qtbot.wait_signal(dialog._sigCodeCopied):
+            dialog.copy_button.click()
+
+    accept_dialog(win.mnb._normalize, pre_call=_set_normalize_params)
+
+    expected = normalize(data, ("x",), 1)
+    xarray.testing.assert_identical(win.slicer_area.data, expected)
+    assert ".min(" in pyperclip.paste()
+    assert ".max(" in pyperclip.paste()
+    xarray.testing.assert_identical(
+        _exec_data_fragment(data, pyperclip.paste()),
+        expected,
+    )
+
+    display_code = win.slicer_area.displayed_provenance_spec()
+    assert display_code is not None
+    code = display_code.display_code()
+    assert code is not None
+    assert ".min(" in code
+    assert ".max(" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xarray.testing.assert_identical(namespace["derived"], expected)
 
     win.close()
 

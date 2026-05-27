@@ -523,6 +523,14 @@ class _ManagedWindowNode(QtCore.QObject):
         return self._source_spec
 
     @property
+    def displayed_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        if self.imagetool is not None:
+            return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
+        return self.provenance_spec
+
+    @property
     def snapshot_token(self) -> str:
         return self._snapshot_token
 

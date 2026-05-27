@@ -7142,7 +7142,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         def _parent_provenance_fetcher(
             parent_uid: str = parent.uid,
         ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-            return self._node_for_target(parent_uid).provenance_spec
+            return self._node_for_target(parent_uid).displayed_provenance_spec
 
         tool.set_source_parent_fetcher(_parent_source_fetcher)
         tool.set_input_provenance_parent_fetcher(_parent_provenance_fetcher)
