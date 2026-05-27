@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import time
 import traceback
 import typing
@@ -1428,12 +1429,22 @@ def _write_full_workspace_tree_file(
 
     import h5py
 
-    fname = str(fname)
-    tmp_fname = f"{fname}.tmp-{uuid.uuid4().hex}"
+    fname = os.fsdecode(fname)
+    use_scratch = _workspace_path_is_high_risk(fname)
+    tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+    destination_tmp: str | None = None
+    if use_scratch:
+        tmp_dir = tempfile.TemporaryDirectory(prefix="erlab-itws-")
+        tmp_fname = str(pathlib.Path(tmp_dir.name) / pathlib.Path(fname).name)
+    else:
+        tmp_fname = f"{fname}.tmp-{uuid.uuid4().hex}"
     try:
         copied_paths: set[str] = set()
         _xarray.ensure_workspace_hdf5_filters_registered()
         copy_groups_tuple = tuple(copy_groups)
+        if use_scratch and _workspace_path_is_likely_network_path(fname):
+            copy_source = None
+            copy_groups_tuple = ()
         if copy_source is not None and copy_groups_tuple:
             with _xarray._workspace_file_lock(copy_source):
                 shutil.copyfile(copy_source, tmp_fname)
@@ -1489,11 +1500,28 @@ def _write_full_workspace_tree_file(
 
         _validate_workspace_h5_file(tmp_fname)
         _fsync_file(tmp_fname)
-        os.replace(tmp_fname, fname)
-        _fsync_parent_directory(fname)
+        if use_scratch:
+            try:
+                os.replace(tmp_fname, fname)
+            except OSError as err:
+                if err.errno != errno.EXDEV:
+                    raise
+                destination_tmp = f"{fname}.tmp-{uuid.uuid4().hex}"
+                shutil.copyfile(tmp_fname, destination_tmp)
+                _fsync_file(destination_tmp)
+                os.replace(destination_tmp, fname)
+            _fsync_parent_directory(fname)
+        else:
+            os.replace(tmp_fname, fname)
+            _fsync_parent_directory(fname)
     finally:
         with contextlib.suppress(FileNotFoundError):
             os.remove(tmp_fname)
+        if destination_tmp is not None:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(destination_tmp)
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
 
 
 def _validate_workspace_h5_file(fname: str | os.PathLike[str]) -> None:
