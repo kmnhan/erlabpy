@@ -6,12 +6,17 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 
 ## Key capabilities
 
-- Responsive slicing of multidimensional (up to 4D) {class}`DataArray <xarray.DataArray>` objects, including Dask-backed data.
-- Unlimited number of cursors with independent binning and code export for each line cut.
-- Rich colormap controls with power law scaling, symmetric scaling about a center, and live color range adjustment.
+- Responsive slicing of multidimensional (up to 4D) {class}`DataArray
+  <xarray.DataArray>` objects, including Dask-backed data.
+- Unlimited number of cursors with independent binning and code export for each line
+  cut.
+- Rich colormap controls with power law scaling, symmetric scaling about a center, and
+  live color range adjustment.
 - Built-in menus for selection, rotation, symmetrization, averaging, interpolation,
   cropping, coordinate reassignment, Fermi edge correction, and other common operations.
-- Tight integration with tools such as {ref}`ktool <guide-ktool>`, {ref}`dtool <guide-dtool>`, and other tools listed in {ref}`interactive-misc-tools`, all accessible from ImageTool’s menus and context menus.
+- Tight integration with tools such as {ref}`ktool <guide-ktool>`, {ref}`dtool
+  <guide-dtool>`, and other tools listed in {ref}`interactive-misc-tools`, all
+  accessible from ImageTool’s menus and context menus.
 - Seamless integration with {ref}`ImageTool manager <imagetool-manager>` when you need
   to organize top-level ImageTool rows, tools opened from those ImageTools, ImageTool
   windows made by those tools, shared workspaces, or synchronized Jupyter notebooks.
@@ -20,8 +25,12 @@ Inspired by *Image Tool* for Igor Pro, developed by the Advanced Light Source at
 
 ## Launching ImageTool
 
-ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>`—with 2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform coordinates gain parallel `_idx` indices so you can still slice by position. Supported inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire {class}`DataTree <xarray.DataTree>` objects.
-(imagetool-entry-points)=
+ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataArray>`—with
+2–4 dimensions. ImageTool tries to handle incompatible input dimensions by adding a new
+dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform
+coordinates gain parallel `_idx` indices so you can still slice by position. Supported
+inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire
+{class}`DataTree <xarray.DataTree>` objects. (imagetool-entry-points)=
 
 ### Entry points
 
@@ -39,7 +48,9 @@ ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataAr
   eri.itool(data, cmap="cividis")
   ```
 
-  Passing a list to {func}`itool <erlab.interactive.imagetool.itool>` spawns multiple windows; set `link=True` to synchronize their cursor positions and bins. Passing a Dataset or DataTree with multiple valid variables first asks which variables to open.
+  Passing a list to {func}`itool <erlab.interactive.imagetool.itool>` spawns multiple
+  windows; set `link=True` to synchronize their cursor positions and bins. Passing a
+  Dataset or DataTree with multiple valid variables first asks which variables to open.
 
 - Launch ImageTool from IPython or a notebook using the `%itool` line magic. Load the extension first:
 
@@ -53,9 +64,13 @@ ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataAr
   %itool data
   ```
 
-  where `data` is a variable in the current namespace. You can pass additional flags, such as `-m` or `--manager` which sends the window straight to the {ref}`manager <imagetool-manager>`. Type `%itool --help` or `%itool?` to list all supported flags.
+  where `data` is a variable in the current namespace. You can pass additional flags,
+  such as `-m` or `--manager` which sends the window straight to the {ref}`manager
+  <imagetool-manager>`. Type `%itool --help` or `%itool?` to list all supported flags.
 
-- Need to open a file quickly? Use {guilabel}`File → Open…` inside ImageTool. The dialog lists every available loader, including those from data loader plugins, so you can switch between formats without writing code.
+- Need to open a file quickly? Use {guilabel}`File → Open…` inside ImageTool. The dialog
+  lists every available loader, including those from data loader plugins, so you can
+  switch between formats without writing code.
 
 - If you are using VS Code, you can open a DataArray in ImageTool directly from the GUI with the `erlab` extension ( [marketplace](https://marketplace.visualstudio.com/items?itemName=khan.erlab) | [open-vsx](https://open-vsx.org/extension/khan/erlab) ).
 
@@ -77,23 +92,27 @@ If you use VS Code with the Jupyter extension, add this to your workspace or use
 
 :::
 
-To integrate ImageTool windows with notebook variables—including bi-directional updates—switch to the {ref}`ImageTool manager <imagetool-manager>` and use the `%watch` magic described in {ref}`working-with-notebooks`. When an ImageTool is open in the manager, ImageTool windows opened from it or from its tools can stay in the same tree branch as the row that made them, as described in {ref}`imagetool-manager-nested-results`.
+To integrate ImageTool windows with notebook variables—including bi-directional
+updates—switch to the {ref}`ImageTool manager <imagetool-manager>` and use the `%watch`
+magic described in {ref}`working-with-notebooks`. When an ImageTool is open in the
+manager, ImageTool windows opened from it or from its tools can stay in the same tree
+branch as the row that made them, as described in
+{ref}`imagetool-manager-nested-results`.
 
 (imagetool-round-trip)=
 
 ## Round-trip
 
 Start from Python with {meth}`xarray.DataArray.qshow`,
-{func}`erlab.interactive.imagetool.itool`, or `%itool`, then use
-{guilabel}`Copy selection code` or dialog {guilabel}`Copy Code` to move the chosen
-selection or transform back into a notebook. If edits should update a live notebook
-variable instead of the clipboard, move the window to the {ref}`manager
-<imagetool-manager>` and use `%watch`.
+{func}`erlab.interactive.imagetool.itool`, or `%itool`, then use {guilabel}`Copy
+selection code` or dialog {guilabel}`Copy Code` to move the chosen selection or
+transform back into a notebook. If edits should update a live notebook variable instead
+of the clipboard, move the window to the {ref}`manager <imagetool-manager>` and use
+`%watch`.
 
 For rows in the manager, the side panel can also show the data in the ImageTool that
 started the workflow, the steps that created the selected row, and code that repeats
-those steps; see
-{ref}`imagetool-manager-replay-code`. The full GUI/API mapping lives in
+those steps; see {ref}`imagetool-manager-replay-code`. The full GUI/API mapping lives in
 {ref}`workflow-bridge-operations`.
 
 (imagetool-interface)=
@@ -130,41 +149,70 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 ## Working with dimensions and coordinates
 
-- The order of dimensions can be swapped using the arrow buttons in the cursor panel. The direction of the arrow intuitively indicates which slice will be swapped with the main view.
+- The order of dimensions can be swapped using the arrow buttons in the cursor panel.
+  The direction of the arrow intuitively indicates which slice will be swapped with the
+  main view.
 
 - Non-uniform coordinates are converted with a `_idx` suffix for plotting. Their true values are displayed in the cursor readouts.
 
-- Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor` dialog. This is a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify start/end values, edit per-point values, scale and offset a numeric scalar or 1D coordinate with `new = scale * old + offset`, add a scalar coordinate, or add a 1D associated coordinate along an existing dimension.
+- Use {guilabel}`Edit → Edit Coordinates` to open the {guilabel}`Coordinate Editor`
+  dialog. This is a GUI for {meth}`xarray.DataArray.assign_coords` that lets you specify
+  start/end values, edit per-point values, scale and offset a numeric scalar or 1D
+  coordinate with `new = scale * old + offset`, add a scalar coordinate, or add a 1D
+  associated coordinate along an existing dimension.
 
-- Use {guilabel}`Edit → Edit Attributes` to open the {guilabel}`Attribute Editor` dialog. This is a GUI for {meth}`xarray.DataArray.assign_attrs` that lets you change existing attributes or add new typed attributes while leaving untouched attributes in place. Choose {guilabel}`String`, {guilabel}`Int`, {guilabel}`Float`, {guilabel}`Bool`, or {guilabel}`Python literal` when entering values.
+- Use {guilabel}`Edit → Edit Attributes` to open the {guilabel}`Attribute Editor`
+  dialog. This is a GUI for {meth}`xarray.DataArray.assign_attrs` that lets you change
+  existing attributes or add new typed attributes while leaving untouched attributes in
+  place. Choose {guilabel}`String`, {guilabel}`Int`, {guilabel}`Float`,
+  {guilabel}`Bool`, or {guilabel}`Python literal` when entering values.
 
-- Use {guilabel}`Edit → Rename…` to open the {guilabel}`Rename Coordinates and Dimensions` dialog. This is a GUI for {meth}`xarray.DataArray.rename` that lets you rename coordinates and dimensions.
+- Use {guilabel}`Edit → Rename…` to open the {guilabel}`Rename Coordinates and
+  Dimensions` dialog. This is a GUI for {meth}`xarray.DataArray.rename` that lets you
+  rename coordinates and dimensions.
 
-- Use {guilabel}`Edit → Swap Dimensions` to open the {guilabel}`Swap Dimensions` dialog. This is an interface for {meth}`xarray.DataArray.swap_dims`.
+- Use {guilabel}`Edit → Swap Dimensions` to open the {guilabel}`Swap Dimensions` dialog.
+  This is an interface for {meth}`xarray.DataArray.swap_dims`.
 
-- Dask-backed arrays are fully supported. The dedicated {guilabel}`Dask` menu exposes actions to compute the array into memory, rechunk automatically, or choose custom chunk shapes within ImageTool.
+- Dask-backed arrays are fully supported. The dedicated {guilabel}`Dask` menu exposes
+  actions to compute the array into memory, rechunk automatically, or choose custom
+  chunk shapes within ImageTool.
 
-- Overlay plots of numeric non-dimensional coordinates (e.g., temperature) on profile plots from {guilabel}`View → Plot Associated Coordinates`. Multi-dimensional coordinates are sliced with the active cursor and averaged over binned hidden dimensions. Right-click a profile plot to open associated coordinates in a new ImageTool window.
+- Overlay plots of numeric non-dimensional coordinates (e.g., temperature) on profile
+  plots from {guilabel}`View → Plot Associated Coordinates`. Multi-dimensional
+  coordinates are sliced with the active cursor and averaged over binned hidden
+  dimensions. Right-click a profile plot to open associated coordinates in a new
+  ImageTool window.
 
-- Use {guilabel}`View → Set Cursor Colors by Coordinate…` to color cursors by a dimension coordinate or numeric associated coordinate value at each cursor position.
+- Use {guilabel}`View → Set Cursor Colors by Coordinate…` to color cursors by a
+  dimension coordinate or numeric associated coordinate value at each cursor position.
 
 (imagetool-slicing)=
 
 ## Slicing, binning, and linking
 
-- Drag with the left mouse button to pan and with the right mouse button (or the wheel) to zoom. Scroll on individual axes to zoom along a single dimension.
+- Drag with the left mouse button to pan and with the right mouse button (or the wheel)
+  to zoom. Scroll on individual axes to zoom along a single dimension.
 
-- To change the slicing position, drag on a cursor line to move it, or drag on the plots while holding {kbd}`Ctrl`. You can also use the keyboard shortcuts listed in the {guilabel}`View → Cursor Control` submenu which allow precise nudging of the active cursor with arrow keys.
+- To change the slicing position, drag on a cursor line to move it, or drag on the plots
+  while holding {kbd}`Ctrl`. You can also use the keyboard shortcuts listed in the
+  {guilabel}`View → Cursor Control` submenu which allow precise nudging of the active
+  cursor with arrow keys.
 
-- When binning is enabled, the data shown are an average over the specified bin widths, which are indicated by shaded regions near the cursor lines.
+- When binning is enabled, the data shown are an average over the specified bin widths,
+  which are indicated by shaded regions near the cursor lines.
 
   :::{hint}
 
-  To reduce the underlying data instead of displaying binned slices, use the {guilabel}`Edit → Aggregate…` dialog or the {guilabel}`Coarsen` dialog for more options.
+  To reduce the underlying data instead of displaying binned slices, use the
+  {guilabel}`Edit → Aggregate…` dialog or the {guilabel}`Coarsen` dialog for more
+  options.
 
   :::
 
-- When comparing data in several ImageTool windows, you can link them either at creation (`eri.itool([data1, data2], link=True)`) or inside the manager. Linked windows maintain synchronized slicing positions, bin widths, and cursor counts.
+- When comparing data in several ImageTool windows, you can link them either at creation
+  (`eri.itool([data1, data2], link=True)`) or inside the manager. Linked windows
+  maintain synchronized slicing positions, bin widths, and cursor counts.
 
 (imagetool-cursors)=
 
@@ -172,23 +220,28 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
 
 - Hover over any toolbar icon to see a short description of its function.
 
-- Copy the numeric readouts at any time with {kbd}`Ctrl+Shift+C` (cursor values) or {kbd}`Ctrl+Alt+C` (cursor indices). ImageTool copies native Python literals so you can paste them directly into scripts.
+- Copy the numeric readouts at any time with {kbd}`Ctrl+Shift+C` (cursor values) or
+  {kbd}`Ctrl+Alt+C` (cursor indices). ImageTool copies native Python literals so you can
+  paste them directly into scripts.
 
-- Right-click the data value readout in the cursor panel to switch it between the data value and any currently plotted associated coordinate value at the active cursor.
+- Right-click the data value readout in the cursor panel to switch it between the data
+  value and any currently plotted associated coordinate value at the active cursor.
 
-- Multiple cursors can be added to the image using the {material-regular}`add` button in the cursor panel. They can each be dragged independently, and their bin widths can be set separately in the binning panel. To switch the active cursor, simply click on it or select it from dropdown menu in the cursor panel.
+- Multiple cursors can be added to the image using the {material-regular}`add` button in
+  the cursor panel. They can each be dragged independently, and their bin widths can be
+  set separately in the binning panel. To switch the active cursor, simply click on it
+  or select it from dropdown menu in the cursor panel.
 
-- To move all cursors simultaneously, hold {kbd}`Alt` while dragging a cursor line, or use {kbd}`Ctrl+Alt` while dragging on the image.
+- To move all cursors simultaneously, hold {kbd}`Alt` while dragging a cursor line, or
+  use {kbd}`Ctrl+Alt` while dragging on the image.
 
-- Right-click on an image plot or line plot to open a useful context menu. Common options include copying the slicing code, locking the aspect ratio on image plots, exporting the current selection, and opening tools.
+- Right-click on an image plot or line plot to open a useful context menu. Common
+  options include copying the slicing code, locking the aspect ratio on image plots,
+  exporting the current selection, and opening tools.
 
-  On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`, {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
-
-  :::{versionchanged} 3.23.0
-  Axis inversion is shared by dimension across plots. Use the plot context menu or
-  {guilabel}`View → Invert Axis` to flip every visible plot showing that
-  dimension; the setting is saved with the ImageTool state and follows undo and redo.
-  :::
+  On image plots, the context menu can launch {ref}`goldtool <guide-goldtool>`,
+  {ref}`restool <guide-restool>`, {ref}`dtool <guide-dtool>`, and {ref}`ftool
+  <guide-ftool>`. On line plots, the context menu offers {ref}`ftool <guide-ftool>`.
 
   Tools opened from ImageTool remember the slice or selection that opened them. If that
   ImageTool is updated with compatible data, the tool shows a {guilabel}`Stale` badge
@@ -202,29 +255,44 @@ Every ImageTool window is built from an {class}`ImageSlicerArea <erlab.interacti
   Holding {kbd}`Alt` while opening the menu switches many actions to cropped mode, which crops the data to what is currently visible in the plot before performing the action. This is useful for conducting analysis on a specific region.
   :::
 
-- Use {guilabel}`View → Rotation Guidelines` to add guidelines for azimuthal offsets or symmetry operations.
+- Use {guilabel}`View → Rotation Guidelines` to add guidelines for azimuthal offsets or
+  symmetry operations.
 
-  The guideline center moves together with the cursor. The center and the angle of the guidelines feed directly into the {guilabel}`Rotate` dialog and {guilabel}`ktool` for fast alignment.
+  The guideline center moves together with the cursor. The center and the angle of the
+  guidelines feed directly into the {guilabel}`Rotate` dialog and {guilabel}`ktool` for
+  fast alignment.
 
-- Use {guilabel}`View → Open ktool` and {guilabel}`View → Open meshtool` for tools launched from the main menu rather than the plot context menu.
+- Use {guilabel}`View → Open ktool` and {guilabel}`View → Open meshtool` for tools
+  launched from the main menu rather than the plot context menu.
 
 - The default color cycle of cursors is user configurable. See [](./options.md).
 
-- Colors can be changed individually from {guilabel}`View → Edit Cursor Colors…`, where you can choose from a colormap or edit each cursor's color separately.
+- Colors can be changed individually from {guilabel}`View → Edit Cursor Colors…`, where
+  you can choose from a colormap or edit each cursor's color separately.
 
-- Alternatively, the colors of the cursors can be set to follow a specific coordinate dynamically based on their positions. This can be enabled from {guilabel}`View → Set Cursor Colors by Coordinate…`.
+- Alternatively, the colors of the cursors can be set to follow a specific coordinate
+  dynamically based on their positions. This can be enabled from {guilabel}`View → Set
+  Cursor Colors by Coordinate…`.
 
 (imagetool-color)=
 
 ## Color and normalization
 
-- Toggle {material-regular}`brightness_auto` to lock the color range to the global data min/max and display a colorbar alongside the image. Drag on the colorbar to update limits interactively or right-click to type exact bounds.
+- Toggle {material-regular}`brightness_auto` to lock the color range to the global data
+  min/max and display a colorbar alongside the image. Drag on the colorbar to update
+  limits interactively or right-click to type exact bounds.
 
-- {material-regular}`vertical_align_center` applies gamma scaling relative to the midpoint, which is handy for centered intensity scales such as spin-polarized or dichroic data.
+- {material-regular}`vertical_align_center` applies gamma scaling relative to the
+  midpoint, which is handy for centered intensity scales such as spin-polarized or
+  dichroic data.
 
-- Use {material-regular}`exposure` to flip between normalization behaviors of {class}`matplotlib.colors.PowerNorm` and {class}`erlab.plotting.colors.InversePowerNorm`.
+- Use {material-regular}`exposure` to flip between normalization behaviors of
+  {class}`matplotlib.colors.PowerNorm` and
+  {class}`erlab.plotting.colors.InversePowerNorm`.
 
-- By default, only a subset of Matplotlib colormaps is loaded. You can load the whole catalog by right-clicking on the colormap drop-down and selecting {guilabel}`Load All Colormaps`.
+- By default, only a subset of Matplotlib colormaps is loaded. You can load the whole
+  catalog by right-clicking on the colormap drop-down and selecting {guilabel}`Load All
+  Colormaps`.
 
 (imagetool-editing)=
 
@@ -290,13 +358,15 @@ closed cleanly when the main window exits.
 
 ## Regions of Interest (ROIs)
 
-ROIs let you focus on a sub-region of the data. They can be created and manipulated directly on the image plot.
+ROIs let you focus on a sub-region of the data. They can be created and manipulated
+directly on the image plot.
 
 Only polygonal ROIs with arbitrary vertex counts are supported at this time.
 
 ### Create and manipulate
 
-- Right-click on an image plot and choose {guilabel}`Add Polygon ROI`. A two-point line appears near the active cursor so you can immediately drag it into place.
+- Right-click on an image plot and choose {guilabel}`Add Polygon ROI`. A two-point line
+  appears near the active cursor so you can immediately drag it into place.
 - Drag any handle to move a vertex. Click on a segment to insert a new vertex.
 - Right-click on a ROI and pick {guilabel}`Edit ROI…` to open a tabular editor.
   - The coordinate table lists every vertex of the ROI.
@@ -333,7 +403,9 @@ Note that both procedures work on the entire data volume, not just the visible s
 
 ## Keyboard shortcuts
 
-Most actions advertise their shortcut directly in the menu bar. The table below highlights common gestures. Replace {kbd}`Ctrl` with {kbd}`⌘` and {kbd}`Alt` with {kbd}`⌥` on macOS.
+Most actions advertise their shortcut directly in the menu bar. The table below
+highlights common gestures. Replace {kbd}`Ctrl` with {kbd}`⌘` and {kbd}`Alt` with
+{kbd}`⌥` on macOS.
 
 :::{list-table}
 :header-rows: 1
@@ -352,4 +424,5 @@ Most actions advertise their shortcut directly in the menu bar. The table below 
   - Move all cursor lines along
 :::
 
-Rule of thumb: hold {kbd}`Alt` to apply actions to all cursors. Shortcuts for 'shifting' a cursor involves the {kbd}`Shift` key.
+Rule of thumb: hold {kbd}`Alt` to apply actions to all cursors. Shortcuts for 'shifting'
+a cursor involves the {kbd}`Shift` key.

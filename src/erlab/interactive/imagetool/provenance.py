@@ -1597,11 +1597,6 @@ class FileDataSelection(pydantic.BaseModel):
 
     New provenance stores stable Dataset variable names and DataTree data paths instead
     of the positional parsed-array index used by older workspaces.
-
-    .. versionchanged:: 3.23.0
-       Added Dataset variable and DataTree path selectors for file-backed ImageTool
-       provenance. Older ``selected_index`` replay payloads remain readable as
-       ``parsed_index`` selections.
     """
 
     kind: typing.Literal[
@@ -1854,11 +1849,6 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     selections should keep :class:`ImageToolSelectionSourceBinding` as their refresh
     state; that binding builds a spec before refresh so edited parent coordinates are
     used.
-
-    .. versionchanged:: 3.23.0
-       Script provenance can describe multiple manager inputs and records manager
-       snapshot tokens so derived tools can show whether the live inputs still match
-       the inputs used to create them.
     """
 
     schema_version: typing.Literal[2] = 2

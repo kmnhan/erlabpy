@@ -61,11 +61,6 @@ def load_bcs(path: str | os.PathLike) -> xr.DataArray | xr.Dataset | xr.DataTree
         is loaded into a separate child node of a data tree. Legacy tabular BCS scans
         without payload columns are returned as a dataset with one data variable per
         measured channel.
-
-    .. versionchanged:: 3.22.0
-
-        Added support for plain tabular text payloads referenced by BCS data tables and
-        legacy ALS tabular BCS Time Scan and Single Motor Scan files.
     """
     path = pathlib.Path(path)
     lines = path.read_text(encoding="utf-8-sig").splitlines()
