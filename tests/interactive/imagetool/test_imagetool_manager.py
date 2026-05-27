@@ -108,6 +108,17 @@ from erlab.interactive.ptable import PeriodicTableWindow
 logger = logging.getLogger(__name__)
 
 
+CONSOLE_HELPER_OFFSET = 2.5
+
+
+def console_helper_dependency(value):
+    return value + CONSOLE_HELPER_OFFSET
+
+
+def console_helper(value):
+    return console_helper_dependency(value)
+
+
 @pytest.fixture(scope="module")
 def test_data():
     return xr.DataArray(
@@ -15451,6 +15462,426 @@ def test_manager_console_reserved_result_name_replays_without_shadowing() -> Non
     )
 
 
+def test_manager_console_helpers_preserve_nested_operands() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+    handle = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        copyable=True,
+    )
+
+    namespace = {"np": np}
+    for value in (
+        np.nan,
+        np.inf,
+        -np.inf,
+        complex(np.nan, np.inf),
+        (1, np.nan),
+        [1, np.inf],
+        {"offset": -np.inf},
+    ):
+        code, copyable = manager_console._literal_code(value)
+        assert copyable
+        evaluated = eval(code, namespace)  # noqa: S307
+        np.testing.assert_equal(evaluated, erlab.utils.misc._convert_to_native(value))
+
+    assert manager_console._literal_code(object())[1] is False
+    assert manager_console._derived_operand_code("data_0 + data_1").startswith("(")
+    assert manager_console._derived_operand_code("data_0 == data_1").startswith("(")
+    assert manager_console._derived_operand_code("data_0.sel(x=0)") == "data_0.sel(x=0)"
+
+    nested = {"left": [handle, slice(0, 1)], "right": (handle,)}
+    assert manager_console._first_console_handle(nested) is handle
+    unwrapped = manager_console._unwrap_console_value(nested)
+    xr.testing.assert_identical(unwrapped["left"][0], data)
+    xr.testing.assert_identical(unwrapped["right"][0], data)
+
+    operand = manager_console._operand_from_value(nested)
+    assert [script_input.name for script_input in operand.script_inputs] == ["data_0"]
+    assert operand.copyable
+    assert operand.value["left"][1] == slice(0, 1)
+
+
+def test_manager_console_namespace_protocols_and_proxies() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+    handle = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        copyable=True,
+    )
+
+    for result, expected in (
+        (-handle, -data),
+        (+handle, +data),
+        (abs(handle - 2.0), abs(data - 2.0)),
+        (np.sin(handle), np.sin(data)),
+        (handle[{"x": 0}], data[{"x": 0}]),
+        (handle.x, data.x),
+        (handle.coarsen(y=2).mean(), data.coarsen(y=2).mean()),
+    ):
+        assert isinstance(result, manager_console._DerivedDataNamespace)
+        xr.testing.assert_identical(result.data, expected)
+
+    bool_handle = manager_console._DerivedDataNamespace(
+        None,
+        xr.DataArray([True, False], dims=("x",)),
+        "data_1",
+        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        copyable=True,
+    )
+    inverted = ~bool_handle
+    assert isinstance(inverted, manager_console._DerivedDataNamespace)
+    xr.testing.assert_identical(inverted.data, xr.DataArray([False, True], dims=("x",)))
+
+    assert handle.__array_ufunc__(np.add, "reduce", handle) is NotImplemented
+    np.testing.assert_array_equal(np.asarray(handle), data.values)
+    np.testing.assert_array_equal(handle.__array__(copy=True), data.values)
+
+    coarsened = handle.coarsen(y=2).mean()
+    spec = coarsened._console_provenance_spec(
+        active_name="derived",
+        label="Evaluate console expression",
+    )
+    assert spec is not None
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(spec, {"data_0": data}),
+        coarsened.data,
+    )
+
+    module_proxy = manager_console._ConsoleModuleProxy(np, "np")
+    assert isinstance(module_proxy.linalg, manager_console._ConsoleModuleProxy)
+    assert module_proxy.float64 is np.float64
+    assert module_proxy.pi == np.pi
+    np.testing.assert_allclose(module_proxy.sin(np.array([0.0, np.pi / 2])), [0.0, 1.0])
+    module_result = module_proxy.sin(handle)
+    assert isinstance(module_result, manager_console._DerivedDataNamespace)
+    xr.testing.assert_allclose(module_result.data, np.sin(data))
+
+    def add_one(value):
+        return value + 1
+
+    function_proxy = manager_console._ConsoleFunctionProxy(add_one)
+    xr.testing.assert_identical(function_proxy(data), data + 1)
+    function_proxy.__name__ = ""
+    function_result = function_proxy(handle)
+    assert isinstance(function_result, manager_console._DerivedDataNamespace)
+    xr.testing.assert_identical(function_result.data, data + 1)
+
+
+def test_manager_console_operator_and_proxy_branches() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(1, 5).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0, 1], "y": [0, 1]},
+    )
+    handle = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        copyable=True,
+    )
+
+    operations = (
+        (lambda: 10 + handle, 10 + data),
+        (lambda: 10 - handle, 10 - data),
+        (lambda: 2 * handle, 2 * data),
+        (lambda: handle @ data, data @ data),
+        (lambda: handle.__rmatmul__(data), data @ data),
+        (lambda: handle / 2, data / 2),
+        (lambda: 10 / handle, 10 / data),
+        (lambda: handle // 2, data // 2),
+        (lambda: 10 // handle, 10 // data),
+        (lambda: handle % 2, data % 2),
+        (lambda: 10 % handle, 10 % data),
+        (lambda: handle**2, data**2),
+        (lambda: 2**handle, 2**data),
+        (lambda: handle < 3, data < 3),
+        (lambda: handle <= 3, data <= 3),
+        (lambda: handle > 3, data > 3),
+        (lambda: handle >= 3, data >= 3),
+        (lambda: handle == 3, data == 3),
+        (lambda: handle != 3, data != 3),
+    )
+    for operation, expected in operations:
+        result = operation()
+        assert isinstance(result, manager_console._DerivedDataNamespace)
+        xr.testing.assert_identical(result.data, expected)
+
+    int_handle = manager_console._DerivedDataNamespace(
+        None,
+        data.astype(int),
+        "data_1",
+        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        copyable=True,
+    )
+    for operation, expected in (
+        (lambda: int_handle & 1, data.astype(int) & 1),
+        (lambda: 1 & int_handle, 1 & data.astype(int)),
+        (lambda: int_handle | 1, data.astype(int) | 1),
+        (lambda: 1 | int_handle, 1 | data.astype(int)),
+        (lambda: int_handle ^ 1, data.astype(int) ^ 1),
+        (lambda: 1 ^ int_handle, 1 ^ data.astype(int)),
+    ):
+        result = operation()
+        assert isinstance(result, manager_console._DerivedDataNamespace)
+        xr.testing.assert_identical(result.data, expected)
+
+    assert handle.qsel.__doc__
+    assert handle._wrap_console_result(1, "one", (), copyable=True) == 1
+    with pytest.raises(TypeError, match="not callable"):
+        manager_console._ConsoleAccessorProxy(
+            handle,
+            types.SimpleNamespace(value=10),
+            ("fake",),
+            "data_0.fake",
+        )()
+    accessor_proxy = manager_console._ConsoleAccessorProxy(
+        handle,
+        types.SimpleNamespace(array=data, value=10),
+        ("fake",),
+        "data_0.fake",
+    )
+    accessor_array = accessor_proxy.array
+    assert isinstance(accessor_array, manager_console._DerivedDataNamespace)
+    xr.testing.assert_identical(accessor_array.data, data)
+    assert accessor_proxy.value == 10
+    coarsened_with_kwargs = handle.coarsen(y=2).mean(skipna=True)
+    assert isinstance(coarsened_with_kwargs, manager_console._DerivedDataNamespace)
+    xr.testing.assert_identical(
+        coarsened_with_kwargs.data,
+        data.coarsen(y=2).mean(skipna=True),
+    )
+    assert "mean" in dir(handle.coarsen(y=2))
+
+    custom_module = types.ModuleType("custom_console_module")
+    custom_module.__file__ = "custom_console_module.py"
+
+    def scale(value, *, offset=0):
+        return value + offset
+
+    custom_module.scale = scale
+    module_proxy = manager_console._ConsoleModuleProxy(custom_module, "custom")
+    assert module_proxy.__file__ == "custom_console_module.py"
+    module_result = module_proxy.scale(handle, offset=2)
+    assert isinstance(module_result, manager_console._DerivedDataNamespace)
+    xr.testing.assert_identical(module_result.data, data + 2)
+    assert module_proxy == custom_module
+    assert module_proxy == manager_console._ConsoleModuleProxy(custom_module, "alias")
+    assert hash(module_proxy) == hash(custom_module)
+
+    class ParentWithoutTools:
+        _console_label = "Parent"
+
+        @property
+        def _console_tools(self):
+            return None
+
+    children = manager_console._ToolChildren(ParentWithoutTools())
+    assert len(children) == 0
+    assert list(children) == []
+    assert "No child" in repr(children)
+    with pytest.raises(LookupError):
+        children[0]
+
+
+def test_manager_console_tools_namespace_helper_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+
+    class FakeManager:
+        manager_index = 3
+
+        def __init__(self) -> None:
+            self._imagetool_wrappers = {}
+            self.added: list[tuple[xr.DataArray, typing.Any]] = []
+
+        def add_imagetool(self, tool, **kwargs) -> None:
+            self.added.append((tool.slicer_area.data, kwargs["provenance_spec"]))
+
+    fake_manager = FakeManager()
+    tools = manager_console.ToolsNamespace(fake_manager)
+    assert repr(tools) == "No tools"
+    assert tools._manager_argument_targets_this_manager(None)
+    assert tools._manager_argument_targets_this_manager(True)
+    assert tools._manager_argument_targets_this_manager(3)
+    assert not tools._manager_argument_targets_this_manager(False)
+    assert not tools._manager_argument_targets_this_manager(4)
+    assert not tools._manager_argument_targets_this_manager("manager-3")
+    tools.unbind_shell()
+    tools._pre_run_cell()
+
+    result_with_error = types.SimpleNamespace(
+        error_before_exec=RuntimeError("before"),
+        error_in_exec=None,
+        result=None,
+    )
+    tools._post_run_cell(result_with_error)
+
+    handle_without_provenance = manager_console._DerivedDataNamespace(
+        None,
+        data,
+        "data_0",
+        (),
+        copyable=False,
+    )
+    monkeypatch.setattr(
+        handle_without_provenance, "_console_provenance_spec", lambda **_kwargs: None
+    )
+    assert not tools._show_handle(
+        handle_without_provenance,
+        active_name="derived",
+        label="Evaluate console expression",
+    )
+
+    monkeypatch.setattr(erlab.interactive, "itool", lambda *_args, **_kwargs: object())
+    shown = tools._show_dataarray_with_provenance(
+        data,
+        prov.script(
+            prov.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+            start_label="Run script",
+            active_name="derived",
+            script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+        ),
+        execute=True,
+    )
+    assert not shown
+    assert not fake_manager.added
+
+
+def test_manager_console_callable_operand_captures_replayable_functions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    monkeypatch.setattr(console_helper, "__module__", "__main__")
+    monkeypatch.setattr(console_helper_dependency, "__module__", "__main__")
+
+    operand = manager_console._callable_operand(console_helper)
+
+    assert operand is not None
+    assert operand.copyable
+    namespace: dict[str, typing.Any] = {
+        "data": data,
+        "np": np,
+        "xr": xr,
+        "erlab": erlab,
+        "era": erlab.analysis,
+    }
+    exec(  # noqa: S102
+        manager_console._script_code(
+            operand.code_prelude,
+            f"derived = {operand.code}(data)",
+        ),
+        namespace,
+        namespace,
+    )
+    xr.testing.assert_identical(namespace["derived"], console_helper(data))
+
+    assert manager_console._function_global_names("def f(:", "f") is None
+    assert (
+        manager_console._function_global_names("def f():\n    return missing", "g")
+        is None
+    )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(console_helper, "__name__", "data")
+        patch.setattr(console_helper, "__qualname__", "data")
+        assert manager_console._callable_operand(console_helper) is None
+
+    with monkeypatch.context() as patch:
+        patch.setattr(console_helper, "__module__", "__main__")
+
+        def raise_oserror(_value):
+            raise OSError
+
+        patch.setattr(manager_console.inspect, "getsource", raise_oserror)
+        assert manager_console._callable_operand(console_helper) is None
+
+
+def test_manager_console_callable_operand_rejects_unreplayable_globals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(console_helper, "__module__", "__main__")
+    monkeypatch.setattr(console_helper_dependency, "__module__", "__main__")
+
+    source_cases = (
+        "def console_helper(value):\n"
+        "    return value\n\n"
+        "def extra():\n"
+        "    return value",
+        "@decorator\ndef console_helper(value):\n    return value",
+    )
+    for source in source_cases:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager_console.inspect,
+                "getsource",
+                lambda _value, source=source: source,
+            )
+            assert manager_console._callable_operand(console_helper) is None
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            manager_console, "_function_global_names", lambda _source, _name: None
+        )
+        assert manager_console._callable_operand(console_helper) is None
+
+    for global_names in ({"data_0"}, {"missing_global"}):
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                manager_console,
+                "_function_global_names",
+                lambda _source, _name, names=global_names: names,
+            )
+            assert manager_console._callable_operand(console_helper) is None
+
+    def local_dependency(value):
+        return value
+
+    with monkeypatch.context() as patch:
+        patch.setitem(console_helper.__globals__, "local_dependency", local_dependency)
+        patch.setattr(
+            manager_console,
+            "_function_global_names",
+            lambda _source, _name: {"local_dependency"},
+        )
+        assert manager_console._callable_operand(console_helper) is None
+
+    with monkeypatch.context() as patch:
+        patch.setitem(console_helper.__globals__, "uncopyable_global", object())
+        patch.setattr(
+            manager_console,
+            "_function_global_names",
+            lambda _source, _name: {"uncopyable_global"},
+        )
+        assert manager_console._callable_operand(console_helper) is None
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            erlab.interactive.imagetool.provenance,
+            "_validate_script_replay_code",
+            lambda _code: (_ for _ in ()).throw(ValueError),
+        )
+        assert manager_console._callable_operand(console_helper) is None
+
+
 def test_manager_console_assignment_tracks_until_explicit_show(
     qtbot,
     manager_context: Callable[
@@ -16662,6 +17093,291 @@ def test_manager_reload_script_inputs_missing_parent_without_source_noops(
 
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, original)
         assert not errors
+
+
+def test_manager_reload_helper_status_dialog_and_workspace_branches(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 1.0
+    path = tmp_path / "recorded.nc"
+    data0.to_netcdf(path)
+    file_spec = prov.file_load(
+        start_label="Load recorded",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+
+    class FakeMessageBox:
+        Icon = types.SimpleNamespace(Warning=object(), Question=object())
+        ButtonRole = types.SimpleNamespace(AcceptRole=object(), ActionRole=object())
+        StandardButton = types.SimpleNamespace(Cancel=object(), Close=object())
+        clicked_index: int | None = 0
+        instances: typing.ClassVar[list["FakeMessageBox"]] = []
+
+        def __init__(self, _parent=None) -> None:
+            self.buttons: list[object] = []
+            self.clicked: object | None = None
+            self.standard_buttons = None
+            FakeMessageBox.instances.append(self)
+
+        def setWindowTitle(self, _value) -> None: ...
+
+        def setDetailedText(self, _value) -> None: ...
+
+        def setIcon(self, _value) -> None: ...
+
+        def setText(self, _value) -> None: ...
+
+        def setInformativeText(self, _value) -> None: ...
+
+        def setStandardButtons(self, value) -> None:
+            self.standard_buttons = value
+
+        def addButton(self, *_args) -> object:
+            button = object()
+            self.buttons.append(button)
+            return button
+
+        def setDefaultButton(self, _value) -> None: ...
+
+        def exec(self) -> None:
+            if (
+                FakeMessageBox.clicked_index is not None
+                and FakeMessageBox.clicked_index < len(self.buttons)
+            ):
+                self.clicked = self.buttons[FakeMessageBox.clicked_index]
+
+        def clickedButton(self) -> object | None:
+            return self.clicked
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        assert (
+            manager._show_multi_input_script_result(
+                data0 - data1,
+                (0, 1),
+                operation_label="Subtract inputs",
+                operation_code="derived = data_0 - data_1",
+            )
+            == 2
+        )
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+        derived_wrapper = manager._imagetool_wrappers[2]
+        derived_uid = derived_wrapper.uid
+        script_spec = derived_wrapper.provenance_spec
+        assert script_spec is not None
+
+        assert manager.dependency_status_label_for_uid(derived_uid) is not None
+        manager.dependency_status_badge_for_uid(derived_uid)
+        assert manager.dependency_status_tooltip_for_uid(derived_uid) is not None
+        assert manager.dependency_input_summary_for_uid(derived_uid) is not None
+        assert manager.dependency_status_label_for_uid("missing") is None
+        assert manager.dependency_status_badge_for_uid("missing") is None
+        assert manager.dependency_status_tooltip_for_uid("missing") is None
+        assert manager.dependency_input_summary_for_uid("missing") is None
+        assert not manager._missing_dependencies_have_recorded_file("missing")
+        assert manager._script_provenance_inputs_current(script_spec)
+        stale_input = script_spec.script_inputs[0].model_copy(
+            update={"node_snapshot_token": "stale"}
+        )
+        stale_spec = script_spec.model_copy(
+            update={"script_inputs": (stale_input, *script_spec.script_inputs[1:])}
+        )
+        missing_input = script_spec.script_inputs[0].model_copy(
+            update={"node_uid": "missing-parent"}
+        )
+        missing_spec = script_spec.model_copy(
+            update={"script_inputs": (missing_input, *script_spec.script_inputs[1:])}
+        )
+        assert not manager._script_provenance_inputs_current(stale_spec)
+        assert not manager._script_provenance_inputs_current(missing_spec)
+
+        full_data_input = prov.ScriptInput(
+            name="full",
+            label="Full data",
+            provenance_spec=prov.full_data().model_dump(mode="json"),
+        )
+        assert not manager._script_input_can_reload(full_data_input)
+        missing_file_input = prov.ScriptInput(
+            name="missing_file",
+            label="Missing file",
+            provenance_spec=file_spec.model_copy(
+                update={
+                    "file_load_source": file_spec.file_load_source.model_copy(
+                        update={"path": str(tmp_path / "missing.nc")}
+                    )
+                }
+            ).model_dump(mode="json"),
+        )
+        assert not manager._script_input_has_recorded_file(missing_file_input)
+
+        file_marker = "file-marker"
+        child_marker = "child-marker"
+        saved_marker = "saved-marker"
+        file_input = prov.ScriptInput(
+            name="file_input",
+            label="File input",
+            node_uid="missing-file-node",
+            node_snapshot_token=file_marker,
+            provenance_spec=file_spec.model_dump(mode="json"),
+        )
+        nested_spec = prov.script(
+            prov.ScriptCodeOperation(label="Use file", code="derived = file_input"),
+            start_label="Run script",
+            active_name="derived",
+            script_inputs=(file_input,),
+        )
+        nested_input = prov.ScriptInput(
+            name="nested",
+            label="Nested input",
+            provenance_spec=nested_spec.model_dump(mode="json"),
+        )
+        ref = prov.ScriptInputDependencyRef(
+            name="file_input",
+            label="File input",
+            node_uid="missing-file-node",
+            node_snapshot_token=file_marker,
+        )
+        assert manager._script_input_has_recorded_file(file_input)
+        assert manager._script_input_has_recorded_file(nested_input)
+        assert manager._dependency_ref_has_recorded_file(nested_spec, ref)
+        assert not manager._dependency_ref_has_recorded_file(None, ref)
+        derived_wrapper.set_displayed_provenance(nested_spec)
+        assert manager._missing_dependencies_have_recorded_file(derived_uid)
+
+        fake_child = types.SimpleNamespace(
+            uid="1 child-node",
+            provenance_spec=file_spec,
+            display_text="Child node",
+            snapshot_token=child_marker,
+        )
+        script_input = manager._script_input_for_node(fake_child)
+        assert script_input.name.startswith("data__1_child")
+        assert script_input.parsed_provenance_spec() == file_spec
+
+        monkeypatch.setattr(manager_mainwindow.QtWidgets, "QMessageBox", FakeMessageBox)
+        FakeMessageBox.instances.clear()
+        manager._show_dependency_reload_dialog(0)
+        assert not FakeMessageBox.instances
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "dependency_status_for_uid", lambda _uid: "current")
+            patch.setattr(
+                manager, "dependency_input_summary_for_uid", lambda _uid: None
+            )
+            patch.setattr(
+                manager, "_node_can_reload_script_inputs", lambda _node: False
+            )
+            manager._show_dependency_reload_dialog(0)
+        assert (
+            FakeMessageBox.instances[-1].standard_buttons
+            is FakeMessageBox.StandardButton.Close
+        )
+
+        reload_targets: list[int | str] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "dependency_status_for_uid", lambda _uid: "changed")
+            patch.setattr(
+                manager, "dependency_input_summary_for_uid", lambda _uid: "details"
+            )
+            patch.setattr(manager, "_node_can_reload_script_inputs", lambda _node: True)
+            patch.setattr(
+                manager, "_reload_script_derived_target", reload_targets.append
+            )
+            FakeMessageBox.clicked_index = 0
+            manager._show_dependency_reload_dialog(0)
+            FakeMessageBox.clicked_index = 1
+            manager._show_dependency_reload_dialog(0)
+        assert reload_targets == [0]
+
+        for clicked_index, expected in (
+            (0, "replace"),
+            (1, "new"),
+            (2, "cancel"),
+            (None, "cancel"),
+        ):
+            FakeMessageBox.clicked_index = clicked_index
+            assert manager._prompt_incompatible_reload_commit("details") == expected
+
+        details = manager._reload_incompatibility_details(
+            data0,
+            data0.rename({"x": "energy"}).assign_coords(y=[10.0, 11.0]),
+        )
+        assert "Current dims" in details
+        assert "Reloaded dims" in details
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                erlab.interactive, "itool", lambda *_args, **_kwargs: object()
+            )
+            assert (
+                manager._show_multi_input_script_result(
+                    data0,
+                    (0,),
+                    operation_label="No tool",
+                    operation_code="derived = data_0",
+                )
+                is None
+            )
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "target_from_slicer_area", lambda _area: None)
+            assert not manager._script_reload_from_slicer_area(object(), execute=False)
+        with monkeypatch.context() as patch:
+            patch.setattr(manager, "target_from_slicer_area", lambda _area: 0)
+            patch.setattr(manager, "_node_can_reload_script_inputs", lambda _node: True)
+            assert manager._script_reload_from_slicer_area(object(), execute=False)
+
+        old_parent_uid = "saved-parent"
+        derived_wrapper.set_displayed_provenance(
+            prov.script(
+                prov.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+                start_label="Run script",
+                active_name="derived",
+                script_inputs=(
+                    prov.ScriptInput(
+                        name="data_0",
+                        label="Saved parent",
+                        node_uid=old_parent_uid,
+                        node_snapshot_token=saved_marker,
+                    ),
+                ),
+            )
+        )
+        assert manager._workspace_loaded_uid_map(
+            {old_parent_uid: 0, "missing": "missing"}
+        ) == {old_parent_uid: manager._imagetool_wrappers[0].uid}
+        manager._rebase_loaded_workspace_dependency_refs(
+            {old_parent_uid: 0, derived_wrapper.uid: 2, "missing": "missing"}
+        )
+        rebased_spec = derived_wrapper.provenance_spec
+        assert rebased_spec is not None
+        assert (
+            rebased_spec.script_inputs[0].node_uid == manager._imagetool_wrappers[0].uid
+        )
 
 
 def test_manager_reload_self_replacement_uses_recorded_source(

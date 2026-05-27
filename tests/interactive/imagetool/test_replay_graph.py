@@ -1,4 +1,6 @@
+import ast
 import pathlib
+import types
 import typing
 
 import numpy as np
@@ -75,6 +77,372 @@ def _polarization_source(path: pathlib.Path) -> xr.DataArray:
     )
     source.to_netcdf(path)
     return source
+
+
+def test_replay_graph_low_level_validation_helpers() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    assert _replay_graph._code_uses_name("derived = data", "data")
+    assert not _replay_graph._code_uses_name("derived =", "data")
+    assert (
+        _replay_graph._simple_assignment_source_name("target = source", "target")
+        == "source"
+    )
+    assert (
+        _replay_graph._simple_assignment_source_name(
+            "target: xr.DataArray = source",
+            "target",
+        )
+        == "source"
+    )
+    assert _replay_graph._simple_assignment_source_name("target =", "target") is None
+    assert (
+        _replay_graph._simple_assignment_source_name(
+            "target = source\nother = source", "target"
+        )
+        is None
+    )
+
+    module = ast.parse(
+        """
+@decorator
+def helper(value=data_0, *, scale=data_1) -> data_2:
+    return value
+
+async def async_helper(value=data_3):
+    return value
+
+lambda_value = lambda value=data_4: value
+
+@class_decorator
+class Child(Base, metaclass=data_5):
+    pass
+"""
+    )
+    names = [_replay_graph._statement_scope_names(stmt) for stmt in module.body]
+    loads = set().union(*(item.loads for item in names))
+    stores = set().union(*(item.stores for item in names))
+    assert {
+        "decorator",
+        "data_0",
+        "data_1",
+        "data_2",
+        "data_3",
+        "data_4",
+        "class_decorator",
+    }.issubset(loads)
+    assert {"Base", "data_5"}.issubset(loads)
+    assert {"helper", "async_helper", "lambda_value", "Child"}.issubset(stores)
+
+    deps = _replay_graph._script_function_dependencies(
+        "def helper():\n"
+        "    def nested():\n"
+        "        return missing\n"
+        "    return nested()\n"
+    )
+    assert deps[("helper", 1)] == {"missing"}
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unresolved name"):
+        _replay_graph._validate_script_code_names(
+            "def helper():\n    return missing\nresult = helper()",
+            set(),
+            {},
+        )
+
+    with pytest.raises(_replay_graph.ReplayGraphError, match="Expected script"):
+        _replay_graph._validate_script_provenance(
+            prov.full_data(prov.SqueezeOperation())
+        )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="without active_name"):
+        _replay_graph._validate_script_provenance(
+            types.SimpleNamespace(kind="script", active_name=None)
+        )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="unsupported Import"):
+        _replay_graph._validate_script_provenance(
+            prov.script(
+                start_label="Run script",
+                seed_code="import os",
+                active_name="derived",
+                script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+            )
+        )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="no replay code"):
+        _replay_graph._validate_script_provenance(
+            prov.script(
+                prov.AverageOperation(dims=("x",)),
+                start_label="Run script",
+                active_name="derived",
+            )
+        )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="no replay code"):
+        _replay_graph._validate_script_provenance(
+            prov.script(start_label="Run script", active_name="derived")
+        )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="non-replayable"):
+        _replay_graph._validate_script_provenance(
+            prov.script(
+                prov.ScriptCodeOperation(
+                    label="Opaque",
+                    code=None,
+                    copyable=False,
+                ),
+                start_label="Run script",
+                active_name="derived",
+                script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+            )
+        )
+    assert not _replay_graph.script_provenance_replayable(None)
+
+
+def test_replay_graph_manual_error_and_cache_paths() -> None:
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+
+    graph = _replay_graph.ReplayGraph()
+    live_key = graph.add_node("live", "live_input", payload={"data": data})
+    graph.output_key = live_key
+    with pytest.raises(_replay_graph.ReplayGraphError, match="Live inputs"):
+        _replay_graph.emit_replay_code(graph)
+    xr.testing.assert_identical(
+        _replay_graph.execute_replay_graph(graph, cache={live_key: data + 1.0}),
+        data + 1.0,
+    )
+    replayed = _replay_graph.execute_replay_graph(graph)
+    xr.testing.assert_identical(replayed, data)
+    assert not np.shares_memory(replayed.data, data.data)
+
+    relay_graph = _replay_graph.ReplayGraph()
+    relay_live_key = relay_graph.add_node("live", "live_input", payload={"data": data})
+    relay_key = relay_graph.add_node("relay", "relay", parents=(relay_live_key,))
+    relay_graph.output_key = relay_key
+    xr.testing.assert_identical(_replay_graph.execute_replay_graph(relay_graph), data)
+
+    for load_code, message in (
+        ("derived =", "not valid Python"),
+        ("other = xr.DataArray([1.0], dims=('x',))", "does not assign"),
+    ):
+        file_graph = _replay_graph.ReplayGraph()
+        file_key = file_graph.add_node(
+            f"file-{message}",
+            "file_load",
+            payload={
+                "active_name": "derived",
+                "load_code": load_code,
+                "load_source": None,
+            },
+        )
+        file_graph.output_key = file_key
+        with pytest.raises(_replay_graph.ReplayGraphError, match=message):
+            _replay_graph.emit_replay_code(file_graph)
+
+    for codes, message in (
+        (("other = xr.DataArray([1.0], dims=('x',))",), "did not create"),
+        (("derived = 1",), "did not produce"),
+    ):
+        script_graph = _replay_graph.ReplayGraph()
+        script_key = script_graph.add_node(
+            f"script-{message}",
+            "script",
+            payload={"bindings": (), "codes": codes, "active_name": "derived"},
+        )
+        script_graph.output_key = script_key
+        with pytest.raises(_replay_graph.ReplayGraphError, match=message):
+            _replay_graph.execute_replay_graph(script_graph)
+
+    unknown_graph = _replay_graph.ReplayGraph()
+    unknown_key = unknown_graph.add_node("unknown", "unknown")
+    unknown_graph.output_key = unknown_key
+    with pytest.raises(_replay_graph.ReplayGraphError, match="Unknown replay"):
+        _replay_graph.emit_replay_code(unknown_graph)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="Unknown replay"):
+        _replay_graph.execute_replay_graph(unknown_graph)
+
+    empty_graph = _replay_graph.ReplayGraph()
+    with pytest.raises(_replay_graph.ReplayGraphError, match="no output"):
+        _replay_graph.emit_replay_code(empty_graph, output_name="derived")
+    with pytest.raises(_replay_graph.ReplayGraphError, match="no output"):
+        _replay_graph.execute_replay_graph(empty_graph)
+
+
+def test_replay_graph_file_script_input_and_rebuild_edges(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(np.arange(3.0), dims=("x",))
+    path = tmp_path / "source.nc"
+    data.to_netcdf(path)
+    file_spec = _file_spec(path)
+
+    setup_code, load_code = _replay_graph._file_seed_code_parts(
+        "import erlab\nimport numpy as np\nderived = xr.load_dataarray('source.nc')",
+        "derived",
+    )
+    assert setup_code == "import numpy as np"
+    assert "xr.load_dataarray" in load_code
+    for seed_code, message in (
+        ("derived =", "not valid Python"),
+        ("other = xr.DataArray([1.0], dims=('x',))", "does not assign"),
+    ):
+        with pytest.raises(_replay_graph.ReplayGraphError, match=message):
+            _replay_graph._file_seed_code_parts(seed_code, "derived")
+
+    loaded_input = prov.ScriptInput(
+        name="loaded",
+        label="Loaded source",
+        provenance_spec=file_spec,
+    )
+    code = _replay_graph.script_inputs_code((loaded_input,), display=False)
+    namespace = _exec_generated_code(code)
+    xr.testing.assert_identical(namespace["loaded"], data)
+    with pytest.raises(_replay_graph.ReplayGraphError, match="recorded source"):
+        _replay_graph.script_inputs_code(
+            (prov.ScriptInput(name="missing", label="Missing source"),),
+            display=False,
+        )
+
+    with pytest.raises(_replay_graph.ReplayGraphError, match="script-derived"):
+        _replay_graph.rebuild_script_provenance(file_spec)
+    script_spec = prov.script(
+        prov.ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Loaded source",
+                provenance_spec=file_spec,
+            ),
+        ),
+    )
+    rebuilt, rebuilt_spec = _replay_graph.rebuild_script_provenance(script_spec)
+    xr.testing.assert_identical(rebuilt, data + 1.0)
+    assert rebuilt_spec.script_inputs[0].node_uid is None
+
+    with pytest.raises(_replay_graph.ReplayGraphError, match="maximum reload depth"):
+        _replay_graph.rebuild_script_provenance(script_spec, depth=21)
+    missing_spec = prov.script(
+        prov.ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="Closed input"),),
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="not open"):
+        _replay_graph.rebuild_script_provenance(missing_spec)
+
+    live_calls = 0
+    initial_marker = "initial-marker"
+    current_marker = "current-marker"
+    live_input = prov.ScriptInput(
+        name="data_0",
+        label="Live input",
+        node_uid="uid-0",
+        node_snapshot_token=initial_marker,
+    )
+    live_spec = prov.script(
+        prov.ScriptCodeOperation(label="Double", code="derived = data_0 * 2.0"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(live_input,),
+    )
+
+    def resolve_live(_script_input):
+        nonlocal live_calls
+        live_calls += 1
+        return data, live_input.model_copy(
+            update={"node_snapshot_token": current_marker}
+        )
+
+    live_rebuilt, live_rebuilt_spec = _replay_graph.rebuild_script_provenance(
+        live_spec,
+        live_input_resolver=resolve_live,
+    )
+    xr.testing.assert_identical(live_rebuilt, data * 2.0)
+    assert live_calls == 1
+    assert live_rebuilt_spec.script_inputs[0].node_snapshot_token == current_marker
+
+    miss_calls = 0
+    duplicate_file_input = prov.ScriptInput(
+        name="data_0",
+        label="Closed file input",
+        node_uid="same-uid",
+        provenance_spec=file_spec,
+    )
+    duplicate_file_spec = prov.script(
+        prov.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(duplicate_file_input, duplicate_file_input),
+    )
+
+    def miss_live(_script_input):
+        nonlocal miss_calls
+        miss_calls += 1
+        return
+
+    rebuilt_from_miss, _rebuilt_from_miss_spec = (
+        _replay_graph.rebuild_script_provenance(
+            duplicate_file_spec,
+            live_input_resolver=miss_live,
+        )
+    )
+    xr.testing.assert_identical(rebuilt_from_miss, data)
+    assert miss_calls == 2
+
+    unsupported_nested = prov.script(
+        prov.ScriptCodeOperation(label="Opaque", code=None, copyable=False),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+    )
+    unsupported_input = prov.ScriptInput(
+        name="data_0",
+        label="Unsupported nested input",
+        provenance_spec=unsupported_nested,
+    )
+    unsupported_spec = prov.script(
+        prov.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(unsupported_input,),
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="cannot be replayed"):
+        _replay_graph.rebuild_script_provenance(unsupported_spec)
+
+    full_data_spec = prov.script(
+        prov.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="Full data",
+                provenance_spec=prov.full_data(),
+            ),
+        ),
+    )
+    with pytest.raises(_replay_graph.ReplayGraphError, match="reloadable"):
+        _replay_graph.rebuild_script_provenance(full_data_spec)
+
+
+def test_replay_graph_operation_code_error_edges() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class Operation:
+        def __init__(self, code: str | None) -> None:
+            self._code = code
+
+        def derivation_entry(self) -> prov.DerivationEntry:
+            return prov.DerivationEntry("Operation", self._code, True)
+
+    for operation, message in (
+        (Operation(None), "does not provide"),
+        (Operation("derived ="), "not valid Python"),
+        (Operation("other = data"), "does not assign"),
+    ):
+        with pytest.raises(_replay_graph.ReplayGraphError, match=message):
+            _replay_graph._operation_replay_code(
+                operation,
+                active_name="derived",
+                context_name="data",
+            )
 
 
 def test_replay_graph_emits_shared_file_and_operation_prefix(
