@@ -234,14 +234,15 @@ def main(execute: bool = True) -> None:
         if startup_files:
             qapp._pending_files.extend(startup_files)
 
-    if (
+    if not qapp.property("_erlab_itool_manager_configured") and (
         sys.platform != "darwin" or not erlab.utils.misc._IS_PACKAGED
-    ):  # pragma: no branch
-        # Ignore if running in a PyInstaller bundle on macOS
+    ):
+        # Ignore if running in a PyInstaller bundle on macOS.
         qapp.setWindowIcon(QtGui.QIcon(_ICON_PATH))
         qapp.setApplicationName("ImageTool Manager")
         qapp.setApplicationDisplayName("ImageTool Manager")
         qapp.setApplicationVersion(erlab.__version__)
+        qapp.setProperty("_erlab_itool_manager_configured", True)
 
     configure_logging()
 

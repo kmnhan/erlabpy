@@ -64,8 +64,21 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/imagetool/test_slicer.py",
         "tests/interactive/imagetool/test_watcher.py",
     ),
-    "cov-qt-imagetool-manager": (
-        "tests/interactive/imagetool/test_imagetool_manager.py",
+    "cov-qt-manager-mainwindow": (
+        "tests/interactive/imagetool/manager/test_mainwindow.py",
+        "tests/interactive/imagetool/manager/test_modelview.py",
+        "tests/interactive/imagetool/manager/test_wrapper.py",
+    ),
+    "cov-qt-manager-workspace": (
+        "tests/interactive/imagetool/manager/test_workspace.py",
+    ),
+    "cov-qt-manager-provenance-console": (
+        "tests/interactive/imagetool/manager/test_provenance.py",
+        "tests/interactive/imagetool/manager/test_console.py",
+        "tests/interactive/imagetool/manager/test_app.py",
+        "tests/interactive/imagetool/manager/test_dialogs.py",
+        "tests/interactive/imagetool/manager/test_registry_server.py",
+        "tests/interactive/imagetool/manager/test_warnings.py",
     ),
     "cov-qt-tools": (
         "tests/interactive/test_bzplot.py",
@@ -88,6 +101,24 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/interactive/test_ptable.py",
         "tests/interactive/test_utils.py",
     ),
+}
+
+MANAGER_COVERAGE_GROUPS: frozenset[str] = frozenset(
+    group for group in COVERAGE_GROUPS if group.startswith("cov-qt-manager-")
+)
+
+COMPATIBILITY_GROUPS: dict[str, tuple[str, ...]] = {
+    "compat-rest": tuple(
+        target
+        for group, targets in COVERAGE_GROUPS.items()
+        if group not in MANAGER_COVERAGE_GROUPS
+        for target in targets
+    ),
+    **{
+        f"compat-{group.removeprefix('cov-qt-')}": targets
+        for group, targets in COVERAGE_GROUPS.items()
+        if group in MANAGER_COVERAGE_GROUPS
+    },
 }
 
 GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
@@ -145,6 +176,8 @@ def expand_file_targets(targets: Sequence[str]) -> list[str]:
 def get_group_targets(group: str) -> tuple[str, ...]:
     if group == "compat":
         return COMPAT_TARGETS
+    if group in COMPATIBILITY_GROUPS:
+        return COMPATIBILITY_GROUPS[group]
     try:
         return COVERAGE_GROUPS[group]
     except KeyError as exc:
@@ -213,3 +246,4 @@ def is_compat_nodeid(nodeid: str) -> bool:
 def iter_known_groups() -> Iterable[str]:
     yield from COVERAGE_GROUPS
     yield "compat"
+    yield from COMPATIBILITY_GROUPS

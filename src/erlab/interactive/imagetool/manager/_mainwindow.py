@@ -75,6 +75,7 @@ logger = logging.getLogger(__name__)
 
 _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
+_QWIDGETSIZE_MAX = 16777215
 _RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
 _MAX_RECENT_WORKSPACES = 10
 _DEPENDENCY_STATUS_LABELS: dict[str, str] = {
@@ -173,7 +174,7 @@ class _HeightForWidthFrame(QtWidgets.QFrame):
             self.setMaximumHeight(height)
         else:
             self.setMinimumHeight(0)
-            self.setMaximumHeight(QtWidgets.QWIDGETSIZE_MAX)
+            self.setMaximumHeight(_QWIDGETSIZE_MAX)
         self.updateGeometry()
 
     def sizeHint(self) -> QtCore.QSize:
