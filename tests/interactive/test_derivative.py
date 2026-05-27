@@ -628,7 +628,9 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert tool.source_state == "unavailable"
 
 
-def test_tool_copy_code_includes_parent_lineage_for_standalone_imagetool(qtbot) -> None:
+def test_tool_copy_code_includes_parent_provenance_for_standalone_imagetool(
+    qtbot,
+) -> None:
     class _DummyState(BaseModel):
         value: int = 0
 

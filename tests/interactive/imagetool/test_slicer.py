@@ -8,7 +8,9 @@ from erlab.interactive.imagetool.slicer import (
     _display_safe_float,
     _display_safe_minmax,
     _display_safe_values,
+    check_cursors_compatible,
     qsel_args_from_indexers,
+    restore_nonuniform_dims,
 )
 
 
@@ -35,6 +37,54 @@ def test_nonuniform_axes_detects_generated_idx_dim(qtbot) -> None:
 
     assert str(slicer._obj.dims[0]).endswith("_idx")
     assert slicer._nonuniform_axes == [0]
+
+
+def test_restore_nonuniform_dims_ignores_user_idx_dim() -> None:
+    data = xr.DataArray(
+        np.zeros((3, 4)),
+        dims=("x_idx", "y"),
+        coords={
+            "x_idx": np.arange(3),
+            "x": ("x_idx", np.arange(3)),
+            "y": np.arange(4),
+        },
+    )
+
+    restored = restore_nonuniform_dims(data)
+
+    xr.testing.assert_identical(restored, data)
+
+
+def test_check_cursors_compatible_normalizes_promoted_1d_stack_dim() -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+    )
+    promoted = ArraySlicer.validate_array(data, copy_values=False)
+
+    assert promoted.dims == ("x", "stack_dim")
+    assert check_cursors_compatible(promoted, data)
+    assert check_cursors_compatible(data, promoted)
+    assert not check_cursors_compatible(
+        promoted, data.assign_coords(x=[0.0, 1.0, 2.0, 4.0])
+    )
+
+
+def test_check_cursors_compatible_normalizes_nonuniform_idx_dims() -> None:
+    public = xr.DataArray(
+        np.arange(12.0).reshape(4, 3),
+        dims=("x", "y"),
+        coords={"x": [0.0, 0.2, 0.8, 1.5], "y": np.arange(3.0)},
+    )
+    internal = ArraySlicer.validate_array(public, copy_values=False)
+
+    assert internal.dims == ("x_idx", "y")
+    assert check_cursors_compatible(internal, public)
+    assert check_cursors_compatible(public, internal)
+    assert not check_cursors_compatible(
+        internal, public.assign_coords(x=[0.0, 0.2, 0.9, 1.5])
+    )
 
 
 def test_set_array_shallow_copy_does_not_require_deep_copy(qtbot) -> None:

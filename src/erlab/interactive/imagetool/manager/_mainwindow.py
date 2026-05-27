@@ -24,7 +24,9 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
+from erlab.interactive.imagetool import _replay_graph
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _server as _manager_server
@@ -75,6 +77,32 @@ _METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
 _METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
 _RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
 _MAX_RECENT_WORKSPACES = 10
+_DEPENDENCY_STATUS_LABELS: dict[str, str] = {
+    "current": "Current",
+    "changed": "Changed",
+    "missing": "Missing",
+}
+_DEPENDENCY_STATUS_BADGES: dict[str, str] = {
+    "changed": "Changed",
+    "missing": "Missing",
+}
+_DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
+    "current": "All recorded live inputs are still open and unchanged.",
+    "changed": "At least one recorded live input has changed since this data was made.",
+    "missing": "At least one recorded live input is no longer open.",
+}
+
+
+@dataclass(frozen=True)
+class _ScriptRebuildResult:
+    data: xr.DataArray
+    provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+
+
+class _ScriptRebuildError(RuntimeError):
+    def __init__(self, message: str, *, details: str = "") -> None:
+        super().__init__(message)
+        self.details = details
 
 
 def _manager_settings() -> QtCore.QSettings:
@@ -135,6 +163,28 @@ class _MetadataDerivationListWidget(QtWidgets.QListWidget):
             event.accept()
             return
         super().keyPressEvent(event)
+
+
+class _HeightForWidthFrame(QtWidgets.QFrame):
+    def sync_height_for_width(self) -> None:
+        if self.isVisible() and self.hasHeightForWidth() and self.width() > 0:
+            height = self.heightForWidth(self.width())
+            self.setMinimumHeight(height)
+            self.setMaximumHeight(height)
+        else:
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(QtWidgets.QWIDGETSIZE_MAX)
+        self.updateGeometry()
+
+    def sizeHint(self) -> QtCore.QSize:
+        hint = super().sizeHint()
+        if self.hasHeightForWidth() and self.width() > 0:
+            hint.setHeight(self.heightForWidth(self.width()))
+        return hint
+
+    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self.sync_height_for_width()
 
 
 class _ElidedInteractiveLabel(QtWidgets.QLabel):
@@ -979,6 +1029,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
         self._all_nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
+        self._dependency_ref_cache: dict[
+            str,
+            tuple[
+                int,
+                tuple[
+                    erlab.interactive.imagetool.provenance.ScriptInputDependencyRef,
+                    ...,
+                ],
+            ],
+        ] = {}
         self._pending_source_refresh_targets: dict[str, set[str]] = {}
         self._displayed_indices: list[int] = []
         self._node_uid_counter: int = 0
@@ -1192,7 +1252,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self.reload_action = QtWidgets.QAction("Reload Data", self)
         self.reload_action.triggered.connect(self.reload_selected)
-        self.reload_action.setToolTip("Reload selected data and refresh child paths")
+        self.reload_action.setToolTip(
+            "Reload selected data from its saved files, parent, or inputs"
+        )
         self.reload_action.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
         self.reload_action.setVisible(False)
 
@@ -1362,8 +1424,14 @@ class ImageToolManager(QtWidgets.QMainWindow):
         left_layout.addWidget(self.tree_view)
 
         # Construct right side of splitter
+        right_panel = QtWidgets.QWidget(self)
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+        main_splitter.addWidget(right_panel)
+
         right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        main_splitter.addWidget(right_splitter)
+        right_layout.addWidget(right_splitter, 1)
 
         self.text_box = QtWidgets.QTextEdit(self)
         self.text_box.setReadOnly(True)
@@ -1372,7 +1440,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.preview_widget = _SingleImagePreview(self)
         right_splitter.addWidget(self.preview_widget)
 
-        self.metadata_group = QtWidgets.QFrame(self)
+        self.metadata_group = _HeightForWidthFrame(self)
         self.metadata_group.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.metadata_group.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Preferred,
@@ -1383,7 +1451,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         metadata_layout.setSpacing(4)
         self.metadata_group.setLayout(metadata_layout)
 
-        self.metadata_details_widget = QtWidgets.QWidget(self.metadata_group)
+        self.metadata_details_widget = _HeightForWidthFrame(self.metadata_group)
         self.metadata_details_layout = QtWidgets.QGridLayout(
             self.metadata_details_widget
         )
@@ -1392,6 +1460,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.metadata_details_layout.setVerticalSpacing(2)
         self.metadata_details_layout.setColumnStretch(1, 1)
         self.metadata_details_widget.setLayout(self.metadata_details_layout)
+        self.metadata_details_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
         self.metadata_details_widget.setVisible(False)
         metadata_layout.addWidget(self.metadata_details_widget)
         self._metadata_detail_labels: dict[str, QtWidgets.QLabel] = {}
@@ -1425,17 +1497,17 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.metadata_derivation_list.setVisible(False)
         metadata_layout.addWidget(self.metadata_derivation_list)
-        right_splitter.addWidget(self.metadata_group)
+        right_layout.addWidget(self.metadata_group, 0)
 
         # Set initial splitter sizes
-        right_splitter.setSizes([280, 140, 96])
+        right_splitter.setSizes([280, 140])
         main_splitter.setSizes([100, 150])
 
         # Store most recent name filter and directory for new windows
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
         self._recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = {}
-        self._metadata_full_code: str | None = None
+        self._metadata_full_code_available = False
         self._metadata_node_uid: str | None = None
         self._metadata_copy_selected_action = QtGui.QAction("Copy Selected Code", self)
         self._metadata_copy_selected_action.setObjectName(
@@ -2033,6 +2105,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         node = self._all_nodes.pop(uid, None)
         if node is None:
             return
+        self._dependency_ref_cache.pop(uid, None)
+        self._refresh_dependency_dependents(uid)
         self._pending_source_refresh_targets.pop(uid, None)
         for blocker_uid, target_uids in list(
             self._pending_source_refresh_targets.items()
@@ -2054,6 +2128,465 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if isinstance(target, int):
             return self._imagetool_wrappers[target]
         return self._all_nodes[target]
+
+    def _dependency_refs_for_uid(
+        self, uid: str
+    ) -> tuple[erlab.interactive.imagetool.provenance.ScriptInputDependencyRef, ...]:
+        node = self._all_nodes.get(uid)
+        if node is None or node.provenance_spec is None:
+            self._dependency_ref_cache.pop(uid, None)
+            return ()
+        spec_id = id(node.provenance_spec)
+        cached = self._dependency_ref_cache.get(uid)
+        if cached is not None and cached[0] == spec_id:
+            return cached[1]
+        refs = erlab.interactive.imagetool.provenance.script_input_dependency_refs(
+            node.provenance_spec
+        )
+        self._dependency_ref_cache[uid] = (spec_id, refs)
+        return refs
+
+    def dependency_status_for_uid(
+        self, uid: str
+    ) -> typing.Literal["current", "changed", "missing"] | None:
+        refs = self._dependency_refs_for_uid(uid)
+        if not refs:
+            return None
+
+        changed = False
+        for ref in refs:
+            parent = self._all_nodes.get(ref.node_uid)
+            if parent is None:
+                return "missing"
+            if (
+                ref.node_snapshot_token is not None
+                and parent.snapshot_token != ref.node_snapshot_token
+            ):
+                changed = True
+        return "changed" if changed else "current"
+
+    def dependency_status_label_for_uid(self, uid: str) -> str | None:
+        status = self.dependency_status_for_uid(uid)
+        if status is None:
+            return None
+        return _DEPENDENCY_STATUS_LABELS[status]
+
+    def dependency_status_badge_for_uid(self, uid: str) -> str | None:
+        status = self.dependency_status_for_uid(uid)
+        if status is None:
+            return None
+        return _DEPENDENCY_STATUS_BADGES.get(status)
+
+    def dependency_status_tooltip_for_uid(self, uid: str) -> str | None:
+        status = self.dependency_status_for_uid(uid)
+        if status is None:
+            return None
+        tooltip = _DEPENDENCY_STATUS_TOOLTIPS[status]
+        node = self._all_nodes.get(uid)
+        if node is not None and self._node_can_reload_script_inputs(node):
+            tooltip += " Click for Reload Data options."
+        if status == "missing" and self._missing_dependencies_have_recorded_file(uid):
+            tooltip += " Recorded source files found for at least one missing input."
+        return tooltip
+
+    def dependency_input_summary_for_uid(self, uid: str) -> str | None:
+        refs = self._dependency_refs_for_uid(uid)
+        if not refs:
+            return None
+
+        node = self._all_nodes.get(uid)
+        spec = None if node is None else node.provenance_spec
+        parts: list[str] = []
+        seen: set[tuple[str, str, str | None]] = set()
+        for ref in refs:
+            key = (ref.name, ref.node_uid, ref.node_snapshot_token)
+            if key in seen:
+                continue
+            seen.add(key)
+            parent = self._all_nodes.get(ref.node_uid)
+            if isinstance(parent, _ImageToolWrapper):
+                current = f"currently ImageTool {parent.index}"
+            elif parent is not None:
+                current = f"currently {parent.display_text}"
+            else:
+                current = "parent no longer open"
+                if self._dependency_ref_has_recorded_file(spec, ref):
+                    current += "; recorded source file found"
+            name = " ".join(ref.name.split())
+            label = " ".join(ref.label.split())
+            current = " ".join(current.split())
+            if name and label and current:
+                parts.append(f"{name}: {label} ({current})")
+        if not parts:
+            return None
+        return "\n".join(parts)
+
+    def _show_dependency_reload_dialog(self, target: int | str) -> None:
+        node = self._node_for_target(target)
+        status = self.dependency_status_for_uid(node.uid)
+        if status is None:
+            return
+
+        details = self.dependency_input_summary_for_uid(node.uid)
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setWindowTitle("Reload Data")
+        if details:
+            msg_box.setDetailedText(details)
+
+        if not self._node_can_reload_script_inputs(node):
+            msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+            msg_box.setText("This result cannot be reloaded from its recorded inputs.")
+            msg_box.setInformativeText(
+                "The recorded provenance is not complete enough to replay."
+            )
+            msg_box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Close)
+            msg_box.exec()
+            return
+
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        if status == "changed":
+            msg_box.setText("Reload this result from the current inputs?")
+        else:
+            msg_box.setText("Reload this result from its recorded inputs?")
+        msg_box.setInformativeText(
+            "The current ImageTool data will be replaced only if reload succeeds."
+        )
+        reload_button = msg_box.addButton(
+            "Reload Data", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", reload_button))
+        msg_box.exec()
+        if msg_box.clickedButton() is reload_button:
+            self._reload_script_derived_target(target)
+        elif msg_box.clickedButton() is cancel_button:
+            return
+
+    @classmethod
+    def _script_input_has_recorded_file(
+        cls,
+        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+    ) -> bool:
+        spec = script_input.parsed_provenance_spec()
+        if spec is None:
+            return False
+        if spec.kind == "file" and spec.file_load_source is not None:
+            return pathlib.Path(spec.file_load_source.path).exists()
+        for nested_input in spec.script_inputs:
+            if cls._script_input_has_recorded_file(nested_input):
+                return True
+        return False
+
+    @classmethod
+    def _dependency_ref_has_recorded_file(
+        cls,
+        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+        ref: erlab.interactive.imagetool.provenance.ScriptInputDependencyRef,
+    ) -> bool:
+        if spec is None:
+            return False
+        for script_input in spec.script_inputs:
+            if (
+                script_input.name == ref.name
+                and script_input.node_uid == ref.node_uid
+                and script_input.node_snapshot_token == ref.node_snapshot_token
+                and cls._script_input_has_recorded_file(script_input)
+            ):
+                return True
+            if cls._dependency_ref_has_recorded_file(
+                script_input.parsed_provenance_spec(), ref
+            ):
+                return True
+        return False
+
+    def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
+        node = self._all_nodes.get(uid)
+        spec = None if node is None else node.provenance_spec
+        return any(
+            self._all_nodes.get(ref.node_uid) is None
+            and self._dependency_ref_has_recorded_file(spec, ref)
+            for ref in self._dependency_refs_for_uid(uid)
+        )
+
+    def _dependency_dependent_uids(self, uid: str) -> list[str]:
+        return [
+            node_uid
+            for node_uid in self._all_nodes
+            if node_uid != uid
+            and any(
+                ref.node_uid == uid for ref in self._dependency_refs_for_uid(node_uid)
+            )
+        ]
+
+    def _refresh_dependency_dependents(self, uid: str) -> None:
+        for dependent_uid in self._dependency_dependent_uids(uid):
+            self.tree_view.refresh(dependent_uid)
+            if self._metadata_node_uid == dependent_uid:
+                self._set_metadata_node(self._all_nodes[dependent_uid])
+
+    def _script_input_name_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str:
+        if isinstance(node, _ImageToolWrapper):
+            return f"data_{node.index}"
+        suffix = "".join(
+            character if character.isalnum() or character == "_" else "_"
+            for character in node.uid
+        )
+        if not suffix or suffix[0].isdigit():
+            suffix = f"_{suffix}"
+        return f"data_{suffix}"
+
+    def _script_input_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> erlab.interactive.imagetool.provenance.ScriptInput:
+        provenance_spec = (
+            node.provenance_spec.model_dump(mode="json")
+            if node.provenance_spec is not None
+            else None
+        )
+        if isinstance(node, _ImageToolWrapper):
+            label = f"ImageTool {node.index}"
+        else:
+            label = node.display_text
+        if isinstance(node, _ImageToolWrapper) and node.name:
+            label += f": {node.name}"
+        return erlab.interactive.imagetool.provenance.ScriptInput(
+            name=self._script_input_name_for_node(node),
+            label=label,
+            node_uid=node.uid,
+            node_snapshot_token=node.snapshot_token,
+            provenance_spec=provenance_spec,
+        )
+
+    def _multi_input_script_provenance(
+        self,
+        input_targets: Iterable[int | str],
+        *,
+        operation_label: str,
+        operation_code: str,
+        active_name: str = "derived",
+        start_label: str = "Run ImageTool manager action",
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+        return erlab.interactive.imagetool.provenance.script(
+            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+                label=operation_label,
+                code=operation_code,
+            ),
+            start_label=start_label,
+            active_name=active_name,
+            script_inputs=tuple(
+                self._script_input_for_node(self._node_for_target(target))
+                for target in input_targets
+            ),
+        )
+
+    def _show_multi_input_script_result(
+        self,
+        data: xr.DataArray,
+        input_targets: Iterable[int | str],
+        *,
+        operation_label: str,
+        operation_code: str,
+    ) -> int | None:
+        input_targets = tuple(input_targets)
+        tool = erlab.interactive.itool(data, manager=False, execute=False)
+        if not isinstance(tool, ImageTool):
+            return None
+        return self.add_imagetool(
+            tool,
+            show=True,
+            activate=True,
+            provenance_spec=self._multi_input_script_provenance(
+                input_targets,
+                operation_label=operation_label,
+                operation_code=operation_code,
+            ),
+        )
+
+    def _script_provenance_inputs_current(
+        self, spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+    ) -> bool:
+        for ref in erlab.interactive.imagetool.provenance.script_input_dependency_refs(
+            spec
+        ):
+            parent = self._all_nodes.get(ref.node_uid)
+            if parent is None:
+                return False
+            if (
+                ref.node_snapshot_token is not None
+                and parent.snapshot_token != ref.node_snapshot_token
+            ):
+                return False
+        return True
+
+    def _resolve_live_script_input_for_reload(
+        self,
+        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        *,
+        target_node_uid: str | None = None,
+    ) -> tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput] | None:
+        spec = script_input.parsed_provenance_spec()
+        if script_input.node_uid is None:
+            return None
+        if target_node_uid is not None and script_input.node_uid == target_node_uid:
+            return None
+        node = self._all_nodes.get(script_input.node_uid)
+        if node is None:
+            return None
+        if (
+            spec is not None
+            and spec.kind == "script"
+            and not self._script_provenance_inputs_current(spec)
+        ):
+            return None
+        return (
+            node.current_source_data(),
+            self._script_input_for_node(node).model_copy(
+                update={"name": script_input.name}
+            ),
+        )
+
+    def _script_input_can_reload(
+        self,
+        script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        *,
+        target_node_uid: str | None = None,
+    ) -> bool:
+        spec = script_input.parsed_provenance_spec()
+        is_target_input = (
+            target_node_uid is not None and script_input.node_uid == target_node_uid
+        )
+        if script_input.node_uid is not None and not is_target_input:
+            node = self._all_nodes.get(script_input.node_uid)
+            if node is not None and (
+                spec is None
+                or spec.kind != "script"
+                or self._script_provenance_inputs_current(spec)
+            ):
+                return True
+        if spec is None:
+            return False
+        if spec.kind == "file":
+            return (
+                spec.file_load_source is not None
+                and pathlib.Path(spec.file_load_source.path).exists()
+            )
+        if spec.kind != "script":
+            return False
+        return erlab.interactive.imagetool.provenance.script_provenance_replayable(
+            spec
+        ) and all(
+            self._script_input_can_reload(
+                nested_input,
+                target_node_uid=target_node_uid,
+            )
+            for nested_input in spec.script_inputs
+        )
+
+    def _rebuild_script_provenance(
+        self,
+        spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        *,
+        target_node_uid: str | None = None,
+    ) -> _ScriptRebuildResult:
+        def _resolve_live_input(
+            script_input: erlab.interactive.imagetool.provenance.ScriptInput,
+        ) -> (
+            tuple[xr.DataArray, erlab.interactive.imagetool.provenance.ScriptInput]
+            | None
+        ):
+            return self._resolve_live_script_input_for_reload(
+                script_input,
+                target_node_uid=target_node_uid,
+            )
+
+        try:
+            data, rebuilt_spec = _replay_graph.rebuild_script_provenance(
+                spec,
+                live_input_resolver=_resolve_live_input,
+            )
+        except _replay_graph.ReplayGraphError as exc:
+            raise _ScriptRebuildError(
+                "Could not reload data.",
+                details=str(exc),
+            ) from exc
+        return _ScriptRebuildResult(
+            data=data,
+            provenance_spec=rebuilt_spec,
+        )
+
+    def _node_can_reload_script_inputs(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> bool:
+        spec = node.provenance_spec
+        return (
+            node.is_imagetool
+            and node.imagetool is not None
+            and spec is not None
+            and spec.kind == "script"
+            and bool(spec.script_inputs)
+            and erlab.interactive.imagetool.provenance.script_provenance_replayable(
+                spec
+            )
+            and all(
+                self._script_input_can_reload(
+                    script_input,
+                    target_node_uid=node.uid,
+                )
+                for script_input in spec.script_inputs
+            )
+        )
+
+    def _script_reload_from_slicer_area(
+        self,
+        slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea,
+        *,
+        execute: bool,
+    ) -> bool:
+        """Check or reload script provenance for a managed slicer area."""
+        target = self.target_from_slicer_area(slicer_area)
+        if target is None:
+            return False
+        if not self._node_can_reload_script_inputs(self._node_for_target(target)):
+            return False
+        return not execute or self._reload_script_derived_target(target)
+
+    def _workspace_loaded_uid_map(
+        self, loaded_targets_by_uid: Mapping[str, int | str]
+    ) -> dict[str, str]:
+        uid_map: dict[str, str] = {}
+        for saved_uid, target in loaded_targets_by_uid.items():
+            try:
+                actual_uid = self._node_for_target(target).uid
+            except KeyError:
+                continue
+            if actual_uid != saved_uid:
+                uid_map[saved_uid] = actual_uid
+        return uid_map
+
+    def _rebase_loaded_workspace_dependency_refs(
+        self, loaded_targets_by_uid: Mapping[str, int | str]
+    ) -> None:
+        uid_map = self._workspace_loaded_uid_map(loaded_targets_by_uid)
+        if not uid_map:
+            return
+
+        for target in loaded_targets_by_uid.values():
+            try:
+                node = self._node_for_target(target)
+            except KeyError:
+                continue
+            if node.provenance_spec is None:
+                continue
+            rebased = (
+                erlab.interactive.imagetool.provenance.rebase_script_input_node_uids(
+                    node.provenance_spec,
+                    uid_map,
+                )
+            )
+            if rebased != node.provenance_spec:
+                node.set_displayed_provenance(rebased, advance_snapshot=False)
 
     def _child_node(self, uid: str) -> _ManagedWindowNode:
         node = self._all_nodes[uid]
@@ -2605,6 +3138,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,
+        snapshot_token: str | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
@@ -2651,6 +3185,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_binding=source_binding,
             source_auto_update=source_auto_update,
             source_state=source_state,
+            snapshot_token=snapshot_token,
         )
         self._imagetool_wrappers[index] = wrapper
         self._register_root_wrapper(wrapper)
@@ -2676,7 +3211,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         return node.info_text
 
     def _clear_metadata(self) -> None:
-        self._metadata_full_code = None
+        self._metadata_full_code_available = False
         self._metadata_node_uid = None
         with QtCore.QSignalBlocker(self.metadata_derivation_list):
             self.metadata_derivation_list.clear()
@@ -2684,7 +3219,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._update_metadata_pane()
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
-        self._metadata_full_code = node.derivation_code
+        self._metadata_full_code_available = node.provenance_spec is not None
         self._metadata_node_uid = node.uid
         self._set_metadata_fields(node.metadata_fields)
 
@@ -2721,6 +3256,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
             key_label = QtWidgets.QLabel(field.label, self.metadata_details_widget)
             key_label.setForegroundRole(QtGui.QPalette.ColorRole.Text)
             key_label.setEnabled(False)
+            key_label.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+            )
             value_label: QtWidgets.QLabel
             if field.details is not None:
                 value_label = _ElidedInteractiveLabel(
@@ -2742,6 +3280,16 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 value_label.setWordWrap(field.wrap)
                 value_label.setToolTip(field.value)
                 value_label.setMinimumWidth(0)
+                value_label.setAlignment(
+                    QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+                )
+                if field.wrap:
+                    size_policy = QtWidgets.QSizePolicy(
+                        QtWidgets.QSizePolicy.Policy.Expanding,
+                        QtWidgets.QSizePolicy.Policy.Preferred,
+                    )
+                    size_policy.setHeightForWidth(True)
+                    value_label.setSizePolicy(size_policy)
             if field.monospace:
                 value_label.setFont(self._metadata_monospace_font)
             self.metadata_details_layout.addWidget(key_label, row, 0)
@@ -2807,16 +3355,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if derivation_count == 0:
             self.metadata_derivation_list.setMinimumHeight(0)
             self.metadata_derivation_list.setMaximumHeight(0)
-            return
+        else:
+            row_height = self.metadata_derivation_list.sizeHintForRow(0)
+            if row_height <= 0:
+                row_height = self.fontMetrics().height() + 8
+            visible_rows = min(derivation_count, 4)
+            frame = self.metadata_derivation_list.frameWidth() * 2
+            height = visible_rows * row_height + frame + 4
+            self.metadata_derivation_list.setMinimumHeight(height)
+            self.metadata_derivation_list.setMaximumHeight(height)
 
-        row_height = self.metadata_derivation_list.sizeHintForRow(0)
-        if row_height <= 0:
-            row_height = self.fontMetrics().height() + 8
-        visible_rows = min(derivation_count, 4)
-        frame = self.metadata_derivation_list.frameWidth() * 2
-        height = visible_rows * row_height + frame + 4
-        self.metadata_derivation_list.setMinimumHeight(height)
-        self.metadata_derivation_list.setMaximumHeight(height)
+        self.metadata_details_widget.updateGeometry()
+        self.metadata_derivation_list.updateGeometry()
+        self.metadata_details_widget.sync_height_for_width()
+        self.metadata_group.sync_height_for_width()
+        self.metadata_group.updateGeometry()
 
     def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
         items = list(self.metadata_derivation_list.selectedItems())
@@ -2846,7 +3399,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         selected_code = self._selected_derivation_code()
         self._metadata_copy_selected_action.setEnabled(bool(selected_code))
         menu.addAction(self._metadata_copy_selected_action)
-        if self._metadata_full_code:
+        if self._metadata_full_code_available:
             self._metadata_copy_full_action.setEnabled(True)
             menu.addAction(self._metadata_copy_full_action)
         return menu
@@ -2871,16 +3424,21 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _copy_full_derivation_code(self) -> None:
-        if not self._metadata_full_code:
-            return
-        code = self._metadata_full_code
         node = (
             None
             if self._metadata_node_uid is None
             else self._all_nodes.get(self._metadata_node_uid)
         )
+        if node is None or not self._metadata_full_code_available:
+            return
+        code = node.derivation_code
+        if not code:
+            self._status_bar.showMessage(
+                "Replay code is unavailable for this result", 5000
+            )
+            return
         provenance = erlab.interactive.imagetool.provenance
-        if node is not None and provenance.uses_default_replay_input(code):
+        if provenance.uses_default_replay_input(code):
             load_source = self._load_source_for_replay(node)
             if load_source is None:
                 source_name = self._prompt_replay_input_name(node)
@@ -3014,7 +3572,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         )
         self.store_action.setEnabled(bool(self.tree_view.selected_imagetool_indices))
 
-        self.reload_action.setVisible(reload_targets is not None)
+        reload_available = reload_targets is not None
+        self.reload_action.setVisible(reload_available)
+        self.reload_action.setEnabled(reload_available)
         self.unwatch_action.setVisible(
             bool(imagetool_targets)
             and len(selection_watched) == len(imagetool_targets)
@@ -3063,6 +3623,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
         self._imagetool_wrappers.pop(index)
         self._all_nodes.pop(wrapper.uid, None)
+        self._refresh_dependency_dependents(wrapper.uid)
         wrapper.dispose()
         wrapper.deleteLater()
 
@@ -3317,6 +3878,150 @@ class ImageToolManager(QtWidgets.QMainWindow):
             for uid in child_uids:
                 self._refresh_source_chain_to_uid(uid)
 
+    @staticmethod
+    def _reload_incompatibility_details(
+        current: xr.DataArray, rebuilt: xr.DataArray
+    ) -> str:
+        current, rebuilt = (
+            erlab.interactive.imagetool.slicer._cursor_compatibility_pair(
+                current, rebuilt
+            )
+        )
+        lines = [
+            f"Current dims: {tuple(current.dims)} shape {tuple(current.shape)}",
+            f"Reloaded dims: {tuple(rebuilt.dims)} shape {tuple(rebuilt.shape)}",
+        ]
+        current_dims = set(current.dims)
+        rebuilt_dims = set(rebuilt.dims)
+        missing_dims = tuple(dim for dim in current.dims if dim not in rebuilt_dims)
+        new_dims = tuple(dim for dim in rebuilt.dims if dim not in current_dims)
+        if missing_dims:
+            lines.append(f"Missing reloaded dimensions: {missing_dims}")
+        if new_dims:
+            lines.append(f"New reloaded dimensions: {new_dims}")
+        for dim in current.dims:
+            if dim not in rebuilt_dims:
+                continue
+            if current.sizes[dim] != rebuilt.sizes[dim]:
+                lines.append(
+                    f"{dim}: size changed from {current.sizes[dim]} to "
+                    f"{rebuilt.sizes[dim]}"
+                )
+            old_coord = current.coords.get(dim)
+            new_coord = rebuilt.coords.get(dim)
+            if old_coord is None or new_coord is None:
+                continue
+            old_values = old_coord.values
+            new_values = new_coord.values
+            missing_count = int(
+                np.count_nonzero(~np.isin(old_values, new_values, assume_unique=True))
+            )
+            if missing_count:
+                lines.append(
+                    f"{dim}: {missing_count} current coordinate value"
+                    f"{'' if missing_count == 1 else 's'} not found in reloaded data"
+                )
+        return "\n".join(lines)
+
+    def _prompt_incompatible_reload_commit(self, details: str) -> str:
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle("Reload Data")
+        msg_box.setText("The reloaded data has different coordinates.")
+        msg_box.setInformativeText(
+            "The current ImageTool view can only be preserved when the reloaded data "
+            "keeps the current cursor coordinates."
+        )
+        msg_box.setDetailedText(details)
+        replace_button = msg_box.addButton(
+            "Replace and Reset View", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+        )
+        new_button = msg_box.addButton(
+            "Open as New", QtWidgets.QMessageBox.ButtonRole.ActionRole
+        )
+        cancel_button = msg_box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", new_button))
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        if clicked is replace_button:
+            return "replace"
+        if clicked is new_button:
+            return "new"
+        if clicked is cancel_button:
+            return "cancel"
+        return "cancel"
+
+    def _replace_script_reload_target(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        result: _ScriptRebuildResult,
+    ) -> None:
+        node.replace_with_detached_data(
+            result.data,
+            result.provenance_spec,
+            propagate_descendants=True,
+        )
+        self.tree_view.refresh(node.uid)
+        if self._metadata_node_uid == node.uid:
+            self._set_metadata_node(node)
+
+    def _reload_script_derived_target(self, target: int | str) -> bool:
+        """Reload a script-derived ImageTool from its recorded inputs."""
+        node = self._node_for_target(target)
+        spec = node.provenance_spec
+        if spec is None:
+            return False
+        try:
+            result = self._rebuild_script_provenance(
+                spec,
+                target_node_uid=node.uid,
+            )
+        except _ScriptRebuildError as exc:
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                "Error",
+                str(exc),
+                detailed_text=exc.details,
+            )
+            return False
+
+        current = node.current_source_data()
+        if erlab.interactive.imagetool.slicer.check_cursors_compatible(
+            current, result.data
+        ):
+            self._replace_script_reload_target(node, result)
+            self._status_bar.showMessage("Reloaded data from inputs", 5000)
+            return True
+
+        details = self._reload_incompatibility_details(current, result.data)
+        match self._prompt_incompatible_reload_commit(details):
+            case "replace":
+                self._replace_script_reload_target(node, result)
+                self._status_bar.showMessage("Reloaded data from inputs", 5000)
+                return True
+            case "new":
+                tool = erlab.interactive.itool(
+                    result.data, manager=False, execute=False
+                )
+                if not isinstance(tool, ImageTool):
+                    erlab.interactive.utils.MessageDialog.critical(
+                        self,
+                        "Error",
+                        "An error occurred while opening reloaded data.",
+                        detailed_text="",
+                    )
+                    return False
+                self.add_imagetool(
+                    tool,
+                    show=True,
+                    activate=True,
+                    provenance_spec=result.provenance_spec,
+                )
+                self._status_bar.showMessage("Opened reloaded data as a new tool", 5000)
+                return True
+            case _:
+                return False
+
     @QtCore.Slot()
     def remove_selected(self) -> None:
         """Discard selected ImageTool windows."""
@@ -3467,6 +4172,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         created_time = node._created_time
         recent_geometry = node._recent_geometry
         provenance_spec = node.provenance_spec
+        snapshot_token = node.snapshot_token
 
         self.tree_view.childtool_removed(uid)
         self._unregister_node(uid)
@@ -3477,6 +4183,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 show=False,
                 uid=uid,
                 provenance_spec=provenance_spec,
+                snapshot_token=snapshot_token,
             )
         wrapper = self._imagetool_wrappers[new_index]
         wrapper._created_time = created_time
@@ -3501,6 +4208,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self.tree_view.setCurrentIndex(promoted_index)
         self.tree_view.scrollTo(promoted_index)
         self.tree_view.refresh(new_index)
+        self._refresh_dependency_dependents(uid)
         self._update_actions()
         self._mark_workspace_structure_dirty("Promoted child ImageTool")
         return new_index
@@ -3690,6 +4398,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> xr.Dataset:
         ds.attrs["manager_node_uid"] = node.uid
         ds.attrs["manager_node_kind"] = kind
+        ds.attrs["manager_node_snapshot_token"] = node.snapshot_token
         if node.provenance_spec is not None:
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
                 node.provenance_spec.model_dump(mode="json")
@@ -3872,6 +4581,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
         kwargs: dict[str, typing.Any] = {
             "uid": uid,
+            "snapshot_token": ds.attrs.get("manager_node_snapshot_token"),
             "provenance_spec": parsed_provenance_spec,
             "source_spec": parsed_source_spec,
             "source_binding": parsed_source_binding,
@@ -3954,6 +4664,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             parent_target,
             show=ds.attrs.get("tool_visible", True),
             uid=ds.attrs.get("manager_node_uid"),
+            snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
         )
 
     @staticmethod
@@ -4298,6 +5009,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     self.remove_all_tools()
                 for root_path in root_paths:
                     _load_path(root_path)
+                self._rebase_loaded_workspace_dependency_refs(loaded_targets_by_uid)
                 self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                 if not mark_dirty:
                     self._drain_workspace_deferred_events()
@@ -4406,6 +5118,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
                         workspace_file_path=workspace_file_path,
                         loaded_targets_by_uid=loaded_targets_by_uid,
                     )
+                    self._rebase_loaded_workspace_dependency_refs(loaded_targets_by_uid)
                     self._restore_workspace_link_groups(manifest, loaded_targets_by_uid)
                     if not mark_dirty:
                         self._drain_workspace_deferred_events()
@@ -5767,13 +6480,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
             watched_metadata.setdefault("workspace_link_id", self._workspace_link_id)
 
         for i, d in enumerate(data):
-            # Set index-specific load function if provided
-            load_index = (
-                typing.cast("Sequence[int]", load_indices)[i]
+            # Set selection-specific load function if provided
+            load_selection = (
+                typing.cast("Sequence[typing.Any]", load_indices)[i]
                 if load_indices is not None
                 else i
             )
-            this_load_func = (*load_func[:2], load_index) if load_func else None
+            this_load_func = (*load_func[:2], load_selection) if load_func else None
             try:
                 indices.append(
                     self.add_imagetool(
@@ -6395,6 +7108,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         *,
         show: bool = True,
         uid: str | None = None,
+        snapshot_token: str | None = None,
     ) -> str:
         """Register a child tool window.
 
@@ -6416,6 +7130,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             self._next_node_uid(uid),
             parent.uid,
             tool,
+            snapshot_token=snapshot_token,
         )
         if not tool._tool_display_name:
             tool._tool_display_name = parent.name
@@ -6453,6 +7168,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
+        snapshot_token: str | None = None,
     ) -> str:
         parent_node = self._node_for_target(parent)
         if source_spec is None and source_binding is not None:
@@ -6478,6 +7194,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             source_auto_update=source_auto_update,
             source_state=source_state,
             output_id=output_id,
+            snapshot_token=snapshot_token,
         )
         self._register_child_node(node)
         if output_id is not None and parent_node.tool_window is not None:

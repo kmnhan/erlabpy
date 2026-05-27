@@ -48,10 +48,17 @@ def check_cursors_compatible(old: xr.DataArray, new: xr.DataArray) -> bool:
     new
         The new DataArray.
     """
+    old, new = _cursor_compatibility_pair(old, new)
     if set(old.dims) != set(new.dims):
         return False
     for d in old.dims:
-        if not np.isin(old[d].values, new[d].values, assume_unique=True).all():
+        old_coord = old.coords.get(d)
+        new_coord = new.coords.get(d)
+        if old_coord is None or new_coord is None:
+            if old.sizes[d] != new.sizes[d]:
+                return False
+            continue
+        if not np.isin(old_coord.values, new_coord.values, assume_unique=True).all():
             return False
     return True
 
@@ -65,6 +72,24 @@ def _is_uniform(arr: npt.NDArray[np.float64]) -> bool:
         # Treat constant coordinate array as non-uniform
         return False
     return np.allclose(dif, dif[0], rtol=3e-05, atol=3e-05, equal_nan=True)
+
+
+def _nonuniform_dim_name(darr: xr.DataArray, dim: Hashable) -> str | None:
+    if not str(dim).endswith("_idx"):
+        return None
+    stripped = str(dim).removesuffix("_idx")
+    coord = darr.coords.get(stripped)
+    if coord is None:
+        return None
+    if coord.ndim != 1 or coord.dims != (dim,) or coord.size != darr.sizes[dim]:
+        return None
+    try:
+        values = coord.values.astype(np.float64)
+    except (TypeError, ValueError):
+        return None
+    if _is_uniform(values):
+        return None
+    return stripped
 
 
 def make_dims_uniform(darr: xr.DataArray) -> xr.DataArray:
@@ -116,12 +141,31 @@ def restore_nonuniform_dims(darr: xr.DataArray) -> xr.DataArray:
     """
     nonuniform_dims: list[Hashable] = []
     for d in darr.dims:
-        if str(d).endswith("_idx"):
-            stripped = str(d).removesuffix("_idx")
-            if stripped in darr.coords:
-                nonuniform_dims.append(d)
-                darr = darr.swap_dims({d: stripped})
+        stripped = _nonuniform_dim_name(darr, d)
+        if stripped is not None:
+            nonuniform_dims.append(d)
+            darr = darr.swap_dims({d: stripped})
     return darr.drop_vars(nonuniform_dims)
+
+
+def _drop_unmatched_stack_dim(data: xr.DataArray, other: xr.DataArray) -> xr.DataArray:
+    if (
+        "stack_dim" in data.dims
+        and "stack_dim" not in other.dims
+        and data.sizes["stack_dim"] == 1
+    ):
+        return data.squeeze("stack_dim", drop=True)
+    return data
+
+
+def _cursor_compatibility_pair(
+    old: xr.DataArray, new: xr.DataArray
+) -> tuple[xr.DataArray, xr.DataArray]:
+    old_view = restore_nonuniform_dims(old.copy(deep=False))
+    new_view = restore_nonuniform_dims(new.copy(deep=False))
+    old_view = _drop_unmatched_stack_dim(old_view, new_view)
+    new_view = _drop_unmatched_stack_dim(new_view, old_view)
+    return old_view, new_view
 
 
 def _get_inc(coord):
@@ -809,15 +853,7 @@ class ArraySlicer(QtCore.QObject):
         # positives when users provide their own *_idx dimensions.
         self._nonuniform_axes = []
         for i, d in enumerate(self._obj.dims):
-            if not str(d).endswith("_idx"):
-                continue
-            stripped = str(d).removesuffix("_idx")
-            if stripped not in self._obj.coords:
-                continue
-            coord = self._obj.coords[stripped]
-            if coord.ndim != 1 or coord.size != self._obj.sizes[d]:
-                continue
-            if not _is_uniform(coord.values.astype(np.float64)):
+            if _nonuniform_dim_name(self._obj, d) is not None:
                 self._nonuniform_axes.append(i)
         self._nonuniform_axes_set: set[int] = set(self._nonuniform_axes)
         self._all_axes: tuple[int, ...] = tuple(range(self._obj.ndim))

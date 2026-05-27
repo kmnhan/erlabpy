@@ -1,5 +1,9 @@
 import ast
 import json
+import pathlib
+import subprocess
+import sys
+import types
 import typing
 
 import numpy as np
@@ -81,6 +85,64 @@ def _string_key_data() -> xr.DataArray:
         coords={"k-space": [0.0, 1.0, 2.0]},
         name="data",
     )
+
+
+def test_provenance_import_keeps_analysis_targets_lazy() -> None:
+    code = (
+        "import sys\n"
+        "import erlab.interactive.imagetool.provenance\n"
+        "loaded = sorted("
+        "name for name in sys.modules if name.startswith('erlab.analysis.') "
+        "or name.startswith('scipy.interpolate') or name.startswith('scipy.linalg')"
+        ")\n"
+        "if loaded:\n"
+        "    print('\\n'.join(loaded))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout == ""
+
+
+def test_script_replay_keeps_unused_aliases_lazy() -> None:
+    code = (
+        "import sys\n"
+        "import numpy as np\n"
+        "import xarray as xr\n"
+        "import erlab.interactive.imagetool.provenance as prov\n"
+        "data = xr.DataArray(np.arange(2.0), dims=('x',))\n"
+        "spec = prov.script(\n"
+        "    prov.ScriptCodeOperation(label='Subtract', "
+        "code='derived = data_0 - data_1'),\n"
+        "    start_label='Run script',\n"
+        "    active_name='derived',\n"
+        "    script_inputs=(\n"
+        "        prov.ScriptInput(name='data_0', label='A'),\n"
+        "        prov.ScriptInput(name='data_1', label='B'),\n"
+        "    ),\n"
+        ")\n"
+        "prov.replay_script_provenance(spec, {'data_0': data, 'data_1': data})\n"
+        "loaded = sorted(\n"
+        "    name for name in sys.modules\n"
+        "    if name.startswith('erlab.analysis.')\n"
+        "    or name.startswith('erlab.plotting')\n"
+        "    or name.startswith('matplotlib')\n"
+        ")\n"
+        "if loaded:\n"
+        "    print('\\n'.join(loaded))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout == ""
 
 
 def _file_replay_source(
@@ -180,8 +242,20 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
     assert [entry.label for entry in spec.derivation_entries()] == [
         "Start from current parent ImageTool data",
         'Average(dims=("x",))',
+        "rename('avg')",
+    ]
+    assert [entry.label for entry in spec.display_entries()] == [
+        "Start from current parent ImageTool data",
+        'Average(dims=("x",))',
     ]
     assert spec.derivation_code() == 'derived = data\nderived = derived.qsel.mean("x")'
+    display_code = typing.cast("str", spec.display_code())
+    assert ".rename(" not in display_code
+    namespace = _exec_generated_code(display_code, {"data": _base_data()})
+    xr.testing.assert_identical(
+        namespace["derived"].rename(None),
+        _base_data().qsel.mean("x").rename(None),
+    )
 
     dumped = spec.model_dump(mode="json")
     assert dumped["schema_version"] == 2
@@ -228,6 +302,16 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
         prov.parse_tool_provenance_spec(
             {"kind": "full_data", "operations": {"op": "average", "dims": ["x"]}}
         )
+
+
+def test_registered_provenance_operations_define_derivation_entries() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    assert [
+        op
+        for op, operation_type in prov._OPERATION_TYPES.items()
+        if "derivation_entry" not in operation_type.__dict__
+    ] == []
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
@@ -570,6 +654,54 @@ def test_tool_provenance_assign_scalar_coord_operation() -> None:
     namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
     xr.testing.assert_identical(
         namespace["derived"], data.assign_coords(temperature=21.5)
+    )
+
+
+def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+
+    scalar_spec = prov.full_data(
+        prov.AssignScalarCoordOperation(coord_name="temperature", value=np.nan)
+    )
+    scalar_code = typing.cast("str", scalar_spec.derivation_code())
+    assert "np.nan" in scalar_code
+    scalar_namespace = _exec_generated_code(scalar_code, {"data": data.copy(deep=True)})
+    assert np.isnan(scalar_namespace["derived"].coords["temperature"].item())
+
+    attrs_spec = prov.full_data(
+        prov.AssignAttrsOperation(
+            attrs={
+                "offset": np.inf,
+                "bad": np.nan,
+                "complex": complex(float("nan"), float("inf")),
+            }
+        )
+    )
+    attrs_code = typing.cast("str", attrs_spec.derivation_code())
+    assert "np.nan" in attrs_code
+    assert "np.inf" in attrs_code
+    assert "complex(np.nan, np.inf)" in attrs_code
+    attrs_namespace = _exec_generated_code(attrs_code, {"data": data.copy(deep=True)})
+    assert np.isinf(attrs_namespace["derived"].attrs["offset"])
+    assert np.isnan(attrs_namespace["derived"].attrs["bad"])
+    assert np.isnan(attrs_namespace["derived"].attrs["complex"].real)
+    assert np.isinf(attrs_namespace["derived"].attrs["complex"].imag)
+
+    coord_spec = prov.full_data(
+        prov.AssignCoord1DOperation(
+            coord_name="temperature",
+            dim="x",
+            values=np.array([np.nan, np.inf, -np.inf]),
+        )
+    )
+    coord_code = typing.cast("str", coord_spec.derivation_code())
+    assert "np.nan" in coord_code
+    assert "np.inf" in coord_code
+    coord_namespace = _exec_generated_code(coord_code, {"data": data.copy(deep=True)})
+    np.testing.assert_equal(
+        coord_namespace["derived"].coords["temperature"].values,
+        np.array([np.nan, np.inf, -np.inf]),
     )
 
 
@@ -995,6 +1127,27 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
     )
 
 
+def test_tool_provenance_display_keeps_name_rename_before_script_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data().rename("source")
+    spec = prov.script(
+        prov.RenameOperation(name="renamed"),
+        prov.ScriptCodeOperation(
+            label="Use DataArray name",
+            code="derived = derived.rename(derived.name + '_used')",
+        ),
+        start_label="Run script",
+        seed_code="derived = data",
+        active_name="derived",
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert ".rename(" in code
+    namespace = _exec_generated_code(code, {"data": data})
+    xr.testing.assert_identical(namespace["derived"], data.rename("renamed_used"))
+
+
 def test_imagetool_selection_source_binding_materializes_current_coordinates() -> None:
     prov = erlab.interactive.imagetool.provenance
     original = _base_data()
@@ -1139,6 +1292,31 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
     assert "derived" not in rebased_namespace
     assert prov.uses_default_replay_input("result = data + 1")
     assert not prov.uses_default_replay_input("result = source_data + 1")
+    helper_code = (
+        "def normalize(data):\n"
+        "    return data / data.max()\n"
+        "\n"
+        "derived = normalize(data_0)"
+    )
+    assert not prov.uses_default_replay_input(helper_code)
+    assert prov.rebase_default_replay_input(helper_code, "source_data") == helper_code
+    mixed_helper_code = (
+        "def normalize(data):\n"
+        "    return data / data.max()\n"
+        "\n"
+        "derived = normalize(data)"
+    )
+    rebased_helper_code = prov.rebase_default_replay_input(
+        mixed_helper_code, "source_data"
+    )
+    assert "def normalize(data):\n    return data / data.max()" in rebased_helper_code
+    assert "derived = normalize(source_data)" in rebased_helper_code
+    replaced_helper_code = prov._replace_code_identifiers(
+        "def normalize(data):\n    return data / data.max()\n\nderived = data",
+        {"data": "source_data", "derived": "result"},
+    )
+    assert "def normalize(data):\n    return data / data.max()" in replaced_helper_code
+    assert "result = source_data" in replaced_helper_code
 
     with pytest.raises(ValueError, match="Expected 2 items"):
         prov._ensure_float_tuple([1.0], expected_len=2)
@@ -1215,16 +1393,23 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
     assert (
         prov.SelOperation(kwargs={"x": 1.0}).derivation_entry().label.startswith("sel(")
     )
+    rename_entry = prov.RenameOperation(name="renamed").derivation_entry()
+    assert rename_entry.copyable is True
+    assert rename_entry.code is not None
+    namespace = _exec_generated_code(
+        rename_entry.code,
+        {"derived": data.copy(deep=True)},
+    )
+    xr.testing.assert_identical(namespace["derived"], data.rename("renamed"))
     assert prov.full_data().derivation_code() is None
     assert (
         prov.script(start_label="Start", active_name="derived").display_code() is None
     )
-    assert (
-        prov.full_data(
-            prov.CorrectWithEdgeOperation(edge_fit=xr.Dataset(), shift_coords=True)
-        ).display_code()
-        is None
-    )
+    edge_entry = prov.CorrectWithEdgeOperation(
+        edge_fit=xr.Dataset(), shift_coords=True
+    ).derivation_entry()
+    assert edge_entry.copyable is True
+    assert edge_entry.code is not None
 
     with pytest.raises(TypeError, match="script_code operations"):
         prov.ScriptCodeOperation(label="Step", code="derived = data").apply(
@@ -1257,6 +1442,12 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
         prov.SymmetrizeNfoldOperation(fold=4, axes=("x", "y")).derivation_entry().code
         == "derived = generated()"
     )
+    symmetrize_nfold_payload = prov.SymmetrizeNfoldOperation(
+        fold=4, axes=("x", "y"), center=(0.0, 0.0)
+    ).model_dump(mode="json")
+    assert prov.parse_tool_provenance_operation(
+        symmetrize_nfold_payload
+    ) == prov.SymmetrizeNfoldOperation(fold=4, axes=("x", "y"), center=(0.0, 0.0))
 
     assign_entry = prov.AssignCoordsOperation(
         coord_name="x", values=np.array([2.0, 1.0, 0.0])
@@ -1369,9 +1560,9 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     )
     assert edge_spec.apply(data).attrs["last_op"] == "correct_with_edge"
     entries = edge_spec.derivation_entries()
-    assert entries[-1].copyable is False
-    assert entries[-1].code is None
-    assert edge_spec.derivation_code() is None
+    assert entries[-1].copyable is True
+    assert entries[-1].code is not None
+    assert edge_spec.derivation_code() is not None
 
     path_spec = erlab.interactive.imagetool.provenance.full_data(
         erlab.interactive.imagetool.provenance.SliceAlongPathOperation(
@@ -1446,9 +1637,34 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
     assert reparsed_spec is not None
     assert reparsed_spec.apply(data).attrs["last_op"] == "correct_with_edge"
     entries = reparsed_spec.derivation_entries()
-    assert entries[-1].copyable is False
-    assert entries[-1].code is None
-    assert reparsed_spec.derivation_code() is None
+    assert entries[-1].copyable is True
+    assert entries[-1].code is not None
+    namespace = _exec_generated_code(
+        typing.cast("str", reparsed_spec.derivation_code()),
+        {"data": data.copy(deep=True)},
+    )
+    assert namespace["derived"].attrs["last_op"] == "correct_with_edge"
+
+
+def test_correct_with_edge_code_handles_nonfinite_dataset(monkeypatch) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = _base_data()
+    edge_fit = xr.Dataset({"edge": ("x", [np.nan, np.inf, -np.inf])})
+
+    def correct_with_edge(data_arg, edge_fit_arg, *, shift_coords=True):
+        xr.testing.assert_identical(edge_fit_arg, edge_fit)
+        return data_arg.assign_attrs(shift_coords=shift_coords)
+
+    monkeypatch.setattr(erlab.analysis.gold, "correct_with_edge", correct_with_edge)
+    spec = prov.full_data(
+        prov.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
+    )
+    code = typing.cast("str", spec.derivation_code())
+
+    assert "np.nan" in code
+    assert "np.inf" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert namespace["derived"].attrs["shift_coords"] is False
 
 
 def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
@@ -1510,7 +1726,7 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
         prov.require_live_source_spec(reparsed_script)
 
 
-def test_tool_replay_provenance_helpers_compose_parent_lineage() -> None:
+def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
     prov = erlab.interactive.imagetool.provenance
 
     parent = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
@@ -1576,7 +1792,7 @@ def test_file_load_source_replay_call_round_trips() -> None:
             kind="callable",
             target="xarray.load_dataarray",
             kwargs={"engine": "h5netcdf"},
-            selected_index=0,
+            selection=prov.FileDataSelection(kind="dataarray"),
             cast_float64=True,
         ),
         load_code='import xarray\n\ndata = xarray.load_dataarray("/tmp/scan.h5")',
@@ -1588,7 +1804,20 @@ def test_file_load_source_replay_call_round_trips() -> None:
     assert parsed_xarray.replay_call.kind == "callable"
     assert parsed_xarray.replay_call.target == "xarray.load_dataarray"
     assert parsed_xarray.replay_call.kwargs == {"engine": "h5netcdf"}
+    assert parsed_xarray.replay_call.selection == prov.FileDataSelection(
+        kind="dataarray"
+    )
     assert parsed_xarray.replay_call.cast_float64 is True
+
+    legacy_call = prov.FileReplayCall.model_validate(
+        {
+            "kind": "callable",
+            "target": "xarray.load_dataarray",
+            "selected_index": 2,
+        }
+    )
+    assert legacy_call.selection == prov.FileDataSelection(kind="parsed_index", value=2)
+    assert "selected_index" not in legacy_call.model_dump(mode="json")
 
     erlab_source = prov.FileLoadSource(
         path="data_002.h5",
@@ -1599,11 +1828,9 @@ def test_file_load_source_replay_call_round_trips() -> None:
             kind="erlab_loader",
             target="example",
             kwargs={},
-            selected_index=0,
+            selection=prov.FileDataSelection(kind="dataarray"),
         ),
-        load_code=(
-            "import erlab\n\nerlab.io.set_loader('example')\ndata = erlab.io.load(2)"
-        ),
+        load_code="erlab.io.set_loader('example')\ndata = erlab.io.load(2)",
     )
     parsed_erlab = prov.FileLoadSource.model_validate(
         erlab_source.model_dump(mode="json")
@@ -1618,7 +1845,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
     replay_stage = prov.ReplayStage(source_kind="full_data")
     file_source = _file_replay_source()
 
-    with pytest.raises(ValidationError, match="selected_index"):
+    with pytest.raises(ValidationError, match="parsed file selection index"):
         prov.FileReplayCall(
             kind="callable", target="xarray.load_dataarray", selected_index=-1
         )
@@ -1629,7 +1856,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
         kind="callable",
         target="xarray.load_dataarray",
         kwargs={1: "bad"},
-        selected_index=0,
+        selection=prov.FileDataSelection(kind="dataarray"),
     )
     with pytest.raises(TypeError, match="string keys"):
         bad_kwargs_call._validate_replay_call()
@@ -1828,6 +2055,1148 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
     ) == prov.to_replay_provenance_spec(watched_parent)
 
 
+def test_script_provenance_supports_named_console_inputs() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    left = prov.script(
+        start_label="Load left",
+        seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
+        active_name="data_0",
+    )
+    right = prov.script(
+        start_label="Load right",
+        seed_code="data_1 = xr.DataArray([0.5, 1.5], dims=['x'])",
+        active_name="data_1",
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Subtract console inputs",
+            code="derived = data_0 - data_1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="ImageTool 0",
+                node_uid="left",
+                provenance_spec=left,
+            ),
+            prov.ScriptInput(
+                name="data_1",
+                label="ImageTool 1",
+                node_uid="right",
+                provenance_spec=right,
+            ),
+        ),
+    )
+
+    reparsed = prov.parse_tool_provenance_spec(spec.model_dump(mode="json"))
+
+    assert reparsed == spec
+    assert [entry.label for entry in spec.display_entries()] == [
+        "Run ImageTool manager console code",
+        "Use data_0 from ImageTool 0",
+        "Use data_1 from ImageTool 1",
+        "Subtract console inputs",
+    ]
+    code = typing.cast("str", spec.derivation_code())
+    namespace = _exec_generated_code(code, {})
+    xr.testing.assert_identical(
+        namespace["derived"],
+        xr.DataArray([0.5, 0.5], dims=["x"]),
+    )
+
+
+def test_script_input_code_reuses_shared_file_replay_prefix(
+    tmp_path: pathlib.Path,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    path = tmp_path / "polarization.nc"
+    source = xr.DataArray(
+        np.arange(12.0).reshape(2, 2, 3),
+        dims=("pol", "energy", "k"),
+        coords={"pol": ["LH", "LV"], "energy": [0.0, 1.0], "k": [0, 1, 2]},
+    )
+    source.to_netcdf(path)
+    file_spec = prov.file_load(
+        start_label="Load both polarizations",
+        seed_code=f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+    shared_stage = prov.full_data(prov.AverageOperation(dims=("k",)))
+    left_stage = prov.selection(
+        prov.SelOperation(kwargs={"pol": "LH"}),
+        prov.SqueezeOperation(),
+    )
+    right_stage = prov.selection(
+        prov.SelOperation(kwargs={"pol": "LV"}),
+        prov.SqueezeOperation(),
+    )
+    left_spec = prov.compose_full_provenance(
+        prov.compose_full_provenance(file_spec, shared_stage),
+        left_stage,
+    )
+    right_spec = prov.compose_full_provenance(
+        prov.compose_full_provenance(file_spec, shared_stage),
+        right_stage,
+    )
+    assert left_spec is not None
+    assert right_spec is not None
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Subtract polarizations",
+            code="derived = data_0 - data_1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="ImageTool 0: LH",
+                provenance_spec=left_spec,
+            ),
+            prov.ScriptInput(
+                name="data_1",
+                label="ImageTool 1: LV",
+                provenance_spec=right_spec,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.display_code())
+
+    assert code.count("xarray.load_dataarray") == 1
+    assert code.count(".qsel.mean") == 1
+    assert "data_0 =" in code
+    assert "data_1 =" in code
+    namespace = _exec_generated_code(code, {})
+    expected = left_stage.apply(shared_stage.apply(source)) - right_stage.apply(
+        shared_stage.apply(source)
+    )
+    xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_script_input_code_keeps_distinct_structured_replay_nodes() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    first = prov.file_load(
+        start_label="Load first",
+        seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        file_load_source=_file_replay_source(
+            "scan.h5",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+    second = prov.file_load(
+        start_label="Load second",
+        seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
+        file_load_source=_file_replay_source(
+            "scan.h5",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=1,
+            ),
+        ),
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Subtract inputs",
+            code="derived = data_0 - data_1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="ImageTool 0", provenance_spec=first),
+            prov.ScriptInput(
+                name="data_1",
+                label="ImageTool 1",
+                provenance_spec=second,
+            ),
+        ),
+    )
+
+    code = typing.cast("str", spec.derivation_code())
+
+    assert code.count("xarray.load_dataarray") == 2
+
+
+def test_script_input_dependency_refs_recurse_and_rebase() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    left_snapshot_id = "left-snapshot"
+    right_snapshot_id = "right-snapshot"
+    extra_snapshot_id = "extra-snapshot"
+    nested = prov.script(
+        prov.ScriptCodeOperation(
+            label="Subtract console inputs",
+            code="diff = data_0 - data_1",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="diff",
+        script_inputs=(
+            prov.ScriptInput(
+                name="data_0",
+                label="ImageTool 0",
+                node_uid="old-left",
+                node_snapshot_token=left_snapshot_id,
+            ),
+            prov.ScriptInput(
+                name="data_1",
+                label="ImageTool 1",
+                node_uid="old-right",
+                node_snapshot_token=right_snapshot_id,
+            ),
+        ),
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Add nested input",
+            code="derived = diff + data_2",
+        ),
+        start_label="Run ImageTool manager console code",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(
+                name="diff",
+                label="console variable 'diff'",
+                provenance_spec=nested,
+            ),
+            prov.ScriptInput(
+                name="data_2",
+                label="ImageTool 2",
+                node_uid="old-extra",
+                node_snapshot_token=extra_snapshot_id,
+            ),
+        ),
+    )
+
+    refs = prov.script_input_dependency_refs(spec)
+    assert [(ref.name, ref.node_uid, ref.node_snapshot_token) for ref in refs] == [
+        ("data_0", "old-left", left_snapshot_id),
+        ("data_1", "old-right", right_snapshot_id),
+        ("data_2", "old-extra", extra_snapshot_id),
+    ]
+
+    rebased = prov.rebase_script_input_node_uids(
+        spec,
+        {
+            "old-left": "new-left",
+            "old-right": "new-right",
+            "old-extra": "new-extra",
+        },
+    )
+
+    assert [source.name for source in rebased.script_inputs] == ["diff", "data_2"]
+    assert rebased.script_inputs[1].node_uid == "new-extra"
+    assert rebased.script_inputs[1].label == "ImageTool 2"
+    assert typing.cast("str", rebased.operations[-1].derivation_entry().code) == (
+        "derived = diff + data_2"
+    )
+    assert [
+        (ref.name, ref.node_uid, ref.node_snapshot_token)
+        for ref in prov.script_input_dependency_refs(rebased)
+    ] == [
+        ("data_0", "new-left", left_snapshot_id),
+        ("data_1", "new-right", right_snapshot_id),
+        ("data_2", "new-extra", extra_snapshot_id),
+    ]
+    assert prov.script_input_dependency_refs(None) == ()
+    assert prov.rebase_script_input_node_uids(spec, {}) is spec
+    with pytest.raises(TypeError, match="Expected provenance spec"):
+        prov.rebase_script_input_node_uids(None, {})
+
+
+def test_low_level_provenance_replay_helper_branches() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    assert not prov._is_whole_array_rename_entry(
+        prov.DerivationEntry("rename", "derived =")
+    )
+    assert not prov._is_whole_array_rename_entry(
+        prov.DerivationEntry("rename", "derived = derived.rename('a', 'b')")
+    )
+    assert not prov._is_whole_array_rename_entry(
+        prov.DerivationEntry("rename", "derived = derived.rename(mapping={'x': 'y'})")
+    )
+    assert prov._is_whole_array_rename_entry(
+        prov.DerivationEntry(
+            "rename",
+            "derived = derived.rename(new_name_or_name_dict=None)",
+        )
+    )
+
+    assert prov._provenance_value_code({"left": (1,)}) == "{'left': (1,)}"
+    with pytest.raises(TypeError, match="Cannot generate replay code"):
+        prov._provenance_value_code(object())
+    with pytest.raises(TypeError, match="hashable fields"):
+        prov._normalize_provenance_hashable(object())
+    assert prov._encode_provenance_hashable(("x", 1)) == {prov._TUPLE_MARKER: ["x", 1]}
+    with pytest.raises(ValueError, match="Expected 2 items"):
+        prov._ensure_float_tuple([1], expected_len=2)
+    for value in (1, "abc"):
+        with pytest.raises(TypeError, match="array-like sequence"):
+            prov._coerce_float_sequence(value)
+    assert prov._format_selection_step("sel", {}) == "derived = derived.sel()"
+    assert prov._validate_active_name(None) is None
+    for value, error in ((1, TypeError), ("class", ValueError)):
+        with pytest.raises(error):
+            prov._validate_active_name(value)
+
+    code = """
+@decorator
+def helper(value=data_0, *, scale=data_1) -> data_2:
+    return value
+
+async def async_helper(value=data_3):
+    return value
+
+lambda_value = lambda value=data_4: value
+
+@class_decorator
+class Child(Base, metaclass=data_5):
+    pass
+"""
+    statements = ast.parse(code).body
+    assert prov._statement_load_count(statements[0], "data_0") == 1
+    assert prov._statement_load_count(statements[0], "data_1") == 1
+    assert prov._statement_load_count(statements[0], "data_2") == 1
+    assert (
+        prov._statement_store_count(
+            statements[0], "helper", count_definition_names=True
+        )
+        == 1
+    )
+    assert prov._statement_load_count(statements[1], "data_3") == 1
+    assert prov._statement_load_count(statements[2], "data_4") == 1
+    assert prov._statement_load_count(statements[3], "class_decorator") == 1
+    assert prov._statement_load_count(statements[3], "data_5") == 1
+    assert (
+        prov._statement_store_count(statements[3], "Child", count_definition_names=True)
+        == 1
+    )
+    assert "source_data" in prov._replace_code_identifiers(
+        code,
+        {"data_0": "source_data"},
+    )
+    rebased = prov.rebase_default_replay_input(
+        """
+def normalize(value=data) -> data:
+    return value
+
+lambda_value = lambda value=data: value
+
+class Child(data):
+    pass
+
+derived = data
+""",
+        "source_data",
+    )
+    assert "source_data" in rebased
+    assert (
+        prov.rebase_default_replay_input("derived = data", "not valid python(")
+        == "derived = data"
+    )
+    assert prov._simplify_display_code("derived =") == "derived ="
+    assert prov._simplify_display_code("") == ""
+    assert prov._simplify_display_code("for item in data:\n    pass") == (
+        "for item in data:\n    pass"
+    )
+    assert prov._simplify_display_code("left = right = data\nresult = left") == (
+        "left = right = data\nresult = left"
+    )
+    assert prov._simplify_display_code("tmp = data\nresult = tmp") == "result = data"
+    assert (
+        prov._simplify_display_code(
+            "tmp = data\nother = 1\nresult = tmp",
+            inline_targets={"missing"},
+        )
+        == "tmp = data\nother = 1\nresult = tmp"
+    )
+
+    wrapped = staticmethod(lambda: None)
+    assert any(path.endswith(".<lambda>") for path in prov._callable_paths(wrapped))
+    assert (
+        prov._callable_paths(types.SimpleNamespace(__module__=1, __name__=2)) == set()
+    )
+
+    with pytest.raises(ValidationError):
+        prov.ScriptInput(name=None, label="Input")
+    with pytest.raises(TypeError, match="script input label"):
+        prov.ScriptInput(name="data_0", label=1)
+    with pytest.raises(ValidationError):
+        prov.ScriptInput(name="data_0", label="   ")
+    with pytest.raises(ValidationError):
+        prov.ScriptInput(name="data_0", label="Input", node_snapshot_token="")
+    with pytest.raises(TypeError, match="script input provenance"):
+        prov.ScriptInput(name="data_0", label="Input", provenance_spec=object())
+    with pytest.raises(TypeError, match="Serialized replay stages"):
+        prov.ToolProvenanceSpec(kind="full_data", replay_stages="bad")
+    with pytest.raises(TypeError, match="Serialized script inputs"):
+        prov.ToolProvenanceSpec(
+            kind="script",
+            start_label="Run",
+            active_name="derived",
+            script_inputs="bad",
+        )
+
+    assert (
+        prov.script(start_label="Run", active_name="derived")._script_graph_code(
+            display=True
+        )
+        is None
+    )
+    assert (
+        prov.full_data(
+            prov.ScriptCodeOperation(label="Opaque", code=None, copyable=False)
+        ).derivation_code()
+        is None
+    )
+    with pytest.raises(ValueError, match="not valid Python"):
+        prov._validate_script_replay_code("derived =")
+    for code_snippet, message in (
+        ("derived = __name__", "dunder names"),
+        ("derived = data.__class__", "dunder attributes"),
+        ("derived = open('path')", "cannot call"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            prov._validate_script_replay_code(code_snippet)
+
+
+def test_script_input_label_is_single_line_display_text() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    script_input = prov.ScriptInput(
+        name="data_0",
+        label="  ImageTool 0:\n\n  processed data  ",
+    )
+
+    assert script_input.label == "ImageTool 0: processed data"
+    with pytest.raises(ValidationError):
+        prov.ScriptInput(name="data_0", label="\n  \t")
+
+
+def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    left = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]})
+    right = xr.DataArray([0.5, 1.5], dims=("x",), coords={"x": [0, 1]})
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Mutate local input",
+            code="data_0[0] = 10.0\nderived = data_0 - data_1",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="ImageTool 0"),
+            prov.ScriptInput(name="data_1", label="ImageTool 1"),
+        ),
+    )
+
+    assert prov.script_provenance_replayable(spec)
+    result = prov.replay_script_provenance(
+        spec,
+        {"data_0": left, "data_1": right},
+    )
+
+    xr.testing.assert_identical(
+        result,
+        xr.DataArray([9.5, 0.5], dims=("x",), coords={"x": [0, 1]}),
+    )
+    xr.testing.assert_identical(
+        left,
+        xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]}),
+    )
+
+
+def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray([1.0], dims=("x",))
+    unsupported = prov.script(
+        prov.ScriptCodeOperation(
+            label="Unsupported",
+            code="import os\nderived = data_0",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    incomplete = prov.script(
+        prov.ScriptCodeOperation(label="Incomplete", code=None),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    missing_seed = prov.script(
+        prov.AverageOperation(dims=("x",)),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    active_input = prov.script(
+        prov.AverageOperation(dims=("x",)),
+        start_label="Run script",
+        active_name="data_0",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    rename_input = prov.script(
+        prov.RenameOperation(name="renamed"),
+        start_label="Run script",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    external_active_input = prov.script(
+        prov.AverageOperation(dims=("x",)),
+        start_label="Run script",
+        active_name="data_0",
+    )
+    function_local_active = prov.script(
+        prov.ScriptCodeOperation(
+            label="Helper",
+            code="def helper(data):\n    derived = data\n",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    missing_helper = prov.script(
+        prov.ScriptCodeOperation(
+            label="Missing helper",
+            code="derived = helper(data_0)",
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    missing_helper_global = prov.script(
+        prov.ScriptCodeOperation(
+            label="Missing helper global",
+            code=(
+                "def helper(data):\n    return data + scale\n\nderived = helper(data_0)"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    captured_helper_global = prov.script(
+        prov.ScriptCodeOperation(
+            label="Captured helper global",
+            code=(
+                "scale = 2.0\n"
+                "\n"
+                "def helper(data):\n"
+                "    return data + scale\n"
+                "\n"
+                "derived = helper(data_0)"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    late_helper_global = prov.script(
+        prov.ScriptCodeOperation(
+            label="Late helper global",
+            code=(
+                "def helper(data):\n"
+                "    return data + scale\n"
+                "\n"
+                "derived = helper(data_0)\n"
+                "scale = 2.0"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+    redefined_helper = prov.script(
+        prov.ScriptCodeOperation(
+            label="Redefined helper",
+            code=(
+                "def helper(data):\n"
+                "    return data + missing\n"
+                "\n"
+                "def helper(data):\n"
+                "    return data\n"
+                "\n"
+                "derived = helper(data_0)"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+
+    assert not prov.script_provenance_replayable(unsupported)
+    assert not prov.script_provenance_replayable(incomplete)
+    assert not prov.script_provenance_replayable(missing_seed)
+    assert not prov.script_provenance_replayable(function_local_active)
+    assert not prov.script_provenance_replayable(missing_helper)
+    assert not prov.script_provenance_replayable(missing_helper_global)
+    assert not prov.script_provenance_replayable(late_helper_global)
+    assert prov.script_provenance_replayable(active_input)
+    assert prov.script_provenance_replayable(rename_input)
+    assert prov.script_provenance_replayable(captured_helper_global)
+    assert prov.script_provenance_replayable(redefined_helper)
+    with pytest.raises(TypeError, match="unsupported Import"):
+        prov.replay_script_provenance(unsupported, {"data_0": data})
+    with pytest.raises(ValueError, match="non-replayable"):
+        prov.replay_script_provenance(incomplete, {"data_0": data})
+    with pytest.raises(TypeError, match="no replay code"):
+        prov.replay_script_provenance(missing_seed, {"data_0": data})
+    with pytest.raises(TypeError, match="no replay code"):
+        prov.replay_script_provenance(function_local_active, {"data_0": data})
+    with pytest.raises(TypeError, match="unresolved name 'helper'"):
+        prov.replay_script_provenance(missing_helper, {"data_0": data})
+    with pytest.raises(TypeError, match="unresolved name 'scale'"):
+        prov.replay_script_provenance(missing_helper_global, {"data_0": data})
+    with pytest.raises(TypeError, match="unresolved name 'scale'"):
+        prov.replay_script_provenance(late_helper_global, {"data_0": data})
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(active_input, {"data_0": data}),
+        data.qsel.average("x"),
+    )
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(rename_input, {"data_0": data}),
+        data.rename("renamed"),
+    )
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(external_active_input, {"data_0": data}),
+        data.qsel.average("x"),
+    )
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(captured_helper_global, {"data_0": data}),
+        data + 2.0,
+    )
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(redefined_helper, {"data_0": data}),
+        data,
+    )
+
+
+def test_replay_script_provenance_accepts_console_module_aliases() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+    spec = prov.script(
+        prov.ScriptCodeOperation(
+            label="Rotate",
+            code=(
+                "derived = era.transform.rotate("
+                "data_0, 0.0, axes=('x', 'y'), reshape=False)"
+            ),
+        ),
+        start_label="Run script",
+        active_name="derived",
+        script_inputs=(prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+    )
+
+    assert prov.script_provenance_replayable(spec)
+    xr.testing.assert_identical(
+        prov.replay_script_provenance(spec, {"data_0": data}),
+        erlab.analysis.transform.rotate(data, 0.0, axes=("x", "y"), reshape=False),
+    )
+
+
+def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
+
+    qsel_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            accessor_path=("qsel",),
+            kwargs={"indexers": {"x": 1.0}},
+            display_code="data.qsel(indexers={'x': 1.0})",
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+    isel_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            dataarray_method="isel",
+            kwargs={"indexers": {"x": 1}},
+            display_code="data.isel(indexers={'x': 1})",
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+    sel_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            dataarray_method="sel",
+            kwargs={"indexers": {"x": 1.0}},
+            display_code="data.sel(indexers={'x': 1.0})",
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+    interp_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            dataarray_method="interp",
+            kwargs={"coords": {"x": [0.25, 0.75]}},
+            display_code="data.interp(coords={'x': [0.25, 0.75]})",
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+    rename_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            dataarray_method="rename",
+            kwargs={"new_name_or_name_dict": {"x": "energy"}},
+            display_code="data.rename(new_name_or_name_dict={'x': 'energy'})",
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+    multidim_coord_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            dataarray_method="assign_coords",
+            kwargs={"foo": (("x", "y"), np.ones((2, 2)))},
+            display_code="data.assign_coords(foo=(('x', 'y'), values))",
+            has_extra_tracked_inputs=False,
+            receiver_data=xr.DataArray(np.ones((2, 2)), dims=("x", "y")),
+        )
+    )
+
+    assert qsel_operation == prov.QSelOperation(kwargs={"x": 1.0})
+    assert isel_operation == prov.IselOperation(kwargs={"x": 1})
+    assert sel_operation == prov.SelOperation(kwargs={"x": 1.0})
+    assert interp_operation == prov.InterpolationOperation(dim="x", values=[0.25, 0.75])
+    assert rename_operation == prov.RenameDimsCoordsOperation(mapping={"x": "energy"})
+    assert multidim_coord_operation is None
+    assert isinstance(qsel_operation, prov.QSelOperation)
+    assert isinstance(isel_operation, prov.IselOperation)
+    assert isinstance(sel_operation, prov.SelOperation)
+    assert isinstance(interp_operation, prov.InterpolationOperation)
+    assert isinstance(rename_operation, prov.RenameDimsCoordsOperation)
+    xr.testing.assert_identical(
+        qsel_operation.apply(data, parent_data=data),
+        data.qsel(indexers={"x": 1.0}),
+    )
+    xr.testing.assert_identical(
+        isel_operation.apply(data, parent_data=data),
+        data.isel(indexers={"x": 1}),
+    )
+    xr.testing.assert_identical(
+        sel_operation.apply(data, parent_data=data),
+        data.sel(indexers={"x": 1.0}),
+    )
+    xr.testing.assert_identical(
+        interp_operation.apply(data, parent_data=data),
+        data.interp(coords={"x": [0.25, 0.75]}),
+    )
+    xr.testing.assert_identical(
+        rename_operation.apply(data, parent_data=data),
+        data.rename(new_name_or_name_dict={"x": "energy"}),
+    )
+
+
+def test_console_pattern_matches_public_parameter_aliases() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    edge_fit = xr.Dataset({"center": ("x", [0.0, 1.0])})
+
+    operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            func=erlab.analysis.gold.correct_with_edge,
+            kwargs={"modelresult": edge_fit, "shift_coords": False},
+            display_code="era.gold.correct_with_edge(data, modelresult=edge_fit)",
+            has_extra_tracked_inputs=False,
+        )
+    )
+
+    assert isinstance(operation, prov.CorrectWithEdgeOperation)
+    assert not operation.shift_coords
+    xr.testing.assert_identical(operation.decoded_edge_fit, edge_fit)
+
+
+def test_console_pattern_matches_new_replayable_operations() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("x", "eV"),
+        coords={"x": [0.0, 1.0], "eV": [0.0, 1.0, 2.0]},
+    )
+
+    aggregate_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            accessor_path=("qsel", "sum"),
+            args=("x",),
+            display_code='data.qsel.sum("x")',
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+    leading_edge_operation = prov.operation_from_console_call(
+        prov.ConsoleCall(
+            func=erlab.analysis.interpolate.leading_edge,
+            kwargs={"fraction": 0.25, "dim": "eV", "direction": "negative"},
+            display_code=(
+                "era.interpolate.leading_edge("
+                "data, fraction=0.25, dim='eV', direction='negative')"
+            ),
+            has_extra_tracked_inputs=False,
+            receiver_data=data,
+        )
+    )
+
+    assert aggregate_operation == prov.QSelAggregationOperation(dims=("x",), func="sum")
+    assert leading_edge_operation == prov.LeadingEdgeOperation(
+        fraction=0.25,
+        dim="eV",
+        direction="negative",
+    )
+    xr.testing.assert_identical(
+        aggregate_operation.apply(data, parent_data=data),
+        data.qsel.sum("x"),
+    )
+
+
+def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    assert prov._console_values_equal(np.nan, np.nan)
+    assert prov._console_mapping_values(
+        (None,), {"coords": None, "x": 1}, mapping_kwargs=("coords",)
+    ) == {"x": 1}
+    assert prov._console_mapping_values(
+        ({"x": 1},), {"coords": {"y": 2}}, mapping_kwargs=("coords",)
+    ) == {"x": 1, "y": 2}
+    assert prov._console_mapping_values((1, 2), {}) is None
+    assert prov._console_mapping_values((1,), {}) is None
+    assert (
+        prov._console_mapping_values((), {"coords": 1}, mapping_kwargs=("coords",))
+        is None
+    )
+
+    pattern = prov.ConsoleOperationPattern(
+        target="builtins.abs",
+        fields=("value",),
+        field_aliases={"old_value": "value"},
+        defaults={"scale": 1},
+        ignored_defaults={"drop": False},
+    )
+
+    assert (
+        pattern.match(
+            prov.ConsoleCall(
+                display_code="abs(3)",
+                has_extra_tracked_inputs=True,
+            )
+        )
+        is None
+    )
+    assert (
+        pattern.match(
+            prov.ConsoleCall(
+                display_code="abs(3)",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        pattern.match(
+            prov.ConsoleCall(
+                func=len,
+                args=(3,),
+                display_code="len(3)",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        pattern.match(
+            prov.ConsoleCall(
+                func=abs,
+                kwargs={"old_value": 3, "value": 4},
+                display_code="abs(old_value=3, value=4)",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        pattern.match(
+            prov.ConsoleCall(
+                func=abs,
+                args=(3,),
+                kwargs={"drop": True},
+                display_code="abs(3, drop=True)",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert pattern.match(
+        prov.ConsoleCall(
+            func=abs,
+            args=(3,),
+            kwargs={"scale": 2, "drop": False},
+            display_code="abs(3, scale=2, drop=False)",
+            has_extra_tracked_inputs=False,
+        )
+    ) == {"value": 3, "scale": 2}
+
+    assert (
+        prov.ConsoleOperationPattern(dataarray_method="isel").match(
+            prov.ConsoleCall(
+                dataarray_method="sel",
+                display_code="data.sel()",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        prov.ConsoleOperationPattern().match(
+            prov.ConsoleCall(
+                dataarray_method="isel",
+                display_code="data.isel()",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        prov.ConsoleOperationPattern(accessor_path=("qsel",)).match(
+            prov.ConsoleCall(
+                accessor_path=("qsel", "mean"),
+                display_code="data.qsel.mean()",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        prov.ConsoleOperationPattern(fields=("required",)).match(
+            prov.ConsoleCall(
+                display_code="data.call()",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        prov.ConsoleOperationPattern().match(
+            prov.ConsoleCall(
+                kwargs={"unexpected": 1},
+                display_code="data.call(unexpected=1)",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+    assert (
+        prov.ConsoleOperationPattern(kwargs_field="mapping").match(
+            prov.ConsoleCall(
+                args=(1,),
+                display_code="data.call(1)",
+                has_extra_tracked_inputs=False,
+            )
+        )
+        is None
+    )
+
+
+def test_console_operations_match_branch_specific_calls() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+    )
+
+    def call(**kwargs: typing.Any) -> typing.Any:
+        kwargs.setdefault("display_code", "data.call()")
+        kwargs.setdefault("has_extra_tracked_inputs", False)
+        kwargs.setdefault("receiver_data", data)
+        return prov.ConsoleCall(**kwargs)
+
+    assert prov.TransposeOperation.from_console_call(
+        call(
+            dataarray_method="transpose",
+            args=("y", "x"),
+            kwargs={"transpose_coords": True, "missing_dims": "raise"},
+        )
+    ) == prov.TransposeOperation(dims=("y", "x"))
+    assert (
+        prov.TransposeOperation.from_console_call(
+            call(dataarray_method="transpose", kwargs={"transpose_coords": False})
+        )
+        is None
+    )
+
+    assert (
+        prov.SqueezeOperation.from_console_call(
+            call(dataarray_method="squeeze", kwargs={"dim": None, "axis": None})
+        )
+        == prov.SqueezeOperation()
+    )
+    assert (
+        prov.SqueezeOperation.from_console_call(
+            call(dataarray_method="squeeze", kwargs={"drop": True})
+        )
+        is None
+    )
+
+    assert prov.RenameOperation.from_console_call(
+        call(dataarray_method="rename", args=("renamed",))
+    ) == prov.RenameOperation(name="renamed")
+    assert (
+        prov.RenameOperation.from_console_call(
+            call(dataarray_method="rename", args=("renamed",), kwargs={"bad": 1})
+        )
+        is None
+    )
+
+    assert prov.AverageOperation.from_console_call(
+        call(accessor_path=("qsel", "average"), kwargs={"dim": "x"})
+    ) == prov.AverageOperation(dims=("x",))
+    assert (
+        prov.AverageOperation.from_console_call(
+            call(accessor_path=("qsel", "average"), args=("x",), kwargs={"dim": "x"})
+        )
+        is None
+    )
+
+    assert prov.QSelAggregationOperation.from_console_call(
+        call(accessor_path=("qsel", "mean"), kwargs={"dim": ("x", "y")})
+    ) == prov.QSelAggregationOperation(dims=("x", "y"), func="mean")
+    assert (
+        prov.QSelAggregationOperation.from_console_call(
+            call(accessor_path=("qsel", "median"), kwargs={"dim": "x"})
+        )
+        is None
+    )
+
+    assert prov.InterpolationOperation.from_console_call(
+        call(
+            dataarray_method="interp",
+            args=({"x": [0.25, 0.75]},),
+            kwargs={"method": "nearest", "assume_sorted": False, "kwargs": None},
+        )
+    ) == prov.InterpolationOperation(dim="x", values=[0.25, 0.75], method="nearest")
+    for bad_call in (
+        call(dataarray_method="interp", kwargs={"method": "cubic", "x": [0.5]}),
+        call(dataarray_method="interp", kwargs={"x": [0.5], "assume_sorted": True}),
+        call(dataarray_method="interp", args=({"x": [0.5], "y": [0.5]},)),
+        call(dataarray_method="interp", kwargs={"x": [[0.0, 1.0]]}),
+    ):
+        assert prov.InterpolationOperation.from_console_call(bad_call) is None
+
+    assert prov.CoarsenOperation.from_console_call(
+        call(
+            dataarray_method="coarsen",
+            args=({"x": 2},),
+            kwargs={"_reducer": "mean", "boundary": "trim"},
+        )
+    ) == prov.CoarsenOperation(
+        dim={"x": 2},
+        boundary="trim",
+        side="left",
+        coord_func="mean",
+        reducer="mean",
+    )
+    for bad_call in (
+        call(dataarray_method="coarsen", kwargs={"x": 2}),
+        call(dataarray_method="coarsen", args=(2,), kwargs={"_reducer": "mean"}),
+        call(
+            dataarray_method="coarsen",
+            args=({"x": "bad"},),
+            kwargs={"_reducer": "mean"},
+        ),
+        call(
+            dataarray_method="coarsen",
+            args=({"x": 2},),
+            kwargs={"_reducer": "mean", "extra": object()},
+        ),
+    ):
+        assert prov.CoarsenOperation.from_console_call(bad_call) is None
+
+    assert prov.ThinOperation.from_console_call(
+        call(dataarray_method="thin", args=(2,))
+    ) == prov.ThinOperation(mode="global", factor=2)
+    assert prov.ThinOperation.from_console_call(
+        call(dataarray_method="thin", args=(None,), kwargs={"x": 2})
+    ) == prov.ThinOperation(mode="per_dim", factors={"x": 2})
+    assert prov.ThinOperation.from_console_call(
+        call(dataarray_method="thin", args=({"x": 2},), kwargs={"y": 2})
+    ) == prov.ThinOperation(mode="per_dim", factors={"x": 2, "y": 2})
+    for bad_call in (
+        call(dataarray_method="thin", args=(1, 2)),
+        call(dataarray_method="thin", args=(1,), kwargs={"x": 2}),
+    ):
+        assert prov.ThinOperation.from_console_call(bad_call) is None
+
+    assert prov.RenameDimsCoordsOperation.from_console_call(
+        call(dataarray_method="rename", kwargs={"new_name_or_name_dict": {"x": "kx"}})
+    ) == prov.RenameDimsCoordsOperation(mapping={"x": "kx"})
+    assert (
+        prov.RenameDimsCoordsOperation.from_console_call(
+            call(dataarray_method="rename", args=(None,))
+        )
+        is None
+    )
+
+    assigned = prov.AssignCoordsOperation.from_console_call(
+        call(dataarray_method="assign_coords", kwargs={"x": np.array([2.0, 3.0])})
+    )
+    assert isinstance(assigned, prov.AssignCoordsOperation)
+    np.testing.assert_allclose(assigned.decoded_values, [2.0, 3.0])
+    assert prov.AssignScalarCoordOperation.from_console_call(
+        call(dataarray_method="assign_coords", kwargs={"temperature": 21.5})
+    ) == prov.AssignScalarCoordOperation(coord_name="temperature", value=21.5)
+    assert prov.AssignCoord1DOperation.from_console_call(
+        call(
+            dataarray_method="assign_coords",
+            kwargs={"temperature": ("x", [100, 101])},
+        )
+    ) == prov.AssignCoord1DOperation(
+        coord_name="temperature", dim="x", values=[100, 101]
+    )
+    for bad_call in (
+        call(dataarray_method="assign_coords", args=(1, 2)),
+        call(dataarray_method="assign_coords", kwargs={"z": np.array([1.0, 2.0])}),
+        call(
+            dataarray_method="assign_coords",
+            kwargs={"temperature": (["x"], [1, 2])},
+        ),
+        call(
+            dataarray_method="assign_coords",
+            kwargs={"temperature": ("x", np.ones((2, 2)))},
+        ),
+    ):
+        assert prov.AssignCoordsOperation.from_console_call(bad_call) is None
+        assert prov.AssignCoord1DOperation.from_console_call(bad_call) is None
+    assert (
+        prov.AssignCoordsOperation.from_console_call(
+            call(
+                dataarray_method="assign_coords",
+                kwargs={"x": ("x", [2.0, 3.0])},
+            )
+        )
+        is None
+    )
+
+
 def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -> None:
     prov = erlab.interactive.imagetool.provenance
     image = xr.DataArray(
@@ -1862,6 +3231,22 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
 
     tree = xr.DataTree.from_dict({"leaf": xr.Dataset({"image": image})})
     assert [darr.name for darr in prov._parse_replay_input(tree)] == ["image"]
+    xr.testing.assert_identical(
+        prov._select_replay_input(
+            dataset, prov.FileDataSelection(kind="dataset_variable", value="image")
+        ),
+        image,
+    )
+    xr.testing.assert_identical(
+        prov._select_replay_input(
+            tree, prov.FileDataSelection(kind="datatree_path", value="/leaf/image")
+        ),
+        image,
+    )
+    assert prov._select_replay_input(
+        np.arange(6).reshape((2, 3)),
+        prov.FileDataSelection(kind="dataarray"),
+    ).shape == (2, 3)
 
     with pytest.raises(ValueError, match="No valid data"):
         prov._parse_replay_input([])
@@ -1869,6 +3254,14 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
         prov._parse_replay_input(xr.Dataset({"scalar": xr.DataArray(1.0)}))
     with pytest.raises(TypeError, match="Unsupported input type list"):
         prov._parse_replay_input([object()])
+    with pytest.raises(KeyError, match="Selected file variable"):
+        prov._select_replay_input(
+            dataset, prov.FileDataSelection(kind="dataset_variable", value="missing")
+        )
+    with pytest.raises(KeyError, match="Selected file DataTree path"):
+        prov._select_replay_input(
+            tree, prov.FileDataSelection(kind="datatree_path", value="/missing/image")
+        )
 
     assert (
         prov._resolve_importable_callable("xarray.load_dataarray") is xr.load_dataarray
@@ -1893,6 +3286,44 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
 
     source_file = tmp_path / "source.h5"
     image.to_netcdf(source_file, engine="h5netcdf")
+    dataset_file = tmp_path / "dataset.h5"
+    dataset.to_netcdf(dataset_file, engine="h5netcdf")
+    xr.testing.assert_identical(
+        prov._load_file_source_data(
+            _file_replay_source(
+                dataset_file,
+                replay_call=prov.FileReplayCall(
+                    kind="callable",
+                    target="xarray.load_dataset",
+                    kwargs={"engine": "h5netcdf"},
+                    selection=prov.FileDataSelection(
+                        kind="dataset_variable",
+                        value="image",
+                    ),
+                ),
+            )
+        ),
+        image,
+    )
+    datatree_file = tmp_path / "tree.h5"
+    tree.to_netcdf(datatree_file, engine="h5netcdf")
+    xr.testing.assert_identical(
+        prov._load_file_source_data(
+            _file_replay_source(
+                datatree_file,
+                replay_call=prov.FileReplayCall(
+                    kind="callable",
+                    target="xarray.load_datatree",
+                    kwargs={"engine": "h5netcdf"},
+                    selection=prov.FileDataSelection(
+                        kind="datatree_path",
+                        value="/leaf/image",
+                    ),
+                ),
+            )
+        ),
+        image,
+    )
     with pytest.raises(IndexError, match="out of range"):
         prov._load_file_source_data(
             _file_replay_source(
@@ -2017,6 +3448,8 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
     assert code is not None
     assert "import xarray" in code
     assert "xarray.load_dataarray" in code
+    assert '.rename("avg")' not in code
+    assert ".rename(y=" in code
     assert "data =" not in code
     namespace = _exec_generated_code(code, {})
     assert isinstance(namespace["derived"], xr.DataArray)

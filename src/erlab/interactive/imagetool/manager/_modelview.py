@@ -31,7 +31,9 @@ logger = logging.getLogger(__name__)
 
 _NODE_UID_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 128
 _TOOL_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 129
-_RowBadgeKind = typing.Literal["dask", "link", "watched", "tool_type", "source_status"]
+_RowBadgeKind = typing.Literal[
+    "dask", "link", "watched", "tool_type", "source_status", "dependency_status"
+]
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                         child_node,
                         right_edge=dask_rect.left() if dask_rect is not None else None,
                     )
+                    if status_rect is None:
+                        status_rect, _, _ = self._compute_dependency_status_info(
+                            option,
+                            child_node,
+                            right_edge=(
+                                dask_rect.left() if dask_rect is not None else None
+                            ),
+                        )
                     right_badge_rect = status_rect or dask_rect
                     if right_badge_rect is not None:
                         rect.setRight(right_badge_rect.left() - self.icon_right_pad)
@@ -358,6 +368,18 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         icons_width, dask_rect, link_rect, watched_rect = self._compute_icons_info(
             option, tool_wrapper
         )
+        icon_rects = [
+            rect for rect in (dask_rect, link_rect, watched_rect) if rect is not None
+        ]
+        dependency_rect, dependency_text, dependency_color = (
+            self._compute_dependency_status_info(
+                option,
+                tool_wrapper,
+                right_edge=(
+                    min(rect.left() for rect in icon_rects) if icon_rects else None
+                ),
+            )
+        )
 
         # Draw label (skip while editing for inline editor)
         if not is_editing:  # pragma: no branch
@@ -376,14 +398,21 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             # Elide text to leave room for icons on the right
             fm = QtGui.QFontMetrics(option.font)
             text = index.data(role=QtCore.Qt.ItemDataRole.DisplayRole)
+            text_rect = QtCore.QRect(option.rect)
+            if dependency_rect is not None:
+                text_rect.setRight(dependency_rect.left() - self.icon_right_pad)
             elided = fm.elidedText(
                 text,
                 view.textElideMode(),
-                option.rect.width() - self.icon_right_pad - icons_width,
+                (
+                    max(text_rect.width(), 0)
+                    if dependency_rect is not None
+                    else option.rect.width() - self.icon_right_pad - icons_width
+                ),
             )
             painter.setPen(palette.color(color_group, role))
             painter.drawText(
-                option.rect,
+                text_rect,
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignLeft,
                 elided,
@@ -428,6 +457,30 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 QtCore.Qt.AlignmentFlag.AlignVCenter
                 | QtCore.Qt.AlignmentFlag.AlignCenter,
                 watched_varname,
+            )
+            painter.restore()
+
+        if dependency_rect and dependency_text and dependency_color:
+            _fill_rounded_rect(
+                painter,
+                dependency_rect,
+                facecolor=option.palette.base(),
+                edgecolor=dependency_color,
+                linewidth=self.icon_border_width,
+                radius=self.icon_corner_radius,
+            )
+            dependency_font = QtGui.QFont(option.font)
+            dependency_font.setPointSizeF(
+                self._font_size * self.child_status_font_scale
+            )
+            painter.save()
+            painter.setFont(dependency_font)
+            painter.setPen(dependency_color)
+            painter.drawText(
+                dependency_rect,
+                QtCore.Qt.AlignmentFlag.AlignVCenter
+                | QtCore.Qt.AlignmentFlag.AlignCenter,
+                dependency_text,
             )
             painter.restore()
 
@@ -477,6 +530,14 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 child_node,
                 right_edge=dask_rect.left() if dask_rect is not None else None,
             )
+            if status_rect is None:
+                status_rect, status_text, status_color = (
+                    self._compute_dependency_status_info(
+                        option,
+                        child_node,
+                        right_edge=dask_rect.left() if dask_rect is not None else None,
+                    )
+                )
 
         if type_rect and type_text and type_color:
             _fill_rounded_rect(
@@ -658,6 +719,36 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
         rect_x = right_edge - badge_width - self.icon_right_pad
         return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
 
+    def _compute_dependency_status_info(
+        self,
+        option: QtWidgets.QStyleOptionViewItem,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        right_edge: int | None = None,
+    ) -> tuple[QtCore.QRect | None, str | None, QtGui.QColor | None]:
+        match self.manager.dependency_status_for_uid(node.uid):
+            case "changed":
+                text = "Changed"
+                color = QtGui.QColor("#8a6d00")
+            case "missing":
+                text = "Missing"
+                color = QtGui.QColor("#59636e")
+            case _:
+                return None, None, None
+
+        rect_size = self.icon_size + 2 * self.icon_inner_pad
+        rect_y = option.rect.center().y() - (rect_size // 2)
+        badge_font = QtGui.QFont(option.font)
+        badge_font.setPointSizeF(self._font_size * self.child_status_font_scale)
+        badge_width = (
+            QtGui.QFontMetrics(badge_font).boundingRect(text).width()
+            + self.child_status_rect_hpad * 2
+        )
+        if right_edge is None:
+            right_edge = option.rect.right()
+        rect_x = right_edge - badge_width - self.icon_right_pad
+        return QtCore.QRect(rect_x, rect_y, badge_width, rect_size), text, color
+
     def _option_for_index(
         self,
         view: QtWidgets.QAbstractItemView,
@@ -698,6 +789,18 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             _, dask_rect, link_rect, watched_rect = self._compute_icons_info(
                 option, node
             )
+            icon_rects = [
+                rect
+                for rect in (dask_rect, link_rect, watched_rect)
+                if rect is not None
+            ]
+            dependency_rect, _, _ = self._compute_dependency_status_info(
+                option,
+                node,
+                right_edge=(
+                    min(rect.left() for rect in icon_rects) if icon_rects else None
+                ),
+            )
             if dask_rect is not None and dask_rect.contains(pos):
                 tooltip = (
                     "Dask-backed data. Click to open Dask and chunk controls."
@@ -732,6 +835,10 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     watched_rect,
                     tooltip,
                 )
+            if dependency_rect is not None and dependency_rect.contains(pos):
+                tooltip = self.manager.dependency_status_tooltip_for_uid(node.uid)
+                if tooltip is not None:
+                    return _RowBadge("dependency_status", dependency_rect, tooltip)
             return None
 
         if not isinstance(node, str):
@@ -755,6 +862,13 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             child_node,
             right_edge=dask_rect.left() if dask_rect is not None else None,
         )
+        source_status = status_rect is not None
+        if status_rect is None:
+            status_rect, _, _ = self._compute_dependency_status_info(
+                option,
+                child_node,
+                right_edge=dask_rect.left() if dask_rect is not None else None,
+            )
         if dask_rect is not None and dask_rect.contains(pos):
             tooltip = (
                 "Dask-backed data. Click to open Dask and chunk controls."
@@ -769,6 +883,12 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         if status_rect is None or not status_rect.contains(pos):
             return None
+        if not source_status:
+            tooltip = self.manager.dependency_status_tooltip_for_uid(child_node.uid)
+            if tooltip is None:
+                return None
+            return _RowBadge("dependency_status", status_rect, tooltip)
+
         match child_node.source_state:
             case "stale":
                 tooltip = (
@@ -1619,6 +1739,16 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
                     except KeyError:
                         return
                     child_node.show_source_update_dialog(parent=self._model.manager)
+            case "dependency_status":
+                if isinstance(node, _ImageToolWrapper):
+                    target: int | str | None = node.index
+                elif isinstance(node, str):
+                    target = node
+                else:
+                    target = None
+                if target is None:
+                    return
+                self._model.manager._show_dependency_reload_dialog(target)
 
     def _show_dask_badge_menu(
         self,

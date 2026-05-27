@@ -42,7 +42,9 @@ _RESERVED_REPLAY_SOURCE_NAMES = {
 _LoadFunc: typing.TypeAlias = tuple[
     Callable[..., typing.Any] | str,
     dict[str, typing.Any],
-    int,
+    int
+    | dict[str, typing.Any]
+    | erlab.interactive.imagetool.provenance.FileDataSelection,
 ]
 _LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
 
@@ -80,7 +82,7 @@ class _ResolvedLoadFunc:
     setup_lines: tuple[str, ...]
     loader_name: str | None
     kwargs: dict[str, typing.Any]
-    selected_index: int
+    selection: erlab.interactive.imagetool.provenance.FileDataSelection
     cast_float64: bool
 
     @property
@@ -98,7 +100,7 @@ class _ResolvedLoadFunc:
             kind=self.kind,
             target=self.target,
             kwargs=self.kwargs,
-            selected_index=self.selected_index,
+            selection=self.selection,
             cast_float64=self.cast_float64,
         )
 
@@ -107,23 +109,16 @@ class _ResolvedLoadFunc:
         imports = list(self.imports)
         call_args = self._call_args(file_path)
         call_expr = f"{self.loader_expr}({', '.join(call_args)})"
-        if self.selected_index != 0:
-            imports.append("import erlab")
-            call_expr = (
-                "erlab.interactive.imagetool.viewer._parse_input("
-                f"{call_expr})[{self.selected_index}]"
-            )
+        call_expr = _file_data_selection_code(call_expr, self.selection)
         if self.cast_float64:
             call_expr = f'{call_expr}.astype("float64")'
 
-        return "\n".join(
-            [
-                *list(dict.fromkeys(imports)),
-                "",
-                *self.setup_lines,
-                f"{assign} = {call_expr}",
-            ]
-        )
+        lines = list(dict.fromkeys(imports))
+        if lines:
+            lines.append("")
+        lines.extend(self.setup_lines)
+        lines.append(f"{assign} = {call_expr}")
+        return "\n".join(lines)
 
     def _call_args(self, file_path: Path) -> list[str]:
         """Return loader call arguments, using compact scan-number syntax when safe."""
@@ -155,6 +150,26 @@ def _needs_float64_cast(source_input_dtype: np.dtype[typing.Any] | str | None) -
     return source_input_dtype is not None and np.dtype(source_input_dtype) not in (
         np.dtype(np.float32),
         np.dtype(np.float64),
+    )
+
+
+def _file_data_selection_code(
+    load_expr: str,
+    selection: erlab.interactive.imagetool.provenance.FileDataSelection,
+) -> str:
+    if selection.kind == "dataarray":
+        return load_expr
+    if selection.kind == "dataset_variable":
+        variable_code = erlab.interactive.imagetool.provenance._provenance_value_code(
+            selection.value
+        )
+        return f"{load_expr}[{variable_code}]"
+    if selection.kind == "datatree_path":
+        return f"{load_expr}[{selection.value!r}]"
+
+    return (
+        "erlab.interactive.imagetool.viewer._parse_input("
+        f"{load_expr})[{selection.value}]"
     )
 
 
@@ -278,7 +293,10 @@ def _resolve_load_func(
     if load_func is None:
         return None
 
-    loader, kwargs, selected_index = load_func
+    loader, kwargs, selection = load_func
+    selection = erlab.interactive.imagetool.provenance.FileDataSelection.model_validate(
+        selection
+    )
     cast_float64 = _needs_float64_cast(source_input_dtype)
     if isinstance(loader, str):
         return _ResolvedLoadFunc(
@@ -287,11 +305,11 @@ def _resolve_load_func(
             loader_label="Loader",
             loader_text=loader,
             loader_expr="erlab.io.load",
-            imports=("import erlab",),
+            imports=(),
             setup_lines=(f"erlab.io.set_loader({loader!r})",),
             loader_name=loader,
             kwargs=kwargs,
-            selected_index=selected_index,
+            selection=selection,
             cast_float64=cast_float64,
         )
 
@@ -304,11 +322,11 @@ def _resolve_load_func(
             loader_label="Loader",
             loader_text=loader_name,
             loader_expr="erlab.io.load",
-            imports=("import erlab",),
+            imports=(),
             setup_lines=(f"erlab.io.set_loader({loader_name!r})",),
             loader_name=loader_name,
             kwargs=kwargs,
-            selected_index=selected_index,
+            selection=selection,
             cast_float64=cast_float64,
         )
 
@@ -325,7 +343,7 @@ def _resolve_load_func(
         setup_lines=(),
         loader_name=None,
         kwargs=kwargs,
-        selected_index=selected_index,
+        selection=selection,
         cast_float64=cast_float64,
     )
 

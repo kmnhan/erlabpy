@@ -216,7 +216,7 @@
 
   Previously, ImageTool windows were always top-level items in the manager, while tools launched from ImageTool were nested under their source ImageTool. This made derived ImageTool outputs inconsistent: opening an ImageTool from an existing ImageTool created a sibling window instead of a child, and the manager could not track the relationship between the output and its source.
 
-  Starting with this release, ImageTool windows can be nested below the tool or ImageTool that created them, and the manager tracks parent-child relationships between source data, tools, and derived outputs. Results are organized under their source in the manager tree, and their lineage is tracked back to the original data. When parent data changes, child tools and outputs are marked as stale and can be refreshed manually or automatically. `ftool`, `goldtool`, and `restool` can also be configured to rerun fits when their source data updates.
+  Starting with this release, ImageTool windows can be nested below the tool or ImageTool that created them, and the manager tracks parent-child relationships between source data, tools, and derived outputs. Results are organized under their source in the manager tree, and their provenance is tracked back to the original data. When parent data changes, child tools and outputs are marked as stale and can be refreshed manually or automatically. `ftool`, `goldtool`, and `restool` can also be configured to rerun fits when their source data updates.
 
   ImageTool transform dialogs now include a `Result Placement` selector. In manager-backed windows, the default is `Open Child Window`. Choose `Open Top-Level Window` to keep the previous detached-window behavior, or `Replace Current` to overwrite the active ImageTool.
 

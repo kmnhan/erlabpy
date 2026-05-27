@@ -13,7 +13,6 @@ import copy
 import functools
 import importlib
 import inspect
-import itertools
 import logging
 import os
 import pathlib
@@ -54,6 +53,15 @@ else:
     qtawesome = _lazy.load("qtawesome")
 
 logger = logging.getLogger(__name__)
+
+_FileDataSelection = erlab.interactive.imagetool.provenance.FileDataSelection
+_FileSelection: typing.TypeAlias = int | dict[str, typing.Any] | _FileDataSelection
+_LoadFunc: typing.TypeAlias = tuple[
+    collections.abc.Callable[..., typing.Any] | str,
+    dict[str, typing.Any],
+    _FileSelection,
+]
+_ParsedInputData: typing.TypeAlias = tuple[xr.DataArray, _FileDataSelection]
 
 
 class ColorMapState(typing.TypedDict):
@@ -99,7 +107,9 @@ class ImageSlicerState(typing.TypedDict):
     cursor_colors: list[str]
     controls_visible: typing.NotRequired[bool]
     file_path: typing.NotRequired[str | None]
-    load_func: typing.NotRequired[tuple[str, dict[str, typing.Any], int] | None]
+    load_func: typing.NotRequired[
+        tuple[str, dict[str, typing.Any], _FileSelection] | None
+    ]
     splitter_sizes: typing.NotRequired[list[list[int]]]
     plotitem_states: typing.NotRequired[list[PlotItemState]]
 
@@ -144,6 +154,14 @@ def _parse_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
     return tuple(d for d in ds.data_vars.values() if _supported_shape(d))
 
 
+def _datatree_dataarray_path(source_path: str, variable_name: Hashable) -> str:
+    source_path = source_path.rstrip("/")
+    variable_path = str(variable_name).strip("/")
+    if not source_path:
+        return f"/{variable_path}"
+    return f"{source_path}/{variable_path}"
+
+
 class _SelectDataArraysDialog(QtWidgets.QDialog):
     def __init__(
         self,
@@ -152,6 +170,7 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
     ) -> None:
         super().__init__(parent)
         self._data_arrays: list[xr.DataArray] = []
+        self._selections: list[_FileDataSelection] = []
         self._source_paths: list[str] = []
         variable_names: list[str] = []
 
@@ -159,6 +178,12 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
             for variable_name, darr in data.data_vars.items():
                 if _supported_shape(darr):
                     self._data_arrays.append(darr)
+                    self._selections.append(
+                        _FileDataSelection(
+                            kind="dataset_variable",
+                            value=variable_name,
+                        )
+                    )
                     self._source_paths.append("/")
                     variable_names.append(str(variable_name))
         else:
@@ -167,6 +192,14 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
                 for variable_name, darr in leaf.dataset.data_vars.items():
                     if _supported_shape(darr):
                         self._data_arrays.append(darr)
+                        self._selections.append(
+                            _FileDataSelection(
+                                kind="datatree_path",
+                                value=_datatree_dataarray_path(
+                                    source_path, variable_name
+                                ),
+                            )
+                        )
                         self._source_paths.append(source_path)
                         variable_names.append(str(variable_name))
 
@@ -434,14 +467,14 @@ class _SelectDataArraysDialog(QtWidgets.QDialog):
         self._path_tree.setCurrentIndex(QtCore.QModelIndex())
         self._filter_for_path(None)
 
-    def selected_dataarrays(self) -> tuple[tuple[xr.DataArray, int], ...]:
-        selected: list[tuple[xr.DataArray, int]] = []
+    def selected_dataarrays(self) -> tuple[_ParsedInputData, ...]:
+        selected: list[_ParsedInputData] = []
         for item in self._items():
             if self._item_checkbox(item).isChecked():
                 index = typing.cast(
                     "int", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
                 )
-                selected.append((self._data_arrays[index], index))
+                selected.append((self._data_arrays[index], self._selections[index]))
         return tuple(selected)
 
     def _update_ok_enabled(self, *_args: object) -> None:
@@ -525,9 +558,9 @@ def _select_input_dataarrays(
     | xr.Dataset
     | xr.DataTree,
     parent: QtWidgets.QWidget | None = None,
-) -> tuple[tuple[xr.DataArray, int], ...] | None:
-    data_arrays = tuple(enumerate(_parse_input(data)))
-    if len(data_arrays) > 1 and isinstance(data, xr.Dataset | xr.DataTree):
+) -> tuple[_ParsedInputData, ...] | None:
+    parsed_data = _parse_input_data(data)
+    if len(parsed_data) > 1 and isinstance(data, xr.Dataset | xr.DataTree):
         dialog = _SelectDataArraysDialog(parent, data)
         if not dialog.exec():
             return None
@@ -535,7 +568,7 @@ def _select_input_dataarrays(
         if not selected:
             return None
         return selected
-    return tuple((darr, source_index) for source_index, darr in data_arrays)
+    return tuple(parsed_data)
 
 
 def _make_cursor_colors(
@@ -595,28 +628,72 @@ def _parse_input(
     | xr.Dataset
     | xr.DataTree,
 ) -> list[xr.DataArray]:
+    return [darr for darr, _selection in _parse_input_data(data)]
+
+
+def _parse_input_data(
+    data: Collection[xr.DataArray | npt.NDArray]
+    | xr.DataArray
+    | npt.NDArray
+    | xr.Dataset
+    | xr.DataTree,
+) -> list[_ParsedInputData]:
     input_cls: str = data.__class__.__name__
     if isinstance(data, np.ndarray | xr.DataArray):
-        data = (data,)
-    elif isinstance(data, xr.Dataset):
-        data = _parse_dataset(data)
-    elif isinstance(data, xr.DataTree):
-        data = tuple(
-            itertools.chain.from_iterable(
-                _parse_dataset(leaf.dataset) for leaf in data.leaves
-            )
+        parsed = (
+            (
+                xr.DataArray(data) if not isinstance(data, xr.DataArray) else data,
+                _FileDataSelection(kind="dataarray"),
+            ),
         )
+    elif isinstance(data, xr.Dataset):
+        parsed = tuple(
+            (
+                darr,
+                _FileDataSelection(kind="dataset_variable", value=variable_name),
+            )
+            for variable_name, darr in data.data_vars.items()
+            if _supported_shape(darr)
+        )
+    elif isinstance(data, xr.DataTree):
+        parsed = tuple(
+            (
+                darr,
+                _FileDataSelection(
+                    kind="datatree_path",
+                    value=_datatree_dataarray_path(str(leaf.path), variable_name),
+                ),
+            )
+            for leaf in data.leaves
+            for variable_name, darr in leaf.dataset.data_vars.items()
+            if _supported_shape(darr)
+        )
+    else:
+        if not isinstance(data, collections.abc.Collection):
+            raise TypeError(
+                f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
+                "DataTree, numpy array, or a list of DataArray or numpy arrays."
+            )
+        parsed_list: list[_ParsedInputData] = []
+        for index, d in enumerate(data):
+            if not isinstance(d, xr.DataArray | np.ndarray):
+                raise TypeError(
+                    f"Unsupported input type {input_cls}. Expected DataArray, "
+                    "Dataset, DataTree, numpy array, or a list of DataArray or "
+                    "numpy arrays."
+                )
+            parsed_list.append(
+                (
+                    xr.DataArray(d) if not isinstance(d, xr.DataArray) else d,
+                    _FileDataSelection(kind="parsed_index", value=index),
+                )
+            )
+        parsed = tuple(parsed_list)
 
-    if len(data) == 0:
+    if len(parsed) == 0:
         raise ValueError(f"No valid data for ImageTool found in {input_cls}")
 
-    if not isinstance(next(iter(data)), xr.DataArray | np.ndarray):
-        raise TypeError(
-            f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
-            "DataTree, numpy array, or a list of DataArray or numpy arrays."
-        )
-
-    return [xr.DataArray(d) if not isinstance(d, xr.DataArray) else d for d in data]
+    return list(parsed)
 
 
 def _link_splitters(
@@ -950,10 +1027,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data, ``load_func`` must also be provided.
     load_func
         3-tuple containing the function, a dictionary of keyword arguments, and the
-        index of the data variable used when loading the data. The function is called
-        when reloading the data. If using a data loader plugin, the function may be as a
-        string representing the loader name. If the function always returns a single
-        DataArray, the last element should be 0.
+        selection of the data variable used when loading the data. The function is
+        called when reloading the data. If using a data loader plugin, the function may
+        be given as a string representing the loader name.
 
     Signals
     -------
@@ -1074,7 +1150,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         bench: bool = False,
         state: ImageSlicerState | None = None,
         file_path: str | os.PathLike | None = None,
-        load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
+        load_func: _LoadFunc | None = None,
         auto_compute: bool = True,
         image_cls=None,
         plotdata_cls=None,
@@ -1264,7 +1340,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._splitters[6].addWidget(self._plots[i])
 
         self._file_path: pathlib.Path | None = None
-        self._load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None
+        self._load_func: _LoadFunc | None = None
         self._source_input_dtype: np.dtype[typing.Any] | None = None
         self.current_cursor: int = 0
         self._data: xr.DataArray
@@ -1361,7 +1437,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if load_func is not None:
             fn = load_func[0]
             func_name = f"{fn.__module__}:{fn.__qualname__}" if callable(fn) else fn
-            load_func = (func_name, *load_func[1:])
+            selection = load_func[2]
+            if isinstance(selection, _FileDataSelection):
+                selection = selection.model_dump(mode="json")
+            load_func = (func_name, load_func[1], selection)
         return {
             "color": self.colormap_properties,
             "slice": self.array_slicer.state,
@@ -1966,7 +2045,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self.reload_act = QtWidgets.QAction("&Reload Data", self)
         self.reload_act.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
         self.reload_act.triggered.connect(self.reload)
-        self.reload_act.setToolTip("Reload data from the original source")
+        self.reload_act.setToolTip(
+            "Reload data from its saved files, parent, or inputs"
+        )
         self.reload_act.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
 
         self.view_all_act = QtWidgets.QAction("View &All", self)
@@ -2373,7 +2454,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
-        load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
+        load_func: _LoadFunc | None = None,
         auto_compute: bool = True,
         *,
         source_replaced: bool = False,
@@ -2398,10 +2479,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             reload the data, ``load_func`` must also be provided.
         load_func
             3-tuple containing the function, a dictionary of keyword arguments, and the
-            index of the data variable used when loading the data. The function is
+            selection of the data variable used when loading the data. The function is
             called when reloading the data. If using a data loader plugin, the function
-            be given as a string representing the loader name. If the function always
-            returns a single DataArray, the last element should be 0.
+            may be given as a string representing the loader name.
         auto_compute
             If `True` and the data is dask-backed, automatically compute the data if its
             size is below the threshold defined in options.
@@ -2545,7 +2625,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         data: xr.DataArray | npt.NDArray,
         rad2deg: bool | Iterable[str] = False,
         file_path: str | os.PathLike | None = None,
-        load_func: tuple[Callable | str, dict[str, typing.Any], int] | None = None,
+        load_func: _LoadFunc | None = None,
         auto_compute: bool = True,
         *,
         emit_edited: bool = False,
@@ -2581,13 +2661,20 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         Direct file-backed windows reload from their stored loader. Detached
         file-rooted provenance reloads by replaying its self-contained code.
+        Managed script-derived ImageTools reload through the manager from their
+        recorded inputs.
 
         Returns
         -------
         bool
             `True` if the data can be reloaded, `False` otherwise.
         """
-        return self._direct_reloadable() or self._provenance_reloadable()
+        if self._direct_reloadable() or self._provenance_reloadable():
+            return True
+        manager = self._manager_instance if self._in_manager else None
+        return manager is not None and manager._script_reload_from_slicer_area(
+            self, execute=False
+        )
 
     def _direct_reloadable(self) -> bool:
         """Return whether direct file metadata can reload the current source."""
@@ -2623,7 +2710,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "xr.DataArray | xr.Dataset | xr.DataTree",
             func(file_path, **load_func[1]),
         )
-        return _parse_input(reloaded)[load_func[2]]
+        return erlab.interactive.imagetool.provenance._select_replay_input(
+            reloaded,
+            load_func[2],
+        )
 
     def _fetch_for_provenance_reload(self) -> xr.DataArray:
         """Replay file-rooted provenance and return the active displayed data."""
@@ -2654,7 +2744,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _reload(self) -> bool:
         """Reload the displayed data and return whether the reload succeeded."""
-        if self.reloadable:  # pragma: no branch
+        if self._direct_reloadable() or self._provenance_reloadable():
             try:
                 data, kwargs = self._fetch_reload_data()
                 self.replace_source_data(data, **kwargs)
@@ -2664,11 +2754,24 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 )
                 return False
             return True
-        return False
+        manager = self._manager_instance if self._in_manager else None
+        if manager is not None:
+            return manager._script_reload_from_slicer_area(self, execute=True)
+        if not self.reloadable:
+            return False
+        try:
+            data, kwargs = self._fetch_reload_data()
+            self.replace_source_data(data, **kwargs)
+        except Exception:
+            erlab.interactive.utils.MessageDialog.critical(
+                self, "Error", "An error occurred while reloading data."
+            )
+            return False
+        return True
 
     @QtCore.Slot()
     def reload(self) -> None:
-        """Reload the displayed data from direct file state or file-rooted provenance.
+        """Reload the displayed data from recorded source information.
 
         Silently fails if the data cannot be reloaded. If an error occurs while
         reloading the data, a message is shown to the user.

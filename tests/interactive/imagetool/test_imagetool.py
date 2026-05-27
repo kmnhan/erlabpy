@@ -1660,7 +1660,7 @@ def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) 
     win.close()
 
 
-def test_itool_file_open_uses_selected_variable_source_index(
+def test_itool_file_open_uses_selected_dataset_variable(
     qtbot,
     monkeypatch,
     accept_dialog,
@@ -1673,15 +1673,23 @@ def test_itool_file_open_uses_selected_variable_source_index(
         coords={"u": np.arange(4), "v": np.arange(5)},
         name="second",
     )
+    updated_second = second + 2.0
+    selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataset_variable",
+        value="second",
+    )
     file_path = tmp_path / "multi.h5"
     file_path.touch()
+    datasets = {
+        "current": xr.Dataset({"first": first, "second": second}),
+    }
 
     def _load_multi(_path: str) -> xr.Dataset:
-        return xr.Dataset({"first": first, "second": second})
+        return datasets["current"]
 
     def _select_second(data, parent=None):
         assert parent is not None
-        return ((data["second"], 1),)
+        return ((data["second"], selection),)
 
     monkeypatch.setattr(
         erlab.interactive.utils,
@@ -1708,7 +1716,18 @@ def test_itool_file_open_uses_selected_variable_source_index(
     assert isinstance(win, ImageTool)
     xr.testing.assert_identical(win.slicer_area.data, second)
     assert win.slicer_area._load_func is not None
-    assert win.slicer_area._load_func[2] == 1
+    assert win.slicer_area._load_func[2] == selection
+
+    datasets["current"] = xr.Dataset(
+        {
+            "inserted": xr.DataArray(np.full((2, 3), 5.0), dims=("x", "y")),
+            "second": updated_second,
+            "first": first,
+        }
+    )
+    with qtbot.wait_signal(win.slicer_area.sigDataChanged):
+        win.slicer_area.reload()
+    xr.testing.assert_identical(win.slicer_area.data, updated_second)
 
     win.close()
 
@@ -2416,7 +2435,8 @@ def test_parse_input() -> None:
         )
 
 
-def test_select_dataarrays_dialog_preserves_tree_source_indices(qtbot) -> None:
+def test_select_dataarrays_dialog_preserves_tree_source_paths(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance
     first = xr.DataArray(
         np.zeros((2, 3), dtype=np.float32),
         dims=("alpha", "eV"),
@@ -2438,7 +2458,10 @@ def test_select_dataarrays_dialog_preserves_tree_source_indices(qtbot) -> None:
     qtbot.addWidget(dialog)
     selected_data = dialog.selected_dataarrays()
 
-    assert [source_index for _data_array, source_index in selected_data] == [0, 1]
+    assert [selection for _data_array, selection in selected_data] == [
+        prov.FileDataSelection(kind="datatree_path", value="/branch_a/signal"),
+        prov.FileDataSelection(kind="datatree_path", value="/branch_b/signal"),
+    ]
     assert dialog._tree_widget.topLevelItem(0).text(1) == "branch_a"
     assert dialog._tree_widget.topLevelItem(0).text(2) == "signal"
     assert dialog._tree_widget.topLevelItem(1).text(1) == "branch_b"
@@ -2505,7 +2528,12 @@ def test_select_dataarrays_dialog_formats_selected_dataarray(
     dialog._tree_widget.setCurrentItem(second_item)
 
     selected_data = dialog.selected_dataarrays()
-    assert [source_index for _data_array, source_index in selected_data] == [1]
+    assert [selection for _data_array, selection in selected_data] == [
+        erlab.interactive.imagetool.provenance.FileDataSelection(
+            kind="dataset_variable",
+            value="second",
+        )
+    ]
     xr.testing.assert_identical(selected_data[0][0], ds["second"])
     xr.testing.assert_identical(formatted[-1][0], ds["second"])
     assert formatted[-1][1] is False
@@ -2605,9 +2633,12 @@ def test_select_dataarrays_dialog_nests_datatree_paths(qtbot) -> None:
 
     dialog._item_checkbox(signal_item).setChecked(False)
 
-    assert [
-        source_index for _data_array, source_index in dialog.selected_dataarrays()
-    ] == [0]
+    assert [selection for _data_array, selection in dialog.selected_dataarrays()] == [
+        erlab.interactive.imagetool.provenance.FileDataSelection(
+            kind="datatree_path",
+            value="/branch_a/sweep_0/signal",
+        )
+    ]
 
     empty_item = QtWidgets.QTreeWidgetItem(["missing"])
     empty_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, "/missing")
@@ -2697,6 +2728,23 @@ def test_select_input_dataarrays_dialog_branches(
     else:
         assert result is not None
         assert [source_index for _data_array, source_index in result] == list(expected)
+
+
+def test_parse_input_data_records_dataset_and_datatree_selectors() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    image = xr.DataArray(np.ones((2, 3)), dims=("x", "y"), name="image")
+    ds = xr.Dataset({"image": image})
+    tree = xr.DataTree.from_dict({"diag": xr.Dataset({"image": image})})
+
+    dataset_parsed = imagetool_viewer._parse_input_data(ds)
+    datatree_parsed = imagetool_viewer._parse_input_data(tree)
+
+    assert dataset_parsed[0][1] == prov.FileDataSelection(
+        kind="dataset_variable", value="image"
+    )
+    assert datatree_parsed[0][1] == prov.FileDataSelection(
+        kind="datatree_path", value="/diag/image"
+    )
 
 
 def test_itool_dataset_selection_returns_selected_variable(qtbot, monkeypatch) -> None:
@@ -4815,7 +4863,10 @@ def test_itool_average(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    xarray.testing.assert_identical(derived, data.qsel.mean("x"))
+    assert ".rename(" not in display_code
+    xarray.testing.assert_identical(
+        derived.rename(None), data.qsel.mean("x").rename(None)
+    )
     win.close()
 
 
@@ -4867,7 +4918,8 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     )
     derived = display_namespace["derived"]
     assert isinstance(derived, xr.DataArray)
-    xarray.testing.assert_identical(derived, expected)
+    assert ".rename(" not in display_code
+    xarray.testing.assert_identical(derived.rename(None), expected.rename(None))
 
     win.close()
 

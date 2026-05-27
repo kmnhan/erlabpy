@@ -62,7 +62,13 @@ description: Use when answering questions or working on ERLabPy ARPES analysis w
   `Add Windows From Workspace`, `%watch --restore`,
   `Reconnect Watched Variables`, `.itws`, `standalone application`,
   `recent documents`, `Jump List`, `Dock menu`, `Result Placement`, `stale`,
-  `automatic updates`, `Auto`, `Refit after update`, `code for repeating steps`,
+  `automatic updates`, `Auto`, `Changed`, `Missing`, `Reload Data`,
+  `Concatenate`, `tools[0] - tools[1]`, `tools[0].children`,
+  `tools.selected`, `tools[0].qsel`, `era.transform.rotate(tools[0])`,
+  `xr.concat([tools[0], tools[1]])`, `my_func(tools[0])`,
+  `structured console provenance`,
+  `Refit after update`, `code for repeating steps`,
+  `reuses shared load and processing work`, `shared loader setup`,
   `ImageTool windows opened from tools`, or
   `workflow-bridge` for notebook and interactive-workflow questions.
 - Search `interactive-tool-authoring`, `ToolWindow`, `tool_status`,

@@ -1171,7 +1171,7 @@ def test_tool_script_provenance_rejects_invalid_expression(qtbot) -> None:
         tool.current_provenance_spec()
 
 
-def test_tool_window_dynamic_expression_provenance_uses_input_lineage(qtbot) -> None:
+def test_tool_window_dynamic_expression_provenance_uses_input_provenance(qtbot) -> None:
     prov = erlab.interactive.imagetool.provenance
 
     class _DynamicTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
@@ -1670,6 +1670,9 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _mark_node_data_dirty(self, _uid: str) -> None:
             return
 
+        def _refresh_dependency_dependents(self, _uid: str) -> None:
+            return
+
     manager = _FakeManager()
     qtbot.addWidget(manager)
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
@@ -1873,6 +1876,9 @@ def test_managed_tool_window_node_detached_update_branches(
             return
 
         def _mark_node_data_dirty(self, _uid: str) -> None:
+            return
+
+        def _refresh_dependency_dependents(self, _uid: str) -> None:
             return
 
     parent_tool = _OutputTool(parent_data)
