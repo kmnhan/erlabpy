@@ -724,18 +724,17 @@ class _ApplicationQuitFilter(QtCore.QObject):
         if event is None:
             return False
         if event.type() == QtCore.QEvent.Type.Quit:
-            return self._manager._handle_application_quit_request()
+            event.accept()
+            self._manager.close()
+            return True
         if (
-            event.type()
-            in (
-                QtCore.QEvent.Type.KeyPress,
-                QtCore.QEvent.Type.ShortcutOverride,
-            )
+            event.type() == QtCore.QEvent.Type.KeyPress
             and isinstance(event, QtGui.QKeyEvent)
             and event.matches(QtGui.QKeySequence.StandardKey.Quit)
         ):
             event.accept()
-            return self._manager._handle_application_quit_request()
+            self._manager.close()
+            return True
         return False
 
 
@@ -1018,7 +1017,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
             _manager_workspace._current_workspace_schema_version()
         )
         self._workspace_lock: QtCore.QLockFile | None = None
-        self._application_quit_requested: bool = False
         self._closing_workspace_document: bool = False
         self._update_workspace_window_title()
 
@@ -1817,17 +1815,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _adopt_workspace_path(self, fname: str | os.PathLike[str]) -> None:
         with self._workspace_document_access_context(fname) as access:
             self._set_workspace_path(access.path, workspace_lock=access.take_lock())
-
-    @property
-    def _suppress_workspace_visibility_dirty(self) -> bool:
-        return self._application_quit_requested
-
-    def _handle_application_quit_request(self) -> bool:
-        self._application_quit_requested = True
-        if self.close():
-            return True
-        self._application_quit_requested = False
-        return True
 
     def _active_managed_window(self) -> QtWidgets.QWidget | None:
         active_window = QtWidgets.QApplication.activeWindow()
@@ -7442,7 +7429,6 @@ class ImageToolManager(QtWidgets.QMainWindow):
             if not self._confirm_save_dirty_workspace(
                 "Closing this manager will discard unsaved workspace changes."
             ):
-                self._application_quit_requested = False
                 if event:
                     event.ignore()
                 return

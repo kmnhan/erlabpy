@@ -2617,7 +2617,6 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
 ) -> None:
     with manager_context() as manager:
         manager._workspace_structure_modified = True
-        manager._application_quit_requested = True
         manager._closing_workspace_document = False
         event = QtGui.QCloseEvent()
         with monkeypatch.context() as patch:
@@ -2628,7 +2627,6 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
 
         assert not event.isAccepted()
         assert not manager._closing_workspace_document
-        assert not manager._application_quit_requested
 
 
 def test_manager_close_save_path_skips_macos_file_path_update(
@@ -2709,12 +2707,7 @@ def test_application_quit_filter_routes_quit_events(qtbot) -> None:
     manager = QtWidgets.QWidget()
     qtbot.addWidget(manager)
     calls: list[str] = []
-
-    def _handle_application_quit_request() -> bool:
-        calls.append("quit")
-        return True
-
-    manager._handle_application_quit_request = _handle_application_quit_request
+    manager.close = lambda: calls.append("close") or False
     event_filter = manager_mainwindow._ApplicationQuitFilter(
         typing.cast("ImageToolManager", manager)
     )
@@ -2726,15 +2719,22 @@ def test_application_quit_filter_routes_quit_events(qtbot) -> None:
         def matches(self, key: QtGui.QKeySequence.StandardKey) -> bool:
             return key == QtGui.QKeySequence.StandardKey.Quit
 
-    quit_event = _QuitKeyEvent(
+    shortcut_event = _QuitKeyEvent(
+        QtCore.QEvent.Type.ShortcutOverride,
+        QtCore.Qt.Key.Key_Q,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    assert not event_filter.eventFilter(None, shortcut_event)
+
+    key_event = _QuitKeyEvent(
         QtCore.QEvent.Type.KeyPress,
         QtCore.Qt.Key.Key_Q,
         QtCore.Qt.KeyboardModifier.NoModifier,
     )
 
-    assert event_filter.eventFilter(None, quit_event)
-    assert quit_event.isAccepted()
-    assert calls == ["quit", "quit"]
+    assert event_filter.eventFilter(None, key_event)
+    assert key_event.isAccepted()
+    assert calls == ["close", "close"]
 
 
 def test_workspace_document_access_releases_lock(tmp_path) -> None:
@@ -3248,26 +3248,6 @@ def test_manager_startup_open_workspace_dialog_schedules_load(
             and name == "load"
             for interval, receiver_ref, name in calls
         )
-
-
-def test_manager_application_quit_request_resets_when_close_fails(
-    monkeypatch,
-    manager_context: Callable[
-        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
-    ],
-) -> None:
-    with manager_context() as manager:
-        original_close = manager.close
-        monkeypatch.setattr(manager, "close", lambda: False)
-
-        assert manager._handle_application_quit_request()
-        assert not manager._application_quit_requested
-
-        monkeypatch.setattr(manager, "close", lambda: True)
-        assert manager._handle_application_quit_request()
-        assert manager._application_quit_requested
-        manager._application_quit_requested = False
-        monkeypatch.setattr(manager, "close", original_close)
 
 
 def test_manager_active_window_and_focus_restore_guards(
@@ -5442,7 +5422,7 @@ def test_workspace_remote_incremental_option_allows_delta_save(
         options[use_incremental_name] = old_incremental_value
 
 
-def test_manager_application_quit_suppresses_child_visibility_dirty(
+def test_manager_close_suppresses_child_visibility_dirty(
     qtbot,
     tmp_path,
     manager_context: Callable[
@@ -5465,8 +5445,9 @@ def test_manager_application_quit_suppresses_child_visibility_dirty(
         manager._mark_workspace_clean()
         assert not manager.is_workspace_modified
 
-        manager._application_quit_requested = True
+        manager._closing_workspace_document = True
         root.hide()
+        manager._closing_workspace_document = False
         manager._drain_workspace_deferred_events()
 
         assert not manager.is_workspace_modified
@@ -5483,14 +5464,14 @@ def test_manager_application_quit_filter_routes_quit_to_manager(
         calls: list[str] = []
         monkeypatch.setattr(
             manager,
-            "_handle_application_quit_request",
-            lambda: calls.append("quit") or True,
+            "close",
+            lambda: calls.append("close") or False,
         )
 
         event = QtCore.QEvent(QtCore.QEvent.Type.Quit)
         assert manager._application_quit_filter is not None
         assert manager._application_quit_filter.eventFilter(None, event)
-        assert calls == ["quit"]
+        assert calls == ["close"]
 
 
 def test_manager_workspace_dirty_marker_not_saved_in_titles(

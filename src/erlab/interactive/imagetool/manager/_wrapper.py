@@ -877,12 +877,13 @@ class _ManagedWindowNode(QtCore.QObject):
                     self.slicer_area, 0, self.slicer_area._update_if_delayed
                 )
 
+            mark_dirty = (
+                self.manager._workspace_loading_depth == 0
+                and self.manager._workspace_saving_depth == 0
+                and not self.manager._closing_workspace_document
+            )
+
             def _mark_visibility_changed() -> None:
-                mark_dirty = (
-                    self.manager._workspace_loading_depth == 0
-                    and self.manager._workspace_saving_depth == 0
-                    and not self.manager._suppress_workspace_visibility_dirty
-                )
                 self.visibility_changed(mark_dirty=mark_dirty)
 
             erlab.interactive.utils.single_shot(
@@ -960,7 +961,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:
-        if self.manager._suppress_workspace_visibility_dirty:
+        if self.manager._closing_workspace_document:
             return
         self.manager._mark_node_state_dirty(self.uid)
 
