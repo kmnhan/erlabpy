@@ -1,5 +1,102 @@
 # ruff: noqa: F403, F405
+import erlab.interactive.imagetool.manager.__main__ as manager_main
+
 from ._shared import *
+
+
+def test_manager_main_cache_directory_uses_qstandardpaths(
+    tmp_path, monkeypatch
+) -> None:
+    cache_root = tmp_path / "cache-root"
+    requested_locations: list[QtCore.QStandardPaths.StandardLocation] = []
+
+    def _writable_location(
+        location: QtCore.QStandardPaths.StandardLocation,
+    ) -> str:
+        requested_locations.append(location)
+        return str(cache_root)
+
+    monkeypatch.setattr(
+        manager_main.QtCore.QStandardPaths, "writableLocation", _writable_location
+    )
+
+    cache_dir = manager_main._cache_directory()
+
+    assert requested_locations == [QtCore.QStandardPaths.StandardLocation.CacheLocation]
+    assert cache_dir == cache_root / "dev.kmnhan.erlabpy.imagetoolmanager"
+    assert cache_dir.is_dir()
+
+
+def test_manager_main_cache_directory_falls_back_to_home_cache(
+    tmp_path, monkeypatch
+) -> None:
+    home_dir = tmp_path / "home"
+
+    monkeypatch.setattr(
+        manager_main.QtCore.QStandardPaths, "writableLocation", lambda location: ""
+    )
+    monkeypatch.setattr(manager_main.pathlib.Path, "home", lambda: home_dir)
+
+    cache_dir = manager_main._cache_directory()
+
+    assert cache_dir == home_dir / ".cache" / "dev.kmnhan.erlabpy.imagetoolmanager"
+    assert cache_dir.is_dir()
+
+
+def test_manager_main_mpl_cache_directory(tmp_path, monkeypatch) -> None:
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.setattr(
+        manager_main.QtCore.QStandardPaths,
+        "writableLocation",
+        lambda location: str(cache_root),
+    )
+
+    mpl_cache_dir = manager_main._mpl_cache_directory()
+
+    assert (
+        mpl_cache_dir
+        == cache_root / "dev.kmnhan.erlabpy.imagetoolmanager" / "matplotlib"
+    )
+    assert mpl_cache_dir.is_dir()
+
+
+def test_manager_main_configure_packaged_matplotlib_cache_skips_source_launch(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("MPLCONFIGDIR", raising=False)
+    monkeypatch.setattr(manager_main.sys, "frozen", True, raising=False)
+    monkeypatch.delattr(manager_main.sys, "_MEIPASS", raising=False)
+    monkeypatch.setattr(
+        manager_main.QtCore.QStandardPaths,
+        "writableLocation",
+        lambda location: str(tmp_path / "cache-root"),
+    )
+
+    manager_main._configure_packaged_matplotlib_cache()
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_manager_main_configure_packaged_matplotlib_cache_sets_packaged_env(
+    tmp_path, monkeypatch
+) -> None:
+    cache_root = tmp_path / "cache-root"
+    monkeypatch.delenv("MPLCONFIGDIR", raising=False)
+    monkeypatch.setattr(manager_main.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        manager_main.sys, "_MEIPASS", str(tmp_path / "_MEI"), raising=False
+    )
+    monkeypatch.setattr(
+        manager_main.QtCore.QStandardPaths,
+        "writableLocation",
+        lambda location: str(cache_root),
+    )
+
+    manager_main._configure_packaged_matplotlib_cache()
+
+    mpl_cache_dir = cache_root / "dev.kmnhan.erlabpy.imagetoolmanager" / "matplotlib"
+    assert os.environ["MPLCONFIGDIR"] == str(mpl_cache_dir)
+    assert mpl_cache_dir.is_dir()
 
 
 def test_manager_reload(
