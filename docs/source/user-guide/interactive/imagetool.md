@@ -30,7 +30,9 @@ ImageTool expects *image-like* data—usually a {class}`DataArray <xarray.DataAr
 dimension for 1D data and squeezing out dimensions of size 1 for 5D+ data. Non-uniform
 coordinates gain parallel `_idx` indices so you can still slice by position. Supported
 inputs include numpy arrays, {class}`Dataset <xarray.Dataset>`, or entire
-{class}`DataTree <xarray.DataTree>` objects. (imagetool-entry-points)=
+{class}`DataTree <xarray.DataTree>` objects.
+
+(imagetool-entry-points)=
 
 ### Entry points
 
