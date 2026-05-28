@@ -1,3 +1,9 @@
+## v3.23.1 (2026-05-28)
+
+### 🐞 Bug Fixes
+
+- **docs:** fix failing documentation build (#365) ([1d99caa](https://github.com/kmnhan/erlabpy/commit/1d99caa3d71e261e0328288d607171a6a196c572))
+
 ## v3.23.0 (2026-05-27)
 
 ### ✨ Features
