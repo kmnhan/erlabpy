@@ -945,6 +945,25 @@ def test_workspace_h5py_attrs_and_root_validation(tmp_path) -> None:
         manager_workspace._read_workspace_root_attrs_h5py(fname)
 
 
+def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "replace-invalid-attrs.itws"
+    with h5py.File(fname, "w") as h5_file:
+        group = h5_file.create_group("0/imagetool")
+        group.attrs["old"] = "removed"
+
+        manager_workspace._replace_h5_attrs(
+            group.attrs,
+            {"": "dropped", None: "dropped", "note": "", "valid": "kept"},
+        )
+
+        assert "old" not in group.attrs
+        assert "" not in list(group.attrs)
+        assert group.attrs["note"] == ""
+        assert group.attrs["valid"] == "kept"
+
+
 def _assert_workspace_h5py_roundtrip(
     tmp_path: pathlib.Path, label: str, data: xr.DataArray
 ) -> tuple[xr.Dataset, xr.Dataset, pathlib.Path]:
@@ -1168,6 +1187,100 @@ def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
     assert loaded is not None
     xr.testing.assert_equal(loaded[data_name], data)
     assert loaded.coords["elapsed"].attrs["units"] == "seconds since start"
+
+
+def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> None:
+    import h5py
+
+    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    fname = tmp_path / "invalid-attrs-fast-path.itws"
+    data = xr.DataArray(
+        np.arange(2.0),
+        dims=("x",),
+        coords={
+            "x": xr.DataArray(
+                [0.0, 1.0],
+                dims=("x",),
+                attrs={"": "dropped", "axis_note": ""},
+            ),
+            "temperature": xr.DataArray(
+                [20.0, 21.0],
+                dims=("x",),
+                attrs={None: "dropped", "units": "K"},
+            ),
+        },
+        attrs={"": "dropped", 1: "dropped", "note": ""},
+        name=data_name,
+    )
+    ds = data.to_dataset()
+    ds.attrs[""] = "dropped"
+    ds.attrs["dataset_note"] = ""
+
+    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/imagetool", ds)
+
+    assert "" in ds.attrs
+    assert "" in ds[data_name].attrs
+    with h5py.File(fname, "r") as h5_file:
+        group = h5_file["0/imagetool"]
+        saved_data = group[data_name]
+
+        assert "" not in list(group.attrs)
+        assert group.attrs["dataset_note"] == ""
+        assert "" not in list(saved_data.attrs)
+        assert saved_data.attrs["note"] == ""
+        assert "" not in list(group["x"].attrs)
+        assert group["x"].attrs["axis_note"] == ""
+        assert "" not in list(group["temperature"].attrs)
+        assert group["temperature"].attrs["units"] == "K"
+
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname, "0/imagetool", preferred_data_name=data_name
+    )
+    assert loaded is not None
+    assert "" not in loaded.attrs
+    assert loaded.attrs["dataset_note"] == ""
+    assert "" not in loaded[data_name].attrs
+    assert loaded[data_name].attrs["note"] == ""
+    assert loaded.coords["temperature"].attrs["units"] == "K"
+
+
+def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> None:
+    fname = tmp_path / "invalid-attrs-fallback.itws"
+    ds = xr.Dataset(
+        {
+            "left": xr.DataArray(
+                [1.0, 2.0],
+                dims=("x",),
+                attrs={"": "dropped", "left_note": ""},
+            ),
+            "right": ("x", [3.0, 4.0]),
+        },
+        coords={
+            "x": xr.DataArray(
+                [0.0, 1.0],
+                dims=("x",),
+                attrs={None: "dropped", "axis_note": ""},
+            )
+        },
+        attrs={"": "dropped", "dataset_note": ""},
+    )
+
+    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
+
+    opened = xr.open_dataset(fname, group="/0/tool", engine="h5netcdf")
+    try:
+        loaded = opened.load()
+    finally:
+        opened.close()
+
+    assert "" in ds.attrs
+    assert "" in ds["left"].attrs
+    assert "" not in loaded.attrs
+    assert loaded.attrs["dataset_note"] == ""
+    assert "" not in loaded["left"].attrs
+    assert loaded["left"].attrs["left_note"] == ""
+    assert "" not in loaded.coords["x"].attrs
+    assert loaded.coords["x"].attrs["axis_note"] == ""
 
 
 def test_workspace_h5py_fast_path_rejects_invalid_payloads(
@@ -5532,6 +5645,39 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
 
         assert "[*]" not in root_title
         assert "[*]" not in tool_title
+
+
+def test_manager_workspace_full_save_drops_empty_attr_name(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25).reshape((5, 5)),
+            dims=["x", "y"],
+            attrs={"": "dropped", "note": ""},
+            name="data",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "empty-attr-name.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        assert "" in root.slicer_area._data.attrs
+        with h5py.File(fname, "r") as h5_file:
+            saved_attrs = h5_file["0/imagetool"][
+                manager_mainwindow._ITOOL_DATA_NAME
+            ].attrs
+            assert "" not in list(saved_attrs)
+            assert saved_attrs["note"] == ""
 
 
 def test_manager_workspace_save_preserves_reordered_roots(
