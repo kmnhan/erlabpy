@@ -2,6 +2,41 @@
 from ._shared import *
 
 
+class _InfoRefreshToolState(pydantic.BaseModel):
+    value: int = 0
+
+
+class _InfoRefreshTool(erlab.interactive.utils.ToolWindow[_InfoRefreshToolState]):
+    StateModel = _InfoRefreshToolState
+    tool_name = "info-refresh"
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__()
+        self._data = data
+        self._status = _InfoRefreshToolState()
+        self._info_text = "initial child info"
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def tool_status(self) -> _InfoRefreshToolState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _InfoRefreshToolState) -> None:
+        self._status = status
+
+    @property
+    def info_text(self) -> str:
+        return self._info_text
+
+    def emit_info_text(self, text: str) -> None:
+        self._info_text = text
+        self.sigInfoChanged.emit()
+
+
 def test_drop_mimedata(
     qtbot,
     accept_dialog,
@@ -266,6 +301,113 @@ def test_childtool_remove_after_tree_clear(
         qtbot.wait_until(
             lambda: uid not in manager._imagetool_wrappers[0]._childtools, timeout=5000
         )
+
+
+def test_childtool_info_changed_debounces_manager_details_refresh(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+        selection_model = manager.tree_view.selectionModel()
+        selection_model.clearSelection()
+        select_child_tool(manager, uid)
+
+        metadata_updates: list[str] = []
+        original_set_metadata_node = manager._set_metadata_node
+
+        def _record_metadata_rebuild(node) -> None:
+            metadata_updates.append(node.uid)
+            original_set_metadata_node(node)
+
+        monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
+        manager._tool_metadata_update_timer.setInterval(1)
+
+        tool.emit_info_text("updated child info")
+        tool.emit_info_text("updated child info again")
+        tool.emit_info_text("updated child info final")
+
+        assert "updated child info" not in manager.text_box.toPlainText()
+        assert metadata_updates == []
+        qtbot.wait_until(lambda: metadata_updates == [uid], timeout=1000)
+        assert "updated child info final" in manager.text_box.toPlainText()
+
+
+def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+        selection_model = manager.tree_view.selectionModel()
+        selection_model.clearSelection()
+        select_tools(manager, [0])
+        manager._update_info()
+        visible_html = manager.text_box.toHtml()
+        manager._tool_metadata_update_timer.setInterval(1)
+
+        tool.emit_info_text("updated child info")
+        qtbot.wait_until(
+            lambda: not manager._tool_metadata_update_timer.isActive(), timeout=1000
+        )
+
+        assert manager.text_box.toHtml() == visible_html
+        assert "updated child info" not in manager.text_box.toPlainText()
+
+
+def test_childtool_repeated_info_changes_mark_state_dirty_once(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        test_data.qshow(manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = _InfoRefreshTool(test_data)
+        uid = manager.add_childtool(tool, 0, show=False)
+        qtbot.wait_until(
+            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            timeout=5000,
+        )
+        manager._mark_workspace_clean()
+
+        tool.emit_info_text("first")
+        tool.emit_info_text("second")
+        tool.emit_info_text("third")
+
+        assert manager._workspace_dirty_state == {uid}
+        assert [
+            event for event in manager._workspace_dirty_events if event.uid == uid
+        ] == [manager._workspace_dirty_events[-1]]
 
 
 def test_remove_imagetool_removes_childtools() -> None:

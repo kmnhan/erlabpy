@@ -1016,6 +1016,13 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._workspace_schema_version: int = (
             _manager_workspace._current_workspace_schema_version()
         )
+        self._pending_tool_metadata_update_uids: set[str] = set()
+        self._tool_metadata_update_timer = QtCore.QTimer(self)
+        self._tool_metadata_update_timer.setSingleShot(True)
+        self._tool_metadata_update_timer.setInterval(300)
+        self._tool_metadata_update_timer.timeout.connect(
+            self._flush_pending_tool_metadata_updates
+        )
         self._workspace_lock: QtCore.QLockFile | None = None
         self._closing_workspace_document: bool = False
         self._update_workspace_window_title()
@@ -1962,6 +1969,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
 
     def _mark_node_state_dirty(self, uid: str) -> None:
         self._mark_workspace_dirty(uid=uid, state=True)
+
+    def _mark_tool_info_dirty(self, uid: str) -> None:
+        if uid not in self._workspace_dirty_state:
+            self._mark_node_state_dirty(uid)
 
     def _mark_workspace_structure_dirty(self, reason: str) -> None:
         self._mark_workspace_dirty(structure=reason)
@@ -3509,6 +3520,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 )
                 self._clear_metadata()
                 self.preview_widget.setVisible(False)
+
+    def _schedule_tool_metadata_update(self, uid: str) -> None:
+        """Refresh expensive selected-tool metadata after bursty info updates settle."""
+        self._pending_tool_metadata_update_uids.add(uid)
+        self._tool_metadata_update_timer.start()
+
+    @QtCore.Slot()
+    def _flush_pending_tool_metadata_updates(self) -> None:
+        pending = self._pending_tool_metadata_update_uids
+        self._pending_tool_metadata_update_uids = set()
+        for uid in sorted(pending):
+            self._update_info(uid=uid)
 
     @QtCore.Slot()
     def _update_actions(self) -> None:
