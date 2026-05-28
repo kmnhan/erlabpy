@@ -462,10 +462,24 @@ def _ensure_h5_parent_group(h5_file, path: str):
     return parent
 
 
-def _replace_h5_attrs(target_attrs, attrs: Mapping[str, typing.Any]) -> None:
+def _workspace_serializable_attrs(
+    attrs: Mapping[typing.Any, typing.Any],
+) -> dict[str, typing.Any]:
+    return {key: value for key, value in attrs.items() if isinstance(key, str) and key}
+
+
+def _sanitize_workspace_attr_names(ds: xr.Dataset) -> xr.Dataset:
+    sanitized = ds.copy(deep=False)
+    sanitized.attrs = _workspace_serializable_attrs(sanitized.attrs)
+    for variable in sanitized.variables.values():
+        variable.attrs = _workspace_serializable_attrs(variable.attrs)
+    return sanitized
+
+
+def _replace_h5_attrs(target_attrs, attrs: Mapping[typing.Any, typing.Any]) -> None:
     for key in list(target_attrs):
         del target_attrs[key]
-    for key, value in attrs.items():
+    for key, value in _workspace_serializable_attrs(attrs).items():
         target_attrs[key] = value
 
 
@@ -1173,7 +1187,7 @@ def _write_workspace_dataset_group_to_file(
     data_name = _workspace_h5py_data_name(ds)
     if data_name is not None:
         ds = _serialization.encode_private_coords(ds, data_name)
-    ds = ds.copy(deep=False)
+    ds = _sanitize_workspace_attr_names(ds)
     stale_encoding_keys = {
         "chunksizes",
         "compression",
