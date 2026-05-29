@@ -7999,6 +7999,8 @@ def test_itool_filter_dialog_reopens_with_current_settings(
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(first_operation)
+    win.mnb._view_menu_visibility()
+    assert win.mnb.action_dict["resetAct"].isEnabled()
 
     def _set_gaussian_params(dialog: GaussianFilterDialog) -> None:
         assert dialog.dim_checks["x"].isChecked()
@@ -8011,6 +8013,68 @@ def test_itool_filter_dialog_reopens_with_current_settings(
     expected = erlab.analysis.image.gaussian_filter(data, sigma={"x": second_sigma})
     xarray.testing.assert_identical(win.slicer_area.data, expected)
 
+    win.close()
+
+
+def test_normalize_filter_dialog_reopens_with_current_settings(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min_area",
+        denominator_rtol=1e-9,
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.apply_filter_operation(operation)
+
+    base_dialog = imagetool_dialogs.DataFilterDialog(win.slicer_area)
+    qtbot.addWidget(base_dialog)
+
+    dialog = NormalizeDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    assert dialog.dim_checks["x"].isChecked()
+    assert not dialog.dim_checks["y"].isChecked()
+    assert dialog.opts[3].isChecked()
+    assert dialog.denominator_rtol == pytest.approx(1e-9)
+
+    dialog.restore_filter_operation(
+        erlab.interactive.imagetool.provenance.GaussianFilterOperation(sigma={"x": 1.0})
+    )
+    assert dialog.dim_checks["x"].isChecked()
+    assert dialog.opts[3].isChecked()
+
+    base_dialog.close()
+    dialog.close()
+    win.close()
+
+
+def test_gaussian_filter_restore_skips_unknown_dimensions(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    dialog = GaussianFilterDialog(win.slicer_area)
+    qtbot.addWidget(dialog)
+
+    dialog.restore_filter_operation(
+        erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+            sigma={"missing": 1.0, "x": 2.0}
+        )
+    )
+
+    assert dialog.dim_checks["x"].isChecked()
+    assert not dialog.dim_checks["y"].isChecked()
+    assert dialog.sigma_spins["x"].value() == pytest.approx(2.0)
+
+    dialog.close()
     win.close()
 
 
@@ -8077,6 +8141,40 @@ def test_accepted_filter_displayed_data_uses_materialized_filter(qtbot) -> None:
     xarray.testing.assert_identical(
         win.slicer_area._tool_source_parent_data(), accepted
     )
+
+    win.slicer_area._accepted_filter_data = None
+    with pytest.raises(RuntimeError, match="Accepted filter data is missing"):
+        _ = win.slicer_area.displayed_data
+    win.close()
+
+
+def test_filter_helpers_reject_invalid_normalized_results(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(9, dtype=float).reshape((3, 3)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3, dtype=float), "y": np.arange(3, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min",
+    )
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+
+    func = win.slicer_area._filter_func_from_operation(operation)
+    xarray.testing.assert_identical(func(data), operation.apply(data, parent_data=data))
+
+    monkeypatch.setattr(
+        win.slicer_area,
+        "_expected_layout_shape",
+        lambda _source_data, _dims: (99, 99),
+    )
+    with pytest.raises(ValueError, match="shape does not match"):
+        win.slicer_area._normalize_filter_result_for_source_dims(
+            data,
+            data.copy(deep=True),
+            tuple(data.dims),
+        )
     win.close()
 
 
@@ -8095,12 +8193,22 @@ def test_apply_filter_operation_caches_dask_accepted_filter_lazily(qtbot) -> Non
     )
     win = ImageTool(data, auto_compute=False)
     qtbot.addWidget(win)
+    source_replaced: list[xr.DataArray] = []
+    data_edited: list[bool] = []
+    win.slicer_area.sigSourceDataReplaced.connect(source_replaced.append)
+    win.slicer_area.sigDataEdited.connect(lambda: data_edited.append(True))
 
     computed_keys: list[object] = []
     with Callback(pretask=lambda key, _dsk, _state: computed_keys.append(key)):
-        win.slicer_area.apply_filter_operation(operation, update=False)
+        win.slicer_area.apply_filter_operation(
+            operation,
+            update=False,
+            emit_edited=True,
+        )
         cached = win.slicer_area.displayed_data
 
+    assert len(source_replaced) == 1
+    assert data_edited == [True]
     assert computed_keys == []
     assert win.slicer_area.data.chunks is not None
     assert cached.chunks is not None

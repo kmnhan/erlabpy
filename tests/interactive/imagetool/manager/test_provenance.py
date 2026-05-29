@@ -387,6 +387,8 @@ def test_manager_operation_filter_preserves_output_binding(
 
         child = _OutputTool(data)
         child_uid = manager.add_childtool(child, 0, show=False)
+        child_node = manager._child_node(child_uid)
+        assert child_node.displayed_source_spec == child_node.source_spec
         initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
         output_tool = itool(initial_output, manager=False, execute=False)
         assert isinstance(output_tool, erlab.interactive.imagetool.ImageTool)

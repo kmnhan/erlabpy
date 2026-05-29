@@ -142,6 +142,13 @@ def test_manager_console_handles_use_filtered_display_data(
         handle = tools[0]
         assert handle is not None
         xr.testing.assert_identical(handle.data, expected)
+        assert (
+            handle._console_provenance_spec(
+                active_name="derived",
+                label="Assign filtered console result",
+            )
+            == manager._imagetool_wrappers[0].displayed_provenance_spec
+        )
 
         derived = handle + 1.0
         xr.testing.assert_identical(derived.data, expected + 1.0)
