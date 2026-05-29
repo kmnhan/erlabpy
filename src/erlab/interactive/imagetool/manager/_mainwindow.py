@@ -2102,6 +2102,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         parent.add_child_reference(
             node.uid, typing.cast("QtWidgets.QWidget", node.window)
         )
+        if node.tool_window is not None:
+            node.tool_window._refresh_reload_data_action()
 
     def _unregister_node(self, uid: str) -> None:
         node = self._all_nodes.pop(uid, None)
@@ -2683,35 +2685,48 @@ class ImageToolManager(QtWidgets.QMainWindow):
             _add_reload_target(index)
 
         for uid in selected_children:
-            try:
-                current: _ImageToolWrapper | _ManagedWindowNode = self._child_node(uid)
-            except KeyError:
-                return None
-            if not current.has_source_binding:
-                return None
-
-            reload_target: int | str | None = None
-            while True:
-                try:
-                    parent = self._parent_node(current)
-                except KeyError:
-                    break
-                if parent.is_imagetool and parent.reloadable:
-                    reload_target = (
-                        parent.index
-                        if isinstance(parent, _ImageToolWrapper)
-                        else parent.uid
-                    )
-                if isinstance(parent, _ImageToolWrapper):
-                    break
-                current = parent
-
+            reload_target = self._reload_target_for_child(uid)
             if reload_target is None:
                 return None
             _add_reload_target(reload_target)
             child_targets.setdefault(reload_target, []).append(uid)
 
         return reload_targets, child_targets
+
+    def _reload_target_for_child(self, uid: str) -> int | str | None:
+        try:
+            current: _ImageToolWrapper | _ManagedWindowNode = self._child_node(uid)
+        except KeyError:
+            return None
+        if not current.has_source_binding:
+            return None
+
+        reload_target: int | str | None = None
+        while True:
+            try:
+                parent = self._parent_node(current)
+            except KeyError:
+                break
+            if parent.is_imagetool and parent.reloadable:
+                reload_target = (
+                    parent.index
+                    if isinstance(parent, _ImageToolWrapper)
+                    else parent.uid
+                )
+            if isinstance(parent, _ImageToolWrapper):
+                break
+            current = parent
+        return reload_target
+
+    def _reload_source_chain_for_child(self, uid: str) -> bool:
+        """Reload the nearest reloadable ancestor, then refresh a child node."""
+        reload_target = self._reload_target_for_child(uid)
+        if reload_target is None:
+            return False
+        node = self._node_for_target(reload_target)
+        if node.imagetool is None or not node.slicer_area._reload():
+            return False
+        return self._refresh_source_chain_to_uid(uid)
 
     @QtCore.Slot()
     def show_selected_source_updates(self) -> None:

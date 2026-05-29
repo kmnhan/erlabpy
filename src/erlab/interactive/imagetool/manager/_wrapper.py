@@ -239,6 +239,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 old.sigDataChanged.disconnect(self._handle_tool_data_changed)
             old.removeEventFilter(self)
             old._set_managed_source_update_dialog(None)
+            old._set_managed_source_reload(None)
             old.set_source_parent_fetcher(None)
             old.set_input_provenance_parent_fetcher(None)
             old.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -280,6 +281,9 @@ class _ManagedWindowNode(QtCore.QObject):
         tool.sigDataChanged.connect(self._handle_tool_data_changed)
         tool.destroyed.connect(self._handle_tool_window_destroyed)
         tool._set_managed_source_update_dialog(self.show_source_update_dialog)
+        tool._set_managed_source_reload(
+            self.reload_source_data, self.can_reload_source_data
+        )
 
     def _handle_tool_window_destroyed(self, _obj: QtCore.QObject | None = None) -> None:
         manager = self._manager()
@@ -1042,6 +1046,17 @@ class _ManagedWindowNode(QtCore.QObject):
     def reload(self) -> None:
         if self.imagetool is not None:
             self.slicer_area.reload()
+
+    def reload_source_data(self) -> bool:
+        if self.tool_window is None:
+            return False
+        return self.manager._reload_source_chain_for_child(self.uid)
+
+    def can_reload_source_data(self) -> bool:
+        return (
+            self.tool_window is not None
+            and self.manager._reload_target_for_child(self.uid) is not None
+        )
 
     @QtCore.Slot()
     def _refresh_node_info(self) -> None:

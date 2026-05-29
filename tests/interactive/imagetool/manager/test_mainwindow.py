@@ -1212,6 +1212,172 @@ def test_manager_reload_selected_child_tool_refreshes_from_file_parent(
         xr.testing.assert_identical(child.tool_data, updated.transpose("eV", "alpha"))
 
 
+def test_managed_child_tool_file_menu_reload_refreshes_file_parent(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = test_data.rename("scan")
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, DerivativeTool)
+        assert child.source_state == "fresh"
+
+        reload_action = child.findChild(QtGui.QAction, "tool_reload_data_action")
+        file_menu = child._tool_file_menu
+        assert reload_action is not None
+        assert child._source_status_bar.isHidden()
+        file_menu.aboutToShow.emit()
+        assert file_menu.menuAction().isVisible()
+        assert reload_action.isVisible()
+        assert reload_action.isEnabled()
+        refresh_key = QtGui.QKeySequence(QtGui.QKeySequence.StandardKey.Refresh)
+        assert (
+            reload_action.shortcut().matches(refresh_key)
+            == QtGui.QKeySequence.SequenceMatch.ExactMatch
+        )
+
+        updated = source.copy(deep=True)
+        updated.data = np.asarray(updated.data) + 100.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        with qtbot.wait_signal(child.sigDataChanged, timeout=5000):
+            reload_action.trigger()
+
+        assert child.source_state == "fresh"
+        xr.testing.assert_identical(fetch(0), updated)
+        xr.testing.assert_identical(child.tool_data, updated.transpose("eV", "alpha"))
+
+
+def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    source = test_data.rename("scan")
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        child_source_spec = prov.selection(
+            prov.IselOperation(kwargs={"alpha": slice(0, 4)})
+        )
+        child_tool = itool(
+            child_source_spec.apply(source), manager=False, execute=False
+        )
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=child_source_spec,
+            source_auto_update=False,
+        )
+
+        child_node = manager._child_node(child_uid)
+        child_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(lambda: len(child_node._childtools) == 1, timeout=5000)
+
+        tool_uid = child_node._childtool_indices[0]
+        tool = manager.get_childtool(tool_uid)
+        assert isinstance(tool, DerivativeTool)
+        assert child_node.source_state == "fresh"
+        assert tool.source_state == "fresh"
+
+        reload_action = tool.findChild(QtGui.QAction, "tool_reload_data_action")
+        assert reload_action is not None
+        assert reload_action.isEnabled()
+
+        updated = source.copy(deep=True)
+        updated.data = np.asarray(updated.data) + 100.0
+        updated.to_netcdf(file_path, engine="h5netcdf")
+
+        with qtbot.wait_signal(tool.sigDataChanged, timeout=5000):
+            reload_action.trigger()
+
+        expected_child = updated.isel(alpha=slice(0, 4))
+        assert child_node.source_state == "fresh"
+        assert tool.source_state == "fresh"
+        xr.testing.assert_identical(fetch(0), updated)
+        xr.testing.assert_identical(fetch(child_uid), expected_child)
+        xr.testing.assert_identical(
+            tool.tool_data, expected_child.transpose("eV", "alpha")
+        )
+
+
+def test_managed_child_tool_hides_reload_without_reloadable_ancestor(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.images[0].open_in_dtool()
+        qtbot.wait_until(
+            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+        )
+
+        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child = manager.get_childtool(child_uid)
+        assert isinstance(child, DerivativeTool)
+
+        reload_action = child.findChild(QtGui.QAction, "tool_reload_data_action")
+        assert reload_action is not None
+        child._tool_file_menu.aboutToShow.emit()
+        assert not child._tool_file_menu.menuAction().isVisible()
+        assert not reload_action.isVisible()
+        assert not reload_action.isEnabled()
+        assert not child.reload_source_data()
+        assert not manager._reload_source_chain_for_child(child_uid)
+
+
 def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
     qtbot,
     tmp_path: pathlib.Path,

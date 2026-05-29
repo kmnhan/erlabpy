@@ -3031,10 +3031,26 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._source_auto_update: bool = False
         self._source_parent_fetcher: Callable[[], xr.DataArray] | None = None
         self._managed_source_update_dialog: Callable[..., int] | None = None
+        self._managed_source_reload: Callable[[], bool] | None = None
+        self._managed_source_reload_available: Callable[[], bool] | None = None
         self._output_imagetool_targets: dict[str, str | QtWidgets.QWidget] = {}
 
-        # Initialize a menu bar to correctly apply keyboard shortcuts on some platforms
-        self.menuBar()
+        menu_bar = typing.cast("QtWidgets.QMenuBar", self.menuBar())
+        self._tool_file_menu = typing.cast("QtWidgets.QMenu", menu_bar.addMenu("&File"))
+        self._tool_file_menu.setObjectName("tool_file_menu")
+        self.reload_data_action = QtWidgets.QAction("&Reload Data", self)
+        self.reload_data_action.setObjectName("tool_reload_data_action")
+        self.reload_data_action.setShortcut(QtGui.QKeySequence.StandardKey.Refresh)
+        self.reload_data_action.setShortcutContext(
+            QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        self.reload_data_action.setIcon(QtGui.QIcon.fromTheme("view-refresh"))
+        self.reload_data_action.setVisible(False)
+        self.reload_data_action.setEnabled(False)
+        self.reload_data_action.triggered.connect(self.reload_source_data)
+        self._tool_file_menu.addAction(self.reload_data_action)
+        self._tool_file_menu.aboutToShow.connect(self._refresh_reload_data_action)
+        self._refresh_reload_data_action()
 
         # Enable closing with keyboard shortcut
         self.__close_shortcut = QtWidgets.QShortcut("Ctrl+W", self, self._hide_or_close)
@@ -3876,6 +3892,39 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         """Set the manager-owned source update dialog callback."""
         self._managed_source_update_dialog = callback
 
+    def _set_managed_source_reload(
+        self,
+        callback: Callable[[], bool] | None,
+        available: Callable[[], bool] | None = None,
+    ) -> None:
+        """Set the manager-owned reload callback for this tool source."""
+        self._managed_source_reload = callback
+        self._managed_source_reload_available = available
+        self._refresh_reload_data_action()
+
+    def _source_reloadable(self) -> bool:
+        if self._managed_source_reload is None:
+            return False
+        if self._managed_source_reload_available is None:
+            return True
+        try:
+            return self._managed_source_reload_available()
+        except Exception:
+            return False
+
+    @QtCore.Slot()
+    def _refresh_reload_data_action(self) -> None:
+        if not qt_is_valid(self.reload_data_action):
+            return
+        reloadable = self._source_reloadable()
+        self.reload_data_action.setVisible(reloadable)
+        self.reload_data_action.setEnabled(reloadable)
+        if not qt_is_valid(self._tool_file_menu):
+            return
+        menu_action = self._tool_file_menu.menuAction()
+        if menu_action is not None and qt_is_valid(menu_action):
+            menu_action.setVisible(reloadable)
+
     def finalize_source_refresh(self) -> None:
         """Record that the current source refresh has been applied to the tool."""
         self._source_refresh_deferred = False
@@ -3938,6 +3987,18 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "}"
         )
         self._source_status_bar.show()
+
+    @QtCore.Slot()
+    def reload_source_data(self) -> bool:
+        """Reload this tool from its managed ImageTool source chain."""
+        self._refresh_reload_data_action()
+        if (
+            self._managed_source_reload is None
+            or not qt_is_valid(self.reload_data_action)
+            or not self.reload_data_action.isEnabled()
+        ):
+            return False
+        return self._managed_source_reload()
 
     def _materialized_source_spec(
         self, parent_data: xr.DataArray

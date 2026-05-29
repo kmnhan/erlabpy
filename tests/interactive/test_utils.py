@@ -438,6 +438,21 @@ def test_qt_is_valid_rejects_deleted_widget(qtbot) -> None:
     qtbot.wait_until(lambda: not qt_is_valid(widget), timeout=1000)
 
 
+def test_tool_window_reload_refresh_ignores_deleted_file_menu(qtbot) -> None:
+    tool = erlab.interactive.utils.ToolWindow()
+    qtbot.addWidget(tool)
+    tool._set_managed_source_reload(lambda: True, lambda: True)
+
+    menu = tool._tool_file_menu
+    menu.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    QtWidgets.QApplication.processEvents()
+    qtbot.wait_until(lambda: not qt_is_valid(menu), timeout=1000)
+
+    tool._set_managed_source_reload(None)
+    assert not tool.reload_source_data()
+
+
 def test_close_shortcut_reaches_child_line_edit(qtbot) -> None:
     window = QtWidgets.QMainWindow()
     line_edit = QtWidgets.QLineEdit(window)
