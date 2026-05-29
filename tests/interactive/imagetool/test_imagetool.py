@@ -8053,6 +8053,91 @@ def test_itool_filter_preview_reject_restores_active_filter(qtbot) -> None:
     win.close()
 
 
+def test_accepted_filter_displayed_data_uses_materialized_filter(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(9, dtype=float).reshape((3, 3)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3, dtype=float), "y": np.arange(3, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min",
+    )
+    win = ImageTool(data)
+    qtbot.addWidget(win)
+    win.slicer_area.apply_filter_operation(operation)
+    accepted = win.slicer_area.data.copy(deep=True)
+
+    data.values[:] *= 2.0
+
+    recomputed = operation.apply(data, parent_data=data)
+    assert float(recomputed.values[1, 0]) != float(accepted.values[1, 0])
+    xarray.testing.assert_identical(win.slicer_area.data, accepted)
+    xarray.testing.assert_identical(win.slicer_area.displayed_data, accepted)
+    xarray.testing.assert_identical(
+        win.slicer_area._tool_source_parent_data(), accepted
+    )
+    win.close()
+
+
+def test_apply_filter_operation_caches_dask_accepted_filter_lazily(qtbot) -> None:
+    da = pytest.importorskip("dask.array")
+    from dask.callbacks import Callback
+
+    data = xr.DataArray(
+        da.from_array(np.arange(12, dtype=float).reshape((3, 4)), chunks=(2, 2)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min",
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+
+    computed_keys: list[object] = []
+    with Callback(pretask=lambda key, _dsk, _state: computed_keys.append(key)):
+        win.slicer_area.apply_filter_operation(operation, update=False)
+        cached = win.slicer_area.displayed_data
+
+    assert computed_keys == []
+    assert win.slicer_area.data.chunks is not None
+    assert cached.chunks is not None
+    xarray.testing.assert_identical(
+        cached.compute(),
+        operation.apply(data, parent_data=data).compute(),
+    )
+    win.close()
+
+
+def test_compute_chunked_preserves_accepted_filter(qtbot) -> None:
+    da = pytest.importorskip("dask.array")
+
+    data = xr.DataArray(
+        da.from_array(np.arange(12, dtype=float).reshape((3, 4)), chunks=(2, 2)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
+    )
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min",
+    )
+    win = ImageTool(data, auto_compute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.apply_filter_operation(operation, update=False)
+
+    win.slicer_area._compute_chunked()
+
+    loaded = data.compute()
+    expected = operation.apply(loaded, parent_data=loaded)
+    assert win.slicer_area._data.chunks is None
+    assert win.slicer_area._accepted_filter_provenance_operation == operation
+    xarray.testing.assert_identical(win.slicer_area.data, expected)
+    xarray.testing.assert_identical(win.slicer_area.displayed_data, expected)
+    win.close()
+
+
 def test_itool_reload_reapplies_accepted_filter(qtbot, tmp_path: pathlib.Path) -> None:
     data = xr.DataArray(
         np.arange(25, dtype=float).reshape((5, 5)),

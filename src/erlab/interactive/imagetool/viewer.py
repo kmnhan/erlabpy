@@ -1196,6 +1196,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._accepted_filter_provenance_operation: (
             erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
         ) = None
+        self._accepted_filter_data: xr.DataArray | None = None
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
         # validated view used for slicing. The two share values by default and detach
         # only when a write needs isolation.
@@ -1718,9 +1719,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         operation = self._accepted_filter_provenance_operation
         if operation is None:
             return self._data_aligned_to_dims(self._data, dims)
-        return self._filtered_data_for_dims(
-            self._filter_func_from_operation(operation), dims
-        )
+        accepted = self._accepted_filter_data
+        if accepted is None:
+            raise RuntimeError("Accepted filter data is missing")
+        return self._data_aligned_to_dims(accepted, dims)
 
     def _normalize_filter_result_for_source_dims(
         self,
@@ -1840,7 +1842,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         emit_edited: bool = False,
     ) -> None:
         operation = self._parse_filter_operation_state(payload)
-        if operation == self._accepted_filter_provenance_operation:
+        if operation == self._accepted_filter_provenance_operation and (
+            (operation is None and self._accepted_filter_data is None)
+            or (operation is not None and self._accepted_filter_data is not None)
+        ):
             return
         self.apply_filter_operation(operation, update=False, emit_edited=emit_edited)
 
@@ -1885,6 +1890,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_func = None
         self._applied_provenance_operation = None
         self._accepted_filter_provenance_operation = None
+        self._accepted_filter_data = None
         restored_obj = False
 
         if self._data_shares_external_values:
@@ -2742,6 +2748,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_func = None
         self._applied_provenance_operation = None
         self._accepted_filter_provenance_operation = None
+        self._accepted_filter_data = None
 
         # Save color limits so we may restore them later
         cached_levels: tuple[float, float] | None = None
@@ -3138,6 +3145,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._restore_obj_from_source(update=update)
             if accept:
                 self._accepted_filter_provenance_operation = None
+                self._accepted_filter_data = None
             if emit_edited:
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
@@ -3171,6 +3179,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self._applied_provenance_operation = operation
             if accept:
                 self._accepted_filter_provenance_operation = operation
+                self._accepted_filter_data = filtered.copy(deep=True)
             if emit_edited:
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
@@ -3191,6 +3200,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._applied_provenance_operation = operation
         if accept:
             self._accepted_filter_provenance_operation = operation
+            self._accepted_filter_data = filtered.copy(deep=True)
         if emit_edited:
             self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
             self.sigDataEdited.emit()
@@ -3379,8 +3389,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """
         if self.data_loadable:
             try:
+                state = copy.deepcopy(self.state)
                 with erlab.interactive.utils.wait_dialog(self, "Computing…"):
                     self.set_data(self._data.load())
+                    self.state = state
                 self.sigDataBackingChanged.emit()
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
