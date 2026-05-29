@@ -88,7 +88,7 @@ def _coerce_added_time(
 
 
 def _format_added_time(value: datetime.datetime) -> str:
-    return value.astimezone().isoformat(sep=" ", timespec="seconds")
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
 
 
 def _preview_from_imagetool(
