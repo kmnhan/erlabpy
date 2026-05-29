@@ -43,6 +43,7 @@ import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._server as manager_server
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._xarray as manager_xarray

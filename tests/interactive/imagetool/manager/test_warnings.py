@@ -72,8 +72,8 @@ def test_warning_alert_suppressed_by_log_flag(
 
 
 def test_warning_handler_ignores_deleted_emitter(qtbot) -> None:
-    emitter = manager_mainwindow._WarningEmitter()
-    handler = manager_mainwindow._WarningNotificationHandler(emitter)
+    emitter = manager_widgets._WarningEmitter()
+    handler = manager_widgets._WarningNotificationHandler(emitter)
 
     emitter.deleteLater()
     QtWidgets.QApplication.sendPostedEvents(None, 0)
@@ -284,7 +284,7 @@ def test_data_recv_dataarray_creation_error_no_duplicate_alert(
         staticmethod(_fake_critical),
     )
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._mainwindow,
+        manager_workspace_io,
         "ImageTool",
         _raise_imagetool,
     )
@@ -381,7 +381,7 @@ def test_import_workspace_locked_file_shows_specific_error(
     monkeypatch.setattr(QtWidgets.QFileDialog, "selectedFiles", lambda self: [fname])
     monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_locked)
     monkeypatch.setattr(
-        manager_mainwindow,
+        manager_workspace_io,
         "_show_workspace_file_lock_error",
         lambda _parent, locked_fname: lock_calls.append(pathlib.Path(locked_fname)),
     )
@@ -417,7 +417,7 @@ def test_open_multiple_files_locked_workspace_does_not_fall_through_to_loaders(
 
     monkeypatch.setattr(manager_xarray, "open_workspace_datatree", _raise_locked)
     monkeypatch.setattr(
-        manager_mainwindow,
+        manager_actions,
         "_show_workspace_file_lock_error",
         lambda _parent, locked_fname: lock_calls.append(pathlib.Path(locked_fname)),
     )
