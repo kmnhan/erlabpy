@@ -1327,12 +1327,24 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    prov = erlab.interactive.imagetool.provenance_framework
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.set_provenance_spec(
+            prov.script(
+                prov.ScriptCodeOperation(
+                    label="Prepare parent data",
+                    code="prepared_parent = data + 1",
+                ),
+                start_label="Start from test data",
+                active_name="prepared_parent",
+            )
+        )
 
         child_uid, child = make_fit2d_child(manager, 0, exp_decay_model)
         monkeypatch.setattr(
@@ -1380,6 +1392,8 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         )
         values_code = copy_full_code_for_uid(monkeypatch, manager, values_uid)
         stderr_code = copy_full_code_for_uid(monkeypatch, manager, stderr_uid)
+        assert "prepared_parent = data + 1" in values_code
+        assert "prepared_parent = data + 1" in stderr_code
         assert ".modelfit_coefficients.sel(param=" in values_code
         assert ".modelfit_stderr.sel(param=" in stderr_code
 
