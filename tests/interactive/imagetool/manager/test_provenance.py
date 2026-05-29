@@ -1223,8 +1223,9 @@ def test_manager_selection_dialog_opens_child_with_source_spec(
         dialog = SelectionDialog(parent_tool.slicer_area)
         assert (
             dialog.launch_mode_combo.currentData(QtCore.Qt.ItemDataRole.UserRole)
-            == "nest"
+            == "replace"
         )
+        set_transform_launch_mode(dialog, "nest")
 
         dialog.accept()
 
@@ -2555,7 +2556,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         parent_tool = manager.get_imagetool(0)
 
         def _nest_average(dialog) -> None:
-            assert dialog.launch_mode == "nest"
+            set_transform_launch_mode(dialog, "nest")
             assert dialog.launch_mode_combo.toolTip()
             dialog.dim_checks["x"].setChecked(True)
 
@@ -2815,7 +2816,7 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         parent_tool = manager.get_imagetool(0)
 
         def _nest_divide(dialog) -> None:
-            assert dialog.launch_mode == "nest"
+            set_transform_launch_mode(dialog, "nest")
             dialog.coord_combo.setCurrentText("mesh_current")
 
         accept_dialog(parent_tool.mnb._divide_by_coord, pre_call=_nest_divide)
@@ -2903,7 +2904,7 @@ def test_manager_affine_coord_child_refreshes_from_formula(
         parent_tool = manager.get_imagetool(0)
 
         def _nest_affine(dialog) -> None:
-            assert dialog.launch_mode == "nest"
+            set_transform_launch_mode(dialog, "nest")
             dialog._coord_combo.setCurrentText("y")
             dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
             dialog.coord_widget.scale_spin.setValue(2.0)
@@ -2971,7 +2972,7 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
         parent_tool = manager.get_imagetool(0)
 
         def _nest_attrs(dialog) -> None:
-            assert dialog.launch_mode == "nest"
+            set_transform_launch_mode(dialog, "nest")
             source_row = next(
                 row
                 for row in range(dialog.table.rowCount())
