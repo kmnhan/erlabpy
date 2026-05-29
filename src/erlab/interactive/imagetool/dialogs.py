@@ -362,16 +362,18 @@ class DataTransformDialog(_DataManipulationDialog):
         if manager is None:
             return False
         node = manager._node_for_target(target)
-        if node.source_spec is not None:
+        source_spec = node.displayed_source_spec
+        if source_spec is not None:
             node.set_source_binding(
-                self._compose_replace_source_spec(node.source_spec, new_name),
+                self._compose_replace_source_spec(source_spec, new_name),
                 auto_update=node.source_auto_update,
                 state=node.source_state,
             )
             return True
-        if node.provenance_spec is not None:
+        displayed_provenance = node.displayed_provenance_spec
+        if displayed_provenance is not None:
             node.set_detached_provenance(
-                self._compose_replace_source_spec(node.provenance_spec, new_name)
+                self._compose_replace_source_spec(displayed_provenance, new_name)
             )
             return True
         if fallback_spec is not None:
@@ -452,12 +454,7 @@ class DataTransformDialog(_DataManipulationDialog):
         else:
             new_name = self.suffix.lstrip("_")
 
-        applied_func = self.slicer_area._applied_func
         try:
-            if applied_func is not None:
-                # Transform must be done on unfiltered data
-                self.slicer_area.apply_func(None)
-
             if self.apply_on_nonuniform_data:
                 processed = self.process_data(
                     erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -472,10 +469,12 @@ class DataTransformDialog(_DataManipulationDialog):
             processed = processed.rename(new_name)
             manager, target = self._manager_target()
             source_spec = self.source_spec(new_name)
-            parent_provenance = self.slicer_area.provenance_spec
+            parent_provenance = self.slicer_area.displayed_provenance_spec()
             if manager is not None and target is not None:
                 with contextlib.suppress(Exception):
-                    parent_provenance = manager._node_for_target(target).provenance_spec
+                    parent_provenance = manager._node_for_target(
+                        target
+                    ).displayed_provenance_spec
             nested_provenance_spec = (
                 erlab.interactive.imagetool.provenance.compose_full_provenance(
                     parent_provenance,
@@ -545,9 +544,6 @@ class DataTransformDialog(_DataManipulationDialog):
                 self, "Error", "An error occurred while processing data."
             )
             return
-        finally:
-            if applied_func is not None:
-                self.slicer_area.apply_func(applied_func)
 
         super().accept()
 
@@ -561,11 +557,8 @@ class DataFilterDialog(_DataManipulationDialog):
 
     - Override method `setup_widgets` to add widgets to the dialog.
 
-    - Override method `process_data` to implement the filter. The output must be a new
-      DataArray with the same shape as the input.
-
     - Override `filter_operation` to generate operation-backed copy code and provenance
-      for the displayed filtered data.
+      for the displayed filtered data. Accepted filters must be operation-backed.
 
     - Override attribute `title` to set the title of the dialog window.
 
@@ -581,6 +574,10 @@ class DataFilterDialog(_DataManipulationDialog):
     def __init__(self, slicer_area: ImageSlicerArea) -> None:
         super().__init__(slicer_area)
         self._previewed: bool = False
+        self._starting_applied_func = self.slicer_area._applied_func
+        self._starting_filter_operation = (
+            self.slicer_area._accepted_filter_provenance_operation
+        )
 
         if self.enable_preview:
             self.preview_button = QtWidgets.QPushButton("Preview")
@@ -588,27 +585,87 @@ class DataFilterDialog(_DataManipulationDialog):
             self.buttonBox.addButton(
                 self.preview_button, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
             )
+        self._restore_current_filter_operation()
+
+    def _restore_current_filter_operation(self) -> None:
+        operation = self.slicer_area._accepted_filter_provenance_operation
+        if operation is not None:
+            self.restore_filter_operation(operation)
+
+    def restore_filter_operation(
+        self,
+        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+    ) -> None:
+        """Restore widgets from an active filter operation when supported."""
+        del operation
+
+    def _uses_process_only_filter(self) -> bool:
+        return (
+            type(self).filter_operation is DataFilterDialog.filter_operation
+            and type(self).process_data is not _DataManipulationDialog.process_data
+        )
+
+    def _apply_current_filter(
+        self,
+        *,
+        update: bool = True,
+        emit_edited: bool = False,
+        preview: bool = False,
+    ) -> None:
+        operation = self.filter_operation()
+        if operation is not None:
+            self.slicer_area.apply_filter_operation(
+                operation,
+                update=update,
+                emit_edited=emit_edited,
+                preview=preview,
+            )
+            return
+        if self._uses_process_only_filter():
+            raise NotImplementedError(
+                "DataFilterDialog subclasses must implement filter_operation() "
+                "to apply accepted filters."
+            )
+        self.slicer_area.apply_filter_operation(
+            None,
+            update=update,
+            emit_edited=emit_edited,
+            preview=preview,
+        )
 
     @QtCore.Slot()
     def _preview(self):
         self._previewed = True
-        self.slicer_area.apply_func(
-            self.process_data,
-            operation=self.filter_operation(),
-        )
+        self._apply_current_filter(preview=True)
 
     @QtCore.Slot()
     def reject(self) -> None:
         if self._previewed:
-            self.slicer_area.apply_func(None)
+            if self._starting_filter_operation is not None:
+                self.slicer_area.apply_filter_operation(
+                    self._starting_filter_operation,
+                    preview=True,
+                )
+            else:
+                self.slicer_area.apply_func(
+                    self._starting_applied_func,
+                    preview=True,
+                )
         super().reject()
 
     @QtCore.Slot()
     def accept(self) -> None:
         try:
-            self.slicer_area.apply_func(
-                self.process_data,
-                operation=self.filter_operation(),
+            operation = self.filter_operation()
+            emit_edited = (
+                operation is not None
+                or self._starting_filter_operation is not None
+                or self._starting_applied_func is not None
+                or self.slicer_area.has_active_filter
+            )
+            self.slicer_area.record_history_mutation(
+                None,
+                lambda: self._apply_current_filter(emit_edited=emit_edited),
             )
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
@@ -2224,6 +2281,22 @@ class NormalizeDialog(DataFilterDialog):
             denominator_rtol=self.denominator_rtol,
         )
 
+    def restore_filter_operation(
+        self,
+        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(
+            operation, erlab.interactive.imagetool.provenance.NormalizeOperation
+        ):
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        for dim in operation.dims:
+            if dim in self.dim_checks:
+                self.dim_checks[dim].setChecked(True)
+        self.opts[self._MODES.index(operation.mode)].setChecked(True)
+        self.denominator_rtol = operation.denominator_rtol
+
 
 class DivideByCoordDialog(DataTransformDialog):
     title = "Divide by Coordinate"
@@ -2520,6 +2593,23 @@ class GaussianFilterDialog(DataFilterDialog):
         return erlab.interactive.imagetool.provenance.GaussianFilterOperation(
             sigma=sigma_values
         )
+
+    def restore_filter_operation(
+        self,
+        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+    ) -> None:
+        if not isinstance(
+            operation, erlab.interactive.imagetool.provenance.GaussianFilterOperation
+        ):
+            return
+        for check in self.dim_checks.values():
+            check.setChecked(False)
+        for dim, sigma in operation.sigma.items():
+            if dim not in self.dim_checks or not self.dim_checks[dim].isEnabled():
+                continue
+            self.dim_checks[dim].setChecked(True)
+            self._set_synced_exact_value(self.sigma_spins[dim], float(sigma))
+            self._sync_from_sigma(dim)
 
 
 class SwapDimsDialog(DataTransformDialog):

@@ -1696,6 +1696,32 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
     assert prov.compose_full_provenance(parent, None) == parent
 
 
+def test_append_display_operation_preserves_final_rename_for_live_sources() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    operation = prov.NormalizeOperation(dims=("x",), mode="min")
+    spec = prov.full_data().append_final_rename("filtered")
+
+    displayed = spec.append_display_operation(operation)
+
+    assert [op.op for op in displayed.operations] == [
+        "normalize",
+        "rename",
+    ]
+    assert displayed.operations[-1] == prov.RenameOperation(name="filtered")
+
+
+def test_append_display_operation_rejects_non_live_sources() -> None:
+    prov = erlab.interactive.imagetool.provenance
+    operation = prov.NormalizeOperation(dims=("x",), mode="min")
+    spec = prov.script(
+        start_label="Evaluate console expression",
+        active_name="derived",
+    )
+
+    with pytest.raises(TypeError, match="live sources"):
+        spec.append_display_operation(operation)
+
+
 def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     data = _base_data()
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})

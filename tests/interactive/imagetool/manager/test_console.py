@@ -113,6 +113,59 @@ def test_manager_console(
         InteractiveShell.clear_instance()
 
 
+def test_manager_console_handles_use_filtered_display_data(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5), "y": np.arange(5)},
+    )
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min",
+    )
+    expected = operation.apply(data, parent_data=data)
+
+    with manager_context() as manager:
+        manager.show()
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        tool = manager.get_imagetool(0)
+        tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        tools = manager_console.ToolsNamespace(manager)
+        handle = tools[0]
+        assert handle is not None
+        xr.testing.assert_identical(handle.data, expected)
+        assert (
+            handle._console_provenance_spec(
+                active_name="derived",
+                label="Assign filtered console result",
+            )
+            == manager._imagetool_wrappers[0].displayed_provenance_spec
+        )
+
+        derived = handle + 1.0
+        xr.testing.assert_identical(derived.data, expected + 1.0)
+        spec = derived._console_provenance_spec(
+            active_name="derived",
+            label="Assign filtered console result",
+        )
+        assert spec is not None
+        code = spec.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(
+            code,
+            {"data": data.copy(deep=True), "data_0": data.copy(deep=True)},
+        )
+        xr.testing.assert_identical(namespace["derived"], expected + 1.0)
+
+
 def test_packaged_macos_matplotlib_cursor_patch_applies_once(monkeypatch) -> None:
     class _Canvas:
         def set_cursor(self, cursor):
@@ -291,6 +344,146 @@ def test_tool_namespace_set_data_item_marks_child_tools_stale(
         qtbot.wait_until(lambda: child.source_state == "stale", timeout=5000)
 
 
+def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = test_data.astype(float)
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={data.dims[0]: 1.0}
+    )
+    filtered = operation.apply(data, parent_data=data)
+
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        itool([data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.apply_filter_operation(operation)
+        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        expected = filtered.copy(deep=True)
+        expected[(0, 0)] = -5.0
+
+        namespace[(0, 0)] = -5.0
+
+        assert parent_tool.slicer_area._accepted_filter_provenance_operation is None
+        xr.testing.assert_identical(parent_tool.slicer_area.data, expected)
+        provenance_spec = manager._imagetool_wrappers[0].displayed_provenance_spec
+        assert provenance_spec is not None
+        display_code = provenance_spec.display_code()
+        assert display_code is not None
+        locals_ns = _exec_generated_code(
+            display_code,
+            {"data": data.copy(deep=True)},
+        )
+        xr.testing.assert_identical(
+            locals_ns[provenance_spec.active_name or "derived"], expected
+        )
+
+
+def test_tool_namespace_set_unfiltered_data_item_avoids_display_copy(
+    qtbot,
+    monkeypatch,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = test_data.astype(float)
+
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        itool([data], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        parent_tool = manager.get_imagetool(0)
+        source_data = parent_tool.slicer_area._data
+        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        copy_calls = []
+        original_copy = xr.DataArray.copy
+
+        def _record_copy(self, *args, **kwargs):
+            deep = kwargs.get("deep", args[0] if args else True)
+            if self is source_data and deep is True:
+                copy_calls.append(self)
+            return original_copy(self, *args, **kwargs)
+
+        monkeypatch.setattr(xr.DataArray, "copy", _record_copy)
+        namespace[(0, 0)] = -5.0
+
+        assert copy_calls == []
+        assert float(parent_tool.slicer_area._data.values[0, 0]) == -5.0
+        assert parent_tool.slicer_area._accepted_filter_provenance_operation is None
+
+
+def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+    filtered = operation.apply(data, parent_data=data)
+    expected = filtered.copy(deep=True)
+    expected[(0, 0)] = -5.0
+
+    with manager_context() as manager:
+        manager.show()
+        manager.activateWindow()
+
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        child_tool = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+        parent_tool = manager.get_imagetool(0)
+        parent_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+        qtbot.wait_until(lambda: fetch(child_uid).identical(filtered), timeout=5000)
+
+        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        namespace[(0, 0)] = -5.0
+
+        qtbot.wait_until(
+            lambda: (
+                child_node.source_state == "fresh"
+                and fetch(child_uid).identical(expected)
+            ),
+            timeout=5000,
+        )
+        child_spec = child_node.displayed_provenance_spec
+        assert child_spec is not None
+        display_code = child_spec.display_code()
+        assert display_code is not None
+        locals_ns = _exec_generated_code(
+            display_code,
+            {"data": data.copy(deep=True), "data_0": data.copy(deep=True)},
+        )
+        xr.testing.assert_identical(
+            locals_ns[child_spec.active_name or "derived"], expected
+        )
+
+
 def test_tool_namespace_set_data_item_failure_keeps_child_tools_fresh(
     qtbot,
     test_data,
@@ -319,6 +512,7 @@ def test_tool_namespace_set_data_item_failure_keeps_child_tools_fresh(
 
         assert child.source_state == "fresh"
         assert float(parent_tool.slicer_area._data.values[0, 0]) == 0.0
+        assert manager._imagetool_wrappers[0].provenance_spec is None
 
 
 def test_manager_console_bare_expression_opens_provenance_root(
@@ -1449,6 +1643,65 @@ def test_manager_console_derived_tool_reload_action_routes_to_manager(
         InteractiveShell.clear_instance()
 
 
+def test_manager_console_derived_reload_reapplies_filter(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+    )
+    data1 = data0 + 1.0
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={"x": 1.0}
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        manager.toggle_console()
+        qtbot.wait_until(manager.console.isVisible, timeout=5000)
+
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.console._console_widget.execute("tools[0] + tools[1]")
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        derived = manager.get_imagetool(2)
+        derived_uid = manager._imagetool_wrappers[2].uid
+        derived.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        updated0 = data0 + 10.0
+        manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
+            timeout=5000,
+        )
+
+        derived.slicer_area.reload()
+        qtbot.wait_until(
+            lambda: manager.dependency_status_for_uid(derived_uid) == "current",
+            timeout=5000,
+        )
+
+        raw_expected = updated0 + data1
+        expected = operation.apply(raw_expected, parent_data=raw_expected)
+        xr.testing.assert_identical(derived.slicer_area.data, expected)
+        xr.testing.assert_identical(derived.slicer_area.displayed_data, expected)
+        display_spec = manager._imagetool_wrappers[2].displayed_provenance_spec
+        assert display_spec is not None
+        assert any(
+            entry.label.startswith("Gaussian Filter")
+            for entry in display_spec.display_entries()
+        )
+
+        manager.console._console_widget.shutdown_kernel()
+        InteractiveShell.clear_instance()
+
+
 def test_manager_concat_records_dependencies_and_handles_removed_inputs(
     qtbot,
     accept_dialog,
@@ -1543,6 +1796,61 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
             manager.get_imagetool(3).slicer_area.data,
             expected_removed_inputs,
         )
+
+
+def test_manager_concat_uses_filtered_display_data(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.arange(2)},
+    )
+    data1 = data0 + 10.0
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+        dims=("x",),
+        mode="min",
+    )
+    filtered0 = operation.apply(data0, parent_data=data0)
+
+    with manager_context() as manager:
+        manager.show()
+        itool([data0, data1], manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.get_imagetool(0).slicer_area.apply_filter_operation(
+            operation,
+            emit_edited=True,
+        )
+        expected = xr.concat(
+            [filtered0, data1],
+            dim="concat_dim",
+            coords="minimal",
+            compat="override",
+            join="outer",
+            combine_attrs="override",
+        ).assign_coords(concat_dim=np.arange(2))
+
+        select_tools(manager, [0, 1])
+        accept_dialog(manager.concat_action.trigger)
+        qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
+
+        xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
+        provenance = manager._imagetool_wrappers[2].provenance_spec
+        assert provenance is not None
+        first_input_spec = provenance.script_inputs[0].parsed_provenance_spec()
+        assert first_input_spec is not None
+        first_input_code = first_input_spec.display_code()
+        assert first_input_code is not None
+        namespace = _exec_generated_code(
+            first_input_code,
+            {"data": data0.copy(deep=True)},
+        )
+        xr.testing.assert_identical(namespace["derived"], filtered0)
 
 
 def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
@@ -2412,6 +2720,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         fake_child = types.SimpleNamespace(
             uid="1 child-node",
             provenance_spec=file_spec,
+            displayed_provenance_spec=file_spec,
             display_text="Child node",
             snapshot_token=child_marker,
         )

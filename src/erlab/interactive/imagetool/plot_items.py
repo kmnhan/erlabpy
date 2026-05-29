@@ -2092,7 +2092,7 @@ class ItoolPlotItem(pg.PlotItem):
         if isinstance(tool_window, erlab.interactive.imagetool.ImageTool):
             tool_window.set_provenance_spec(
                 erlab.interactive.imagetool.provenance.compose_display_provenance(
-                    self.slicer_area.provenance_spec,
+                    self.slicer_area.displayed_provenance_spec(),
                     source_spec,
                     parent_data=self.slicer_area._tool_source_parent_data(),
                 )

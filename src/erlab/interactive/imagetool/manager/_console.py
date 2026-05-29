@@ -1149,8 +1149,8 @@ class ToolNamespace(_ConsoleDataHandleMixin):
     ``tools[idx].children[j]`` accesses a child ImageTool in manager tree order. The
     handle delegates DataArray attributes, methods, operators, and supported ERLab
     calls to the underlying array while preserving provenance for derived results.
-    ``.data`` remains exact raw :class:`xarray.DataArray` access for compatibility and
-    is not provenance-aware.
+    ``.data`` remains exact current :class:`xarray.DataArray` access for compatibility
+    and is not provenance-aware.
 
     Examples
     --------
@@ -1158,7 +1158,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
       >>> tools[0] - tools[1]
 
-    - Access the raw underlying DataArray of an ImageTool:
+    - Access the current DataArray of an ImageTool:
 
       >>> tools[1].data
 
@@ -1190,8 +1190,8 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
     @property
     def data(self) -> xr.DataArray:
-        """Raw :class:`xarray.DataArray` displayed by the ImageTool."""
-        return self.tool.slicer_area._data
+        """Current :class:`xarray.DataArray` displayed by the ImageTool."""
+        return self.tool.slicer_area.displayed_data
 
     @data.setter
     def data(self, value: xr.DataArray | _ConsoleDataHandleMixin) -> None:
@@ -1215,11 +1215,33 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
     def _get_data_item(self, key):
         """Return a subset of the tool data."""
-        return self.tool.slicer_area._data[key]
+        return self.tool.slicer_area.displayed_data[key]
 
-    def _set_data_item(self, key, value) -> None:
+    def _prepare_data_item_assignment(self, key, value) -> xr.DataArray | None:
+        """Validate a console item assignment before changing provenance."""
+        value = _unwrap_console_value(value)
+        slicer_area = self.tool.slicer_area
+        if not slicer_area.has_active_filter:
+            return None
+        data = slicer_area.displayed_data.copy(deep=True)
+        data[key] = value
+        return data
+
+    def _set_data_item(
+        self,
+        key,
+        value,
+        *,
+        prepared_data: xr.DataArray | None = None,
+        emit_signals: bool = True,
+    ) -> None:
         """Safely mutate a subset of the tool data from the console."""
-        self.tool.slicer_area._set_source_item(key, _unwrap_console_value(value))
+        value = _unwrap_console_value(value)
+        slicer_area = self.tool.slicer_area
+        if prepared_data is not None:
+            slicer_area.replace_source_data(prepared_data, emit_edited=emit_signals)
+            return
+        slicer_area._set_source_item(key, value, emit_signals=emit_signals)
 
     @property
     def _console_tools(self) -> ToolsNamespace | None:
@@ -1251,9 +1273,10 @@ class ToolNamespace(_ConsoleDataHandleMixin):
         label = self._console_label
         if self._wrapper.name:
             label += f": {self._wrapper.name}"
+        wrapper_provenance = self._wrapper.displayed_provenance_spec
         provenance_spec = (
-            self._wrapper.provenance_spec.model_dump(mode="json")
-            if self._wrapper.provenance_spec is not None
+            wrapper_provenance.model_dump(mode="json")
+            if wrapper_provenance is not None
             else None
         )
         return erlab.interactive.imagetool.provenance.ScriptInput(
@@ -1274,7 +1297,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
     def _console_provenance_spec(
         self, *, active_name: str, label: str
     ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
-        return self._wrapper.provenance_spec
+        return self._wrapper.displayed_provenance_spec
 
     def __setitem__(self, key: typing.Any, value: typing.Any) -> None:
         key_operand = _operand_from_value(key)
@@ -1283,9 +1306,15 @@ class ToolNamespace(_ConsoleDataHandleMixin):
         script_inputs, copyable, code_prelude = _merge_operands(
             self_operand, key_operand, value_operand
         )
+        target_name = self._console_input_name
         code = _script_code(
             code_prelude,
-            f"{self_operand.code}[{key_operand.code}] = {value_operand.code}",
+            "\n".join(
+                (
+                    f"{target_name} = {self_operand.code}.copy(deep=True)",
+                    f"{target_name}[{key_operand.code}] = {value_operand.code}",
+                )
+            ),
         )
         provenance_spec = erlab.interactive.imagetool.provenance.script(
             erlab.interactive.imagetool.provenance.ScriptCodeOperation(
@@ -1294,11 +1323,31 @@ class ToolNamespace(_ConsoleDataHandleMixin):
                 copyable=copyable,
             ),
             start_label="Run ImageTool manager console code",
-            active_name=self._console_input_name,
+            active_name=target_name,
             script_inputs=script_inputs,
         )
-        self._set_data_item(key_operand.value, value_operand.value)
+        prepared_data = self._prepare_data_item_assignment(
+            key_operand.value, value_operand.value
+        )
+        if prepared_data is None:
+            self._set_data_item(
+                key_operand.value,
+                value_operand.value,
+                emit_signals=False,
+            )
+            self._wrapper.set_detached_provenance(provenance_spec)
+            slicer_area = self.tool.slicer_area
+            slicer_area.sigSourceDataReplaced.emit(
+                slicer_area._tool_source_parent_data()
+            )
+            slicer_area.sigDataEdited.emit()
+            return
         self._wrapper.set_detached_provenance(provenance_spec)
+        self._set_data_item(
+            key_operand.value,
+            value_operand.value,
+            prepared_data=prepared_data,
+        )
 
     def __getattr__(self, attr):  # implicitly wrap methods from ImageToolWrapper
         if hasattr(self._wrapper, attr):
@@ -1500,9 +1549,9 @@ class ToolsNamespace:
 
     @property
     def selected_data(self) -> list[xr.DataArray]:
-        """Raw DataArrays from selected root or child ImageTools."""
+        """Current DataArrays from selected root or child ImageTools."""
         return [
-            self._manager.get_imagetool(target).slicer_area._data
+            self._manager.get_imagetool(target).slicer_area.displayed_data
             for target in self._manager._selected_imagetool_targets()
         ]
 

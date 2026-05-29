@@ -706,9 +706,12 @@ class _WarningNotificationHandler(logging.Handler):
         except Exception:  # pragma: no cover
             self.handleError(record)
             return
-        self._emitter.warning_received.emit(
-            record.levelname, record.levelno, message, traceback_msg
-        )
+        if not erlab.interactive.utils.qt_is_valid(self._emitter):
+            return
+        with contextlib.suppress(RuntimeError):
+            self._emitter.warning_received.emit(
+                record.levelname, record.levelno, message, traceback_msg
+            )
 
 
 class _ApplicationQuitFilter(QtCore.QObject):
@@ -2339,9 +2342,10 @@ class ImageToolManager(QtWidgets.QMainWindow):
     def _script_input_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
     ) -> erlab.interactive.imagetool.provenance.ScriptInput:
+        displayed_provenance = node.displayed_provenance_spec
         provenance_spec = (
-            node.provenance_spec.model_dump(mode="json")
-            if node.provenance_spec is not None
+            displayed_provenance.model_dump(mode="json")
+            if displayed_provenance is not None
             else None
         )
         if isinstance(node, _ImageToolWrapper):
@@ -3218,7 +3222,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         self._update_metadata_pane()
 
     def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
-        self._metadata_full_code_available = node.provenance_spec is not None
+        self._metadata_full_code_available = node.displayed_provenance_spec is not None
         self._metadata_node_uid = node.uid
         self._set_metadata_fields(node.metadata_fields)
 
@@ -3971,6 +3975,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             result.data,
             result.provenance_spec,
             propagate_descendants=True,
+            preserve_filter=True,
         )
         self.tree_view.refresh(node.uid)
         if self._metadata_node_uid == node.uid:
@@ -4182,7 +4187,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
         childtools = dict(node._childtools)
         created_time = node._created_time
         recent_geometry = node._recent_geometry
-        provenance_spec = node.provenance_spec
+        persistence = node.persistence_view()
+        provenance_spec = persistence.provenance_spec
         snapshot_token = node.snapshot_token
 
         self.tree_view.childtool_removed(uid)
@@ -4301,16 +4307,18 @@ class ImageToolManager(QtWidgets.QMainWindow):
     ) -> int | str:
         node = self._node_for_target(target)
         if node.is_imagetool:
+            persistence = node.persistence_view()
             duplicated_window = self.get_imagetool(target).duplicate(_in_manager=True)
             if isinstance(node, _ImageToolWrapper):
                 new_target: int | str = self.add_imagetool(
                     duplicated_window,
                     activate=True,
                     source_input_ndim=node.source_input_ndim,
-                    provenance_spec=node.provenance_spec,
-                    source_spec=node.source_spec,
-                    source_auto_update=node.source_auto_update,
-                    source_state=node.source_state,
+                    provenance_spec=persistence.provenance_spec,
+                    source_spec=persistence.source_spec,
+                    source_binding=persistence.source_binding,
+                    source_auto_update=persistence.source_auto_update,
+                    source_state=persistence.source_state,
                 )
             else:
                 parent_target = (
@@ -4322,11 +4330,12 @@ class ImageToolManager(QtWidgets.QMainWindow):
                     duplicated_window,
                     parent_target,
                     activate=True,
-                    provenance_spec=node.provenance_spec,
-                    source_spec=node.source_spec,
-                    source_auto_update=node.source_auto_update,
-                    source_state=node.source_state,
-                    output_id=node.output_id,
+                    provenance_spec=persistence.provenance_spec,
+                    source_spec=persistence.source_spec,
+                    source_binding=persistence.source_binding,
+                    source_auto_update=persistence.source_auto_update,
+                    source_state=persistence.source_state,
+                    output_id=persistence.output_id,
                 )
         else:
             tool = typing.cast("erlab.interactive.utils.ToolWindow", node.tool_window)
@@ -4410,9 +4419,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
         ds.attrs["manager_node_uid"] = node.uid
         ds.attrs["manager_node_kind"] = kind
         ds.attrs["manager_node_snapshot_token"] = node.snapshot_token
-        if node.provenance_spec is not None:
+        persistence = node.persistence_view()
+        provenance_spec = persistence.provenance_spec
+        if provenance_spec is not None:
             ds.attrs["manager_node_provenance_spec"] = json.dumps(
-                node.provenance_spec.model_dump(mode="json")
+                provenance_spec.model_dump(mode="json")
             )
         if isinstance(node, _ImageToolWrapper) and node.source_input_ndim is not None:
             ds.attrs["manager_node_source_input_ndim"] = int(node.source_input_ndim)
@@ -4438,24 +4449,28 @@ class ImageToolManager(QtWidgets.QMainWindow):
             ds.attrs["manager_node_watched_connected"] = bool(
                 watched_metadata.get("connected", False)
             )
-        output_id = node.output_id
+        output_id = persistence.output_id
         if kind == "imagetool" and output_id is not None:
             ds.attrs["manager_node_output_id"] = output_id
-        if kind == "imagetool" and node.source_spec is not None:
+        source_spec = persistence.source_spec
+        if kind == "imagetool" and source_spec is not None:
             ds.attrs["manager_node_live_source_spec"] = json.dumps(
-                node.source_spec.model_dump(mode="json")
+                source_spec.model_dump(mode="json")
             )
-        if kind == "imagetool" and node.source_binding is not None:
+        source_binding = persistence.source_binding
+        if kind == "imagetool" and source_binding is not None:
             ds.attrs["manager_node_live_source_binding"] = json.dumps(
-                node.source_binding.model_dump(mode="json")
+                source_binding.model_dump(mode="json")
             )
         if kind == "imagetool" and (
-            node.source_spec is not None
-            or node.source_binding is not None
+            source_spec is not None
+            or source_binding is not None
             or output_id is not None
         ):
-            ds.attrs["manager_node_source_state"] = node.source_state
-            ds.attrs["manager_node_source_auto_update"] = bool(node.source_auto_update)
+            ds.attrs["manager_node_source_state"] = persistence.source_state
+            ds.attrs["manager_node_source_auto_update"] = bool(
+                persistence.source_auto_update
+            )
         return ds
 
     def _serialize_workspace_node(
@@ -5245,13 +5260,8 @@ class ImageToolManager(QtWidgets.QMainWindow):
                 "display_name": node.display_text,
             }
             if node.is_imagetool and node.imagetool is not None:
-                data = node.slicer_area._data
-                if data.chunks is not None:
-                    entry["data_backing"] = "dask"
-                elif _manager_xarray.dataarray_is_file_backed(data):
-                    entry["data_backing"] = "file_lazy"
-                else:
-                    entry["data_backing"] = "memory"
+                persistence = node.persistence_view()
+                entry["data_backing"] = persistence.data_backing
                 link_info = link_metadata.get(uid)
                 if link_info is not None:
                     entry["link_group"], entry["link_colors"] = link_info
@@ -5545,14 +5555,9 @@ class ImageToolManager(QtWidgets.QMainWindow):
         for node in self._all_nodes.values():
             if not node.is_imagetool or node.imagetool is None:
                 continue
-            data = node.slicer_area._data
-            if data.chunks is not None:
-                kind = "dask"
-            elif _manager_xarray.dataarray_is_file_backed(data):
-                kind = "file_lazy"
-            else:
-                kind = "memory"
-            snapshot[node.uid] = (kind, _manager_xarray.dataarray_source_paths(data))
+            persistence = node.persistence_view()
+            kind = typing.cast("str", persistence.data_backing)
+            snapshot[node.uid] = (kind, persistence.source_paths)
         return snapshot
 
     def _rebind_workspace_backed_imagetools(
@@ -5588,7 +5593,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
             tool = node.imagetool
             if tool is None:
                 continue
-            slicer_area = tool.slicer_area
+            persistence = node.persistence_view()
             rebind_chunks: typing.Any
             if backing_snapshot is not None:
                 backing = backing_snapshot.get(node.uid)
@@ -5605,11 +5610,11 @@ class ImageToolManager(QtWidgets.QMainWindow):
             else:
                 rebind_chunks = chunks
                 if rebind_chunks is _WORKSPACE_REBIND_KEEP_CHUNKS:
-                    rebind_chunks = {} if slicer_area._data.chunks is not None else None
+                    rebind_chunks = {} if persistence.data_backing == "dask" else None
             pending.append(
                 (
                     node,
-                    copy.deepcopy(slicer_area.state),
+                    copy.deepcopy(persistence.state),
                     node.name,
                     rebind_chunks,
                 )
@@ -6699,7 +6704,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if index is None:
             return None
         with contextlib.suppress(KeyError):
-            return self.get_imagetool(index).slicer_area._data
+            return self.get_imagetool(index).slicer_area.displayed_data
         return None
 
     @QtCore.Slot(object)
@@ -7187,7 +7192,7 @@ class ImageToolManager(QtWidgets.QMainWindow):
         if provenance_spec is None and source_spec is not None:
             provenance_spec = (
                 erlab.interactive.imagetool.provenance.compose_display_provenance(
-                    parent_node.provenance_spec,
+                    parent_node.displayed_provenance_spec,
                     source_spec,
                     parent_data=parent_node.current_source_data(),
                 )

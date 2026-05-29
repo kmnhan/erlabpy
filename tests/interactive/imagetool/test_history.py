@@ -408,6 +408,29 @@ def test_describe_state_change_reports_axis_inversions():
     assert details == ("Axis inversion changed",)
 
 
+@pytest.mark.parametrize(
+    ("old_filter", "new_filter", "expected"),
+    [
+        (None, {"op": "normalize"}, "Filter applied"),
+        ({"op": "normalize"}, {"op": "gaussian_filter"}, "Filter changed"),
+        ({"op": "normalize"}, None, "Filter cleared"),
+    ],
+)
+def test_describe_state_change_reports_filter_operation(
+    old_filter, new_filter, expected
+) -> None:
+    prev = _base_state()
+    curr = copy.deepcopy(prev)
+    if old_filter is not None:
+        prev["filter_operation"] = old_filter
+    curr["filter_operation"] = new_filter
+
+    label, details = _history.describe_state_change(prev, curr)
+
+    assert label == expected
+    assert details == ("Filter operation changed",)
+
+
 def test_describe_state_change_reports_added_keys_and_generic_fallback():
     prev = _base_state()
     curr = copy.deepcopy(prev)

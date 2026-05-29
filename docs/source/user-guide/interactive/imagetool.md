@@ -345,16 +345,16 @@ script or notebook for reproducibility.
   your data exposes an `eV` axis, ImageTool can import a previously fitted edge via
   {func}`xarray_lmfit.load_fit` and shift the spectrum accordingly.
 - {guilabel}`View → Normalize` opens the {guilabel}`Normalize` dialog, which applies a
-  non-destructive filter that supports area normalization, min-max scaling, and baseline
+  reversible filter that supports area normalization, min-max scaling, and baseline
   subtraction.
 - {guilabel}`View → Gaussian Filter` opens the {guilabel}`Gaussian Filter` dialog, which
-  applies a non-destructive filter that applies coordinate-aware Gaussian broadening
-  along selected dimensions.
+  applies a reversible coordinate-aware Gaussian broadening filter along selected
+  dimensions.
 
 Use {guilabel}`Edit → Undo` and {guilabel}`Edit → Redo` to walk changes back, and
-{guilabel}`View → Reset` to remove any currently applied filter function. ImageTool also
-keeps track of additional tool windows opened from the context menus, so everything is
-closed cleanly when the main window exits.
+{guilabel}`View → Reset` to remove any currently applied filter. Reopening the dialog
+for the active filter starts from the current filter settings and replaces that active
+filter when accepted.
 
 (imagetool-roi)=
 
