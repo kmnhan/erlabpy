@@ -590,9 +590,9 @@ which ImageTool data and selection opened it:
 
 - Use `ItoolPlotItem.make_tool_source_spec(...)` when the tool is created from the
   active cursor or cropped selection.
-- Use ``erlab.interactive.imagetool.provenance.full_data()`` when the whole current
+- Use ``erlab.interactive.imagetool.provenance_framework.full_data()`` when the whole current
   array should be used again during an update.
-- Use the operation models in ``erlab.interactive.imagetool.provenance`` such as
+- Use the operation models in ``erlab.interactive.imagetool.provenance_operations`` such as
   ``QSelOperation(...)``, ``IselOperation(...)``, ``SelOperation(...)``,
   ``QSelAggregationOperation(...)``, and ``TransposeOperation(...)`` when a tool
   needs to write or modify the saved operation list explicitly. Pass those operation

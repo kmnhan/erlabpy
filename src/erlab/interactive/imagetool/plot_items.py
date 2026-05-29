@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Plotting primitives and interactive graphics items for ImageTool."""
 
 from __future__ import annotations
@@ -17,15 +18,14 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool.viewer import (
+from erlab.interactive.imagetool.viewer_linking import record_history, suppress_history
+from erlab.interactive.imagetool.viewer_state import (
     GuidelineState,
     PlotItemState,
     _associated_coord_color,
     _associated_coord_icon,
     _make_cursor_colors,
     _plotted_associated_coord_names,
-    record_history,
-    suppress_history,
     suppressnanwarning,
 )
 
@@ -37,7 +37,9 @@ if typing.TYPE_CHECKING:
     import qtawesome
 
     from erlab.interactive.imagetool import ImageTool
-    from erlab.interactive.imagetool.provenance import ImageToolSelectionSourceBinding
+    from erlab.interactive.imagetool.provenance_framework import (
+        ImageToolSelectionSourceBinding,
+    )
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 else:
     import lazy_loader as _lazy
@@ -1135,7 +1137,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
         """Return a source spec for the current plot selection.
 
         The spec contains ``qsel``, ``isel``, and ``sel`` operations for the current
@@ -1224,7 +1226,7 @@ class ItoolPlotItem(pg.PlotItem):
                     crop_sel_indexers[key] = index_selector
 
         transpose_dims = tuple(reversed(self.current_data.dims)) if transpose else None
-        return erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding(
+        return erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding(
             selection_mode=selection_mode,
             selection_indexers=selection_indexers,
             selection_binned_dims=tuple(selection_binned_dims),
@@ -2039,7 +2041,7 @@ class ItoolPlotItem(pg.PlotItem):
     def _open_data_in_new_window(
         self,
         data: xr.DataArray,
-        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         *,
         source_binding: ImageToolSelectionSourceBinding | None = None,
         use_parent_colormap: bool,
@@ -2091,7 +2093,7 @@ class ItoolPlotItem(pg.PlotItem):
         tool_window = erlab.interactive.itool(**itool_kw)
         if isinstance(tool_window, erlab.interactive.imagetool.ImageTool):
             tool_window.set_provenance_spec(
-                erlab.interactive.imagetool.provenance.compose_display_provenance(
+                erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
                     self.slicer_area.displayed_provenance_spec(),
                     source_spec,
                     parent_data=self.slicer_area._tool_source_parent_data(),
@@ -2116,13 +2118,15 @@ class ItoolPlotItem(pg.PlotItem):
     def open_associated_coord(
         self, coord_name: Hashable, *, displayed_profile: bool
     ) -> None:
-        operation = erlab.interactive.imagetool.provenance.SelectCoordOperation(
-            coord_name=coord_name
+        operation = (
+            erlab.interactive.imagetool.provenance_framework.SelectCoordOperation(
+                coord_name=coord_name
+            )
         )
         source_spec = (
             self.make_tool_source_spec().append_operations(operation)
             if displayed_profile
-            else erlab.interactive.imagetool.provenance.public_data(operation)
+            else erlab.interactive.imagetool.provenance_framework.public_data(operation)
         )
         data = source_spec.apply(self.slicer_area._tool_source_parent_data())
         self._open_data_in_new_window(

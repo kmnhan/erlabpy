@@ -49,8 +49,10 @@ def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
         name="scan",
     )
     data.to_netcdf(file_path, engine="h5netcdf")
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 1.0}
+        )
     )
 
     with manager_context() as manager:
@@ -386,7 +388,7 @@ def test_manager_workspace_save_selection_cancel_does_not_write(
             return QtWidgets.QDialog.DialogCode.Rejected
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._mainwindow,
+        erlab.interactive.imagetool.manager._workspace_io,
         "_ChooseFromDataTreeDialog",
         _RejectedChooseDialog,
     )
@@ -422,7 +424,7 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
     ],
 ) -> None:
     class _SelectedChooseDialog(
-        erlab.interactive.imagetool.manager._mainwindow._ChooseFromDataTreeDialog
+        erlab.interactive.imagetool.manager._workspace_io._ChooseFromDataTreeDialog
     ):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
@@ -436,7 +438,7 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
             return QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._mainwindow,
+        erlab.interactive.imagetool.manager._workspace_io,
         "_ChooseFromDataTreeDialog",
         _SelectedChooseDialog,
     )
@@ -1011,7 +1013,7 @@ def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
 def _assert_workspace_h5py_roundtrip(
     tmp_path: pathlib.Path, label: str, data: xr.DataArray
 ) -> tuple[xr.Dataset, xr.Dataset, pathlib.Path]:
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     fname = tmp_path / f"{label}.itws"
     ds = data.rename(data_name).to_dataset()
 
@@ -1044,7 +1046,7 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
         dims=("x", "y"),
         coords={"x": np.arange(2.0), "y": np.arange(3.0), "temperature": 20.0},
         attrs={"coordinates": b""},
-        name=manager_mainwindow._ITOOL_DATA_NAME,
+        name=manager_workspace_io._ITOOL_DATA_NAME,
     )
     ds = data.to_dataset()
 
@@ -1054,21 +1056,20 @@ def test_workspace_h5py_fast_path_roundtrips_scalar_coords(tmp_path) -> None:
     loaded = manager_workspace._read_workspace_dataset_group_h5py(
         fname,
         "0/imagetool",
-        preferred_data_name=manager_mainwindow._ITOOL_DATA_NAME,
+        preferred_data_name=manager_workspace_io._ITOOL_DATA_NAME,
     )
 
     assert loaded is not None
     expected = data.copy()
     expected.attrs.pop("coordinates")
     xr.testing.assert_equal(
-        loaded[manager_mainwindow._ITOOL_DATA_NAME],
+        loaded[manager_workspace_io._ITOOL_DATA_NAME],
         expected,
     )
     assert loaded.coords["temperature"].item() == 20.0
     with h5py.File(fname, "r") as h5_file:
-        coordinates = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME].attrs[
-            "coordinates"
-        ]
+        saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+        coordinates = saved_data.attrs["coordinates"]
     if isinstance(coordinates, bytes):
         coordinates = coordinates.decode()
     assert coordinates == "temperature"
@@ -1112,7 +1113,7 @@ def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
 ) -> None:
     import h5py
 
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     base = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
@@ -1201,7 +1202,7 @@ def test_workspace_h5py_fast_path_roundtrips_associated_coords_and_xarray(
 
 
 def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     fname = tmp_path / "numeric-since-units.itws"
     data = xr.DataArray(
         [1.0, 2.0],
@@ -1236,7 +1237,7 @@ def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
 def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> None:
     import h5py
 
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     fname = tmp_path / "invalid-attrs-fast-path.itws"
     data = xr.DataArray(
         np.arange(2.0),
@@ -1330,7 +1331,7 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
 def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     monkeypatch, tmp_path
 ) -> None:
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
 
     assert not manager_workspace._workspace_dataset_can_write_h5py(
@@ -1407,7 +1408,7 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
 def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
     import h5py
 
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
     fname = tmp_path / "malformed-reader.itws"
 
@@ -1546,7 +1547,7 @@ def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
 def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
     import h5py
 
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
     fname = tmp_path / "legacy-spaced-coord.itws"
 
@@ -1604,7 +1605,7 @@ def test_workspace_h5py_reader_restores_legacy_spaced_coords(tmp_path) -> None:
 def test_workspace_h5py_writer_replaces_groups_and_preserves_attrs(tmp_path) -> None:
     import h5py
 
-    data_name = manager_mainwindow._ITOOL_DATA_NAME
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
     fname = tmp_path / "writer-attrs.itws"
     ds = xr.Dataset(
@@ -2087,7 +2088,7 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
     fname = tmp_path / "copy.itws"
     ds = xr.Dataset(
         {
-            manager_mainwindow._ITOOL_DATA_NAME: (
+            manager_workspace_io._ITOOL_DATA_NAME: (
                 ("x", "y"),
                 np.arange(12, dtype=np.float64).reshape(3, 4),
             )
@@ -2138,7 +2139,7 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
         group = h5_file["0/imagetool"]
         assert group.attrs["itool_title"] == "new"
         np.testing.assert_array_equal(
-            group[manager_mainwindow._ITOOL_DATA_NAME][...],
+            group[manager_workspace_io._ITOOL_DATA_NAME][...],
             np.arange(12, dtype=np.float64).reshape(3, 4),
         )
 
@@ -3143,6 +3144,11 @@ def test_manager_recent_workspace_normalization_and_settings(
         monkeypatch.setattr(
             manager_mainwindow, "_manager_settings", lambda: _ObjectSettings()
         )
+        monkeypatch.setattr(
+            erlab.interactive.imagetool.manager._workspace_io,
+            "_manager_settings",
+            lambda: _ObjectSettings(),
+        )
         assert manager._recent_workspace_paths() == []
 
 
@@ -3239,7 +3245,7 @@ def test_manager_open_recent_workspace_reports_load_errors(
             lambda _exc: True,
         )
         monkeypatch.setattr(
-            manager_mainwindow,
+            erlab.interactive.imagetool.manager._workspace_io,
             "_show_workspace_file_lock_error",
             lambda _parent, path: lock_errors.append(pathlib.Path(path)),
         )
@@ -3719,7 +3725,7 @@ def test_open_multiple_files_workspace_locks_before_recovery(
             ),
         )
         monkeypatch.setattr(
-            manager_mainwindow,
+            erlab.interactive.imagetool.manager._actions,
             "_show_workspace_file_lock_error",
             lambda _parent, locked_fname: lock_calls.append(pathlib.Path(locked_fname)),
         )
@@ -4157,7 +4163,7 @@ def test_manager_workspace_import_appends_without_reassociation(
             return QtWidgets.QDialog.DialogCode.Accepted
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._mainwindow,
+        erlab.interactive.imagetool.manager._workspace_io,
         "_ChooseFromDataTreeDialog",
         _SelectSecondDialog,
     )
@@ -4483,7 +4489,7 @@ def test_manager_offload_to_workspace_saves_dirty_workspace_before_rebind(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved[0, 0] == 10.0
 
 
@@ -4528,7 +4534,7 @@ def test_manager_compute_offloaded_workspace_data_marks_backing_dirty(
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved.chunks is None
 
 
@@ -4642,7 +4648,7 @@ def test_manager_offload_to_workspace_preserves_child_source_state(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
 
     with manager_context() as manager:
@@ -4717,21 +4723,21 @@ def test_manager_manual_chunk_edits_persist_on_next_workspace_save(
         assert manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved.chunks is None
 
         assert manager.save()
         assert not manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved.chunks == (2, 3)
 
         opened = manager_xarray.open_workspace_dataset(
             fname, manager._workspace_payload_path(uid), chunks={}
         )
         try:
-            rebound = opened[manager_mainwindow._ITOOL_DATA_NAME]
+            rebound = opened[manager_workspace_io._ITOOL_DATA_NAME]
             assert rebound.chunks == ((2, 2, 1), (3, 2))
         finally:
             opened.close()
@@ -5256,7 +5262,7 @@ def test_manager_workspace_save_shows_wait_dialog_when_actual_save_is_slow(
 
         focus_restored: list[QtWidgets.QWidget | None] = []
         monkeypatch.setattr(
-            manager_mainwindow,
+            erlab.interactive.imagetool.manager._workspace_io,
             "_WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS",
             0.01,
         )
@@ -5457,7 +5463,7 @@ def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
             return QtWidgets.QDialog(parent)
 
         monkeypatch.setattr(
-            manager_mainwindow,
+            erlab.interactive.imagetool.manager._workspace_io,
             "_WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS",
             0.01,
         )
@@ -5718,7 +5724,7 @@ def test_manager_workspace_full_save_drops_empty_attr_name(
         assert "" in root.slicer_area._data.attrs
         with h5py.File(fname, "r") as h5_file:
             saved_attrs = h5_file["0/imagetool"][
-                manager_mainwindow._ITOOL_DATA_NAME
+                manager_workspace_io._ITOOL_DATA_NAME
             ].attrs
             assert "" not in list(saved_attrs)
             assert saved_attrs["note"] == ""
@@ -5870,7 +5876,7 @@ def test_manager_workspace_delta_save_splits_state_and_data_writes(
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved[0, 0] == 10
 
 
@@ -5921,7 +5927,7 @@ def test_manager_workspace_file_backed_data_can_load_into_memory(
         coords={"x": np.arange(5), "y": np.arange(5)},
     )
     tree = xr.DataTree.from_dict(
-        {"0/imagetool": source.to_dataset(name=manager_mainwindow._ITOOL_DATA_NAME)}
+        {"0/imagetool": source.to_dataset(name=manager_workspace_io._ITOOL_DATA_NAME)}
     )
     try:
         manager_workspace._write_full_workspace_tree_file(
@@ -6137,7 +6143,7 @@ def test_manager_workspace_lazy_data_delta_save_uses_pending_group_before_replac
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved[0, 0] == 10
 
 
@@ -6176,7 +6182,7 @@ def test_manager_workspace_same_file_lazy_data_delta_save_does_not_deadlock(
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved[0, 0] == 0
             assert saved.chunks == (128, 64)
 
@@ -6229,7 +6235,7 @@ def test_manager_workspace_lazy_data_delta_pending_failure_preserves_old_group(
         import h5py
 
         with h5py.File(fname, "r") as h5_file:
-            saved = h5_file["0/imagetool"][manager_mainwindow._ITOOL_DATA_NAME]
+            saved = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
             assert saved[0, 0] == 0
             assert not any(
                 manager_workspace._is_workspace_internal_group_name(name)
@@ -6484,7 +6490,9 @@ def test_manager_workspace_roundtrip_goldtool_child(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+        child.set_source_binding(
+            erlab.interactive.imagetool.provenance_framework.full_data()
+        )
         child_uid = manager.add_childtool(child, 0, show=False)
         configure_goldtool_child(child, fitted=True, spline=True)
 

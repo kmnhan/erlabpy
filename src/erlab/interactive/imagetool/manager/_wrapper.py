@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Managed window nodes shown in ImageToolManager."""
 
 from __future__ import annotations
@@ -31,8 +32,11 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
     from erlab.interactive.imagetool.manager import ImageToolManager
-    from erlab.interactive.imagetool.provenance import ImageToolSelectionSourceBinding
-    from erlab.interactive.imagetool.viewer import ImageSlicerArea, ImageSlicerState
+    from erlab.interactive.imagetool.provenance_framework import (
+        ImageToolSelectionSourceBinding,
+    )
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
+    from erlab.interactive.imagetool.viewer_state import ImageSlicerState
 
 
 def _preview_from_imagetool(
@@ -94,8 +98,12 @@ class _MetadataField:
 class _NodePersistenceView:
     data: xr.DataArray | None
     state: ImageSlicerState | None
-    provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
-    source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+    provenance_spec: (
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
+    )
+    source_spec: (
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
+    )
     source_binding: ImageToolSelectionSourceBinding | None
     output_id: str | None
     source_state: typing.Literal["fresh", "stale", "unavailable"]
@@ -131,9 +139,9 @@ class _ManagedWindowNode(QtCore.QObject):
         parent_uid: str | None,
         window: QtWidgets.QWidget,
         *,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None = None,
-        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None = None,
         source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
@@ -163,11 +171,11 @@ class _ManagedWindowNode(QtCore.QObject):
         )
 
         self._source_spec: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
         ) = None
         self._source_binding: ImageToolSelectionSourceBinding | None = None
         self._provenance_spec: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
         ) = None
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
@@ -517,7 +525,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def source_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         if self.tool_window is not None:
             return self.tool_window.source_spec
         return self._source_spec
@@ -525,7 +533,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def displayed_source_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         source_spec = self.source_spec
         if self.imagetool is not None:
             return self.slicer_area.displayed_live_source_spec(source_spec)
@@ -542,7 +550,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         if self.tool_window is not None:
             return self.tool_window.current_provenance_spec()
         if self._provenance_spec is not None:
@@ -552,7 +560,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def displayed_provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         if self.imagetool is not None:
             return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
         return self.provenance_spec
@@ -636,13 +644,13 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def set_displayed_provenance(
         self,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None,
         *,
         advance_snapshot: bool = True,
     ) -> None:
         self._provenance_spec = (
-            erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+            erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
                 provenance_spec
             )
         )
@@ -654,7 +662,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def derivation_entries(
         self,
-    ) -> list[erlab.interactive.imagetool.provenance.DerivationEntry]:
+    ) -> list[erlab.interactive.imagetool.provenance_framework.DerivationEntry]:
         provenance_spec = self.displayed_provenance_spec
         if provenance_spec is None:
             return []
@@ -683,10 +691,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def set_source_binding(
         self,
-        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+        | None,
         *,
         source_binding: ImageToolSelectionSourceBinding | None = None,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None = None,
         auto_update: bool = False,
         state: _source_state_type = "fresh",
@@ -711,7 +720,8 @@ class _ManagedWindowNode(QtCore.QObject):
             Current refresh state for manager status UI.
         """
         if source_spec is not None and not isinstance(
-            source_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+            source_spec,
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "source_spec must be a ToolProvenanceSpec or None. Use "
@@ -719,7 +729,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         if source_binding is not None and not isinstance(
             source_binding,
-            erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding,
+            erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding,
         ):
             raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
         self._source_binding = source_binding
@@ -728,10 +738,13 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.manager._parent_node(self).current_source_data()
             )
         self._source_spec = (
-            erlab.interactive.imagetool.provenance.require_live_source_spec(source_spec)
+            erlab.interactive.imagetool.provenance_framework.require_live_source_spec(
+                source_spec
+            )
         )
         if provenance_spec is not None and not isinstance(
-            provenance_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+            provenance_spec,
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
@@ -746,7 +759,7 @@ class _ManagedWindowNode(QtCore.QObject):
             parent_data = parent.current_source_data()
             source_spec = self._materialized_source_spec(parent_data)
             self.set_displayed_provenance(
-                erlab.interactive.imagetool.provenance.compose_display_provenance(
+                erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
                     parent.displayed_provenance_spec,
                     source_spec,
                     parent_data=parent_data,
@@ -759,7 +772,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
         output_id: str,
         *,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None = None,
         auto_update: bool = False,
         state: _source_state_type = "fresh",
@@ -771,7 +784,8 @@ class _ManagedWindowNode(QtCore.QObject):
         if not output_id:
             raise ValueError("output_id must not be empty")
         if provenance_spec is not None and not isinstance(
-            provenance_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+            provenance_spec,
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
@@ -788,11 +802,12 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def set_detached_provenance(
         self,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None,
     ) -> None:
         if provenance_spec is not None and not isinstance(
-            provenance_spec, erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+            provenance_spec,
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
@@ -808,7 +823,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _materialized_source_spec(
         self, parent_data: xr.DataArray
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
         """Return the source spec to apply to ``parent_data``."""
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
@@ -822,7 +837,7 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> (
         tuple[
             xr.DataArray,
-            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None,
         ]
         | None
     ):
@@ -858,7 +873,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def _replace_imagetool_data(
         self,
         data: xr.DataArray,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None,
         *,
         state: _source_state_type = "fresh",
@@ -900,7 +915,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def replace_with_detached_data(
         self,
         data: xr.DataArray,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None,
         *,
         propagate_descendants: bool = True,
@@ -1118,12 +1133,10 @@ class _ManagedWindowNode(QtCore.QObject):
                 parent_data = self.parent_source_data()
                 source_spec = self._materialized_source_spec(parent_data)
                 resolved = source_spec.apply(parent_data)
-                provenance_spec = (
-                    erlab.interactive.imagetool.provenance.compose_display_provenance(
-                        self.manager._parent_node(self).displayed_provenance_spec,
-                        source_spec,
-                        parent_data=parent_data,
-                    )
+                provenance_spec = erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
+                    self.manager._parent_node(self).displayed_provenance_spec,
+                    source_spec,
+                    parent_data=parent_data,
                 )
             self._replace_imagetool_data(
                 resolved,
@@ -1169,12 +1182,10 @@ class _ManagedWindowNode(QtCore.QObject):
                     return False
                 source_spec = self._materialized_source_spec(parent_data)
                 resolved = source_spec.apply(parent_data)
-                provenance_spec = (
-                    erlab.interactive.imagetool.provenance.compose_display_provenance(
-                        self.manager._parent_node(self).displayed_provenance_spec,
-                        source_spec,
-                        parent_data=parent_data,
-                    )
+                provenance_spec = erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
+                    self.manager._parent_node(self).displayed_provenance_spec,
+                    source_spec,
+                    parent_data=parent_data,
                 )
         except Exception:
             self._set_source_state("unavailable")
@@ -1250,9 +1261,9 @@ class _ImageToolWrapper(_ManagedWindowNode):
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         *,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None = None,
-        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None = None,
         source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
@@ -1350,7 +1361,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
 
     def _watched_root_provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         varname = self._watched_varname
         if (
             not self.watched
@@ -1368,7 +1379,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             np.dtype(np.float64),
         ):
             seed_source = f"{seed_source}.astype(np.float64)"
-        return erlab.interactive.imagetool.provenance.script(
+        return erlab.interactive.imagetool.provenance_framework.script(
             start_label=f"Start from watched variable {varname!r}",
             seed_code=f"derived = {seed_source}",
             active_name="derived",
@@ -1377,7 +1388,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
     @property
     def provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         base_provenance = super().provenance_spec
         if base_provenance is not None:
             return base_provenance
@@ -1393,7 +1404,9 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def current_source_data(self) -> xr.DataArray:
         data = super().current_source_data()
         if self._source_input_ndim == 1:
-            return erlab.interactive.imagetool.provenance.mark_promoted_1d_source(data)
+            return erlab.interactive.imagetool.provenance_framework.mark_promoted_1d_source(
+                data
+            )
         return data
 
     @QtCore.Slot()

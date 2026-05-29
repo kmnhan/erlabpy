@@ -1,6 +1,7 @@
 """Internal replay graph for ImageTool provenance.
 
-The saved provenance schema stays in :mod:`erlab.interactive.imagetool.provenance`.
+The saved provenance schema stays in
+:mod:`erlab.interactive.imagetool.provenance_framework`.
 This module compiles those specs into an execution/code-generation graph at runtime so
 shared file loads and shared structured operations are emitted or replayed once.
 """
@@ -114,9 +115,9 @@ _REPLAY_TEMP_PREFIX = "_itool_replay_"
 
 
 def _prov():
-    from erlab.interactive.imagetool import provenance
+    from erlab.interactive.imagetool import provenance_framework
 
-    return provenance
+    return provenance_framework
 
 
 def _canonical_key(kind: str, payload: Mapping[str, typing.Any]) -> str:

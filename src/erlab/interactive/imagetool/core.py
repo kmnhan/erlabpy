@@ -35,22 +35,24 @@ from erlab.interactive.imagetool.plot_items import (
     _pad_1d_plot,
     _PolyROIEditDialog,
 )
-from erlab.interactive.imagetool.viewer import (
-    ColorMapState,
-    ImageSlicerArea,
-    ImageSlicerState,
-    PlotItemState,
+from erlab.interactive.imagetool.viewer import ImageSlicerArea
+from erlab.interactive.imagetool.viewer_linking import (
     SlicerLinkProxy,
     _link_splitters,
+    _sync_splitters,
+    link_slicer,
+    record_history,
+    suppress_history,
+)
+from erlab.interactive.imagetool.viewer_state import (
+    ColorMapState,
+    ImageSlicerState,
+    PlotItemState,
     _make_cursor_colors,
     _parse_dataset,
     _parse_input,
     _processed_ndim,
     _supported_shape,
-    _sync_splitters,
-    link_slicer,
-    record_history,
-    suppress_history,
     suppressnanwarning,
 )
 

@@ -8,9 +8,12 @@ __all__ = [
     "fastslicing",
     "itool",
     "manager",
-    "provenance",
+    "provenance_framework",
+    "provenance_operations",
     "slicer",
     "viewer",
+    "viewer_linking",
+    "viewer_state",
 ]
 
 from . import (
@@ -20,9 +23,12 @@ from . import (
     fastbinning,
     fastslicing,
     manager,
-    provenance,
+    provenance_framework,
+    provenance_operations,
     slicer,
     viewer,
+    viewer_linking,
+    viewer_state,
 )
 from ._itool import itool
 from ._mainwindow import BaseImageTool, ImageTool

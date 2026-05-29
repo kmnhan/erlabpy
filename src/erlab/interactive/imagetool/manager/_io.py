@@ -173,12 +173,14 @@ class _MultiFileHandler(QtCore.QObject):
         self.manager._status_bar.showMessage("")
         self.manager._recent_directory = str(file_path.parent)
         try:
-            selected_data = erlab.interactive.imagetool.viewer._select_input_dataarrays(
-                typing.cast(
-                    "xr.DataArray | xr.Dataset | xr.DataTree | list[xr.DataArray]",
-                    data,
-                ),
-                self.manager,
+            selected_data = (
+                erlab.interactive.imagetool.viewer_state._select_input_dataarrays(
+                    typing.cast(
+                        "xr.DataArray | xr.Dataset | xr.DataTree | list[xr.DataArray]",
+                        data,
+                    ),
+                    self.manager,
+                )
             )
         except Exception:
             self._on_failed(file_path, traceback.format_exc())
@@ -199,7 +201,7 @@ class _MultiFileHandler(QtCore.QObject):
         selected_data: tuple[
             tuple[
                 xr.DataArray,
-                erlab.interactive.imagetool.provenance.FileDataSelection,
+                erlab.interactive.imagetool.provenance_framework.FileDataSelection,
             ],
             ...,
         ],

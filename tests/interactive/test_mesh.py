@@ -113,8 +113,10 @@ def test_meshtool_output_provenance_roundtrip_uses_tuple_assignment(
         payload = spec.model_dump(mode="json")
         assert payload["active_name"] == expected_name
 
-        reparsed = erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
-            payload
+        reparsed = (
+            erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
+                payload
+            )
         )
         assert reparsed is not None
         code = reparsed.display_code()

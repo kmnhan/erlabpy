@@ -1,3 +1,4 @@
+# ruff: noqa: E402, E501, PYI047
 """Provides core functionality of ImageTool.
 
 This module contains :class:`ImageSlicerArea` which handles the core functionality of
@@ -10,16 +11,13 @@ from __future__ import annotations
 import collections
 import contextlib
 import copy
-import functools
 import importlib
-import inspect
 import logging
 import os
 import pathlib
 import threading
 import typing
 import uuid
-import warnings
 import weakref
 
 import numpy as np
@@ -37,7 +35,7 @@ from erlab.interactive.imagetool._viewer_dialogs import (
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Callable, Collection, Hashable, Iterable, Mapping
+    from collections.abc import Callable, Hashable, Iterable, Mapping
 
     import qtawesome
 
@@ -46,7 +44,6 @@ if typing.TYPE_CHECKING:
         ItoolImageItem,
         ItoolPlotItem,
     )
-    from erlab.interactive.imagetool.slicer import ArraySlicer, ArraySlicerState
 else:
     import lazy_loader as _lazy
 
@@ -54,7 +51,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
-_FileDataSelection = erlab.interactive.imagetool.provenance.FileDataSelection
+_FileDataSelection = erlab.interactive.imagetool.provenance_framework.FileDataSelection
 _FileSelection: typing.TypeAlias = int | dict[str, typing.Any] | _FileDataSelection
 _LoadFunc: typing.TypeAlias = tuple[
     collections.abc.Callable[..., typing.Any] | str,
@@ -64,928 +61,20 @@ _LoadFunc: typing.TypeAlias = tuple[
 _ParsedInputData: typing.TypeAlias = tuple[xr.DataArray, _FileDataSelection]
 
 
-class ColorMapState(typing.TypedDict):
-    """A dictionary containing the colormap state of an `ImageSlicerArea` instance."""
-
-    cmap: str | pg.ColorMap
-    gamma: float
-    reverse: bool
-    high_contrast: bool
-    zero_centered: bool
-    levels_locked: bool
-    levels: typing.NotRequired[tuple[float, float]]
-
-
-class GuidelineState(typing.TypedDict):
-    """A dictionary containing the state of rotation guidelines."""
-
-    count: typing.Literal[1, 2, 3]
-    angle: float
-    offset: tuple[float, float]
-    follow_cursor: bool
-
-
-class PlotItemState(typing.TypedDict):
-    """A dictionary containing the state of a `PlotItem` instance."""
-
-    vb_aspect_locked: bool | float
-    vb_x_inverted: typing.NotRequired[bool]
-    vb_y_inverted: typing.NotRequired[bool]
-    vb_autorange: typing.NotRequired[tuple[bool, bool]]
-    roi_states: typing.NotRequired[list[dict[str, typing.Any]]]
-    guideline_state: typing.NotRequired[GuidelineState]
-
-
-class ImageSlicerState(typing.TypedDict):
-    """A dictionary containing the state of an `ImageSlicerArea` instance."""
-
-    color: ColorMapState
-    slice: ArraySlicerState
-    current_cursor: int
-    manual_limits: dict[str, list[float]]
-    axis_inversions: typing.NotRequired[dict[str, bool]]
-    filter_operation: typing.NotRequired[dict[str, typing.Any] | None]
-    cursor_colors: list[str]
-    controls_visible: typing.NotRequired[bool]
-    file_path: typing.NotRequired[str | None]
-    load_func: typing.NotRequired[
-        tuple[str, dict[str, typing.Any], _FileSelection] | None
-    ]
-    splitter_sizes: typing.NotRequired[list[list[int]]]
-    plotitem_states: typing.NotRequired[list[PlotItemState]]
-
-
-class _SuppressNanWarning(contextlib.ContextDecorator):
-    def __init__(self) -> None:
-        self._contexts: list[typing.Any] = []
-
-    def __enter__(self) -> typing.Self:
-        context = warnings.catch_warnings()
-        context.__enter__()
-        warnings.filterwarnings(
-            "ignore",
-            r"All-NaN (slice|axis) encountered",
-            RuntimeWarning,
-        )
-        self._contexts.append(context)
-        return self
-
-    def __exit__(self, *exc_info: object) -> bool | None:
-        return self._contexts.pop().__exit__(*exc_info)
-
-
-suppressnanwarning = _SuppressNanWarning()
-
-
-def _processed_ndim(darr: xr.DataArray) -> int:
-    if darr.ndim == 1:
-        nd = 2
-    elif darr.ndim > 4:
-        nd = len(tuple(s for s in darr.shape if s != 1))
-    else:
-        nd = darr.ndim
-    return nd
-
-
-def _supported_shape(darr: xr.DataArray) -> bool:
-    return _processed_ndim(darr) in (2, 3, 4)
-
-
-def _parse_dataset(ds: xr.Dataset) -> tuple[xr.DataArray, ...]:
-    return tuple(d for d in ds.data_vars.values() if _supported_shape(d))
-
-
-def _datatree_dataarray_path(source_path: str, variable_name: Hashable) -> str:
-    source_path = source_path.rstrip("/")
-    variable_path = str(variable_name).strip("/")
-    if not source_path:
-        return f"/{variable_path}"
-    return f"{source_path}/{variable_path}"
-
-
-class _SelectDataArraysDialog(QtWidgets.QDialog):
-    def __init__(
-        self,
-        parent: QtWidgets.QWidget | None,
-        data: xr.Dataset | xr.DataTree,
-    ) -> None:
-        super().__init__(parent)
-        self._data_arrays: list[xr.DataArray] = []
-        self._selections: list[_FileDataSelection] = []
-        self._source_paths: list[str] = []
-        variable_names: list[str] = []
-
-        if isinstance(data, xr.Dataset):
-            for variable_name, darr in data.data_vars.items():
-                if _supported_shape(darr):
-                    self._data_arrays.append(darr)
-                    self._selections.append(
-                        _FileDataSelection(
-                            kind="dataset_variable",
-                            value=variable_name,
-                        )
-                    )
-                    self._source_paths.append("/")
-                    variable_names.append(str(variable_name))
-        else:
-            for leaf in data.leaves:
-                source_path = str(leaf.path)
-                for variable_name, darr in leaf.dataset.data_vars.items():
-                    if _supported_shape(darr):
-                        self._data_arrays.append(darr)
-                        self._selections.append(
-                            _FileDataSelection(
-                                kind="datatree_path",
-                                value=_datatree_dataarray_path(
-                                    source_path, variable_name
-                                ),
-                            )
-                        )
-                        self._source_paths.append(source_path)
-                        variable_names.append(str(variable_name))
-
-        self.setWindowTitle("Select Data Variables")
-        self.resize(820, 420)
-
-        layout = QtWidgets.QVBoxLayout(self)
-
-        show_path_tree = any(source_path != "/" for source_path in self._source_paths)
-        name_column = 2 if show_path_tree else 1
-        ndim_column = 3 if show_path_tree else 2
-        shape_column = 4 if show_path_tree else 3
-        size_column = 5 if show_path_tree else 4
-
-        self._tree_widget = QtWidgets.QTreeWidget(self)
-        if show_path_tree:
-            self._tree_widget.setColumnCount(6)
-            self._tree_widget.setHeaderLabels(
-                ["", "Path", "Name", "ndim", "Shape", "Size"]
-            )
-        else:
-            self._tree_widget.setColumnCount(5)
-            self._tree_widget.setHeaderLabels(["", "Name", "ndim", "Shape", "Size"])
-        self._tree_widget.setRootIsDecorated(False)
-        self._tree_widget.setIndentation(0)
-        self._tree_widget.setSelectionBehavior(
-            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self._tree_widget.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
-        )
-        header = self._tree_widget.header()
-        if header is not None:
-            header.setStretchLastSection(False)
-        self._tree_widget.setAlternatingRowColors(True)
-        self._tree_widget.setUniformRowHeights(True)
-
-        self._path_tree: QtWidgets.QTreeWidget | None = None
-        if show_path_tree:
-            splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
-            self._path_tree = QtWidgets.QTreeWidget(splitter)
-            self._path_tree.setColumnCount(1)
-            self._path_tree.setHeaderHidden(True)
-            self._path_tree.setSelectionMode(
-                QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
-            )
-            self._path_tree.setUniformRowHeights(True)
-            self._path_tree.setMinimumWidth(160)
-            splitter.addWidget(self._path_tree)
-            splitter.addWidget(self._tree_widget)
-            splitter.setStretchFactor(0, 0)
-            splitter.setStretchFactor(1, 1)
-            splitter.setSizes([180, 640])
-            layout.addWidget(splitter)
-        else:
-            layout.addWidget(self._tree_widget)
-
-        for source_index, (darr, source_path, variable_name) in enumerate(
-            zip(self._data_arrays, self._source_paths, variable_names, strict=True)
-        ):
-            row_text = [""] * self._tree_widget.columnCount()
-            if show_path_tree:
-                row_text[1] = source_path.strip("/")
-            row_text[name_column] = variable_name
-            row_text[ndim_column] = str(darr.ndim)
-            row_text[size_column] = erlab.utils.formatting.format_nbytes(darr.nbytes)
-            item = QtWidgets.QTreeWidgetItem(row_text)
-            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, source_index)
-            item.setFlags(
-                item.flags()
-                | QtCore.Qt.ItemFlag.ItemIsEnabled
-                | QtCore.Qt.ItemFlag.ItemIsSelectable
-            )
-            item.setTextAlignment(
-                ndim_column,
-                QtCore.Qt.AlignmentFlag.AlignRight
-                | QtCore.Qt.AlignmentFlag.AlignVCenter,
-            )
-            item.setTextAlignment(
-                size_column,
-                QtCore.Qt.AlignmentFlag.AlignRight
-                | QtCore.Qt.AlignmentFlag.AlignVCenter,
-            )
-            item.setToolTip(0, source_path)
-            for column in range(1, self._tree_widget.columnCount()):
-                item.setToolTip(column, repr(darr))
-            self._tree_widget.addTopLevelItem(item)
-
-            checkbox_container = QtWidgets.QWidget(self._tree_widget)
-            checkbox_layout = QtWidgets.QHBoxLayout(checkbox_container)
-            checkbox_layout.setContentsMargins(0, 0, 0, 0)
-            checkbox_layout.setSpacing(0)
-            checkbox_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            checkbox = QtWidgets.QCheckBox(checkbox_container)
-            checkbox.setChecked(True)
-            checkbox.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-            checkbox.setToolTip("Load this variable")
-            checkbox.toggled.connect(self._update_ok_enabled)
-            checkbox.clicked.connect(
-                lambda _checked=False, item=item: self._tree_widget.setCurrentItem(item)
-            )
-            checkbox_layout.addWidget(checkbox)
-            item.setSizeHint(0, checkbox_container.sizeHint())
-            self._tree_widget.setItemWidget(item, 0, checkbox_container)
-
-            label = QtWidgets.QLabel(
-                erlab.interactive.utils._apply_qt_accent_color(
-                    erlab.utils.formatting.format_darr_shape_html(
-                        darr.rename(None),
-                        show_size=False,
-                    )
-                ),
-                self,
-            )
-            label.setTextFormat(QtCore.Qt.TextFormat.RichText)
-            label.setTextInteractionFlags(
-                QtCore.Qt.TextInteractionFlag.NoTextInteraction
-            )
-            label.setToolTip(repr(darr))
-            label.setContentsMargins(4, 0, 4, 0)
-            item.setSizeHint(shape_column, label.sizeHint())
-            self._tree_widget.setItemWidget(item, shape_column, label)
-
-        if self._path_tree is not None:
-            self._populate_path_tree()
-        for column in range(self._tree_widget.columnCount()):
-            self._tree_widget.resizeColumnToContents(column)
-        header = self._tree_widget.header()
-        if header is not None:
-            header.setSectionResizeMode(
-                shape_column, QtWidgets.QHeaderView.ResizeMode.Stretch
-            )
-
-        self._details = QtWidgets.QTextBrowser(self)
-        self._details.setOpenExternalLinks(False)
-        self._details.setMinimumHeight(150)
-        self._details.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Expanding,
-        )
-        self._tree_widget.currentItemChanged.connect(self._update_details)
-        layout.addWidget(self._details)
-
-        button_row = QtWidgets.QHBoxLayout()
-        self._clear_path_filter_button: QtWidgets.QPushButton | None = None
-        if self._path_tree is not None:
-            self._clear_path_filter_button = QtWidgets.QPushButton(
-                "Clear Path Filter", self
-            )
-            self._clear_path_filter_button.setEnabled(False)
-            self._clear_path_filter_button.clicked.connect(self._clear_path_filter)
-            button_row.addWidget(self._clear_path_filter_button)
-        select_all_button = QtWidgets.QPushButton("Select All", self)
-        deselect_all_button = QtWidgets.QPushButton("Deselect All", self)
-        select_all_button.clicked.connect(self._check_all)
-        deselect_all_button.clicked.connect(self._uncheck_all)
-        button_row.addWidget(select_all_button)
-        button_row.addWidget(deselect_all_button)
-        button_row.addStretch()
-
-        self._button_box = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
-            parent=self,
-        )
-        self._button_box.accepted.connect(self.accept)
-        self._button_box.rejected.connect(self.reject)
-        button_row.addWidget(self._button_box)
-        layout.addLayout(button_row)
-
-        self._tree_widget.itemChanged.connect(self._update_ok_enabled)
-        if self._path_tree is not None:
-            self._path_tree.currentItemChanged.connect(self._filter_for_path)
-            self._tree_widget.setCurrentItem(next(self._items(), None))
-        else:
-            self._tree_widget.setCurrentItem(next(self._items(), None))
-        self._update_ok_enabled()
-
-    def _populate_path_tree(self) -> None:
-        if self._path_tree is None:  # pragma: no cover - guarded by caller
-            return
-
-        data_paths = {
-            source_path for source_path in self._source_paths if source_path != "/"
-        }
-        path_children: dict[str, set[str]] = {}
-        for source_path in data_paths:
-            parent_path = ""
-            for part in source_path.strip("/").split("/"):
-                path_children.setdefault(parent_path, set()).add(part)
-                parent_path = f"{parent_path}/{part}"
-
-        path_items: dict[str, QtWidgets.QTreeWidgetItem] = {}
-
-        def compressed_child_path(parent_path: str, part: str) -> tuple[str, str]:
-            label_parts = [part]
-            child_path = f"{parent_path}/{part}" if parent_path else f"/{part}"
-            while (
-                child_path not in data_paths
-                and len(path_children.get(child_path, ())) == 1
-            ):
-                next_part = sorted(path_children[child_path])[0]
-                label_parts.append(next_part)
-                child_path = f"{child_path}/{next_part}"
-            return child_path, "/".join(label_parts)
-
-        for source_path in sorted(data_paths):
-            parent_item: QtWidgets.QTreeWidgetItem | None = None
-            current_path = ""
-            while current_path != source_path:
-                remaining_path = source_path.removeprefix(current_path).strip("/")
-                part = remaining_path.split("/", maxsplit=1)[0]
-                current_path, label = compressed_child_path(current_path, part)
-                item = path_items.get(current_path)
-                if item is None:
-                    item = QtWidgets.QTreeWidgetItem([label])
-                    item.setData(0, QtCore.Qt.ItemDataRole.UserRole, current_path)
-                    item.setToolTip(0, current_path)
-                    path_items[current_path] = item
-                    if parent_item is None:
-                        self._path_tree.addTopLevelItem(item)
-                    else:
-                        parent_item.addChild(item)
-                parent_item = item
-
-        self._path_tree.expandAll()
-
-    def _item_checkbox(self, item: QtWidgets.QTreeWidgetItem) -> QtWidgets.QCheckBox:
-        widget = self._tree_widget.itemWidget(item, 0)
-        checkbox = widget.findChild(QtWidgets.QCheckBox) if widget is not None else None
-        if checkbox is None:  # pragma: no cover - only possible if the widget is lost
-            raise RuntimeError("Missing variable selection checkbox")
-        return checkbox
-
-    def _items(self) -> collections.abc.Iterator[QtWidgets.QTreeWidgetItem]:
-        stack = [
-            self._tree_widget.topLevelItem(row)
-            for row in reversed(range(self._tree_widget.topLevelItemCount()))
-        ]
-        while stack:
-            item = stack.pop()
-            if item is None:  # pragma: no cover - only possible if Qt drops an item
-                continue
-            stack.extend(item.child(row) for row in reversed(range(item.childCount())))
-            if item.data(0, QtCore.Qt.ItemDataRole.UserRole) is not None:
-                yield item
-
-    @QtCore.Slot()
-    def _check_all(self) -> None:
-        for item in self._items():
-            if not item.isHidden():
-                self._item_checkbox(item).setChecked(True)
-
-    @QtCore.Slot()
-    def _uncheck_all(self) -> None:
-        for item in self._items():
-            if not item.isHidden():
-                self._item_checkbox(item).setChecked(False)
-
-    @QtCore.Slot()
-    def _clear_path_filter(self) -> None:
-        if self._path_tree is None:  # pragma: no cover - guarded by caller
-            return
-        self._path_tree.clearSelection()
-        self._path_tree.setCurrentIndex(QtCore.QModelIndex())
-        self._filter_for_path(None)
-
-    def selected_dataarrays(self) -> tuple[_ParsedInputData, ...]:
-        selected: list[_ParsedInputData] = []
-        for item in self._items():
-            if self._item_checkbox(item).isChecked():
-                index = typing.cast(
-                    "int", item.data(0, QtCore.Qt.ItemDataRole.UserRole)
-                )
-                selected.append((self._data_arrays[index], self._selections[index]))
-        return tuple(selected)
-
-    def _update_ok_enabled(self, *_args: object) -> None:
-        button = self._button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
-        if button is not None:  # pragma: no branch
-            button.setEnabled(bool(self.selected_dataarrays()))
-
-    def _filter_for_path(
-        self,
-        current: QtWidgets.QTreeWidgetItem | None,
-        _previous: QtWidgets.QTreeWidgetItem | None = None,
-    ) -> None:
-        selected_path = ""
-        if current is not None:
-            selected_path = typing.cast(
-                "str", current.data(0, QtCore.Qt.ItemDataRole.UserRole)
-            )
-
-        if self._clear_path_filter_button is not None:
-            self._clear_path_filter_button.setEnabled(selected_path != "")
-
-        first_visible: QtWidgets.QTreeWidgetItem | None = None
-        for item in self._items():
-            source_path = self._source_paths[
-                typing.cast("int", item.data(0, QtCore.Qt.ItemDataRole.UserRole))
-            ]
-            visible = (
-                selected_path == ""
-                or source_path == selected_path
-                or source_path.startswith(f"{selected_path}/")
-            )
-            item.setHidden(not visible)
-            if visible and first_visible is None:
-                first_visible = item
-
-        current_item = self._tree_widget.currentItem()
-        if first_visible is None:
-            self._tree_widget.setCurrentItem(None)
-            self._details.clear()
-        elif current_item is None or current_item.isHidden():
-            self._tree_widget.setCurrentItem(first_visible)
-        else:
-            self._update_details(current_item)
-
-    def _update_details(
-        self,
-        current: QtWidgets.QTreeWidgetItem | None,
-        _previous: QtWidgets.QTreeWidgetItem | None = None,
-    ) -> None:
-        if current is None:
-            self._details.clear()
-            return
-
-        candidate_index = current.data(0, QtCore.Qt.ItemDataRole.UserRole)
-        if candidate_index is None:
-            self._details.clear()
-            return
-
-        data_array = self._data_arrays[typing.cast("int", candidate_index)]
-        self._details.setHtml(
-            erlab.interactive.utils._apply_qt_accent_color(
-                erlab.utils.formatting.format_darr_html(
-                    data_array,
-                    show_size=False,
-                    show_summary=False,
-                )
-            )
-        )
-
-    def accept(self) -> None:
-        if not self.selected_dataarrays():
-            self.reject()
-            return
-        super().accept()
-
-
-def _select_input_dataarrays(
-    data: Collection[xr.DataArray | npt.NDArray]
-    | xr.DataArray
-    | npt.NDArray
-    | xr.Dataset
-    | xr.DataTree,
-    parent: QtWidgets.QWidget | None = None,
-) -> tuple[_ParsedInputData, ...] | None:
-    parsed_data = _parse_input_data(data)
-    if len(parsed_data) > 1 and isinstance(data, xr.Dataset | xr.DataTree):
-        dialog = _SelectDataArraysDialog(parent, data)
-        if not dialog.exec():
-            return None
-        selected = dialog.selected_dataarrays()
-        if not selected:
-            return None
-        return selected
-    return tuple(parsed_data)
-
-
-def _make_cursor_colors(
-    clr: QtGui.QColor,
-) -> tuple[QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor, QtGui.QColor]:
-    """Given a color, return a tuple of colors used for cursors and spans.
-
-    This function generates a set of colors based on the input color `clr` with
-    pre-defined transparency levels.
-    """
-    clr_cursor = pg.mkColor(clr)
-    clr_cursor_hover = pg.mkColor(clr)
-    clr_span = pg.mkColor(clr)
-    clr_span_edge = pg.mkColor(clr)
-
-    clr_cursor.setAlphaF(0.75)
-    clr_cursor_hover.setAlphaF(0.95)
-    clr_span.setAlphaF(0.15)
-    clr_span_edge.setAlphaF(0.35)
-
-    return clr, clr_cursor, clr_cursor_hover, clr_span, clr_span_edge
-
-
-def _plotted_associated_coord_names(
-    array_slicer: ArraySlicer,
-) -> tuple[Hashable, ...]:
-    plotted = array_slicer.twin_coord_names
-    return tuple(name for name in array_slicer.associated_coord_dims if name in plotted)
-
-
-def _associated_coord_color(
-    slicer_area: ImageSlicerArea, coord_name: Hashable
-) -> QtGui.QColor:
-    coord_names = tuple(slicer_area.array_slicer.associated_coord_dims)
-    return slicer_area.TWIN_COLORS[
-        coord_names.index(coord_name) % len(slicer_area.TWIN_COLORS)
-    ]
-
-
-def _associated_coord_icon(color: QtGui.QColor) -> QtGui.QIcon:
-    img = QtGui.QImage(16, 16, QtGui.QImage.Format.Format_RGBA64)
-    img.fill(QtCore.Qt.GlobalColor.transparent)
-
-    painter = QtGui.QPainter(img)
-    painter.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing, True)
-    painter.setPen(QtCore.Qt.PenStyle.NoPen)
-    painter.setBrush(color)
-    painter.drawEllipse(2, 2, 12, 12)
-    painter.end()
-    return QtGui.QIcon(QtGui.QPixmap.fromImage(img))
-
-
-def _parse_input(
-    data: Collection[xr.DataArray | npt.NDArray]
-    | xr.DataArray
-    | npt.NDArray
-    | xr.Dataset
-    | xr.DataTree,
-) -> list[xr.DataArray]:
-    return [darr for darr, _selection in _parse_input_data(data)]
-
-
-def _parse_input_data(
-    data: Collection[xr.DataArray | npt.NDArray]
-    | xr.DataArray
-    | npt.NDArray
-    | xr.Dataset
-    | xr.DataTree,
-) -> list[_ParsedInputData]:
-    input_cls: str = data.__class__.__name__
-    if isinstance(data, np.ndarray | xr.DataArray):
-        parsed = (
-            (
-                xr.DataArray(data) if not isinstance(data, xr.DataArray) else data,
-                _FileDataSelection(kind="dataarray"),
-            ),
-        )
-    elif isinstance(data, xr.Dataset):
-        parsed = tuple(
-            (
-                darr,
-                _FileDataSelection(kind="dataset_variable", value=variable_name),
-            )
-            for variable_name, darr in data.data_vars.items()
-            if _supported_shape(darr)
-        )
-    elif isinstance(data, xr.DataTree):
-        parsed = tuple(
-            (
-                darr,
-                _FileDataSelection(
-                    kind="datatree_path",
-                    value=_datatree_dataarray_path(str(leaf.path), variable_name),
-                ),
-            )
-            for leaf in data.leaves
-            for variable_name, darr in leaf.dataset.data_vars.items()
-            if _supported_shape(darr)
-        )
-    else:
-        if not isinstance(data, collections.abc.Collection):
-            raise TypeError(
-                f"Unsupported input type {input_cls}. Expected DataArray, Dataset, "
-                "DataTree, numpy array, or a list of DataArray or numpy arrays."
-            )
-        parsed_list: list[_ParsedInputData] = []
-        for index, d in enumerate(data):
-            if not isinstance(d, xr.DataArray | np.ndarray):
-                raise TypeError(
-                    f"Unsupported input type {input_cls}. Expected DataArray, "
-                    "Dataset, DataTree, numpy array, or a list of DataArray or "
-                    "numpy arrays."
-                )
-            parsed_list.append(
-                (
-                    xr.DataArray(d) if not isinstance(d, xr.DataArray) else d,
-                    _FileDataSelection(kind="parsed_index", value=index),
-                )
-            )
-        parsed = tuple(parsed_list)
-
-    if len(parsed) == 0:
-        raise ValueError(f"No valid data for ImageTool found in {input_cls}")
-
-    return list(parsed)
-
-
-def _link_splitters(
-    s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter, reverse: bool = False
-) -> None:
-    s0.blockSignals(True)
-    s1.blockSignals(True)
-    sizes = s0.sizes()
-    total = sum(sizes)
-    if reverse:
-        sizes = list(reversed(sizes))
-        sizes[0] = s1.sizes()[-1]
-    else:
-        sizes[0] = s1.sizes()[0]
-    if all(x == 0 for x in sizes[1:]) and sizes[0] != total:
-        sizes[1:] = [1] * len(sizes[1:])
-    try:
-        factor = (total - sizes[0]) / sum(sizes[1:])
-    except ZeroDivisionError:
-        factor = 0.0
-    for k in range(1, len(sizes)):
-        sizes[k] = round(sizes[k] * factor)
-    if reverse:
-        sizes = list(reversed(sizes))
-    s0.setSizes(sizes)
-    s0.blockSignals(False)
-    s1.blockSignals(False)
-
-
-def _sync_splitters(s0: QtWidgets.QSplitter, s1: QtWidgets.QSplitter) -> None:
-    s0.splitterMoved.connect(lambda: _link_splitters(s1, s0))
-    s1.splitterMoved.connect(lambda: _link_splitters(s0, s1))
-
-
-# class ItoolGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
-def suppress_history(method: Callable | None = None):
-    """Ignore history changes made within the decorated method."""
-
-    def my_decorator(method: Callable):
-        @functools.wraps(method)
-        def wrapped(self, *args, **kwargs):
-            area = self.slicer_area if hasattr(self, "slicer_area") else self
-            with area.history_suppressed():
-                return method(self, *args, **kwargs)
-
-        return wrapped
-
-    if method is not None:
-        return my_decorator(method)
-    return my_decorator
-
-
-def record_history(method: Callable | None = None):
-    """Log history before calling the decorated method."""
-
-    def my_decorator(method: Callable):
-        @functools.wraps(method)
-        def wrapped(self, *args, **kwargs):
-            area = self.slicer_area if hasattr(self, "slicer_area") else self
-            transaction_id = kwargs.pop("__slicer_transaction_id", None)
-            keep_pending = kwargs.pop(
-                "__slicer_keep_pending", area._history_group_active
-            )
-            return area.record_history_mutation(
-                transaction_id,
-                lambda: method(self, *args, **kwargs),
-                keep_pending=keep_pending,
-            )
-
-        typing.cast("typing.Any", wrapped)._itool_records_history = True
-        return wrapped
-
-    if method is not None:
-        return my_decorator(method)
-    return my_decorator
-
-
-def link_slicer(
-    func: Callable | None = None,
-    *,
-    indices: bool = False,
-    steps: bool = False,
-    color: bool = False,
-):
-    """Sync decorated methods across multiple `ImageSlicerArea` instances.
-
-    Parameters
-    ----------
-    func
-        The method to sync across multiple instances of `ImageSlicerArea`.
-    indices
-        If `True`, the input argument named `value` given to `func` are interpreted as
-        indices, and will be converted to appropriate values for other instances of
-        `ImageSlicerArea`. The behavior of this conversion is determined by `steps`. If
-        `True`, An input argument named `axis` of type integer must be present in the
-        decorated method to determine the axis along which the index is to be changed.
-    steps
-        If `False`, considers `value` as an absolute index. If `True`, considers `value`
-        as a relative value such as the number of steps or bins. See the implementation
-        of `SlicerLinkProxy` for more information.
-    color
-        Boolean whether the decorated method is related to visualization, such as
-        colormap control.
-
-    """
-
-    def my_decorator(func: Callable):
-        @functools.wraps(func)
-        def wrapped(*args, **kwargs):
-            # skip sync if already synced
-            skip_sync = kwargs.pop("__slicer_skip_sync", False)
-            transaction_id = kwargs.pop("__slicer_transaction_id", None)
-            keep_pending = kwargs.pop("__slicer_keep_pending", None)
-            obj = args[0]
-            records_history = getattr(func, "_itool_records_history", False)
-            if keep_pending is None:
-                keep_pending = obj._history_group_active
-            sync_enabled = (
-                obj.is_linked
-                and not skip_sync
-                and obj._link_sync_suppressed == 0
-                and obj._linking_proxy is not None
-                and (not color or obj._linking_proxy.link_colors)
-            )
-            if records_history and transaction_id is None and sync_enabled:
-                transaction_id = obj.next_linked_history_transaction_id()
-
-            call_kwargs = dict(kwargs)
-            if records_history:
-                call_kwargs["__slicer_transaction_id"] = transaction_id
-                call_kwargs["__slicer_keep_pending"] = keep_pending
-            out = func(*args, **call_kwargs)
-            if sync_enabled:
-                all_args = inspect.Signature.from_callable(func).bind(*args, **kwargs)
-                all_args.apply_defaults()
-                obj = all_args.arguments.pop("self")
-                if obj._linking_proxy is not None:  # pragma: no branch
-                    obj._linking_proxy.sync(
-                        obj,
-                        func.__name__,
-                        all_args.arguments,
-                        indices,
-                        steps,
-                        color,
-                        transaction_id,
-                        keep_pending,
-                    )
-            return out
-
-        return wrapped
-
-    if func is not None:
-        return my_decorator(func)
-    return my_decorator
-
-
-class SlicerLinkProxy:
-    """Internal class for handling linked `ImageSlicerArea` s.
-
-    Parameters
-    ----------
-    *slicers
-        The slicers to link.
-    link_colors
-        Whether to sync color related changes, by default `True`.
-
-    """
-
-    def __init__(self, *slicers: ImageSlicerArea, link_colors: bool = True) -> None:
-        self.link_colors = link_colors
-
-        self._children: weakref.WeakSet[ImageSlicerArea] = weakref.WeakSet()
-        for s in slicers:
-            self.add(s)
-
-    @property
-    def children(self) -> weakref.WeakSet[ImageSlicerArea]:
-        return self._children
-
-    @property
-    def num_children(self) -> int:
-        return len(self.children)
-
-    def unlink_all(self) -> None:
-        for s in self.children:
-            s._linking_proxy = None
-        self.children.clear()
-
-    def add(self, slicer_area: ImageSlicerArea) -> None:
-        if slicer_area.is_linked:
-            if slicer_area._linking_proxy == self:
-                return
-            raise ValueError("Already linked to another proxy.")
-        self.children.add(slicer_area)
-        slicer_area._linking_proxy = self
-
-    def remove(self, slicer_area: ImageSlicerArea) -> None:
-        self.children.remove(slicer_area)
-        slicer_area._linking_proxy = None
-
-    def sync(
-        self,
-        source: ImageSlicerArea,
-        funcname: str,
-        arguments: dict[str, typing.Any],
-        indices: bool,
-        steps: bool,
-        color: bool,
-        transaction_id: str | None,
-        keep_pending: bool,
-    ) -> None:
-        r"""Propagate changes across multiple :class:`ImageSlicerArea`\ s.
-
-        This method is invoked every time a method decorated with :func:`link_slicer` in
-        a linked `ImageSlicerArea` is called.
-
-        Parameters
-        ----------
-        source
-            Instance of `ImageSlicerArea` corresponding to the called method.
-        funcname
-            Name of the called method.
-        arguments
-            Arguments included in the function call.
-        indices, steps, color
-            Arguments given to the decorator. See :func:`link_slicer`
-
-        """
-        if color and not self.link_colors:
-            return
-        for target in self.children.difference({source}):
-            getattr(target, funcname)(
-                **self.convert_args(
-                    source,
-                    target,
-                    dict(arguments),
-                    indices,
-                    steps,
-                    transaction_id,
-                    keep_pending,
-                )
-            )
-
-    def convert_args(
-        self,
-        source: ImageSlicerArea,
-        target: ImageSlicerArea,
-        args: dict[str, typing.Any],
-        indices: bool,
-        steps: bool,
-        transaction_id: str | None,
-        keep_pending: bool,
-    ):
-        if indices:
-            index: int | None = args.get("value")
-
-            if index is not None:
-                axis: int | None = args.get("axis")
-
-                if axis is None:
-                    raise ValueError(
-                        "Axis argument not found in method decorated "
-                        "with the `indices=True` argument"
-                    )
-
-                args["value"] = self.convert_index(source, target, axis, index, steps)
-
-        args["__slicer_skip_sync"] = True  # passed onto the decorator
-        args["__slicer_transaction_id"] = transaction_id
-        args["__slicer_keep_pending"] = keep_pending
-        return args
-
-    @staticmethod
-    def convert_index(
-        source: ImageSlicerArea,
-        target: ImageSlicerArea,
-        axis: int,
-        index: int,
-        steps: bool,
-    ):
-        if steps:
-            return round(
-                index
-                * source.array_slicer.incs_uniform[axis]
-                / target.array_slicer.incs_uniform[axis]
-            )
-        value = source.array_slicer.value_of_index(axis, index, uniform=False)
-        new_index: int = target.array_slicer.index_of_value(
-            axis, float(value), uniform=False
-        )
-        return new_index
+from erlab.interactive.imagetool.viewer_linking import (
+    SlicerLinkProxy,
+    _sync_splitters,
+    link_slicer,
+    record_history,
+    suppress_history,
+)
+from erlab.interactive.imagetool.viewer_state import (
+    ColorMapState,
+    ImageSlicerState,
+    PlotItemState,
+    _parse_input,
+    _processed_ndim,
+)
 
 
 class ImageSlicerArea(QtWidgets.QWidget):
@@ -1073,10 +162,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
         return typing.cast(
-            "erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None",
+            "erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None",
             getattr(self.parent(), "provenance_spec", None),
         )
 
@@ -1191,10 +280,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # Current plot filter. Accepted filters are represented by the operation below.
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
         self._applied_provenance_operation: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
+            | None
         ) = None
         self._accepted_filter_provenance_operation: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
+            | None
         ) = None
         self._accepted_filter_data: xr.DataArray | None = None
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
@@ -1704,11 +795,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def displayed_live_source_spec(
         self,
-        base_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        base_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+        | None,
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         """Return live source provenance including the accepted display filter."""
-        source_spec = erlab.interactive.imagetool.provenance.require_live_source_spec(
-            base_spec
+        source_spec = (
+            erlab.interactive.imagetool.provenance_framework.require_live_source_spec(
+                base_spec
+            )
         )
         operation = self._accepted_filter_provenance_operation
         if source_spec is None or operation is None:
@@ -1784,7 +878,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _filter_operation_result_for_data(
         self,
         data: xr.DataArray,
-        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
         dims: tuple[Hashable, ...],
     ) -> xr.DataArray:
         return self._normalize_filter_result_for_source_dims(
@@ -1808,7 +902,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _filter_operation_result_for_replacement(
         self,
         data: xr.DataArray,
-        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
     ) -> xr.DataArray:
         return self._filter_operation_result_for_data(
             data,
@@ -1818,7 +912,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @staticmethod
     def _filter_func_from_operation(
-        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
     ) -> Callable[[xr.DataArray], xr.DataArray]:
         def _apply_filter(darr: xr.DataArray) -> xr.DataArray:
             return operation.apply(darr, parent_data=darr)
@@ -1828,10 +922,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _parse_filter_operation_state(
         self,
         payload: dict[str, typing.Any] | None,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+    ) -> (
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation | None
+    ):
         if payload is None:
             return None
-        return erlab.interactive.imagetool.provenance.parse_tool_provenance_operation(
+        return erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_operation(
             payload
         )
 
@@ -2908,7 +2004,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "xr.DataArray | xr.Dataset | xr.DataTree",
             func(file_path, **load_func[1]),
         )
-        return erlab.interactive.imagetool.provenance._select_replay_input(
+        return erlab.interactive.imagetool.provenance_framework._select_replay_input(
             reloaded,
             load_func[2],
         )
@@ -2925,7 +2021,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         file_path = pathlib.Path(provenance_spec.file_load_source.path)
         if not file_path.exists():
             raise FileNotFoundError(file_path)
-        return erlab.interactive.imagetool.provenance.replay_file_provenance(
+        return erlab.interactive.imagetool.provenance_framework.replay_file_provenance(
             provenance_spec
         )
 
@@ -3065,18 +2161,18 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def displayed_provenance_spec(
         self,
-        base_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        base_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None = None,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         """Return provenance for the currently displayed data values."""
         if base_spec is None:
             base_spec = self.provenance_spec
         operation = self._accepted_filter_provenance_operation
         if operation is None:
             return base_spec
-        return erlab.interactive.imagetool.provenance.compose_full_provenance(
+        return erlab.interactive.imagetool.provenance_framework.compose_full_provenance(
             base_spec,
-            erlab.interactive.imagetool.provenance.full_data(operation),
+            erlab.interactive.imagetool.provenance_framework.full_data(operation),
         )
 
     def apply_func(
@@ -3085,7 +2181,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         update: bool = True,
         *,
         operation: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
+            | None
         ) = None,
         emit_edited: bool = False,
         preview: bool = True,
@@ -3134,7 +2231,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         update: bool = True,
         *,
         operation: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
+            | None
         ) = None,
         accept: bool = False,
         emit_edited: bool = False,
@@ -3168,7 +2266,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         update: bool = True,
         *,
         operation: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
+            | None
         ) = None,
         accept: bool = False,
         emit_edited: bool = False,
@@ -3208,7 +2307,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def apply_filter_operation(
         self,
         operation: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
+            | None
         ),
         update: bool = True,
         *,
@@ -3885,7 +2985,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+            tool.set_source_binding(
+                erlab.interactive.imagetool.provenance_framework.full_data()
+            )
         self.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -3895,7 +2997,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.data, data_name=self.watched_data_name, execute=False
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+            tool.set_source_binding(
+                erlab.interactive.imagetool.provenance_framework.full_data()
+            )
         self.add_tool_window(tool)
 
     def adjust_layout(

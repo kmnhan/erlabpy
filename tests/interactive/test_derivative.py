@@ -76,7 +76,7 @@ def test_dtool(qtbot, interpmode, smoothmode, nsmooth, method_idx) -> None:
 
     check_generated_code(win)
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(),
+        erlab.interactive.imagetool.provenance_framework.full_data(),
         auto_update=True,
         state="stale",
     )
@@ -208,8 +208,8 @@ def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> N
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.selection(
-            erlab.interactive.imagetool.provenance.TransposeOperation()
+        erlab.interactive.imagetool.provenance_framework.selection(
+            erlab.interactive.imagetool.provenance_framework.TransposeOperation()
         ),
         auto_update=True,
     )
@@ -236,7 +236,7 @@ def test_dtool_full_data_source_update_marks_unavailable_for_incompatible_data(
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(),
+        erlab.interactive.imagetool.provenance_framework.full_data(),
         auto_update=False,
     )
 
@@ -255,7 +255,7 @@ def test_dtool_restored_source_binding_without_parent_stays_stale(qtbot) -> None
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(),
+        erlab.interactive.imagetool.provenance_framework.full_data(),
         auto_update=True,
         state="stale",
     )
@@ -284,7 +284,7 @@ def test_dtool_source_update_with_temporarily_missing_parent_stays_stale(qtbot) 
     qtbot.addWidget(win)
 
     win.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(),
+        erlab.interactive.imagetool.provenance_framework.full_data(),
         auto_update=True,
         state="stale",
     )
@@ -355,7 +355,7 @@ def test_source_update_dialog_cancel_rejects(qtbot) -> None:
 
 
 def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
-    encoded = erlab.interactive.imagetool.provenance.encode_provenance_value(
+    encoded = erlab.interactive.imagetool.provenance_framework.encode_provenance_value(
         {
             "outer": {
                 "sel": slice(0.5, 2.5),
@@ -364,7 +364,9 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         }
     )
 
-    decoded = erlab.interactive.imagetool.provenance.decode_provenance_value(encoded)
+    decoded = erlab.interactive.imagetool.provenance_framework.decode_provenance_value(
+        encoded
+    )
     assert decoded == {
         "outer": {
             "sel": slice(0.5, 2.5),
@@ -379,11 +381,13 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         name="data",
     )
 
-    resolved_full = erlab.interactive.imagetool.provenance.full_data().apply(parent)
+    resolved_full = erlab.interactive.imagetool.provenance_framework.full_data().apply(
+        parent
+    )
     xr.testing.assert_identical(resolved_full, parent)
 
-    resolved_qsel = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.QSelOperation(
+    resolved_qsel = erlab.interactive.imagetool.provenance_framework.selection(
+        erlab.interactive.imagetool.provenance_framework.QSelOperation(
             kwargs={"x": 1.0, "x_width": 1.0}
         )
     )
@@ -391,15 +395,17 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         resolved_qsel.apply(parent), parent.qsel(x=1.0, x_width=1.0)
     )
 
-    resolved_selection = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.IselOperation(
+    resolved_selection = erlab.interactive.imagetool.provenance_framework.selection(
+        erlab.interactive.imagetool.provenance_framework.IselOperation(
             kwargs={"x": slice(1, None), "z": 1}
         ),
-        erlab.interactive.imagetool.provenance.SelOperation(
+        erlab.interactive.imagetool.provenance_framework.SelOperation(
             kwargs={"y": slice(11.0, 12.0)}
         ),
-        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
-        erlab.interactive.imagetool.provenance.TransposeOperation(dims=("y", "x")),
+        erlab.interactive.imagetool.provenance_framework.SortCoordOrderOperation(),
+        erlab.interactive.imagetool.provenance_framework.TransposeOperation(
+            dims=("y", "x")
+        ),
     )
     xr.testing.assert_identical(
         resolved_selection.apply(parent),
@@ -408,10 +414,10 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         .transpose("y", "x"),
     )
 
-    resolved_squeezed = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"z": 0}),
-        erlab.interactive.imagetool.provenance.TransposeOperation(),
-        erlab.interactive.imagetool.provenance.SqueezeOperation(),
+    resolved_squeezed = erlab.interactive.imagetool.provenance_framework.selection(
+        erlab.interactive.imagetool.provenance_framework.IselOperation(kwargs={"z": 0}),
+        erlab.interactive.imagetool.provenance_framework.TransposeOperation(),
+        erlab.interactive.imagetool.provenance_framework.SqueezeOperation(),
     )
     xr.testing.assert_identical(
         resolved_squeezed.apply(parent),
@@ -431,12 +437,14 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     parent_nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(
         parent_nonuniform_public
     )
-    resolved_nonuniform = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.QSelOperation(kwargs={"beta": 2.0}),
-        erlab.interactive.imagetool.provenance.IselOperation(
+    resolved_nonuniform = erlab.interactive.imagetool.provenance_framework.selection(
+        erlab.interactive.imagetool.provenance_framework.QSelOperation(
+            kwargs={"beta": 2.0}
+        ),
+        erlab.interactive.imagetool.provenance_framework.IselOperation(
             kwargs={"alpha": slice(1, 3)}
         ),
-        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
+        erlab.interactive.imagetool.provenance_framework.SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
         resolved_nonuniform.apply(parent_nonuniform),
@@ -447,12 +455,12 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         ValidationError,
         match="full_data', 'public_data', 'selection', 'script' or 'file",
     ):
-        erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+        erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
             {"kind": "invalid"}
         )
 
     with pytest.raises(ValidationError, match="Unknown provenance operation"):
-        erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+        erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
             {"kind": "selection", "operations": [{"op": "invalid"}]}
         )
 
@@ -530,8 +538,10 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     tool.setCentralWidget(replacement)
     assert tool.centralWidget() is replacement
 
-    spec = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"x": slice(0, 2)})
+    spec = erlab.interactive.imagetool.provenance_framework.selection(
+        erlab.interactive.imagetool.provenance_framework.IselOperation(
+            kwargs={"x": slice(0, 2)}
+        )
     )
     tool.set_source_binding(spec, auto_update=True, state="stale")
     assert tool.has_source_binding is True
@@ -578,7 +588,7 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert tool.source_state == "unavailable"
 
     tool.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(), auto_update=True
+        erlab.interactive.imagetool.provenance_framework.full_data(), auto_update=True
     )
     tool.fail_validate = True
     assert tool._update_from_parent_source() is False
@@ -595,13 +605,13 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     xr.testing.assert_identical(tool.tool_data, updated)
 
     tool.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(), auto_update=False
+        erlab.interactive.imagetool.provenance_framework.full_data(), auto_update=False
     )
     tool.handle_parent_source_replaced(updated * 2)
     assert tool.source_state == "stale"
 
     tool.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(), auto_update=True
+        erlab.interactive.imagetool.provenance_framework.full_data(), auto_update=True
     )
     tool.fail_validate = True
     tool.handle_parent_source_replaced(updated)
@@ -622,7 +632,7 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
         )
     )
     tool.set_source_binding(
-        erlab.interactive.imagetool.provenance.full_data(), auto_update=True
+        erlab.interactive.imagetool.provenance_framework.full_data(), auto_update=True
     )
     tool.handle_parent_source_replaced(bad_parent)
     assert tool.source_state == "unavailable"
@@ -679,8 +689,8 @@ def test_tool_copy_code_includes_parent_provenance_for_standalone_imagetool(
     assert isinstance(parent, erlab.interactive.imagetool.ImageTool)
     qtbot.addWidget(parent)
     parent.set_provenance_spec(
-        erlab.interactive.imagetool.provenance.selection(
-            erlab.interactive.imagetool.provenance.IselOperation(
+        erlab.interactive.imagetool.provenance_framework.selection(
+            erlab.interactive.imagetool.provenance_framework.IselOperation(
                 kwargs={"x": slice(0, 2)}
             )
         )
@@ -688,7 +698,9 @@ def test_tool_copy_code_includes_parent_provenance_for_standalone_imagetool(
 
     tool = _DummyTool(data.isel(x=slice(0, 2)))
     qtbot.addWidget(tool)
-    tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+    tool.set_source_binding(
+        erlab.interactive.imagetool.provenance_framework.full_data()
+    )
     parent.slicer_area.add_tool_window(tool, transfer_to_manager=False)
 
     code = tool.copy_code()
@@ -744,8 +756,8 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
 
     data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
     parent_provenance = {
-        "spec": erlab.interactive.imagetool.provenance.selection(
-            erlab.interactive.imagetool.provenance.IselOperation(
+        "spec": erlab.interactive.imagetool.provenance_framework.selection(
+            erlab.interactive.imagetool.provenance_framework.IselOperation(
                 kwargs={"x": slice(0, 2)}
             )
         )
@@ -753,7 +765,9 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
 
     tool = _DummyTool(data.isel(x=slice(0, 2)))
     qtbot.addWidget(tool)
-    tool.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
+    tool.set_source_binding(
+        erlab.interactive.imagetool.provenance_framework.full_data()
+    )
     tool.set_input_provenance_parent_fetcher(lambda: parent_provenance["spec"])
 
     initial_code = tool.copy_code()
@@ -765,8 +779,12 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
     assert isinstance(initial_result, xr.DataArray)
     xr.testing.assert_identical(initial_result, data.isel(x=slice(0, 2)).mean())
 
-    parent_provenance["spec"] = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"y": slice(0, 2)})
+    parent_provenance["spec"] = (
+        erlab.interactive.imagetool.provenance_framework.selection(
+            erlab.interactive.imagetool.provenance_framework.IselOperation(
+                kwargs={"y": slice(0, 2)}
+            )
+        )
     )
     stale_code = tool.copy_code()
     stale_namespace = _exec_generated_code(
@@ -834,7 +852,7 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
         def update_data(self, new_data: xr.DataArray) -> None:
             self._data = new_data
 
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
 
     tool = _DummyTool(data)

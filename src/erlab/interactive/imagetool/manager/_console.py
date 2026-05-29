@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Jupyter console widget for ImageToolManager."""
 
 from __future__ import annotations
@@ -87,9 +88,9 @@ def _tool_data_name(index: int) -> str:
 
 
 def _dedupe_script_inputs(
-    inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
-) -> tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...]:
-    deduped: list[erlab.interactive.imagetool.provenance.ScriptInput] = []
+    inputs: Sequence[erlab.interactive.imagetool.provenance_framework.ScriptInput],
+) -> tuple[erlab.interactive.imagetool.provenance_framework.ScriptInput, ...]:
+    deduped: list[erlab.interactive.imagetool.provenance_framework.ScriptInput] = []
     seen: set[str] = set()
     for script_input in inputs:
         if script_input.name in seen:
@@ -198,7 +199,7 @@ def _callable_operand(
         "era",
         "eri",
         "eplt",
-        *erlab.interactive.imagetool.provenance._SCRIPT_REPLAY_ALLOWED_BUILTINS,
+        *erlab.interactive.imagetool.provenance_framework._SCRIPT_REPLAY_ALLOWED_BUILTINS,
     }
     for global_name in sorted(global_names):
         if global_name in allowed_globals:
@@ -226,7 +227,7 @@ def _callable_operand(
 
     code_prelude = _dedupe_code_preludes(prelude, (source,))
     try:
-        erlab.interactive.imagetool.provenance._validate_script_replay_code(
+        erlab.interactive.imagetool.provenance_framework._validate_script_replay_code(
             _script_code(code_prelude, "derived = data")
         )
     except (TypeError, ValueError):
@@ -238,12 +239,14 @@ def _callable_operand(
 class _ConsoleOperand:
     value: typing.Any
     code: str
-    script_inputs: tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...] = ()
+    script_inputs: tuple[
+        erlab.interactive.imagetool.provenance_framework.ScriptInput, ...
+    ] = ()
     copyable: bool = True
     code_prelude: tuple[str, ...] = ()
     seed_expression: str | None = None
     operations: tuple[
-        erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation, ...
     ] = ()
 
 
@@ -297,7 +300,7 @@ def _literal_code(value: typing.Any) -> tuple[str, bool]:
 def _merge_operands(
     *operands: _ConsoleOperand,
 ) -> tuple[
-    tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...],
+    tuple[erlab.interactive.imagetool.provenance_framework.ScriptInput, ...],
     bool,
     tuple[str, ...],
 ]:
@@ -418,7 +421,7 @@ def _format_call_code(
     args: tuple[typing.Any, ...], kwargs: dict[str, typing.Any]
 ) -> tuple[
     str,
-    tuple[erlab.interactive.imagetool.provenance.ScriptInput, ...],
+    tuple[erlab.interactive.imagetool.provenance_framework.ScriptInput, ...],
     tuple[typing.Any, ...],
     dict[str, typing.Any],
     bool,
@@ -442,19 +445,24 @@ def _format_call_code(
 
 
 def _structured_operation_from_call(
-    call: erlab.interactive.imagetool.provenance.ConsoleCall,
-) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+    call: erlab.interactive.imagetool.provenance_framework.ConsoleCall,
+) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation | None:
     with contextlib.suppress(Exception):
-        return erlab.interactive.imagetool.provenance.operation_from_console_call(call)
+        return erlab.interactive.imagetool.provenance_framework.operation_from_console_call(
+            call
+        )
     return None
 
 
 def _structured_seed_and_operations(
     source: _ConsoleOperand,
-    operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None,
+    operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
+    | None,
 ) -> tuple[
     str | None,
-    tuple[erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...],
+    tuple[
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation, ...
+    ],
 ]:
     if operation is None or (source.seed_expression is None and not source.copyable):
         return None, ()
@@ -504,7 +512,7 @@ class _ConsoleAccessorProxy:
             source_operand,
             _ConsoleOperand(None, "", call_inputs, args_copyable, call_prelude),
         )
-        call = erlab.interactive.imagetool.provenance.ConsoleCall(
+        call = erlab.interactive.imagetool.provenance_framework.ConsoleCall(
             func=func,
             accessor_path=path,
             args=raw_args,
@@ -572,7 +580,9 @@ class _ConsoleCoarsenProxy:
         expression: str,
         raw_args: tuple[typing.Any, ...],
         raw_kwargs: dict[str, typing.Any],
-        script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
+        script_inputs: Sequence[
+            erlab.interactive.imagetool.provenance_framework.ScriptInput
+        ],
         *,
         copyable: bool,
         code_prelude: Sequence[str],
@@ -620,7 +630,7 @@ class _ConsoleCoarsenProxy:
                     script_input.name
                     for script_input in self._source_operand.script_inputs
                 }
-                call = erlab.interactive.imagetool.provenance.ConsoleCall(
+                call = erlab.interactive.imagetool.provenance_framework.ConsoleCall(
                     dataarray_method="coarsen",
                     args=self._raw_args,
                     kwargs={**self._raw_kwargs, "_reducer": attr},
@@ -714,12 +724,13 @@ class _ConsoleModuleProxy(types.ModuleType):
             operation = None
             seed_expression = None
             operations: tuple[
-                erlab.interactive.imagetool.provenance.ToolProvenanceOperation, ...
+                erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
+                ...,
             ] = ()
             if source_operand is not None:
                 source_inputs = source_operand.script_inputs
                 source_names = {script_input.name for script_input in source_inputs}
-                call = erlab.interactive.imagetool.provenance.ConsoleCall(
+                call = erlab.interactive.imagetool.provenance_framework.ConsoleCall(
                     func=value,
                     args=call_args,
                     kwargs=call_kwargs,
@@ -826,19 +837,21 @@ class _ConsoleDataHandleMixin:
 
     def _console_provenance_spec(
         self, *, active_name: str, label: str
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         raise NotImplementedError
 
     def _wrap_console_result(
         self,
         value: typing.Any,
         expression: str,
-        script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
+        script_inputs: Sequence[
+            erlab.interactive.imagetool.provenance_framework.ScriptInput
+        ],
         *,
         copyable: bool,
         code_prelude: Sequence[str] = (),
         operations: Sequence[
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
         ] = (),
         seed_expression: str | None = None,
     ) -> typing.Any:
@@ -1107,7 +1120,7 @@ class _ConsoleDataHandleMixin:
                     copyable=copyable,
                     code_prelude=code_prelude,
                 )
-            call = erlab.interactive.imagetool.provenance.ConsoleCall(
+            call = erlab.interactive.imagetool.provenance_framework.ConsoleCall(
                 func=data_attr,
                 dataarray_method=attr,
                 args=raw_args,
@@ -1269,7 +1282,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
     def _script_input(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ScriptInput:
+    ) -> erlab.interactive.imagetool.provenance_framework.ScriptInput:
         label = self._console_label
         if self._wrapper.name:
             label += f": {self._wrapper.name}"
@@ -1279,7 +1292,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
             if wrapper_provenance is not None
             else None
         )
-        return erlab.interactive.imagetool.provenance.ScriptInput(
+        return erlab.interactive.imagetool.provenance_framework.ScriptInput(
             name=self._console_input_name,
             label=label,
             node_uid=self._wrapper.uid,
@@ -1296,7 +1309,7 @@ class ToolNamespace(_ConsoleDataHandleMixin):
 
     def _console_provenance_spec(
         self, *, active_name: str, label: str
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         return self._wrapper.displayed_provenance_spec
 
     def __setitem__(self, key: typing.Any, value: typing.Any) -> None:
@@ -1316,8 +1329,8 @@ class ToolNamespace(_ConsoleDataHandleMixin):
                 )
             ),
         )
-        provenance_spec = erlab.interactive.imagetool.provenance.script(
-            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+        provenance_spec = erlab.interactive.imagetool.provenance_framework.script(
+            erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation(
                 label=f"Set {self._console_label} data item from console",
                 code=code,
                 copyable=copyable,
@@ -1414,12 +1427,14 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
         tools: ToolsNamespace | None,
         data: xr.DataArray,
         expression: str,
-        script_inputs: Sequence[erlab.interactive.imagetool.provenance.ScriptInput],
+        script_inputs: Sequence[
+            erlab.interactive.imagetool.provenance_framework.ScriptInput
+        ],
         *,
         copyable: bool,
         code_prelude: Sequence[str] = (),
         operations: Sequence[
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
         ] = (),
         seed_expression: str | None = None,
     ) -> None:
@@ -1472,7 +1487,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
             self.data,
             self._console_name,
             (
-                erlab.interactive.imagetool.provenance.ScriptInput(
+                erlab.interactive.imagetool.provenance_framework.ScriptInput(
                     name=self._console_name,
                     label=f"console variable {self._console_name!r}",
                     provenance_spec=provenance_payload,
@@ -1483,7 +1498,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
 
     def _console_provenance_spec(
         self, *, active_name: str, label: str
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         if not self._script_inputs:
             return None
         if self._operations and self._seed_expression is not None:
@@ -1491,7 +1506,7 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
                 self._code_prelude,
                 f"{active_name} = {self._seed_expression}",
             )
-            return erlab.interactive.imagetool.provenance.script(
+            return erlab.interactive.imagetool.provenance_framework.script(
                 *self._operations,
                 start_label="Run ImageTool manager console code",
                 seed_code=seed_code,
@@ -1499,8 +1514,8 @@ class _DerivedDataNamespace(_ConsoleDataHandleMixin):
                 script_inputs=self._script_inputs,
             )
         code = _script_code(self._code_prelude, f"{active_name} = {self._expression}")
-        return erlab.interactive.imagetool.provenance.script(
-            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+        return erlab.interactive.imagetool.provenance_framework.script(
+            erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation(
                 label=label,
                 code=code,
                 copyable=self._copyable,
@@ -1710,7 +1725,7 @@ class ToolsNamespace:
     def _show_dataarray_with_provenance(
         self,
         data: xr.DataArray,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         **kwargs,
     ) -> bool:
         display_kwargs = dict(kwargs)

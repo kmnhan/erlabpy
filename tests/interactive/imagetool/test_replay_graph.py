@@ -30,7 +30,7 @@ def _exec_generated_code(
 
 
 def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     return prov.FileLoadSource(
         path=str(path),
         loader_label="xarray.load_dataarray",
@@ -45,7 +45,7 @@ def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
 
 
 def _file_spec(path: pathlib.Path | str, *, selected_index: int = 0):
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     return prov.file_load(
         start_label="Load source",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
@@ -54,7 +54,7 @@ def _file_spec(path: pathlib.Path | str, *, selected_index: int = 0):
 
 
 def _erlab_file_spec(path: pathlib.Path | str, loader: str):
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     return prov.file_load(
         start_label=f"Load {path}",
         seed_code=(
@@ -93,7 +93,7 @@ def _assert_dense_replay_temps(code: str) -> None:
 
 
 def test_replay_graph_low_level_validation_helpers() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     assert _replay_graph._code_uses_name("derived = data", "data")
     assert not _replay_graph._code_uses_name("derived =", "data")
@@ -278,7 +278,7 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
 def test_replay_graph_file_script_input_and_rebuild_edges(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     path = tmp_path / "source.nc"
     data.to_netcdf(path)
@@ -504,7 +504,7 @@ def test_replay_graph_operation_code_uses_parameterized_names() -> None:
 def test_replay_graph_emits_shared_file_and_operation_prefix(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "polarization.nc"
     source = _polarization_source(path)
     file_spec = _file_spec(path)
@@ -551,7 +551,7 @@ def test_replay_graph_emits_shared_file_and_operation_prefix(
 def test_replay_graph_handles_structured_script_operations(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -588,7 +588,7 @@ def test_replay_graph_handles_structured_script_operations(
 def test_replay_graph_emits_structured_script_operation_without_identity_relays(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -623,7 +623,7 @@ def test_replay_graph_emits_structured_script_operation_without_identity_relays(
 
 
 def test_replay_graph_preserves_script_inputs_after_structured_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     spec = prov.script(
         prov.AverageOperation(dims=("x",)),
@@ -653,7 +653,7 @@ def test_replay_graph_preserves_script_inputs_after_structured_operation() -> No
 
 
 def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     spec = prov.script(
         prov.AverageOperation(dims=("x",)),
@@ -685,7 +685,7 @@ def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
 
 
 def test_replay_graph_rebases_context_for_inlined_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
@@ -715,7 +715,7 @@ def test_replay_graph_rebases_context_for_inlined_operation() -> None:
 def test_replay_graph_rebases_context_in_script_input_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -752,7 +752,7 @@ def test_replay_graph_rebases_context_in_script_input_code(
 def test_replay_graph_shares_structured_console_alias_prefixes(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "polarization.nc"
     source = _polarization_source(path)
     averaged = prov.script(
@@ -799,7 +799,7 @@ def test_replay_graph_shares_structured_console_alias_prefixes(
 def test_replay_graph_display_normalizes_nested_derived_console_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "cd_map.nc"
     source = xr.DataArray(
         np.arange(2 * 6 * 10, dtype=float).reshape(2, 6, 10) + 1.0,
@@ -985,7 +985,7 @@ def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
 
 
 def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     graph = _replay_graph.ReplayGraph(display=True)
     source_key = graph.add_node(
@@ -1034,7 +1034,7 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
 def test_replay_graph_display_promotes_ui_style_script_input_names(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     source = _polarization_source(path)
     left = prov.compose_full_provenance(
@@ -1082,7 +1082,7 @@ def test_replay_graph_display_promotes_ui_style_script_input_names(
 
 
 def test_replay_graph_display_uses_watched_roots_as_raw_inputs() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     rc_data = xr.DataArray(np.arange(3.0), dims=("x",))
     lc_data = xr.DataArray(np.arange(3.0) + 10.0, dims=("x",))
     rc = prov.script(
@@ -1116,7 +1116,7 @@ def test_replay_graph_display_uses_watched_roots_as_raw_inputs() -> None:
 
 
 def test_replay_graph_display_keeps_helpers_from_raw_seed_inputs() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     raw_data = xr.DataArray(np.arange(1.0, 4.0), dims=("x",))
     root = prov.script(
         start_label="Start from watched variable 'raw'",
@@ -1146,7 +1146,7 @@ def test_replay_graph_display_keeps_helpers_from_raw_seed_inputs() -> None:
 def test_replay_graph_display_hides_internal_source_view_restore_only(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "nonuniform.nc"
     source = xr.DataArray(
         np.arange(6.0).reshape(3, 2),
@@ -1179,7 +1179,7 @@ def test_replay_graph_display_hides_internal_source_view_restore_only(
 def test_replay_graph_display_keeps_bindings_for_scoped_or_rebound_inputs(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     source = xr.DataArray(np.arange(3.0), dims=("x",))
     source.to_netcdf(path)
@@ -1230,7 +1230,7 @@ def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
     seed_code: str | None,
     active_name: str,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     spec = prov.script(
         prov.RenameOperation(name="renamed"),
@@ -1251,7 +1251,7 @@ def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
 def test_replay_graph_display_skips_whole_array_rename(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
     path = tmp_path / "source.nc"
     data.to_netcdf(path)
@@ -1281,7 +1281,7 @@ def test_replay_graph_display_skips_whole_array_rename(
 def test_replay_graph_display_keeps_name_rename_before_script_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
     path = tmp_path / "source.nc"
     data.to_netcdf(path)
@@ -1319,7 +1319,7 @@ def test_replay_graph_display_keeps_name_rename_before_script_code(
 def test_script_replayability_does_not_generate_structured_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     spec = prov.script(
         prov.RenameOperation(name="renamed"),
         start_label="Run script",
@@ -1339,7 +1339,7 @@ def test_script_replayability_does_not_generate_structured_code(
 def test_replay_graph_uses_existing_console_alias_for_script_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -1379,7 +1379,7 @@ def test_replay_graph_uses_existing_console_alias_for_script_code(
 def test_replay_graph_uses_existing_console_alias_for_structured_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -1425,7 +1425,7 @@ def test_replay_graph_uses_existing_console_alias_for_structured_code(
 
 
 def test_replay_graph_keeps_structurally_distinct_file_loads() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     first = _file_spec("scan.h5", selected_index=0)
     second = _file_spec("scan.h5", selected_index=1)
     spec = prov.script(
@@ -1444,7 +1444,7 @@ def test_replay_graph_keeps_structurally_distinct_file_loads() -> None:
 
 
 def test_replay_graph_reuses_shared_loader_setup() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     spec = prov.script(
         prov.ScriptCodeOperation(
             label="Add",
@@ -1474,7 +1474,7 @@ def test_replay_graph_reuses_shared_loader_setup() -> None:
 
 
 def test_replay_graph_reemits_stateful_setup_after_loader_change() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     spec = prov.script(
         prov.ScriptCodeOperation(
             label="Add",
@@ -1511,7 +1511,7 @@ def test_replay_graph_reemits_stateful_setup_after_loader_change() -> None:
 
 
 def test_replay_graph_does_not_merge_operations_with_different_contexts() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     file_spec = _file_spec("scan.h5")
     first_spec = prov.compose_full_provenance(
         file_spec,
@@ -1543,7 +1543,7 @@ def test_replay_graph_does_not_merge_operations_with_different_contexts() -> Non
 
 
 def test_replay_graph_script_nodes_are_not_deduplicated() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     first = prov.script(
         start_label="Make first",
         seed_code="derived = xr.DataArray([1.0, 2.0], dims=['x'])",
@@ -1575,7 +1575,7 @@ def test_replay_graph_script_nodes_are_not_deduplicated() -> None:
 
 
 def test_replay_graph_raises_typed_errors_for_unsupported_script() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray([1.0], dims=("x",))
     spec = prov.script(
         prov.ScriptCodeOperation(label="Unsupported", code="import os\nderived = data"),
@@ -1591,7 +1591,7 @@ def test_replay_graph_emits_correct_with_edge_operation_code(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
     data.to_netcdf(path)
@@ -1619,7 +1619,7 @@ def test_replay_graph_emits_correct_with_edge_operation_code(
 
 
 def test_replay_graph_execution_matches_emitted_code(tmp_path: pathlib.Path) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "source.nc"
     source = xr.DataArray(
         np.arange(6.0).reshape(2, 3),

@@ -13,7 +13,7 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool.viewer import (
+from erlab.interactive.imagetool.viewer_state import (
     _associated_coord_color,
     _associated_coord_icon,
     _plotted_associated_coord_names,

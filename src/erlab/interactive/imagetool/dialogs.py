@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Dialogs for data manipulation found in the menu bar."""
 
 from __future__ import annotations
@@ -20,6 +21,32 @@ from erlab.interactive.imagetool._dialog_widgets import (
     CoordinateGridWidget,
 )
 
+__all__ = [
+    "AggregateDialog",
+    "AssignAttrsDialog",
+    "AssignCoordsDialog",
+    "CoarsenDialog",
+    "CropDialog",
+    "CropToViewDialog",
+    "DataFilterDialog",
+    "DataTransformDialog",
+    "DivideByCoordDialog",
+    "EdgeCorrectionDialog",
+    "GaussianFilterDialog",
+    "InterpolationDialog",
+    "LeadingEdgeDialog",
+    "NormalizeDialog",
+    "ROIMaskDialog",
+    "ROIPathDialog",
+    "RenameDimsCoordsDialog",
+    "RotationDialog",
+    "SelectionDialog",
+    "SwapDimsDialog",
+    "SymmetrizeDialog",
+    "SymmetrizeNfoldDialog",
+    "ThinDialog",
+]
+
 if typing.TYPE_CHECKING:
     from collections.abc import Hashable
 
@@ -27,7 +54,8 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool.plot_items import ItoolPolyLineROI
     from erlab.interactive.imagetool.slicer import ArraySlicer
-    from erlab.interactive.imagetool.viewer import ColorMapState, ImageSlicerArea
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
+    from erlab.interactive.imagetool.viewer_state import ColorMapState
 
 _GAUSSIAN_FWHM_FACTOR: float = 2 * math.sqrt(2 * math.log(2))
 
@@ -273,23 +301,25 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def source_operations(
         self,
-    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+    ) -> list[erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation]:
         operation = self.source_transform_operation()
         return [] if operation is None else [operation]
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+    ) -> (
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation | None
+    ):
         return None
 
     def source_spec(
         self, new_name: str
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
         operations = self.source_operations()
         builder = (
-            erlab.interactive.imagetool.provenance.public_data
+            erlab.interactive.imagetool.provenance_framework.public_data
             if self.apply_on_nonuniform_data
-            else erlab.interactive.imagetool.provenance.full_data
+            else erlab.interactive.imagetool.provenance_framework.full_data
         )
         if not self.apply_on_nonuniform_data and any(
             str(dim).endswith("_idx")
@@ -297,17 +327,17 @@ class DataTransformDialog(_DataManipulationDialog):
             for dim in self.slicer_area.data.dims
         ):
             operations.append(
-                erlab.interactive.imagetool.provenance.RestoreNonuniformDimsOperation()
+                erlab.interactive.imagetool.provenance_framework.RestoreNonuniformDimsOperation()
             )
         return builder(*operations).append_final_rename(new_name)
 
     def _detached_provenance_spec(
         self,
-        parent_provenance: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        parent_provenance: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None,
-        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         new_name: str,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
         return self._compose_transform_provenance(
             parent_provenance,
             source_spec,
@@ -316,26 +346,27 @@ class DataTransformDialog(_DataManipulationDialog):
 
     @staticmethod
     def _compose_transform_provenance(
-        base_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
-        source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        base_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+        | None,
+        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         new_name: str,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
         if base_spec is None:
             return source_spec
         with contextlib.suppress(TypeError):
-            live_parent = (
-                erlab.interactive.imagetool.provenance.require_live_source_spec(
-                    base_spec
-                )
+            live_parent = erlab.interactive.imagetool.provenance_framework.require_live_source_spec(
+                base_spec
             )
             if live_parent is not None:
                 operations = source_spec.drop_trailing_rename().operations
                 return live_parent.append_replacement_operations(
                     *operations
                 ).append_final_rename(new_name)
-        composed = erlab.interactive.imagetool.provenance.compose_full_provenance(
-            base_spec,
-            source_spec,
+        composed = (
+            erlab.interactive.imagetool.provenance_framework.compose_full_provenance(
+                base_spec,
+                source_spec,
+            )
         )
         if composed is None:
             raise RuntimeError("Could not compose ImageTool transform provenance.")
@@ -343,9 +374,9 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def _compose_replace_source_spec(
         self,
-        existing_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
+        existing_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         new_name: str,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
         return self._compose_transform_provenance(
             existing_spec,
             self.source_spec(new_name),
@@ -356,7 +387,8 @@ class DataTransformDialog(_DataManipulationDialog):
         self,
         target: int | str,
         new_name: str,
-        fallback_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+        fallback_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+        | None,
     ) -> bool:
         manager, _ = self._manager_target()
         if manager is None:
@@ -383,7 +415,7 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def _set_current_tool_provenance(
         self,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | None,
     ) -> None:
         parent = self.slicer_area.parent()
@@ -401,7 +433,7 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def make_code(self) -> str:
         try:
-            return erlab.interactive.imagetool.provenance.operations_expression_code(
+            return erlab.interactive.imagetool.provenance_framework.operations_expression_code(
                 self.source_operations(),
                 self._copy_data_name(),
             )
@@ -475,11 +507,9 @@ class DataTransformDialog(_DataManipulationDialog):
                     parent_provenance = manager._node_for_target(
                         target
                     ).displayed_provenance_spec
-            nested_provenance_spec = (
-                erlab.interactive.imagetool.provenance.compose_full_provenance(
-                    parent_provenance,
-                    source_spec,
-                )
+            nested_provenance_spec = erlab.interactive.imagetool.provenance_framework.compose_full_provenance(
+                parent_provenance,
+                source_spec,
             )
             detached_provenance_spec = self._detached_provenance_spec(
                 parent_provenance,
@@ -594,7 +624,7 @@ class DataFilterDialog(_DataManipulationDialog):
 
     def restore_filter_operation(
         self,
-        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
     ) -> None:
         """Restore widgets from an active filter operation when supported."""
         del operation
@@ -676,18 +706,20 @@ class DataFilterDialog(_DataManipulationDialog):
 
     def filter_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+    ) -> (
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation | None
+    ):
         return None
 
     def filter_operations(
         self,
-    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+    ) -> list[erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation]:
         operation = self.filter_operation()
         return [] if operation is None else [operation]
 
     def make_code(self) -> str:
         try:
-            return erlab.interactive.imagetool.provenance.operations_expression_code(
+            return erlab.interactive.imagetool.provenance_framework.operations_expression_code(
                 self.filter_operations(),
                 self._copy_data_name(),
             )
@@ -768,8 +800,8 @@ class RotationDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.RotateOperation(
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance_framework.RotateOperation(
             **self._rotate_params
         )
 
@@ -824,12 +856,14 @@ class AggregateDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         if not self._target_dims:
             raise ValueError("No dimensions selected")
-        return erlab.interactive.imagetool.provenance.QSelAggregationOperation(
-            dims=self._target_dims,
-            func=self._reducer,
+        return (
+            erlab.interactive.imagetool.provenance_framework.QSelAggregationOperation(
+                dims=self._target_dims,
+                func=self._reducer,
+            )
         )
 
     @QtCore.Slot()
@@ -1155,22 +1189,28 @@ class SelectionDialog(DataTransformDialog):
 
     def source_operations(
         self,
-    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+    ) -> list[erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation]:
         isel_kwargs, sel_kwargs, qsel_kwargs = self._selection_kwargs()
         operations: list[
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
         ] = []
         if isel_kwargs:
             operations.append(
-                erlab.interactive.imagetool.provenance.IselOperation(kwargs=isel_kwargs)
+                erlab.interactive.imagetool.provenance_framework.IselOperation(
+                    kwargs=isel_kwargs
+                )
             )
         if sel_kwargs:
             operations.append(
-                erlab.interactive.imagetool.provenance.SelOperation(kwargs=sel_kwargs)
+                erlab.interactive.imagetool.provenance_framework.SelOperation(
+                    kwargs=sel_kwargs
+                )
             )
         if qsel_kwargs:
             operations.append(
-                erlab.interactive.imagetool.provenance.QSelOperation(kwargs=qsel_kwargs)
+                erlab.interactive.imagetool.provenance_framework.QSelOperation(
+                    kwargs=qsel_kwargs
+                )
             )
         return operations
 
@@ -1347,14 +1387,14 @@ class InterpolationDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.InterpolationOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.InterpolationOperation:
         dim = self._selected_dim
         if dim is None:
             raise ValueError("No dimension selected")
         source_error = self._source_coord_error(dim)
         if source_error is not None:
             raise ValueError(source_error)
-        return erlab.interactive.imagetool.provenance.InterpolationOperation(
+        return erlab.interactive.imagetool.provenance_framework.InterpolationOperation(
             dim=dim,
             values=self._target_values(),
             method=typing.cast(
@@ -1473,14 +1513,14 @@ class LeadingEdgeDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.LeadingEdgeOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.LeadingEdgeOperation:
         dim = self._selected_dim
         if dim is None:
             raise ValueError("No dimension selected")
         source_error = self._source_coord_error(dim)
         if source_error is not None:
             raise ValueError(source_error)
-        return erlab.interactive.imagetool.provenance.LeadingEdgeOperation(
+        return erlab.interactive.imagetool.provenance_framework.LeadingEdgeOperation(
             fraction=float(self.fraction_spin.value()),
             dim=dim,
             direction=self._direction,
@@ -1610,10 +1650,10 @@ class CoarsenDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         if not self._selected_windows:
             raise ValueError("No dimensions selected")
-        return erlab.interactive.imagetool.provenance.CoarsenOperation(
+        return erlab.interactive.imagetool.provenance_framework.CoarsenOperation(
             dim=self._selected_windows,
             boundary=self.boundary_combo.currentText(),
             side=self.side_combo.currentText(),
@@ -1765,16 +1805,16 @@ class ThinDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         if self._use_global_mode:
             if self.global_spin.value() <= 1:
                 raise ValueError("No thinning requested")
-            return erlab.interactive.imagetool.provenance.ThinOperation(
+            return erlab.interactive.imagetool.provenance_framework.ThinOperation(
                 mode="global", factor=self.global_spin.value()
             )
         if not self._effective_factors:
             raise ValueError("No thinning requested")
-        return erlab.interactive.imagetool.provenance.ThinOperation(
+        return erlab.interactive.imagetool.provenance_framework.ThinOperation(
             mode="per_dim", factors=self._effective_factors
         )
 
@@ -1897,8 +1937,8 @@ class SymmetrizeDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.SymmetrizeOperation(
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance_framework.SymmetrizeOperation(
             **self._params
         )
 
@@ -1985,9 +2025,11 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.SymmetrizeNfoldOperation(
-            **self._params
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
+        return (
+            erlab.interactive.imagetool.provenance_framework.SymmetrizeNfoldOperation(
+                **self._params
+            )
         )
 
 
@@ -2004,13 +2046,15 @@ class EdgeCorrectionDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         edge_fit = getattr(self, "_edge_fit", None)
         if edge_fit is None:
             raise RuntimeError("Edge correction fit data has not been loaded.")
-        return erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation(
-            edge_fit=edge_fit,
-            shift_coords=self.shift_coord_check.isChecked(),
+        return (
+            erlab.interactive.imagetool.provenance_framework.CorrectWithEdgeOperation(
+                edge_fit=edge_fit,
+                shift_coords=self.shift_coord_check.isChecked(),
+            )
         )
 
     def _validate(self) -> QtWidgets.QDialog.DialogCode:
@@ -2039,11 +2083,11 @@ class _BaseCropDialog(DataTransformDialog):
 
     def source_operations(
         self,
-    ) -> list[erlab.interactive.imagetool.provenance.ToolProvenanceOperation]:
+    ) -> list[erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation]:
         sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
         isel_kwargs: dict[Hashable, slice] = {}
         operations: list[
-            erlab.interactive.imagetool.provenance.ToolProvenanceOperation
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
         ] = []
 
         for key in list(sel_kwargs.keys()):
@@ -2052,11 +2096,15 @@ class _BaseCropDialog(DataTransformDialog):
 
         if sel_kwargs:
             operations.append(
-                erlab.interactive.imagetool.provenance.SelOperation(kwargs=sel_kwargs)
+                erlab.interactive.imagetool.provenance_framework.SelOperation(
+                    kwargs=sel_kwargs
+                )
             )
         if isel_kwargs:
             operations.append(
-                erlab.interactive.imagetool.provenance.IselOperation(kwargs=isel_kwargs)
+                erlab.interactive.imagetool.provenance_framework.IselOperation(
+                    kwargs=isel_kwargs
+                )
             )
         return operations
 
@@ -2271,11 +2319,13 @@ class NormalizeDialog(DataFilterDialog):
 
     def filter_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+    ) -> (
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation | None
+    ):
         norm_dims = self._norm_dims
         if not norm_dims:
             return None
-        return erlab.interactive.imagetool.provenance.NormalizeOperation(
+        return erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
             dims=norm_dims,
             mode=self._mode,
             denominator_rtol=self.denominator_rtol,
@@ -2283,10 +2333,11 @@ class NormalizeDialog(DataFilterDialog):
 
     def restore_filter_operation(
         self,
-        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
     ) -> None:
         if not isinstance(
-            operation, erlab.interactive.imagetool.provenance.NormalizeOperation
+            operation,
+            erlab.interactive.imagetool.provenance_framework.NormalizeOperation,
         ):
             return
         for check in self.dim_checks.values():
@@ -2384,7 +2435,7 @@ class DivideByCoordDialog(DataTransformDialog):
             return
         coord = self._source_data.coords[coord_name]
         try:
-            erlab.interactive.imagetool.provenance.DivideByCoordOperation._raise_if_zero(
+            erlab.interactive.imagetool.provenance_framework.DivideByCoordOperation._raise_if_zero(
                 coord
             )
         except ValueError:
@@ -2399,11 +2450,11 @@ class DivideByCoordDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         coord_name = self._selected_coord_name
         if coord_name is None:
             raise ValueError("No coordinate selected")
-        return erlab.interactive.imagetool.provenance.DivideByCoordOperation(
+        return erlab.interactive.imagetool.provenance_framework.DivideByCoordOperation(
             coord_name=coord_name
         )
 
@@ -2586,20 +2637,23 @@ class GaussianFilterDialog(DataFilterDialog):
 
     def filter_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+    ) -> (
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation | None
+    ):
         sigma_values, _ = self._sigma_values()
         if not sigma_values:
             return None
-        return erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        return erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
             sigma=sigma_values
         )
 
     def restore_filter_operation(
         self,
-        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
     ) -> None:
         if not isinstance(
-            operation, erlab.interactive.imagetool.provenance.GaussianFilterOperation
+            operation,
+            erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation,
         ):
             return
         for check in self.dim_checks.values():
@@ -2711,10 +2765,10 @@ class SwapDimsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         if not self._swap_mapping:
             raise ValueError("No dimensions changed")
-        return erlab.interactive.imagetool.provenance.SwapDimsOperation(
+        return erlab.interactive.imagetool.provenance_framework.SwapDimsOperation(
             mapping=self._swap_mapping
         )
 
@@ -2842,11 +2896,13 @@ class RenameDimsCoordsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         if not self._rename_mapping:
             raise ValueError("No names changed")
-        return erlab.interactive.imagetool.provenance.RenameDimsCoordsOperation(
-            mapping=typing.cast("dict[Hashable, Hashable]", self._rename_mapping)
+        return (
+            erlab.interactive.imagetool.provenance_framework.RenameDimsCoordsOperation(
+                mapping=typing.cast("dict[Hashable, Hashable]", self._rename_mapping)
+            )
         )
 
 
@@ -3044,29 +3100,31 @@ class AssignCoordsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
         if self._mode_tabs.currentIndex() == 1:
             values, dim = self._add_coord_values()
             name = self._add_name_edit.text().strip()
             if dim is None:
-                return (
-                    erlab.interactive.imagetool.provenance.AssignScalarCoordOperation(
-                        coord_name=name,
-                        value=values,
-                    )
+                return erlab.interactive.imagetool.provenance_framework.AssignScalarCoordOperation(
+                    coord_name=name,
+                    value=values,
                 )
-            return erlab.interactive.imagetool.provenance.AssignCoord1DOperation(
-                coord_name=name,
-                dim=dim,
-                values=values,
+            return (
+                erlab.interactive.imagetool.provenance_framework.AssignCoord1DOperation(
+                    coord_name=name,
+                    dim=dim,
+                    values=values,
+                )
             )
         if self.coord_widget.use_affine_transform:
-            return erlab.interactive.imagetool.provenance.AffineCoordOperation(
-                coord_name=self.current_coord_name,
-                scale=self.coord_widget.affine_scale,
-                offset=self.coord_widget.affine_offset,
+            return (
+                erlab.interactive.imagetool.provenance_framework.AffineCoordOperation(
+                    coord_name=self.current_coord_name,
+                    scale=self.coord_widget.affine_scale,
+                    offset=self.coord_widget.affine_offset,
+                )
             )
-        return erlab.interactive.imagetool.provenance.AssignCoordsOperation(
+        return erlab.interactive.imagetool.provenance_framework.AssignCoordsOperation(
             coord_name=self.current_coord_name,
             values=self.coord_widget.new_coord,
         )
@@ -3272,8 +3330,8 @@ class AssignAttrsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.AssignAttrsOperation(
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance_framework.AssignAttrsOperation(
             attrs=self._changed_attrs
         )
 
@@ -3343,8 +3401,8 @@ class ROIPathDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.SliceAlongPathOperation(
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
+        return erlab.interactive.imagetool.provenance_framework.SliceAlongPathOperation(
             **self._params
         )
 
@@ -3392,7 +3450,9 @@ class ROIMaskDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation:
-        return erlab.interactive.imagetool.provenance.MaskWithPolygonOperation(
-            **self._params
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation:
+        return (
+            erlab.interactive.imagetool.provenance_framework.MaskWithPolygonOperation(
+                **self._params
+            )
         )

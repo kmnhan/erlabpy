@@ -1,3 +1,5 @@
+# ruff: noqa: E501
+
 import ast
 import json
 import pathlib
@@ -90,7 +92,7 @@ def _string_key_data() -> xr.DataArray:
 def test_provenance_import_keeps_analysis_targets_lazy() -> None:
     code = (
         "import sys\n"
-        "import erlab.interactive.imagetool.provenance\n"
+        "import erlab.interactive.imagetool.provenance_framework\n"
         "loaded = sorted("
         "name for name in sys.modules if name.startswith('erlab.analysis.') "
         "or name.startswith('scipy.interpolate') or name.startswith('scipy.linalg')"
@@ -113,7 +115,7 @@ def test_script_replay_keeps_unused_aliases_lazy() -> None:
         "import sys\n"
         "import numpy as np\n"
         "import xarray as xr\n"
-        "import erlab.interactive.imagetool.provenance as prov\n"
+        "import erlab.interactive.imagetool.provenance_framework as prov\n"
         "data = xr.DataArray(np.arange(2.0), dims=('x',))\n"
         "spec = prov.script(\n"
         "    prov.ScriptCodeOperation(label='Subtract', "
@@ -150,7 +152,7 @@ def _file_replay_source(
     *,
     replay_call: typing.Any = None,
 ) -> typing.Any:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     if replay_call is None:
         replay_call = prov.FileReplayCall(
             kind="callable",
@@ -169,7 +171,7 @@ def _file_replay_source(
 
 
 def _file_provenance_spec(path: typing.Any = "scan.h5") -> typing.Any:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     return prov.file_load(
         start_label="Load data from file 'scan.h5'",
         seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
@@ -178,7 +180,7 @@ def _file_provenance_spec(path: typing.Any = "scan.h5") -> typing.Any:
 
 
 def test_tool_provenance_codec_and_combinators() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     edge_fit = xr.Dataset({"edge": ("x", [1.0, 2.0, 3.0])})
     encoded = prov.encode_provenance_value(
         {"sel": slice(1.0, 2.0), "data": _base_data(), "edge_fit": edge_fit}
@@ -214,7 +216,7 @@ def test_tool_provenance_codec_and_combinators() -> None:
     with pytest.raises(ValidationError, match="Instance is frozen"):
         spec.kind = "selection"
     with pytest.raises(TypeError, match="ToolProvenanceOperation instances only"):
-        erlab.interactive.imagetool.provenance.full_data(
+        erlab.interactive.imagetool.provenance_framework.full_data(
             {"op": "average", "dims": ["y"]}
         )
     with pytest.raises(TypeError, match="ToolProvenanceOperation instances only"):
@@ -224,7 +226,7 @@ def test_tool_provenance_codec_and_combinators() -> None:
 
 
 def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     payload = {
         "schema_version": 1,
         "kind": "full_data",
@@ -305,7 +307,7 @@ def test_tool_provenance_parse_final_payload_and_migrate_legacy_schema() -> None
 
 
 def test_registered_provenance_operations_define_operation_code_api() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     structured_operation_types = [
         operation_type
@@ -327,33 +329,37 @@ def test_registered_provenance_operations_define_operation_code_api() -> None:
 @pytest.mark.parametrize(
     "operation",
     [
-        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"x": slice(0, 2)}),
-        erlab.interactive.imagetool.provenance.SelOperation(kwargs={"y": 11.0}),
-        erlab.interactive.imagetool.provenance.DivideByCoordOperation(
+        erlab.interactive.imagetool.provenance_framework.IselOperation(
+            kwargs={"x": slice(0, 2)}
+        ),
+        erlab.interactive.imagetool.provenance_framework.SelOperation(
+            kwargs={"y": 11.0}
+        ),
+        erlab.interactive.imagetool.provenance_framework.DivideByCoordOperation(
             coord_name="scale"
         ),
-        erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
             sigma={"x": 0.5}
         ),
-        erlab.interactive.imagetool.provenance.NormalizeOperation(
+        erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
             dims=("x",),
             mode="minmax",
         ),
-        erlab.interactive.imagetool.provenance.CoarsenOperation(
+        erlab.interactive.imagetool.provenance_framework.CoarsenOperation(
             dim={"x": 2},
             boundary="trim",
             side="left",
             coord_func="mean",
             reducer="mean",
         ),
-        erlab.interactive.imagetool.provenance.ThinOperation(
+        erlab.interactive.imagetool.provenance_framework.ThinOperation(
             mode="per_dim",
             factors={"y": 2},
         ),
     ],
 )
 def test_operation_replay_code_uses_requested_names(
-    operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+    operation: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation,
 ) -> None:
     data = _base_data().drop_vars("x_alt").assign_coords(scale=("x", [1.0, 2.0, 3.0]))
 
@@ -374,7 +380,7 @@ def test_operation_replay_code_uses_requested_names(
 
 
 def test_operation_replay_code_passes_source_context() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     parent = _base_data()
     child = parent.transpose("z", "x", "y")
     operation = prov.SortCoordOrderOperation()
@@ -397,7 +403,7 @@ def test_operation_replay_code_passes_source_context() -> None:
 
 
 def test_operation_code_base_edges() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(4.0), dims=("x",))
 
     with pytest.raises(NotImplementedError):
@@ -425,19 +431,19 @@ def test_operation_code_base_edges() -> None:
     ("operation", "expected"),
     [
         (
-            erlab.interactive.imagetool.provenance.NormalizeOperation(
+            erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
                 dims=("x",), mode="area"
             ),
             'data / data.mean("x")',
         ),
         (
-            erlab.interactive.imagetool.provenance.NormalizeOperation(
+            erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
                 dims=("x",), mode="min"
             ),
             'data - data.min("x")',
         ),
         (
-            erlab.interactive.imagetool.provenance.NormalizeOperation(
+            erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
                 dims=("x",), mode="min_area"
             ),
             '(data - data.min("x")) / data.mean("x")',
@@ -445,14 +451,14 @@ def test_operation_code_base_edges() -> None:
     ],
 )
 def test_normalize_operation_expression_modes(
-    operation: erlab.interactive.imagetool.provenance.NormalizeOperation,
+    operation: erlab.interactive.imagetool.provenance_framework.NormalizeOperation,
     expected: str,
 ) -> None:
     assert operation.expression_code("data") == expected
 
 
 def test_roi_operation_derivation_labels() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     vertices = np.array([[0.0, 0.0], [1.0, 1.0]])
 
     path_operation = prov.SliceAlongPathOperation(
@@ -470,7 +476,7 @@ def test_roi_operation_derivation_labels() -> None:
 
 
 def test_operations_expression_code_chains_without_relay_assignments() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data().assign_coords(scale=("x", [1.0, 2.0, 3.0]))
     operations = (
         prov.DivideByCoordOperation(coord_name="scale"),
@@ -493,7 +499,7 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     payload = {
         "schema_version": 1,
         "kind": "script",
@@ -546,26 +552,30 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         name="data",
     )
     nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(nonuniform_public)
-    selection_spec = erlab.interactive.imagetool.provenance.selection(
-        erlab.interactive.imagetool.provenance.QSelOperation(kwargs={"beta": 2.0}),
-        erlab.interactive.imagetool.provenance.IselOperation(
+    selection_spec = erlab.interactive.imagetool.provenance_framework.selection(
+        erlab.interactive.imagetool.provenance_framework.QSelOperation(
+            kwargs={"beta": 2.0}
+        ),
+        erlab.interactive.imagetool.provenance_framework.IselOperation(
             kwargs={"alpha": slice(1, 3)}
         ),
-        erlab.interactive.imagetool.provenance.SortCoordOrderOperation(),
+        erlab.interactive.imagetool.provenance_framework.SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
         selection_spec.apply(nonuniform),
         nonuniform_public.qsel(beta=2.0).isel({"alpha": slice(1, 3)}),
     )
 
-    transformed = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.IselOperation(kwargs={"z": 0}),
-        erlab.interactive.imagetool.provenance.SelOperation(
+    transformed = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.IselOperation(kwargs={"z": 0}),
+        erlab.interactive.imagetool.provenance_framework.SelOperation(
             kwargs={"y": slice(11.0, 12.0)}
         ),
-        erlab.interactive.imagetool.provenance.TransposeOperation(dims=("y", "x")),
-        erlab.interactive.imagetool.provenance.SqueezeOperation(),
-        erlab.interactive.imagetool.provenance.RenameOperation(name="done"),
+        erlab.interactive.imagetool.provenance_framework.TransposeOperation(
+            dims=("y", "x")
+        ),
+        erlab.interactive.imagetool.provenance_framework.SqueezeOperation(),
+        erlab.interactive.imagetool.provenance_framework.RenameOperation(name="done"),
     )
     xr.testing.assert_identical(
         transformed.apply(data),
@@ -577,14 +587,16 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
 
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.AverageOperation(dims=("y",))
+        erlab.interactive.imagetool.provenance_framework.full_data(
+            erlab.interactive.imagetool.provenance_framework.AverageOperation(
+                dims=("y",)
+            )
         ).apply(data),
         data.qsel.mean("y"),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.QSelAggregationOperation(
+        erlab.interactive.imagetool.provenance_framework.full_data(
+            erlab.interactive.imagetool.provenance_framework.QSelAggregationOperation(
                 dims=("y",),
                 func="sum",
             )
@@ -592,8 +604,8 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         data.qsel.sum("y"),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.CoarsenOperation(
+        erlab.interactive.imagetool.provenance_framework.full_data(
+            erlab.interactive.imagetool.provenance_framework.CoarsenOperation(
                 dim={"y": 2},
                 boundary="trim",
                 side="left",
@@ -604,40 +616,40 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
         data.coarsen(y=2, boundary="trim", side="left", coord_func="mean").mean(),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.ThinOperation(
+        erlab.interactive.imagetool.provenance_framework.full_data(
+            erlab.interactive.imagetool.provenance_framework.ThinOperation(
                 mode="global", factor=2
             )
         ).apply(data),
         data.thin(2),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.ThinOperation(
+        erlab.interactive.imagetool.provenance_framework.full_data(
+            erlab.interactive.imagetool.provenance_framework.ThinOperation(
                 mode="per_dim", factors={"x": 2}
             )
         ).apply(data),
         data.thin({"x": 2}),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.SwapDimsOperation(
+        erlab.interactive.imagetool.provenance_framework.full_data(
+            erlab.interactive.imagetool.provenance_framework.SwapDimsOperation(
                 mapping={"x": "x_alt"}
             )
         ).apply(data),
         data.swap_dims({"x": "x_alt"}),
     )
     xr.testing.assert_identical(
-        erlab.interactive.imagetool.provenance.full_data(
-            erlab.interactive.imagetool.provenance.RenameDimsCoordsOperation(
+        erlab.interactive.imagetool.provenance_framework.full_data(
+            erlab.interactive.imagetool.provenance_framework.RenameDimsCoordsOperation(
                 mapping={"x": "kx", "x_alt": "label"}
             )
         ).apply(data),
         data.rename({"x": "kx", "x_alt": "label"}),
     )
 
-    assigned = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.AssignCoordsOperation(
+    assigned = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.AssignCoordsOperation(
             coord_name="y", values=np.array([100.0, 101.0, 102.0, 103.0])
         )
     ).apply(data)
@@ -652,7 +664,7 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
 
 
 def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _string_key_data().assign_coords(
         {"coord-1": xr.DataArray([100.0, 101.0, 102.0], dims=["k-space"])}
     )
@@ -680,7 +692,7 @@ def test_tool_provenance_rename_dims_coords_round_trip_and_code() -> None:
 
 
 def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(6).reshape((3, 2)).astype(float),
         dims=("k-space", "y"),
@@ -714,7 +726,7 @@ def test_tool_provenance_interpolation_operation_round_trip_and_code() -> None:
 
 
 def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     ev = np.linspace(0.0, 4.0, 5)
     data = xr.DataArray(
         np.vstack([4.0 - ev, 8.0 - 2.0 * ev, 2.0 - 0.5 * ev]),
@@ -766,7 +778,7 @@ def test_tool_provenance_leading_edge_operation_round_trip_and_code() -> None:
 def test_tool_provenance_assign_coords_replay_display_code(
     values: np.ndarray, expected_call: str
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
 
     spec = prov.full_data(
@@ -788,7 +800,7 @@ def test_tool_provenance_assign_coords_replay_display_code(
 
 
 def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(1),
         dims=("x",),
@@ -813,7 +825,7 @@ def test_tool_provenance_assign_coords_single_value_uses_linspace() -> None:
 
 
 def test_tool_provenance_assign_scalar_coord_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
     operation = prov.AssignScalarCoordOperation(coord_name="temperature", value=21.5)
     expected = erlab.utils.array.sort_coord_order(
@@ -836,7 +848,7 @@ def test_tool_provenance_assign_scalar_coord_operation() -> None:
 
 
 def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
 
     scalar_spec = prov.full_data(
@@ -884,7 +896,7 @@ def test_tool_provenance_nonfinite_coord_and_attr_code() -> None:
 
 
 def test_tool_provenance_assign_1d_coord_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
     values = np.array(["low", "mid", "high"])
     operation = prov.AssignCoord1DOperation(
@@ -912,7 +924,7 @@ def test_tool_provenance_assign_1d_coord_operation() -> None:
 
 
 def test_tool_provenance_assign_attrs_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data().assign_attrs(source="old", count=1)
     attrs = {"source": "new", "flag": True, "meta": {"scan": 1}}
     operation = prov.AssignAttrsOperation(attrs=attrs)
@@ -964,7 +976,7 @@ def _expected_affine_coord(
 def test_tool_provenance_affine_coord_operation(
     data: xr.DataArray, coord_name: str, scale: float, offset: float
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     operation = prov.AffineCoordOperation(
         coord_name=coord_name,
         scale=scale,
@@ -997,7 +1009,7 @@ def test_tool_provenance_affine_coord_operation(
 
 
 def test_tool_provenance_divide_by_coord_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 2.0, 4.0]))
 
     spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh_current"))
@@ -1014,7 +1026,7 @@ def test_tool_provenance_divide_by_coord_operation() -> None:
 
 
 def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data().assign_coords(
         {
             "mesh current": ("x", [1.0, 2.0, 4.0]),
@@ -1049,7 +1061,7 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
 
 
 def test_tool_provenance_divide_by_coord_rejects_zero_values() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 0.0, 4.0]))
     spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh_current"))
 
@@ -1058,7 +1070,7 @@ def test_tool_provenance_divide_by_coord_rejects_zero_values() -> None:
 
 
 def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     public = xr.DataArray(
         np.arange(20).reshape((5, 4)),
         dims=("x", "y"),
@@ -1109,7 +1121,7 @@ def test_tool_provenance_public_data_replays_on_restored_nonuniform_dims() -> No
 
 
 def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _hashable_data()
     string_key_data = _string_key_data()
 
@@ -1224,7 +1236,7 @@ def test_tool_provenance_preserves_hashable_dims_and_mapping_keys() -> None:
 
 
 def test_tool_provenance_display_entries_streamline_live_source() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
 
     hidden_spec = prov.full_data(
@@ -1259,7 +1271,7 @@ def test_tool_provenance_display_entries_streamline_live_source() -> None:
 
 
 def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     spec = prov.script(
         prov.ScriptCodeOperation(label="isel()", code="derived = derived.isel()"),
@@ -1306,7 +1318,7 @@ def test_tool_provenance_display_entries_keep_ambiguous_script_steps() -> None:
 
 
 def test_tool_provenance_display_keeps_name_rename_before_script_code() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data().rename("source")
     spec = prov.script(
         prov.RenameOperation(name="renamed"),
@@ -1327,7 +1339,7 @@ def test_tool_provenance_display_keeps_name_rename_before_script_code() -> None:
 
 
 def test_imagetool_selection_source_binding_materializes_current_coordinates() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     original = _base_data()
     shifted = original.assign_coords(y=[20.0, 21.0, 22.0, 23.0])
 
@@ -1359,7 +1371,7 @@ def test_imagetool_selection_source_binding_materializes_current_coordinates() -
 
 
 def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
     binding = prov.ImageToolSelectionSourceBinding(
         selection_mode="isel",
@@ -1396,7 +1408,7 @@ def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() 
 
 
 def test_imagetool_selection_source_binding_validates_crop_indexers() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),
@@ -1428,13 +1440,13 @@ def test_tool_provenance_rejects_unsupported_hashables() -> None:
             return 0
 
     with pytest.raises(TypeError, match="provenance hashable fields only support"):
-        erlab.interactive.imagetool.provenance.AverageOperation(
+        erlab.interactive.imagetool.provenance_framework.AverageOperation(
             dims=(_UnsupportedHashable(),)
         )
 
 
 def test_tool_provenance_validation_helpers_and_error_branches() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     base_operation = prov.ToolProvenanceOperation()
 
     assert prov._format_derivation_value([1, 2]) == "(1, 2)"
@@ -1549,7 +1561,7 @@ def test_tool_provenance_validation_helpers_and_error_branches() -> None:
 
 
 def test_select_coord_operation_round_trips_and_applies() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data().assign_coords(temp=("x", [100.0, 200.0, 300.0]))
     operation = prov.SelectCoordOperation(coord_name="temp")
 
@@ -1572,7 +1584,7 @@ def test_select_coord_operation_round_trips_and_applies() -> None:
 
 
 def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
 
     xr.testing.assert_identical(
@@ -1697,7 +1709,7 @@ def test_tool_provenance_remaining_operation_and_display_branches(monkeypatch) -
 
 
 def test_append_display_operation_preserves_final_rename_for_live_sources() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     operation = prov.NormalizeOperation(dims=("x",), mode="min")
     spec = prov.full_data().append_final_rename("filtered")
 
@@ -1711,7 +1723,7 @@ def test_append_display_operation_preserves_final_rename_for_live_sources() -> N
 
 
 def test_append_display_operation_rejects_non_live_sources() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     operation = prov.NormalizeOperation(dims=("x",), mode="min")
     spec = prov.script(
         start_label="Evaluate console expression",
@@ -1749,22 +1761,22 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
         erlab.analysis.mask, "mask_with_polygon", _record("mask_with_polygon")
     )
 
-    rotate_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.RotateOperation(
+    rotate_spec = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.RotateOperation(
             angle=45.0, axes=("x", "y"), center=(0.5, 1.5), reshape=False, order=3
         )
     )
     assert rotate_spec.apply(data).attrs["last_op"] == "rotate"
 
-    symmetrize_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.SymmetrizeOperation(
+    symmetrize_spec = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.SymmetrizeOperation(
             dim="x", center=1.0, subtract=True, mode="valid", part="below"
         )
     )
     assert symmetrize_spec.apply(data).attrs["last_op"] == "symmetrize"
 
-    symmetrize_nfold_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.SymmetrizeNfoldOperation(
+    symmetrize_nfold_spec = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.SymmetrizeNfoldOperation(
             fold=4,
             axes=("x", "y"),
             center={"x": 1.0, "y": 11.0},
@@ -1774,8 +1786,8 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     )
     assert symmetrize_nfold_spec.apply(data).attrs["last_op"] == "symmetrize_nfold"
 
-    edge_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation(
+    edge_spec = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.CorrectWithEdgeOperation(
             edge_fit=edge_fit, shift_coords=False
         )
     )
@@ -1785,8 +1797,8 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert entries[-1].code is not None
     assert edge_spec.derivation_code() is not None
 
-    path_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.SliceAlongPathOperation(
+    path_spec = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.SliceAlongPathOperation(
             vertices={"x": [0.0, 1.0], "y": [10.0, 12.0]},
             step_size=0.5,
             dim_name="path",
@@ -1794,8 +1806,8 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     )
     assert path_spec.apply(data).attrs["last_op"] == "slice_along_path"
 
-    mask_spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.MaskWithPolygonOperation(
+    mask_spec = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.MaskWithPolygonOperation(
             vertices=np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]]),
             dims=("x", "y"),
             invert=True,
@@ -1834,26 +1846,26 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
         ),
     )
 
-    spec = erlab.interactive.imagetool.provenance.full_data(
-        erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation(
+    spec = erlab.interactive.imagetool.provenance_framework.full_data(
+        erlab.interactive.imagetool.provenance_framework.CorrectWithEdgeOperation(
             edge_fit=edge_fit, shift_coords=False
         )
     )
     payload = spec.model_dump(mode="json")
 
-    reparsed_operation = (
-        erlab.interactive.imagetool.provenance.parse_tool_provenance_operation(
-            payload["operations"][0]
-        )
+    reparsed_operation = erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_operation(
+        payload["operations"][0]
     )
     assert isinstance(
         reparsed_operation,
-        erlab.interactive.imagetool.provenance.CorrectWithEdgeOperation,
+        erlab.interactive.imagetool.provenance_framework.CorrectWithEdgeOperation,
     )
     xr.testing.assert_identical(reparsed_operation.decoded_edge_fit, edge_fit)
 
-    reparsed_spec = erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
-        payload
+    reparsed_spec = (
+        erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
+            payload
+        )
     )
     assert reparsed_spec is not None
     assert reparsed_spec.apply(data).attrs["last_op"] == "correct_with_edge"
@@ -1868,7 +1880,7 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
 
 
 def test_correct_with_edge_code_handles_nonfinite_dataset(monkeypatch) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
     edge_fit = xr.Dataset({"edge": ("x", [np.nan, np.inf, -np.inf])})
 
@@ -1891,7 +1903,7 @@ def test_correct_with_edge_code_handles_nonfinite_dataset(monkeypatch) -> None:
 def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
     gold, gold_fit_res
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     spec = prov.full_data(
         prov.CorrectWithEdgeOperation(edge_fit=gold_fit_res, shift_coords=False)
     )
@@ -1920,7 +1932,7 @@ def test_tool_provenance_roundtrip_correct_with_edge_fit_dataset(
 
 
 def test_tool_provenance_script_specs_reject_live_source() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     script_spec = prov.script(
         prov.ScriptCodeOperation(
@@ -1948,7 +1960,7 @@ def test_tool_provenance_script_specs_reject_live_source() -> None:
 
 
 def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     parent = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
     local = prov.script(
@@ -1976,7 +1988,7 @@ def test_tool_replay_provenance_helpers_compose_parent_provenance() -> None:
 
 
 def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
     parent = prov.script(
         prov.ScriptCodeOperation(
@@ -2002,7 +2014,7 @@ def test_tool_provenance_compose_full_uses_parent_active_name_for_live_local() -
 
 
 def test_file_load_source_replay_call_round_trips() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     xarray_source = prov.FileLoadSource(
         path="scan.h5",
@@ -2062,7 +2074,7 @@ def test_file_load_source_replay_call_round_trips() -> None:
 
 
 def test_file_provenance_validation_rejects_invalid_payloads() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     replay_stage = prov.ReplayStage(source_kind="full_data")
     file_source = _file_replay_source()
 
@@ -2159,7 +2171,7 @@ def test_file_provenance_validation_rejects_invalid_payloads() -> None:
 
 
 def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     spec = (
         _file_provenance_spec()
         .append_replay_stage(prov.full_data(prov.SelOperation(kwargs={"missing": 0})))
@@ -2184,7 +2196,7 @@ def test_file_provenance_display_entries_keep_steps_after_stage_failure() -> Non
 
 
 def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     file_spec = _file_provenance_spec()
 
     assert prov.replay_input_name(None) is None
@@ -2278,7 +2290,7 @@ def test_file_provenance_compose_fallbacks_and_replay_aliases() -> None:
 
 
 def test_script_provenance_supports_named_console_inputs() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     left = prov.script(
         start_label="Load left",
         seed_code="data_0 = xr.DataArray([1.0, 2.0], dims=['x'])",
@@ -2332,7 +2344,7 @@ def test_script_provenance_supports_named_console_inputs() -> None:
 def test_script_input_code_reuses_shared_file_replay_prefix(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "polarization.nc"
     source = xr.DataArray(
         np.arange(12.0).reshape(2, 2, 3),
@@ -2410,7 +2422,7 @@ def test_script_input_code_reuses_shared_file_replay_prefix(
 
 
 def test_script_input_code_keeps_distinct_structured_replay_nodes() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     first = prov.file_load(
         start_label="Load first",
         seed_code="import xarray\n\nderived = xarray.load_dataarray('scan.h5')",
@@ -2458,7 +2470,7 @@ def test_script_input_code_keeps_distinct_structured_replay_nodes() -> None:
 
 
 def test_script_input_dependency_refs_recurse_and_rebase() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     left_snapshot_id = "left-snapshot"
     right_snapshot_id = "right-snapshot"
     extra_snapshot_id = "extra-snapshot"
@@ -2543,7 +2555,7 @@ def test_script_input_dependency_refs_recurse_and_rebase() -> None:
 
 
 def test_low_level_provenance_replay_helper_branches() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     assert not prov._is_whole_array_rename_entry(
         prov.DerivationEntry("rename", "derived =")
@@ -2700,7 +2712,7 @@ derived = data
 
 
 def test_script_input_label_is_single_line_display_text() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     script_input = prov.ScriptInput(
         name="data_0",
@@ -2713,7 +2725,7 @@ def test_script_input_label_is_single_line_display_text() -> None:
 
 
 def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     left = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0, 1]})
     right = xr.DataArray([0.5, 1.5], dims=("x",), coords={"x": [0, 1]})
     spec = prov.script(
@@ -2746,7 +2758,7 @@ def test_replay_script_provenance_uses_resolved_inputs_without_mutating() -> Non
 
 
 def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray([1.0], dims=("x",))
     unsupported = prov.script(
         prov.ScriptCodeOperation(
@@ -2913,7 +2925,7 @@ def test_replay_script_provenance_rejects_unsupported_or_incomplete_code() -> No
 
 
 def test_replay_script_provenance_accepts_console_module_aliases() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2940,7 +2952,7 @@ def test_replay_script_provenance_accepts_console_module_aliases() -> None:
 
 
 def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
 
     qsel_operation = prov.operation_from_console_call(
@@ -3032,7 +3044,7 @@ def test_console_pattern_expands_named_xarray_mapping_arguments() -> None:
 
 
 def test_console_pattern_matches_public_parameter_aliases() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     edge_fit = xr.Dataset({"center": ("x", [0.0, 1.0])})
 
     operation = prov.operation_from_console_call(
@@ -3050,7 +3062,7 @@ def test_console_pattern_matches_public_parameter_aliases() -> None:
 
 
 def test_console_pattern_matches_new_replayable_operations() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "eV"),
@@ -3092,7 +3104,7 @@ def test_console_pattern_matches_new_replayable_operations() -> None:
 
 
 def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     assert prov._console_values_equal(np.nan, np.nan)
     assert prov._console_mapping_values(
@@ -3240,7 +3252,7 @@ def test_console_pattern_rejects_ambiguous_calls_and_expands_defaults() -> None:
 
 
 def test_console_operations_match_branch_specific_calls() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -3421,7 +3433,7 @@ def test_console_operations_match_branch_specific_calls() -> None:
 
 
 def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     image = xr.DataArray(
         np.arange(6).reshape((2, 3)),
         dims=("row", "col"),
@@ -3576,7 +3588,7 @@ def test_file_replay_parses_supported_inputs_and_errors(tmp_path, monkeypatch) -
 
 def test_file_replay_uses_erlab_loader(example_loader, example_data_dir) -> None:
     del example_loader
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     file_path = example_data_dir / "data_002.h5"
     spec = prov.file_load(
         start_label="Load data from file 'data_002.h5'",
@@ -3601,7 +3613,7 @@ def test_file_replay_uses_erlab_loader(example_loader, example_data_dir) -> None
 def test_file_provenance_composes_structured_stages_and_replays_modified_source(
     tmp_path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "source.h5"
     data = xr.DataArray(
         np.arange(12).reshape((3, 4)),
@@ -3684,7 +3696,7 @@ def test_file_provenance_composes_structured_stages_and_replays_modified_source(
 
 
 def test_tool_provenance_compose_display_provenance_streamlines_live_source() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     parent = prov.script(
         start_label="Start from watched variable 'my_data_name'",
         seed_code="derived = my_data_name",
@@ -3714,7 +3726,7 @@ def test_tool_provenance_compose_display_provenance_streamlines_live_source() ->
 
 
 def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = prov.selection(
         prov.IselOperation(kwargs={"z": 0}),
         prov.SortCoordOrderOperation(),
@@ -3737,7 +3749,7 @@ def test_tool_provenance_display_compose_keeps_default_seed_without_parent() -> 
 
 
 def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     watched = prov.script(
         start_label="Start from watched variable 'my_data'",
@@ -3771,7 +3783,7 @@ def test_tool_provenance_direct_replay_input_name_requires_simple_seed() -> None
 
 
 def test_tool_provenance_compose_display_replay_omits_synthetic_1d_squeeze() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     parent = prov.script(
         start_label="Start from watched variable 'my_1d'",
         seed_code="derived = my_1d",
