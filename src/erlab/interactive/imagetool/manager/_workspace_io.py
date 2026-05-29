@@ -68,6 +68,62 @@ _DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
 from erlab.interactive.imagetool.manager._widgets import *
 
 
+def _workspace_provenance_file_stems(
+    spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None,
+) -> tuple[str, ...]:
+    stems: list[str] = []
+
+    def collect(
+        current: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+        | None,
+    ) -> None:
+        if current is None:
+            return
+        if current.file_load_source is not None:
+            stem = pathlib.Path(current.file_load_source.path).stem
+            if stem not in stems:
+                stems.append(stem)
+        for script_input in current.script_inputs:
+            collect(script_input.parsed_provenance_spec())
+
+    collect(spec)
+    return tuple(stems)
+
+
+def _workspace_compact_file_suffix(stems: tuple[str, ...]) -> str:
+    if not stems:
+        return ""
+    if len(stems) <= 2:
+        return f" ({', '.join(stems)})"
+    return f" ({', '.join(stems[:2])}, +{len(stems) - 2})"
+
+
+def _legacy_saved_title_data_name(
+    ds: xr.Dataset,
+    provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+    | None,
+) -> str | None:
+    title = _strip_workspace_modified_placeholder(str(ds.attrs.get("itool_title", "")))
+    if ": " in title:
+        prefix, rest = title.split(": ", maxsplit=1)
+        if prefix.isdigit():
+            title = rest
+    saved_name = str(ds.attrs.get("itool_name", ""))
+    stems = _workspace_provenance_file_stems(provenance_spec)
+    compact_suffix = _workspace_compact_file_suffix(stems)
+    if compact_suffix and title.endswith(compact_suffix):
+        title = title[: -len(compact_suffix)]
+    if not title or title == saved_name:
+        return None
+
+    for stem in stems:
+        if (saved_name and title == f"{saved_name} ({stem})") or (
+            not saved_name and title == stem
+        ):
+            return None
+    return title
+
+
 class _WorkspaceIOMixin:
     @staticmethod
     def _normalize_recent_workspace_paths(
@@ -659,15 +715,7 @@ class _WorkspaceIOMixin:
                 node.index if isinstance(node, _ImageToolWrapper) else node.uid
             )
             ds = self.get_imagetool(target).to_dataset()
-            ds.attrs["itool_title"] = _strip_workspace_modified_placeholder(
-                ds.attrs.get("itool_title", "")
-            )
-            if isinstance(node, _ImageToolWrapper):
-                ds.attrs["itool_title"] = (
-                    ds.attrs["itool_title"]
-                    .removeprefix(f"{node.index}")
-                    .removeprefix(": ")
-                )
+            ds.attrs["itool_title"] = node.name
             constructor[f"{path}/imagetool"] = self._annotate_workspace_dataset(
                 ds, node, kind="imagetool"
             )
@@ -794,6 +842,10 @@ class _WorkspaceIOMixin:
         tool_kwargs: dict[str, typing.Any] = {"_in_manager": True}
         if _ITOOL_DATA_NAME in ds and ds[_ITOOL_DATA_NAME].chunks is not None:
             tool_kwargs["auto_compute"] = False
+        legacy_name = _legacy_saved_title_data_name(ds, parsed_provenance_spec)
+        if legacy_name is not None:
+            ds = ds.copy(deep=False)
+            ds.attrs["itool_name"] = legacy_name
         tool = ImageTool.from_dataset(ds, **tool_kwargs)
         if parent_target is not None:
             target = self.add_imagetool_child(

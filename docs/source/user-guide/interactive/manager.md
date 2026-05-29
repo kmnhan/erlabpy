@@ -150,10 +150,9 @@ If more than one manager is running and no default has been selected, calls that
 
 The left pane lists ImageTool windows, tools opened from ImageTool, and ImageTool
 windows opened from those tools. Top-level ImageTool windows use an index and optional
-name (`index: name`). Rows made from another row appear as child rows under the row that
-made them.
-Selecting entries populates the right pane with details, a steps list when available,
-and a live preview.
+data name (`index: name`). Rows derived from another row appear as child rows under the
+row that made them. Selecting entries populates the right pane with details, a steps
+list when available, and a preview of the main image.
 
 :::{note}
 Enable {guilabel}`View → Preview on Hover` to see thumbnails while moving the mouse over the list.

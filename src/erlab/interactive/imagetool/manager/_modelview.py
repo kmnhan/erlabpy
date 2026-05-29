@@ -1303,7 +1303,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         ptr = index.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
             if role == QtCore.Qt.ItemDataRole.EditRole:
-                self.manager.rename_imagetool(self._imagetool_index(index), value)
+                self.manager.rename_imagetool(self._imagetool_index(index), str(value))
 
                 self.dataChanged.emit(index, index, [role])
                 return True
@@ -1312,7 +1312,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             child_node = self._node_from_uid(ptr)
             if child_node is None:
                 return False
-            child_node.name = value
+            child_node.name = str(value)
 
             self.dataChanged.emit(index, index, [role])
             return True

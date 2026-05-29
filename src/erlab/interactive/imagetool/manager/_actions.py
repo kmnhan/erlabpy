@@ -512,7 +512,7 @@ class _ActionsMixin:
 
     def rename_imagetool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
-        self._imagetool_wrappers[index].name = new_name
+        self._imagetool_wrappers[index].name = str(new_name)
 
     def _duplicate_subtree(
         self, target: int | str, *, parent_override: int | str | None = None

@@ -8,6 +8,7 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 import contextlib
 import datetime
 import keyword
+import pathlib
 import sys
 import typing
 import uuid
@@ -127,6 +128,64 @@ def _format_chunk_summary(data: xr.DataArray) -> str:
     return "; ".join(parts)
 
 
+def _dataarray_name(data: xr.DataArray | None) -> str:
+    if data is None or data.name is None:
+        return ""
+    name = str(data.name)
+    return "" if name.strip() == "" else name
+
+
+def _append_unique_path(paths: list[pathlib.Path], path: str | pathlib.Path) -> None:
+    normalized = pathlib.Path(path).expanduser()
+    with contextlib.suppress(OSError, RuntimeError):
+        normalized = normalized.resolve(strict=False)
+    if normalized not in paths:
+        paths.append(normalized)
+
+
+def _collect_provenance_file_paths(
+    spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None,
+    paths: list[pathlib.Path],
+) -> None:
+    if spec is None:
+        return
+    if spec.file_load_source is not None:
+        _append_unique_path(paths, spec.file_load_source.path)
+    for script_input in spec.script_inputs:
+        _collect_provenance_file_paths(script_input.parsed_provenance_spec(), paths)
+
+
+def _compact_file_suffix(paths: typing.Sequence[pathlib.Path]) -> str:
+    if not paths:
+        return ""
+    stems = tuple(dict.fromkeys(path.stem for path in paths))
+    if len(stems) <= 2:
+        return f" ({', '.join(stems)})"
+    return f" ({', '.join(stems[:2])}, +{len(stems) - 2})"
+
+
+def _spec_with_final_data_name(
+    spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
+    name: str,
+) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
+    provenance = erlab.interactive.imagetool.provenance_framework
+    rename = provenance.RenameOperation(name=name)
+    if spec.kind != "file":
+        return spec.append_final_rename(name)
+
+    stages = list(spec.replay_stages)
+    if stages:
+        last_stage = stages[-1]
+        operations = tuple(last_stage.operations)
+        if operations and isinstance(operations[-1], provenance.RenameOperation):
+            stages[-1] = last_stage.model_copy(
+                update={"operations": (*operations[:-1], rename)}
+            )
+            return spec.model_copy(update={"replay_stages": tuple(stages)})
+
+    return spec.append_replay_stage(provenance.full_data(rename))
+
+
 class _ManagedWindowNode(QtCore.QObject):
     """A recursively managed window node in ImageToolManager."""
 
@@ -165,10 +224,6 @@ class _ManagedWindowNode(QtCore.QObject):
             "imagetool" if isinstance(window, ImageTool) else "tool"
         )
         self._name = window.windowTitle()
-        self._name_manually_overridden = (
-            isinstance(window, ImageTool)
-            and self._name.replace("[*]", "") != window.slicer_area.display_name
-        )
 
         self._source_spec: (
             erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
@@ -363,6 +418,8 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def name(self) -> str:
+        if self.imagetool is not None:
+            return _dataarray_name(self.slicer_area._data)
         if self.tool_window is not None:
             return self.tool_window._tool_display_name or self.tool_window.windowTitle()
         return self._name
@@ -372,24 +429,70 @@ class _ManagedWindowNode(QtCore.QObject):
         self._set_name(name, manual=True)
 
     def _set_name(self, name: str, *, manual: bool) -> None:
-        if manual:
-            self._name_manually_overridden = True
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
             self.manager.tree_view.refresh(self.uid)
             self.manager._mark_node_state_dirty(self.uid)
             return
-        if name == self._name and self.imagetool is not None and not manual:
+        if self.imagetool is not None:
+            self._rename_imagetool_data(name, record_provenance=manual)
             return
         self._name = name
-        if self.imagetool is not None:
-            self.imagetool.setWindowTitle(self.label_text)
         self.manager.tree_view.refresh(self.uid)
         self.manager._mark_node_state_dirty(self.uid)
 
+    def _rename_imagetool_data(self, name: str, *, record_provenance: bool) -> None:
+        if self.imagetool is None:
+            return
+        if name == self.name:
+            self.imagetool.setWindowTitle(self.label_text)
+            return
+        slicer_area = self.slicer_area
+        slicer_area._data = slicer_area._data.rename(name)
+        slicer_area.array_slicer.set_array(
+            slicer_area._data, validate=False, reset=False, copy_values=False
+        )
+        if slicer_area._accepted_filter_data is not None:
+            slicer_area._accepted_filter_data = (
+                slicer_area._accepted_filter_data.rename(name)
+            )
+        if record_provenance:
+            self._record_data_rename_provenance(name)
+        self.imagetool.setWindowTitle(self.label_text)
+        self.manager.tree_view.refresh(self.uid)
+        self.manager._update_info(uid=self.uid)
+        self.manager._refresh_dependency_dependents(self.uid)
+        self.manager._mark_node_state_dirty(self.uid)
+
+    def _record_data_rename_provenance(self, name: str) -> None:
+        spec = self.provenance_spec
+        if spec is not None:
+            self._provenance_spec = _spec_with_final_data_name(spec, name)
+            if self.imagetool is not None:
+                self.imagetool.set_provenance_spec(self._provenance_spec)
+        if self._source_spec is not None:
+            self._source_spec = erlab.interactive.imagetool.provenance_framework.require_live_source_spec(
+                _spec_with_final_data_name(self._source_spec, name)
+            )
+
+    def _file_label_paths(self) -> tuple[pathlib.Path, ...]:
+        paths: list[pathlib.Path] = []
+        if self.imagetool is not None and self.slicer_area._file_path is not None:
+            _append_unique_path(paths, self.slicer_area._file_path)
+        _collect_provenance_file_paths(self.displayed_provenance_spec, paths)
+        return tuple(paths)
+
+    @property
+    def file_suffix_text(self) -> str:
+        return _compact_file_suffix(self._file_label_paths())
+
+    @property
+    def base_label_text(self) -> str:
+        return self.name
+
     @property
     def label_text(self) -> str:
-        return self._name
+        return self.base_label_text
 
     @property
     def display_text(self) -> str:
@@ -1009,14 +1112,10 @@ class _ManagedWindowNode(QtCore.QObject):
     @QtCore.Slot()
     @QtCore.Slot(str)
     def update_title(self, title: str | None = None) -> None:
+        del title
         if self.imagetool is not None:
-            if title is None:
-                title = self.imagetool.windowTitle()
-            title = title.replace("[*]", "")
-            if self._name_manually_overridden:
-                self.imagetool.setWindowTitle(self.label_text)
-                return
-            self._set_name(title, manual=False)
+            self.imagetool.setWindowTitle(self.label_text)
+            self.manager.tree_view.refresh(self.uid)
 
     @QtCore.Slot()
     def visibility_changed(self, *, mark_dirty: bool = True) -> None:
@@ -1397,8 +1496,10 @@ class _ImageToolWrapper(_ManagedWindowNode):
     @property
     def label_text(self) -> str:
         title = f"{self.index}"
-        if self._name:
-            title += f": {self._name}"
+        base_label = self.base_label_text
+        if base_label:
+            title += f": {base_label}"
+        title += self.file_suffix_text
         return title
 
     def current_source_data(self) -> xr.DataArray:

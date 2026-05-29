@@ -2027,6 +2027,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
         """Return reload data and replacement kwargs for the active reload source."""
+        provenance_spec = self.provenance_spec
+        if (
+            provenance_spec is not None
+            and provenance_spec.kind == "file"
+            and bool(provenance_spec.replay_stages)
+            and self._provenance_reloadable()
+        ):
+            return self._fetch_for_provenance_reload(), {}
         if self._direct_reloadable():
             return (
                 self._fetch_for_reload(),

@@ -2109,10 +2109,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                     ).dims
                     == current_data.dims
                 )
-            # Rule 6: drop whole-array name changes. ImageTool appends names such as
-            # ``_avg`` to keep displayed tools distinct, but the DataArray name is not
-            # an analysis step. Dimension and coordinate renames use
-            # RenameDimsCoordsOperation and remain visible.
+            # Rule 6: hide whole-array name changes in derivation display. Dimension
+            # and coordinate renames use RenameDimsCoordsOperation and remain visible.
             elif isinstance(operation, RenameOperation):
                 hide_operation = not any(
                     isinstance(later_operation, ScriptCodeOperation)

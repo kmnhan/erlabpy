@@ -373,10 +373,16 @@ def test_operation_replay_code_uses_requested_names(
             "source": data.copy(deep=True),
         },
     )
-    xr.testing.assert_identical(
-        namespace["result"],
-        operation.apply(data, parent_data=data),
-    )
+    result = namespace["result"]
+    expected = operation.apply(data, parent_data=data)
+    if isinstance(
+        operation,
+        erlab.interactive.imagetool.provenance_framework.DivideByCoordOperation,
+    ):
+        result = result.rename(None)
+        expected = expected.rename(None)
+        assert ".rename(" not in code
+    xr.testing.assert_identical(result, expected)
 
 
 def test_operation_replay_code_passes_source_context() -> None:
@@ -485,6 +491,7 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
 
     code = prov.operations_expression_code(operations, "data")
     assert code.startswith("(data / data.scale).isel(")
+    assert ".rename(" not in code
     assert "derived" not in code
 
     namespace = _exec_generated_code(
@@ -495,7 +502,7 @@ def test_operations_expression_code_chains_without_relay_assignments() -> None:
         operations[0].apply(data, parent_data=data),
         parent_data=data,
     )
-    xr.testing.assert_identical(namespace["result"], expected)
+    xr.testing.assert_identical(namespace["result"].rename(None), expected.rename(None))
 
 
 def test_tool_provenance_parse_legacy_file_script_metadata() -> None:
@@ -1013,16 +1020,18 @@ def test_tool_provenance_divide_by_coord_operation() -> None:
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 2.0, 4.0]))
 
     spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh_current"))
-    xr.testing.assert_identical(spec.apply(data), data / data.mesh_current)
+    expected = (data / data.mesh_current).rename(data.name)
+    xr.testing.assert_identical(spec.apply(data), expected)
     code = spec.derivation_code()
     assert code is not None
     assert "derived.mesh_current" in code
+    assert ".rename(" not in code
     namespace = _exec_generated_code(code, {"data": data})
     xr.testing.assert_identical(namespace["derived"], data / data.mesh_current)
 
     reparsed = prov.parse_tool_provenance_spec(spec.model_dump(mode="json"))
     assert reparsed == spec
-    xr.testing.assert_identical(reparsed.apply(data), data / data.mesh_current)
+    xr.testing.assert_identical(reparsed.apply(data), expected)
 
 
 def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
@@ -1042,6 +1051,7 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
     spaced_code = spaced_spec.derivation_code()
     assert spaced_code is not None
     assert 'derived.coords["mesh current"]' in spaced_code
+    assert ".rename(" not in spaced_code
     namespace = _exec_generated_code(spaced_code, {"data": data})
     xr.testing.assert_identical(
         namespace["derived"], data / data.coords["mesh current"]
@@ -1051,12 +1061,13 @@ def test_tool_provenance_divide_by_coord_fallback_code_and_broadcast() -> None:
     conflict_code = conflict_spec.derivation_code()
     assert conflict_code is not None
     assert 'derived.coords["mean"]' in conflict_code
+    assert ".rename(" not in conflict_code
     namespace = _exec_generated_code(conflict_code, {"data": data})
     xr.testing.assert_identical(namespace["derived"], data / data.coords["mean"])
 
     broadcast_spec = prov.full_data(prov.DivideByCoordOperation(coord_name="mesh_map"))
     xr.testing.assert_identical(
-        broadcast_spec.apply(data), data / data.coords["mesh_map"]
+        broadcast_spec.apply(data), (data / data.coords["mesh_map"]).rename(data.name)
     )
 
 

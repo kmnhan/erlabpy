@@ -15,6 +15,7 @@ def test_manager_duplicate(
         # Open a tool with the manager
         itool([test_data, test_data], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+        manager.rename_imagetool(0, "renamed source")
 
         select_tools(manager, [0, 1])
         manager.duplicate_selected()
@@ -469,6 +470,44 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager._imagetool_wrappers[0]._childtool_indices == [child_uids[0]]
         assert child_uids[1] not in manager._all_nodes
+
+
+def test_manager_workspace_load_migrates_legacy_manual_title_to_data_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data = xr.DataArray(np.arange(25).reshape((5, 5)), dims=["x", "y"], name="scan")
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
+    root = itool(
+        data,
+        manager=False,
+        execute=False,
+        file_path=file_path,
+        load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+    )
+    assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+    qtbot.addWidget(root)
+    ds = root.to_dataset()
+    root.close()
+    ds.attrs["itool_title"] = "legacy manual name (scan)"
+    ds.attrs["itool_name"] = "scan"
+    ds.attrs["manager_node_provenance_spec"] = ds.attrs["itool_provenance_spec"]
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager._load_workspace_imagetool_dataset(
+            ds,
+            parent_target=None,
+            node_path="0",
+        )
+
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        assert manager.name_of_imagetool(0) == "legacy manual name"
+        assert manager.get_imagetool(0).slicer_area._data.name == "legacy manual name"
 
 
 def _open_external_hdf5_imagetool_data(
@@ -5663,7 +5702,7 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
 
         root.setWindowTitle("stale root title[*]")
         manager._imagetool_wrappers[0].update_title()
-        assert "stale root title" in manager._imagetool_wrappers[0].label_text
+        assert "stale root title" not in manager._imagetool_wrappers[0].label_text
         assert "[*]" not in manager._imagetool_wrappers[0].label_text
 
         root.setWindowTitle("stale root title[*]")
@@ -5695,6 +5734,7 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
 
         assert "[*]" not in root_title
         assert "[*]" not in tool_title
+        assert root_title == "source"
 
 
 def test_manager_workspace_full_save_drops_empty_attr_name(

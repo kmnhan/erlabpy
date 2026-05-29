@@ -596,7 +596,7 @@ class DivideByCoordOperation(ToolProvenanceOperation):
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         coord = data.coords[self.coord_name]
         self._raise_if_zero(coord)
-        return data / coord
+        return (data / coord).rename(data.name)
 
     def derivation_label(self) -> str:
         label_kwargs = {"coord_name": self.coord_name}
