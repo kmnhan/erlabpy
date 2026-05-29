@@ -35,6 +35,7 @@ import erlab
 import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
+import erlab.interactive.imagetool.manager._actions as manager_actions
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
@@ -46,6 +47,7 @@ import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._xarray as manager_xarray
 import erlab.interactive.imagetool.viewer as imagetool_viewer
+import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive._mesh import MeshTool
