@@ -43,6 +43,7 @@ import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._server as manager_server
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
+import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._xarray as manager_xarray
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 from erlab.interactive._fit1d import Fit1DTool
@@ -515,6 +516,7 @@ def isolated_recent_workspace_settings(
 
     _settings().clear()
     monkeypatch.setattr(manager_mainwindow, "_manager_settings", _settings)
+    monkeypatch.setattr(manager_workspace_io, "_manager_settings", _settings)
     return settings_path
 
 
