@@ -1667,6 +1667,12 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return
 
+        def _mark_tool_info_dirty(self, uid: str) -> None:
+            self._mark_node_state_dirty(uid)
+
+        def _schedule_tool_metadata_update(self, uid: str) -> None:
+            self._update_info(uid=uid)
+
         def _mark_node_data_dirty(self, _uid: str) -> None:
             return
 
@@ -1875,6 +1881,12 @@ def test_managed_tool_window_node_detached_update_branches(
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return
 
+        def _mark_tool_info_dirty(self, uid: str) -> None:
+            self._mark_node_state_dirty(uid)
+
+        def _schedule_tool_metadata_update(self, uid: str) -> None:
+            self._update_info(uid=uid)
+
         def _mark_node_data_dirty(self, _uid: str) -> None:
             return
 
@@ -2067,6 +2079,12 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def _mark_node_state_dirty(self, _uid: str) -> None:
             return
+
+        def _mark_tool_info_dirty(self, uid: str) -> None:
+            self._mark_node_state_dirty(uid)
+
+        def _schedule_tool_metadata_update(self, uid: str) -> None:
+            self._update_info(uid=uid)
 
     manager = _FakeManager()
     qtbot.addWidget(manager)
