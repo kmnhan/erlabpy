@@ -26,10 +26,7 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         parent_tool = manager.get_imagetool(0)
-        parent_tool.slicer_area.apply_func(
-            lambda darr: operation.apply(darr, parent_data=darr),
-            operation=operation,
-        )
+        parent_tool.slicer_area.apply_filter_operation(operation)
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
             lambda: len(manager._imagetool_wrappers[0]._childtools) == 1,
@@ -49,6 +46,380 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
             namespace,
         )
         xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_manager_filtered_parent_updates_source_bound_child(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+    )
+    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+    expected = operation.apply(data, parent_data=data)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_tool = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+
+        root_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        qtbot.wait_until(
+            lambda: (
+                child_node.source_state == "fresh"
+                and fetch(child_uid).identical(expected)
+            ),
+            timeout=5000,
+        )
+        xr.testing.assert_identical(fetch(child_uid), expected)
+        assert child_node.provenance_spec is not None
+        code = child_node.provenance_spec.display_code()
+        assert code is not None
+        namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+        xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_manager_filtered_source_bound_child_refresh_keeps_filter(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+    )
+    updated = data + 100.0
+    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+    expected = operation.apply(updated, parent_data=updated)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_tool = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+        child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        qtbot.wait_until(
+            lambda: (
+                child_node.source_state == "fresh"
+                and fetch(child_uid).identical(expected)
+            ),
+            timeout=5000,
+        )
+        xr.testing.assert_identical(fetch(child_uid), expected)
+        display_spec = child_node.displayed_provenance_spec
+        assert display_spec is not None
+        display_code = display_spec.display_code()
+        assert display_code is not None
+        assert "gaussian_filter" in display_code
+        namespace = _exec_generated_code(
+            display_code, {"data": updated.copy(deep=True)}
+        )
+        xr.testing.assert_identical(namespace["derived"], expected)
+
+
+def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    bad_update = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["u", "y"],
+        coords={"u": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+    expected = operation.apply(data, parent_data=data)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_tool = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+        child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, bad_update)
+
+        qtbot.wait_until(
+            lambda: child_node.source_state == "unavailable",
+            timeout=5000,
+        )
+        xr.testing.assert_identical(fetch(child_uid), expected)
+        assert child_tool.slicer_area._accepted_filter_provenance_operation == operation
+
+
+def test_manager_duplicate_filtered_child_records_filter_once(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+    )
+    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+    expected = operation.apply(data, parent_data=data)
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_tool = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        duplicated_uid = manager.duplicate_childtool(child_uid)
+        duplicated_node = manager._child_node(duplicated_uid)
+        duplicated_tool = manager.get_imagetool(duplicated_uid)
+
+        assert duplicated_node.source_spec is not None
+        assert [op.op for op in duplicated_node.source_spec.operations] == []
+        displayed_source = duplicated_node.displayed_source_spec
+        assert displayed_source is not None
+        assert [op.op for op in displayed_source.operations] == ["gaussian_filter"]
+        display_code = duplicated_node.displayed_provenance_spec.display_code()
+        assert display_code is not None
+        assert display_code.count("gaussian_filter") == 1
+        xr.testing.assert_identical(duplicated_tool.slicer_area.data, expected)
+
+
+def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(25).reshape((5, 5)).astype(float),
+        dims=["alpha", "eV"],
+        coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
+    )
+    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_tool = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        tree = manager._to_datatree()
+        saved = typing.cast(
+            "xr.DataTree", tree[f"0/childtools/{child_uid}/imagetool"]
+        ).to_dataset(inherit=False)
+        state = json.loads(saved.attrs["itool_state"])
+        assert state["filter_operation"]["op"] == "gaussian_filter"
+        source_payload = json.loads(saved.attrs["manager_node_live_source_spec"])
+        assert source_payload["operations"] == []
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        for node in tree.values():
+            manager._load_workspace_node(typing.cast("xr.DataTree", node))
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        loaded_node = manager._child_node(child_uid)
+        displayed_source = loaded_node.displayed_source_spec
+        assert displayed_source is not None
+        assert [op.op for op in displayed_source.operations] == ["gaussian_filter"]
+
+        updated = data + 10.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+        expected = operation.apply(updated, parent_data=updated)
+        qtbot.wait_until(
+            lambda: fetch(child_uid).identical(expected),
+            timeout=5000,
+        )
+        xr.testing.assert_identical(fetch(child_uid), expected)
+
+
+def test_manager_operation_filter_preserves_output_binding(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+
+    class _OutputToolState(pydantic.BaseModel):
+        pass
+
+    class _OutputTool(erlab.interactive.utils.ToolWindow[_OutputToolState]):
+        StateModel = _OutputToolState
+        tool_name = "output-dummy"
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+            self._status = _OutputToolState()
+
+        @property
+        def tool_status(self) -> _OutputToolState:
+            return self._status
+
+        @tool_status.setter
+        def tool_status(self, status: _OutputToolState) -> None:
+            self._status = status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def output_imagetool_data(
+            self, output_id: str | enum.Enum
+        ) -> xr.DataArray | None:
+            assert output_id == "out"
+            return self._data + 10.0
+
+        def output_imagetool_provenance(
+            self, output_id: str | enum.Enum, data: xr.DataArray
+        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+            assert output_id == "out"
+            del data
+            return prov.script(
+                prov.ScriptCodeOperation(label="Use output", code="result = data + 10"),
+                start_label="Start from parent",
+                active_name="result",
+            )
+
+    data = xr.DataArray(
+        np.arange(12, dtype=float).reshape((3, 4)),
+        dims=["x", "y"],
+        coords={"x": np.arange(3), "y": np.arange(4)},
+        name="scan",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child = _OutputTool(data)
+        child_uid = manager.add_childtool(child, 0, show=False)
+        initial_output = typing.cast("xr.DataArray", child.output_imagetool_data("out"))
+        output_tool = itool(initial_output, manager=False, execute=False)
+        assert isinstance(output_tool, erlab.interactive.imagetool.ImageTool)
+        output_uid = manager.add_imagetool_child(
+            output_tool,
+            child_uid,
+            show=False,
+            provenance_spec=child.output_imagetool_provenance("out", initial_output),
+            source_state="fresh",
+            output_id="out",
+        )
+        operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+        output_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+        expected = operation.apply(initial_output, parent_data=initial_output)
+
+        duplicated_uid = manager.duplicate_childtool(output_uid)
+        duplicated_node = manager._child_node(duplicated_uid)
+        assert duplicated_node.output_id == "out"
+        assert duplicated_node.source_spec is None
+        xr.testing.assert_identical(fetch(duplicated_uid), expected)
+
+        tree = manager._to_datatree()
+        saved = typing.cast(
+            "xr.DataTree",
+            tree[f"0/childtools/{child_uid}/childtools/{output_uid}/imagetool"],
+        ).to_dataset(inherit=False)
+        assert saved.attrs["manager_node_output_id"] == "out"
+        state = json.loads(saved.attrs["itool_state"])
+        assert state["filter_operation"]["op"] == "gaussian_filter"
+        xr.testing.assert_identical(
+            saved[manager_mainwindow._ITOOL_DATA_NAME].rename(initial_output.name),
+            initial_output,
+        )
 
 
 def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
@@ -1668,6 +2039,78 @@ def test_manager_aggregate_child_refreshes_from_parent(
         assert child_node._update_from_parent_source() is True
         xr.testing.assert_identical(
             fetch(child_uid).rename(None), updated.qsel.sum("x").rename(None)
+        )
+
+
+def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
+    qtbot,
+    accept_dialog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    prov = erlab.interactive.imagetool.provenance
+    data = xr.DataArray(
+        np.arange(12).reshape((3, 4)).astype(float),
+        dims=["x", "y"],
+        coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
+        name="scan",
+    )
+    operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        root_tool = itool(data, manager=False, execute=False)
+        assert isinstance(root_tool, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root_tool, show=False)
+
+        child_tool = itool(data.copy(deep=False), manager=False, execute=False)
+        assert isinstance(child_tool, erlab.interactive.imagetool.ImageTool)
+        child_uid = manager.add_imagetool_child(
+            child_tool,
+            0,
+            show=False,
+            source_spec=prov.full_data(),
+            source_auto_update=True,
+        )
+        child_node = manager._child_node(child_uid)
+        child_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+        def _replace_average(dialog) -> None:
+            dialog.dim_checks["x"].setChecked(True)
+            set_transform_launch_mode(dialog, "replace")
+
+        accept_dialog(child_tool.mnb._average, pre_call=_replace_average)
+
+        filtered = operation.apply(data, parent_data=data)
+        expected = filtered.qsel.mean("x").rename("scan_avg")
+        xr.testing.assert_identical(fetch(child_uid), expected)
+        assert child_node.source_spec is not None
+        assert child_node.source_spec.is_live_source
+        assert [op.op for op in child_node.source_spec.operations] == [
+            "gaussian_filter",
+            "qsel_aggregate",
+            "rename",
+        ]
+
+        updated = data + 10.0
+        with qtbot.wait_signal(manager._sigDataReplaced):
+            replace_data(0, updated)
+
+        updated_filtered = operation.apply(updated, parent_data=updated)
+        updated_expected = updated_filtered.qsel.mean("x").rename("scan_avg")
+        qtbot.wait_until(
+            lambda: (
+                child_node.source_state == "fresh"
+                and fetch(child_uid).identical(updated_expected)
+            ),
+            timeout=5000,
+        )
+        xr.testing.assert_identical(
+            fetch(child_uid),
+            updated_expected,
         )
 
 

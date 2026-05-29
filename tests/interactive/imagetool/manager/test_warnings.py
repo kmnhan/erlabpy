@@ -71,6 +71,30 @@ def test_warning_alert_suppressed_by_log_flag(
         QtWidgets.QApplication.processEvents()
 
 
+def test_warning_handler_ignores_deleted_emitter(qtbot) -> None:
+    emitter = manager_mainwindow._WarningEmitter()
+    handler = manager_mainwindow._WarningNotificationHandler(emitter)
+
+    emitter.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, 0)
+    QtWidgets.QApplication.processEvents()
+    qtbot.wait_until(
+        lambda: not erlab.interactive.utils.qt_is_valid(emitter),
+        timeout=1000,
+    )
+
+    record = logging.LogRecord(
+        name="test.warning.deleted",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=0,
+        msg="deleted warning emitter",
+        args=(),
+        exc_info=None,
+    )
+    handler.emit(record)
+
+
 def test_error_creating_imagetool_does_not_duplicate_alert_dialog(
     qtbot,
     monkeypatch,

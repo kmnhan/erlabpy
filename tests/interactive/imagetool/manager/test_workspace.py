@@ -34,6 +34,50 @@ def test_manager_duplicate(
             )
 
 
+def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
+    qtbot,
+    tmp_path: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    file_path = tmp_path / "scan.h5"
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+        name="scan",
+    )
+    data.to_netcdf(file_path, engine="h5netcdf")
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={"x": 1.0}
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        opened = xr.open_dataarray(file_path, engine="h5netcdf")
+        try:
+            itool(opened, manager=True)
+            qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+            tool = manager.get_imagetool(0)
+            tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
+
+            uid = manager._imagetool_wrappers[0].uid
+            entry = next(
+                item
+                for item in manager._workspace_node_manifest_entries()
+                if item["uid"] == uid
+            )
+            assert entry["data_backing"] == "file_lazy"
+            snapshot = manager._workspace_data_backing_snapshot()
+            assert snapshot[uid][0] == "file_lazy"
+            assert str(file_path.resolve()) in snapshot[uid][1]
+        finally:
+            opened.close()
+
+
 def test_manager_duplicate_goldtool_child(
     qtbot,
     monkeypatch,

@@ -32,7 +32,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.provenance import ImageToolSelectionSourceBinding
-    from erlab.interactive.imagetool.viewer import ImageSlicerArea
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea, ImageSlicerState
 
 
 def _preview_from_imagetool(
@@ -88,6 +88,20 @@ class _MetadataField:
     monospace: bool = False
     wrap: bool = False
     details: _LoadSourceDetails | None = None
+
+
+@dataclass(frozen=True)
+class _NodePersistenceView:
+    data: xr.DataArray | None
+    state: ImageSlicerState | None
+    provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+    source_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+    source_binding: ImageToolSelectionSourceBinding | None
+    output_id: str | None
+    source_state: typing.Literal["fresh", "stale", "unavailable"]
+    source_auto_update: bool
+    data_backing: typing.Literal["dask", "file_lazy", "memory"] | None
+    source_paths: tuple[str, ...] = ()
 
 
 def _format_chunk_summary(data: xr.DataArray) -> str:
@@ -382,7 +396,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 self.tool_window.info_text
             )
         text = erlab.utils.formatting.format_darr_html(
-            self.slicer_area._data,
+            self.slicer_area.displayed_data,
             show_size=True,
             additional_info=[
                 f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
@@ -396,7 +410,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _metadata_data(self) -> xr.DataArray | None:
         if self.imagetool is not None:
-            return self.slicer_area._data
+            return self.slicer_area.displayed_data
         if self.tool_window is not None:
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 return self.tool_window.tool_data
@@ -505,6 +519,15 @@ class _ManagedWindowNode(QtCore.QObject):
         return self._source_spec
 
     @property
+    def displayed_source_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        source_spec = self.source_spec
+        if self.imagetool is not None:
+            return self.slicer_area.displayed_live_source_spec(source_spec)
+        return source_spec
+
+    @property
     def source_binding(
         self,
     ) -> ImageToolSelectionSourceBinding | None:
@@ -529,6 +552,44 @@ class _ManagedWindowNode(QtCore.QObject):
         if self.imagetool is not None:
             return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
         return self.provenance_spec
+
+    def persistence_view(self) -> _NodePersistenceView:
+        """Return the only manager persistence/clone view for this node."""
+        if self.imagetool is None:
+            return _NodePersistenceView(
+                data=None,
+                state=None,
+                provenance_spec=self.provenance_spec,
+                source_spec=self.source_spec,
+                source_binding=self.source_binding,
+                output_id=self.output_id,
+                source_state=self.source_state,
+                source_auto_update=self.source_auto_update,
+                data_backing=None,
+            )
+
+        data, state = self.slicer_area.persistence_data_and_state()
+        from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
+
+        data_backing: typing.Literal["dask", "file_lazy", "memory"]
+        if data.chunks is not None:
+            data_backing = "dask"
+        elif _manager_xarray.dataarray_is_file_backed(data):
+            data_backing = "file_lazy"
+        else:
+            data_backing = "memory"
+        return _NodePersistenceView(
+            data=data,
+            state=state,
+            provenance_spec=self.provenance_spec,
+            source_spec=self.source_spec,
+            source_binding=self.source_binding,
+            output_id=self.output_id,
+            source_state=self.source_state,
+            source_auto_update=self.source_auto_update,
+            data_backing=data_backing,
+            source_paths=_manager_xarray.dataarray_source_paths(data),
+        )
 
     @property
     def snapshot_token(self) -> str:
@@ -590,9 +651,10 @@ class _ManagedWindowNode(QtCore.QObject):
     def derivation_entries(
         self,
     ) -> list[erlab.interactive.imagetool.provenance.DerivationEntry]:
-        if self.provenance_spec is None:
+        provenance_spec = self.displayed_provenance_spec
+        if provenance_spec is None:
             return []
-        return self.provenance_spec.display_entries()
+        return provenance_spec.display_entries()
 
     @property
     def derivation_lines(self) -> list[str]:
@@ -600,9 +662,10 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @property
     def derivation_code(self) -> str | None:
-        if self.provenance_spec is None:
+        provenance_spec = self.displayed_provenance_spec
+        if provenance_spec is None:
             return None
-        return self.provenance_spec.display_code()
+        return provenance_spec.display_code()
 
     def add_child_reference(self, uid: str, window: QtWidgets.QWidget) -> None:
         if uid not in self._childtool_indices:
@@ -680,7 +743,7 @@ class _ManagedWindowNode(QtCore.QObject):
             source_spec = self._materialized_source_spec(parent_data)
             self.set_displayed_provenance(
                 erlab.interactive.imagetool.provenance.compose_display_provenance(
-                    parent.provenance_spec,
+                    parent.displayed_provenance_spec,
                     source_spec,
                     parent_data=parent_data,
                 )
@@ -796,9 +859,30 @@ class _ManagedWindowNode(QtCore.QObject):
         *,
         state: _source_state_type = "fresh",
         propagate_descendants: bool,
+        preserve_filter: bool = False,
     ) -> None:
+        accepted_filter_operation = None
+        filtered = None
+        if preserve_filter and self.imagetool is not None:
+            accepted_filter_operation = (
+                self.slicer_area._accepted_filter_provenance_operation
+            )
+            if accepted_filter_operation is not None:
+                filtered = self.slicer_area._filter_operation_result_for_replacement(
+                    data,
+                    accepted_filter_operation,
+                )
         with self._suspend_descendant_propagation(), self._suspend_snapshot_updates():
             self.slicer_area.replace_source_data(data)
+            if accepted_filter_operation is not None:
+                self.slicer_area._apply_filter_result(
+                    typing.cast("xr.DataArray", filtered),
+                    self.slicer_area._filter_func_from_operation(
+                        accepted_filter_operation
+                    ),
+                    operation=accepted_filter_operation,
+                    accept=True,
+                )
         self.set_displayed_provenance(provenance_spec, advance_snapshot=False)
         self._advance_snapshot_token()
         self._set_source_state(state)
@@ -816,6 +900,7 @@ class _ManagedWindowNode(QtCore.QObject):
         | None,
         *,
         propagate_descendants: bool = True,
+        preserve_filter: bool = False,
     ) -> None:
         """Replace displayed ImageTool data with detached provenance."""
         self._source_spec = None
@@ -826,6 +911,7 @@ class _ManagedWindowNode(QtCore.QObject):
             provenance_spec,
             state="fresh",
             propagate_descendants=propagate_descendants,
+            preserve_filter=preserve_filter,
         )
 
     def _handle_tool_data_changed(self) -> None:
@@ -1019,7 +1105,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 resolved = source_spec.apply(parent_data)
                 provenance_spec = (
                     erlab.interactive.imagetool.provenance.compose_display_provenance(
-                        self.manager._parent_node(self).provenance_spec,
+                        self.manager._parent_node(self).displayed_provenance_spec,
                         source_spec,
                         parent_data=parent_data,
                     )
@@ -1028,6 +1114,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 resolved,
                 provenance_spec,
                 propagate_descendants=True,
+                preserve_filter=True,
             )
         except Exception:
             self._set_source_state("unavailable")
@@ -1069,7 +1156,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 resolved = source_spec.apply(parent_data)
                 provenance_spec = (
                     erlab.interactive.imagetool.provenance.compose_display_provenance(
-                        self.manager._parent_node(self).provenance_spec,
+                        self.manager._parent_node(self).displayed_provenance_spec,
                         source_spec,
                         parent_data=parent_data,
                     )
@@ -1084,6 +1171,7 @@ class _ManagedWindowNode(QtCore.QObject):
                     resolved,
                     provenance_spec,
                     propagate_descendants=False,
+                    preserve_filter=True,
                 )
             except Exception:
                 self._set_source_state("unavailable")

@@ -557,6 +557,21 @@ def _describe_state_change_rows(
         details.append(_detail_note("Axis inversion changed"))
         _consume(changes, "axis_inversions", prefixes=("axis_inversions",))
 
+    if any(
+        path == "filter_operation" or path.startswith("filter_operation.")
+        for path in changes
+    ):
+        old_filter = prev.get("filter_operation", _MISSING)
+        new_filter = curr.get("filter_operation", _MISSING)
+        if new_filter is _MISSING or new_filter is None:
+            summaries.append("Filter cleared")
+        elif old_filter is _MISSING or old_filter is None:
+            summaries.append("Filter applied")
+        else:
+            summaries.append("Filter changed")
+        details.append(_detail_note("Filter operation changed"))
+        _consume(changes, "filter_operation", prefixes=("filter_operation",))
+
     if "plotitem_states" in changes:
         plot_summaries, plot_details = _plot_state_changes(
             prev_flat.get("plotitem_states", []), curr_flat.get("plotitem_states", [])

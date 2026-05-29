@@ -104,6 +104,7 @@ class ImageSlicerState(typing.TypedDict):
     current_cursor: int
     manual_limits: dict[str, list[float]]
     axis_inversions: typing.NotRequired[dict[str, bool]]
+    filter_operation: typing.NotRequired[dict[str, typing.Any] | None]
     cursor_colors: list[str]
     controls_visible: typing.NotRequired[bool]
     file_path: typing.NotRequired[str | None]
@@ -1050,7 +1051,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     sigSourceDataReplaced()
         Signal emitted when the underlying source data is replaced or otherwise
         changed at the source level, such as file open, reload, manager-driven
-        replacement, or in-place console edits.
+        replacement, accepted filters, or in-place console edits.
     sigPointValueChanged(value)
         Signal emitted when the point value at the current cursor has been computed.
         Only emitted for dask-backed data.
@@ -1187,9 +1188,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._associated_tools: dict[str, QtWidgets.QWidget] = {}
         self._assoc_tools_lock = threading.RLock()
 
-        # Applied filter function
+        # Current plot filter. Accepted filters are represented by the operation below.
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
         self._applied_provenance_operation: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+        ) = None
+        self._accepted_filter_provenance_operation: (
             erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
         ) = None
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
@@ -1444,7 +1448,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if isinstance(selection, _FileDataSelection):
                 selection = selection.model_dump(mode="json")
             load_func = (func_name, load_func[1], selection)
-        return {
+        state: ImageSlicerState = {
             "color": self.colormap_properties,
             "slice": self.array_slicer.state,
             "current_cursor": int(self.current_cursor),
@@ -1457,13 +1461,22 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "controls_visible": self.controls_visible,
             "plotitem_states": [p._serializable_state for p in self.axes],
         }
+        filter_operation = self._accepted_filter_provenance_operation
+        if filter_operation is not None:
+            state["filter_operation"] = filter_operation.model_dump(mode="json")
+        return state
 
     @state.setter
     def state(self, state: ImageSlicerState) -> None:
         with self.history_suppressed(), self.link_sync_suppressed():
             self._restore_state(state)
 
-    def _restore_state(self, state: ImageSlicerState) -> None:
+    def _restore_state(
+        self,
+        state: ImageSlicerState,
+        *,
+        emit_filter_edited: bool = False,
+    ) -> None:
         logger.debug("Restoring state...")
         parent = self.parent()
         if hasattr(parent, "_set_controls_visible"):
@@ -1533,6 +1546,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if file_path is not None:
             self.sigDataChanged.emit()
             logger.debug("Restored file path")
+
+        self._restore_filter_operation_from_state(
+            state.get("filter_operation", None),
+            emit_edited=emit_filter_edited,
+        )
+        logger.debug("Restored filter operation")
 
         # Restore colormap settings
         try:
@@ -1662,9 +1681,168 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def data(self) -> xr.DataArray:
         return self.array_slicer._obj
 
+    @property
+    def displayed_data(self) -> xr.DataArray:
+        """Return the public data values committed for derived outputs."""
+        return self._accepted_data_for_dims(tuple(self._data.dims))
+
     def _tool_source_parent_data(self) -> xr.DataArray:
         """Return the current slicer view used for source-bound child tools."""
-        return self.data.copy(deep=False)
+        return self._accepted_data_for_dims(tuple(self.data.dims)).copy(deep=False)
+
+    @property
+    def has_active_filter(self) -> bool:
+        return (
+            self._applied_func is not None
+            or self._accepted_filter_provenance_operation is not None
+        )
+
+    def persistence_data_and_state(self) -> tuple[xr.DataArray, ImageSlicerState]:
+        """Return data/state for save and clone paths."""
+        return self._data, self.state
+
+    def displayed_live_source_spec(
+        self,
+        base_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        """Return live source provenance including the accepted display filter."""
+        source_spec = erlab.interactive.imagetool.provenance.require_live_source_spec(
+            base_spec
+        )
+        operation = self._accepted_filter_provenance_operation
+        if source_spec is None or operation is None:
+            return source_spec
+        return source_spec.append_display_operation(operation)
+
+    def _accepted_data_for_dims(self, dims: tuple[Hashable, ...]) -> xr.DataArray:
+        operation = self._accepted_filter_provenance_operation
+        if operation is None:
+            return self._data_aligned_to_dims(self._data, dims)
+        return self._filtered_data_for_dims(
+            self._filter_func_from_operation(operation), dims
+        )
+
+    def _normalize_filter_result_for_source_dims(
+        self,
+        source_data: xr.DataArray,
+        filtered: xr.DataArray,
+        dims: tuple[Hashable, ...],
+    ) -> xr.DataArray:
+        """Validate a filter result and align it with the requested data layout."""
+        if source_data.ndim != filtered.ndim:
+            raise ValueError("DataArray dimensions do not match")
+        if set(source_data.dims) != set(filtered.dims):
+            raise ValueError("DataArray dimensions do not match")
+
+        expected_source_shape = tuple(source_data.sizes[dim] for dim in filtered.dims)
+        if filtered.shape != expected_source_shape:
+            raise ValueError("DataArray shape does not match")
+
+        filtered = self._data_aligned_to_dims(filtered, dims)
+        expected_shape = self._expected_layout_shape(source_data, dims)
+        if filtered.shape != expected_shape:
+            raise ValueError("DataArray shape does not match")
+        return filtered
+
+    def _normalize_filter_result_for_dims(
+        self, filtered: xr.DataArray, dims: tuple[Hashable, ...]
+    ) -> xr.DataArray:
+        return self._normalize_filter_result_for_source_dims(self._data, filtered, dims)
+
+    def _expected_layout_shape(
+        self, source_data: xr.DataArray, dims: tuple[Hashable, ...]
+    ) -> tuple[int, ...]:
+        aligned = self._data_aligned_to_dims(source_data, dims)
+        return tuple(aligned.sizes[dim] for dim in dims)
+
+    @staticmethod
+    def _data_aligned_to_dims(
+        data: xr.DataArray, dims: tuple[Hashable, ...]
+    ) -> xr.DataArray:
+        missing_dims = tuple(dim for dim in dims if dim not in data.dims)
+        if missing_dims and any(str(dim).endswith("_idx") for dim in missing_dims):
+            data = erlab.interactive.imagetool.slicer.make_dims_uniform(data)
+            missing_dims = tuple(dim for dim in dims if dim not in data.dims)
+        if missing_dims == ("stack_dim",):
+            data = data.expand_dims("stack_dim", axis=dims.index("stack_dim"))
+        if data.dims != dims:
+            return data.transpose(*dims)
+        return data
+
+    def _filtered_data_for_dims(
+        self, func: Callable[[xr.DataArray], xr.DataArray], dims: tuple[Hashable, ...]
+    ) -> xr.DataArray:
+        return self._normalize_filter_result_for_dims(func(self._data), dims)
+
+    def _filtered_data_for_display(
+        self, func: Callable[[xr.DataArray], xr.DataArray]
+    ) -> xr.DataArray:
+        return self._filtered_data_for_dims(func, tuple(self.data.dims))
+
+    def _filter_operation_result_for_data(
+        self,
+        data: xr.DataArray,
+        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+        dims: tuple[Hashable, ...],
+    ) -> xr.DataArray:
+        return self._normalize_filter_result_for_source_dims(
+            data,
+            operation.apply(data, parent_data=data),
+            dims,
+        )
+
+    def _replacement_display_dims(self, data: xr.DataArray) -> tuple[Hashable, ...]:
+        validated = erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
+            data,
+            copy_values=False,
+        )
+        if erlab.interactive.imagetool.slicer.check_cursors_compatible(
+            self.data,
+            validated,
+        ):
+            return tuple(self.data.dims)
+        return tuple(validated.dims)
+
+    def _filter_operation_result_for_replacement(
+        self,
+        data: xr.DataArray,
+        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+    ) -> xr.DataArray:
+        return self._filter_operation_result_for_data(
+            data,
+            operation,
+            self._replacement_display_dims(data),
+        )
+
+    @staticmethod
+    def _filter_func_from_operation(
+        operation: erlab.interactive.imagetool.provenance.ToolProvenanceOperation,
+    ) -> Callable[[xr.DataArray], xr.DataArray]:
+        def _apply_filter(darr: xr.DataArray) -> xr.DataArray:
+            return operation.apply(darr, parent_data=darr)
+
+        return _apply_filter
+
+    def _parse_filter_operation_state(
+        self,
+        payload: dict[str, typing.Any] | None,
+    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None:
+        if payload is None:
+            return None
+        return erlab.interactive.imagetool.provenance.parse_tool_provenance_operation(
+            payload
+        )
+
+    def _restore_filter_operation_from_state(
+        self,
+        payload: dict[str, typing.Any] | None,
+        *,
+        emit_edited: bool = False,
+    ) -> None:
+        operation = self._parse_filter_operation_state(payload)
+        if operation == self._accepted_filter_provenance_operation:
+            return
+        self.apply_filter_operation(operation, update=False, emit_edited=emit_edited)
 
     @staticmethod
     def _owned_values_copy(darr: xr.DataArray) -> typing.Any:
@@ -1699,13 +1877,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
 
-    def _set_source_item(self, key, value) -> None:
+    def _set_source_item(self, key, value, *, emit_signals: bool = True) -> None:
         """Safely update a subset of the public source array in place."""
         need_restore = (
             self._applied_func is not None or not self._obj_shares_data_values
         )
         self._applied_func = None
         self._applied_provenance_operation = None
+        self._accepted_filter_provenance_operation = None
         restored_obj = False
 
         if self._data_shares_external_values:
@@ -1726,7 +1905,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.array_slicer.clear_val_cache()
             self.refresh_all(only_plots=True)
             self.lock_levels(self.levels_locked)
-            if updated:
+            if updated and emit_signals:
                 self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
                 self.sigDataEdited.emit()
 
@@ -1866,8 +2045,14 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _apply_history_entry(self, entry: _history.HistoryEntry, *, undo: bool) -> None:
         source = entry.before_state if undo else entry.after_state
         patched = _history.patch_state(self.state, source, entry.changed_paths)
+        emit_filter_edited = any(
+            bool(path) and path[0] == "filter_operation" for path in entry.changed_paths
+        )
         with self.history_suppressed(), self.link_sync_suppressed():
-            self.state = typing.cast("ImageSlicerState", patched)
+            self._restore_state(
+                typing.cast("ImageSlicerState", patched),
+                emit_filter_edited=emit_filter_edited,
+            )
 
     def _apply_matching_linked_history_entry(
         self, transaction_id: str, *, undo: bool
@@ -2556,6 +2741,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         self._obj_shares_data_values = True
         self._applied_func = None
         self._applied_provenance_operation = None
+        self._accepted_filter_provenance_operation = None
 
         # Save color limits so we may restore them later
         cached_levels: tuple[float, float] | None = None
@@ -2752,7 +2938,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if self._direct_reloadable() or self._provenance_reloadable():
             try:
                 data, kwargs = self._fetch_reload_data()
-                self.replace_source_data(data, **kwargs)
+                self._replace_reload_data(data, kwargs)
             except Exception:
                 erlab.interactive.utils.MessageDialog.critical(
                     self, "Error", "An error occurred while reloading data."
@@ -2766,13 +2952,37 @@ class ImageSlicerArea(QtWidgets.QWidget):
             return False
         try:
             data, kwargs = self._fetch_reload_data()
-            self.replace_source_data(data, **kwargs)
+            self._replace_reload_data(data, kwargs)
         except Exception:
             erlab.interactive.utils.MessageDialog.critical(
                 self, "Error", "An error occurred while reloading data."
             )
             return False
         return True
+
+    def _replace_reload_data(
+        self,
+        data: xr.DataArray,
+        kwargs: dict[str, typing.Any],
+    ) -> None:
+        """Replace source data during reload and reapply the accepted filter."""
+        accepted_filter_operation = self._accepted_filter_provenance_operation
+        if accepted_filter_operation is None:
+            self.replace_source_data(data, **kwargs)
+            return
+
+        filtered = self._filter_operation_result_for_replacement(
+            data,
+            accepted_filter_operation,
+        )
+        self.set_data(data, **kwargs)
+        self._apply_filter_result(
+            filtered,
+            self._filter_func_from_operation(accepted_filter_operation),
+            operation=accepted_filter_operation,
+            accept=True,
+            emit_edited=True,
+        )
 
     @QtCore.Slot()
     def reload(self) -> None:
@@ -2854,13 +3064,12 @@ class ImageSlicerArea(QtWidgets.QWidget):
         """Return provenance for the currently displayed data values."""
         if base_spec is None:
             base_spec = self.provenance_spec
-        operation = self._applied_provenance_operation
+        operation = self._accepted_filter_provenance_operation
         if operation is None:
             return base_spec
-        return erlab.interactive.imagetool.provenance.compose_display_provenance(
+        return erlab.interactive.imagetool.provenance.compose_full_provenance(
             base_spec,
             erlab.interactive.imagetool.provenance.full_data(operation),
-            parent_data=self._data,
         )
 
     def apply_func(
@@ -2871,6 +3080,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
         operation: (
             erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
         ) = None,
+        emit_edited: bool = False,
+        preview: bool = True,
     ) -> None:
         """Apply a function to the data.
 
@@ -2878,8 +3089,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
         DataArray. The returned DataArray must have the same dimensions and coordinates
         as the original data.
 
-        This action is not recorded in the history, and the data is not affected. Only
-        one function can be applied at a time.
+        This preview-only action is not recorded in the history, and the source data
+        remains unchanged. Accepted filters must use :meth:`apply_filter_operation`.
+        Only one preview function can be applied at a time.
 
         Parameters
         ----------
@@ -2887,33 +3099,82 @@ class ImageSlicerArea(QtWidgets.QWidget):
             The function to apply to the data. if None, the data is restored.
         update
             If `True`, the plots are updated after setting the new values.
+        operation
+            Deprecated. Accepted filters must use :meth:`apply_filter_operation`.
+        emit_edited
+            If `True`, emit edit and source-change signals after updating the preview.
+        preview
+            Must be `True`. The argument is kept for existing internal callers.
 
         """
+        if operation is not None:
+            raise ValueError(
+                "Use apply_filter_operation() for operation-backed filters"
+            )
+        if not preview:
+            raise ValueError("apply_func() is preview-only")
+        self._apply_filter_func(
+            func,
+            update=update,
+            operation=None,
+            accept=False,
+            emit_edited=emit_edited,
+        )
+
+    def _apply_filter_func(
+        self,
+        func: Callable[[xr.DataArray], xr.DataArray] | None,
+        update: bool = True,
+        *,
+        operation: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+        ) = None,
+        accept: bool = False,
+        emit_edited: bool = False,
+    ) -> None:
         if func is None:
             self._applied_func = None
             self._applied_provenance_operation = None
             self._restore_obj_from_source(update=update)
+            if accept:
+                self._accepted_filter_provenance_operation = None
+            if emit_edited:
+                self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
+                self.sigDataEdited.emit()
             return
 
-        # `self._data` is the public/source array, while `self.data` is the current
-        # validated slicer view. Temporary filters only detach the slicer view so the
-        # source array remains unchanged and can be restored cheaply.
-        filtered = func(self._data)
+        filtered = self._filtered_data_for_display(func)
+        self._apply_filter_result(
+            filtered,
+            func,
+            update=update,
+            operation=operation,
+            accept=accept,
+            emit_edited=emit_edited,
+        )
+
+    def _apply_filter_result(
+        self,
+        filtered: xr.DataArray,
+        func: Callable[[xr.DataArray], xr.DataArray],
+        update: bool = True,
+        *,
+        operation: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+        ) = None,
+        accept: bool = False,
+        emit_edited: bool = False,
+    ) -> None:
         if filtered.chunks is None:
             self.update_values(filtered, update=update)
             self._applied_func = func
             self._applied_provenance_operation = operation
+            if accept:
+                self._accepted_filter_provenance_operation = operation
+            if emit_edited:
+                self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
+                self.sigDataEdited.emit()
             return
-
-        if self.data.ndim != filtered.ndim:
-            raise ValueError("DataArray dimensions do not match")
-        if set(self.data.dims) != set(filtered.dims):
-            raise ValueError("DataArray dimensions do not match")
-
-        if self.data.dims != filtered.dims:
-            filtered = filtered.transpose(*self.data.dims)
-        if self.data.shape != filtered.shape:
-            raise ValueError("DataArray shape does not match")
 
         self.array_slicer.set_array(
             filtered,
@@ -2928,6 +3189,44 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.lock_levels(self.levels_locked)
         self._applied_func = func
         self._applied_provenance_operation = operation
+        if accept:
+            self._accepted_filter_provenance_operation = operation
+        if emit_edited:
+            self.sigSourceDataReplaced.emit(self._tool_source_parent_data())
+            self.sigDataEdited.emit()
+
+    def apply_filter_operation(
+        self,
+        operation: (
+            erlab.interactive.imagetool.provenance.ToolProvenanceOperation | None
+        ),
+        update: bool = True,
+        *,
+        emit_edited: bool = False,
+        preview: bool = False,
+    ) -> None:
+        """Apply an operation-backed reversible display filter."""
+        if operation is None:
+            self._apply_filter_func(
+                None,
+                update=update,
+                accept=not preview,
+                emit_edited=emit_edited,
+            )
+            return
+        filtered = self._filter_operation_result_for_data(
+            self._data,
+            operation,
+            tuple(self.data.dims),
+        )
+        self._apply_filter_result(
+            filtered,
+            self._filter_func_from_operation(operation),
+            update=update,
+            operation=operation,
+            accept=not preview,
+            emit_edited=emit_edited,
+        )
 
     def set_manual_limits(self, manual_limits: dict[str, list[float]]) -> None:
         """Set manual limits for the axes.

@@ -190,14 +190,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
         self.set_provenance_spec(provenance_spec)
 
     def to_dataset(self) -> xr.Dataset:
-        name = self.slicer_area._data.name
+        data, state = self.slicer_area.persistence_data_and_state()
+        name = data.name
         if name is None:
             name = ""
-        ds = self.slicer_area._data.to_dataset(
-            name=_ITOOL_DATA_NAME, promote_attrs=False
-        )
+        ds = data.to_dataset(name=_ITOOL_DATA_NAME, promote_attrs=False)
         attrs = {
-            "itool_state": json.dumps(self.slicer_area.state),
+            "itool_state": json.dumps(state),
             "itool_title": self.windowTitle(),
             "itool_name": str(name),
             "itool_rect": self.geometry().getRect(),
@@ -299,8 +298,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
             The duplicated ImageTool window.
 
         """
-        kwargs["state"] = self.slicer_area.state.copy()
-        new_tool = self.__class__(self.slicer_area._data.copy(deep=False), **kwargs)
+        data, state = self.slicer_area.persistence_data_and_state()
+        kwargs["state"] = state
+        new_tool = self.__class__(data.copy(deep=False), **kwargs)
         new_tool.set_provenance_spec(self.provenance_spec)
         new_tool.setGeometry(self.geometry())
         return new_tool
@@ -544,7 +544,8 @@ class ImageTool(BaseImageTool):
 
     @QtCore.Slot()
     def _export_file(self, *, native: bool = True) -> None:
-        if self.slicer_area._data is None:
+        data = self.slicer_area.displayed_data
+        if data is None:
             raise ValueError("Data is Empty!")
         dialog = QtWidgets.QFileDialog(self)
         dialog.setAcceptMode(QtWidgets.QFileDialog.AcceptMode.AcceptSave)
@@ -590,13 +591,13 @@ class ImageTool(BaseImageTool):
         }
 
         dialog.setNameFilters(valid_savers.keys())
-        dialog.setDirectory(f"{self.slicer_area._data.name}.h5")
+        dialog.setDirectory(f"{data.name}.h5")
         # dialog.setOption(QtWidgets.QFileDialog.Option.DontUseNativeDialog)
         if dialog.exec():
             files = dialog.selectedFiles()
             fn, kargs = valid_savers[dialog.selectedNameFilter()]
             with erlab.interactive.utils.wait_dialog(self, "Saving..."):
-                fn(self.slicer_area._data, files[0], **kargs)
+                fn(data, files[0], **kargs)
 
 
 class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
@@ -870,9 +871,7 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
     @QtCore.Slot()
     def _view_menu_visibility(self) -> None:
         self.slicer_area.refresh_actions_enabled()
-        self.action_dict["resetAct"].setEnabled(
-            self.slicer_area._applied_func is not None
-        )
+        self.action_dict["resetAct"].setEnabled(self.slicer_area.has_active_filter)
         self._populate_invert_axis_menu()
 
     @QtCore.Slot()
@@ -986,7 +985,13 @@ class ItoolMenuBar(erlab.interactive.utils.DictMenuBar):
 
     @QtCore.Slot()
     def _reset_filters(self) -> None:
-        self.slicer_area.apply_func(None)
+        self.slicer_area.record_history_mutation(
+            None,
+            lambda: self.slicer_area.apply_filter_operation(
+                None,
+                emit_edited=True,
+            ),
+        )
 
     @QtCore.Slot()
     def _copy_cursor_val(self) -> None:

@@ -1990,6 +1990,20 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         """Replace a final rename, if present, then append new operation instances."""
         return self.drop_trailing_rename().append_operations(*operations)
 
+    def append_display_operation(
+        self, operation: ToolProvenanceOperation
+    ) -> ToolProvenanceSpec:
+        """Append a live display operation without making a final name stale."""
+        operation = _require_operation_instance(operation)
+        if not self.is_live_source:
+            raise TypeError("Display operations can only be appended to live sources")
+        operations = self.operations
+        if operations and isinstance(operations[-1], RenameOperation):
+            return self.model_copy(
+                update={"operations": (*operations[:-1], operation, operations[-1])}
+            )
+        return self.append_operations(operation)
+
     def append_final_rename(self, name: str) -> ToolProvenanceSpec:
         return self.drop_trailing_rename().append_operations(RenameOperation(name=name))
 

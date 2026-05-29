@@ -107,7 +107,8 @@ class _ConcatDialog(QtWidgets.QDialog):
             try:
                 selected = list(manager._selected_imagetool_targets())
                 to_concat = [
-                    manager.get_imagetool(idx).slicer_area._data for idx in selected
+                    manager.get_imagetool(idx).slicer_area.displayed_data
+                    for idx in selected
                 ]
                 concat_kwargs = self.concat_kwargs()
                 input_names = [
@@ -241,7 +242,7 @@ class _StoreDialog(QtWidgets.QDialog):
         self._layout.addRow("Data to store", QtWidgets.QLabel("Stored name"))
 
         for tool_idx in target_indices:
-            data = manager.get_imagetool(tool_idx).slicer_area._data
+            data = manager.get_imagetool(tool_idx).slicer_area.displayed_data
             wrapper = manager._imagetool_wrappers[tool_idx]
             default_name = data.name
             if not erlab.interactive.utils._is_kwarg_name(default_name):
