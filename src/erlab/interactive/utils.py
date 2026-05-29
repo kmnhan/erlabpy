@@ -3914,11 +3914,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     @QtCore.Slot()
     def _refresh_reload_data_action(self) -> None:
+        if not qt_is_valid(self.reload_data_action):
+            return
         reloadable = self._source_reloadable()
         self.reload_data_action.setVisible(reloadable)
         self.reload_data_action.setEnabled(reloadable)
+        if not qt_is_valid(self._tool_file_menu):
+            return
         menu_action = self._tool_file_menu.menuAction()
-        if menu_action is not None:
+        if menu_action is not None and qt_is_valid(menu_action):
             menu_action.setVisible(reloadable)
 
     def finalize_source_refresh(self) -> None:
@@ -3990,6 +3994,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._refresh_reload_data_action()
         if (
             self._managed_source_reload is None
+            or not qt_is_valid(self.reload_data_action)
             or not self.reload_data_action.isEnabled()
         ):
             return False
