@@ -166,6 +166,44 @@ def test_manager_workspace_load_preserves_added_time(
         assert manager._child_node(tool_uid).created_time == tool_added
 
 
+def test_manager_added_time_display_uses_zone_name_and_offset(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    added = datetime.datetime(
+        2024,
+        1,
+        2,
+        3,
+        4,
+        5,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=9), "KST"),
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+            created_time=added,
+        )
+
+        node = manager._imagetool_wrappers[0]
+        expected = added.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
+        assert node.added_time_display == expected
+        assert node.added_time_iso == added.isoformat(timespec="seconds")
+        assert (
+            next(
+                field.value for field in node.metadata_fields if field.label == "Added"
+            )
+            == expected
+        )
+        assert f"Added {expected}" in node.info_text
+
+
 @pytest.mark.parametrize("saved_attr", [None, "not-a-date"], ids=["missing", "invalid"])
 def test_manager_workspace_load_falls_back_for_legacy_or_invalid_added_time(
     qtbot,
