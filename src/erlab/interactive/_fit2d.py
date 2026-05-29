@@ -1908,7 +1908,10 @@ class Fit2DTool(Fit1DTool):
     @QtCore.Slot()
     def copy_code(self) -> str:
         return self._copy_provenance_code(
-            self._resolve_script_provenance(self.COPY_PROVENANCE)
+            self._resolve_script_provenance(
+                self.COPY_PROVENANCE,
+                include_parent_provenance=False,
+            )
         )
 
     @QtCore.Slot()
@@ -1918,7 +1921,10 @@ class Fit2DTool(Fit1DTool):
     @QtCore.Slot()
     def copy_code_1d(self) -> str:
         return self._copy_provenance_code(
-            self._resolve_script_provenance(Fit1DTool.COPY_PROVENANCE)
+            self._resolve_script_provenance(
+                Fit1DTool.COPY_PROVENANCE,
+                include_parent_provenance=False,
+            )
         )
 
     def detached_output_imagetool_provenance(

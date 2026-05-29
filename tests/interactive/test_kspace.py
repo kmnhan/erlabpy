@@ -548,6 +548,29 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
     assert "input_data_kconv" in namespace
 
 
+def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance_framework
+    data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
+    source = prov.selection(prov.IselOperation(kwargs={"alpha": slice(2, 24)}))
+    parent_provenance = prov.selection(prov.IselOperation(kwargs={"hv": slice(0, 5)}))
+    source_data = source.apply(data)
+    win = ktool(source_data, execute=False)
+    qtbot.addWidget(win)
+    win.set_source_binding(source)
+    win.set_input_provenance_parent_fetcher(lambda: parent_provenance)
+
+    code = win.copy_code()
+
+    assert "hv=slice" not in code
+    assert "alpha=slice" in code
+    namespace = {"data": data.copy(deep=True)}
+    exec(code, {"__builtins__": {"slice": slice}}, namespace)  # noqa: S102
+    expected = win._assign_params(source_data.copy(deep=True)).kspace.convert(
+        bounds=win.bounds, resolution=win.resolution
+    )
+    xr.testing.assert_allclose(expected, namespace["derived_kconv"])
+
+
 def test_ktool_update_rate_limited(qtbot, anglemap, monkeypatch) -> None:
     win = ktool(anglemap, execute=False)
     qtbot.addWidget(win)
