@@ -1187,7 +1187,7 @@ def test_tool_script_provenance_rejects_invalid_expression(qtbot) -> None:
 
 
 def test_tool_window_dynamic_expression_provenance_uses_input_provenance(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     class _DynamicTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
         StateModel = _PersistentToolState
@@ -1302,7 +1302,7 @@ def test_tool_window_dynamic_expression_provenance_uses_input_provenance(qtbot) 
 
 
 def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     class _OperationsTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
         StateModel = _PersistentToolState
@@ -1395,7 +1395,7 @@ def test_tool_window_copy_provenance_code_handles_empty_specs(
     qtbot,
     monkeypatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     copied: list[str] = []
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)
@@ -1537,7 +1537,7 @@ def test_tool_window_prompt_existing_output_choices(qtbot, monkeypatch) -> None:
 
 
 def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data)
     qtbot.addWidget(tool)
@@ -1563,7 +1563,7 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
 
 
 def test_tool_window_dataset_roundtrips_source_binding(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data.isel(x=slice(1, 3)))
     qtbot.addWidget(tool)
@@ -1626,14 +1626,14 @@ def test_tool_window_source_binding_empty_and_type_error_branches(qtbot) -> None
         tool.set_source_binding(
             None,
             source_binding=typing.cast(
-                "erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding",
+                "erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding",
                 object(),
             ),
         )
 
 
 def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     class _FakeTreeView:
         def __init__(self) -> None:
@@ -1712,7 +1712,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         node.set_source_binding(
             None,
             source_binding=typing.cast(
-                "erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding",
+                "erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding",
                 object(),
             ),
         )
@@ -1815,7 +1815,7 @@ def test_managed_tool_window_node_detached_update_branches(
     qtbot,
     monkeypatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     parent_data = xr.DataArray(np.arange(4.0), dims=("x",), name="parent")
 
     class _FakeTreeView:
@@ -1830,7 +1830,8 @@ def test_managed_tool_window_node_detached_update_branches(
             super().__init__(data)
             self.output_data: xr.DataArray | None = None
             self.output_provenance: (
-                erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+                erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+                | None
             ) = None
 
         def output_imagetool_data(
@@ -1843,7 +1844,7 @@ def test_managed_tool_window_node_detached_update_branches(
             self,
             output_id: str | enum.Enum,
             data: xr.DataArray,
-        ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+        ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
             assert output_id == "out"
             assert data is self.output_data
             return self.output_provenance
@@ -2201,7 +2202,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_separate(
     qtbot, monkeypatch
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     class _DummyState(pydantic.BaseModel):
         value: int = 0
@@ -2360,7 +2361,7 @@ def test_tool_window_managed_detached_output_preserves_provenance(
         def update_data(self, new_data: xr.DataArray) -> None:
             self._data = new_data
 
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     root_data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
     output_data = xr.DataArray(np.arange(3.0), dims=("x",), name="detached")
     detached_spec = prov.script(

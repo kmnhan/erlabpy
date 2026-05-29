@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Complete ImageTool window with menubar and keyboard shortcuts.
 
 This module implements :class:`BaseImageTool` and :class:`ImageTool` that contains all
@@ -21,7 +22,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 from erlab.interactive.imagetool import _serialization
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
-from erlab.interactive.imagetool.viewer import _select_input_dataarrays
+from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
@@ -62,7 +63,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         state = kwargs.pop("state", None)
         transpose = bool(kwargs.pop("transpose", False))
         self._provenance_spec: (
-            erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
         ) = None
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
@@ -160,19 +161,19 @@ class BaseImageTool(QtWidgets.QMainWindow):
     @property
     def provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
         return self._provenance_spec
 
     def set_provenance_spec(
         self,
-        provenance_spec: erlab.interactive.imagetool.provenance.ToolProvenanceSpec
+        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
         | typing.Mapping[str, typing.Any]
         | None,
     ) -> None:
         """Set canonical replay provenance for the current ImageTool data."""
         self._provenance_spec = (
-            erlab.interactive.imagetool.provenance.parse_tool_provenance_spec(
+            erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
                 provenance_spec
             )
         )

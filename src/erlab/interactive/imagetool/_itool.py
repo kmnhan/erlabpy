@@ -7,8 +7,8 @@ import numpy.typing as npt
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool.viewer import (
-    SlicerLinkProxy,
+from erlab.interactive.imagetool.viewer_linking import SlicerLinkProxy
+from erlab.interactive.imagetool.viewer_state import (
     _parse_input,
     _select_input_dataarrays,
 )

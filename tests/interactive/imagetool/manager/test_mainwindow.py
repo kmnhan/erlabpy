@@ -9,7 +9,7 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     calls: list[str] = []
     copied: list[str] = []
 
@@ -976,7 +976,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1093,7 +1093,7 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1281,7 +1281,7 @@ def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = test_data.rename("scan")
     file_path = tmp_path / "scan.h5"
     source.to_netcdf(file_path, engine="h5netcdf")
@@ -1385,7 +1385,7 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1458,7 +1458,7 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1541,7 +1541,7 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(12, dtype=float).reshape((3, 4)),
         dims=["x", "y"],
@@ -1771,7 +1771,7 @@ def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(12.0).reshape(3, 4),
         dims=("x", "y"),

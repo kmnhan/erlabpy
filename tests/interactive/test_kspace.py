@@ -530,7 +530,7 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
     win = ktool(data, execute=False)
     qtbot.addWidget(win)
     win.set_input_provenance_spec(
-        erlab.interactive.imagetool.provenance.script(
+        erlab.interactive.imagetool.provenance_framework.script(
             start_label="Start from watched variable 'my_data'",
             seed_code="derived = my_data.astype(np.float64)",
             active_name="derived",

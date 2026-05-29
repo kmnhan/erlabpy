@@ -23,10 +23,14 @@ import erlab
 import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
-import erlab.interactive.imagetool.viewer as imagetool_viewer
+import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
+from erlab.interactive.imagetool._viewer_dialogs import (
+    _AssociatedCoordsDialog,
+    _CursorColorCoordDialog,
+)
 from erlab.interactive.imagetool.controls import (
     ItoolColormapControls,
     ItoolCrosshairControls,
@@ -56,10 +60,8 @@ from erlab.interactive.imagetool.dialogs import (
     ThinDialog,
 )
 from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
-from erlab.interactive.imagetool.viewer import (
-    ImageSlicerArea,
-    _AssociatedCoordsDialog,
-    _CursorColorCoordDialog,
+from erlab.interactive.imagetool.viewer import ImageSlicerArea
+from erlab.interactive.imagetool.viewer_state import (
     _parse_input,
     _SelectDataArraysDialog,
 )
@@ -190,7 +192,7 @@ def test_operation_backed_dialog_empty_operation_edges(qtbot, monkeypatch) -> No
         raise RuntimeError("cannot emit")
 
     monkeypatch.setattr(
-        erlab.interactive.imagetool.provenance,
+        erlab.interactive.imagetool.provenance_framework,
         "operations_expression_code",
         _raise_expression_code,
     )
@@ -1212,8 +1214,8 @@ def test_profile_menu_opens_associated_coord_targets(
     captured: list[
         tuple[
             xr.DataArray,
-            erlab.interactive.imagetool.provenance.ToolProvenanceSpec,
-            erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding
+            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
+            erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding
             | None,
             bool,
         ]
@@ -1666,7 +1668,7 @@ def test_parse_data() -> None:
         match=r"Unsupported input type str. Expected DataArray, Dataset, DataTree, "
         r"numpy array, or a list of DataArray or numpy arrays.",
     ):
-        erlab.interactive.imagetool.viewer._parse_input("string")
+        erlab.interactive.imagetool.viewer_state._parse_input("string")
 
 
 def test_itool_load(qtbot, monkeypatch, move_and_compare_values, accept_dialog) -> None:
@@ -1760,7 +1762,7 @@ def test_itool_file_open_uses_selected_dataset_variable(
         name="second",
     )
     updated_second = second + 2.0
-    selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+    selection = erlab.interactive.imagetool.provenance_framework.FileDataSelection(
         kind="dataset_variable",
         value="second",
     )
@@ -1891,7 +1893,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
 ) -> None:
     win = itool(xr.DataArray(np.arange(4.0), dims=("x",)), execute=False)
     qtbot.addWidget(win)
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
 
     with pytest.raises(RuntimeError, match="cannot be reloaded"):
         win.slicer_area._fetch_for_provenance_reload()
@@ -2042,7 +2044,7 @@ def test_itool_save_preserves_filter_state_and_exports_displayed_data(
         coords={"x": np.arange(5), "y": np.arange(5)},
         name="scan",
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -2061,7 +2063,7 @@ def test_itool_save_preserves_filter_state_and_exports_displayed_data(
     xarray.testing.assert_identical(restored.slicer_area.data, expected)
     xarray.testing.assert_identical(restored.slicer_area._data, data)
     display_spec = restored.slicer_area.displayed_provenance_spec(
-        erlab.interactive.imagetool.provenance.full_data()
+        erlab.interactive.imagetool.provenance_framework.full_data()
     )
     assert display_spec is not None
     code = display_spec.display_code()
@@ -2101,8 +2103,10 @@ def test_saved_filtered_file_data_reloads_by_reapplying_filter(
     )
     updated = data + 100.0
     data.to_netcdf(file_path, engine="h5netcdf")
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 1.0}
+        )
     )
 
     win = ImageTool(
@@ -2133,8 +2137,10 @@ def test_filter_state_restore_does_not_emit_edit_signals(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 1.0}
+        )
     )
     expected = operation.apply(data, parent_data=data)
     source = itool(data, execute=False)
@@ -2488,7 +2494,10 @@ def test_itool_child_tool_source_specs_and_non_source_updates(qtbot) -> None:
     win.slicer_area.open_in_meshtool()
     qtbot.wait_until(lambda: len(win.slicer_area._associated_tools) == 1, timeout=5000)
     child = next(iter(win.slicer_area._associated_tools.values()))
-    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
+    assert (
+        child.source_spec
+        == erlab.interactive.imagetool.provenance_framework.full_data()
+    )
     assert child.source_state == "fresh"
 
     new_data = data.copy(deep=True)
@@ -2505,8 +2514,10 @@ def test_child_tool_from_gaussian_filtered_itool_keeps_display_provenance(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"alpha": 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"alpha": 1.0}
+        )
     )
     expected = operation.apply(data, parent_data=data)
 
@@ -2537,8 +2548,10 @@ def test_image_child_from_gaussian_filtered_itool_keeps_display_provenance(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"alpha": 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"alpha": 1.0}
+        )
     )
     expected = operation.apply(data, parent_data=data)
 
@@ -2565,7 +2578,7 @@ def test_image_child_from_gaussian_filtered_itool_keeps_display_provenance(
 
 
 def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     win = itool(_TEST_DATA["2D"].copy(), execute=False)
     qtbot.addWidget(win)
 
@@ -2739,7 +2752,7 @@ def test_parse_input() -> None:
 
 
 def test_select_dataarrays_dialog_preserves_tree_source_paths(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     first = xr.DataArray(
         np.zeros((2, 3), dtype=np.float32),
         dims=("alpha", "eV"),
@@ -2832,7 +2845,7 @@ def test_select_dataarrays_dialog_formats_selected_dataarray(
 
     selected_data = dialog.selected_dataarrays()
     assert [selection for _data_array, selection in selected_data] == [
-        erlab.interactive.imagetool.provenance.FileDataSelection(
+        erlab.interactive.imagetool.provenance_framework.FileDataSelection(
             kind="dataset_variable",
             value="second",
         )
@@ -2937,7 +2950,7 @@ def test_select_dataarrays_dialog_nests_datatree_paths(qtbot) -> None:
     dialog._item_checkbox(signal_item).setChecked(False)
 
     assert [selection for _data_array, selection in dialog.selected_dataarrays()] == [
-        erlab.interactive.imagetool.provenance.FileDataSelection(
+        erlab.interactive.imagetool.provenance_framework.FileDataSelection(
             kind="datatree_path",
             value="/branch_a/sweep_0/signal",
         )
@@ -3022,9 +3035,9 @@ def test_select_input_dataarrays_dialog_branches(
         def selected_dataarrays(self) -> tuple[tuple[xr.DataArray, int], ...]:
             return selected
 
-    monkeypatch.setattr(imagetool_viewer, "_SelectDataArraysDialog", _Dialog)
+    monkeypatch.setattr(imagetool_viewer_state, "_SelectDataArraysDialog", _Dialog)
 
-    result = imagetool_viewer._select_input_dataarrays(ds)
+    result = imagetool_viewer_state._select_input_dataarrays(ds)
 
     if expected is None:
         assert result is None
@@ -3034,13 +3047,13 @@ def test_select_input_dataarrays_dialog_branches(
 
 
 def test_parse_input_data_records_dataset_and_datatree_selectors() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     image = xr.DataArray(np.ones((2, 3)), dims=("x", "y"), name="image")
     ds = xr.Dataset({"image": image})
     tree = xr.DataTree.from_dict({"diag": xr.Dataset({"image": image})})
 
-    dataset_parsed = imagetool_viewer._parse_input_data(ds)
-    datatree_parsed = imagetool_viewer._parse_input_data(tree)
+    dataset_parsed = imagetool_viewer_state._parse_input_data(ds)
+    datatree_parsed = imagetool_viewer_state._parse_input_data(tree)
 
     assert dataset_parsed[0][1] == prov.FileDataSelection(
         kind="dataset_variable", value="image"
@@ -3879,8 +3892,10 @@ def test_apply_func_rejects_operation_backed_filters(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 1.0}
+        )
     )
 
     win = ImageTool(data)
@@ -3894,7 +3909,7 @@ def test_apply_func_rejects_operation_backed_filters(qtbot) -> None:
     with pytest.raises(ValueError, match="apply_filter_operation"):
         win.slicer_area.apply_func(
             lambda darr: darr + 1,
-            operation=erlab.interactive.imagetool.provenance.NormalizeOperation(
+            operation=erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
                 dims=("x",),
                 mode="area",
             ),
@@ -4516,7 +4531,10 @@ def test_itool_open_in_ktool_sets_full_data_source_binding(qtbot, monkeypatch) -
 
     win.slicer_area.open_in_ktool()
 
-    assert child.source_spec == erlab.interactive.imagetool.provenance.full_data()
+    assert (
+        child.source_spec
+        == erlab.interactive.imagetool.provenance_framework.full_data()
+    )
     assert child.source_state == "fresh"
 
     win.close()
@@ -4602,7 +4620,7 @@ def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) ->
 def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
     qtbot, monkeypatch
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     win = itool(_TEST_DATA["2D"].copy(), execute=False)
     qtbot.addWidget(win)
 
@@ -5229,9 +5247,11 @@ def test_itool_transform_after_filter_uses_displayed_data_and_provenance(
         coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
         name="scan",
     )
-    filter_operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
-        dims=("x",),
-        mode="min",
+    filter_operation = (
+        erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
+            dims=("x",),
+            mode="min",
+        )
     )
     filtered = filter_operation.apply(data, parent_data=data)
     expected = filtered.qsel.mean("y").rename("scan_avg")
@@ -5294,7 +5314,8 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     ]
     aggregate_op = win.provenance_spec.operations[0]
     assert isinstance(
-        aggregate_op, erlab.interactive.imagetool.provenance.QSelAggregationOperation
+        aggregate_op,
+        erlab.interactive.imagetool.provenance_framework.QSelAggregationOperation,
     )
     assert aggregate_op.func == "sum"
 
@@ -5830,8 +5851,10 @@ def test_transform_dialog_restores_filter_after_processing_error(
     win = itool(data, execute=False)
     qtbot.addWidget(win)
 
-    filter_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
+    filter_operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 1.0}
+        )
     )
     win.slicer_area.apply_filter_operation(filter_operation)
 
@@ -5870,8 +5893,8 @@ def test_transform_replace_composes_after_script_active_name(qtbot) -> None:
     qtbot.addWidget(win)
 
     win.set_provenance_spec(
-        erlab.interactive.imagetool.provenance.script(
-            erlab.interactive.imagetool.provenance.ScriptCodeOperation(
+        erlab.interactive.imagetool.provenance_framework.script(
+            erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation(
                 label="Compute intermediate result",
                 code="result = data + 1",
             ),
@@ -7993,8 +8016,10 @@ def test_itool_filter_dialog_reopens_with_current_settings(
     )
     first_sigma = 0.015
     second_sigma = 0.02
-    first_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": first_sigma}
+    first_operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": first_sigma}
+        )
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -8022,7 +8047,7 @@ def test_normalize_filter_dialog_reopens_with_current_settings(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min_area",
         denominator_rtol=1e-9,
@@ -8043,7 +8068,9 @@ def test_normalize_filter_dialog_reopens_with_current_settings(qtbot) -> None:
     assert dialog.denominator_rtol == pytest.approx(1e-9)
 
     dialog.restore_filter_operation(
-        erlab.interactive.imagetool.provenance.GaussianFilterOperation(sigma={"x": 1.0})
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 1.0}
+        )
     )
     assert dialog.dim_checks["x"].isChecked()
     assert dialog.opts[3].isChecked()
@@ -8065,7 +8092,7 @@ def test_gaussian_filter_restore_skips_unknown_dimensions(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     dialog.restore_filter_operation(
-        erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
             sigma={"missing": 1.0, "x": 2.0}
         )
     )
@@ -8084,11 +8111,15 @@ def test_itool_filter_preview_reject_restores_active_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
     )
-    first_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
+    first_operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 0.015}
+        )
     )
-    second_operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.02}
+    second_operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 0.02}
+        )
     )
     first_expected = first_operation.apply(data, parent_data=data)
     second_expected = second_operation.apply(data, parent_data=data)
@@ -8123,7 +8154,7 @@ def test_accepted_filter_displayed_data_uses_materialized_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(3, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -8154,7 +8185,7 @@ def test_filter_helpers_reject_invalid_normalized_results(qtbot, monkeypatch) ->
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(3, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -8187,7 +8218,7 @@ def test_apply_filter_operation_caches_dask_accepted_filter_lazily(qtbot) -> Non
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -8227,7 +8258,7 @@ def test_compute_chunked_preserves_accepted_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -8261,8 +8292,10 @@ def test_itool_reload_reapplies_accepted_filter(qtbot, tmp_path: pathlib.Path) -
     def _load_current(_path: str) -> xr.DataArray:
         return current["data"]
 
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 0.015}
+        )
     )
     win = ImageTool(
         data,
@@ -8311,8 +8344,10 @@ def test_itool_reload_filter_failure_keeps_existing_filtered_data(
     def _load_current(_path: str) -> xr.DataArray:
         return current["data"]
 
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 0.015}
+        )
     )
     win = ImageTool(
         data,
@@ -8348,8 +8383,10 @@ def test_itool_empty_filter_accept_clears_active_filter(qtbot) -> None:
         dims=["x", "y"],
         coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
     )
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 0.015}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 0.015}
+        )
     )
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -8373,8 +8410,10 @@ def test_itool_filter_accept_and_reset_are_undoable(qtbot, accept_dialog) -> Non
         coords={"x": np.linspace(0.0, 0.04, 5), "y": np.arange(5, dtype=float)},
     )
     sigma = 0.015
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": sigma}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": sigma}
+        )
     )
     expected = operation.apply(data, parent_data=data)
     win = itool(data, execute=False)

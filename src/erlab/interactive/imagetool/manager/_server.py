@@ -1080,7 +1080,7 @@ def show_in_manager(
     elif data is None:
         input_data = []
     else:
-        input_data = erlab.interactive.imagetool.viewer._parse_input(data)
+        input_data = erlab.interactive.imagetool.viewer_state._parse_input(data)
 
     direct_manager = _direct_manager_for_target(target)
     if direct_manager is not None:
@@ -1129,7 +1129,7 @@ def replace_data(
     Response
         Manager response.
     """
-    data_list = erlab.interactive.imagetool.viewer._parse_input(data)
+    data_list = erlab.interactive.imagetool.viewer_state._parse_input(data)
 
     if isinstance(index, (int, str)):
         index = [index]

@@ -424,7 +424,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
 
         if link_rect:
             proxy = typing.cast(
-                "erlab.interactive.imagetool.viewer.SlicerLinkProxy",
+                "erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy",
                 tool_wrapper.slicer_area._linking_proxy,
             )
             link_color = self.manager.color_for_linker(proxy)

@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """Private helpers for ImageTool file-load metadata and provenance."""
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ _LoadFunc: typing.TypeAlias = tuple[
     dict[str, typing.Any],
     int
     | dict[str, typing.Any]
-    | erlab.interactive.imagetool.provenance.FileDataSelection,
+    | erlab.interactive.imagetool.provenance_framework.FileDataSelection,
 ]
 _LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
 
@@ -82,7 +83,7 @@ class _ResolvedLoadFunc:
     setup_lines: tuple[str, ...]
     loader_name: str | None
     kwargs: dict[str, typing.Any]
-    selection: erlab.interactive.imagetool.provenance.FileDataSelection
+    selection: erlab.interactive.imagetool.provenance_framework.FileDataSelection
     cast_float64: bool
 
     @property
@@ -94,9 +95,11 @@ class _ResolvedLoadFunc:
             typing.cast("dict[typing.Hashable, typing.Any]", self.kwargs)
         )
 
-    def replay_call(self) -> erlab.interactive.imagetool.provenance.FileReplayCall:
+    def replay_call(
+        self,
+    ) -> erlab.interactive.imagetool.provenance_framework.FileReplayCall:
         """Return the serialized loader call used by structured file replay."""
-        return erlab.interactive.imagetool.provenance.FileReplayCall(
+        return erlab.interactive.imagetool.provenance_framework.FileReplayCall(
             kind=self.kind,
             target=self.target,
             kwargs=self.kwargs,
@@ -155,20 +158,22 @@ def _needs_float64_cast(source_input_dtype: np.dtype[typing.Any] | str | None) -
 
 def _file_data_selection_code(
     load_expr: str,
-    selection: erlab.interactive.imagetool.provenance.FileDataSelection,
+    selection: erlab.interactive.imagetool.provenance_framework.FileDataSelection,
 ) -> str:
     if selection.kind == "dataarray":
         return load_expr
     if selection.kind == "dataset_variable":
-        variable_code = erlab.interactive.imagetool.provenance._provenance_value_code(
-            selection.value
+        variable_code = (
+            erlab.interactive.imagetool.provenance_framework._provenance_value_code(
+                selection.value
+            )
         )
         return f"{load_expr}[{variable_code}]"
     if selection.kind == "datatree_path":
         return f"{load_expr}[{selection.value!r}]"
 
     return (
-        "erlab.interactive.imagetool.viewer._parse_input("
+        "erlab.interactive.imagetool.viewer_state._parse_input("
         f"{load_expr})[{selection.value}]"
     )
 
@@ -294,7 +299,7 @@ def _resolve_load_func(
         return None
 
     loader, kwargs, selection = load_func
-    selection = erlab.interactive.imagetool.provenance.FileDataSelection.model_validate(
+    selection = erlab.interactive.imagetool.provenance_framework.FileDataSelection.model_validate(
         selection
     )
     cast_float64 = _needs_float64_cast(source_input_dtype)
@@ -436,7 +441,7 @@ def _load_source_details_from_file(
 
 
 def _load_source_details_from_provenance(
-    load_source: erlab.interactive.imagetool.provenance.FileLoadSource,
+    load_source: erlab.interactive.imagetool.provenance_framework.FileLoadSource,
 ) -> _LoadSourceDetails:
     """Build manager metadata details from serialized provenance file metadata."""
     return _LoadSourceDetails(
@@ -459,7 +464,7 @@ def _load_provenance_from_file_details(
     load_func: _LoadFunc | None,
     *,
     source_input_dtype: np.dtype[typing.Any] | str | None = None,
-) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
     """Build replay provenance whose seed reloads the current data from disk."""
     resolved = _resolve_load_func(
         load_func,
@@ -468,10 +473,10 @@ def _load_provenance_from_file_details(
     if resolved is None:
         return None
     details = _load_source_details(file_path, load_func, resolved)
-    return erlab.interactive.imagetool.provenance.file_load(
+    return erlab.interactive.imagetool.provenance_framework.file_load(
         start_label=f"Load data from file {file_path.name!r}",
         seed_code=resolved.load_code(file_path, assign="derived"),
-        file_load_source=erlab.interactive.imagetool.provenance.FileLoadSource(
+        file_load_source=erlab.interactive.imagetool.provenance_framework.FileLoadSource(
             path=str(details.path),
             loader_label=details.loader_label,
             loader_text=details.loader_text,

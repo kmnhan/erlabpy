@@ -1900,7 +1900,7 @@ class Fit2DTool(Fit1DTool):
 
     def current_provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         # Manager metadata and other passive provenance consumers should not trigger
         # interactive warnings for incomplete fit ranges.
         return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
@@ -1926,7 +1926,7 @@ class Fit2DTool(Fit1DTool):
         data: xr.DataArray,
         *,
         source: QtCore.QObject | None = None,
-    ) -> erlab.interactive.imagetool.provenance.ToolProvenanceSpec | None:
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         if source is None:
             return self._resolve_script_provenance(self._DETACHED_COPY_PROVENANCE)
         return super().detached_output_imagetool_provenance(

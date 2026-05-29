@@ -127,8 +127,10 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
 
     _missing_attr_loader.__module__ = "math"
     _missing_attr_loader.__qualname__ = "missing_loader"
-    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
-        kind="dataarray"
+    dataarray_selection = (
+        erlab.interactive.imagetool.provenance_framework.FileDataSelection(
+            kind="dataarray"
+        )
     )
 
     assert _load_code_from_file_details(file_path, None) is None
@@ -145,7 +147,7 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
     selected_code = _load_code_from_file_details(file_path, ("example", {}, 1))
     assert selected_code == (
         "erlab.io.set_loader('example')\n"
-        "data = erlab.interactive.imagetool.viewer._parse_input("
+        "data = erlab.interactive.imagetool.viewer_state._parse_input("
         f"erlab.io.load({str(file_path)!r}))[1]"
     )
     assert _load_code_from_file_details(file_path, (_local_loader, {}, 0)) is None

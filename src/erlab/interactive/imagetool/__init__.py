@@ -9,13 +9,16 @@ Modules
    :toctree:
 
    viewer
+   viewer_linking
+   viewer_state
    slicer
    fastslicing
    fastbinning
    controls
    dialogs
    manager
-   provenance
+   provenance_framework
+   provenance_operations
 
 """
 

@@ -124,7 +124,7 @@ def test_manager_console_handles_use_filtered_display_data(
         dims=["x", "y"],
         coords={"x": np.arange(5), "y": np.arange(5)},
     )
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -352,8 +352,10 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
     ],
 ) -> None:
     data = test_data.astype(float)
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={data.dims[0]: 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={data.dims[0]: 1.0}
+        )
     )
     filtered = operation.apply(data, parent_data=data)
 
@@ -430,7 +432,7 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(25, dtype=float).reshape((5, 5)),
         dims=["x", "y"],
@@ -624,7 +626,7 @@ def test_manager_console_bare_expression_opens_provenance_root(
 def test_manager_console_rejects_reserved_result_names_for_provenance(
     reserved_name: str,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(2.0), dims=("x",))
     result = manager_console._DerivedDataNamespace(
         None,
@@ -641,7 +643,7 @@ def test_manager_console_rejects_reserved_result_names_for_provenance(
 
 
 def test_manager_console_reserved_result_name_replays_without_shadowing() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data0 = xr.DataArray(np.array([10.0]), dims=("x",))
     data1 = xr.DataArray(np.array([1.0]), dims=("x",))
     source = manager_console._DerivedDataNamespace(
@@ -677,7 +679,7 @@ def test_manager_console_reserved_result_name_replays_without_shadowing() -> Non
 
 
 def test_manager_console_helpers_preserve_nested_operands() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -724,7 +726,7 @@ def test_manager_console_helpers_preserve_nested_operands() -> None:
 
 
 def test_manager_console_namespace_protocols_and_proxies() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -797,7 +799,7 @@ def test_manager_console_namespace_protocols_and_proxies() -> None:
 
 
 def test_manager_console_operator_and_proxy_branches() -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(1, 5).reshape(2, 2),
         dims=("x", "y"),
@@ -917,7 +919,7 @@ def test_manager_console_operator_and_proxy_branches() -> None:
 def test_manager_console_tools_namespace_helper_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
 
     class FakeManager:
@@ -1089,7 +1091,7 @@ def test_manager_console_callable_operand_rejects_unreplayable_globals(
 
     with monkeypatch.context() as patch:
         patch.setattr(
-            erlab.interactive.imagetool.provenance,
+            erlab.interactive.imagetool.provenance_framework,
             "_validate_script_replay_code",
             lambda _code: (_ for _ in ()).throw(ValueError),
         )
@@ -1466,7 +1468,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             expected_chain,
         )
         xr.testing.assert_identical(
-            erlab.interactive.imagetool.provenance.replay_script_provenance(
+            erlab.interactive.imagetool.provenance_framework.replay_script_provenance(
                 chain_spec, {"data_0": data0}
             ),
             expected_chain,
@@ -1569,7 +1571,7 @@ def test_manager_console_captures_self_contained_function_source(
         assert "def add_scale(data):" in shifted_code
         assert "def offset_data(data):" in shifted_code
         xr.testing.assert_identical(
-            erlab.interactive.imagetool.provenance.replay_script_provenance(
+            erlab.interactive.imagetool.provenance_framework.replay_script_provenance(
                 shifted_spec, {"data_0": data}
             ),
             data + 2.0,
@@ -1655,8 +1657,10 @@ def test_manager_console_derived_reload_reapplies_filter(
         coords={"x": np.arange(3), "y": np.arange(3)},
     )
     data1 = data0 + 1.0
-    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
-        sigma={"x": 1.0}
+    operation = (
+        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+            sigma={"x": 1.0}
+        )
     )
 
     with manager_context() as manager:
@@ -1811,7 +1815,7 @@ def test_manager_concat_uses_filtered_display_data(
         coords={"x": np.arange(2), "y": np.arange(2)},
     )
     data1 = data0 + 10.0
-    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -2279,7 +2283,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data0 = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2390,7 +2394,7 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24.0).reshape(2, 2, 3, 2),
         dims=("pol", "energy", "k", "beta"),
@@ -2552,7 +2556,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data0 = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2837,7 +2841,7 @@ def test_manager_reload_self_replacement_uses_recorded_source(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2939,7 +2943,7 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance
+    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),

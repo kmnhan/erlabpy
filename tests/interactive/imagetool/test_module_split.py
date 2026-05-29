@@ -20,7 +20,7 @@ def test_core_shim_export_identity_and_deprecation_warning() -> None:
     assert any(issubclass(w.category, FutureWarning) for w in caught)
 
     assert core.ImageSlicerArea is erlab.interactive.imagetool.viewer.ImageSlicerArea
-    assert core._parse_input is erlab.interactive.imagetool.viewer._parse_input
+    assert core._parse_input is erlab.interactive.imagetool.viewer_state._parse_input
     assert (
         core._PolyROIEditDialog
         is erlab.interactive.imagetool.plot_items._PolyROIEditDialog
