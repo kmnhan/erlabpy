@@ -238,8 +238,8 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
 
     qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-    test_data.qshow(manager=True)
-    test_data.qshow(manager=True)
+    test_data.qshow(manager=manager.manager_index)
+    test_data.qshow(manager=manager.manager_index)
     qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
     manager.raise_()
@@ -266,12 +266,18 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
             menu = tl
             break
     assert isinstance(menu, QtWidgets.QMenu)
+    menu.close()
+    QtWidgets.QApplication.processEvents()
 
     def _discard_changes(dialog: QtWidgets.QMessageBox) -> None:
         dialog.button(QtWidgets.QMessageBox.StandardButton.Discard).click()
 
     accept_dialog(manager.close, accept_call=_discard_changes)
-    qtbot.wait_until(lambda: not erlab.interactive.imagetool.manager.is_running())
+    qtbot.wait_until(
+        lambda: (
+            not erlab.interactive.imagetool.manager.is_running(manager.manager_index)
+        )
+    )
 
 
 def test_childtool_remove_after_tree_clear(
@@ -541,9 +547,7 @@ def test_select_loader_options_cancel_keeps_recent_filter(
             assert self.checked_name == "Example Raw Data (*.h5)"
             return False
 
-    monkeypatch.setattr(
-        manager_mainwindow, "_NameFilterDialog", _CancelNameFilterDialog
-    )
+    monkeypatch.setattr(manager_actions, "_NameFilterDialog", _CancelNameFilterDialog)
     manager = types.SimpleNamespace(
         _recent_loader_extensions_by_filter={"Example Raw Data (*.h5)": {}},
         _recent_name_filter="Previous",
@@ -657,9 +661,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
     manager._select_loader_options = types.MethodType(
         ImageToolManager._select_loader_options, manager
     )
-    monkeypatch.setattr(
-        manager_mainwindow, "_NameFilterDialog", _CancelNameFilterDialog
-    )
+    monkeypatch.setattr(manager_actions, "_NameFilterDialog", _CancelNameFilterDialog)
     monkeypatch.setattr(
         erlab.interactive.utils,
         "file_loaders",
@@ -846,7 +848,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
         return ((data["second"], selection),)
 
     monkeypatch.setattr(
-        imagetool_viewer,
+        imagetool_viewer_state,
         "_select_input_dataarrays",
         _select_second,
     )
@@ -947,7 +949,9 @@ def test_manager_multifile_handler_selection_failure_branches(
 
     if case == "cancel":
         monkeypatch.setattr(
-            imagetool_viewer, "_select_input_dataarrays", lambda _data, _parent: None
+            imagetool_viewer_state,
+            "_select_input_dataarrays",
+            lambda _data, _parent: None,
         )
         handler._on_loaded(file_path, data)
 
@@ -959,7 +963,9 @@ def test_manager_multifile_handler_selection_failure_branches(
             raise ValueError("bad selection")
 
         monkeypatch.setattr(
-            imagetool_viewer, "_select_input_dataarrays", _raise_selection_error
+            imagetool_viewer_state,
+            "_select_input_dataarrays",
+            _raise_selection_error,
         )
         handler._on_loaded(file_path, data)
 
