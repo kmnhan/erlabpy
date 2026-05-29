@@ -310,7 +310,9 @@ def test_manager_workspace_properties_action_uses_current_state(
             return int(QtWidgets.QDialog.DialogCode.Accepted)
 
     monkeypatch.setattr(
-        manager_mainwindow, "_WorkspacePropertiesDialog", _FakeWorkspacePropertiesDialog
+        manager_workspace_io,
+        "_WorkspacePropertiesDialog",
+        _FakeWorkspacePropertiesDialog,
     )
 
     with manager_context() as manager:
@@ -346,7 +348,7 @@ def test_manager_standalone_app_menus(
 
     monkeypatch.setattr(QtGui.QIcon, "fromTheme", staticmethod(_record_theme_icon))
     monkeypatch.setattr(
-        manager_mainwindow,
+        manager_widgets,
         "_launch_new_manager_instance",
         lambda: launched.append(True),
     )
@@ -874,15 +876,15 @@ def test_launch_new_manager_instance_uses_detached_source_process(monkeypatch) -
     calls: list[tuple[list[str], dict[str, typing.Any]]] = []
 
     monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
-    monkeypatch.setattr(manager_mainwindow.sys, "platform", "linux")
-    monkeypatch.setattr(manager_mainwindow.sys, "executable", "/env/bin/python")
+    monkeypatch.setattr(manager_widgets.sys, "platform", "linux")
+    monkeypatch.setattr(manager_widgets.sys, "executable", "/env/bin/python")
     monkeypatch.setattr(
-        manager_mainwindow.subprocess,
+        manager_widgets.subprocess,
         "Popen",
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    manager_mainwindow._launch_new_manager_instance()
+    manager_widgets._launch_new_manager_instance()
 
     assert calls == [
         (
@@ -908,15 +910,15 @@ def test_launch_new_manager_instance_uses_macos_app_bundle(
     executable.touch()
 
     monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", True)
-    monkeypatch.setattr(manager_mainwindow.sys, "platform", "darwin")
-    monkeypatch.setattr(manager_mainwindow.sys, "executable", str(executable))
+    monkeypatch.setattr(manager_widgets.sys, "platform", "darwin")
+    monkeypatch.setattr(manager_widgets.sys, "executable", str(executable))
     monkeypatch.setattr(
-        manager_mainwindow.subprocess,
+        manager_widgets.subprocess,
         "Popen",
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    manager_mainwindow._launch_new_manager_instance()
+    manager_widgets._launch_new_manager_instance()
 
     assert calls == [
         (
@@ -936,24 +938,24 @@ def test_launch_new_manager_instance_uses_windows_detached_flags(monkeypatch) ->
     calls: list[tuple[list[str], dict[str, typing.Any]]] = []
 
     monkeypatch.setattr(erlab.utils.misc, "_IS_PACKAGED", False)
-    monkeypatch.setattr(manager_mainwindow.sys, "platform", "win32")
-    monkeypatch.setattr(manager_mainwindow.sys, "executable", r"C:\env\python.exe")
+    monkeypatch.setattr(manager_widgets.sys, "platform", "win32")
+    monkeypatch.setattr(manager_widgets.sys, "executable", r"C:\env\python.exe")
     monkeypatch.setattr(
-        manager_mainwindow.subprocess, "DETACHED_PROCESS", 8, raising=False
+        manager_widgets.subprocess, "DETACHED_PROCESS", 8, raising=False
     )
     monkeypatch.setattr(
-        manager_mainwindow.subprocess,
+        manager_widgets.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
         512,
         raising=False,
     )
     monkeypatch.setattr(
-        manager_mainwindow.subprocess,
+        manager_widgets.subprocess,
         "Popen",
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
-    manager_mainwindow._launch_new_manager_instance()
+    manager_widgets._launch_new_manager_instance()
 
     assert calls == [
         (
@@ -973,7 +975,7 @@ def test_open_new_manager_instance_shows_error_dialog(monkeypatch) -> None:
     dialogs: list[tuple[object, str, str]] = []
 
     monkeypatch.setattr(
-        manager_mainwindow,
+        manager_widgets,
         "_launch_new_manager_instance",
         lambda: (_ for _ in ()).throw(RuntimeError("launch failed")),
     )
