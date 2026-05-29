@@ -1,4 +1,11 @@
 # ruff: noqa: F403, F405
+import datetime
+
+from erlab.interactive.imagetool.manager._wrapper import (
+    _coerce_added_time,
+    _format_added_time,
+)
+
 from ._shared import *
 
 
@@ -187,6 +194,46 @@ def test_wrapper_loader_code_and_metadata_helper_branches(
     ).chunk({"x": (2, 3), "y": 2})
     assert _format_chunk_summary(xr.DataArray(np.zeros(2), dims=("x",))) == "In memory"
     assert _format_chunk_summary(chunked) == "x=2, 3; y=2"
+
+
+def test_added_time_helpers_use_aware_datetimes(caplog) -> None:
+    added = datetime.datetime(
+        2024,
+        1,
+        2,
+        3,
+        4,
+        5,
+        987654,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=9), "KST"),
+    )
+
+    assert _coerce_added_time(added) == added.replace(microsecond=0)
+    assert _coerce_added_time(added.isoformat().encode()) == added.replace(
+        microsecond=0
+    )
+    assert _format_added_time(added) == added.astimezone().strftime(
+        "%Y-%m-%d %H:%M:%S %Z (%z)"
+    )
+    fallback = _coerce_added_time(None)
+    assert fallback.tzinfo is not None
+    assert fallback.utcoffset() is not None
+
+    caplog.set_level(logging.WARNING)
+    for invalid in (
+        "not-a-date",
+        b"\xff",
+        object(),
+        datetime.datetime(2024, 1, 2, 3, 4, 5),
+    ):
+        fallback = _coerce_added_time(invalid, node_uid="bad-node")
+        assert fallback.tzinfo is not None
+        assert fallback.utcoffset() is not None
+
+    assert (
+        "Ignoring invalid saved manager added timestamp for node bad-node"
+        in caplog.text
+    )
 
 
 def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_child(

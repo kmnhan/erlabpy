@@ -8,6 +8,7 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 import contextlib
 import datetime
 import keyword
+import logging
 import sys
 import typing
 import uuid
@@ -37,6 +38,57 @@ if typing.TYPE_CHECKING:
     )
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
     from erlab.interactive.imagetool.viewer_state import ImageSlicerState
+
+
+logger = logging.getLogger(__name__)
+
+
+def _current_added_time() -> datetime.datetime:
+    return datetime.datetime.now().astimezone().replace(microsecond=0)
+
+
+def _coerce_added_time(
+    value: datetime.datetime | str | bytes | None, *, node_uid: str | None = None
+) -> datetime.datetime:
+    if value is None:
+        return _current_added_time()
+    if isinstance(value, bytes):
+        try:
+            value = value.decode()
+        except UnicodeDecodeError:
+            logger.warning(
+                "Ignoring invalid saved manager added timestamp for node %s",
+                node_uid,
+                exc_info=True,
+            )
+            return _current_added_time()
+    if isinstance(value, str):
+        try:
+            value = datetime.datetime.fromisoformat(value)
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid saved manager added timestamp for node %s",
+                node_uid,
+                exc_info=True,
+            )
+            return _current_added_time()
+    if not isinstance(value, datetime.datetime):
+        logger.warning(
+            "Ignoring invalid saved manager added timestamp for node %s",
+            node_uid,
+        )
+        return _current_added_time()
+    if value.tzinfo is None or value.utcoffset() is None:
+        logger.warning(
+            "Ignoring invalid saved manager added timestamp for node %s",
+            node_uid,
+        )
+        return _current_added_time()
+    return value.replace(microsecond=0)
+
+
+def _format_added_time(value: datetime.datetime) -> str:
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
 
 
 def _preview_from_imagetool(
@@ -148,13 +200,14 @@ class _ManagedWindowNode(QtCore.QObject):
         source_state: _source_state_type = "fresh",
         output_id: str | None = None,
         snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
     ) -> None:
         super().__init__(manager)
         self._manager = weakref.ref(manager)
         self.uid = uid
         self.parent_uid = parent_uid
         self._recent_geometry: QtCore.QRect | None = None
-        self._created_time = datetime.datetime.now()
+        self._created_time = _coerce_added_time(created_time, node_uid=uid)
 
         self._childtools: dict[str, QtWidgets.QWidget] = {}
         self._childtool_indices: list[str] = []
@@ -410,15 +463,25 @@ class _ManagedWindowNode(QtCore.QObject):
         text = erlab.utils.formatting.format_darr_html(
             self.slicer_area.displayed_data,
             show_size=True,
-            additional_info=[
-                f"Added {self._created_time.isoformat(sep=' ', timespec='seconds')}"
-            ],
+            additional_info=[f"Added {self.added_time_display}"],
         )
         return erlab.interactive.utils._apply_qt_accent_color(text)
 
     @property
     def tree_uid_text(self) -> str:
         return self.uid
+
+    @property
+    def created_time(self) -> datetime.datetime:
+        return self._created_time
+
+    @property
+    def added_time_iso(self) -> str:
+        return self._created_time.isoformat(timespec="seconds")
+
+    @property
+    def added_time_display(self) -> str:
+        return _format_added_time(self._created_time)
 
     def _metadata_data(self) -> xr.DataArray | None:
         if self.imagetool is not None:
@@ -489,7 +552,7 @@ class _ManagedWindowNode(QtCore.QObject):
             ),
             _MetadataField(
                 "Added",
-                self._created_time.isoformat(sep=" ", timespec="seconds"),
+                self.added_time_display,
                 monospace=True,
             ),
         ]
@@ -1269,6 +1332,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
     ) -> None:
         self._index = index
         self._watched_varname: str | None = None
@@ -1301,6 +1365,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             source_auto_update=source_auto_update,
             source_state=source_state,
             snapshot_token=snapshot_token,
+            created_time=created_time,
         )
 
     @property
