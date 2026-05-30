@@ -429,6 +429,7 @@ _UNSET = object()
 class _WatcherServer(QtCore.QThread):
     def __init__(self, port: int | None = None) -> None:
         super().__init__()
+        self.setObjectName(type(self).__name__)
         self.stopped = threading.Event()
         self.port = PORT_WATCH if port is None else port
         self._bound_event = threading.Event()
@@ -533,6 +534,7 @@ class _ManagerServer(QtCore.QThread):
 
     def __init__(self, port: int | None = None) -> None:
         super().__init__()
+        self.setObjectName(type(self).__name__)
         self.stopped = threading.Event()
         self.port = PORT if port is None else port
         self._bound_event = threading.Event()
@@ -659,7 +661,6 @@ class _ManagerServer(QtCore.QThread):
                                     logger.debug(
                                         "Server stopping while waiting for data"
                                     )
-                                    _send_multipart(sock, {"status": "error"})
                                     break
 
                                 logger.debug("Data obtained, sending response...")
@@ -682,7 +683,6 @@ class _ManagerServer(QtCore.QThread):
                                         "Server stopping while waiting for "
                                         "watched-variable info"
                                     )
-                                    _send_multipart(sock, {"status": "error"})
                                     break
 
                                 logger.debug(
