@@ -614,11 +614,10 @@ def test_qsel_args_desc_uniform_descending_axis_emits_positive_width() -> None:
     assert args["x_width"] > 0.0
 
     actual = data.qsel(args)
-    expected = data.sel(
+    expected = data.sortby("x").sel(
         x=slice(
-            args["x"] + args["x_width"] / 2,
             args["x"] - args["x_width"] / 2,
-            -1,
+            args["x"] + args["x_width"] / 2,
         )
     )
     np.testing.assert_allclose(actual.values, expected.mean().values)
