@@ -5985,7 +5985,7 @@ def test_itool_interpolate(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None), expected.rename(None)
     )
-    assert win.slicer_area._data.name == "scan_interp_x"
+    assert win.slicer_area._data.name == "scan"
 
     xarray.testing.assert_identical(
         _exec_data_fragment(data, pyperclip.paste()), expected

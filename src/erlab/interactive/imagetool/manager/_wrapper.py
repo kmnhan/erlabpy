@@ -449,9 +449,7 @@ class _ManagedWindowNode(QtCore.QObject):
             return
         slicer_area = self.slicer_area
         slicer_area._data = slicer_area._data.rename(name)
-        slicer_area.array_slicer.set_array(
-            slicer_area._data, validate=False, reset=False, copy_values=False
-        )
+        slicer_area.array_slicer._obj = slicer_area.array_slicer._obj.rename(name)
         if slicer_area._accepted_filter_data is not None:
             slicer_area._accepted_filter_data = (
                 slicer_area._accepted_filter_data.rename(name)

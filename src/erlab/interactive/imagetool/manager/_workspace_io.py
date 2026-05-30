@@ -110,6 +110,8 @@ def _legacy_saved_title_data_name(
             title = rest
     saved_name = str(ds.attrs.get("itool_name", ""))
     stems = _workspace_provenance_file_stems(provenance_spec)
+    if not saved_name and not stems:
+        return None
     compact_suffix = _workspace_compact_file_suffix(stems)
     if compact_suffix and title.endswith(compact_suffix):
         title = title[: -len(compact_suffix)]
@@ -120,6 +122,8 @@ def _legacy_saved_title_data_name(
         if (saved_name and title == f"{saved_name} ({stem})") or (
             not saved_name and title == stem
         ):
+            return None
+        if saved_name and saved_name == stem and title == f"{stem} ({stem})":
             return None
     return title
 
@@ -846,6 +850,9 @@ class _WorkspaceIOMixin:
         if legacy_name is not None:
             ds = ds.copy(deep=False)
             ds.attrs["itool_name"] = legacy_name
+        elif "itool_name" not in ds.attrs:
+            ds = ds.copy(deep=False)
+            ds.attrs["itool_name"] = ""
         tool = ImageTool.from_dataset(ds, **tool_kwargs)
         if parent_target is not None:
             target = self.add_imagetool_child(

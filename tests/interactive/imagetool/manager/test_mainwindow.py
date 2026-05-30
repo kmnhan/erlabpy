@@ -959,7 +959,12 @@ def test_manager_reload_selected_preserves_manual_root_name(
             root_index.data(QtCore.Qt.ItemDataRole.DisplayRole)
             == "0: manual root name (scan)"
         )
-        assert root_tool.windowTitle() == "0: manual root name (scan)"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                root_tool.windowTitle()
+            )
+            == "0: manual root name (scan)"
+        )
 
         updated = (source + 100.0).rename("reloaded_scan")
         updated.to_netcdf(file_path, engine="h5netcdf")
@@ -973,7 +978,12 @@ def test_manager_reload_selected_preserves_manual_root_name(
             manager.reload_selected()
 
         assert manager.name_of_imagetool(0) == "manual root name"
-        assert root_tool.windowTitle() == "0: manual root name (scan)"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                root_tool.windowTitle()
+            )
+            == "0: manual root name (scan)"
+        )
         xr.testing.assert_identical(fetch(0), updated.rename("manual root name"))
 
 
@@ -1007,7 +1017,12 @@ def test_manager_file_suffix_does_not_seed_unnamed_root_name(
         assert manager.name_of_imagetool(0) == ""
         assert root_index.data(QtCore.Qt.ItemDataRole.EditRole) == ""
         assert root_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "0 (scan)"
-        assert manager.get_imagetool(0).windowTitle() == "0 (scan)"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                manager.get_imagetool(0).windowTitle()
+            )
+            == "0 (scan)"
+        )
 
 
 def test_manager_reload_selected_preserves_manual_child_imagetool_name(
@@ -1063,7 +1078,12 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
         assert (
             child_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "manual child name"
         )
-        assert child_tool.windowTitle() == "manual child name"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                child_tool.windowTitle()
+            )
+            == "manual child name"
+        )
 
         updated = (source + 50.0).rename("reloaded_scan")
         updated.to_netcdf(file_path, engine="h5netcdf")
@@ -1078,7 +1098,12 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
 
         assert child_node.source_state == "fresh"
         assert child_node.name == "manual child name"
-        assert child_tool.windowTitle() == "manual child name"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                child_tool.windowTitle()
+            )
+            == "manual child name"
+        )
         xr.testing.assert_identical(
             fetch(child_uid), updated.rename("manual child name")
         )

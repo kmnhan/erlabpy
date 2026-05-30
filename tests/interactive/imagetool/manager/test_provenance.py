@@ -1895,7 +1895,12 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         child_node = manager._child_node(child_uid)
         child_tool = manager.get_imagetool(child_uid)
         child_node.name = "averaged child"
-        assert child_tool.windowTitle() == "averaged child"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                child_tool.windowTitle()
+            )
+            == "averaged child"
+        )
         child_before = fetch(child_uid).copy(deep=True)
 
         child_tool.slicer_area.images[0].open_in_dtool()
