@@ -103,24 +103,6 @@ COVERAGE_GROUPS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-MANAGER_COVERAGE_GROUPS: frozenset[str] = frozenset(
-    group for group in COVERAGE_GROUPS if group.startswith("cov-qt-manager-")
-)
-
-COMPATIBILITY_GROUPS: dict[str, tuple[str, ...]] = {
-    "compat-rest": tuple(
-        target
-        for group, targets in COVERAGE_GROUPS.items()
-        if group not in MANAGER_COVERAGE_GROUPS
-        for target in targets
-    ),
-    **{
-        f"compat-{group.removeprefix('cov-qt-')}": targets
-        for group, targets in COVERAGE_GROUPS.items()
-        if group in MANAGER_COVERAGE_GROUPS
-    },
-}
-
 GUI_PREFIXES: tuple[str, ...] = ("tests/interactive/",)
 GUI_TARGETS: tuple[str, ...] = ()
 
@@ -176,8 +158,6 @@ def expand_file_targets(targets: Sequence[str]) -> list[str]:
 def get_group_targets(group: str) -> tuple[str, ...]:
     if group == "compat":
         return COMPAT_TARGETS
-    if group in COMPATIBILITY_GROUPS:
-        return COMPATIBILITY_GROUPS[group]
     try:
         return COVERAGE_GROUPS[group]
     except KeyError as exc:
@@ -246,4 +226,3 @@ def is_compat_nodeid(nodeid: str) -> bool:
 def iter_known_groups() -> Iterable[str]:
     yield from COVERAGE_GROUPS
     yield "compat"
-    yield from COMPATIBILITY_GROUPS
