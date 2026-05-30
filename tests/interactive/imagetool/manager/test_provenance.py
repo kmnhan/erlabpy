@@ -2,6 +2,48 @@
 from ._shared import *
 
 
+def _manager_provenance_file_spec(path: pathlib.Path):
+    prov = erlab.interactive.imagetool.provenance_framework
+    return prov.file_load(
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+
+
+def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
+    prov = erlab.interactive.imagetool.provenance_framework
+    paths = [
+        tmp_path / "scan_a.h5",
+        tmp_path / "scan_b.h5",
+        tmp_path / "scan_c.h5",
+    ]
+
+    assert manager_wrapper._compact_file_suffix(paths) == " (scan_a, scan_b, +1)"
+
+    spec = _manager_provenance_file_spec(paths[0]).append_replay_stage(
+        prov.full_data(prov.AverageOperation(dims=("x",))).append_final_rename("old")
+    )
+    renamed = manager_wrapper._spec_with_final_data_name(spec, "new")
+
+    assert renamed.kind == "file"
+    assert renamed.replay_stages
+    assert renamed.replay_stages[-1].operations[-1] == prov.RenameOperation(name="new")
+    assert renamed.replay_stages[-1].operations[:-1] == (
+        prov.AverageOperation(dims=("x",)),
+    )
+
+
 def test_manager_childtool_from_filtered_parent_uses_display_provenance(
     qtbot,
     manager_context: Callable[

@@ -30,6 +30,78 @@ class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildStat
         self._status = status
 
 
+def _workspace_test_file_spec(path: pathlib.Path):
+    prov = erlab.interactive.imagetool.provenance_framework
+    return prov.file_load(
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+
+
+def test_workspace_file_suffix_helpers_collect_nested_inputs(tmp_path) -> None:
+    prov = erlab.interactive.imagetool.provenance_framework
+    first = _workspace_test_file_spec(tmp_path / "scan_a.h5")
+    second = _workspace_test_file_spec(tmp_path / "scan_b.h5")
+    third = _workspace_test_file_spec(tmp_path / "scan_c.h5")
+    nested = prov.script(
+        start_label="Combine",
+        seed_code="derived = data_0 + data_1",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_1", label="B", provenance_spec=second),
+            prov.ScriptInput(name="data_2", label="C", provenance_spec=third),
+            prov.ScriptInput(name="data_0", label="A duplicate", provenance_spec=first),
+        ),
+    )
+    combined = prov.script(
+        start_label="Combine nested",
+        seed_code="derived = data_0",
+        active_name="derived",
+        script_inputs=(
+            prov.ScriptInput(name="data_0", label="A", provenance_spec=first),
+            prov.ScriptInput(name="nested", label="Nested", provenance_spec=nested),
+        ),
+    )
+
+    stems = manager_workspace_io._workspace_provenance_file_stems(combined)
+
+    assert stems == ("scan_a", "scan_b", "scan_c")
+    assert (
+        manager_workspace_io._workspace_compact_file_suffix(stems)
+        == " (scan_a, scan_b, +1)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("attrs", "expected"),
+    [
+        ({"itool_title": "2: manual (scan)", "itool_name": "scan"}, "manual"),
+        ({"itool_title": "scan", "itool_name": ""}, None),
+        ({"itool_title": "scan (scan)", "itool_name": "scan"}, None),
+    ],
+)
+def test_workspace_legacy_title_migration_ignores_generated_file_labels(
+    tmp_path,
+    attrs,
+    expected,
+) -> None:
+    ds = xr.Dataset(attrs=attrs)
+    spec = _workspace_test_file_spec(tmp_path / "scan.h5")
+
+    assert manager_workspace_io._legacy_saved_title_data_name(ds, spec) == expected
+
+
 def test_manager_duplicate(
     qtbot,
     test_data,

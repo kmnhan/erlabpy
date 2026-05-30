@@ -1025,6 +1025,35 @@ def test_manager_file_suffix_does_not_seed_unnamed_root_name(
         )
 
 
+def test_manager_rename_updates_accepted_filter_data(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
+        dims=("alpha",),
+        mode="min",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data.astype(float).rename("scan"), manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root_tool = manager.get_imagetool(0)
+        root_tool.slicer_area.apply_filter_operation(operation)
+
+        manager.rename_imagetool(0, "filtered scan")
+
+        assert root_tool.slicer_area._data.name == "filtered scan"
+        assert root_tool.slicer_area._accepted_filter_data is not None
+        assert root_tool.slicer_area._accepted_filter_data.name == "filtered scan"
+        assert root_tool.slicer_area.array_slicer._obj.name == "filtered scan"
+
+
 def test_manager_reload_selected_preserves_manual_child_imagetool_name(
     qtbot,
     tmp_path: pathlib.Path,
