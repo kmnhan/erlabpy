@@ -8,8 +8,8 @@ __all__ = ["_ImageToolWrapper", "_ManagedWindowNode"]
 import contextlib
 import datetime
 import keyword
-import pathlib
 import logging
+import pathlib
 import sys
 import typing
 import uuid
