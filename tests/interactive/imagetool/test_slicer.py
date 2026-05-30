@@ -481,7 +481,7 @@ def test_bin_slice_descending_axis_boundary_window_two(qtbot) -> None:
         coords={"x": np.array([4.0, 3.0, 2.0, 1.0]), "y": np.arange(3)},
     )
     slicer = ArraySlicer(data, parent=QtCore.QObject())
-    slicer.set_indices(0, [0, 1, 2], update=False)
+    slicer.set_indices(0, [0, 1], update=False)
     slicer.set_bin(0, 0, 2, update=False)
 
     assert slicer._bin_slice(0, 0) == slice(0, 2)
@@ -618,9 +618,10 @@ def test_qsel_args_desc_uniform_descending_axis_emits_positive_width() -> None:
         x=slice(
             args["x"] + args["x_width"] / 2,
             args["x"] - args["x_width"] / 2,
+            -1,
         )
     )
-    np.testing.assert_allclose(actual.values, expected.values)
+    np.testing.assert_allclose(actual.values, expected.mean().values)
 
 
 def test_xslice_descending_hidden_axis_with_boundary_bin_succeeds() -> None:
