@@ -1,5 +1,3 @@
-# mypy: ignore-errors
-# ruff: noqa: TC001
 from __future__ import annotations
 
 import contextlib
@@ -23,21 +21,23 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._logging import get_log_file_path
+from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
 from erlab.interactive.imagetool.manager._registry import unregister_manager_record
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
-from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
+    from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
+    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
     from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ _DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
 @dataclass(frozen=True)
 class _ScriptRebuildResult:
     data: xr.DataArray
-    provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+    provenance_spec: ToolProvenanceSpec
 
 
 class _ScriptRebuildError(RuntimeError):
@@ -894,7 +894,7 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
             event.ignore()
 
 
-class _WidgetsMixin:
+class _WidgetsMixin(_ManagerMixinBase):
     @property
     def _status_bar(self) -> QtWidgets.QStatusBar:
         return typing.cast("QtWidgets.QStatusBar", self.statusBar())
@@ -1372,7 +1372,7 @@ class _WidgetsMixin:
         from erlab.interactive.imagetool.manager._updater_gui import AutoUpdater
 
         updater = AutoUpdater()
-        updater.check_for_updates(self)
+        updater.check_for_updates(typing.cast("ImageToolManager", self))
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""

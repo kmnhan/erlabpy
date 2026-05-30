@@ -1,5 +1,3 @@
-# ruff: noqa: E501
-
 import ast
 import json
 import pathlib
@@ -14,6 +12,7 @@ import xarray as xr
 from pydantic import ValidationError
 
 import erlab
+from erlab.interactive.imagetool import provenance_operations
 
 
 def _exec_generated_code(
@@ -329,30 +328,22 @@ def test_registered_provenance_operations_define_operation_code_api() -> None:
 @pytest.mark.parametrize(
     "operation",
     [
-        erlab.interactive.imagetool.provenance_framework.IselOperation(
-            kwargs={"x": slice(0, 2)}
-        ),
-        erlab.interactive.imagetool.provenance_framework.SelOperation(
-            kwargs={"y": 11.0}
-        ),
-        erlab.interactive.imagetool.provenance_framework.DivideByCoordOperation(
-            coord_name="scale"
-        ),
-        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
-            sigma={"x": 0.5}
-        ),
-        erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
+        provenance_operations.IselOperation(kwargs={"x": slice(0, 2)}),
+        provenance_operations.SelOperation(kwargs={"y": 11.0}),
+        provenance_operations.DivideByCoordOperation(coord_name="scale"),
+        provenance_operations.GaussianFilterOperation(sigma={"x": 0.5}),
+        provenance_operations.NormalizeOperation(
             dims=("x",),
             mode="minmax",
         ),
-        erlab.interactive.imagetool.provenance_framework.CoarsenOperation(
+        provenance_operations.CoarsenOperation(
             dim={"x": 2},
             boundary="trim",
             side="left",
             coord_func="mean",
             reducer="mean",
         ),
-        erlab.interactive.imagetool.provenance_framework.ThinOperation(
+        provenance_operations.ThinOperation(
             mode="per_dim",
             factors={"y": 2},
         ),
@@ -377,7 +368,7 @@ def test_operation_replay_code_uses_requested_names(
     expected = operation.apply(data, parent_data=data)
     if isinstance(
         operation,
-        erlab.interactive.imagetool.provenance_framework.DivideByCoordOperation,
+        provenance_operations.DivideByCoordOperation,
     ):
         result = result.rename(None)
         expected = expected.rename(None)
@@ -437,27 +428,21 @@ def test_operation_code_base_edges() -> None:
     ("operation", "expected"),
     [
         (
-            erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
-                dims=("x",), mode="area"
-            ),
+            provenance_operations.NormalizeOperation(dims=("x",), mode="area"),
             'data / data.mean("x")',
         ),
         (
-            erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
-                dims=("x",), mode="min"
-            ),
+            provenance_operations.NormalizeOperation(dims=("x",), mode="min"),
             'data - data.min("x")',
         ),
         (
-            erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
-                dims=("x",), mode="min_area"
-            ),
+            provenance_operations.NormalizeOperation(dims=("x",), mode="min_area"),
             '(data - data.min("x")) / data.mean("x")',
         ),
     ],
 )
 def test_normalize_operation_expression_modes(
-    operation: erlab.interactive.imagetool.provenance_framework.NormalizeOperation,
+    operation: provenance_operations.NormalizeOperation,
     expected: str,
 ) -> None:
     assert operation.expression_code("data") == expected
@@ -560,13 +545,9 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
     nonuniform = erlab.interactive.imagetool.slicer.make_dims_uniform(nonuniform_public)
     selection_spec = erlab.interactive.imagetool.provenance_framework.selection(
-        erlab.interactive.imagetool.provenance_framework.QSelOperation(
-            kwargs={"beta": 2.0}
-        ),
-        erlab.interactive.imagetool.provenance_framework.IselOperation(
-            kwargs={"alpha": slice(1, 3)}
-        ),
-        erlab.interactive.imagetool.provenance_framework.SortCoordOrderOperation(),
+        provenance_operations.QSelOperation(kwargs={"beta": 2.0}),
+        provenance_operations.IselOperation(kwargs={"alpha": slice(1, 3)}),
+        provenance_operations.SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
         selection_spec.apply(nonuniform),
@@ -574,15 +555,11 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
 
     transformed = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.IselOperation(kwargs={"z": 0}),
-        erlab.interactive.imagetool.provenance_framework.SelOperation(
-            kwargs={"y": slice(11.0, 12.0)}
-        ),
-        erlab.interactive.imagetool.provenance_framework.TransposeOperation(
-            dims=("y", "x")
-        ),
-        erlab.interactive.imagetool.provenance_framework.SqueezeOperation(),
-        erlab.interactive.imagetool.provenance_framework.RenameOperation(name="done"),
+        provenance_operations.IselOperation(kwargs={"z": 0}),
+        provenance_operations.SelOperation(kwargs={"y": slice(11.0, 12.0)}),
+        provenance_operations.TransposeOperation(dims=("y", "x")),
+        provenance_operations.SqueezeOperation(),
+        provenance_operations.RenameOperation(name="done"),
     )
     xr.testing.assert_identical(
         transformed.apply(data),
@@ -595,15 +572,13 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
 
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance_framework.full_data(
-            erlab.interactive.imagetool.provenance_framework.AverageOperation(
-                dims=("y",)
-            )
+            provenance_operations.AverageOperation(dims=("y",))
         ).apply(data),
         data.qsel.mean("y"),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance_framework.full_data(
-            erlab.interactive.imagetool.provenance_framework.QSelAggregationOperation(
+            provenance_operations.QSelAggregationOperation(
                 dims=("y",),
                 func="sum",
             )
@@ -612,7 +587,7 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance_framework.full_data(
-            erlab.interactive.imagetool.provenance_framework.CoarsenOperation(
+            provenance_operations.CoarsenOperation(
                 dim={"y": 2},
                 boundary="trim",
                 side="left",
@@ -624,31 +599,25 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance_framework.full_data(
-            erlab.interactive.imagetool.provenance_framework.ThinOperation(
-                mode="global", factor=2
-            )
+            provenance_operations.ThinOperation(mode="global", factor=2)
         ).apply(data),
         data.thin(2),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance_framework.full_data(
-            erlab.interactive.imagetool.provenance_framework.ThinOperation(
-                mode="per_dim", factors={"x": 2}
-            )
+            provenance_operations.ThinOperation(mode="per_dim", factors={"x": 2})
         ).apply(data),
         data.thin({"x": 2}),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance_framework.full_data(
-            erlab.interactive.imagetool.provenance_framework.SwapDimsOperation(
-                mapping={"x": "x_alt"}
-            )
+            provenance_operations.SwapDimsOperation(mapping={"x": "x_alt"})
         ).apply(data),
         data.swap_dims({"x": "x_alt"}),
     )
     xr.testing.assert_identical(
         erlab.interactive.imagetool.provenance_framework.full_data(
-            erlab.interactive.imagetool.provenance_framework.RenameDimsCoordsOperation(
+            provenance_operations.RenameDimsCoordsOperation(
                 mapping={"x": "kx", "x_alt": "label"}
             )
         ).apply(data),
@@ -656,7 +625,7 @@ def test_tool_provenance_apply_selection_and_xarray_operations() -> None:
     )
 
     assigned = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.AssignCoordsOperation(
+        provenance_operations.AssignCoordsOperation(
             coord_name="y", values=np.array([100.0, 101.0, 102.0, 103.0])
         )
     ).apply(data)
@@ -1350,11 +1319,10 @@ def test_tool_provenance_display_keeps_name_rename_before_script_code() -> None:
 
 
 def test_imagetool_selection_source_binding_materializes_current_coordinates() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     original = _base_data()
     shifted = original.assign_coords(y=[20.0, 21.0, 22.0, 23.0])
 
-    binned = prov.ImageToolSelectionSourceBinding(
+    binned = provenance_operations.ImageToolSelectionSourceBinding(
         selection_indexers={"y": slice(1, 4)},
         selection_binned_dims=("y",),
     )
@@ -1367,12 +1335,16 @@ def test_imagetool_selection_source_binding_materializes_current_coordinates() -
         new_spec.apply(shifted), shifted.qsel(y=22.0, y_width=3.0)
     )
 
-    unbinned = prov.ImageToolSelectionSourceBinding(selection_indexers={"y": 2})
+    unbinned = provenance_operations.ImageToolSelectionSourceBinding(
+        selection_indexers={"y": 2}
+    )
     unbinned_spec = unbinned.materialize(shifted)
     assert unbinned_spec.operations[0].decoded_kwargs == {"y": 22.0}
     xr.testing.assert_identical(unbinned_spec.apply(shifted), shifted.qsel(y=22.0))
 
-    cropped = prov.ImageToolSelectionSourceBinding(crop_sel_indexers={"y": slice(1, 3)})
+    cropped = provenance_operations.ImageToolSelectionSourceBinding(
+        crop_sel_indexers={"y": slice(1, 3)}
+    )
     cropped_spec = cropped.materialize(shifted)
     assert cropped_spec.operations[0].decoded_kwargs == {"y": slice(21.0, 22.0)}
     xr.testing.assert_identical(
@@ -1382,9 +1354,8 @@ def test_imagetool_selection_source_binding_materializes_current_coordinates() -
 
 
 def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = _base_data()
-    binding = prov.ImageToolSelectionSourceBinding(
+    binding = provenance_operations.ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"z": 1},
         crop_sel_indexers={"x": slice(0, 3)},
@@ -1393,7 +1364,7 @@ def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() 
         squeeze=True,
     )
 
-    reparsed = prov.ImageToolSelectionSourceBinding.model_validate(
+    reparsed = provenance_operations.ImageToolSelectionSourceBinding.model_validate(
         binding.model_dump(mode="json")
     )
     assert reparsed == binding
@@ -1419,7 +1390,6 @@ def test_imagetool_selection_source_binding_round_trips_and_reuses_operations() 
 
 
 def test_imagetool_selection_source_binding_validates_crop_indexers() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0),
         dims=("x",),
@@ -1427,16 +1397,16 @@ def test_imagetool_selection_source_binding_validates_crop_indexers() -> None:
     )
 
     with pytest.raises(ValueError, match="Dimension `missing` not found"):
-        prov.ImageToolSelectionSourceBinding(
+        provenance_operations.ImageToolSelectionSourceBinding(
             crop_sel_indexers={"missing": slice(0, 1)}
         ).materialize(data)
 
     with pytest.raises(ValueError, match="Selection for dimension `x` is empty"):
-        prov.ImageToolSelectionSourceBinding(
+        provenance_operations.ImageToolSelectionSourceBinding(
             crop_sel_indexers={"x": slice(1, 1)}
         ).materialize(data)
 
-    binding = prov.ImageToolSelectionSourceBinding(
+    binding = provenance_operations.ImageToolSelectionSourceBinding(
         crop_sel_indexers={"x": typing.cast("typing.Any", 1)}
     )
     spec = binding.materialize(data)
@@ -1451,9 +1421,7 @@ def test_tool_provenance_rejects_unsupported_hashables() -> None:
             return 0
 
     with pytest.raises(TypeError, match="provenance hashable fields only support"):
-        erlab.interactive.imagetool.provenance_framework.AverageOperation(
-            dims=(_UnsupportedHashable(),)
-        )
+        provenance_operations.AverageOperation(dims=(_UnsupportedHashable(),))
 
 
 def test_tool_provenance_validation_helpers_and_error_branches() -> None:
@@ -1773,21 +1741,21 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     )
 
     rotate_spec = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.RotateOperation(
+        provenance_operations.RotateOperation(
             angle=45.0, axes=("x", "y"), center=(0.5, 1.5), reshape=False, order=3
         )
     )
     assert rotate_spec.apply(data).attrs["last_op"] == "rotate"
 
     symmetrize_spec = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.SymmetrizeOperation(
+        provenance_operations.SymmetrizeOperation(
             dim="x", center=1.0, subtract=True, mode="valid", part="below"
         )
     )
     assert symmetrize_spec.apply(data).attrs["last_op"] == "symmetrize"
 
     symmetrize_nfold_spec = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.SymmetrizeNfoldOperation(
+        provenance_operations.SymmetrizeNfoldOperation(
             fold=4,
             axes=("x", "y"),
             center={"x": 1.0, "y": 11.0},
@@ -1798,7 +1766,7 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert symmetrize_nfold_spec.apply(data).attrs["last_op"] == "symmetrize_nfold"
 
     edge_spec = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.CorrectWithEdgeOperation(
+        provenance_operations.CorrectWithEdgeOperation(
             edge_fit=edge_fit, shift_coords=False
         )
     )
@@ -1809,7 +1777,7 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert edge_spec.derivation_code() is not None
 
     path_spec = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.SliceAlongPathOperation(
+        provenance_operations.SliceAlongPathOperation(
             vertices={"x": [0.0, 1.0], "y": [10.0, 12.0]},
             step_size=0.5,
             dim_name="path",
@@ -1818,7 +1786,7 @@ def test_tool_provenance_apply_analysis_operations(monkeypatch) -> None:
     assert path_spec.apply(data).attrs["last_op"] == "slice_along_path"
 
     mask_spec = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.MaskWithPolygonOperation(
+        provenance_operations.MaskWithPolygonOperation(
             vertices=np.array([[0.0, 10.0], [1.0, 11.0], [2.0, 12.0]]),
             dims=("x", "y"),
             invert=True,
@@ -1858,18 +1826,19 @@ def test_tool_provenance_roundtrip_correct_with_edge(monkeypatch) -> None:
     )
 
     spec = erlab.interactive.imagetool.provenance_framework.full_data(
-        erlab.interactive.imagetool.provenance_framework.CorrectWithEdgeOperation(
+        provenance_operations.CorrectWithEdgeOperation(
             edge_fit=edge_fit, shift_coords=False
         )
     )
     payload = spec.model_dump(mode="json")
 
-    reparsed_operation = erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_operation(
+    provenance = erlab.interactive.imagetool.provenance_framework
+    reparsed_operation = provenance.parse_tool_provenance_operation(
         payload["operations"][0]
     )
     assert isinstance(
         reparsed_operation,
-        erlab.interactive.imagetool.provenance_framework.CorrectWithEdgeOperation,
+        provenance_operations.CorrectWithEdgeOperation,
     )
     xr.testing.assert_identical(reparsed_operation.decoded_edge_fit, edge_fit)
 

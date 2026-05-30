@@ -1,5 +1,28 @@
-# ruff: noqa: F403, F405
-from ._shared import *
+import pathlib
+import types
+import typing
+
+import pytest
+import xarray as xr
+from qtpy import QtCore, QtWidgets
+
+import erlab
+import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+from erlab.interactive.imagetool._load_source import (
+    _load_code_from_file_details,
+    _resolve_identified_path,
+    _scan_number_load_call_args,
+)
+from erlab.interactive.imagetool.manager._dialogs import (
+    _ChooseFromDataTreeDialog,
+    _CoordinateAttrsPickerDialog,
+    _NameFilterDialog,
+    _NameMapEditorDialog,
+    _text_to_loader_extension_value,
+)
+
+if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool.manager import ImageToolManager
 
 
 def test_load_code_from_file_details_uses_erlab_io_loader_syntax(

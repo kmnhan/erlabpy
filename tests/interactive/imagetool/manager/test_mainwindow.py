@@ -1,5 +1,56 @@
-# ruff: noqa: F403, F405
-from ._shared import *
+import concurrent.futures
+import logging
+import pathlib
+import types
+import typing
+from collections.abc import Callable
+
+import numpy as np
+import pytest
+import xarray
+import xarray as xr
+from qtpy import QtCore, QtGui, QtWidgets
+
+import erlab
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool
+from erlab.interactive.imagetool import itool, provenance_operations
+from erlab.interactive.imagetool._load_source import _LoadSourceDetails
+from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog, _RenameDialog
+from erlab.interactive.imagetool.manager._mainwindow import (
+    _LoadSourceDetailsDialog,
+    _WorkspacePropertiesDialog,
+    _WorkspacePropertiesState,
+)
+from erlab.interactive.imagetool.manager._modelview import (
+    _TOOL_TYPE_ROLE,
+    _ImageToolWrapperItemDelegate,
+)
+
+from .helpers import (
+    _exec_generated_code,
+    assert_nonempty_tooltip,
+    bring_manager_to_top,
+    child_status_badge,
+    click_child_status_badge,
+    click_tree_view_pos,
+    configure_goldtool_child,
+    copy_full_code_for_uid,
+    metadata_derivation_texts,
+    select_child_tool,
+    select_tools,
+    trigger_menu_action,
+)
+
+if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool.manager._modelview import (
+        _ImageToolWrapperItemModel,
+    )
+
+logger = logging.getLogger(__name__)
 
 
 def test_manager_metadata_full_code_generated_only_when_copied(
@@ -1032,7 +1083,7 @@ def test_manager_rename_updates_accepted_filter_data(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
+    operation = provenance_operations.NormalizeOperation(
         dims=("alpha",),
         mode="min",
     )
@@ -1879,14 +1930,13 @@ def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(12.0).reshape(3, 4),
         dims=("x", "y"),
         coords={"x": np.arange(3.0), "y": np.arange(4.0)},
         name="scan",
     )
-    source_binding = prov.ImageToolSelectionSourceBinding(
+    source_binding = provenance_operations.ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"y": slice(1, 3)},
     )

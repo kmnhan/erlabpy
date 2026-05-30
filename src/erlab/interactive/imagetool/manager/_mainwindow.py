@@ -1,5 +1,3 @@
-# mypy: ignore-errors
-# ruff: noqa: E402, E501, F401, F403, F405, TC001, TC002
 from __future__ import annotations
 
 import gc
@@ -8,22 +6,35 @@ import sys
 import typing
 import uuid
 
-import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
-from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
-from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+from erlab.interactive.imagetool.manager._actions import _ActionsMixin
+from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelMixin
+from erlab.interactive.imagetool.manager._lineage import _LineageMixin
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._registry import (
     activate_manager_record,
     reserve_manager_record,
     unregister_manager_record,
 )
+from erlab.interactive.imagetool.manager._widgets import (
+    _LINKER_COLORS,
+    _SHM_NAME,
+    _ApplicationQuitFilter,
+    _HeightForWidthFrame,
+    _MetadataDerivationListWidget,
+    _SingleImagePreview,
+    _StandaloneAppSpec,
+    _WarningEmitter,
+    _WarningNotificationHandler,
+    _WidgetsMixin,
+)
+from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOMixin
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -33,29 +44,19 @@ if typing.TYPE_CHECKING:
     import datetime
     import pathlib
 
+    import numpy as np
+
+    from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.provenance_framework import (
+        ScriptInputDependencyRef,
+        ToolProvenanceSpec,
+    )
+    from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
 
 logger = logging.getLogger(__name__)
-
-from erlab.interactive.imagetool.manager._actions import _ActionsMixin
-from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelMixin
-from erlab.interactive.imagetool.manager._lineage import _LineageMixin
-from erlab.interactive.imagetool.manager._widgets import *
-from erlab.interactive.imagetool.manager._widgets import (
-    _ICON_PATH,
-    _LINKER_COLORS,
-    _SHM_NAME,
-    _ApplicationQuitFilter,
-    _HeightForWidthFrame,
-    _MetadataDerivationListWidget,
-    _SingleImagePreview,
-    _StandaloneAppSpec,
-    _WarningEmitter,
-    _WidgetsMixin,
-)
-from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOMixin
 
 
 class ImageToolManager(
@@ -183,7 +184,7 @@ class ImageToolManager(
             tuple[
                 int,
                 tuple[
-                    erlab.interactive.imagetool.provenance_framework.ScriptInputDependencyRef,
+                    ScriptInputDependencyRef,
                     ...,
                 ],
             ],
@@ -776,10 +777,8 @@ class ImageToolManager(
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         uid: str | None = None,
-        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None = None,
-        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None = None,
+        provenance_spec: ToolProvenanceSpec | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
         source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",

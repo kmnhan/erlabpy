@@ -15,6 +15,7 @@ import xarray as xr
 from qtpy import PYQT6, QtCore, QtGui, QtTest, QtWidgets
 
 import erlab.interactive.utils
+from erlab.interactive.imagetool import provenance_operations
 from erlab.interactive.imagetool.manager._modelview import (
     _MIME,
     _NODE_UID_ROLE,
@@ -1646,12 +1647,11 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
 
 
 def test_tool_window_dataset_roundtrips_source_binding(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(4.0), dims=("x",), coords={"x": np.arange(4)})
     tool = _PersistentTool(data.isel(x=slice(1, 3)))
     qtbot.addWidget(tool)
 
-    source_binding = prov.ImageToolSelectionSourceBinding(
+    source_binding = provenance_operations.ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"x": slice(1, 3)},
     )
@@ -1709,7 +1709,7 @@ def test_tool_window_source_binding_empty_and_type_error_branches(qtbot) -> None
         tool.set_source_binding(
             None,
             source_binding=typing.cast(
-                "erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding",
+                "provenance_operations.ImageToolSelectionSourceBinding",
                 object(),
             ),
         )
@@ -1795,7 +1795,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
         node.set_source_binding(
             None,
             source_binding=typing.cast(
-                "erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding",
+                "provenance_operations.ImageToolSelectionSourceBinding",
                 object(),
             ),
         )
@@ -1819,7 +1819,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     assert manager.tree_view.refreshed[-1] == "child"
     assert manager.updated[-1] == "child"
 
-    source_binding = prov.ImageToolSelectionSourceBinding()
+    source_binding = provenance_operations.ImageToolSelectionSourceBinding()
     source_spec = prov.full_data()
     tool.set_source_binding(
         source_spec,
@@ -2008,7 +2008,7 @@ def test_managed_tool_window_node_detached_update_branches(
     with pytest.raises(RuntimeError, match="not bound"):
         node._materialized_source_spec(parent_data)
 
-    source_binding = prov.ImageToolSelectionSourceBinding(
+    source_binding = provenance_operations.ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"x": slice(0, 2)},
     )

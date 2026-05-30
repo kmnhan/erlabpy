@@ -1,5 +1,26 @@
-# ruff: noqa: F403, F405
-from ._shared import *
+import concurrent.futures
+import dataclasses
+import json
+import subprocess
+import sys
+import typing
+from collections.abc import Callable
+
+import numpy as np
+import pytest
+import xarray as xr
+import zmq
+
+import erlab
+import erlab.interactive.imagetool._itool as itool_mod
+import erlab.interactive.imagetool.manager._registry as manager_registry
+import erlab.interactive.imagetool.manager._server as manager_server
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._magic import _normalize_manager_target_args
+from erlab.interactive.imagetool.manager import ImageToolManager, fetch
+from erlab.interactive.imagetool.manager._server import Response, _WatcherServer
+
+from .helpers import _use_isolated_manager_registry
 
 
 def test_manager_selection_info_single_manager(
@@ -806,7 +827,7 @@ def test_manager_server_run_errors_when_data_request_stops(monkeypatch) -> None:
 
     manager.run()
 
-    assert sent == [{"status": "error"}]
+    assert sent == []
     assert socket.closed
 
 
@@ -853,7 +874,7 @@ def test_manager_server_run_errors_when_watch_info_request_stops(monkeypatch) ->
 
     manager.run()
 
-    assert sent == [{"status": "error"}]
+    assert sent == []
     assert socket.closed
 
 

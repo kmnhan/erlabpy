@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 """Various helper functions and extensions to Qt and pyqtgraph.
 
 This module contains various helper functions and classes that extend the functionality
@@ -31,7 +30,7 @@ import typing
 import warnings
 import weakref
 import webbrowser
-from collections.abc import Callable, Hashable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -51,6 +50,10 @@ if typing.TYPE_CHECKING:
     from pyqtgraph.GraphicsScene.mouseEvents import MouseDragEvent
 
     from erlab.interactive.imagetool.provenance_framework import (
+        ToolProvenanceOperation,
+        ToolProvenanceSpec,
+    )
+    from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
 else:
@@ -865,7 +868,7 @@ def _is_kwarg_name(value: typing.Any) -> bool:
     )
 
 
-def format_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
+def format_kwargs(d: Mapping[typing.Any, typing.Any]) -> str:
     """Format a dictionary of keyword arguments for a function call.
 
     If the keys are valid Python identifiers, the output will be formatted as keyword
@@ -885,7 +888,7 @@ def format_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
     return "{" + out + "}"
 
 
-def format_call_kwargs(d: typing.Mapping[typing.Any, typing.Any]) -> str:
+def format_call_kwargs(d: Mapping[typing.Any, typing.Any]) -> str:
     """Format mapping arguments for a call site.
 
     If all keys are identifier strings, emit plain keyword syntax. If all keys are
@@ -3247,15 +3250,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     @property
     def input_provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         """Return the replay provenance snapshot for the displayed tool input data."""
         return self._input_provenance_spec
 
     def set_input_provenance_spec(
         self,
-        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | typing.Mapping[str, typing.Any]
-        | None,
+        provenance_spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
     ) -> None:
         """Set the replay provenance snapshot for the displayed tool input data."""
         self._input_provenance_spec = (
@@ -3350,7 +3351,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 ):
                     parent_provenance = fetched_parent
 
-            return erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
+            provenance = erlab.interactive.imagetool.provenance_framework
+            return provenance.compose_display_provenance(
                 parent_provenance,
                 source_spec,
                 parent_data=parent_data,
@@ -3375,14 +3377,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
 
     def _normalize_script_provenance_operations(
         self,
-        operations: erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-        | Sequence[
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-        ]
-        | None,
-    ) -> tuple[
-        erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation, ...
-    ]:
+        operations: ToolProvenanceOperation | Sequence[ToolProvenanceOperation] | None,
+    ) -> tuple[ToolProvenanceOperation, ...]:
         if operations is None:
             return ()
         if isinstance(
@@ -3494,7 +3490,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             if prelude:
                 code = f"{prelude}\n{code}"
             operations = (
-                erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation(
+                erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation(
                     label=label,
                     code=code,
                 ),
@@ -3579,9 +3575,8 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 raise RuntimeError("Direct replay input requires input provenance.")
             if local_spec is None:
                 return None
-            replay_spec = erlab.interactive.imagetool.provenance_framework.to_replay_provenance_spec(
-                local_spec
-            )
+            provenance = erlab.interactive.imagetool.provenance_framework
+            replay_spec = provenance.to_replay_provenance_spec(local_spec)
             if replay_spec is None:
                 raise RuntimeError("Could not convert local provenance to replay spec.")
             return replay_spec.model_copy(
@@ -3938,7 +3933,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         )
         if source_binding is not None and not isinstance(
             source_binding,
-            erlab.interactive.imagetool.provenance_framework.ImageToolSelectionSourceBinding,
+            erlab.interactive.imagetool.provenance_operations.ImageToolSelectionSourceBinding,
         ):
             raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
         self._source_binding = source_binding
@@ -4378,15 +4373,14 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         source_spec = None
         if _TOOL_SOURCE_SPEC_ATTR in ds.attrs:
             try:
-                source_spec = erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
+                provenance = erlab.interactive.imagetool.provenance_framework
+                source_spec = provenance.parse_tool_provenance_spec(
                     typing.cast(
                         "Mapping[str, typing.Any]",
                         json.loads(ds.attrs[_TOOL_SOURCE_SPEC_ATTR]),
                     )
                 )
-                source_spec = erlab.interactive.imagetool.provenance_framework.require_live_source_spec(
-                    source_spec
-                )
+                source_spec = provenance.require_live_source_spec(source_spec)
             except Exception:
                 logger.warning(
                     "Ignoring invalid saved tool source provenance for %s",
@@ -4396,13 +4390,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         source_binding = None
         if _TOOL_SOURCE_BINDING_ATTR in ds.attrs:
             try:
-                provenance = erlab.interactive.imagetool.provenance_framework
-                source_binding = (
-                    provenance.ImageToolSelectionSourceBinding.model_validate(
-                        typing.cast(
-                            "Mapping[str, typing.Any]",
-                            json.loads(ds.attrs[_TOOL_SOURCE_BINDING_ATTR]),
-                        )
+                operations = erlab.interactive.imagetool.provenance_operations
+                binding_type = operations.ImageToolSelectionSourceBinding
+                source_binding = binding_type.model_validate(
+                    typing.cast(
+                        "Mapping[str, typing.Any]",
+                        json.loads(ds.attrs[_TOOL_SOURCE_BINDING_ATTR]),
                     )
                 )
             except Exception:
@@ -4425,7 +4418,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             try:
                 tool.set_input_provenance_spec(
                     typing.cast(
-                        "typing.Mapping[str, typing.Any]",
+                        "Mapping[str, typing.Any]",
                         json.loads(ds.attrs[_TOOL_INPUT_PROVENANCE_SPEC_ATTR]),
                     )
                 )

@@ -24,6 +24,7 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.provenance_framework import FileDataSelection
 
 
 class _DataLoaderSignals(QtCore.QObject):
@@ -201,7 +202,7 @@ class _MultiFileHandler(QtCore.QObject):
         selected_data: tuple[
             tuple[
                 xr.DataArray,
-                erlab.interactive.imagetool.provenance_framework.FileDataSelection,
+                FileDataSelection,
             ],
             ...,
         ],

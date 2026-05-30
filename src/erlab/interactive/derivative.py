@@ -573,17 +573,17 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     def _result_provenance_operations(
         self, *, input_name: str | None = None, transpose_output: bool = False
     ) -> tuple[
-        erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation, ...
+        erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation, ...
     ]:
         operations = [
-            erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation(
+            erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation(
                 label="Compute derivative output",
                 code=self._build_copy_code(input_name=input_name),
             )
         ]
         if transpose_output:
             operations.append(
-                erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation(
+                erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation(
                     label="Transpose derivative output for ImageTool display",
                     code="result = result.transpose()",
                 )
@@ -596,7 +596,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> tuple[
-        erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation, ...
+        erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation, ...
     ]:
         return self._result_provenance_operations(input_name=input_name)
 
@@ -606,7 +606,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
         input_name: str | None = None,
         data: xr.DataArray | None = None,
     ) -> tuple[
-        erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation, ...
+        erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation, ...
     ]:
         return self._result_provenance_operations(
             input_name=input_name,

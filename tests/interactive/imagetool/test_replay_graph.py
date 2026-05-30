@@ -3,6 +3,7 @@ import pathlib
 import re
 import types
 import typing
+from collections.abc import Mapping
 
 import numpy as np
 import pytest
@@ -1006,9 +1007,7 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
 
     original_replace = prov._replace_code_identifiers
 
-    def _raise_on_input_replacement(
-        code: str, replacements: typing.Mapping[str, str]
-    ) -> str:
+    def _raise_on_input_replacement(code: str, replacements: Mapping[str, str]) -> str:
         if "data_0" in replacements:
             raise SyntaxError("bad script input")
         return original_replace(code, replacements)

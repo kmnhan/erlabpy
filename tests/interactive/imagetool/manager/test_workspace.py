@@ -1,7 +1,54 @@
-# ruff: noqa: F403, F405
+import contextlib
 import datetime
+import errno
+import json
+import logging
+import os
+import pathlib
+import sys
+import tempfile
+import time
+import types
+import typing
+import warnings
+import weakref
+from collections.abc import Callable, Iterable, Mapping
 
-from ._shared import *
+import numpy as np
+import pydantic
+import pytest
+import xarray
+import xarray as xr
+from qtpy import QtCore, QtGui, QtWidgets
+
+import erlab
+import erlab.interactive.imagetool._serialization as imagetool_serialization
+import erlab.interactive.imagetool.manager as manager_module
+import erlab.interactive.imagetool.manager._desktop as manager_desktop
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._workspace as manager_workspace
+import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+import erlab.interactive.imagetool.manager._xarray as manager_xarray
+from erlab.interactive._fit1d import Fit1DTool
+from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool.controls import ItoolColormapControls
+from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
+from erlab.interactive.imagetool.manager._dialogs import _ChooseFromDataTreeDialog
+
+from .helpers import (
+    action_map_by_object_name,
+    assert_fit_result_dataset_equivalent,
+    assert_fit_result_list_equivalent,
+    configure_goldtool_child,
+    copy_full_code_for_uid,
+    make_fit2d_child,
+    select_child_tool,
+    select_tools,
+    set_transform_launch_mode,
+)
 
 
 class _AddedTimeChildState(pydantic.BaseModel):
@@ -333,7 +380,7 @@ def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
     )
     data.to_netcdf(file_path, engine="h5netcdf")
     operation = (
-        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+        erlab.interactive.imagetool.provenance_operations.GaussianFilterOperation(
             sigma={"x": 1.0}
         )
     )
@@ -2576,13 +2623,13 @@ def test_write_full_workspace_tree_file_scratch_replace_failure_preserves_old(
         manager_workspace, "_workspace_path_is_likely_cloud_path", lambda _path: True
     )
     monkeypatch.setattr(manager_workspace.os, "replace", _fail_replace)
-    with pytest.raises(OSError, match="replace failed"):
-        try:
+    try:
+        with pytest.raises(OSError, match="replace failed"):
             manager_workspace._write_full_workspace_tree_file(
                 fname, tree, _transaction_test_root_attrs()
             )
-        finally:
-            tree.close()
+    finally:
+        tree.close()
 
     assert _read_transaction_test_value(fname) == 1.0
     assert scratch_paths
@@ -2623,13 +2670,13 @@ def test_write_full_workspace_tree_file_scratch_copy_failure_cleans_destination_
     )
     monkeypatch.setattr(manager_workspace.os, "replace", _replace_with_exdev)
     monkeypatch.setattr(shutil, "copyfile", _fail_copyfile)
-    with pytest.raises(OSError, match="copy failed"):
-        try:
+    try:
+        with pytest.raises(OSError, match="copy failed"):
             manager_workspace._write_full_workspace_tree_file(
                 fname, tree, _transaction_test_root_attrs()
             )
-        finally:
-            tree.close()
+    finally:
+        tree.close()
 
     assert _read_transaction_test_value(fname) == 1.0
     assert scratch_paths
@@ -3703,7 +3750,7 @@ def test_manager_startup_open_workspace_dialog_schedules_load(
 ) -> None:
     calls: list[tuple[int, weakref.ReferenceType[object] | None, str]] = []
 
-    def record_single_shot(interval: int, callback: typing.Callable[[], None]) -> None:
+    def record_single_shot(interval: int, callback: Callable[[], None]) -> None:
         receiver = getattr(callback, "__self__", None)
         calls.append(
             (
