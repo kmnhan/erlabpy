@@ -308,15 +308,18 @@ def qsel_args_from_indexers(
         if dim in binned_dim_set:
             coord = data[dim][selector].values
             center = float(np.round(coord.mean(), order))
-            width = float(np.round(coord[-1] - coord[0] + inc, order))
+            width = float(np.abs(np.round(coord[-1] - coord[0] + inc, order)))
 
             out[dim] = center
-            if not np.allclose(
-                data[dim]
-                .sel({dim: slice(center - width / 2, center + width / 2)})
-                .values,
-                coord,
-            ):
+            slice_obj = slice(center - width / 2, center + width / 2)
+            if coord[0] > coord[-1]:
+                slice_obj = slice(
+                    slice_obj.stop,
+                    slice_obj.start,
+                    -slice_obj.step if slice_obj.step is not None else None,
+                )
+
+            if not np.allclose(data[dim].sel({dim: slice_obj}).values, coord):
                 raise ValueError(
                     "Bin does not contain the same values as the original data."
                 )
@@ -1342,7 +1345,18 @@ class ArraySlicer(QtCore.QObject):
         center = self._indices[cursor][axis]
         if self._binned[cursor][axis]:
             window = self._bins[cursor][axis]
-            return slice(center - window // 2, center + (window - 1) // 2 + 1)
+            start = center - window // 2
+            stop = center + (window - 1) // 2 + 1
+            start = max(0, start)
+            stop = min(self._obj.shape[axis], stop)
+            size = stop - start
+            if size < window:
+                missing = window - size
+                if start == 0:
+                    stop = min(self._obj.shape[axis], stop + missing)
+                elif stop == self._obj.shape[axis]:
+                    start = max(0, start - missing)
+            return slice(start, stop)
         if int_if_one:
             return center
         return slice(center, center + 1)
@@ -1353,8 +1367,7 @@ class ArraySlicer(QtCore.QObject):
         center = self._indices[cursor][axis]
         if not self._binned[cursor][axis]:
             return self._obj.data[(slice(None),) * axis + (center,)]
-        window = self._bins[cursor][axis]
-        selection = slice(center - window // 2, center + (window - 1) // 2 + 1)
+        selection = self._bin_slice(cursor, axis)
         return erlab.interactive.imagetool.fastbinning.fast_nanmean_skipcheck(
             self._obj.data[(slice(None),) * axis + (selection,)],
             axis=axis,
@@ -1373,7 +1386,6 @@ class ArraySlicer(QtCore.QObject):
         """
         # Internal callers pass sorted, unique axes.
         reduced_axes: Sequence[int] = axis
-        bins = self._bins[cursor]
         binned = self._binned[cursor]
         indices = self._indices[cursor]
         selection: list[slice | int] = [slice(None)] * self._obj.ndim
@@ -1386,11 +1398,7 @@ class ArraySlicer(QtCore.QObject):
                 # Keep binned axes in the view and track their positions after any
                 # earlier unbinned axes have been removed by integer indexing.
                 any_binned = True
-                center = indices[ax]
-                window = bins[ax]
-                selection[ax] = slice(
-                    center - window // 2, center + (window - 1) // 2 + 1
-                )
+                selection[ax] = self._bin_slice(cursor, ax)
                 selected_axis.append(ax - dropped)
             else:
                 all_binned = False

@@ -474,6 +474,19 @@ def test_bin_along_axis_unbinned_matches_integer_index_selection(qtbot) -> None:
     np.testing.assert_allclose(slicer._bin_along_axis(0, 1), values[:, 3, :])
 
 
+def test_bin_slice_descending_axis_boundary_window_two(qtbot) -> None:
+    data = xr.DataArray(
+        np.zeros((4, 3), dtype=np.float32),
+        dims=("x", "y"),
+        coords={"x": np.array([4.0, 3.0, 2.0, 1.0]), "y": np.arange(3)},
+    )
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [0, 1, 2], update=False)
+    slicer.set_bin(0, 0, 2, update=False)
+
+    assert slicer._bin_slice(0, 0) == slice(0, 2)
+
+
 def test_point_value_unbinned_returns_current_scalar(qtbot) -> None:
     values = np.arange(4 * 5, dtype=np.float32).reshape(4, 5)
     data = xr.DataArray(
@@ -586,6 +599,47 @@ def test_qsel_args_from_indexers_validates_live_bin_coordinates() -> None:
 
     with pytest.raises(ValueError, match="Bin does not contain"):
         qsel_args_from_indexers(data, {"x": slice(2, 5)}, ("x",))
+
+
+def test_qsel_args_desc_uniform_descending_axis_emits_positive_width() -> None:
+    data = xr.DataArray(
+        np.arange(5, dtype=np.float32),
+        dims=("x",),
+        coords={"x": np.array([5.0, 4.0, 3.0, 2.0, 1.0])},
+    )
+
+    args = qsel_args_from_indexers(data, {"x": slice(0, 2)}, ("x",))
+
+    assert args["x"] == 4.5
+    assert args["x_width"] > 0.0
+
+    actual = data.qsel(args)
+    expected = data.sel(
+        x=slice(
+            args["x"] + args["x_width"] / 2,
+            args["x"] - args["x_width"] / 2,
+        )
+    )
+    np.testing.assert_allclose(actual.values, expected.values)
+
+    with pytest.raises(ValueError, match=r"Selection for dimension `x` is empty\."):
+        qsel_args_from_indexers(data, {"x": slice(2, 2)}, ("x",))
+
+
+def test_xslice_descending_hidden_axis_with_boundary_bin_succeeds() -> None:
+    values = np.arange(10, dtype=np.float32).reshape(2, 5)
+    data = xr.DataArray(
+        values,
+        dims=("x", "y"),
+        coords={"x": np.arange(2), "y": np.array([5.0, 4.0, 3.0, 2.0, 1.0])},
+    )
+    slicer = ArraySlicer(data, parent=QtCore.QObject())
+    slicer.set_indices(0, [0, 0], update=False)
+    slicer.set_bin(0, 1, 2, update=False)
+
+    selected = slicer.xslice(0, (0,))
+
+    np.testing.assert_allclose(selected.values, np.array([0.5, 5.5], dtype=np.float32))
 
 
 def test_isel_code_uses_call_kwargs_formatting(qtbot) -> None:
