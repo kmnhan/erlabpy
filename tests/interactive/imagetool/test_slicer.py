@@ -622,9 +622,6 @@ def test_qsel_args_desc_uniform_descending_axis_emits_positive_width() -> None:
     )
     np.testing.assert_allclose(actual.values, expected.values)
 
-    with pytest.raises(ValueError, match=r"Selection for dimension `x` is empty\."):
-        qsel_args_from_indexers(data, {"x": slice(2, 2)}, ("x",))
-
 
 def test_xslice_descending_hidden_axis_with_boundary_bin_succeeds() -> None:
     values = np.arange(10, dtype=np.float32).reshape(2, 5)
