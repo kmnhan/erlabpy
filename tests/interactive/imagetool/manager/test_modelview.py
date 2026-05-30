@@ -331,6 +331,10 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
         selection_model = manager.tree_view.selectionModel()
         selection_model.clearSelection()
         select_child_tool(manager, uid)
+        qtbot.wait_until(
+            lambda: manager.tree_view.selected_childtool_uids == [uid],
+            timeout=5000,
+        )
 
         metadata_updates: list[str] = []
         original_set_metadata_node = manager._set_metadata_node
@@ -342,13 +346,19 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
         manager._tool_metadata_update_timer.setInterval(1)
 
-        tool.emit_info_text("updated child info")
-        tool.emit_info_text("updated child info again")
-        tool.emit_info_text("updated child info final")
+        child_node = manager._child_node(uid)
+        tool._info_text = "updated child info"
+        child_node._handle_tool_info_changed()
+        tool._info_text = "updated child info again"
+        child_node._handle_tool_info_changed()
+        tool._info_text = "updated child info final"
+        child_node._handle_tool_info_changed()
 
         assert "updated child info" not in manager.text_box.toPlainText()
         assert metadata_updates == []
-        qtbot.wait_until(lambda: metadata_updates == [uid], timeout=1000)
+        assert manager._pending_tool_metadata_update_uids == {uid}
+        manager._flush_pending_tool_metadata_updates()
+        assert metadata_updates == [uid]
         assert "updated child info final" in manager.text_box.toPlainText()
 
 

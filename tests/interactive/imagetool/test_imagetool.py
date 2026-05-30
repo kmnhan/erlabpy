@@ -5254,7 +5254,7 @@ def test_itool_transform_after_filter_uses_displayed_data_and_provenance(
         )
     )
     filtered = filter_operation.apply(data, parent_data=data)
-    expected = filtered.qsel.mean("y").rename("scan_avg")
+    expected = filtered.qsel.mean("y")
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     win.slicer_area.apply_filter_operation(filter_operation)
@@ -5310,7 +5310,6 @@ def test_itool_aggregate_sum(qtbot, accept_dialog) -> None:
     assert win.provenance_spec is not None
     assert [op.op for op in win.provenance_spec.operations] == [
         "qsel_aggregate",
-        "rename",
     ]
     aggregate_op = win.provenance_spec.operations[0]
     assert isinstance(
@@ -5348,17 +5347,16 @@ def test_average_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> No
     qtbot.addWidget(dialog)
     dialog.dim_checks["y"].setChecked(True)
 
-    spec = dialog.source_spec("scan_avg")
+    spec = dialog.source_spec("ignored")
     expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
         dialog.process_data(win.slicer_area.data)
-    ).rename("scan_avg")
+    )
     refreshed = spec.apply(win.slicer_area.data)
 
     assert spec.kind == "full_data"
     assert [op.op for op in spec.operations] == [
         "qsel_aggregate",
         "restore_nonuniform_dims",
-        "rename",
     ]
     assert refreshed.dims == ("x",)
     xarray.testing.assert_identical(refreshed, expected)
@@ -5394,17 +5392,16 @@ def test_aggregate_source_spec_restores_nonuniform_dims_after_refresh(qtbot) -> 
     dialog.dim_checks["y"].setChecked(True)
     _set_combo_data(dialog.reducer_combo, "sum")
 
-    spec = dialog.source_spec("scan_sum")
+    spec = dialog.source_spec("ignored")
     expected = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
         dialog.process_data(win.slicer_area.data)
-    ).rename("scan_sum")
+    )
     refreshed = spec.apply(win.slicer_area.data)
 
     assert spec.kind == "full_data"
     assert [op.op for op in spec.operations] == [
         "qsel_aggregate",
         "restore_nonuniform_dims",
-        "rename",
     ]
     assert refreshed.dims == ("x",)
     xarray.testing.assert_identical(refreshed, expected)
@@ -5573,7 +5570,7 @@ def test_selection_dialog_accept_replaces_current_data(qtbot) -> None:
         win.slicer_area._data.rename(None), data.qsel(hv=40.0).rename(None)
     )
     assert win.provenance_spec is not None
-    assert [op.op for op in win.provenance_spec.operations] == ["qsel", "rename"]
+    assert [op.op for op in win.provenance_spec.operations] == ["qsel"]
 
     win.close()
 
@@ -5776,11 +5773,9 @@ def test_selection_dialog_uses_public_nonuniform_dimensions(qtbot) -> None:
     xarray.testing.assert_identical(
         _exec_data_fragment(data, dialog.make_code()), expected
     )
-    spec = dialog.source_spec("scan_sel")
+    spec = dialog.source_spec("ignored")
     assert spec.kind == "public_data"
-    xarray.testing.assert_identical(
-        spec.apply(win.slicer_area.data), expected.rename("scan_sel")
-    )
+    xarray.testing.assert_identical(spec.apply(win.slicer_area.data), expected)
 
     dialog.close()
     win.close()
@@ -5990,7 +5985,7 @@ def test_itool_interpolate(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None), expected.rename(None)
     )
-    assert win.slicer_area._data.name == "scan_interp_x"
+    assert win.slicer_area._data.name == "scan"
 
     xarray.testing.assert_identical(
         _exec_data_fragment(data, pyperclip.paste()), expected
@@ -6133,7 +6128,7 @@ def test_itool_leading_edge(qtbot, accept_dialog) -> None:
     xarray.testing.assert_identical(
         win.slicer_area._data.rename(None), expected.rename(None)
     )
-    assert win.slicer_area._data.name == "scan_leading_edge_eV"
+    assert win.slicer_area._data.name == "scan"
     xarray.testing.assert_identical(
         _exec_data_fragment(data, pyperclip.paste()), expected
     )
@@ -6169,8 +6164,6 @@ def test_leading_edge_dialog_rejects_no_dimension(qtbot, monkeypatch) -> None:
         return QtWidgets.QMessageBox.StandardButton.Ok
 
     monkeypatch.setattr(QtWidgets.QMessageBox, "warning", _record_warning)
-    assert dialog.suffix == "_leading_edge_coord"
-    dialog.suffix = "ignored"
     assert dialog.make_code() == ""
     with pytest.raises(ValueError, match="No dimension selected"):
         dialog.source_transform_operation()
@@ -6183,7 +6176,7 @@ def test_leading_edge_dialog_rejects_no_dimension(qtbot, monkeypatch) -> None:
     win.close()
 
 
-def test_leading_edge_dialog_defaults_and_suffix(qtbot) -> None:
+def test_leading_edge_dialog_defaults_to_first_dimension(qtbot) -> None:
     data = xr.DataArray(
         np.arange(6, dtype=float).reshape((2, 3)),
         dims=["1 axis", "energy"],
@@ -6194,7 +6187,6 @@ def test_leading_edge_dialog_defaults_and_suffix(qtbot) -> None:
     dialog = LeadingEdgeDialog(win.slicer_area)
 
     assert dialog.dim_combo.currentData(QtCore.Qt.ItemDataRole.UserRole) == "1 axis"
-    assert dialog.suffix == "_leading_edge_coord_1_axis"
 
     dialog.close()
     win.close()
@@ -7784,10 +7776,11 @@ def test_itool_divide_by_coord(qtbot, accept_dialog) -> None:
 
     accept_dialog(win.mnb._divide_by_coord, pre_call=_set_dialog_params)
 
-    expected = (data / data.mesh_current).rename("scan_div_mesh_current")
+    expected = (data / data.mesh_current).rename("scan")
     xarray.testing.assert_identical(win.slicer_area._data, expected)
     copied_code = pyperclip.paste()
     assert "data.mesh_current" in copied_code
+    assert ".rename(" not in copied_code
     namespace: dict[str, typing.Any] = {"data": data.copy(deep=True)}
     exec(f"result = {copied_code}", {}, namespace)  # noqa: S102
     xarray.testing.assert_identical(
@@ -7866,11 +7859,7 @@ def test_divide_by_coord_dialog_edge_paths(qtbot, monkeypatch) -> None:
 
     dialog.coord_combo.setCurrentText("scalar_current")
     assert dialog.coord_dims_label.text() == "scalar"
-    assert dialog.suffix == "_div_scalar_current"
-    dialog.suffix = ""
-
     dialog.coord_combo.setCurrentText("2 current")
-    assert dialog.suffix == "_div_coord_2_current"
 
     warnings: list[tuple[str, str]] = []
 
@@ -7883,7 +7872,6 @@ def test_divide_by_coord_dialog_edge_paths(qtbot, monkeypatch) -> None:
     dialog.coord_combo.setCurrentIndex(-1)
     dialog._update_coord_dims_label()
     assert dialog.coord_dims_label.text() == ""
-    assert dialog.suffix == "_div_coord"
     assert dialog.make_code() == ""
     with pytest.raises(ValueError, match="No coordinate selected"):
         dialog.source_transform_operation()
@@ -7934,6 +7922,7 @@ def test_itool_divide_by_coord_nonuniform_generated_code(qtbot, accept_dialog) -
     display_code = win.provenance_spec.display_code()
     assert display_code is not None
     assert "mesh_current" in display_code
+    assert ".rename(" not in display_code
     assert "x_idx" not in display_code
     namespace = {"data": data.copy(deep=True)}
     exec(display_code, {}, namespace)  # noqa: S102

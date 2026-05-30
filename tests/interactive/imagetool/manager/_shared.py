@@ -46,6 +46,7 @@ import erlab.interactive.imagetool.manager._server as manager_server
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 import erlab.interactive.imagetool.manager._xarray as manager_xarray
 import erlab.interactive.imagetool.viewer as imagetool_viewer
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state

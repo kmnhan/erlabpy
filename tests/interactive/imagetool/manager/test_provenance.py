@@ -2,6 +2,48 @@
 from ._shared import *
 
 
+def _manager_provenance_file_spec(path: pathlib.Path):
+    prov = erlab.interactive.imagetool.provenance_framework
+    return prov.file_load(
+        start_label="Load source",
+        seed_code=f"derived = xr.load_dataarray({str(path)!r})",
+        file_load_source=prov.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=prov.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
+
+
+def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
+    prov = erlab.interactive.imagetool.provenance_framework
+    paths = [
+        tmp_path / "scan_a.h5",
+        tmp_path / "scan_b.h5",
+        tmp_path / "scan_c.h5",
+    ]
+
+    assert manager_wrapper._compact_file_suffix(paths) == " (scan_a, scan_b, +1)"
+
+    spec = _manager_provenance_file_spec(paths[0]).append_replay_stage(
+        prov.full_data(prov.AverageOperation(dims=("x",))).append_final_rename("old")
+    )
+    renamed = manager_wrapper._spec_with_final_data_name(spec, "new")
+
+    assert renamed.kind == "file"
+    assert renamed.replay_stages
+    assert renamed.replay_stages[-1].operations[-1] == prov.RenameOperation(name="new")
+    assert renamed.replay_stages[-1].operations[:-1] == (
+        prov.AverageOperation(dims=("x",)),
+    )
+
+
 def test_manager_childtool_from_filtered_parent_uses_display_provenance(
     qtbot,
     manager_context: Callable[
@@ -1234,11 +1276,11 @@ def test_manager_selection_dialog_opens_child_with_source_spec(
         child_uid = parent._childtool_indices[0]
         child_node = manager._child_node(child_uid)
         child_tool = child_node.imagetool
-        expected = data.qsel(hv=40.0).rename("scan_sel")
+        expected = data.qsel(hv=40.0)
 
         assert child_tool is not None
         assert child_node.source_spec is not None
-        assert [op.op for op in child_node.source_spec.operations] == ["qsel", "rename"]
+        assert [op.op for op in child_node.source_spec.operations] == ["qsel"]
         xarray.testing.assert_identical(
             child_node.source_spec.apply(parent_tool.slicer_area.data), expected
         )
@@ -1869,6 +1911,7 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
     qtbot,
     monkeypatch,
     accept_dialog,
+    tmp_path: pathlib.Path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -1879,12 +1922,19 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         coords={"x": np.arange(3), "y": np.arange(4), "z": np.arange(5)},
         name="scan",
     )
+    file_path = tmp_path / "scan.h5"
+    data.to_netcdf(file_path, engine="h5netcdf")
 
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
 
-        itool(data, manager=True)
+        itool(
+            data,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         parent_tool = manager.get_imagetool(0)
@@ -1902,6 +1952,12 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         child_node = manager._child_node(child_uid)
         child_tool = manager.get_imagetool(child_uid)
         child_node.name = "averaged child"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                child_tool.windowTitle()
+            )
+            == "averaged child"
+        )
         child_before = fetch(child_uid).copy(deep=True)
 
         child_tool.slicer_area.images[0].open_in_dtool()
@@ -1932,9 +1988,8 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         assert manager.tree_view.selected_childtool_uids == []
         assert manager._root_wrapper_for_uid(nested_uid).index == promoted_index
         assert (
-            manager.get_imagetool(promoted_index)
-            .windowTitle()
-            .startswith(f"{promoted_index}: averaged child")
+            manager.get_imagetool(promoted_index).windowTitle()
+            == f"{promoted_index}: averaged child (scan)"
         )
         xr.testing.assert_identical(fetch(child_uid), child_before)
         xr.testing.assert_identical(
@@ -2044,7 +2099,6 @@ def test_manager_aggregate_child_refreshes_from_parent(
         assert child_node.source_spec is not None
         assert [op.op for op in child_node.source_spec.operations] == [
             "qsel_aggregate",
-            "rename",
         ]
         xr.testing.assert_identical(
             fetch(child_uid).rename(None), data.qsel.sum("x").rename(None)
@@ -2104,14 +2158,13 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         accept_dialog(child_tool.mnb._average, pre_call=_replace_average)
 
         filtered = operation.apply(data, parent_data=data)
-        expected = filtered.qsel.mean("x").rename("scan_avg")
+        expected = filtered.qsel.mean("x")
         xr.testing.assert_identical(fetch(child_uid), expected)
         assert child_node.source_spec is not None
         assert child_node.source_spec.is_live_source
         assert [op.op for op in child_node.source_spec.operations] == [
             "gaussian_filter",
             "qsel_aggregate",
-            "rename",
         ]
 
         updated = data + 10.0
@@ -2119,7 +2172,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
             replace_data(0, updated)
 
         updated_filtered = operation.apply(updated, parent_data=updated)
-        updated_expected = updated_filtered.qsel.mean("x").rename("scan_avg")
+        updated_expected = updated_filtered.qsel.mean("x")
         qtbot.wait_until(
             lambda: (
                 child_node.source_state == "fresh"
@@ -2177,7 +2230,6 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         assert root.provenance_spec.replay_stages[0].source_kind == "full_data"
         assert [op.op for op in root.provenance_spec.replay_stages[0].operations] == [
             "qsel_aggregate",
-            "rename",
         ]
         entries = root.provenance_spec.display_entries()
         assert entries[0].label == "Load data from file 'scan.h5'"
@@ -2262,7 +2314,7 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
         assert [
             operation["op"]
             for operation in provenance_payload["replay_stages"][0]["operations"]
-        ] == ["qsel_aggregate", "rename"]
+        ] == ["qsel_aggregate"]
         assert (
             provenance_payload["file_load_source"]["replay_call"]["target"]
             == "xarray.load_dataarray"
@@ -2841,7 +2893,7 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         child_node = manager._child_node(child_uid)
         child_tool = manager.get_imagetool(child_uid)
 
-        expected = (data / data.mesh_current).rename("scan_div_mesh_current")
+        expected = (data / data.mesh_current).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
         assert child_node.source_spec is not None
         operations = [
@@ -2873,6 +2925,7 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         assert not erlab.interactive.imagetool.provenance_framework.uses_default_replay_input(
             copied[-1]
         )
+        assert ".rename(" not in copied[-1]
 
         namespace = _exec_generated_code(
             copied[-1], {"source_data": data.copy(deep=True)}

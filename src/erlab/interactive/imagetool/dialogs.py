@@ -6,7 +6,6 @@ from __future__ import annotations
 import ast
 import contextlib
 import math
-import re
 import typing
 import weakref
 
@@ -202,16 +201,10 @@ class DataTransformDialog(_DataManipulationDialog):
 
     - Override attribute `enable_copy` to show or hide the copy button.
 
-    - Override attributes `prefix` and `suffix` to set the prefix and suffix of the new
-      data name.
-
     - Override attribute `keep_colors` and `keep_color_limits` to control which
       color-related settings are migrated when opening in a new window.
 
     """
-
-    prefix: str = ""
-    suffix: str = ""
 
     keep_colors: bool = True
     """Whether to keep the color settings when opening in a new window.
@@ -313,8 +306,9 @@ class DataTransformDialog(_DataManipulationDialog):
         return None
 
     def source_spec(
-        self, new_name: str
+        self, new_name: str | None = None
     ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
+        del new_name
         operations = self.source_operations()
         builder = (
             erlab.interactive.imagetool.provenance_framework.public_data
@@ -329,7 +323,7 @@ class DataTransformDialog(_DataManipulationDialog):
             operations.append(
                 erlab.interactive.imagetool.provenance_framework.RestoreNonuniformDimsOperation()
             )
-        return builder(*operations).append_final_rename(new_name)
+        return builder(*operations)
 
     def _detached_provenance_spec(
         self,
@@ -351,6 +345,7 @@ class DataTransformDialog(_DataManipulationDialog):
         source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
         new_name: str,
     ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
+        del new_name
         if base_spec is None:
             return source_spec
         with contextlib.suppress(TypeError):
@@ -358,10 +353,9 @@ class DataTransformDialog(_DataManipulationDialog):
                 base_spec
             )
             if live_parent is not None:
-                operations = source_spec.drop_trailing_rename().operations
                 return live_parent.append_replacement_operations(
-                    *operations
-                ).append_final_rename(new_name)
+                    *source_spec.operations
+                )
         composed = (
             erlab.interactive.imagetool.provenance_framework.compose_full_provenance(
                 base_spec,
@@ -481,10 +475,10 @@ class DataTransformDialog(_DataManipulationDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
-        if self.slicer_area.data.name is not None:
-            new_name = f"{self.prefix}{self.slicer_area.data.name}{self.suffix}"
-        else:
-            new_name = self.suffix.lstrip("_")
+        input_name = self.slicer_area.data.name
+        new_name = ""
+        if input_name is not None:
+            new_name = str(input_name)
 
         try:
             if self.apply_on_nonuniform_data:
@@ -497,8 +491,8 @@ class DataTransformDialog(_DataManipulationDialog):
                 processed = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
                     self.process_data(self.slicer_area.data)
                 )
+            processed = processed.rename(input_name)
 
-            processed = processed.rename(new_name)
             manager, target = self._manager_target()
             source_spec = self.source_spec(new_name)
             parent_provenance = self.slicer_area.displayed_provenance_spec()
@@ -731,16 +725,6 @@ class RotationDialog(DataTransformDialog):
     enable_copy = True
 
     @property
-    def suffix(self) -> str:
-        angle_str = str(self._rotate_params["angle"])
-        return f"_rot{angle_str}"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
-
-    @property
     def _rotate_params(self) -> dict[str, typing.Any]:
         return {
             "angle": float(
@@ -810,20 +794,12 @@ class AggregateDialog(DataTransformDialog):
     title = "Aggregate Over Dimensions"
     enable_copy = True
 
-    _REDUCERS: typing.ClassVar[dict[str, tuple[str, str]]] = {
-        "mean": ("Mean", "_avg"),
-        "min": ("Minimum", "_min"),
-        "max": ("Maximum", "_max"),
-        "sum": ("Sum", "_sum"),
+    _REDUCERS: typing.ClassVar[dict[str, str]] = {
+        "mean": "Mean",
+        "min": "Minimum",
+        "max": "Maximum",
+        "sum": "Sum",
     }
-
-    @property
-    def suffix(self) -> str:
-        return self._REDUCERS[self._reducer][1]
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        pass
 
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Dimensions")
@@ -839,7 +815,7 @@ class AggregateDialog(DataTransformDialog):
         self.layout_.addRow(dim_group)
 
         self.reducer_combo = QtWidgets.QComboBox()
-        for reducer, (label, _) in self._REDUCERS.items():
+        for reducer, label in self._REDUCERS.items():
             self.reducer_combo.addItem(label, userData=reducer)
         self.layout_.addRow("Reducer", self.reducer_combo)
 
@@ -1104,7 +1080,6 @@ class _SelectionRow:
 
 class SelectionDialog(DataTransformDialog):
     title = "Select Data"
-    suffix = "_sel"
     enable_copy = True
     apply_on_nonuniform_data = True
 
@@ -1326,22 +1301,6 @@ class InterpolationDialog(DataTransformDialog):
             self.dim_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
         )
 
-    @property
-    def suffix(self) -> str:
-        dim = self._selected_dim
-        suffix = "" if dim is None else str(dim)
-        suffix = re.sub(r"[^0-9A-Za-z_]+", "_", suffix).strip("_")
-        if not suffix:
-            suffix = "coord"
-        elif suffix[0].isdigit():
-            suffix = f"coord_{suffix}"
-        return f"_interp_{suffix}"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
-
     def _source_coord_values(self, dim: Hashable) -> npt.NDArray:
         if dim not in self._source_data.coords:
             return np.arange(self._source_data.sizes[dim], dtype=np.float64)
@@ -1480,22 +1439,6 @@ class LeadingEdgeDialog(DataTransformDialog):
             self.direction_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
         )
 
-    @property
-    def suffix(self) -> str:
-        dim = self._selected_dim
-        suffix = "" if dim is None else str(dim)
-        suffix = re.sub(r"[^0-9A-Za-z_]+", "_", suffix).strip("_")
-        if not suffix:
-            suffix = "coord"
-        elif suffix[0].isdigit():
-            suffix = f"coord_{suffix}"
-        return f"_leading_edge_{suffix}"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
-
     def _source_coord_error(self, dim: Hashable) -> str | None:
         coord = np.asarray(self._source_data[dim].values)
         if coord.ndim != 1:
@@ -1565,15 +1508,6 @@ class CoarsenDialog(DataTransformDialog):
         "sum",
         "var",
     )
-
-    @property
-    def suffix(self) -> str:
-        return f"_coarsen_{self._reducer}"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
 
     def setup_widgets(self) -> None:
         self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -1707,7 +1641,6 @@ class CoarsenDialog(DataTransformDialog):
 
 class ThinDialog(DataTransformDialog):
     title = "Thin Data"
-    suffix = "_thin"
     enable_copy = True
     apply_on_nonuniform_data = True
 
@@ -1843,15 +1776,6 @@ class SymmetrizeDialog(DataTransformDialog):
     title = "Symmetrize"
     enable_copy = True
 
-    @property
-    def suffix(self) -> str:
-        return f"_sym_{self._params['dim']}"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
-
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Mirror plane")
         dim_layout = QtWidgets.QHBoxLayout()
@@ -1948,15 +1872,6 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
     enable_copy = True
 
     @property
-    def suffix(self) -> str:
-        return f"_symC{self._params['fold']}"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
-
-    @property
     def _params(self) -> dict[str, typing.Any]:
         return {
             "fold": self.fold_spin.value(),
@@ -2035,7 +1950,6 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
 
 class EdgeCorrectionDialog(DataTransformDialog):
     title = "Edge Correction"
-    suffix = "_corr"
     enable_copy = False
 
     def setup_widgets(self) -> None:
@@ -2074,7 +1988,6 @@ class EdgeCorrectionDialog(DataTransformDialog):
 
 
 class _BaseCropDialog(DataTransformDialog):
-    suffix = "_crop"
     enable_copy = True
 
     @property
@@ -2384,22 +2297,6 @@ class DivideByCoordDialog(DataTransformDialog):
             "Hashable",
             self.coord_combo.currentData(QtCore.Qt.ItemDataRole.UserRole),
         )
-
-    @property
-    def suffix(self) -> str:
-        coord_name = self._selected_coord_name
-        suffix = "" if coord_name is None else str(coord_name)
-        suffix = re.sub(r"[^0-9A-Za-z_]+", "_", suffix).strip("_")
-        if not suffix:
-            suffix = "coord"
-        elif suffix[0].isdigit():
-            suffix = f"coord_{suffix}"
-        return f"_div_{suffix}"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
 
     @QtCore.Slot()
     @QtCore.Slot(int)
@@ -3341,15 +3238,6 @@ class ROIPathDialog(DataTransformDialog):
     enable_copy = True
     apply_on_nonuniform_data = True
 
-    @property
-    def suffix(self) -> str:
-        return "_path"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
-
     def __init__(self, roi: ItoolPolyLineROI) -> None:
         self.roi = roi
         super().__init__(self.roi.plot_item.slicer_area)
@@ -3411,15 +3299,6 @@ class ROIMaskDialog(DataTransformDialog):
     title = "Mask with ROI"
     enable_copy = True
     apply_on_nonuniform_data = True
-
-    @property
-    def suffix(self) -> str:
-        return "_masked"
-
-    @suffix.setter
-    def suffix(self, value: str) -> None:
-        # To satisfy mypy
-        pass
 
     def __init__(self, roi: ItoolPolyLineROI) -> None:
         self.roi = roi

@@ -951,7 +951,20 @@ def test_manager_reload_selected_preserves_manual_root_name(
             "manual root name",
             QtCore.Qt.ItemDataRole.EditRole,
         )
+        root_tool = manager.get_imagetool(0)
         assert manager.name_of_imagetool(0) == "manual root name"
+        assert root_tool.slicer_area._data.name == "manual root name"
+        assert root_index.data(QtCore.Qt.ItemDataRole.EditRole) == "manual root name"
+        assert (
+            root_index.data(QtCore.Qt.ItemDataRole.DisplayRole)
+            == "0: manual root name (scan)"
+        )
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                root_tool.windowTitle()
+            )
+            == "0: manual root name (scan)"
+        )
 
         updated = (source + 100.0).rename("reloaded_scan")
         updated.to_netcdf(file_path, engine="h5netcdf")
@@ -961,12 +974,84 @@ def test_manager_reload_selected_preserves_manual_root_name(
         manager._update_actions()
         assert manager.reload_action.isVisible()
 
-        root_tool = manager.get_imagetool(0)
         with qtbot.wait_signal(root_tool.slicer_area.sigDataChanged, timeout=5000):
             manager.reload_selected()
 
         assert manager.name_of_imagetool(0) == "manual root name"
-        xr.testing.assert_identical(fetch(0), updated)
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                root_tool.windowTitle()
+            )
+            == "0: manual root name (scan)"
+        )
+        xr.testing.assert_identical(fetch(0), updated.rename("manual root name"))
+
+
+def test_manager_file_suffix_does_not_seed_unnamed_root_name(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    source = test_data.astype(float).rename(None)
+    file_path = tmp_path / "scan.h5"
+    source.to_netcdf(file_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(
+            source,
+            manager=True,
+            file_path=file_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        model = typing.cast("_ImageToolWrapperItemModel", manager.tree_view.model())
+        root_index = model._row_index(0)
+
+        assert manager.name_of_imagetool(0) == ""
+        assert root_index.data(QtCore.Qt.ItemDataRole.EditRole) == ""
+        assert root_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "0 (scan)"
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                manager.get_imagetool(0).windowTitle()
+            )
+            == "0 (scan)"
+        )
+
+
+def test_manager_rename_updates_accepted_filter_data(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
+        dims=("alpha",),
+        mode="min",
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+
+        itool(test_data.astype(float).rename("scan"), manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        root_tool = manager.get_imagetool(0)
+        root_tool.slicer_area.apply_filter_operation(operation)
+
+        manager.rename_imagetool(0, "filtered scan")
+
+        assert root_tool.slicer_area._data.name == "filtered scan"
+        assert root_tool.slicer_area._accepted_filter_data is not None
+        assert root_tool.slicer_area._accepted_filter_data.name == "filtered scan"
+        assert root_tool.slicer_area.array_slicer._obj.name == "filtered scan"
 
 
 def test_manager_reload_selected_preserves_manual_child_imagetool_name(
@@ -1017,6 +1102,17 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
         )
         child_node = manager._child_node(child_uid)
         assert child_node.name == "manual child name"
+        assert child_tool.slicer_area._data.name == "manual child name"
+        assert child_index.data(QtCore.Qt.ItemDataRole.EditRole) == "manual child name"
+        assert (
+            child_index.data(QtCore.Qt.ItemDataRole.DisplayRole) == "manual child name"
+        )
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                child_tool.windowTitle()
+            )
+            == "manual child name"
+        )
 
         updated = (source + 50.0).rename("reloaded_scan")
         updated.to_netcdf(file_path, engine="h5netcdf")
@@ -1031,7 +1127,15 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
 
         assert child_node.source_state == "fresh"
         assert child_node.name == "manual child name"
-        xr.testing.assert_identical(fetch(child_uid), updated)
+        assert (
+            manager_workspace_io._strip_workspace_modified_placeholder(
+                child_tool.windowTitle()
+            )
+            == "manual child name"
+        )
+        xr.testing.assert_identical(
+            fetch(child_uid), updated.rename("manual child name")
+        )
 
 
 def test_manager_workspace_reload_preserves_manual_root_name(
@@ -1071,6 +1175,7 @@ def test_manager_workspace_reload_preserves_manual_root_name(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager.name_of_imagetool(0) == "saved manual root"
+        assert manager.get_imagetool(0).slicer_area._data.name == "saved manual root"
 
         updated = (source + 200.0).rename("updated_scan")
         updated.to_netcdf(source_path, engine="h5netcdf")
@@ -1083,7 +1188,7 @@ def test_manager_workspace_reload_preserves_manual_root_name(
             manager.reload_selected()
 
         assert manager.name_of_imagetool(0) == "saved manual root"
-        xr.testing.assert_identical(fetch(0), updated)
+        xr.testing.assert_identical(fetch(0), updated.rename("saved manual root"))
 
 
 def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
@@ -1142,6 +1247,7 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
         loaded_child_node = manager._child_node(loaded_child_uid)
         loaded_child_tool = manager.get_imagetool(loaded_child_uid)
         assert loaded_child_node.name == "saved manual child"
+        assert loaded_child_tool.slicer_area._data.name == "saved manual child"
 
         updated = (source + 125.0).rename("updated_scan")
         updated.to_netcdf(source_path, engine="h5netcdf")
@@ -1155,7 +1261,9 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
 
         assert loaded_child_node.source_state == "fresh"
         assert loaded_child_node.name == "saved manual child"
-        xr.testing.assert_identical(fetch(loaded_child_uid), updated)
+        xr.testing.assert_identical(
+            fetch(loaded_child_uid), updated.rename("saved manual child")
+        )
 
 
 @pytest.mark.parametrize("auto_update", [False, True], ids=["manual", "auto"])
