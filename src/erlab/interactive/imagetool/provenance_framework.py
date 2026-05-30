@@ -1,4 +1,3 @@
-# ruff: noqa: F403,F405
 """Helpers for recording, displaying, and replaying ImageTool provenance.
 
 The saved provenance model stores enough history to explain or rebuild an ImageTool
@@ -35,8 +34,10 @@ saved.
 
 Manager children opened from an ImageTool cursor or bin selection do not keep the
 first generated ``qsel`` arguments as their refresh state. They store the selected
-parent indices in :class:`ImageToolSelectionSourceBinding` and rebuild ``qsel`` or
-``isel`` operations from the current parent data each time they refresh.
+parent indices in
+:class:`~erlab.interactive.imagetool.provenance_operations.ImageToolSelectionSourceBinding`
+and rebuild ``qsel`` or ``isel`` operations from the current parent data each time
+they refresh.
 
 Adding a new provenance-carrying operation follows the same pattern every time:
 
@@ -90,48 +91,15 @@ with :func:`full_data`, :func:`public_data`, :func:`selection`, :func:`file_load
 from __future__ import annotations
 
 __all__ = [
-    "AffineCoordOperation",
-    "AssignAttrsOperation",
-    "AssignCoord1DOperation",
-    "AssignCoordsOperation",
-    "AssignScalarCoordOperation",
-    "AverageOperation",
-    "CoarsenOperation",
-    "CorrectWithEdgeOperation",
     "DerivationEntry",
-    "DivideByCoordOperation",
     "FileDataSelection",
     "FileLoadSource",
     "FileReplayCall",
-    "GaussianFilterOperation",
-    "ImageToolSelectionSourceBinding",
-    "InterpolationOperation",
-    "IselOperation",
-    "LeadingEdgeOperation",
-    "MaskWithPolygonOperation",
-    "NormalizeOperation",
-    "QSelAggregationOperation",
-    "QSelOperation",
-    "RenameDimsCoordsOperation",
-    "RenameOperation",
     "ReplayStage",
-    "RestoreNonuniformDimsOperation",
-    "RotateOperation",
-    "ScriptCodeOperation",
     "ScriptInput",
     "ScriptInputDependencyRef",
-    "SelOperation",
-    "SelectCoordOperation",
-    "SliceAlongPathOperation",
-    "SortCoordOrderOperation",
-    "SqueezeOperation",
-    "SwapDimsOperation",
-    "SymmetrizeNfoldOperation",
-    "SymmetrizeOperation",
-    "ThinOperation",
     "ToolProvenanceOperation",
     "ToolProvenanceSpec",
-    "TransposeOperation",
     "compose_display_provenance",
     "compose_full_provenance",
     "decode_provenance_value",
@@ -887,6 +855,10 @@ def uses_default_replay_input(code: str) -> bool:
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 
+def _provenance_operations() -> typing.Any:
+    return importlib.import_module("erlab.interactive.imagetool.provenance_operations")
+
+
 def _callable_paths(func: Callable[..., typing.Any]) -> set[str]:
     paths: set[str] = set()
     for value in (func, inspect.unwrap(func)):
@@ -1402,6 +1374,7 @@ def operations_expression_code(
 
 def operation_from_console_call(call: ConsoleCall) -> ToolProvenanceOperation | None:
     """Return the structured operation represented by a console call, if known."""
+    _provenance_operations()
     for operation_type in _OPERATION_TYPES.values():
         operation = operation_type.from_console_call(call)
         if operation is not None:
@@ -1584,6 +1557,7 @@ def parse_tool_provenance_operation(
     if not isinstance(op, str):
         raise TypeError("Serialized provenance operations must include a string `op`")
 
+    _provenance_operations()
     operation_type = _OPERATION_TYPES.get(op)
     if operation_type is None:
         raise ValueError(
@@ -1847,9 +1821,10 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     A spec records exact operation arguments for live refresh, runtime replay, copied
     code, and derivation display. Manager children opened from ImageTool cursor or bin
-    selections should keep :class:`ImageToolSelectionSourceBinding` as their refresh
-    state; that binding builds a spec before refresh so edited parent coordinates are
-    used.
+    selections should keep
+    :class:`~erlab.interactive.imagetool.provenance_operations.ImageToolSelectionSourceBinding`
+    as their refresh state; that binding builds a spec before refresh so edited parent
+    coordinates are used.
     """
 
     schema_version: typing.Literal[2] = 2
@@ -1981,7 +1956,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def drop_trailing_rename(self) -> ToolProvenanceSpec:
         operations = self.operations
-        if operations and isinstance(operations[-1], RenameOperation):
+        if operations and isinstance(
+            operations[-1], _provenance_operations().RenameOperation
+        ):
             operations = operations[:-1]
         return self.model_copy(update={"operations": operations})
 
@@ -1999,14 +1976,18 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if not self.is_live_source:
             raise TypeError("Display operations can only be appended to live sources")
         operations = self.operations
-        if operations and isinstance(operations[-1], RenameOperation):
+        if operations and isinstance(
+            operations[-1], _provenance_operations().RenameOperation
+        ):
             return self.model_copy(
                 update={"operations": (*operations[:-1], operation, operations[-1])}
             )
         return self.append_operations(operation)
 
     def append_final_rename(self, name: str) -> ToolProvenanceSpec:
-        return self.drop_trailing_rename().append_operations(RenameOperation(name=name))
+        return self.drop_trailing_rename().append_operations(
+            _provenance_operations().RenameOperation(name=name)
+        )
 
     def append_replay_stage(self, source: ToolProvenanceSpec) -> ToolProvenanceSpec:
         """Append one live-source transformation stage to file provenance."""
@@ -2069,7 +2050,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         for index, operation in enumerate(operations):
             hide_operation = False
 
-            if isinstance(operation, ScriptCodeOperation):
+            if isinstance(operation, _provenance_operations().ScriptCodeOperation):
                 entry = operation.derivation_entry()
                 hide_operation = entry.code in {
                     "derived = derived.isel()",
@@ -2078,17 +2059,32 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 } or _is_internal_sort_coord_order_entry(entry)
                 if not hide_operation and _is_whole_array_rename_entry(entry):
                     hide_operation = not any(
-                        isinstance(later_operation, ScriptCodeOperation)
+                        isinstance(
+                            later_operation,
+                            _provenance_operations().ScriptCodeOperation,
+                        )
                         for later_operation in operations[index + 1 :]
                     )
             # Rule 1: drop empty selection operations.
-            elif isinstance(operation, (QSelOperation, IselOperation, SelOperation)):
+            elif isinstance(
+                operation,
+                (
+                    _provenance_operations().QSelOperation,
+                    _provenance_operations().IselOperation,
+                    _provenance_operations().SelOperation,
+                ),
+            ):
                 hide_operation = not operation.decoded_kwargs
             # Rule 2: hide internal coordinate-order normalization.
-            elif isinstance(operation, SortCoordOrderOperation):
+            elif isinstance(
+                operation, _provenance_operations().SortCoordOrderOperation
+            ):
                 hide_operation = True
             # Rule 3: drop transpose calls that do not change dimension order.
-            elif isinstance(operation, TransposeOperation) and current_data is not None:
+            elif (
+                isinstance(operation, _provenance_operations().TransposeOperation)
+                and current_data is not None
+            ):
                 target_dims = (
                     tuple(operation.dims)
                     if operation.dims is not None
@@ -2096,11 +2092,16 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 )
                 hide_operation = target_dims == tuple(current_data.dims)
             # Rule 4: drop squeeze calls that would not remove singleton dimensions.
-            elif isinstance(operation, SqueezeOperation) and current_data is not None:
+            elif (
+                isinstance(operation, _provenance_operations().SqueezeOperation)
+                and current_data is not None
+            ):
                 hide_operation = not any(size == 1 for size in current_data.shape)
             # Rule 5: drop nonuniform restoration when it would not change dimensions.
             elif (
-                isinstance(operation, RestoreNonuniformDimsOperation)
+                isinstance(
+                    operation, _provenance_operations().RestoreNonuniformDimsOperation
+                )
                 and current_data is not None
             ):
                 hide_operation = (
@@ -2111,9 +2112,11 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 )
             # Rule 6: hide whole-array name changes in derivation display. Dimension
             # and coordinate renames use RenameDimsCoordsOperation and remain visible.
-            elif isinstance(operation, RenameOperation):
+            elif isinstance(operation, _provenance_operations().RenameOperation):
                 hide_operation = not any(
-                    isinstance(later_operation, ScriptCodeOperation)
+                    isinstance(
+                        later_operation, _provenance_operations().ScriptCodeOperation
+                    )
                     for later_operation in operations[index + 1 :]
                 )
 
@@ -2170,7 +2173,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             active_name="derived",
             file_load_source=self.file_load_source,
             operations=tuple(
-                ScriptCodeOperation(
+                _provenance_operations().ScriptCodeOperation(
                     label=entry.label,
                     code=entry.code,
                     copyable=entry.copyable,
@@ -2474,13 +2477,20 @@ def compose_display_provenance(
     ):
         saw_squeeze = False
         for operation in source.operations:
-            if isinstance(operation, (QSelOperation, IselOperation, SelOperation)):
+            if isinstance(
+                operation,
+                (
+                    _provenance_operations().QSelOperation,
+                    _provenance_operations().IselOperation,
+                    _provenance_operations().SelOperation,
+                ),
+            ):
                 if operation.decoded_kwargs:
                     break
                 continue
-            if isinstance(operation, SortCoordOrderOperation):
+            if isinstance(operation, _provenance_operations().SortCoordOrderOperation):
                 continue
-            if isinstance(operation, SqueezeOperation):
+            if isinstance(operation, _provenance_operations().SqueezeOperation):
                 saw_squeeze = True
                 continue
             break
@@ -2495,7 +2505,7 @@ def compose_display_provenance(
         seed_code=_DEFAULT_REPLAY_SEED_CODE,
         active_name="derived",
         operations=tuple(
-            ScriptCodeOperation(
+            _provenance_operations().ScriptCodeOperation(
                 label=entry.label,
                 code=entry.code,
                 copyable=entry.copyable,
@@ -2584,7 +2594,7 @@ def _as_script_replay_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
             active_name=spec.active_name,
             file_load_source=spec.file_load_source,
             operations=tuple(
-                ScriptCodeOperation(
+                _provenance_operations().ScriptCodeOperation(
                     label=entry.label,
                     code=entry.code,
                     copyable=entry.copyable,
@@ -2640,7 +2650,7 @@ def compose_full_provenance(
         if seed_code is not None:
             local_operations.insert(
                 0,
-                ScriptCodeOperation(
+                _provenance_operations().ScriptCodeOperation(
                     label=typing.cast("str", local_spec.start_label),
                     code=seed_code,
                 ),
@@ -2655,7 +2665,7 @@ def compose_full_provenance(
         ):
             local_operations.insert(
                 0,
-                ScriptCodeOperation(
+                _provenance_operations().ScriptCodeOperation(
                     label="Use current parent output as the active data",
                     code=f"derived = {parent_input}",
                 ),
@@ -2684,115 +2694,6 @@ def require_live_source_spec(
             "whose operations support `apply()`."
         )
     return spec
-
-
-class ImageToolSelectionSourceBinding(pydantic.BaseModel):
-    """ImageTool selection state stored for manager child refreshes.
-
-    Stores the parent dimension indices selected in an ImageTool plot. When a child
-    refreshes after parent coordinates change, :meth:`materialize` rebuilds ``qsel`` or
-    ``isel`` operations from the current parent data so the child follows the same
-    cursor or bin position instead of old coordinate labels.
-
-    Parameters
-    ----------
-    selection_mode
-        Use ``"qsel"`` when selected hidden dimensions should be represented by current
-        coordinate values, or ``"isel"`` when they must stay index-based.
-    selection_indexers
-        Parent dimension names mapped to integer indices or index slices from the
-        cursor or bin selection.
-    selection_binned_dims
-        Dimensions in ``selection_indexers`` whose slices should become ``qsel`` center
-        and width arguments.
-    crop_sel_indexers
-        Index slice selections from visible axes that should be represented by current
-        coordinate values during refresh.
-    crop_isel_indexers
-        Index slice selections from visible non-uniform axes.
-    transpose_dims
-        Dimension order to apply after selection, if the opened tool expects a
-        transposed input.
-    squeeze
-        Whether to squeeze singleton dimensions after selection.
-    """
-
-    schema_version: typing.Literal[1] = 1
-    kind: typing.Literal["imagetool_selection"] = "imagetool_selection"
-    selection_mode: typing.Literal["qsel", "isel"] = "qsel"
-    selection_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
-    selection_binned_dims: ProvenanceHashableTuple = ()
-    crop_sel_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
-    crop_isel_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
-    transpose_dims: NullableProvenanceHashableTuple = None
-    squeeze: bool = False
-
-    model_config = pydantic.ConfigDict(
-        frozen=True,
-        arbitrary_types_allowed=True,
-        extra="forbid",
-    )
-
-    def materialize(self, parent_data: xr.DataArray) -> ToolProvenanceSpec:
-        """Build a source spec for the current parent data.
-
-        Parameters
-        ----------
-        parent_data
-            Current data from the parent ImageTool.
-
-        Returns
-        -------
-        ToolProvenanceSpec
-            Source spec whose ``qsel``, ``isel``, and ``sel`` operations match this
-            binding on ``parent_data``.
-        """
-        operations: list[ToolProvenanceOperation] = []
-        selection_data = ToolProvenanceSpec._starting_data_for_kind(
-            "selection", parent_data
-        )
-        selection_indexers = dict(self.selection_indexers)
-        if selection_indexers:
-            if self.selection_mode == "qsel":
-                operation = QSelOperation(
-                    kwargs=erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
-                        selection_data,
-                        selection_indexers,
-                        self.selection_binned_dims,
-                    )
-                )
-            else:
-                operation = IselOperation(kwargs=selection_indexers)
-            operations.append(operation)
-
-        crop_sel_indexers = dict(self.crop_sel_indexers)
-        if crop_sel_indexers:
-            crop_sel_kwargs: dict[Hashable, typing.Any] = {}
-            for dim, selector in crop_sel_indexers.items():
-                if dim not in selection_data.dims:
-                    raise ValueError(f"Dimension `{dim}` not found in data")
-                coord = selection_data[dim][selector].values
-                if isinstance(selector, slice):
-                    if coord.size == 0:
-                        raise ValueError(f"Selection for dimension `{dim}` is empty")
-                    crop_sel_kwargs[dim] = slice(
-                        erlab.utils.misc._convert_to_native(coord[0]),
-                        erlab.utils.misc._convert_to_native(coord[-1]),
-                    )
-                else:
-                    crop_sel_kwargs[dim] = erlab.utils.misc._convert_to_native(coord)
-            operations.append(SelOperation(kwargs=crop_sel_kwargs))
-
-        crop_isel_indexers = dict(self.crop_isel_indexers)
-        if crop_isel_indexers:
-            operations.append(IselOperation(kwargs=crop_isel_indexers))
-
-        operations.append(SortCoordOrderOperation())
-        if self.transpose_dims is not None:
-            operations.append(TransposeOperation(dims=self.transpose_dims))
-        if self.squeeze:
-            operations.append(SqueezeOperation())
-        return ToolProvenanceSpec(kind="selection").append_operations(*operations)
 
 
 def full_data(
@@ -3066,8 +2967,3 @@ def replay_script_provenance(
         if "non-replayable" in str(exc):
             raise ValueError(str(exc)) from exc
         raise TypeError(str(exc)) from exc
-
-
-# Import concrete operations after the framework is fully defined so subclasses
-# register with ToolProvenanceOperation.
-from erlab.interactive.imagetool.provenance_operations import *  # noqa: E402

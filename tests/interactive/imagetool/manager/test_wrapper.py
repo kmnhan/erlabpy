@@ -1,12 +1,27 @@
-# ruff: noqa: F403, F405
 import datetime
+import logging
+import pathlib
+import typing
+from collections.abc import Callable
 
+import numpy as np
+import xarray as xr
+from qtpy import QtCore, QtGui
+
+import erlab
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool._load_source import (
+    _load_code_from_file_details,
+    _load_provenance_from_file_details,
+    _load_source_label_and_text,
+    _loader_callable_text,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _coerce_added_time,
     _format_added_time,
+    _format_chunk_summary,
+    _preview_from_imagetool,
 )
-
-from ._shared import *
 
 
 def test_wrapper_preview_fallback_branches(monkeypatch) -> None:

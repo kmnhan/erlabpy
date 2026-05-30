@@ -1,5 +1,3 @@
-# mypy: ignore-errors
-# ruff: noqa: E402, E501, F403, F405, TC002
 from __future__ import annotations
 
 import logging
@@ -7,13 +5,24 @@ import pathlib
 import typing
 
 import numpy as np
-import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import _replay_graph
+from erlab.interactive.imagetool import (
+    _replay_graph,
+    provenance_framework,
+    provenance_operations,
+)
 from erlab.interactive.imagetool._mainwindow import ImageTool
+from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
+from erlab.interactive.imagetool.manager._widgets import (
+    _DEPENDENCY_STATUS_BADGES,
+    _DEPENDENCY_STATUS_LABELS,
+    _DEPENDENCY_STATUS_TOOLTIPS,
+    _ScriptRebuildError,
+    _ScriptRebuildResult,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -22,34 +31,13 @@ from erlab.interactive.imagetool.manager._wrapper import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
+    import xarray as xr
+
 
 logger = logging.getLogger(__name__)
 
-_METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
-_METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
-_QWIDGETSIZE_MAX = 16777215
-_RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
-_MAX_RECENT_WORKSPACES = 10
-_DEPENDENCY_STATUS_LABELS: dict[str, str] = {
-    "current": "Current",
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_BADGES: dict[str, str] = {
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
-    "current": "All recorded live inputs are still open and unchanged.",
-    "changed": "At least one recorded live input has changed since this data was made.",
-    "missing": "At least one recorded live input is no longer open.",
-}
 
-
-from erlab.interactive.imagetool.manager._widgets import *
-
-
-class _LineageMixin:
+class _LineageMixin(_ManagerMixinBase):
     def _node_for_target(
         self, target: int | str
     ) -> _ImageToolWrapper | _ManagedWindowNode:
@@ -59,9 +47,7 @@ class _LineageMixin:
 
     def _dependency_refs_for_uid(
         self, uid: str
-    ) -> tuple[
-        erlab.interactive.imagetool.provenance_framework.ScriptInputDependencyRef, ...
-    ]:
+    ) -> tuple[provenance_framework.ScriptInputDependencyRef, ...]:
         node = self._all_nodes.get(uid)
         if node is None or node.provenance_spec is None:
             self._dependency_ref_cache.pop(uid, None)
@@ -70,9 +56,7 @@ class _LineageMixin:
         cached = self._dependency_ref_cache.get(uid)
         if cached is not None and cached[0] == spec_id:
             return cached[1]
-        refs = erlab.interactive.imagetool.provenance_framework.script_input_dependency_refs(
-            node.provenance_spec
-        )
+        refs = provenance_framework.script_input_dependency_refs(node.provenance_spec)
         self._dependency_ref_cache[uid] = (spec_id, refs)
         return refs
 
@@ -195,7 +179,7 @@ class _LineageMixin:
     @classmethod
     def _script_input_has_recorded_file(
         cls,
-        script_input: erlab.interactive.imagetool.provenance_framework.ScriptInput,
+        script_input: provenance_framework.ScriptInput,
     ) -> bool:
         spec = script_input.parsed_provenance_spec()
         if spec is None:
@@ -210,9 +194,8 @@ class _LineageMixin:
     @classmethod
     def _dependency_ref_has_recorded_file(
         cls,
-        spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None,
-        ref: erlab.interactive.imagetool.provenance_framework.ScriptInputDependencyRef,
+        spec: provenance_framework.ToolProvenanceSpec | None,
+        ref: provenance_framework.ScriptInputDependencyRef,
     ) -> bool:
         if spec is None:
             return False
@@ -270,7 +253,7 @@ class _LineageMixin:
 
     def _script_input_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> erlab.interactive.imagetool.provenance_framework.ScriptInput:
+    ) -> provenance_framework.ScriptInput:
         displayed_provenance = node.displayed_provenance_spec
         provenance_spec = (
             displayed_provenance.model_dump(mode="json")
@@ -283,7 +266,7 @@ class _LineageMixin:
             label = node.display_text
         if isinstance(node, _ImageToolWrapper) and node.name:
             label += f": {node.name}"
-        return erlab.interactive.imagetool.provenance_framework.ScriptInput(
+        return provenance_framework.ScriptInput(
             name=self._script_input_name_for_node(node),
             label=label,
             node_uid=node.uid,
@@ -299,9 +282,9 @@ class _LineageMixin:
         operation_code: str,
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
-    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
-        return erlab.interactive.imagetool.provenance_framework.script(
-            erlab.interactive.imagetool.provenance_framework.ScriptCodeOperation(
+    ) -> provenance_framework.ToolProvenanceSpec:
+        return provenance_framework.script(
+            provenance_operations.ScriptCodeOperation(
                 label=operation_label,
                 code=operation_code,
             ),
@@ -337,11 +320,9 @@ class _LineageMixin:
         )
 
     def _script_provenance_inputs_current(
-        self, spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
+        self, spec: provenance_framework.ToolProvenanceSpec
     ) -> bool:
-        for ref in erlab.interactive.imagetool.provenance_framework.script_input_dependency_refs(
-            spec
-        ):
+        for ref in provenance_framework.script_input_dependency_refs(spec):
             parent = self._all_nodes.get(ref.node_uid)
             if parent is None:
                 return False
@@ -354,15 +335,10 @@ class _LineageMixin:
 
     def _resolve_live_script_input_for_reload(
         self,
-        script_input: erlab.interactive.imagetool.provenance_framework.ScriptInput,
+        script_input: provenance_framework.ScriptInput,
         *,
         target_node_uid: str | None = None,
-    ) -> (
-        tuple[
-            xr.DataArray, erlab.interactive.imagetool.provenance_framework.ScriptInput
-        ]
-        | None
-    ):
+    ) -> tuple[xr.DataArray, provenance_framework.ScriptInput] | None:
         spec = script_input.parsed_provenance_spec()
         if script_input.node_uid is None:
             return None
@@ -386,7 +362,7 @@ class _LineageMixin:
 
     def _script_input_can_reload(
         self,
-        script_input: erlab.interactive.imagetool.provenance_framework.ScriptInput,
+        script_input: provenance_framework.ScriptInput,
         *,
         target_node_uid: str | None = None,
     ) -> bool:
@@ -411,31 +387,26 @@ class _LineageMixin:
             )
         if spec.kind != "script":
             return False
-        return (
-            erlab.interactive.imagetool.provenance_framework.script_provenance_replayable(
-                spec
+        return provenance_framework.script_provenance_replayable(spec) and all(
+            self._script_input_can_reload(
+                nested_input,
+                target_node_uid=target_node_uid,
             )
-            and all(
-                self._script_input_can_reload(
-                    nested_input,
-                    target_node_uid=target_node_uid,
-                )
-                for nested_input in spec.script_inputs
-            )
+            for nested_input in spec.script_inputs
         )
 
     def _rebuild_script_provenance(
         self,
-        spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
+        spec: provenance_framework.ToolProvenanceSpec,
         *,
         target_node_uid: str | None = None,
     ) -> _ScriptRebuildResult:
         def _resolve_live_input(
-            script_input: erlab.interactive.imagetool.provenance_framework.ScriptInput,
+            script_input: provenance_framework.ScriptInput,
         ) -> (
             tuple[
                 xr.DataArray,
-                erlab.interactive.imagetool.provenance_framework.ScriptInput,
+                provenance_framework.ScriptInput,
             ]
             | None
         ):
@@ -469,9 +440,7 @@ class _LineageMixin:
             and spec is not None
             and spec.kind == "script"
             and bool(spec.script_inputs)
-            and erlab.interactive.imagetool.provenance_framework.script_provenance_replayable(
-                spec
-            )
+            and provenance_framework.script_provenance_replayable(spec)
             and all(
                 self._script_input_can_reload(
                     script_input,
@@ -522,7 +491,7 @@ class _LineageMixin:
                 continue
             if node.provenance_spec is None:
                 continue
-            rebased = erlab.interactive.imagetool.provenance_framework.rebase_script_input_node_uids(
+            rebased = provenance_framework.rebase_script_input_node_uids(
                 node.provenance_spec,
                 uid_map,
             )

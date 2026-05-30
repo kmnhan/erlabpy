@@ -1,116 +1,30 @@
-# ruff: noqa: F401,TC001
-import concurrent.futures
-import contextlib
-import dataclasses
-import enum
-import errno
-import gc
-import io
-import json
+from __future__ import annotations
+
 import logging
-import os
-import pathlib
-import pickle
-import subprocess
-import sys
-import tempfile
-import time
-import types
 import typing
-import warnings
-import weakref
-import webbrowser
-from collections.abc import Callable, Iterable, Mapping
 
 import numpy as np
 import pydantic
 import pytest
 import xarray as xr
 import xarray.testing
-import zmq
-from IPython.core.interactiveshell import InteractiveShell
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool._itool as itool_mod
-import erlab.interactive.imagetool._serialization as imagetool_serialization
-import erlab.interactive.imagetool.manager as manager_module
-import erlab.interactive.imagetool.manager._actions as manager_actions
-import erlab.interactive.imagetool.manager._console as manager_console
-import erlab.interactive.imagetool.manager._desktop as manager_desktop
-import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
-import erlab.interactive.imagetool.manager._io as manager_io
-import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._registry as manager_registry
-import erlab.interactive.imagetool.manager._server as manager_server
-import erlab.interactive.imagetool.manager._widgets as manager_widgets
-import erlab.interactive.imagetool.manager._workspace as manager_workspace
-import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
-import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
-import erlab.interactive.imagetool.manager._xarray as manager_xarray
-import erlab.interactive.imagetool.viewer as imagetool_viewer
-import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
-from erlab.interactive._mesh import MeshTool
-from erlab.interactive.derivative import DerivativeTool
-from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-from erlab.interactive.fermiedge import GoldTool, ResolutionTool
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool._load_source import (
-    _load_code_from_file_details,
-    _load_provenance_from_file_details,
-    _load_source_label_and_text,
-    _loader_callable_text,
-    _LoadSourceDetails,
-    _resolve_identified_path,
-    _scan_number_load_call_args,
-)
-from erlab.interactive.imagetool._magic import _normalize_manager_target_args
-from erlab.interactive.imagetool.controls import ItoolColormapControls
-from erlab.interactive.imagetool.dialogs import SelectionDialog
-from erlab.interactive.imagetool.manager import (
-    ImageToolManager,
-    fetch,
-    load_in_manager,
-    replace_data,
-)
-from erlab.interactive.imagetool.manager._console import ToolNamespace
-from erlab.interactive.imagetool.manager._dialogs import (
-    _ChooseFromDataTreeDialog,
-    _ConcatDialog,
-    _CoordinateAttrsPickerDialog,
-    _NameFilterDialog,
-    _NameMapEditorDialog,
-    _RenameDialog,
-    _text_to_loader_extension_value,
-)
-from erlab.interactive.imagetool.manager._mainwindow import (
-    _LoadSourceDetailsDialog,
-    _WorkspacePropertiesDialog,
-    _WorkspacePropertiesState,
-)
-from erlab.interactive.imagetool.manager._modelview import (
-    _MIME,
-    _NODE_UID_ROLE,
-    _TOOL_TYPE_ROLE,
-    _ImageToolWrapperItemDelegate,
-    _ImageToolWrapperItemModel,
-    _RowBadge,
-)
-from erlab.interactive.imagetool.manager._server import (
-    AddDataPacket,
-    Response,
-    _recv_multipart,
-    _remove_idx,
-    _show_idx,
-    _WatcherServer,
-)
-from erlab.interactive.imagetool.manager._wrapper import (
-    _format_chunk_summary,
-    _preview_from_imagetool,
-)
-from erlab.interactive.ptable import PeriodicTableWindow
+
+if typing.TYPE_CHECKING:
+    import pathlib
+    from collections.abc import Callable
+
+    from erlab.interactive.fermiedge import GoldTool
+    from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._modelview import (
+        _ImageToolWrapperItemDelegate,
+        _ImageToolWrapperItemModel,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -124,15 +38,6 @@ def console_helper_dependency(value):
 
 def console_helper(value):
     return console_helper_dependency(value)
-
-
-@pytest.fixture(scope="module")
-def test_data():
-    return xr.DataArray(
-        np.arange(25).reshape((5, 5)),
-        dims=["alpha", "eV"],
-        coords={"alpha": np.arange(5), "eV": np.arange(5)},
-    )
 
 
 def select_tools(
@@ -509,21 +414,6 @@ def menu_map_by_object_name(
     return menus
 
 
-@pytest.fixture(autouse=True)
-def isolated_recent_workspace_settings(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> pathlib.Path:
-    settings_path = tmp_path / "recent-workspaces.ini"
-
-    def _settings() -> QtCore.QSettings:
-        return QtCore.QSettings(str(settings_path), QtCore.QSettings.Format.IniFormat)
-
-    _settings().clear()
-    monkeypatch.setattr(manager_mainwindow, "_manager_settings", _settings)
-    monkeypatch.setattr(manager_workspace_io, "_manager_settings", _settings)
-    return settings_path
-
-
 def _exec_generated_code(
     code: str, namespace: dict[str, typing.Any]
 ) -> dict[str, typing.Any]:
@@ -618,6 +508,3 @@ def copy_full_code_for_uid(
     trigger_menu_action(menu, manager._metadata_copy_full_action)
     assert copied
     return copied[-1]
-
-
-__all__ = [name for name in globals() if not name.startswith("__")]

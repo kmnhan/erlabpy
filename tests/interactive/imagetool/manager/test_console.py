@@ -1,5 +1,39 @@
-# ruff: noqa: F403,F405,RUF012
-from ._shared import *
+import pathlib
+import sys
+import types
+import typing
+from collections.abc import Callable
+
+import numpy as np
+import pytest
+import xarray as xr
+from IPython.core.interactiveshell import InteractiveShell
+from qtpy import QtWidgets
+
+import erlab
+import erlab.interactive.imagetool.manager._console as manager_console
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool.manager import fetch
+from erlab.interactive.imagetool.manager._console import ToolNamespace
+from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
+
+from .helpers import (
+    _exec_generated_code,
+    click_tree_view_pos,
+    console_helper,
+    console_helper_dependency,
+    dependency_status_badge,
+    metadata_detail_labels,
+    metadata_detail_map,
+    select_child_tool,
+    select_tools,
+)
+
+if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool.manager._modelview import (
+        _ImageToolWrapperItemDelegate,
+    )
 
 
 def test_manager_console(
@@ -124,7 +158,7 @@ def test_manager_console_handles_use_filtered_display_data(
         dims=["x", "y"],
         coords={"x": np.arange(5), "y": np.arange(5)},
     )
-    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_operations.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -353,7 +387,7 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
 ) -> None:
     data = test_data.astype(float)
     operation = (
-        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+        erlab.interactive.imagetool.provenance_operations.GaussianFilterOperation(
             sigma={data.dims[0]: 1.0}
         )
     )
@@ -1658,7 +1692,7 @@ def test_manager_console_derived_reload_reapplies_filter(
     )
     data1 = data0 + 1.0
     operation = (
-        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
+        erlab.interactive.imagetool.provenance_operations.GaussianFilterOperation(
             sigma={"x": 1.0}
         )
     )
@@ -1815,7 +1849,7 @@ def test_manager_concat_uses_filtered_display_data(
         coords={"x": np.arange(2), "y": np.arange(2)},
     )
     data1 = data0 + 10.0
-    operation = erlab.interactive.imagetool.provenance_framework.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance_operations.NormalizeOperation(
         dims=("x",),
         mode="min",
     )

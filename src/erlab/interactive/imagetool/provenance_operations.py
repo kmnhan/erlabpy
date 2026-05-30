@@ -2,6 +2,43 @@
 
 from __future__ import annotations
 
+__all__ = [
+    "AffineCoordOperation",
+    "AssignAttrsOperation",
+    "AssignCoord1DOperation",
+    "AssignCoordsOperation",
+    "AssignScalarCoordOperation",
+    "AverageOperation",
+    "CoarsenOperation",
+    "CorrectWithEdgeOperation",
+    "DivideByCoordOperation",
+    "GaussianFilterOperation",
+    "ImageToolSelectionSourceBinding",
+    "InterpolationOperation",
+    "IselOperation",
+    "LeadingEdgeOperation",
+    "MaskWithPolygonOperation",
+    "NormalizeOperation",
+    "QSelAggregationOperation",
+    "QSelOperation",
+    "RenameDimsCoordsOperation",
+    "RenameOperation",
+    "RestoreNonuniformDimsOperation",
+    "RotateOperation",
+    "ScriptCodeOperation",
+    "SelOperation",
+    "SelectCoordOperation",
+    "SliceAlongPathOperation",
+    "SortCoordOrderOperation",
+    "SqueezeOperation",
+    "SwapDimsOperation",
+    "SymmetrizeNfoldOperation",
+    "SymmetrizeOperation",
+    "ThinOperation",
+    "TransposeOperation",
+]
+
+
 import contextlib
 import keyword
 import typing
@@ -44,6 +81,83 @@ from erlab.interactive.imagetool.provenance_framework import (
     decode_provenance_value,
     encode_provenance_value,
 )
+
+
+class ImageToolSelectionSourceBinding(pydantic.BaseModel):
+    """ImageTool selection state stored for manager child refreshes.
+
+    Stores the parent dimension indices selected in an ImageTool plot. When a child
+    refreshes after parent coordinates change, :meth:`materialize` rebuilds ``qsel`` or
+    ``isel`` operations from the current parent data so the child follows the same
+    cursor or bin position instead of old coordinate labels.
+    """
+
+    schema_version: typing.Literal[1] = 1
+    kind: typing.Literal["imagetool_selection"] = "imagetool_selection"
+    selection_mode: typing.Literal["qsel", "isel"] = "qsel"
+    selection_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
+    selection_binned_dims: ProvenanceHashableTuple = ()
+    crop_sel_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
+    crop_isel_indexers: ProvenanceMapping = pydantic.Field(default_factory=dict)
+    transpose_dims: NullableProvenanceHashableTuple = None
+    squeeze: bool = False
+
+    model_config = pydantic.ConfigDict(
+        frozen=True,
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
+
+    def materialize(self, parent_data: xr.DataArray):
+        """Build a source spec for the current parent data."""
+        from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
+
+        operations: list[ToolProvenanceOperation] = []
+        selection_data = ToolProvenanceSpec._starting_data_for_kind(
+            "selection", parent_data
+        )
+        selection_indexers = dict(self.selection_indexers)
+        if selection_indexers:
+            if self.selection_mode == "qsel":
+                operation = QSelOperation(
+                    kwargs=erlab.interactive.imagetool.slicer.qsel_args_from_indexers(
+                        selection_data,
+                        selection_indexers,
+                        self.selection_binned_dims,
+                    )
+                )
+            else:
+                operation = IselOperation(kwargs=selection_indexers)
+            operations.append(operation)
+
+        crop_sel_indexers = dict(self.crop_sel_indexers)
+        if crop_sel_indexers:
+            crop_sel_kwargs: dict[Hashable, typing.Any] = {}
+            for dim, selector in crop_sel_indexers.items():
+                if dim not in selection_data.dims:
+                    raise ValueError(f"Dimension `{dim}` not found in data")
+                coord = selection_data[dim][selector].values
+                if isinstance(selector, slice):
+                    if coord.size == 0:
+                        raise ValueError(f"Selection for dimension `{dim}` is empty")
+                    crop_sel_kwargs[dim] = slice(
+                        erlab.utils.misc._convert_to_native(coord[0]),
+                        erlab.utils.misc._convert_to_native(coord[-1]),
+                    )
+                else:
+                    crop_sel_kwargs[dim] = erlab.utils.misc._convert_to_native(coord)
+            operations.append(SelOperation(kwargs=crop_sel_kwargs))
+
+        crop_isel_indexers = dict(self.crop_isel_indexers)
+        if crop_isel_indexers:
+            operations.append(IselOperation(kwargs=crop_isel_indexers))
+
+        operations.append(SortCoordOrderOperation())
+        if self.transpose_dims is not None:
+            operations.append(TransposeOperation(dims=self.transpose_dims))
+        if self.squeeze:
+            operations.append(SqueezeOperation())
+        return ToolProvenanceSpec(kind="selection").append_operations(*operations)
 
 
 class ScriptCodeOperation(ToolProvenanceOperation):

@@ -232,7 +232,7 @@ def test_dtool_source_update_marks_unavailable_for_incompatible_data(qtbot) -> N
 
     win.set_source_binding(
         erlab.interactive.imagetool.provenance_framework.selection(
-            erlab.interactive.imagetool.provenance_framework.TransposeOperation()
+            erlab.interactive.imagetool.provenance_operations.TransposeOperation()
         ),
         auto_update=True,
     )
@@ -410,7 +410,7 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     xr.testing.assert_identical(resolved_full, parent)
 
     resolved_qsel = erlab.interactive.imagetool.provenance_framework.selection(
-        erlab.interactive.imagetool.provenance_framework.QSelOperation(
+        erlab.interactive.imagetool.provenance_operations.QSelOperation(
             kwargs={"x": 1.0, "x_width": 1.0}
         )
     )
@@ -419,14 +419,14 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     )
 
     resolved_selection = erlab.interactive.imagetool.provenance_framework.selection(
-        erlab.interactive.imagetool.provenance_framework.IselOperation(
+        erlab.interactive.imagetool.provenance_operations.IselOperation(
             kwargs={"x": slice(1, None), "z": 1}
         ),
-        erlab.interactive.imagetool.provenance_framework.SelOperation(
+        erlab.interactive.imagetool.provenance_operations.SelOperation(
             kwargs={"y": slice(11.0, 12.0)}
         ),
-        erlab.interactive.imagetool.provenance_framework.SortCoordOrderOperation(),
-        erlab.interactive.imagetool.provenance_framework.TransposeOperation(
+        erlab.interactive.imagetool.provenance_operations.SortCoordOrderOperation(),
+        erlab.interactive.imagetool.provenance_operations.TransposeOperation(
             dims=("y", "x")
         ),
     )
@@ -438,9 +438,11 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
     )
 
     resolved_squeezed = erlab.interactive.imagetool.provenance_framework.selection(
-        erlab.interactive.imagetool.provenance_framework.IselOperation(kwargs={"z": 0}),
-        erlab.interactive.imagetool.provenance_framework.TransposeOperation(),
-        erlab.interactive.imagetool.provenance_framework.SqueezeOperation(),
+        erlab.interactive.imagetool.provenance_operations.IselOperation(
+            kwargs={"z": 0}
+        ),
+        erlab.interactive.imagetool.provenance_operations.TransposeOperation(),
+        erlab.interactive.imagetool.provenance_operations.SqueezeOperation(),
     )
     xr.testing.assert_identical(
         resolved_squeezed.apply(parent),
@@ -461,13 +463,13 @@ def test_tool_provenance_roundtrip_and_resolve_selection() -> None:
         parent_nonuniform_public
     )
     resolved_nonuniform = erlab.interactive.imagetool.provenance_framework.selection(
-        erlab.interactive.imagetool.provenance_framework.QSelOperation(
+        erlab.interactive.imagetool.provenance_operations.QSelOperation(
             kwargs={"beta": 2.0}
         ),
-        erlab.interactive.imagetool.provenance_framework.IselOperation(
+        erlab.interactive.imagetool.provenance_operations.IselOperation(
             kwargs={"alpha": slice(1, 3)}
         ),
-        erlab.interactive.imagetool.provenance_framework.SortCoordOrderOperation(),
+        erlab.interactive.imagetool.provenance_operations.SortCoordOrderOperation(),
     )
     xr.testing.assert_identical(
         resolved_nonuniform.apply(parent_nonuniform),
@@ -562,7 +564,7 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert tool.centralWidget() is replacement
 
     spec = erlab.interactive.imagetool.provenance_framework.selection(
-        erlab.interactive.imagetool.provenance_framework.IselOperation(
+        erlab.interactive.imagetool.provenance_operations.IselOperation(
             kwargs={"x": slice(0, 2)}
         )
     )
@@ -713,7 +715,7 @@ def test_tool_copy_code_uses_current_tool_input_without_parent_provenance(
     qtbot.addWidget(parent)
     parent.set_provenance_spec(
         erlab.interactive.imagetool.provenance_framework.selection(
-            erlab.interactive.imagetool.provenance_framework.IselOperation(
+            erlab.interactive.imagetool.provenance_operations.IselOperation(
                 kwargs={"x": slice(0, 2)}
             )
         )
@@ -784,7 +786,7 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
     data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
     parent_provenance = {
         "spec": erlab.interactive.imagetool.provenance_framework.selection(
-            erlab.interactive.imagetool.provenance_framework.IselOperation(
+            erlab.interactive.imagetool.provenance_operations.IselOperation(
                 kwargs={"x": slice(0, 2)}
             )
         )
@@ -809,7 +811,7 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
 
     parent_provenance["spec"] = (
         erlab.interactive.imagetool.provenance_framework.selection(
-            erlab.interactive.imagetool.provenance_framework.IselOperation(
+            erlab.interactive.imagetool.provenance_operations.IselOperation(
                 kwargs={"y": slice(0, 2)}
             )
         )

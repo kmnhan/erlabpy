@@ -1,5 +1,3 @@
-# mypy: ignore-errors
-# ruff: noqa: E402, E501, F403, F405
 from __future__ import annotations
 
 import contextlib
@@ -17,6 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab.interactive.imagetool import provenance_framework, provenance_operations
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
@@ -25,7 +24,22 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _is_loader_func,
 )
+from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
 from erlab.interactive.imagetool.manager._registry import refresh_manager_record
+from erlab.interactive.imagetool.manager._widgets import (
+    _MAX_RECENT_WORKSPACES,
+    _RECENT_WORKSPACES_SETTINGS_KEY,
+    _WORKSPACE_REBIND_KEEP_CHUNKS,
+    _WORKSPACE_SAVE_SHORTCUT_OBJECT_NAME,
+    _WORKSPACE_SAVE_WAIT_DIALOG_THRESHOLD_SECONDS,
+    _manager_settings,
+    _show_workspace_file_lock_error,
+    _strip_workspace_modified_placeholder,
+    _window_title_with_modified_placeholder,
+    _WorkspaceDocumentAccess,
+    _WorkspacePropertiesDialog,
+    _WorkspacePropertiesState,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -41,41 +55,19 @@ if typing.TYPE_CHECKING:
         Sequence,
     )
 
+    from erlab.interactive.imagetool.manager import ImageToolManager
+
 
 logger = logging.getLogger(__name__)
 
-_METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
-_METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
-_QWIDGETSIZE_MAX = 16777215
-_RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
-_MAX_RECENT_WORKSPACES = 10
-_DEPENDENCY_STATUS_LABELS: dict[str, str] = {
-    "current": "Current",
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_BADGES: dict[str, str] = {
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
-    "current": "All recorded live inputs are still open and unchanged.",
-    "changed": "At least one recorded live input has changed since this data was made.",
-    "missing": "At least one recorded live input is no longer open.",
-}
-
-
-from erlab.interactive.imagetool.manager._widgets import *
-
 
 def _workspace_provenance_file_stems(
-    spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None,
+    spec: provenance_framework.ToolProvenanceSpec | None,
 ) -> tuple[str, ...]:
     stems: list[str] = []
 
     def collect(
-        current: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None,
+        current: provenance_framework.ToolProvenanceSpec | None,
     ) -> None:
         if current is None:
             return
@@ -100,8 +92,7 @@ def _workspace_compact_file_suffix(stems: tuple[str, ...]) -> str:
 
 def _legacy_saved_title_data_name(
     ds: xr.Dataset,
-    provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-    | None,
+    provenance_spec: provenance_framework.ToolProvenanceSpec | None,
 ) -> str | None:
     title = _strip_workspace_modified_placeholder(str(ds.attrs.get("itool_title", "")))
     if ": " in title:
@@ -128,7 +119,7 @@ def _legacy_saved_title_data_name(
     return title
 
 
-class _WorkspaceIOMixin:
+class _WorkspaceIOMixin(_ManagerMixinBase):
     @staticmethod
     def _normalize_recent_workspace_paths(
         paths: Iterable[str | os.PathLike[str]],
@@ -777,9 +768,7 @@ class _WorkspaceIOMixin:
         provenance_spec = ds.attrs.get("manager_node_provenance_spec")
         live_source_spec = ds.attrs.get("manager_node_live_source_spec")
         live_source_binding = ds.attrs.get("manager_node_live_source_binding")
-        parse_provenance_spec = (
-            erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec
-        )
+        parse_provenance_spec = provenance_framework.parse_tool_provenance_spec
         parsed_provenance_spec = None
         if provenance_spec is not None:
             try:
@@ -801,7 +790,7 @@ class _WorkspaceIOMixin:
                     "Mapping[str, typing.Any]",
                     json.loads(live_source_spec),
                 )
-                parsed_source_spec = erlab.interactive.imagetool.provenance_framework.require_live_source_spec(
+                parsed_source_spec = provenance_framework.require_live_source_spec(
                     parse_provenance_spec(source_payload)
                 )
             except Exception:
@@ -813,16 +802,12 @@ class _WorkspaceIOMixin:
         parsed_source_binding = None
         if live_source_binding is not None:
             try:
-                provenance = erlab.interactive.imagetool.provenance_framework
                 binding_payload = typing.cast(
                     "Mapping[str, typing.Any]",
                     json.loads(live_source_binding),
                 )
-                parsed_source_binding = (
-                    provenance.ImageToolSelectionSourceBinding.model_validate(
-                        binding_payload
-                    )
-                )
+                binding_type = provenance_operations.ImageToolSelectionSourceBinding
+                parsed_source_binding = binding_type.model_validate(binding_payload)
             except Exception:
                 logger.warning(
                     "Ignoring invalid saved manager source binding for node %s",
@@ -1342,7 +1327,10 @@ class _WorkspaceIOMixin:
             dialog: _ChooseFromDataTreeDialog | None = None
             if select:
                 dialog = _ChooseFromDataTreeDialog(
-                    self, tree, mode="load", root_keys=root_keys
+                    typing.cast("ImageToolManager", self),
+                    tree,
+                    mode="load",
+                    root_keys=root_keys,
                 )
                 if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                     return False
@@ -2400,7 +2388,9 @@ class _WorkspaceIOMixin:
         """
         tree: xr.DataTree = self._to_datatree()
         try:
-            dialog = _ChooseFromDataTreeDialog(self, tree, mode="save")
+            dialog = _ChooseFromDataTreeDialog(
+                typing.cast("ImageToolManager", self), tree, mode="save"
+            )
             if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                 return
 

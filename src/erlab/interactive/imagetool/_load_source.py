@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 """Private helpers for ImageTool file-load metadata and provenance."""
 
 from __future__ import annotations
@@ -40,12 +39,11 @@ _RESERVED_REPLAY_SOURCE_NAMES = {
     "_processed",
 }
 
+_FileDataSelection = erlab.interactive.imagetool.provenance_framework.FileDataSelection
 _LoadFunc: typing.TypeAlias = tuple[
     Callable[..., typing.Any] | str,
     dict[str, typing.Any],
-    int
-    | dict[str, typing.Any]
-    | erlab.interactive.imagetool.provenance_framework.FileDataSelection,
+    int | dict[str, typing.Any] | _FileDataSelection,
 ]
 _LoadKind: typing.TypeAlias = typing.Literal["erlab_loader", "callable"]
 
@@ -299,9 +297,7 @@ def _resolve_load_func(
         return None
 
     loader, kwargs, selection = load_func
-    selection = erlab.interactive.imagetool.provenance_framework.FileDataSelection.model_validate(
-        selection
-    )
+    selection = _FileDataSelection.model_validate(selection)
     cast_float64 = _needs_float64_cast(source_input_dtype)
     if isinstance(loader, str):
         return _ResolvedLoadFunc(

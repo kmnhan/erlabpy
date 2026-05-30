@@ -73,7 +73,7 @@ from erlab.interactive.imagetool.manager._logging import (
     configure_logging,
     get_log_file_path,
 )
-from erlab.interactive.imagetool.manager._mainwindow import _ICON_PATH, ImageToolManager
+from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 from erlab.interactive.imagetool.manager._server import (
     HOST_IP,
     PORT,
@@ -103,6 +103,7 @@ from erlab.interactive.imagetool.manager._watcher import (
     watch,
     watched_variables,
 )
+from erlab.interactive.imagetool.manager._widgets import _ICON_PATH
 
 logger = logging.getLogger(__name__)
 

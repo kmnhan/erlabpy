@@ -1,7 +1,43 @@
-# ruff: noqa: F403, F405
-import erlab.interactive.imagetool.manager.__main__ as manager_main
+import dataclasses
+import gc
+import io
+import logging
+import os
+import pathlib
+import pickle
+import subprocess
+import sys
+import tempfile
+import time
+import types
+import typing
+import webbrowser
+from collections.abc import Callable
 
-from ._shared import *
+import pytest
+import xarray as xr
+import zmq
+from qtpy import QtCore, QtGui, QtWidgets
+
+import erlab
+import erlab.interactive.imagetool.manager.__main__ as manager_main
+import erlab.interactive.imagetool.manager._desktop as manager_desktop
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
+import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+from erlab.interactive.imagetool.manager import load_in_manager
+from erlab.interactive.imagetool.manager._mainwindow import _WorkspacePropertiesState
+from erlab.interactive.imagetool.manager._server import (
+    AddDataPacket,
+    Response,
+    _recv_multipart,
+)
+from erlab.interactive.ptable import PeriodicTableWindow
+
+from .helpers import action_map_by_object_name, menu_map_by_object_name
+
+logger = logging.getLogger(__name__)
 
 
 def test_manager_main_cache_directory_uses_qstandardpaths(

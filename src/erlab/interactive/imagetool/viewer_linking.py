@@ -1,4 +1,3 @@
-# ruff: noqa: TC002, TC003
 """Linking and history decorators for ImageTool viewer widgets."""
 
 from __future__ import annotations
@@ -7,11 +6,12 @@ import functools
 import inspect
 import typing
 import weakref
-from collections.abc import Callable
-
-from qtpy import QtWidgets
 
 if typing.TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from qtpy import QtWidgets
+
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 

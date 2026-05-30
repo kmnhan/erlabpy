@@ -1,5 +1,3 @@
-# mypy: ignore-errors
-# ruff: noqa: E402, F403, F405
 from __future__ import annotations
 
 import logging
@@ -9,6 +7,14 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab.interactive.imagetool import provenance_framework
+from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
+from erlab.interactive.imagetool.manager._widgets import (
+    _METADATA_DERIVATION_CODE_ROLE,
+    _METADATA_DERIVATION_COPYABLE_ROLE,
+    _ElidedInteractiveLabel,
+    _LoadSourceDetailsDialog,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -20,31 +26,8 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
-_METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
-_QWIDGETSIZE_MAX = 16777215
-_RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
-_MAX_RECENT_WORKSPACES = 10
-_DEPENDENCY_STATUS_LABELS: dict[str, str] = {
-    "current": "Current",
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_BADGES: dict[str, str] = {
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
-    "current": "All recorded live inputs are still open and unchanged.",
-    "changed": "At least one recorded live input has changed since this data was made.",
-    "missing": "At least one recorded live input is no longer open.",
-}
 
-
-from erlab.interactive.imagetool.manager._widgets import *
-
-
-class _DetailsPanelMixin:
+class _DetailsPanelMixin(_ManagerMixinBase):
     @QtCore.Slot()
     def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
         return node.info_text
@@ -276,7 +259,7 @@ class _DetailsPanelMixin:
                 "Replay code is unavailable for this result", 5000
             )
             return
-        provenance = erlab.interactive.imagetool.provenance_framework
+        provenance = provenance_framework
         if provenance.uses_default_replay_input(code):
             load_source = self._load_source_for_replay(node)
             if load_source is None:

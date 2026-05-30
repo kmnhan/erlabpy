@@ -1,4 +1,3 @@
-# ruff: noqa: E501
 """Complete ImageTool window with menubar and keyboard shortcuts.
 
 This module implements :class:`BaseImageTool` and :class:`ImageTool` that contains all
@@ -25,8 +24,9 @@ from erlab.interactive.imagetool._load_source import _load_provenance_from_file_
 from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
+    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 _ITOOL_DATA_NAME: str = _serialization.ITOOL_DATA_NAME
@@ -161,15 +161,13 @@ class BaseImageTool(QtWidgets.QMainWindow):
     @property
     def provenance_spec(
         self,
-    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+    ) -> ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
         return self._provenance_spec
 
     def set_provenance_spec(
         self,
-        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | typing.Mapping[str, typing.Any]
-        | None,
+        provenance_spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
     ) -> None:
         """Set canonical replay provenance for the current ImageTool data."""
         self._provenance_spec = (
@@ -257,9 +255,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         if provenance_spec is not None:
             try:
                 tool.set_provenance_spec(
-                    typing.cast(
-                        "typing.Mapping[str, typing.Any]", json.loads(provenance_spec)
-                    )
+                    typing.cast("Mapping[str, typing.Any]", json.loads(provenance_spec))
                 )
             except Exception:
                 erlab.utils.misc.emit_user_level_warning(

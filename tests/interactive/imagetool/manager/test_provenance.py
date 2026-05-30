@@ -1,9 +1,60 @@
-# ruff: noqa: E501,F403,F405,RUF012
-from ._shared import *
+import enum
+import json
+import pathlib
+import typing
+from collections.abc import Callable
+
+import numpy as np
+import pydantic
+import pytest
+import xarray
+import xarray as xr
+from qtpy import QtCore, QtWidgets
+
+import erlab
+import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
+import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
+from erlab.interactive._fit2d import Fit2DTool
+from erlab.interactive._mesh import MeshTool
+from erlab.interactive.derivative import DerivativeTool
+from erlab.interactive.fermiedge import GoldTool, ResolutionTool
+from erlab.interactive.imagetool import (
+    itool,
+    provenance_framework,
+    provenance_operations,
+)
+from erlab.interactive.imagetool.dialogs import SelectionDialog
+from erlab.interactive.imagetool.manager import fetch, replace_data
+from erlab.interactive.imagetool.manager._modelview import (
+    _NODE_UID_ROLE,
+    _ImageToolWrapperItemDelegate,
+)
+from erlab.interactive.imagetool.manager._server import _remove_idx, _show_idx
+
+from .helpers import (
+    _assert_modelfit_code_replays_source,
+    _exec_generated_code,
+    child_status_badge,
+    click_child_status_badge,
+    configure_goldtool_child,
+    copy_full_code_for_uid,
+    make_fit1d_child,
+    make_fit2d_child,
+    manager_preview_pixmap,
+    menu_map_by_object_name,
+    metadata_derivation_texts,
+    metadata_detail_map,
+    select_child_tool,
+    select_metadata_rows,
+    select_tools,
+    set_transform_launch_mode,
+    trigger_menu_action,
+)
 
 
 def _manager_provenance_file_spec(path: pathlib.Path):
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     return prov.file_load(
         start_label="Load source",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
@@ -22,7 +73,7 @@ def _manager_provenance_file_spec(path: pathlib.Path):
 
 
 def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     paths = [
         tmp_path / "scan_a.h5",
         tmp_path / "scan_b.h5",
@@ -32,15 +83,19 @@ def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> N
     assert manager_wrapper._compact_file_suffix(paths) == " (scan_a, scan_b, +1)"
 
     spec = _manager_provenance_file_spec(paths[0]).append_replay_stage(
-        prov.full_data(prov.AverageOperation(dims=("x",))).append_final_rename("old")
+        prov.full_data(
+            provenance_operations.AverageOperation(dims=("x",))
+        ).append_final_rename("old")
     )
     renamed = manager_wrapper._spec_with_final_data_name(spec, "new")
 
     assert renamed.kind == "file"
     assert renamed.replay_stages
-    assert renamed.replay_stages[-1].operations[-1] == prov.RenameOperation(name="new")
+    assert renamed.replay_stages[-1].operations[
+        -1
+    ] == provenance_operations.RenameOperation(name="new")
     assert renamed.replay_stages[-1].operations[:-1] == (
-        prov.AverageOperation(dims=("x",)),
+        provenance_operations.AverageOperation(dims=("x",)),
     )
 
 
@@ -55,11 +110,7 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = (
-        erlab.interactive.imagetool.provenance_framework.GaussianFilterOperation(
-            sigma={"alpha": 1.0}
-        )
-    )
+    operation = provenance_operations.GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -98,7 +149,7 @@ def test_manager_filtered_parent_updates_source_bound_child(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["alpha", "eV"],
@@ -149,7 +200,7 @@ def test_manager_filtered_source_bound_child_refresh_keeps_filter(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["alpha", "eV"],
@@ -207,7 +258,7 @@ def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["x", "y"],
@@ -258,7 +309,7 @@ def test_manager_duplicate_filtered_child_records_filter_once(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["alpha", "eV"],
@@ -307,7 +358,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)).astype(float),
         dims=["alpha", "eV"],
@@ -371,7 +422,7 @@ def test_manager_operation_filter_preserves_output_binding(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
 
     class _OutputToolState(pydantic.BaseModel):
         pass
@@ -405,7 +456,7 @@ def test_manager_operation_filter_preserves_output_binding(
 
         def output_imagetool_provenance(
             self, output_id: str | enum.Enum, data: xr.DataArray
-        ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+        ) -> provenance_framework.ToolProvenanceSpec | None:
             assert output_id == "out"
             del data
             return prov.script(
@@ -474,7 +525,7 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
 
     class _StaticToolState(pydantic.BaseModel):
         value: int = 0
@@ -486,7 +537,7 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
         def __init__(
             self,
             data: xr.DataArray,
-            provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec,
+            provenance_spec: provenance_framework.ToolProvenanceSpec,
         ) -> None:
             super().__init__()
             self._data = data
@@ -511,7 +562,7 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
 
         def current_provenance_spec(
             self,
-        ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+        ) -> provenance_framework.ToolProvenanceSpec | None:
             return self._provenance_spec
 
     data = xr.DataArray(np.arange(4.0), dims=("x",))
@@ -746,7 +797,7 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     base = xr.DataArray(
         np.arange(16, dtype=float).reshape((4, 4)),
         dims=["x", "y"],
@@ -818,7 +869,7 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     base = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -938,7 +989,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     base = xr.DataArray(
         np.arange(16, dtype=float).reshape((4, 4)),
         dims=["x", "y"],
@@ -1004,7 +1055,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     base = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1088,7 +1139,7 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
 
     class _DeferredToolState(pydantic.BaseModel):
         value: int = 0
@@ -1306,7 +1357,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
     output_id: str,
     expected_name: str,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
 
     with manager_context() as manager:
         manager.show()
@@ -1369,7 +1420,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     with manager_context() as manager:
         manager.show()
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
@@ -1446,7 +1497,7 @@ def test_manager_output_refresh_updates_stale_parent_source(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
 
     class _OutputToolState(pydantic.BaseModel):
         value: int = 0
@@ -1486,7 +1537,7 @@ def test_manager_output_refresh_updates_stale_parent_source(
 
         def output_imagetool_provenance(
             self, output_id: str | enum.Enum, data: xr.DataArray
-        ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+        ) -> provenance_framework.ToolProvenanceSpec | None:
             assert output_id == "out"
             return prov.script(
                 prov.ScriptCodeOperation(label="Use output", code="result = data + 10"),
@@ -1727,9 +1778,7 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         )
         trigger_menu_action(menu, manager._metadata_copy_full_action)
         assert copied
-        assert not erlab.interactive.imagetool.provenance_framework.uses_default_replay_input(
-            copied[-1]
-        )
+        assert not provenance_framework.uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         result = namespace["result"]
         assert isinstance(result, xr.DataArray)
@@ -2122,7 +2171,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
+    prov = provenance_framework
     data = xr.DataArray(
         np.arange(12).reshape((3, 4)).astype(float),
         dims=["x", "y"],
@@ -2665,7 +2714,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         transforms = [
             op
             for op in typing.cast(
-                "erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec",
+                "provenance_framework.ToolProvenanceSpec",
                 child_node.source_spec,
             ).operations
             if op.op == "qsel_aggregate"
@@ -2736,9 +2785,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
             copied[-1],
             {"source_data": data.copy(deep=True)},
         )
-        assert not erlab.interactive.imagetool.provenance_framework.uses_default_replay_input(
-            copied[-1]
-        )
+        assert not provenance_framework.uses_default_replay_input(copied[-1])
         full_result = full_namespace["derived"]
         assert isinstance(full_result, xr.DataArray)
         xr.testing.assert_identical(
@@ -2922,9 +2969,7 @@ def test_manager_divide_by_coord_child_refresh_and_code(
         menu = manager._build_metadata_derivation_menu()
         assert menu is not None
         trigger_menu_action(menu, manager._metadata_copy_full_action)
-        assert not erlab.interactive.imagetool.provenance_framework.uses_default_replay_input(
-            copied[-1]
-        )
+        assert not provenance_framework.uses_default_replay_input(copied[-1])
         assert ".rename(" not in copied[-1]
 
         namespace = _exec_generated_code(
@@ -2985,12 +3030,10 @@ def test_manager_affine_coord_child_refreshes_from_formula(
         child_node = manager._child_node(child_uid)
         child_tool = manager.get_imagetool(child_uid)
 
-        operation = (
-            erlab.interactive.imagetool.provenance_framework.AffineCoordOperation(
-                coord_name="y",
-                scale=2.0,
-                offset=0.5,
-            )
+        operation = provenance_operations.AffineCoordOperation(
+            coord_name="y",
+            scale=2.0,
+            offset=0.5,
         )
         expected = operation.apply(data, parent_data=data).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
@@ -3062,10 +3105,8 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
         child_node = manager._child_node(child_uid)
         child_tool = manager.get_imagetool(child_uid)
 
-        operation = (
-            erlab.interactive.imagetool.provenance_framework.AssignAttrsOperation(
-                attrs={"source": "new", "flag": True}
-            )
+        operation = provenance_operations.AssignAttrsOperation(
+            attrs={"source": "new", "flag": True}
         )
         expected = operation.apply(data, parent_data=data).rename("scan")
         xr.testing.assert_identical(child_tool.slicer_area._data, expected)
@@ -3428,10 +3469,8 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
 
         node = manager._imagetool_wrappers[0]
         node.set_detached_provenance(
-            erlab.interactive.imagetool.provenance_framework.full_data(
-                erlab.interactive.imagetool.provenance_framework.AverageOperation(
-                    dims=("alpha",)
-                )
+            provenance_framework.full_data(
+                provenance_operations.AverageOperation(dims=("alpha",))
             )
         )
 
@@ -3456,9 +3495,7 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
 
         assert prompted == [node.uid]
         assert copied
-        assert not erlab.interactive.imagetool.provenance_framework.uses_default_replay_input(
-            copied[-1]
-        )
+        assert not provenance_framework.uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(
             copied[-1], {"source_data": test_data.copy(deep=True)}
         )
@@ -3482,10 +3519,8 @@ def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
 
         node = manager._imagetool_wrappers[0]
         node.set_detached_provenance(
-            erlab.interactive.imagetool.provenance_framework.full_data(
-                erlab.interactive.imagetool.provenance_framework.AverageOperation(
-                    dims=("alpha",)
-                )
+            provenance_framework.full_data(
+                provenance_operations.AverageOperation(dims=("alpha",))
             )
         )
 
@@ -3532,10 +3567,8 @@ def test_manager_file_backed_full_code_uses_load_code(
 
         node = manager._imagetool_wrappers[0]
         node.set_detached_provenance(
-            erlab.interactive.imagetool.provenance_framework.full_data(
-                erlab.interactive.imagetool.provenance_framework.AverageOperation(
-                    dims=("alpha",)
-                )
+            provenance_framework.full_data(
+                provenance_operations.AverageOperation(dims=("alpha",))
             )
         )
 
@@ -3558,9 +3591,7 @@ def test_manager_file_backed_full_code_uses_load_code(
         trigger_menu_action(menu, manager._metadata_copy_full_action)
 
         assert copied
-        assert not erlab.interactive.imagetool.provenance_framework.uses_default_replay_input(
-            copied[-1]
-        )
+        assert not provenance_framework.uses_default_replay_input(copied[-1])
         namespace = _exec_generated_code(copied[-1], {})
         xr.testing.assert_identical(namespace["derived"], test_data.qsel.mean("alpha"))
 
@@ -3591,10 +3622,8 @@ def test_manager_file_backed_full_code_prefers_scan_number_loader(
 
         node = manager._imagetool_wrappers[0]
         node.set_detached_provenance(
-            erlab.interactive.imagetool.provenance_framework.full_data(
-                erlab.interactive.imagetool.provenance_framework.AverageOperation(
-                    dims=("alpha",)
-                )
+            provenance_framework.full_data(
+                provenance_operations.AverageOperation(dims=("alpha",))
             )
         )
 

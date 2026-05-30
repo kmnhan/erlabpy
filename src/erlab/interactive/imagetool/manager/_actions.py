@@ -1,5 +1,3 @@
-# mypy: ignore-errors
-# ruff: noqa: E402, E501, F403, F405, TC002
 from __future__ import annotations
 
 import contextlib
@@ -9,11 +7,11 @@ import traceback
 import typing
 import uuid
 
-import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab.interactive.imagetool import provenance_framework
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
@@ -25,6 +23,11 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
+from erlab.interactive.imagetool.manager._widgets import (
+    _WATCHED_VAR_COLORS,
+    _show_workspace_file_lock_error,
+)
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -34,39 +37,19 @@ if typing.TYPE_CHECKING:
     import datetime
     from collections.abc import Callable, Iterable, Mapping
 
+    import xarray as xr
+
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool.provenance_framework import (
+    from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
     from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
 
-_METADATA_DERIVATION_CODE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
-_METADATA_DERIVATION_COPYABLE_ROLE = _METADATA_DERIVATION_CODE_ROLE + 1
-_QWIDGETSIZE_MAX = 16777215
-_RECENT_WORKSPACES_SETTINGS_KEY = "recent_workspaces"
-_MAX_RECENT_WORKSPACES = 10
-_DEPENDENCY_STATUS_LABELS: dict[str, str] = {
-    "current": "Current",
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_BADGES: dict[str, str] = {
-    "changed": "Changed",
-    "missing": "Missing",
-}
-_DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
-    "current": "All recorded live inputs are still open and unchanged.",
-    "changed": "At least one recorded live input has changed since this data was made.",
-    "missing": "At least one recorded live input is no longer open.",
-}
 
-
-from erlab.interactive.imagetool.manager._widgets import *
-
-
-class _ActionsMixin:
+class _ActionsMixin(_ManagerMixinBase):
     @QtCore.Slot(int)
     def remove_imagetool(self, index: int, *, update_view: bool = True) -> None:
         """Remove the ImageTool window corresponding to the given index."""
@@ -295,7 +278,7 @@ class _ActionsMixin:
     @property
     def _rename_dialog(self) -> _RenameDialog:
         if not hasattr(self, "__rename_dialog"):
-            self.__rename_dialog = _RenameDialog(self)
+            self.__rename_dialog = _RenameDialog(typing.cast("ImageToolManager", self))
         return self.__rename_dialog
 
     @QtCore.Slot()
@@ -483,7 +466,7 @@ class _ActionsMixin:
     @property
     def _concat_dialog(self) -> _ConcatDialog:
         if not hasattr(self, "__concat_dialog"):
-            self.__concat_dialog = _ConcatDialog(self)
+            self.__concat_dialog = _ConcatDialog(typing.cast("ImageToolManager", self))
         return self.__concat_dialog
 
     @QtCore.Slot()
@@ -496,7 +479,7 @@ class _ActionsMixin:
     def store_selected(self) -> None:
         self.ensure_console_initialized()
         dialog = _StoreDialog(
-            self,
+            typing.cast("ImageToolManager", self),
             [
                 target
                 for target in self._selected_imagetool_targets()
@@ -807,7 +790,9 @@ class _ActionsMixin:
                 _ImageToolManagerJupyterConsole,
             )
 
-            self.console = _ImageToolManagerJupyterConsole(self)
+            self.console = _ImageToolManagerJupyterConsole(
+                typing.cast("ImageToolManager", self)
+            )
 
     @QtCore.Slot()
     def toggle_console(self) -> None:
@@ -1152,7 +1137,9 @@ class _ActionsMixin:
         kwargs: dict[str, typing.Any],
         retry_callback: Callable,
     ) -> None:
-        handler = _MultiFileHandler(self, queued, func, kwargs)
+        handler = _MultiFileHandler(
+            typing.cast("ImageToolManager", self), queued, func, kwargs
+        )
         self._file_handlers.add(handler)
 
         def _finished_callback(loaded_new, aborted, failed_new) -> None:
@@ -1215,7 +1202,7 @@ class _ActionsMixin:
         """
         parent = self._node_for_target(index)
         node = _ManagedWindowNode(
-            self,
+            typing.cast("ImageToolManager", self),
             self._next_node_uid(uid),
             parent.uid,
             tool,
@@ -1230,7 +1217,7 @@ class _ActionsMixin:
 
         def _parent_provenance_fetcher(
             parent_uid: str = parent.uid,
-        ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+        ) -> provenance_framework.ToolProvenanceSpec | None:
             return self._node_for_target(parent_uid).displayed_provenance_spec
 
         tool.set_source_parent_fetcher(_parent_source_fetcher)
@@ -1250,10 +1237,8 @@ class _ActionsMixin:
         show: bool = True,
         activate: bool = False,
         uid: str | None = None,
-        provenance_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None = None,
-        source_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None = None,
+        provenance_spec: provenance_framework.ToolProvenanceSpec | None = None,
+        source_spec: provenance_framework.ToolProvenanceSpec | None = None,
         source_binding: ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
@@ -1265,7 +1250,7 @@ class _ActionsMixin:
         if source_spec is None and source_binding is not None:
             source_spec = source_binding.materialize(parent_node.current_source_data())
         if provenance_spec is None and source_spec is not None:
-            provenance_spec = erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
+            provenance_spec = provenance_framework.compose_display_provenance(
                 parent_node.displayed_provenance_spec,
                 source_spec,
                 parent_data=parent_node.current_source_data(),
@@ -1273,7 +1258,7 @@ class _ActionsMixin:
         if provenance_spec is not None:
             tool.set_provenance_spec(provenance_spec)
         node = _ManagedWindowNode(
-            self,
+            typing.cast("ImageToolManager", self),
             self._next_node_uid(uid),
             parent_node.uid,
             tool,
