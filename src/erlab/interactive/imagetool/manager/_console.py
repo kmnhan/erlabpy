@@ -1370,12 +1370,11 @@ class ToolNamespace(_ConsoleDataHandleMixin):
         return super().__getattr__(attr)
 
     def __repr__(self) -> str:
-        time_repr = self._wrapper._created_time.isoformat(sep=" ", timespec="seconds")
         label = self._console_label
         if self._wrapper.name:
             label += f": {self._wrapper.name}"
         out = f"{label}\n"
-        out += f"  Added: {time_repr}\n"
+        out += f"  Added: {self._wrapper.added_time_display}\n"
         out += f"  Linked: {self.tool.slicer_area.is_linked}\n"
         return out
 

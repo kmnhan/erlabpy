@@ -1,5 +1,33 @@
 # ruff: noqa: F403, F405
+import datetime
+
 from ._shared import *
+
+
+class _AddedTimeChildState(pydantic.BaseModel):
+    value: int = 0
+
+
+class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildState]):
+    StateModel = _AddedTimeChildState
+    tool_name = "added-time-child"
+
+    def __init__(self, data: xr.DataArray) -> None:
+        super().__init__()
+        self._data = data
+        self._status = _AddedTimeChildState()
+
+    @property
+    def tool_data(self) -> xr.DataArray:
+        return self._data
+
+    @property
+    def tool_status(self) -> _AddedTimeChildState:
+        return self._status
+
+    @tool_status.setter
+    def tool_status(self, status: _AddedTimeChildState) -> None:
+        self._status = status
 
 
 def test_manager_duplicate(
@@ -33,6 +61,188 @@ def test_manager_duplicate(
                 manager._imagetool_wrappers[i].name
                 == manager._imagetool_wrappers[i + 2].name
             )
+
+
+def test_manager_workspace_saves_added_time_for_all_node_kinds(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    root_added = datetime.datetime(
+        2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=9))
+    )
+    child_added = datetime.datetime(
+        2024, 1, 3, 4, 5, 6, tzinfo=datetime.timezone(datetime.timedelta(hours=-5))
+    )
+    tool_added = datetime.datetime(2024, 1, 4, 5, 6, 7, tzinfo=datetime.UTC)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+            created_time=root_added,
+        )
+        child_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(test_data + 1, _in_manager=True),
+            root_index,
+            show=False,
+            created_time=child_added,
+        )
+        tool_uid = manager.add_childtool(
+            _AddedTimeChildTool(test_data),
+            root_index,
+            show=False,
+            created_time=tool_added,
+        )
+
+        fname = tmp_path / "added-time.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+    with h5py.File(fname, "r") as h5_file:
+        assert h5_file["0/imagetool"].attrs[
+            "manager_node_added_at"
+        ] == root_added.isoformat(timespec="seconds")
+        assert h5_file[f"0/childtools/{child_uid}/imagetool"].attrs[
+            "manager_node_added_at"
+        ] == child_added.isoformat(timespec="seconds")
+        assert h5_file[f"0/childtools/{tool_uid}/tool"].attrs[
+            "manager_node_added_at"
+        ] == tool_added.isoformat(timespec="seconds")
+
+
+def test_manager_workspace_load_preserves_added_time(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    root_added = datetime.datetime(
+        2024, 1, 2, 3, 4, 5, tzinfo=datetime.timezone(datetime.timedelta(hours=9))
+    )
+    child_added = datetime.datetime(
+        2024, 1, 3, 4, 5, 6, tzinfo=datetime.timezone(datetime.timedelta(hours=-5))
+    )
+    tool_added = datetime.datetime(2024, 1, 4, 5, 6, 7, tzinfo=datetime.UTC)
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        root_index = manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+            created_time=root_added,
+        )
+        child_uid = manager.add_imagetool_child(
+            erlab.interactive.imagetool.ImageTool(test_data + 1, _in_manager=True),
+            root_index,
+            show=False,
+            created_time=child_added,
+        )
+        tool_uid = manager.add_childtool(
+            _AddedTimeChildTool(test_data),
+            root_index,
+            show=False,
+            created_time=tool_added,
+        )
+
+        fname = tmp_path / "added-time-load.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+
+        assert manager._imagetool_wrappers[root_index].created_time == root_added
+        assert manager._child_node(child_uid).created_time == child_added
+        assert manager._child_node(tool_uid).created_time == tool_added
+
+
+def test_manager_added_time_display_uses_zone_name_and_offset(
+    qtbot,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    added = datetime.datetime(
+        2024,
+        1,
+        2,
+        3,
+        4,
+        5,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=9), "KST"),
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+            created_time=added,
+        )
+
+        node = manager._imagetool_wrappers[0]
+        expected = added.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
+        assert node.added_time_display == expected
+        assert node.added_time_iso == added.isoformat(timespec="seconds")
+        assert (
+            next(
+                field.value for field in node.metadata_fields if field.label == "Added"
+            )
+            == expected
+        )
+        assert f"Added {expected}" in node.info_text
+
+
+@pytest.mark.parametrize("saved_attr", [None, "not-a-date"], ids=["missing", "invalid"])
+def test_manager_workspace_load_falls_back_for_legacy_or_invalid_added_time(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+    saved_attr: str | None,
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.add_imagetool(
+            erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True),
+            show=False,
+        )
+        fname = tmp_path / "legacy-added-time.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        with h5py.File(fname, "a") as h5_file:
+            if saved_attr is None:
+                del h5_file["0/imagetool"].attrs["manager_node_added_at"]
+            else:
+                h5_file["0/imagetool"].attrs["manager_node_added_at"] = saved_attr
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+
+        loaded = manager._imagetool_wrappers[0].created_time
+        assert loaded.tzinfo is not None
+        assert loaded.utcoffset() is not None
 
 
 def test_workspace_backing_uses_persistence_data_for_filtered_file_data(

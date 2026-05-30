@@ -3021,6 +3021,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         self._input_provenance_spec: (
             erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
         ) = None
+        self._input_provenance_snapshot_from_parent = False
         self._input_provenance_parent_fetcher: (
             Callable[
                 [],
@@ -3262,6 +3263,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 provenance_spec
             )
         )
+        self._input_provenance_snapshot_from_parent = False
 
     def set_input_provenance_parent_fetcher(
         self,
@@ -3290,19 +3292,10 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     def _snapshot_input_provenance(
         self,
     ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
-        parent_data: xr.DataArray | None = None
-        if self._source_parent_fetcher is not None:
-            try:
-                parent_data = self._source_parent_fetcher()
-            except Exception:
-                parent_data = None
-
+        parent_data, source_spec = self._input_source_context()
         parent_provenance = None
         if self._input_provenance_parent_fetcher is not None:
             parent_provenance = self._parent_input_provenance()
-        source_spec = self._source_spec
-        if parent_data is not None and self._source_binding is not None:
-            source_spec = self._materialized_source_spec(parent_data)
         return (
             erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
                 parent_provenance,
@@ -3311,9 +3304,28 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             )
         )
 
+    def _input_source_context(
+        self,
+    ) -> tuple[
+        xr.DataArray | None,
+        erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None,
+    ]:
+        parent_data: xr.DataArray | None = None
+        if self._source_parent_fetcher is not None:
+            try:
+                parent_data = self._source_parent_fetcher()
+            except Exception:
+                parent_data = None
+
+        source_spec = self._source_spec
+        if parent_data is not None and self._source_binding is not None:
+            source_spec = self._materialized_source_spec(parent_data)
+        return parent_data, source_spec
+
     def _sync_input_provenance_snapshot(self) -> None:
         """Refresh the stored input provenance snapshot for the displayed tool data."""
         self._input_provenance_spec = self._snapshot_input_provenance()
+        self._input_provenance_snapshot_from_parent = True
 
     def _effective_input_provenance_spec(
         self,
@@ -3321,6 +3333,36 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         if self._input_provenance_spec is not None:
             return self._input_provenance_spec
         return self._snapshot_input_provenance()
+
+    def _copy_input_provenance_spec(
+        self,
+    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+        if self.has_source_binding:
+            parent_data, source_spec = self._input_source_context()
+            parent_provenance = None
+            if self._input_provenance_parent_fetcher is not None:
+                fetched_parent = self._parent_input_provenance()
+                if (
+                    erlab.interactive.imagetool.provenance_framework.direct_replay_input_name(
+                        fetched_parent
+                    )
+                    is not None
+                ):
+                    parent_provenance = fetched_parent
+
+            return erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
+                parent_provenance,
+                source_spec,
+                parent_data=parent_data,
+            )
+        if (
+            self._input_provenance_spec is not None
+            and not self._input_provenance_snapshot_from_parent
+        ):
+            return self._input_provenance_spec
+        if self._input_provenance_parent_fetcher is None:
+            return self._input_provenance_spec
+        return None
 
     def _call_script_provenance_method(
         self,
@@ -3508,10 +3550,15 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         definition: ToolScriptProvenanceDefinition | None,
         *,
         data: xr.DataArray | None = None,
+        include_parent_provenance: bool = True,
     ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
         if definition is None:
             return None
-        input_provenance = self._effective_input_provenance_spec()
+        input_provenance = (
+            self._effective_input_provenance_spec()
+            if include_parent_provenance
+            else self._copy_input_provenance_spec()
+        )
         direct_input_name = (
             erlab.interactive.imagetool.provenance_framework.direct_replay_input_name(
                 input_provenance
@@ -3599,7 +3646,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     @QtCore.Slot()
     def copy_code(self) -> str:
         """Copy the current tool provenance code to the clipboard."""
-        return self._copy_provenance_code(self.current_provenance_spec())
+        return self._copy_provenance_code(
+            self._resolve_script_provenance(
+                self.COPY_PROVENANCE,
+                include_parent_provenance=False,
+            )
+        )
 
     def _notify_data_changed(self) -> None:
         """Notify manager-facing listeners that displayed tool data has changed."""
