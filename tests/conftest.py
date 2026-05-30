@@ -293,6 +293,10 @@ def manager_context() -> Callable[
                         QtWidgets.QApplication.sendPostedEvents(None, 0)
                         QtWidgets.QApplication.processEvents()
                         time.sleep(0.01)
+                    if manager.server.isRunning():
+                        manager.server.stop(timeout_ms=1000)
+                    if manager.watcher_server.isRunning():
+                        manager.watcher_server.stop(timeout_ms=1000)
                     manager.deleteLater()
                     for _ in range(3):
                         QtWidgets.QApplication.sendPostedEvents(None, 0)
