@@ -1,9 +1,9 @@
-# mypy: ignore-errors
-# ruff: noqa: F821
 """Concrete ImageTool provenance operations."""
 
 from __future__ import annotations
 
+import contextlib
+import keyword
 import typing
 from collections.abc import Hashable, Mapping, Sequence
 
@@ -12,10 +12,38 @@ import pydantic
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool import provenance_framework as _framework
-
-# Concrete operations use framework models plus private coercion and formatting helpers.
-globals().update({name: getattr(_framework, name) for name in dir(_framework)})
+from erlab.interactive.imagetool.provenance_framework import (
+    _DATASET_MARKER,
+    _FIT_DATASET_MARKER,
+    _SORT_COORD_ORDER_DERIVATION_LABEL,
+    _TUPLE_MARKER,
+    ConsoleCall,
+    ConsoleOperationPattern,
+    DerivationEntry,
+    NullableProvenanceHashableTuple,
+    ProvenanceFloatMapping,
+    ProvenanceFloatSequenceMapping,
+    ProvenanceHashable,
+    ProvenanceHashableMapping,
+    ProvenanceHashablePair,
+    ProvenanceHashableTuple,
+    ProvenanceIntMapping,
+    ProvenanceMapping,
+    ToolProvenanceOperation,
+    _coerce_float_mapping_field,
+    _console_mapping_values,
+    _console_values_equal,
+    _ensure_float_tuple,
+    _format_derivation_value,
+    _format_selection_expr,
+    _is_identifier_string_mapping,
+    _provenance_numeric_array_code,
+    _provenance_value_code,
+    _scalar_coord_value,
+    _single_assign_coord,
+    decode_provenance_value,
+    encode_provenance_value,
+)
 
 
 class ScriptCodeOperation(ToolProvenanceOperation):
