@@ -31,6 +31,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
+    import datetime
     from collections.abc import Callable, Iterable, Mapping
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
@@ -397,7 +398,7 @@ class _ActionsMixin:
 
         childtool_indices = list(node._childtool_indices)
         childtools = dict(node._childtools)
-        created_time = node._created_time
+        created_time = node.created_time
         recent_geometry = node._recent_geometry
         persistence = node.persistence_view()
         provenance_spec = persistence.provenance_spec
@@ -413,9 +414,9 @@ class _ActionsMixin:
                 uid=uid,
                 provenance_spec=provenance_spec,
                 snapshot_token=snapshot_token,
+                created_time=created_time,
             )
         wrapper = self._imagetool_wrappers[new_index]
-        wrapper._created_time = created_time
         wrapper._recent_geometry = recent_geometry
         wrapper._childtool_indices = childtool_indices
         wrapper._childtools = childtools
@@ -1196,6 +1197,7 @@ class _ActionsMixin:
         show: bool = True,
         uid: str | None = None,
         snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
     ) -> str:
         """Register a child tool window.
 
@@ -1218,6 +1220,7 @@ class _ActionsMixin:
             parent.uid,
             tool,
             snapshot_token=snapshot_token,
+            created_time=created_time,
         )
         if not tool._tool_display_name:
             tool._tool_display_name = parent.name
@@ -1256,6 +1259,7 @@ class _ActionsMixin:
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
         snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
     ) -> str:
         parent_node = self._node_for_target(parent)
         if source_spec is None and source_binding is not None:
@@ -1280,6 +1284,7 @@ class _ActionsMixin:
             source_state=source_state,
             output_id=output_id,
             snapshot_token=snapshot_token,
+            created_time=created_time,
         )
         self._register_child_node(node)
         if output_id is not None and parent_node.tool_window is not None:

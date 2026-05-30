@@ -30,6 +30,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
 )
 
 if typing.TYPE_CHECKING:
+    import datetime
     import pathlib
 
     from erlab.interactive.imagetool.provenance_framework import (
@@ -784,6 +785,7 @@ class ImageToolManager(
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,
         snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
     ) -> int:
         """Add a new ImageTool window to the manager and show it.
 
@@ -831,6 +833,7 @@ class ImageToolManager(
             source_auto_update=source_auto_update,
             source_state=source_state,
             snapshot_token=snapshot_token,
+            created_time=created_time,
         )
         self._imagetool_wrappers[index] = wrapper
         self._register_root_wrapper(wrapper)

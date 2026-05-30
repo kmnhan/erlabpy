@@ -122,6 +122,29 @@ def test_dtool_smoothing_copy_code_uses_readable_steps(qtbot) -> None:
     xr.testing.assert_identical(win.result, namespace["result"])
 
 
+def test_dtool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
+    prov = erlab.interactive.imagetool.provenance_framework
+    data = xr.DataArray(
+        np.arange(49).reshape((7, 7)), dims=["x", "y"], name="data"
+    ).astype(np.float64)
+    source = prov.selection(prov.IselOperation(kwargs={"y": slice(1, 6)}))
+    parent_provenance = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
+    source_data = source.apply(data)
+    win: DerivativeTool = dtool(source_data, execute=False)
+    qtbot.addWidget(win)
+    win.set_source_binding(source)
+    win.set_input_provenance_parent_fetcher(lambda: parent_provenance)
+
+    code = win.copy_code()
+
+    assert "x=slice" not in code
+    assert "y=slice" in code
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xr.testing.assert_identical(win.result, result)
+
+
 def test_dtool_update_data_preserves_state(qtbot) -> None:
     data = xr.DataArray(
         np.arange(25).reshape((5, 5)), dims=["x", "y"], name="data"
@@ -638,7 +661,7 @@ def test_tool_window_source_binding_helpers_and_failure_paths(qtbot) -> None:
     assert tool.source_state == "unavailable"
 
 
-def test_tool_copy_code_includes_parent_provenance_for_standalone_imagetool(
+def test_tool_copy_code_uses_current_tool_input_without_parent_provenance(
     qtbot,
 ) -> None:
     class _DummyState(BaseModel):
@@ -704,7 +727,11 @@ def test_tool_copy_code_includes_parent_provenance_for_standalone_imagetool(
     parent.slicer_area.add_tool_window(tool, transfer_to_manager=False)
 
     code = tool.copy_code()
-    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    assert ".isel(" not in code
+    namespace = _exec_generated_code(
+        code,
+        {"data": tool.tool_data.copy(deep=True)},
+    )
     result = namespace["result"]
     assert isinstance(result, xr.DataArray)
     xr.testing.assert_identical(result, data.isel(x=slice(0, 2)).mean())
@@ -771,9 +798,10 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
     tool.set_input_provenance_parent_fetcher(lambda: parent_provenance["spec"])
 
     initial_code = tool.copy_code()
+    assert ".isel(" not in initial_code
     initial_namespace = _exec_generated_code(
         initial_code,
-        {"data": data.copy(deep=True)},
+        {"data": tool.tool_data.copy(deep=True)},
     )
     initial_result = initial_namespace["result"]
     assert isinstance(initial_result, xr.DataArray)
@@ -787,9 +815,10 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
         )
     )
     stale_code = tool.copy_code()
+    assert ".isel(" not in stale_code
     stale_namespace = _exec_generated_code(
         stale_code,
-        {"data": data.copy(deep=True)},
+        {"data": tool.tool_data.copy(deep=True)},
     )
     stale_result = stale_namespace["result"]
     assert isinstance(stale_result, xr.DataArray)
@@ -799,9 +828,10 @@ def test_tool_input_provenance_snapshot_tracks_applied_refreshes(qtbot) -> None:
     tool.finalize_source_refresh()
 
     refreshed_code = tool.copy_code()
+    assert ".isel(" not in refreshed_code
     refreshed_namespace = _exec_generated_code(
         refreshed_code,
-        {"data": data.copy(deep=True)},
+        {"data": tool.tool_data.copy(deep=True)},
     )
     refreshed_result = refreshed_namespace["result"]
     assert isinstance(refreshed_result, xr.DataArray)

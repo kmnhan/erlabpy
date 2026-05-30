@@ -275,7 +275,7 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def _default_launch_mode(self) -> typing.Literal["replace", "detach", "nest"]:
         if any(mode[0] == "nest" for mode in self._available_launch_modes()):
-            return "nest"
+            return "replace"
         return "detach"
 
     @QtCore.Slot()

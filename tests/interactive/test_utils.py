@@ -1008,6 +1008,89 @@ def test_tool_window_declared_output_dispatch_and_validation(qtbot) -> None:
         tool.output_imagetool_data("dummy.unknown")
 
 
+def test_tool_window_copy_code_ignores_parent_provenance_but_keeps_source(
+    qtbot,
+) -> None:
+    prov = erlab.interactive.imagetool.provenance_framework
+
+    class _DummyState(pydantic.BaseModel):
+        value: int = 0
+
+    class _DummyTool(erlab.interactive.utils.ToolWindow[_DummyState]):
+        StateModel = _DummyState
+        tool_name = "dummy"
+        COPY_PROVENANCE: typing.ClassVar = (
+            erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                start_label="Start from current dummy input data",
+                label="Compute dummy output",
+                expression_method="_result_output_expression",
+                assign="result",
+            )
+        )
+
+        class Output(enum.StrEnum):
+            RESULT = "dummy.result"
+
+        IMAGE_TOOL_OUTPUTS: typing.ClassVar = {
+            Output.RESULT: erlab.interactive.utils.ToolImageOutputDefinition(
+                data_method="_result_output_data",
+                provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
+                    start_label="Start from current dummy input data",
+                    label="Compute dummy output",
+                    expression_method="_result_output_expression",
+                    assign="result",
+                ),
+            )
+        }
+
+        def __init__(self, data: xr.DataArray) -> None:
+            super().__init__()
+            self._data = data
+
+        @property
+        def tool_status(self) -> _DummyState:
+            return _DummyState()
+
+        @tool_status.setter
+        def tool_status(self, status: _DummyState) -> None:
+            del status
+
+        @property
+        def tool_data(self) -> xr.DataArray:
+            return self._data
+
+        def update_data(self, new_data: xr.DataArray) -> None:
+            self._data = new_data
+
+        def _result_output_data(self) -> xr.DataArray:
+            return self._data.mean()
+
+        def _result_output_expression(
+            self,
+            *,
+            input_name: str | None = None,
+            data: xr.DataArray | None = None,
+        ) -> str:
+            del data
+            return f"{input_name or 'data'}.mean()"
+
+    data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
+    parent_provenance = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
+    source = prov.selection(prov.IselOperation(kwargs={"y": slice(1, 3)}))
+    tool = _DummyTool(source.apply(data))
+    qtbot.addWidget(tool)
+    tool.set_source_binding(source)
+    tool.set_input_provenance_parent_fetcher(lambda: parent_provenance)
+
+    code = tool.copy_code()
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    result = namespace["result"]
+    assert isinstance(result, xr.DataArray)
+    xr.testing.assert_identical(result, data.isel(y=slice(1, 3)).mean())
+    assert "x=slice" not in code
+    assert "y=slice" in code
+
+
 def test_tool_script_provenance_definition_validates_assignments() -> None:
     with pytest.raises(ValueError, match="tuple `assign` must define `active_name`"):
         erlab.interactive.utils.ToolScriptProvenanceDefinition(
