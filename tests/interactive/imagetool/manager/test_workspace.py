@@ -22,6 +22,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._qt_state as qt_state
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
@@ -535,55 +536,87 @@ def test_qt_bytearray_base64_helpers_reject_invalid_values() -> None:
     assert erlab.interactive.utils._qt_bytearray_from_base64("") is None
 
 
-def test_imagetool_dataset_prefers_qt_geometry_and_keeps_rect_fallback(
+def test_qt_window_state_helpers_parse_invalid_and_restore_rect(qtbot) -> None:
+    assert qt_state.QtWindowState.model_validate({"rect": None}).rect is None
+    with pytest.raises(pydantic.ValidationError):
+        qt_state.QtWindowState.model_validate({"rect": [1, 2, 3]})
+
+    assert qt_state.qt_bytearray_from_base64(object()) is None
+    assert qt_state.parse_qt_window_state(b"\xff") is None
+    assert qt_state.parse_qt_window_state("{") is None
+    assert qt_state.parse_qt_window_state({"rect": [1, 2, 3]}) is None
+
+    widget = QtWidgets.QWidget()
+    qtbot.addWidget(widget)
+    assert qt_state.restore_qt_window_state(
+        widget, {"geometry": "", "rect": [10, 20, 123, 45]}
+    )
+    assert widget.geometry().getRect() == (10, 20, 123, 45)
+
+
+def test_imagetool_dataset_uses_window_state_and_keeps_rect_fallback(
     qtbot, test_data
 ) -> None:
     tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
     qtbot.addWidget(tool)
     tool.resize(533, 477)
     ds = tool.to_dataset()
-    assert ds.attrs["itool_qt_geometry"]
-
-    qt_geometry_ds = ds.copy(deep=False)
-    del qt_geometry_ds.attrs["itool_rect"]
-    restored = erlab.interactive.imagetool.ImageTool.from_dataset(
-        qt_geometry_ds, _in_manager=True
+    window_state = json.loads(ds.attrs["itool_window_state"])
+    assert window_state["geometry"]
+    assert tuple(window_state["rect"]) == tuple(
+        int(value) for value in tool.geometry().getRect()
     )
+    assert "itool_qt_geometry" not in ds.attrs
+    assert "itool_rect" not in ds.attrs
+
+    restored = erlab.interactive.imagetool.ImageTool.from_dataset(ds, _in_manager=True)
     qtbot.addWidget(restored)
     assert restored.size() == tool.size()
 
     legacy_ds = ds.copy(deep=False)
-    del legacy_ds.attrs["itool_qt_geometry"]
+    del legacy_ds.attrs["itool_window_state"]
+    legacy_ds.attrs["itool_rect"] = tuple(
+        int(value) for value in tool.geometry().getRect()
+    )
+    legacy_ds.attrs["itool_visible"] = True
     legacy = erlab.interactive.imagetool.ImageTool.from_dataset(
         legacy_ds, _in_manager=True
     )
     qtbot.addWidget(legacy)
     assert tuple(legacy.geometry().getRect()) == tuple(
-        int(value) for value in ds.attrs["itool_rect"]
+        int(value) for value in legacy_ds.attrs["itool_rect"]
     )
 
 
-def test_toolwindow_dataset_prefers_qt_geometry_and_keeps_rect_fallback(
+def test_toolwindow_dataset_uses_window_state_and_keeps_rect_fallback(
     qtbot, test_data
 ) -> None:
     tool = _AddedTimeChildTool(test_data)
     qtbot.addWidget(tool)
     tool.resize(421, 333)
     ds = tool.to_dataset()
-    assert ds.attrs["tool_qt_geometry"]
+    window_state = json.loads(ds.attrs["tool_window_state"])
+    assert window_state["geometry"]
+    assert tuple(window_state["rect"]) == tuple(
+        int(value) for value in tool.geometry().getRect()
+    )
+    assert "tool_qt_geometry" not in ds.attrs
+    assert "tool_rect" not in ds.attrs
 
-    qt_geometry_ds = ds.copy(deep=False)
-    del qt_geometry_ds.attrs["tool_rect"]
-    restored = erlab.interactive.utils.ToolWindow.from_dataset(qt_geometry_ds)
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(ds)
     qtbot.addWidget(restored)
     assert restored.size() == tool.size()
 
     legacy_ds = ds.copy(deep=False)
-    del legacy_ds.attrs["tool_qt_geometry"]
+    del legacy_ds.attrs["tool_window_state"]
+    legacy_ds.attrs["tool_rect"] = tuple(
+        int(value) for value in tool.geometry().getRect()
+    )
+    legacy_ds.attrs["tool_visible"] = True
     legacy = erlab.interactive.utils.ToolWindow.from_dataset(legacy_ds)
     qtbot.addWidget(legacy)
     assert tuple(legacy.geometry().getRect()) == tuple(
-        int(value) for value in ds.attrs["tool_rect"]
+        int(value) for value in legacy_ds.attrs["tool_rect"]
     )
 
 
@@ -856,6 +889,9 @@ def test_manager_workspace_roundtrip_restores_manager_layout(
         manager.main_splitter.setSizes([220, 420])
         manager.right_splitter.setSizes([300, 160])
         expected_layout = manager._workspace_layout_snapshot()
+        assert "window_state" in expected_layout
+        assert "geometry" not in expected_layout
+        assert expected_layout["window_state"]["geometry"]
         expected_size = manager.size()
         expected_main_sizes = manager.main_splitter.sizes()
         expected_right_sizes = manager.right_splitter.sizes()
@@ -942,6 +978,60 @@ def test_manager_workspace_layout_only_save_updates_root_manifest_only(
         assert manifest["manager_layout"] == manager._workspace_layout_snapshot()
 
 
+def test_manager_workspace_standalone_app_only_save_updates_root_manifest_only(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "standalone-only.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        delta_save_count = manager._workspace_state.delta_save_count
+
+        manager.show_ptable()
+        ptable = manager.ptable_window
+        ptable.hv_edit.setText("150")
+        qtbot.wait_until(lambda: manager.is_workspace_modified, timeout=5000)
+        assert manager._workspace_state.layout_modified
+
+        def _forbid_node_serialization(*_args, **_kwargs):
+            raise AssertionError("standalone-only save serialized a node")
+
+        def _forbid_full_save(*_args, **_kwargs):
+            raise AssertionError(
+                "standalone-only save requested a full workspace write"
+            )
+
+        monkeypatch.setattr(
+            manager, "_serialize_workspace_node", _forbid_node_serialization
+        )
+        monkeypatch.setattr(
+            manager_workspace, "_write_full_workspace_tree_file", _forbid_full_save
+        )
+
+        assert manager.save()
+        assert manager._workspace_state.delta_save_count == delta_save_count
+        assert not manager.is_workspace_modified
+
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert "delta_save_count" not in manifest
+        assert manifest["standalone_apps"]["apps"]["ptable"]["photon_energy"] == "150"
+
+
 def test_manager_workspace_import_does_not_restore_manager_layout(
     qtbot,
     tmp_path: pathlib.Path,
@@ -987,6 +1077,361 @@ def test_manager_workspace_import_does_not_restore_manager_layout(
         assert manager._workspace_layout_snapshot() == current_layout
 
 
+def test_manager_workspace_roundtrip_restores_loader_and_standalone_apps(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    example_data_dir: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    loader_name = next(
+        name for name in erlab.io.loaders if erlab.io.loaders[name].file_dialog_methods
+    )
+    name_filter = next(iter(erlab.io.loaders[loader_name].file_dialog_methods))
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        manager.add_imagetool(root, show=False)
+
+        manager._recent_directory = str(example_data_dir)
+        manager._recent_name_filter = name_filter
+        manager._recent_loader_kwargs_by_filter[name_filter] = {"single": True}
+        manager._recent_loader_extensions_by_filter[name_filter] = {
+            "coordinate_attrs": ["manager"]
+        }
+
+        manager.show_explorer()
+        explorer = manager.explorer
+        explorer.resize(682, 444)
+        explorer.add_tab(root_path=example_data_dir, loader_name=loader_name)
+        qtbot.wait_until(lambda: explorer.tab_widget.count() == 2, timeout=5000)
+        explorer.tab_widget.setCurrentIndex(1)
+        explorer.current_explorer._preview_check.setChecked(True)
+        explorer.current_explorer._tree_view.sortByColumn(
+            0, QtCore.Qt.SortOrder.DescendingOrder
+        )
+        explorer.current_explorer._loader_kwargs_by_name[loader_name] = {
+            "single": False
+        }
+        explorer.current_explorer._loader_extensions_by_name[loader_name] = {
+            "coordinate_attrs": ["explorer"]
+        }
+        expected_explorer_size = explorer.size()
+        explorer.hide()
+        qtbot.wait_until(lambda: not explorer.isVisible(), timeout=5000)
+
+        manager.show_ptable()
+        ptable = manager.ptable_window
+        ptable.resize(825, 650)
+        ptable._set_selection_state(
+            [6, 8], current_atomic_number=8, anchor_atomic_number=6
+        )
+        ptable._plot_atomic_number = 6
+        ptable._plot_target_user_selected = True
+        ptable.hv_edit.setText("80")
+        ptable.workfunction_edit.setText("4.5")
+        ptable.max_harmonic_spin.setValue(3)
+        ptable.notation_combo.setCurrentIndex(ptable.notation_combo.findData("iupac"))
+        ptable._refresh_window_state(ensure_visible=False)
+
+        fname = tmp_path / "loader-standalone.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        expected_ptable_size = ptable.size()
+
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert manifest["loader_state"]["recent_directory"] == str(example_data_dir)
+        assert manifest["loader_state"]["recent_name_filter"] == name_filter
+        assert manifest["loader_state"]["manager_loader_kwargs_by_filter"][
+            name_filter
+        ] == {"single": True}
+        app_state = manifest["standalone_apps"]["apps"]
+        assert not app_state["explorer"]["window_state"]["visible"]
+        assert app_state["explorer"]["active_tab"] == 1
+        assert app_state["explorer"]["loader_kwargs_by_name"][loader_name] == {
+            "single": False
+        }
+        assert app_state["ptable"]["window_state"]["visible"]
+        assert app_state["ptable"]["window_state"]["rect"][2:] == [
+            expected_ptable_size.width(),
+            expected_ptable_size.height(),
+        ]
+        assert app_state["ptable"]["selected_atomic_numbers"] == [6, 8]
+
+        manager._close_standalone_app("explorer")
+        manager._close_standalone_app("ptable")
+        manager._recent_directory = None
+        manager._recent_name_filter = None
+        manager._recent_loader_kwargs_by_filter.clear()
+        manager._recent_loader_extensions_by_filter.clear()
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+
+        assert manager._recent_directory == str(example_data_dir)
+        assert manager._recent_name_filter == name_filter
+        assert manager._recent_loader_kwargs_by_filter[name_filter] == {"single": True}
+        assert manager._recent_loader_extensions_by_filter[name_filter] == {
+            "coordinate_attrs": ["manager"]
+        }
+
+        assert "explorer" not in manager._standalone_app_windows
+        assert manager._standalone_app_pending_states["explorer"]["active_tab"] == 1
+        restored_ptable = manager.ptable_window
+        assert restored_ptable.isVisible()
+        assert restored_ptable.size().width() >= expected_ptable_size.width()
+        assert restored_ptable.size().height() == expected_ptable_size.height()
+        assert restored_ptable.selected_atomic_numbers == (6, 8)
+        assert restored_ptable._plot_atomic_number == 6
+        assert restored_ptable.hv_edit.text() == "80"
+        assert restored_ptable.workfunction_edit.text() == "4.5"
+        assert restored_ptable.max_harmonic == 3
+        assert restored_ptable.current_notation == "iupac"
+
+        manager.show_explorer()
+        restored_explorer = manager.explorer
+        qtbot.wait_until(restored_explorer.isVisible, timeout=5000)
+        assert restored_explorer.size() == expected_explorer_size
+        assert restored_explorer.tab_widget.count() == 2
+        assert restored_explorer.tab_widget.currentIndex() == 1
+        restored_tab = restored_explorer.current_explorer
+        assert restored_tab is not None
+        assert restored_tab.current_directory == example_data_dir
+        assert restored_tab.loader_name == loader_name
+        assert restored_tab._preview_check.isChecked()
+        assert restored_tab._fs_model._sort_order == QtCore.Qt.SortOrder.DescendingOrder
+        assert restored_explorer.loader_kwargs_by_name()[loader_name] == {
+            "single": False
+        }
+        assert restored_explorer.loader_extensions_by_name()[loader_name] == {
+            "coordinate_attrs": ["explorer"]
+        }
+
+
+def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    example_data_dir: pathlib.Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    loader_name = next(
+        name for name in erlab.io.loaders if erlab.io.loaders[name].file_dialog_methods
+    )
+    name_filter = next(iter(erlab.io.loaders[loader_name].file_dialog_methods))
+    explorer_kwargs = {loader_name: {"single": False}}
+    explorer_extensions = {loader_name: {"coordinate_attrs": ["explorer"]}}
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        manager.add_imagetool(root, show=False)
+        manager._recent_directory = str(example_data_dir)
+        manager._recent_name_filter = name_filter
+        manager._recent_loader_kwargs_by_filter[name_filter] = {"single": True}
+        manager._workspace_controller._loader_state = (
+            manager_workspace.WorkspaceLoaderState(
+                explorer_loader_kwargs_by_name=explorer_kwargs,
+                explorer_loader_extensions_by_name=explorer_extensions,
+            )
+        )
+
+        fname = tmp_path / "loader-no-explorer.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert manifest["loader_state"]["explorer_loader_kwargs_by_name"] == (
+            explorer_kwargs
+        )
+        assert "explorer" not in manifest["standalone_apps"]["apps"]
+
+        manager._workspace_controller._loader_state = (
+            manager_workspace.WorkspaceLoaderState()
+        )
+        manager._recent_directory = None
+        manager._recent_name_filter = None
+        manager._recent_loader_kwargs_by_filter.clear()
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        assert "explorer" not in manager._standalone_app_pending_states
+
+        manager._mark_workspace_layout_dirty()
+        assert manager.save()
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert "explorer" not in manifest["standalone_apps"]["apps"]
+        assert manifest["loader_state"]["explorer_loader_kwargs_by_name"] == (
+            explorer_kwargs
+        )
+
+        manager.show_explorer()
+        explorer = manager.explorer
+        assert (
+            explorer.loader_kwargs_by_name()[loader_name]
+            == explorer_kwargs[loader_name]
+        )
+        assert (
+            explorer.loader_extensions_by_name()[loader_name]
+            == explorer_extensions[loader_name]
+        )
+
+
+def test_workspace_loader_and_standalone_app_state_edge_cases(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+
+        controller._restore_workspace_loader_state({"loader_state": []})
+        controller._restore_workspace_loader_state(
+            {"loader_state": {"manager_loader_kwargs_by_filter": []}}
+        )
+
+        loader_calls: list[
+            tuple[dict[str, dict[str, typing.Any]], dict[str, dict[str, typing.Any]]]
+        ] = []
+
+        class _LoaderStateExplorer(QtWidgets.QWidget):
+            def apply_loader_state(
+                self,
+                *,
+                kwargs_by_name: dict[str, dict[str, typing.Any]],
+                extensions_by_name: dict[str, dict[str, typing.Any]],
+            ) -> None:
+                loader_calls.append((kwargs_by_name, extensions_by_name))
+
+        explorer = _LoaderStateExplorer()
+        qtbot.addWidget(explorer)
+        manager._standalone_app_windows["explorer"] = explorer
+        controller._restore_workspace_loader_state(
+            {
+                "loader_state": {
+                    "explorer_loader_kwargs_by_name": {"example": {"single": True}},
+                    "explorer_loader_extensions_by_name": {
+                        "example": {"coordinate_attrs": ["sample"]}
+                    },
+                }
+            }
+        )
+        assert loader_calls == [
+            (
+                {"example": {"single": True}},
+                {"example": {"coordinate_attrs": ["sample"]}},
+            )
+        ]
+        manager._standalone_app_windows.pop("explorer")
+
+        assert controller._validated_standalone_app_state("missing", {}) is None
+        assert (
+            controller._validated_standalone_app_state("explorer", {"tabs": "bad"})
+            is None
+        )
+
+        manager._standalone_app_pending_states["ptable"] = {
+            "window_state": {"visible": False},
+            "selected_atomic_numbers": [1],
+        }
+        snapshot = controller._workspace_standalone_apps_snapshot()
+        assert snapshot["apps"]["ptable"]["selected_atomic_numbers"] == [1]
+
+        controller._restore_standalone_apps_state({"standalone_apps": []})
+        controller._restore_standalone_apps_state({"standalone_apps": {"apps": []}})
+        controller._restore_standalone_apps_state(
+            {"standalone_apps": {"apps": {"missing": {}}}}
+        )
+
+        manager.show_ptable()
+        ptable = manager.ptable_window
+        assert ptable.isVisible()
+        hidden_ptable_state = ptable.workspace_state_payload()
+        hidden_ptable_state["window_state"]["visible"] = False
+        controller._restore_standalone_apps_state(
+            {"standalone_apps": {"apps": {"ptable": hidden_ptable_state}}}
+        )
+        assert not ptable.isVisible()
+
+        widget = QtWidgets.QWidget()
+        qtbot.addWidget(widget)
+        manager._apply_standalone_app_state("missing", widget, {})
+
+
+def test_manager_workspace_import_does_not_restore_standalone_apps(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        manager.add_imagetool(root, show=False)
+        manager.show_ptable()
+        ptable = manager.ptable_window
+        ptable.hv_edit.setText("120")
+        ptable._set_selection_state(
+            [8], current_atomic_number=8, anchor_atomic_number=8
+        )
+        ptable._refresh_window_state(ensure_visible=False)
+
+        fname = tmp_path / "import-standalone.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        ptable.hv_edit.setText("30")
+        ptable._set_selection_state(
+            [1], current_atomic_number=1, anchor_atomic_number=1
+        )
+        ptable._refresh_window_state(ensure_visible=False)
+
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert manager._from_h5py_workspace_file(
+            fname, manifest, replace=False, mark_dirty=True
+        )
+        assert ptable.hv_edit.text() == "30"
+        assert ptable.selected_atomic_numbers == (1,)
+
+        tree = manager_xarray.open_workspace_datatree(fname, chunks=None)
+        assert manager._from_datatree(
+            tree,
+            replace=False,
+            mark_dirty=True,
+            select=False,
+            workspace_file_path=fname,
+        )
+        assert ptable.hv_edit.text() == "30"
+        assert ptable.selected_atomic_numbers == (1,)
+
+
 def test_manager_workspace_restore_layout_ignores_missing_or_invalid_values(
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -1001,7 +1446,7 @@ def test_manager_workspace_restore_layout_ignores_missing_or_invalid_values(
         manager._restore_workspace_layout(
             {
                 "manager_layout": {
-                    "geometry": "",
+                    "window_state": {"geometry": ""},
                     "main_splitter": "",
                     "right_splitter": "",
                 }
@@ -7276,9 +7721,8 @@ def test_manager_workspace_delta_save_persists_geometry_changes(
 
         assert manager.save()
         with h5py.File(fname, "r") as h5_file:
-            saved_rect = tuple(
-                int(value) for value in h5_file["0/imagetool"].attrs["itool_rect"]
-            )
+            saved_state = json.loads(h5_file["0/imagetool"].attrs["itool_window_state"])
+            saved_rect = tuple(int(value) for value in saved_state["rect"])
         assert saved_rect == expected_rect
 
 

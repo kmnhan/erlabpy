@@ -5,8 +5,15 @@ from collections.abc import Callable
 from qtpy import QtCore, QtGui
 
 import erlab
-from erlab.interactive.explorer._base_explorer import _DataExplorer, _ReprFetcher
-from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
+from erlab.interactive.explorer._base_explorer import (
+    DataExplorerTabState,
+    _DataExplorer,
+    _ReprFetcher,
+)
+from erlab.interactive.explorer._tabbed_explorer import (
+    DataExplorerState,
+    _TabbedExplorer,
+)
 from erlab.interactive.imagetool.manager import _dialogs
 
 
@@ -237,6 +244,50 @@ def test_explorer_loader_extensions_apply_only_to_manager_loads(
     worker = _ReprFetcher(file_path, _preview_loader, include_values=False)
     worker.run()
     assert preview_calls == [{"single": True, "load_kwargs": {"without_values": True}}]
+
+
+def test_explorer_workspace_state_restores_selection(
+    qtbot,
+    example_loader,
+    example_data_dir: pathlib.Path,
+) -> None:
+    explorer = _DataExplorer(root_path=example_data_dir, loader_name="example")
+    qtbot.addWidget(explorer)
+    qtbot.wait_until(lambda: explorer._tree_view.model().rowCount() > 0)
+
+    assert (
+        DataExplorerTabState.model_validate(
+            {
+                "root_path": str(example_data_dir),
+                "selected_paths": None,
+                "splitter_sizes": None,
+                "preview_splitter_sizes": None,
+            }
+        ).selected_paths
+        == ()
+    )
+    assert DataExplorerState.model_validate({"tabs": None}).tabs == ()
+
+    explorer._tree_view.selectionModel().selectionChanged.disconnect(
+        explorer._on_selection_changed
+    )
+    file_paths = (
+        example_data_dir / "data_002.h5",
+        example_data_dir / "data_003.h5",
+    )
+    missing_path = example_data_dir / "missing.h5"
+    explorer.restore_workspace_state(
+        DataExplorerTabState(
+            root_path=str(example_data_dir),
+            loader_name="example",
+            selected_paths=(*map(str, file_paths), str(missing_path)),
+        )
+    )
+
+    qtbot.wait_until(lambda: set(file_paths).issubset(explorer._current_selection))
+    assert set(file_paths).issubset(explorer._current_selection)
+    assert missing_path not in explorer._current_selection
+    assert not explorer._model_index_for_path(missing_path).isValid()
 
 
 def test_explorer_loader_options_dialog_updates_kwargs(

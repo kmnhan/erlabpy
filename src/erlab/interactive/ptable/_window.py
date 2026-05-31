@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import typing
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
+import pydantic
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive import _qt_state
 from erlab.interactive.ptable._inspector import ElementInspector
 from erlab.interactive.ptable._shared import (
     ElementRecord,
@@ -34,8 +36,42 @@ from erlab.interactive.ptable._table import (
 
 __all__ = ["PeriodicTableWindow", "ptable"]
 
-if TYPE_CHECKING:
+if typing.TYPE_CHECKING:
     from collections.abc import Callable
+
+
+class PeriodicTableState(pydantic.BaseModel):
+    # The Periodic Table top-level window uses the shared Qt window schema.
+    window_state: _qt_state.QtWindowState | None = None
+    selected_atomic_numbers: tuple[int, ...] = ()
+    current_atomic_number: int | None = None
+    anchor_atomic_number: int | None = None
+    # Plot target may differ from the current item when multiple elements are selected.
+    plot_atomic_number: int | None = None
+    plot_target_user_selected: bool = False
+    # Line-edit text is preserved exactly, including temporarily invalid input.
+    photon_energy: str = ""
+    work_function: str = ""
+    max_harmonic: int = 1
+    notation: typing.Literal["orbital", "iupac"] = "orbital"
+
+    model_config = pydantic.ConfigDict(extra="ignore")
+
+    @pydantic.field_validator("selected_atomic_numbers", mode="before")
+    @classmethod
+    def _selected_tuple(cls, value: object) -> object:
+        if value is None:
+            return ()
+        return tuple(value) if isinstance(value, (list, tuple)) else value
+
+    @pydantic.field_validator("photon_energy", "work_function", mode="before")
+    @classmethod
+    def _line_edit_text(cls, value: object) -> object:
+        if value is None:
+            return ""
+        if isinstance(value, (int, float, str)) and not isinstance(value, bool):
+            return str(value)
+        return value
 
 
 class _SearchLineEdit(QtWidgets.QLineEdit):
@@ -349,7 +385,7 @@ class _SearchCompletion:
 
 
 _NOTATION_VALUES = frozenset({"orbital", "iupac"})
-_DEFAULT_NOTATION = "orbital"
+_DEFAULT_NOTATION: typing.Literal["orbital", "iupac"] = "orbital"
 _NOTATION_SETTINGS_KEY = "notation"
 _ENERGY_RELATION_TOOLTIP = (
     "<i>E</i><sub>kin</sub> = <i>h\u03bd</i> \u2212 <i>E</i><sub>edge</sub> "
@@ -386,6 +422,8 @@ def _resolve_notation(notation: str | None) -> str:
 
 
 class PeriodicTableWindow(QtWidgets.QMainWindow):
+    sigStateChanged = QtCore.Signal()
+
     _MAX_HARMONIC = 10
     _LEGACY_MINIMUM_WINDOW_SIZE = QtCore.QSize(1180, 760)
     _LEGACY_TOP_SPLITTER_RATIO = 560 / (560 + 340)
@@ -413,6 +451,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self._search_matches: set[int] = set()
         self._search_completions: tuple[_SearchCompletion, ...] = ()
         self._search_completion_row: int | None = None
+        self._workspace_state_restoring = False
 
         self.setWindowTitle("Periodic Table of the Elements")
         self.resize(1600, 920)
@@ -615,10 +654,10 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         return tuple(self._selected_atomic_numbers)
 
     @property
-    def current_notation(self) -> str:
+    def current_notation(self) -> typing.Literal["orbital", "iupac"]:
         current_data = self.notation_combo.currentData()
         if isinstance(current_data, str) and current_data in _NOTATION_VALUES:
-            return current_data
+            return typing.cast("typing.Literal['orbital', 'iupac']", current_data)
         return _DEFAULT_NOTATION
 
     @property
@@ -646,6 +685,83 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         except ValueError:
             return 0.0
         return max(value, 0.0)
+
+    def workspace_state_payload(self) -> dict[str, typing.Any]:
+        return PeriodicTableState(
+            window_state=_qt_state.qt_window_state(self),
+            selected_atomic_numbers=tuple(self._selected_atomic_numbers),
+            current_atomic_number=self._current_atomic_number,
+            anchor_atomic_number=self._selection_anchor_atomic_number,
+            plot_atomic_number=self._plot_atomic_number,
+            plot_target_user_selected=self._plot_target_user_selected,
+            photon_energy=self.hv_edit.text(),
+            work_function=self.workfunction_edit.text(),
+            max_harmonic=self.max_harmonic,
+            notation=self.current_notation,
+        ).model_dump(mode="json", exclude_none=True)
+
+    def restore_workspace_state(self, state: PeriodicTableState) -> None:
+        state = PeriodicTableState.model_validate(state)
+        self._workspace_state_restoring = True
+        try:
+            notation_index = self.notation_combo.findData(state.notation)
+            if notation_index >= 0:
+                self.notation_combo.setCurrentIndex(notation_index)
+
+            self.hv_edit.setText(state.photon_energy)
+            self.workfunction_edit.setText(state.work_function)
+
+            self.max_harmonic_spin.setValue(
+                max(1, min(int(state.max_harmonic), self._MAX_HARMONIC))
+            )
+
+            selected_numbers = [
+                atomic_number
+                for value in state.selected_atomic_numbers
+                if (atomic_number := self._atomic_number_from_state(value)) is not None
+            ]
+            current_atomic_number = self._atomic_number_from_state(
+                state.current_atomic_number
+            )
+            anchor_atomic_number = self._atomic_number_from_state(
+                state.anchor_atomic_number
+            )
+            self._set_selection_state(
+                selected_numbers,
+                current_atomic_number=current_atomic_number,
+                anchor_atomic_number=anchor_atomic_number,
+            )
+
+            plot_atomic_number = self._atomic_number_from_state(
+                state.plot_atomic_number
+            )
+            if plot_atomic_number in self._selected_atomic_numbers:
+                self._plot_atomic_number = plot_atomic_number
+                self._plot_target_user_selected = (
+                    state.plot_target_user_selected
+                    and len(self._selected_atomic_numbers) > 1
+                )
+
+            _qt_state.restore_qt_window_state(self, state.window_state)
+        finally:
+            self._workspace_state_restoring = False
+        self._refresh_inputs()
+        self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
+
+    @staticmethod
+    def _atomic_number_from_state(value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        with contextlib.suppress(TypeError, ValueError):
+            atomic_number = int(typing.cast("typing.Any", value))
+            if 1 <= atomic_number <= 118:
+                return atomic_number
+        return None
+
+    def _emit_workspace_state_changed(self) -> None:
+        if not self._workspace_state_restoring:
+            self.sigStateChanged.emit()
 
     def _set_line_edit_invalid_state(
         self, widget: QtWidgets.QLineEdit, invalid: bool
@@ -1213,15 +1329,18 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self.table_view.setFocus()
         self._clear_hover_preview()
         self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
 
     def _handle_background_clicked(self, _: object) -> None:
         self._clear_hover_preview()
         self._clear_selection()
         self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
 
     def _handle_clear_requested(self) -> None:
         self._clear_selection()
         self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
 
     def _handle_navigation_requested(self, key: int, modifiers: object) -> None:
         navigation = _navigation_atomic_numbers()
@@ -1246,6 +1365,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             self._select_single_atomic_number(target_atomic_number)
         self._clear_hover_preview()
         self._refresh_window_state(ensure_visible=True)
+        self._emit_workspace_state_changed()
 
     def _handle_search_changed(self, text: str) -> None:
         if text.strip() == "":
@@ -1358,6 +1478,7 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             )
         self.table_view.setFocus()
         self._refresh_window_state(ensure_visible=True)
+        self._emit_workspace_state_changed()
 
     def _handle_plot_target_changed(self, atomic_number: int) -> None:
         if (
@@ -1368,19 +1489,24 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         self._plot_atomic_number = atomic_number
         self._plot_target_user_selected = len(self._selected_atomic_numbers) > 1
         self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
 
     def _handle_energy_inputs_changed(self, _: str) -> None:
         self._refresh_inputs()
         self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
 
     def _handle_max_harmonic_changed(self, _: int) -> None:
         self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
 
     def _handle_notation_changed(self, _: int) -> None:
-        settings = _get_ptable_settings()
-        settings.setValue(_NOTATION_SETTINGS_KEY, self.current_notation)
-        settings.sync()
+        if not self._workspace_state_restoring:
+            settings = _get_ptable_settings()
+            settings.setValue(_NOTATION_SETTINGS_KEY, self.current_notation)
+            settings.sync()
         self._refresh_window_state(ensure_visible=False)
+        self._emit_workspace_state_changed()
 
 
 def ptable(

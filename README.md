@@ -77,6 +77,12 @@ Interactive windows support dark mode.
   <img alt="Data explorer window." src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/explorer_light.png?raw=true">
 </picture>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/ptable_dark.png?raw=true">
+  <source media="(prefers-color-scheme: light)" srcset="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/ptable_light.png?raw=true">
+  <img alt="Periodic table window." src="https://github.com/kmnhan/erlabpy/blob/main/docs/source/images/ptable_light.png?raw=true">
+</picture>
+
 ## Contributing
 
 We welcome contributions. Report issues to the [issue tracker](https://github.com/kmnhan/erlabpy/issues). For questions, visit the [Discussions page](https://github.com/kmnhan/erlabpy/discussions). To contribute, fork the repository and submit a pull request. See our [Contributing page](https://erlabpy.readthedocs.io/en/stable/contributing.html) for more information.

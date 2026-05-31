@@ -15,6 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
+from erlab.interactive import _qt_state
 from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
@@ -60,6 +61,15 @@ if typing.TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+def _workspace_dataset_window_visible(
+    ds: xr.Dataset, prefix: str, *, default: bool = True
+) -> bool:
+    state = _qt_state.parse_qt_window_state(ds.attrs.get(f"{prefix}_window_state"))
+    if state is not None:
+        return state.visible
+    return bool(ds.attrs.get(f"{prefix}_visible", default))
 
 
 def _workspace_provenance_file_stems(
@@ -124,6 +134,7 @@ class _WorkspaceIOController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
         self._missing_workspace_colormaps: list[tuple[str, str]] = []
+        self._loader_state = _manager_workspace.WorkspaceLoaderState()
 
     def _record_missing_workspace_colormap(
         self, cmap: str, node_path: str | None
@@ -899,7 +910,7 @@ class _WorkspaceIOController:
             target = self._manager.add_imagetool_child(
                 tool,
                 parent_target,
-                show=ds.attrs.get("itool_visible", True),
+                show=_workspace_dataset_window_visible(ds, "itool"),
                 **kwargs,
             )
             self._manager._record_workspace_loaded_imagetool_target(
@@ -942,7 +953,7 @@ class _WorkspaceIOController:
                 preferred_index = None
         target = self._manager.add_imagetool(
             tool,
-            show=ds.attrs.get("itool_visible", True),
+            show=_workspace_dataset_window_visible(ds, "itool"),
             index=preferred_index,
             **kwargs,
         )
@@ -959,7 +970,7 @@ class _WorkspaceIOController:
         return self._manager.add_childtool(
             erlab.interactive.utils.ToolWindow.from_dataset(ds),
             parent_target,
-            show=ds.attrs.get("tool_visible", True),
+            show=_workspace_dataset_window_visible(ds, "tool"),
             uid=ds.attrs.get("manager_node_uid"),
             snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
             created_time=ds.attrs.get("manager_node_added_at"),
@@ -1319,6 +1330,8 @@ class _WorkspaceIOController:
                 )
                 if replace:
                     self._manager._restore_workspace_layout(manifest)
+                    self._restore_workspace_loader_state(manifest)
+                    self._restore_standalone_apps_state(manifest)
                 if not mark_dirty:
                     self._manager._drain_workspace_deferred_events()
             except Exception:
@@ -1443,6 +1456,8 @@ class _WorkspaceIOController:
                     )
                     if replace:
                         self._manager._restore_workspace_layout(manifest)
+                        self._restore_workspace_loader_state(manifest)
+                        self._restore_standalone_apps_state(manifest)
                     if not mark_dirty:
                         self._manager._drain_workspace_deferred_events()
                 except Exception:
@@ -1543,16 +1558,20 @@ class _WorkspaceIOController:
             node = self._manager._tool_graph.nodes[uid]
             entry: dict[str, typing.Any] = {
                 "uid": uid,
+                # Payload group path relative to the workspace root HDF5 group.
                 "path": self._manager._workspace_node_path(uid),
+                # Restores graph node type without probing payload attrs first.
                 "kind": "imagetool" if node.is_imagetool else "tool",
                 "parent_uid": node.parent_uid,
                 "display_name": node.display_text,
             }
             if node.is_imagetool and node.imagetool is not None:
                 persistence = node.persistence_view()
+                # Distinguishes embedded data from lazy file-backed/dask payloads.
                 entry["data_backing"] = persistence.data_backing
                 link_info = link_metadata.get(uid)
                 if link_info is not None:
+                    # link_group is an ordinal within this manifest, not a stable id.
                     entry["link_group"], entry["link_colors"] = link_info
             entries.append(entry)
             for child_uid in node._childtool_indices:
@@ -1590,13 +1609,14 @@ class _WorkspaceIOController:
             erlab_version=str(erlab.__version__),
             workspace_link_id=self._manager._workspace_state.link_id,
             manager_layout=self._manager._workspace_layout_snapshot(),
+            loader_state=self._workspace_loader_state_snapshot(),
+            standalone_apps=self._workspace_standalone_apps_snapshot(),
         )
 
-    def _workspace_layout_snapshot(self) -> dict[str, str]:
+    def _workspace_layout_snapshot(self) -> dict[str, typing.Any]:
         return {
-            "geometry": erlab.interactive.utils._qt_bytearray_to_base64(
-                self._manager.saveGeometry()
-            ),
+            "window_state": _qt_state.qt_window_state_payload(self._manager),
+            # QSplitter state preserves pane sizes and collapsed/expanded handles.
             "main_splitter": erlab.interactive.utils._qt_bytearray_to_base64(
                 self._manager.main_splitter.saveState()
             ),
@@ -1614,11 +1634,7 @@ class _WorkspaceIOController:
         if not isinstance(layout, dict):
             return
 
-        geometry = erlab.interactive.utils._qt_bytearray_from_base64(
-            layout.get("geometry")
-        )
-        if geometry is not None:
-            self._manager.restoreGeometry(geometry)
+        _qt_state.restore_qt_window_state(self._manager, layout.get("window_state"))
 
         main_splitter = erlab.interactive.utils._qt_bytearray_from_base64(
             layout.get("main_splitter")
@@ -1631,6 +1647,188 @@ class _WorkspaceIOController:
         )
         if right_splitter is not None:
             self._manager.right_splitter.restoreState(right_splitter)
+
+    def _workspace_loader_state_snapshot(self) -> dict[str, typing.Any]:
+        manager_loader_kwargs = self._manager._recent_loader_kwargs_by_filter
+        manager_loader_extensions = self._manager._recent_loader_extensions_by_filter
+        explorer_kwargs = self._loader_state.explorer_loader_kwargs_by_name
+        explorer_extensions = self._loader_state.explorer_loader_extensions_by_name
+        explorer = self._manager._standalone_app_windows.get("explorer")
+        if explorer is not None and erlab.interactive.utils.qt_is_valid(explorer):
+            kwargs_getter = getattr(explorer, "loader_kwargs_by_name", None)
+            if callable(kwargs_getter):
+                explorer_kwargs = kwargs_getter()
+            extensions_getter = getattr(explorer, "loader_extensions_by_name", None)
+            if callable(extensions_getter):
+                explorer_extensions = extensions_getter()
+        state = _manager_workspace.WorkspaceLoaderState(
+            recent_directory=self._manager._recent_directory,
+            recent_name_filter=self._manager._recent_name_filter,
+            manager_loader_kwargs_by_filter={
+                str(name): dict(kwargs)
+                for name, kwargs in manager_loader_kwargs.items()
+            },
+            manager_loader_extensions_by_filter={
+                str(name): dict(extensions)
+                for name, extensions in manager_loader_extensions.items()
+            },
+            explorer_loader_kwargs_by_name={
+                str(name): dict(kwargs) for name, kwargs in explorer_kwargs.items()
+            },
+            explorer_loader_extensions_by_name={
+                str(name): dict(extensions)
+                for name, extensions in explorer_extensions.items()
+            },
+        )
+        self._loader_state = state
+        return state.model_dump(mode="json", exclude_none=True)
+
+    def _explorer_loader_state(
+        self,
+    ) -> tuple[dict[str, dict[str, typing.Any]], dict[str, dict[str, typing.Any]]]:
+        loader_kwargs = self._loader_state.explorer_loader_kwargs_by_name
+        loader_extensions = self._loader_state.explorer_loader_extensions_by_name
+        return (
+            {str(name): dict(kwargs) for name, kwargs in loader_kwargs.items()},
+            {
+                str(name): dict(extensions)
+                for name, extensions in loader_extensions.items()
+            },
+        )
+
+    def _restore_workspace_loader_state(
+        self,
+        manifest: Mapping[str, typing.Any] | None,
+        *,
+        apply_explorer: bool = True,
+    ) -> None:
+        if manifest is None:
+            return
+        payload = manifest.get("loader_state")
+        if not isinstance(payload, dict):
+            return
+        try:
+            state = _manager_workspace.WorkspaceLoaderState.model_validate(payload)
+        except Exception:
+            logger.warning("Ignoring invalid workspace loader state", exc_info=True)
+            return
+
+        self._loader_state = state
+        self._manager._recent_directory = state.recent_directory
+        self._manager._recent_name_filter = state.recent_name_filter
+        self._manager._recent_loader_kwargs_by_filter = {
+            str(name): dict(kwargs)
+            for name, kwargs in state.manager_loader_kwargs_by_filter.items()
+        }
+        self._manager._recent_loader_extensions_by_filter = {
+            str(name): dict(extensions)
+            for name, extensions in state.manager_loader_extensions_by_filter.items()
+        }
+        explorer_kwargs = {
+            str(name): dict(kwargs)
+            for name, kwargs in state.explorer_loader_kwargs_by_name.items()
+        }
+        explorer_extensions = {
+            str(name): dict(extensions)
+            for name, extensions in state.explorer_loader_extensions_by_name.items()
+        }
+        if not apply_explorer:
+            return
+        explorer = self._manager._standalone_app_windows.get("explorer")
+        if explorer is not None and erlab.interactive.utils.qt_is_valid(explorer):
+            apply_loader_state = getattr(explorer, "apply_loader_state", None)
+            if callable(apply_loader_state):
+                apply_loader_state(
+                    kwargs_by_name=explorer_kwargs,
+                    extensions_by_name=explorer_extensions,
+                )
+
+    @staticmethod
+    def _validated_standalone_app_state(
+        key: str, state: Mapping[str, typing.Any]
+    ) -> dict[str, typing.Any] | None:
+        model_type: typing.Any
+        if key == "explorer":
+            from erlab.interactive.explorer._tabbed_explorer import DataExplorerState
+
+            model_type = DataExplorerState
+        elif key == "ptable":
+            from erlab.interactive.ptable._window import PeriodicTableState
+
+            model_type = PeriodicTableState
+        else:
+            return None
+        try:
+            return typing.cast(
+                "dict[str, typing.Any]",
+                model_type.model_validate(state).model_dump(
+                    mode="json", exclude_none=True
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "Ignoring invalid %s standalone app state", key, exc_info=True
+            )
+            return None
+
+    def _workspace_standalone_apps_snapshot(self) -> dict[str, typing.Any]:
+        app_states: dict[str, dict[str, typing.Any]] = {}
+        for key in self._manager._standalone_app_specs:
+            widget = self._manager._standalone_app_windows.get(key)
+            state: dict[str, typing.Any] | None = None
+            if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
+                state_getter = getattr(widget, "workspace_state_payload", None)
+                if callable(state_getter):
+                    state = typing.cast("dict[str, typing.Any]", state_getter())
+            elif key in self._manager._standalone_app_pending_states:
+                state = self._manager._standalone_app_pending_states[key]
+            if state is None:
+                continue
+            validated = self._validated_standalone_app_state(key, state)
+            if validated is not None:
+                app_states[key] = validated
+        return _manager_workspace.StandaloneAppsState(apps=app_states).model_dump(
+            mode="json", exclude_none=True
+        )
+
+    def _restore_standalone_apps_state(
+        self, manifest: Mapping[str, typing.Any] | None
+    ) -> None:
+        if manifest is None:
+            return
+        payload = manifest.get("standalone_apps")
+        if not isinstance(payload, dict):
+            return
+        try:
+            state = _manager_workspace.StandaloneAppsState.model_validate(payload)
+        except Exception:
+            logger.warning("Ignoring invalid standalone app state", exc_info=True)
+            return
+
+        restored_states: dict[str, dict[str, typing.Any]] = {}
+        for key, app_state in state.apps.items():
+            if key not in self._manager._standalone_app_specs:
+                continue
+            validated = self._validated_standalone_app_state(key, app_state)
+            if validated is not None:
+                restored_states[key] = validated
+
+        for key in set(self._manager._standalone_app_specs) - set(restored_states):
+            self._manager._close_standalone_app(key)
+
+        for key, app_state in restored_states.items():
+            window_state = _qt_state.parse_qt_window_state(
+                app_state.get("window_state")
+            )
+            if window_state is not None and window_state.visible:
+                widget = self._manager._ensure_standalone_app(key)
+                self._manager._apply_standalone_app_state(key, widget, app_state)
+            else:
+                widget = self._manager._standalone_app_windows.get(key)
+                if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
+                    self._manager._apply_standalone_app_state(key, widget, app_state)
+                else:
+                    self._manager._standalone_app_pending_states[key] = app_state
 
     def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
         tree: xr.DataTree = self._manager._to_datatree()
@@ -2646,6 +2844,10 @@ class _WorkspaceIOController:
                                     workspace_access=access,
                                     rebind_data=False,
                                 )
+                                if replace:
+                                    self._restore_workspace_loader_state(
+                                        manifest, apply_explorer=False
+                                    )
                             return self._finish_workspace_file_load(loaded)
                     except Exception:
                         logger.debug(
@@ -2653,7 +2855,7 @@ class _WorkspaceIOController:
                             exc_info=True,
                         )
                 tree = _manager_xarray.open_workspace_datatree(access.path, chunks=None)
-                schema_version, delta_save_count, _manifest = (
+                schema_version, delta_save_count, manifest = (
                     _manager_workspace._workspace_file_metadata_from_attrs(tree.attrs)
                 )
                 loaded = self._manager._from_datatree(
@@ -2672,6 +2874,10 @@ class _WorkspaceIOController:
                         workspace_access=access,
                         rebind_data=False,
                     )
+                    if replace:
+                        self._restore_workspace_loader_state(
+                            manifest, apply_explorer=False
+                        )
                 return self._finish_workspace_file_load(loaded)
         finally:
             self._missing_workspace_colormaps = previous_missing_colormaps

@@ -7,8 +7,6 @@ of pyqtgraph and Qt.
 from __future__ import annotations
 
 import ast
-import base64
-import binascii
 import bisect
 import contextlib
 import enum
@@ -42,6 +40,7 @@ import xarray as xr
 from qtpy import PYQT6, PYSIDE6, QtCore, QtGui, QtWidgets, uic
 
 import erlab
+from erlab.interactive import _qt_state
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Collection, Hashable, Iterator, Mapping
@@ -100,27 +99,11 @@ logger = logging.getLogger(__name__)
 
 
 def _qt_bytearray_to_base64(value: QtCore.QByteArray) -> str:
-    return base64.b64encode(value.data()).decode("ascii")
+    return _qt_state.qt_bytearray_to_base64(value)
 
 
 def _qt_bytearray_from_base64(value: object) -> QtCore.QByteArray | None:
-    if isinstance(value, bytes):
-        try:
-            text = value.decode("ascii")
-        except UnicodeDecodeError:
-            return None
-    elif isinstance(value, str):
-        text = value
-    else:
-        return None
-
-    try:
-        raw = base64.b64decode(text.encode("ascii"), validate=True)
-    except (binascii.Error, ValueError, UnicodeEncodeError):
-        return None
-    if not raw:
-        return None
-    return QtCore.QByteArray(raw)
+    return _qt_state.qt_bytearray_from_base64(value)
 
 
 def _qt_object_is_valid_fallback(arg__1: object) -> bool:
@@ -4287,15 +4270,13 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
         data_name = self.tool_data.name
         if data_name is None:
             data_name = "<none-value>"
-        attrs = {
+        attrs: dict[str, typing.Any] = {
             "tool_state": self.tool_status.model_dump_json(),
             "tool_data_name": str(data_name),
             "tool_title": self.windowTitle(),
             "tool_cls_qualname": self._qual_name(),
             "tool_display_name": self._tool_display_name,
-            "tool_qt_geometry": _qt_bytearray_to_base64(self.saveGeometry()),
-            "tool_rect": self.geometry().getRect(),
-            "tool_visible": bool(self.isVisible()),
+            "tool_window_state": _qt_state.qt_window_state_json(self),
             "erlab_version": erlab.__version__,
         }
         if self._source_spec is not None:
@@ -4450,11 +4431,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 )
         tool._restore_persistence_payload(ds)
         tool.setWindowTitle(ds.attrs["tool_title"])
-        restored_geometry = False
-        geometry = _qt_bytearray_from_base64(ds.attrs.get("tool_qt_geometry"))
-        if geometry is not None:
-            restored_geometry = tool.restoreGeometry(geometry)
-        if not restored_geometry and "tool_rect" in ds.attrs:
+        if (
+            not _qt_state.restore_qt_window_state(
+                tool, ds.attrs.get("tool_window_state")
+            )
+            and "tool_rect" in ds.attrs
+        ):
             tool.setGeometry(*ds.attrs["tool_rect"])
         return tool
 

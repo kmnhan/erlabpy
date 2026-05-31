@@ -609,6 +609,7 @@ def test_select_loader_options_cancel_keeps_recent_filter(
 
     monkeypatch.setattr(manager_base, "_NameFilterDialog", _CancelNameFilterDialog)
     manager = types.SimpleNamespace(
+        _recent_loader_kwargs_by_filter={},
         _recent_loader_extensions_by_filter={"Example Raw Data (*.h5)": {}},
         _recent_name_filter="Previous",
     )
@@ -710,6 +711,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
             return False
 
     manager = types.SimpleNamespace(
+        _recent_loader_kwargs_by_filter={},
         _recent_loader_extensions_by_filter={},
         _recent_name_filter=None,
         _add_from_multiple_files=lambda *_args, **_kwargs: None,
