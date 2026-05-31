@@ -2702,10 +2702,16 @@ class ImageSlicerArea(QtWidgets.QWidget):
         update: bool = True,
     ) -> None:
         action_values = gamma is None and levels_locked is None and levels is None
-        if cmap is not None:
-            self._colormap_properties["cmap"] = cmap
-        if gamma is not None:
-            self._colormap_properties["gamma"] = float(gamma)
+        next_cmap = (
+            cmap
+            if cmap is not None
+            else typing.cast("str | pg.ColorMap", self._colormap_properties["cmap"])
+        )
+        next_gamma = (
+            float(gamma)
+            if gamma is not None
+            else float(self._colormap_properties["gamma"])
+        )
 
         reverse_value = (
             self.reverse_act.isChecked()
@@ -2723,19 +2729,40 @@ class ImageSlicerArea(QtWidgets.QWidget):
             else zero_centered
         )
 
+        next_reverse = bool(self._colormap_properties["reverse"])
+        next_high_contrast = bool(self._colormap_properties["high_contrast"])
+        next_zero_centered = bool(self._colormap_properties["zero_centered"])
+        if reverse_value is not None:
+            next_reverse = bool(reverse_value)
+        if high_contrast_value is not None:
+            next_high_contrast = bool(high_contrast_value)
+        if zero_centered_value is not None:
+            next_zero_centered = bool(zero_centered_value)
+
+        pg_colormap = erlab.interactive.colors._pg_colormap_powernorm_lut(
+            next_cmap,
+            next_gamma,
+            next_reverse,
+            high_contrast=next_high_contrast,
+            zero_centered=next_zero_centered,
+        )
+
+        self._colormap_properties.update(
+            {
+                "cmap": next_cmap,
+                "gamma": next_gamma,
+                "reverse": next_reverse,
+                "high_contrast": next_high_contrast,
+                "zero_centered": next_zero_centered,
+            }
+        )
         reverse_blocker = QtCore.QSignalBlocker(self.reverse_act)
         high_contrast_blocker = QtCore.QSignalBlocker(self.high_contrast_act)
         zero_centered_blocker = QtCore.QSignalBlocker(self.zero_centered_act)
         try:
-            if reverse_value is not None:
-                self._colormap_properties["reverse"] = bool(reverse_value)
-                self.reverse_act.setChecked(bool(reverse_value))
-            if high_contrast_value is not None:
-                self._colormap_properties["high_contrast"] = bool(high_contrast_value)
-                self.high_contrast_act.setChecked(bool(high_contrast_value))
-            if zero_centered_value is not None:
-                self._colormap_properties["zero_centered"] = bool(zero_centered_value)
-                self.zero_centered_act.setChecked(bool(zero_centered_value))
+            self.reverse_act.setChecked(next_reverse)
+            self.high_contrast_act.setChecked(next_high_contrast)
+            self.zero_centered_act.setChecked(next_zero_centered)
         finally:
             del reverse_blocker
             del high_contrast_blocker
@@ -2746,14 +2773,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
         if levels is not None:
             self.levels = levels
 
-        properties = self.colormap_properties
-        pg_colormap = erlab.interactive.colors._pg_colormap_powernorm_lut(
-            properties["cmap"],
-            properties["gamma"],
-            properties["reverse"],
-            high_contrast=properties["high_contrast"],
-            zero_centered=properties["zero_centered"],
-        )
         for im in self._imageitems:
             im.set_pg_colormap(pg_colormap, update=update)
         self.sigViewOptionChanged.emit()

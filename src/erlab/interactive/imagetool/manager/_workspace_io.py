@@ -123,6 +123,70 @@ def _legacy_saved_title_data_name(
 class _WorkspaceIOController:
     def __init__(self, manager: ImageToolManager) -> None:
         self._manager = manager
+        self._missing_workspace_colormaps: list[tuple[str, str]] = []
+
+    def _record_missing_workspace_colormap(
+        self, cmap: str, node_path: str | None
+    ) -> None:
+        node_label = node_path if node_path is not None else "unknown workspace node"
+        record = (node_label, cmap)
+        if record not in self._missing_workspace_colormaps:
+            self._missing_workspace_colormaps.append(record)
+
+    def _dataset_without_missing_workspace_colormap(
+        self, ds: xr.Dataset, node_path: str | None
+    ) -> xr.Dataset:
+        state_payload = ds.attrs.get("itool_state")
+        if not isinstance(state_payload, str):
+            return ds
+        try:
+            state = json.loads(state_payload)
+        except Exception:
+            return ds
+        if not isinstance(state, dict):
+            return ds
+        color_state = state.get("color")
+        if not isinstance(color_state, dict):
+            return ds
+        cmap = color_state.get("cmap")
+        if not isinstance(cmap, str):
+            return ds
+        try:
+            erlab.interactive.colors.pg_colormap_from_name(cmap)
+        except RuntimeError:
+            color_state = dict(color_state)
+            color_state.pop("cmap", None)
+            state = dict(state)
+            state["color"] = color_state
+            ds = ds.copy(deep=False)
+            ds.attrs["itool_state"] = json.dumps(state)
+            self._record_missing_workspace_colormap(cmap, node_path)
+        return ds
+
+    def _show_missing_workspace_colormap_warning(self) -> None:
+        if not self._missing_workspace_colormaps:
+            return
+        affected = "\n".join(
+            f"- {node_label}: {cmap}"
+            for node_label, cmap in self._missing_workspace_colormaps
+        )
+        dialog = erlab.interactive.utils.MessageDialog(
+            self._manager,
+            title="Unavailable Colormap",
+            text="Some saved colormaps are unavailable.",
+            informative_text=(
+                "ImageTool Manager used the default colormap for these windows:\n"
+                f"{affected}"
+            ),
+            buttons=QtWidgets.QDialogButtonBox.StandardButton.Ok,
+            icon_pixmap=QtWidgets.QStyle.StandardPixmap.SP_MessageBoxWarning,
+        )
+        dialog.exec()
+
+    def _finish_workspace_file_load(self, loaded: bool) -> bool:
+        if loaded:
+            self._show_missing_workspace_colormap_warning()
+        return loaded
 
     @staticmethod
     def _normalize_recent_workspace_paths(
@@ -811,6 +875,7 @@ class _WorkspaceIOController:
         elif "itool_name" not in ds.attrs:
             ds = ds.copy(deep=False)
             ds.attrs["itool_name"] = ""
+        ds = self._dataset_without_missing_workspace_colormap(ds, node_path)
         tool = ImageTool.from_dataset(ds, **tool_kwargs)
         if parent_target is not None:
             target = self._manager.add_imagetool_child(
@@ -2459,65 +2524,70 @@ class _WorkspaceIOController:
         select: bool,
         native: bool = True,
     ) -> bool:
-        with self._manager._workspace_document_access_context(fname) as access:
-            _manager_workspace._recover_workspace_transactions(access.path)
-            if not select and replace:
-                try:
-                    root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(
-                        access.path
-                    )
-                    schema_version, delta_save_count, manifest = (
-                        _manager_workspace._workspace_file_metadata_from_attrs(
-                            root_attrs
+        previous_missing_colormaps = self._missing_workspace_colormaps
+        self._missing_workspace_colormaps = []
+        try:
+            with self._manager._workspace_document_access_context(fname) as access:
+                _manager_workspace._recover_workspace_transactions(access.path)
+                if not select and replace:
+                    try:
+                        root_attrs = _manager_workspace._read_workspace_root_attrs_h5py(
+                            access.path
                         )
-                    )
-                    if (
-                        schema_version
-                        == _manager_workspace._current_workspace_schema_version()
-                        and manifest is not None
-                    ):
-                        loaded = self._manager._from_h5py_workspace_file(
-                            access.path,
-                            manifest,
-                            replace=replace,
-                            mark_dirty=mark_dirty,
-                        )
-                        if loaded and associate:
-                            self._manager._associate_loaded_workspace_file(
-                                access.path,
-                                schema_version,
-                                native=native,
-                                delta_save_count=delta_save_count,
-                                workspace_access=access,
-                                rebind_data=False,
+                        schema_version, delta_save_count, manifest = (
+                            _manager_workspace._workspace_file_metadata_from_attrs(
+                                root_attrs
                             )
-                        return loaded
-                except Exception:
-                    logger.debug(
-                        "Failed h5py workspace load path; falling back to DataTree",
-                        exc_info=True,
-                    )
-            tree = _manager_xarray.open_workspace_datatree(access.path, chunks=None)
-            schema_version, delta_save_count, _manifest = (
-                _manager_workspace._workspace_file_metadata_from_attrs(tree.attrs)
-            )
-            loaded = self._manager._from_datatree(
-                tree,
-                replace=replace,
-                mark_dirty=mark_dirty,
-                select=select,
-                workspace_file_path=access.path,
-            )
-            if loaded and associate:
-                self._manager._associate_loaded_workspace_file(
-                    access.path,
-                    schema_version,
-                    native=native,
-                    delta_save_count=delta_save_count,
-                    workspace_access=access,
-                    rebind_data=False,
+                        )
+                        if (
+                            schema_version
+                            == _manager_workspace._current_workspace_schema_version()
+                            and manifest is not None
+                        ):
+                            loaded = self._manager._from_h5py_workspace_file(
+                                access.path,
+                                manifest,
+                                replace=replace,
+                                mark_dirty=mark_dirty,
+                            )
+                            if loaded and associate:
+                                self._manager._associate_loaded_workspace_file(
+                                    access.path,
+                                    schema_version,
+                                    native=native,
+                                    delta_save_count=delta_save_count,
+                                    workspace_access=access,
+                                    rebind_data=False,
+                                )
+                            return self._finish_workspace_file_load(loaded)
+                    except Exception:
+                        logger.debug(
+                            "Failed h5py workspace load path; falling back to DataTree",
+                            exc_info=True,
+                        )
+                tree = _manager_xarray.open_workspace_datatree(access.path, chunks=None)
+                schema_version, delta_save_count, _manifest = (
+                    _manager_workspace._workspace_file_metadata_from_attrs(tree.attrs)
                 )
-            return loaded
+                loaded = self._manager._from_datatree(
+                    tree,
+                    replace=replace,
+                    mark_dirty=mark_dirty,
+                    select=select,
+                    workspace_file_path=access.path,
+                )
+                if loaded and associate:
+                    self._manager._associate_loaded_workspace_file(
+                        access.path,
+                        schema_version,
+                        native=native,
+                        delta_save_count=delta_save_count,
+                        workspace_access=access,
+                        rebind_data=False,
+                    )
+                return self._finish_workspace_file_load(loaded)
+        finally:
+            self._missing_workspace_colormaps = previous_missing_colormaps
 
     def load(self, *, native: bool = True) -> bool:
         """Replace this manager with a workspace file."""
