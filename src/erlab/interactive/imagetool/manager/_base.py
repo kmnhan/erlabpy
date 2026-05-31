@@ -36,6 +36,7 @@ if typing.TYPE_CHECKING:
         _ManagerDependencyTracker,
     )
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+    from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
     from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
     from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
     from erlab.interactive.imagetool.manager._registry import _ManagerRecord
@@ -110,7 +111,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _file_handlers: set[_MultiFileHandler]
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
-    _linkers: list[erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy]
+    _link_registry: _ManagerLinkRegistry
     _manager_record: _ManagerRecord
     _metadata_copy_full_action: QtGui.QAction
     _metadata_copy_selected_action: QtGui.QAction
@@ -118,7 +119,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _metadata_full_code_available: bool
     _metadata_monospace_font: QtGui.QFont
     _metadata_node_uid: str | None
-    _pending_linker_reload: bool
     _previous_excepthook: Callable[
         [type[BaseException], BaseException, types.TracebackType | None], typing.Any
     ]
@@ -267,7 +267,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         outermost = self._bulk_remove_depth == 0
         self._bulk_remove_depth += 1
         if outermost:
-            self._pending_linker_reload = False
+            self._link_registry.clear_pending_cleanup()
             self.setUpdatesEnabled(False)
             self.tree_view.setUpdatesEnabled(False)
         try:
@@ -278,8 +278,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
                 self.tree_view.setUpdatesEnabled(True)
                 self.setUpdatesEnabled(True)
 
-                if self._pending_linker_reload:
-                    self._pending_linker_reload = False
+                if self._link_registry.pop_pending_cleanup():
                     self._cleanup_linkers()
 
                 self._update_actions()
@@ -338,18 +337,13 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
     @QtCore.Slot()
     def _request_reload_linkers(self) -> None:
-        if self._bulk_remove_depth > 0:
-            self._pending_linker_reload = True
-            return
-        self._cleanup_linkers()
+        if self._link_registry.request_cleanup(defer=self._bulk_remove_depth > 0):
+            self.sigLinkersChanged.emit()
 
     @QtCore.Slot()
     def _cleanup_linkers(self) -> None:
         """Remove linkers with one or no children."""
-        for linker in list(self._linkers):
-            if linker.num_children <= 1:
-                linker.unlink_all()
-                self._linkers.remove(linker)
+        self._link_registry.cleanup_stale()
         self.sigLinkersChanged.emit()
 
     @property

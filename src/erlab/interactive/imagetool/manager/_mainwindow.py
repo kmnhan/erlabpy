@@ -15,6 +15,7 @@ from erlab.interactive.imagetool.manager._actions import _ActionsMixin
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelMixin
 from erlab.interactive.imagetool.manager._lineage import _LineageMixin
+from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._registry import (
@@ -153,9 +154,7 @@ class ImageToolManager(
             self._application_quit_filter = _ApplicationQuitFilter(self)
             qapp.installEventFilter(self._application_quit_filter)
 
-        self._linkers: list[
-            erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
-        ] = []
+        self._link_registry = _ManagerLinkRegistry()
 
         # Stores additional analysis tools opened from child ImageTool windows
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
@@ -185,9 +184,7 @@ class ImageToolManager(
         # Store progress bar widgets
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
 
-        # Deferred updates while removing multiple windows
         self._bulk_remove_depth: int = 0
-        self._pending_linker_reload: bool = False
 
         # Initialize actions
         self.settings_action = QtWidgets.QAction("Settings", self)
@@ -776,8 +773,13 @@ class ImageToolManager(
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
     ) -> QtGui.QColor:
         """Get the color that should represent the given linker."""
-        idx = self._linkers.index(linker)
+        idx = self._link_registry.index(linker)
         return _LINKER_COLORS[idx % len(_LINKER_COLORS)]
+
+    def linker_index(
+        self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
+    ) -> int:
+        return self._link_registry.index(linker)
 
     def add_imagetool(
         self,
