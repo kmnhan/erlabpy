@@ -1379,6 +1379,13 @@ class AffineCoordOperation(ToolProvenanceOperation):
     scale: float
     offset: float
 
+    @pydantic.field_validator("scale", "offset")
+    @classmethod
+    def _validate_finite_affine_value(cls, value: float) -> float:
+        if not np.isfinite(value):
+            raise ValueError("affine coordinate scale and offset must be finite")
+        return value
+
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         coord = data.coords[self.coord_name]
         return erlab.utils.array.sort_coord_order(
@@ -1405,12 +1412,22 @@ class AffineCoordOperation(ToolProvenanceOperation):
         self, input_name: str, *, source_name: str | None = None
     ) -> str:
         coord_name_code = repr(self.coord_name)
-        scale_code = erlab.interactive.utils._parse_single_arg(float(self.scale))
-        offset_code = erlab.interactive.utils._parse_single_arg(float(self.offset))
+        coord_values_code = f"{input_name}[{coord_name_code}].values"
+        scale = float(self.scale)
+        offset = float(self.offset)
+        data_code = coord_values_code
+        if scale != 1.0:
+            scale_code = erlab.interactive.utils._parse_single_arg(scale)
+            data_code = f"{scale_code} * {data_code}"
+        if offset > 0.0:
+            offset_code = erlab.interactive.utils._parse_single_arg(offset)
+            data_code = f"{data_code} + {offset_code}"
+        elif offset < 0.0:
+            offset_code = erlab.interactive.utils._parse_single_arg(abs(offset))
+            data_code = f"{data_code} - {offset_code}"
         return (
             f"{input_name}.assign_coords({{{coord_name_code}: "
-            f"{input_name}[{coord_name_code}].copy(data={scale_code} * "
-            f"{input_name}[{coord_name_code}].values + {offset_code})}})"
+            f"{input_name}[{coord_name_code}].copy(data={data_code})}})"
         )
 
 

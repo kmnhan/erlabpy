@@ -6846,17 +6846,23 @@ def test_itool_assign_coords_affine(qtbot, accept_dialog) -> None:
     def _set_dialog_params(dialog: AssignCoordsDialog) -> None:
         dialog._coord_combo.setCurrentText("y")
         dialog.coord_widget.edit_mode_tabs.setCurrentIndex(1)
-        _set_spinbox_text(dialog.coord_widget.scale_spin, "2.000000000000001")
-        _set_spinbox_text(dialog.coord_widget.offset_spin, "0.5000000000000001")
+        _set_spinbox_text(dialog.coord_widget.scale_spin, "1.0")
+        _set_spinbox_text(dialog.coord_widget.offset_spin, "-3.7")
         dialog.launch_mode_combo.setCurrentText("Replace Current")
 
     accept_dialog(win.mnb._assign_coords, pre_call=_set_dialog_params, timeout=10.0)
     np.testing.assert_allclose(
         win.slicer_area._data.y.values,
-        float("2.000000000000001") * np.arange(4) + float("0.5000000000000001"),
+        np.arange(4) - 3.7,
         rtol=0,
         atol=0,
     )
+    assert win.provenance_spec is not None
+    display_code = win.provenance_spec.display_code(parent_data=data)
+    assert display_code is not None
+    assert "['y'].values - 3.7" in display_code
+    assert "1.0 *" not in display_code
+    assert "+ -3.7" not in display_code
 
 
 def _combo_index_for_data(combo: QtWidgets.QComboBox, data: object) -> int:
