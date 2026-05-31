@@ -10,6 +10,7 @@ import typing
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive import _qt_state
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 
 if typing.TYPE_CHECKING:
@@ -57,6 +58,29 @@ if typing.TYPE_CHECKING:
         _ManagedWindowNode,
     )
     from erlab.interactive.ptable import PeriodicTableWindow
+
+
+class _StandaloneAppEventFilter(QtCore.QObject):
+    _STATE_EVENT_TYPES = frozenset(
+        {
+            QtCore.QEvent.Type.Hide,
+            QtCore.QEvent.Type.Move,
+            QtCore.QEvent.Type.Resize,
+            QtCore.QEvent.Type.Show,
+            QtCore.QEvent.Type.WindowStateChange,
+        }
+    )
+
+    def __init__(self, manager: _ImageToolManagerBase) -> None:
+        super().__init__(manager)
+        self._manager = manager
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> bool:
+        if event is not None and event.type() in self._STATE_EVENT_TYPES:
+            self._manager._mark_standalone_app_state_dirty()
+        return super().eventFilter(obj, event)
 
 
 class _ImageToolManagerBase(QtWidgets.QMainWindow):
@@ -124,6 +148,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     ]
     _progress_bars: dict[int, QtWidgets.QProgressDialog]
     _recent_directory: str | None
+    _recent_loader_kwargs_by_filter: dict[str, dict[str, typing.Any]]
     _recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]]
     _recent_name_filter: str | None
     _registry_heartbeat_timer: QtCore.QTimer
@@ -132,6 +157,8 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _sigReplyData: QtCore.SignalInstance
     _sigWatchedDataEdited: QtCore.SignalInstance
     _standalone_app_actions: dict[str, QtGui.QAction]
+    _standalone_app_event_filters: dict[str, QtCore.QObject]
+    _standalone_app_pending_states: dict[str, dict[str, typing.Any]]
     _standalone_app_specs: dict[str, _StandaloneAppSpec]
     _standalone_app_windows: dict[str, QtWidgets.QWidget]
     _tool_graph: _ManagerToolGraph
@@ -156,6 +183,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             )
             msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
         return msg_box
+
+    def _mark_workspace_layout_dirty(self) -> None:
+        self._workspace_controller._mark_workspace_layout_dirty()
 
     def _node_for_target(
         self, target: int | str
@@ -253,9 +283,17 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     def _create_explorer_window(self) -> QtWidgets.QWidget:
         from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 
-        return _TabbedExplorer(
+        explorer = _TabbedExplorer(
             root_path=self._recent_directory, loader_name=self._recent_loader_name
         )
+        loader_kwargs, loader_extensions = (
+            self._workspace_controller._explorer_loader_state()
+        )
+        explorer.apply_loader_state(
+            kwargs_by_name=loader_kwargs,
+            extensions_by_name=loader_extensions,
+        )
+        return explorer
 
     def _create_ptable_window(self) -> QtWidgets.QWidget:
         from erlab.interactive.ptable import PeriodicTableWindow
@@ -299,13 +337,21 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         *,
         sample_paths: Iterable[str | pathlib.Path] | None = None,
     ) -> tuple[str, Callable, dict[str, typing.Any]] | None:
+        dialog_loaders: dict[str, tuple[Callable, dict[str, typing.Any]]] = {}
+        for current_filter, (func, kwargs) in valid_loaders.items():
+            dialog_kwargs = kwargs.copy()
+            dialog_kwargs.update(
+                self._recent_loader_kwargs_by_filter.get(current_filter, {})
+            )
+            dialog_loaders[current_filter] = (func, dialog_kwargs)
+
         dialog = _NameFilterDialog(
             self,
-            valid_loaders,
+            dialog_loaders,
             loader_extensions=self._recent_loader_extensions_by_filter,
             sample_paths=sample_paths,
         )
-        dialog.check_filter(name_filter or self._preferred_name_filter(valid_loaders))
+        dialog.check_filter(name_filter or self._preferred_name_filter(dialog_loaders))
 
         if not dialog.exec():
             return None
@@ -313,9 +359,13 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         selected_filter, func, kwargs = dialog.checked_filter()
         self._recent_name_filter = selected_filter
         loader_extensions = kwargs.get("loader_extensions", {})
+        selected_kwargs = kwargs.copy()
+        selected_kwargs.pop("loader_extensions", None)
+        self._recent_loader_kwargs_by_filter[selected_filter] = selected_kwargs
         self._recent_loader_extensions_by_filter[selected_filter] = (
             loader_extensions.copy() if isinstance(loader_extensions, dict) else {}
         )
+        self._mark_workspace_layout_dirty()
         return selected_filter, func, kwargs
 
     def _create_standalone_app_action(self, key: str) -> QtGui.QAction:
@@ -335,10 +385,22 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
 
     def _create_standalone_app_window(self, key: str) -> QtWidgets.QWidget:
         widget = self._standalone_app_specs[key].factory()
-        widget.destroyed.connect(
-            lambda _=None, app_key=key: self._standalone_app_windows.pop(app_key, None)
-        )
+        event_filter = _StandaloneAppEventFilter(self)
+        widget.installEventFilter(event_filter)
+        self._standalone_app_event_filters[key] = event_filter
+        signal = getattr(widget, "sigStateChanged", None)
+        if signal is not None:
+            signal.connect(self._mark_standalone_app_state_dirty)
+
+        def cleanup(_obj: QtCore.QObject | None = None) -> None:
+            self._standalone_app_windows.pop(key, None)
+            self._standalone_app_event_filters.pop(key, None)
+
+        widget.destroyed.connect(cleanup)
         self._standalone_app_windows[key] = widget
+        pending_state = self._standalone_app_pending_states.get(key)
+        if pending_state is not None:
+            self._apply_standalone_app_state(key, widget, pending_state)
         return widget
 
     def _ensure_standalone_app(self, key: str) -> QtWidgets.QWidget:
@@ -354,9 +416,40 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         widget.raise_()
         return widget
 
+    def _mark_standalone_app_state_dirty(self) -> None:
+        self._mark_workspace_layout_dirty()
+
+    def _apply_standalone_app_state(
+        self,
+        key: str,
+        widget: QtWidgets.QWidget,
+        state: dict[str, typing.Any],
+    ) -> None:
+        restore_state = getattr(widget, "restore_workspace_state", None)
+        if callable(restore_state):
+            restore_state(state)
+
+        window_state = _qt_state.parse_qt_window_state(state.get("window_state"))
+        if window_state is None:
+            return
+        if window_state.visible:
+            widget.show()
+        else:
+            widget.hide()
+        self._standalone_app_pending_states[key] = state
+
+    def _close_standalone_app(self, key: str) -> None:
+        widget = self._standalone_app_windows.pop(key, None)
+        event_filter = self._standalone_app_event_filters.pop(key, None)
+        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
+            self._standalone_app_pending_states.pop(key, None)
+            return
+        if event_filter is not None:
+            widget.removeEventFilter(event_filter)
+        widget.close()
+        widget.deleteLater()
+        self._standalone_app_pending_states.pop(key, None)
+
     def _close_standalone_apps(self) -> None:
-        for widget in tuple(self._standalone_app_windows.values()):
-            if erlab.interactive.utils.qt_is_valid(widget):
-                widget.close()
-                widget.deleteLater()
-        self._standalone_app_windows.clear()
+        for key in tuple(self._standalone_app_windows):
+            self._close_standalone_app(key)

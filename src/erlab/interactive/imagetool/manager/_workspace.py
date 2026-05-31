@@ -1,3 +1,43 @@
+"""ImageTool Manager workspace file format internals.
+
+Workspace files use the ``.itws`` suffix and are HDF5 files written through
+``xarray.DataTree``/``h5netcdf``. Runtime code should treat the root attributes as the
+authoritative manifest for ordering and manager-level state; HDF5 group names are
+payload locations, not the complete schema.
+
+Current file layout
+-------------------
+
+::
+
+    /
+      attrs:
+        imagetool_workspace_schema_version
+        imagetool_workspace_manifest
+        erlab_version
+      <root index>/
+        imagetool/
+        childtools/
+          <child uid>/
+            imagetool/ or tool/
+      __itws_txn_<id>/, __itws_pending_<id>/, __itws_backup_<id>/
+
+Schema ownership
+----------------
+
+The root manifest envelope is assembled by :func:`_workspace_root_attrs_payload`;
+non-obvious manifest entries are commented where they are built. Manager-level loader
+state and the standalone app envelope are validated in this module. Data Explorer
+and Periodic Table state schemas live with the app code that snapshots and restores
+them. Shared Qt geometry/visibility state is implemented in
+:mod:`erlab.interactive._qt_state`.
+
+ImageTool and ToolWindow payload attrs live with the serializers that write them:
+``BaseImageTool.to_dataset`` and ``ToolWindow._saved_tool_attrs``. New writers use
+``*_window_state`` attrs; readers only fall back to released legacy ``itool_rect`` and
+``tool_rect`` attrs for older workspace files.
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -13,6 +53,7 @@ import typing
 import uuid
 from dataclasses import dataclass
 
+import pydantic
 from qtpy import QtCore
 
 import erlab
@@ -31,6 +72,37 @@ _WORKSPACE_TRANSACTION_PROTOCOL = "recoverable-delta-v1"
 _WORKSPACE_PENDING_GROUP_PREFIX = "__itws_pending_"
 _WORKSPACE_BACKUP_GROUP_PREFIX = "__itws_backup_"
 _WORKSPACE_TRANSACTION_GROUP_PREFIX = "__itws_txn_"
+
+
+class WorkspaceLoaderState(pydantic.BaseModel):
+    recent_directory: str | None = None
+    # QFileDialog name filter selected in manager file-open flows.
+    recent_name_filter: str | None = None
+    # Manager file-open options are keyed by name filter, not loader name.
+    manager_loader_kwargs_by_filter: dict[str, dict[str, typing.Any]] = pydantic.Field(
+        default_factory=dict
+    )
+    # Loader extensions are saved separately because extend_loader applies them later.
+    manager_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = (
+        pydantic.Field(default_factory=dict)
+    )
+    # Data Explorer tabs select loaders by name, so their options use loader names.
+    explorer_loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = pydantic.Field(
+        default_factory=dict
+    )
+    explorer_loader_extensions_by_name: dict[str, dict[str, typing.Any]] = (
+        pydantic.Field(default_factory=dict)
+    )
+
+    model_config = pydantic.ConfigDict(extra="ignore")
+
+
+class StandaloneAppsState(pydantic.BaseModel):
+    schema_version: int = 1
+    # Keys are manager standalone app ids such as "explorer" and "ptable".
+    apps: dict[str, dict[str, typing.Any]] = pydantic.Field(default_factory=dict)
+
+    model_config = pydantic.ConfigDict(extra="ignore")
 
 
 @dataclass
@@ -311,18 +383,31 @@ def _workspace_root_attrs_payload(
     erlab_version: str,
     workspace_link_id: str | None = None,
     manager_layout: Mapping[str, typing.Any] | None = None,
+    loader_state: Mapping[str, typing.Any] | None = None,
+    standalone_apps: Mapping[str, typing.Any] | None = None,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
         "erlab_version": erlab_version,
+        # HDF5 group order is not the manager's authoritative top-level order.
         "root_order": list(root_order),
+        # Stable manager UIDs map to payload groups and link/data metadata here.
         "nodes": list(nodes),
     }
     if workspace_link_id is not None:
+        # Scopes watched-variable/source links to this workspace document.
         manifest["workspace_link_id"] = workspace_link_id
     if manager_layout is not None:
+        # Stored at root so layout-only saves can avoid rewriting tool payloads.
         manifest["manager_layout"] = dict(manager_layout)
+    if loader_state is not None:
+        # Manager loader choices are independent of standalone Data Explorer state.
+        manifest["loader_state"] = dict(loader_state)
+    if standalone_apps is not None:
+        # Restored on full workspace open; imports intentionally ignore app windows.
+        manifest["standalone_apps"] = dict(standalone_apps)
     if delta_save_count > 0:
+        # Marks files written through the recoverable in-place delta-save protocol.
         manifest["transaction_protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL
         manifest["delta_save_count"] = int(delta_save_count)
     return {

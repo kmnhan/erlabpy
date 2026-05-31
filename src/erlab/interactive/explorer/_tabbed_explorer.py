@@ -6,15 +6,46 @@ import sys
 import typing
 import weakref
 
+import pydantic
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.explorer._base_explorer import _DataExplorer
+from erlab.interactive import _qt_state
+from erlab.interactive.explorer._base_explorer import (
+    DataExplorerTabState,
+    _DataExplorer,
+)
+
+
+class DataExplorerState(pydantic.BaseModel):
+    # The tabbed Data Explorer top-level window uses the shared Qt window schema.
+    window_state: _qt_state.QtWindowState | None = None
+    tabs: tuple[DataExplorerTabState, ...] = ()
+    active_tab: int = 0
+    # Shared loader options for tabs in this Data Explorer window.
+    loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = pydantic.Field(
+        default_factory=dict
+    )
+    loader_extensions_by_name: dict[str, dict[str, typing.Any]] = pydantic.Field(
+        default_factory=dict
+    )
+
+    model_config = pydantic.ConfigDict(extra="ignore")
+
+    @pydantic.field_validator("tabs", mode="before")
+    @classmethod
+    def _tabs_tuple(cls, value: object) -> object:
+        if value is None:
+            return ()
+        return tuple(value) if isinstance(value, (list, tuple)) else value
 
 
 class _TabbedExplorer(QtWidgets.QMainWindow):
+    sigStateChanged = QtCore.Signal()
+
     def __init__(self, parent: QtWidgets.QWidget | None = None, **kwargs) -> None:
         super().__init__(parent=parent)
+        self._workspace_state_restoring = False
         self._setup_actions()
         self._setup_ui(**kwargs)
 
@@ -27,6 +58,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.update_menubar)
+        self.tab_widget.currentChanged.connect(self._emit_workspace_state_changed)
 
         add_btn = erlab.interactive.utils.IconActionButton(
             self._addtab_act, "mdi6.plus", icon_kw={"scale_factor": 1.2}
@@ -106,6 +138,101 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
             return typing.cast("_DataExplorer", current_tab._explorer)
         return None
 
+    def _emit_workspace_state_changed(self, *_args: object) -> None:
+        if not self._workspace_state_restoring:
+            self.sigStateChanged.emit()
+
+    def loader_kwargs_by_name(self) -> dict[str, dict[str, typing.Any]]:
+        loader_kwargs: dict[str, dict[str, typing.Any]] = {}
+        for index in range(self.tab_widget.count()):
+            explorer = self.get_explorer(index)
+            if explorer is not None:
+                loader_kwargs.update(explorer.loader_kwargs_by_name())
+        return loader_kwargs
+
+    def loader_extensions_by_name(self) -> dict[str, dict[str, typing.Any]]:
+        loader_extensions: dict[str, dict[str, typing.Any]] = {}
+        for index in range(self.tab_widget.count()):
+            explorer = self.get_explorer(index)
+            if explorer is not None:
+                loader_extensions.update(explorer.loader_extensions_by_name())
+        return loader_extensions
+
+    def apply_loader_state(
+        self,
+        *,
+        kwargs_by_name: dict[str, dict[str, typing.Any]],
+        extensions_by_name: dict[str, dict[str, typing.Any]],
+    ) -> None:
+        for index in range(self.tab_widget.count()):
+            explorer = self.get_explorer(index)
+            if explorer is not None:
+                explorer.apply_loader_state(
+                    kwargs_by_name=kwargs_by_name,
+                    extensions_by_name=extensions_by_name,
+                )
+
+    def workspace_state_payload(self) -> dict[str, typing.Any]:
+        return DataExplorerState(
+            window_state=_qt_state.qt_window_state(self),
+            tabs=tuple(
+                DataExplorerTabState.model_validate(explorer.workspace_state_payload())
+                for index in range(self.tab_widget.count())
+                if (explorer := self.get_explorer(index)) is not None
+            ),
+            active_tab=int(self.tab_widget.currentIndex()),
+            loader_kwargs_by_name=self.loader_kwargs_by_name(),
+            loader_extensions_by_name=self.loader_extensions_by_name(),
+        ).model_dump(mode="json", exclude_none=True)
+
+    def restore_workspace_state(self, state: DataExplorerState) -> None:
+        state = DataExplorerState.model_validate(state)
+        self._workspace_state_restoring = True
+        try:
+            loader_kwargs_by_name = {
+                str(name): dict(value)
+                for name, value in state.loader_kwargs_by_name.items()
+            }
+            loader_extensions_by_name = {
+                str(name): dict(value)
+                for name, value in state.loader_extensions_by_name.items()
+            }
+
+            if state.tabs:
+                self._clear_tabs()
+                for tab_state in state.tabs:
+                    self.add_tab(
+                        root_path=tab_state.root_path,
+                        loader_name=tab_state.loader_name,
+                    )
+                    explorer = self.current_explorer
+                    if explorer is not None:
+                        explorer.restore_workspace_state(tab_state)
+            self.apply_loader_state(
+                kwargs_by_name=loader_kwargs_by_name,
+                extensions_by_name=loader_extensions_by_name,
+            )
+
+            if self.tab_widget.count() > 0:
+                self.tab_widget.setCurrentIndex(
+                    max(0, min(state.active_tab, self.tab_widget.count() - 1))
+                )
+
+            _qt_state.restore_qt_window_state(self, state.window_state)
+        finally:
+            self._workspace_state_restoring = False
+        self._emit_workspace_state_changed()
+
+    def _clear_tabs(self) -> None:
+        while self.tab_widget.count() > 0:
+            tab = self.tab_widget.widget(0)
+            explorer = self.get_explorer(0)
+            self.tab_widget.removeTab(0)
+            if explorer is not None:
+                explorer.deleteLater()
+            if tab is not None:
+                tab.deleteLater()
+
     @QtCore.Slot()
     def add_tab(self, **kwargs) -> None:
         """Add a new tab with a DataExplorer instance.
@@ -122,7 +249,13 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
             kwargs.setdefault("root_path", self.current_explorer.current_directory)
             kwargs.setdefault("loader_name", self.current_explorer.loader_name)
 
+        loader_kwargs = self.loader_kwargs_by_name()
+        loader_extensions = self.loader_extensions_by_name()
         new_explorer: _DataExplorer = _DataExplorer(self, **kwargs)
+        new_explorer.apply_loader_state(
+            kwargs_by_name=loader_kwargs,
+            extensions_by_name=loader_extensions,
+        )
         tab_idx: int = self.tab_widget.addTab(
             QtWidgets.QWidget(), str(new_explorer.current_directory.name)
         )
@@ -144,7 +277,9 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
 
         new_explorer.sigDirectoryChanged.connect(self.update_title)
         new_explorer.sigCloseRequested.connect(self.close_tab)
+        new_explorer.sigStateChanged.connect(self._emit_workspace_state_changed)
         self.update_menubar()
+        self._emit_workspace_state_changed()
 
     @QtCore.Slot()
     def update_menubar(self) -> None:
@@ -226,6 +361,7 @@ class _TabbedExplorer(QtWidgets.QMainWindow):
                 self.tab_widget.currentIndex() if index < 0 else index
             )
         self.update_menubar()
+        self._emit_workspace_state_changed()
 
     def dragEnterEvent(
         self, event: QtGui.QDragEnterEvent | None

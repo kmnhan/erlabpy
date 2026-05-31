@@ -179,6 +179,8 @@ class ImageToolManager(_ImageToolManagerBase):
         # Stores additional analysis tools opened from child ImageTool windows
         self._additional_windows: dict[str, QtWidgets.QWidget] = {}
         self._standalone_app_windows: dict[str, QtWidgets.QWidget] = {}
+        self._standalone_app_event_filters: dict[str, QtCore.QObject] = {}
+        self._standalone_app_pending_states: dict[str, dict[str, typing.Any]] = {}
         self._standalone_app_specs: dict[str, _StandaloneAppSpec] = {
             "explorer": _StandaloneAppSpec(
                 key="explorer",
@@ -643,6 +645,7 @@ class ImageToolManager(_ImageToolManagerBase):
         # Store most recent name filter and directory for new windows
         self._recent_name_filter: str | None = None
         self._recent_directory: str | None = None
+        self._recent_loader_kwargs_by_filter: dict[str, dict[str, typing.Any]] = {}
         self._recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]] = {}
         self._metadata_full_code_available = False
         self._metadata_node_uid: str | None = None
@@ -1210,9 +1213,6 @@ class ImageToolManager(_ImageToolManagerBase):
     def _mark_workspace_structure_dirty(self, reason: str) -> None:
         self._workspace_controller._mark_workspace_structure_dirty(reason)
 
-    def _mark_workspace_layout_dirty(self) -> None:
-        self._workspace_controller._mark_workspace_layout_dirty()
-
     def _mark_workspace_clean(self) -> None:
         self._workspace_controller._mark_workspace_clean()
 
@@ -1424,7 +1424,7 @@ class ImageToolManager(_ImageToolManagerBase):
             delta_save_count=delta_save_count
         )
 
-    def _workspace_layout_snapshot(self) -> dict[str, str]:
+    def _workspace_layout_snapshot(self) -> dict[str, typing.Any]:
         return self._workspace_controller._workspace_layout_snapshot()
 
     def _restore_workspace_layout(

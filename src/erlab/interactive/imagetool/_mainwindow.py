@@ -19,6 +19,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive import _qt_state
 from erlab.interactive.imagetool import _serialization, provenance
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
@@ -193,11 +194,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
             "itool_state": json.dumps(state),
             "itool_title": self.windowTitle(),
             "itool_name": str(name),
-            "itool_qt_geometry": (
-                erlab.interactive.utils._qt_bytearray_to_base64(self.saveGeometry())
-            ),
-            "itool_rect": self.geometry().getRect(),
-            "itool_visible": bool(self.isVisible()),
+            "itool_window_state": _qt_state.qt_window_state_json(self),
             "erlab_version": erlab.__version__,
         }
         if self._provenance_spec is not None:
@@ -260,13 +257,12 @@ class BaseImageTool(QtWidgets.QMainWindow):
                     "Ignoring invalid saved ImageTool provenance metadata.",
                 )
         tool.setWindowTitle(ds.attrs["itool_title"])
-        restored_geometry = False
-        geometry = erlab.interactive.utils._qt_bytearray_from_base64(
-            ds.attrs.get("itool_qt_geometry")
-        )
-        if geometry is not None:
-            restored_geometry = tool.restoreGeometry(geometry)
-        if not restored_geometry and "itool_rect" in ds.attrs:
+        if (
+            not _qt_state.restore_qt_window_state(
+                tool, ds.attrs.get("itool_window_state")
+            )
+            and "itool_rect" in ds.attrs
+        ):
             tool.setGeometry(*ds.attrs["itool_rect"])
         return tool
 

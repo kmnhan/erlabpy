@@ -16,6 +16,7 @@ import traceback
 import typing
 import weakref
 
+import pydantic
 import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -37,6 +38,33 @@ _TRANSLATE_MIME_TYPES = {
     "application/octet-stream": "Unknown",
     "text/csv": "CSV Document",
 }
+
+
+class DataExplorerTabState(pydantic.BaseModel):
+    root_path: str
+    loader_name: str | None = None
+    preview: bool = False
+    # Absolute file paths selected in the tree after the folder model is restored.
+    selected_paths: tuple[str, ...] = ()
+    sort_column: int = 0
+    sort_order: typing.Literal["ascending", "descending"] = "ascending"
+    # Splitter sizes are enough to restore the tab layout without QWidget state.
+    splitter_sizes: tuple[int, ...] = ()
+    preview_splitter_sizes: tuple[int, ...] = ()
+
+    model_config = pydantic.ConfigDict(extra="ignore")
+
+    @pydantic.field_validator(
+        "selected_paths",
+        "splitter_sizes",
+        "preview_splitter_sizes",
+        mode="before",
+    )
+    @classmethod
+    def _tuple_field(cls, value: object) -> object:
+        if value is None:
+            return ()
+        return tuple(value) if isinstance(value, (list, tuple)) else value
 
 
 class _FileSystem:
@@ -803,6 +831,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
 
     sigDirectoryChanged = QtCore.Signal(str)
     sigCloseRequested = QtCore.Signal(object)
+    sigStateChanged = QtCore.Signal()
 
     def __init__(
         self,
@@ -818,6 +847,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._fs_model.modelReset.connect(
             lambda: erlab.interactive.utils.single_shot(self, 1, self._dir_loaded)
         )
+        self._fs_model.layoutChanged.connect(self._emit_workspace_state_changed)
 
         self.menu_bar: QtWidgets.QMenuBar = typing.cast(
             "QtWidgets.QMenuBar", self.menuBar()
@@ -826,6 +856,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._slider_value: int | None = None
         self._loader_kwargs_by_name: dict[str, dict[str, typing.Any]] = {}
         self._loader_extensions_by_name: dict[str, dict[str, typing.Any]] = {}
+        self._workspace_state_restoring = False
 
         self._setup_actions()
         self._setup_ui()
@@ -850,6 +881,116 @@ class _DataExplorer(QtWidgets.QMainWindow):
     def current_directory(self) -> pathlib.Path:
         """Current directory being displayed."""
         return self._fs_model.file_system.path
+
+    def _emit_workspace_state_changed(self, *_args: object) -> None:
+        if not self._workspace_state_restoring:
+            self.sigStateChanged.emit()
+
+    def loader_kwargs_by_name(self) -> dict[str, dict[str, typing.Any]]:
+        return {
+            name: kwargs.copy() for name, kwargs in self._loader_kwargs_by_name.items()
+        }
+
+    def loader_extensions_by_name(self) -> dict[str, dict[str, typing.Any]]:
+        return {
+            name: extensions.copy()
+            for name, extensions in self._loader_extensions_by_name.items()
+        }
+
+    def apply_loader_state(
+        self,
+        *,
+        kwargs_by_name: dict[str, dict[str, typing.Any]],
+        extensions_by_name: dict[str, dict[str, typing.Any]],
+    ) -> None:
+        self._loader_kwargs_by_name = {
+            name: kwargs.copy() for name, kwargs in kwargs_by_name.items()
+        }
+        self._loader_extensions_by_name = {
+            name: extensions.copy() for name, extensions in extensions_by_name.items()
+        }
+
+    def workspace_state_payload(self) -> dict[str, typing.Any]:
+        sort_order: typing.Literal["ascending", "descending"] = (
+            "descending"
+            if self._fs_model._sort_order == QtCore.Qt.SortOrder.DescendingOrder
+            else "ascending"
+        )
+        return DataExplorerTabState(
+            root_path=str(self.current_directory),
+            loader_name=self.loader_name,
+            preview=bool(self._preview_check.isChecked()),
+            selected_paths=tuple(str(path) for path in self._current_selection),
+            sort_column=int(self._fs_model._sort_column),
+            sort_order=sort_order,
+            splitter_sizes=tuple(int(value) for value in self._main_splitter.sizes()),
+            preview_splitter_sizes=tuple(
+                int(value) for value in self._preview_splitter.sizes()
+            ),
+        ).model_dump(mode="json", exclude_none=True)
+
+    def restore_workspace_state(self, state: DataExplorerTabState) -> None:
+        state = DataExplorerTabState.model_validate(state)
+        self._workspace_state_restoring = True
+        try:
+            if state.loader_name is not None and state.loader_name in erlab.io.loaders:
+                self._loader_combo.setCurrentText(state.loader_name)
+
+            self._preview_check.setChecked(state.preview)
+
+            if state.root_path:
+                self._fs_model.set_root_path(state.root_path)
+
+            sort_order = (
+                QtCore.Qt.SortOrder.DescendingOrder
+                if state.sort_order == "descending"
+                else QtCore.Qt.SortOrder.AscendingOrder
+            )
+            self._tree_view.sortByColumn(state.sort_column, sort_order)
+
+            if state.splitter_sizes:
+                self._main_splitter.setSizes(list(state.splitter_sizes))
+
+            if state.preview_splitter_sizes:
+                self._preview_splitter.setSizes(list(state.preview_splitter_sizes))
+
+            if state.selected_paths:
+                restore_paths = tuple(str(path) for path in state.selected_paths)
+
+                def restore_selection() -> None:
+                    self._restore_workspace_selection(restore_paths)
+
+                erlab.interactive.utils.single_shot(
+                    self,
+                    0,
+                    restore_selection,
+                )
+        finally:
+            self._workspace_state_restoring = False
+        self._emit_workspace_state_changed()
+
+    def _restore_workspace_selection(self, paths: tuple[str, ...]) -> None:
+        selection_model = self._tree_view.selectionModel()
+        selection_model.clearSelection()
+        for path in paths:
+            index = self._model_index_for_path(path)
+            if not index.isValid():
+                continue
+            last_column = self._tree_view.model().columnCount() - 1
+            idx_end = self._tree_view.model().index(
+                index.row(), last_column, index.parent()
+            )
+            selection_model.select(
+                QtCore.QItemSelection(index, idx_end),
+                QtCore.QItemSelectionModel.SelectionFlag.Select,
+            )
+
+    def _model_index_for_path(self, path: str | os.PathLike[str]) -> QtCore.QModelIndex:
+        try:
+            item = self._fs_model.file_system.child_from_path(pathlib.Path(path))
+        except (KeyError, ValueError):
+            return QtCore.QModelIndex()
+        return self._fs_model._find_index(item)
 
     @QtCore.Slot()
     def try_close(self) -> None:
@@ -943,15 +1084,15 @@ class _DataExplorer(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(main_widget)
         main_widget.setLayout(layout)
 
-        splitter = QtWidgets.QSplitter(main_widget)
-        splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
+        self._main_splitter = QtWidgets.QSplitter(main_widget)
+        self._main_splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
+        layout.addWidget(self._main_splitter)
 
         left_widget = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_widget.setLayout(left_layout)
-        splitter.addWidget(left_widget)
+        self._main_splitter.addWidget(left_widget)
 
         left_header = QtWidgets.QWidget()
         left_header_layout = QtWidgets.QHBoxLayout(left_header)
@@ -989,6 +1130,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._tree_view.selectionModel().selectionChanged.connect(
             self._on_selection_changed
         )
+        self._tree_view.selectionModel().selectionChanged.connect(
+            self._emit_workspace_state_changed
+        )
         self._tree_view.doubleClicked.connect(self.double_clicked)
         self._tree_view.sortByColumn(0, QtCore.Qt.SortOrder.AscendingOrder)
         left_layout.addWidget(self._tree_view)
@@ -997,11 +1141,11 @@ class _DataExplorer(QtWidgets.QMainWindow):
         right_layout = QtWidgets.QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_widget.setLayout(right_layout)
-        splitter.addWidget(right_widget)
+        self._main_splitter.addWidget(right_widget)
 
-        preview_splitter = QtWidgets.QSplitter()
-        preview_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
-        right_layout.addWidget(preview_splitter)
+        self._preview_splitter = QtWidgets.QSplitter()
+        self._preview_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
+        right_layout.addWidget(self._preview_splitter)
 
         right_footer = QtWidgets.QWidget()
         right_footer_layout = QtWidgets.QHBoxLayout(right_footer)
@@ -1013,6 +1157,9 @@ class _DataExplorer(QtWidgets.QMainWindow):
         self._loader_combo = _LoaderWidget()
         self._loader_combo.currentIndexChanged.connect(self._on_selection_changed)
         self._loader_combo.currentIndexChanged.connect(self._loader_changed)
+        self._loader_combo.currentIndexChanged.connect(
+            self._emit_workspace_state_changed
+        )
         right_footer_layout.addWidget(self._loader_combo)
         right_footer_layout.addWidget(
             erlab.interactive.utils.IconActionButton(
@@ -1028,6 +1175,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         )
         self._preview_check.setChecked(False)
         self._preview_check.toggled.connect(self._on_selection_changed)
+        self._preview_check.toggled.connect(self._emit_workspace_state_changed)
         right_footer_layout.addWidget(self._preview_check)
 
         self._text_edit = QtWidgets.QTextEdit()
@@ -1037,13 +1185,13 @@ class _DataExplorer(QtWidgets.QMainWindow):
         typing.cast("QtWidgets.QScrollBar", scroll_bar).valueChanged.connect(
             self._save_slider_pos
         )
-        preview_splitter.addWidget(self._text_edit)
+        self._preview_splitter.addWidget(self._text_edit)
 
         self._preview = _DataPreviewWidget()
         self._preview.setVisible(False)
-        preview_splitter.addWidget(self._preview)
+        self._preview_splitter.addWidget(self._preview)
 
-        preview_splitter.setSizes([200, 200])
+        self._preview_splitter.setSizes([200, 200])
 
         self.setMinimumWidth(487)
         self.setMinimumHeight(301)
@@ -1059,6 +1207,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
             dir_name = dir_path.name or str(dir_path)
             self.setWindowTitle(f"Data Explorer — {dir_name}")
         self.sigDirectoryChanged.emit(str(dir_path))
+        self._emit_workspace_state_changed()
 
     @QtCore.Slot()
     def _save_slider_pos(self) -> None:
@@ -1131,6 +1280,7 @@ class _DataExplorer(QtWidgets.QMainWindow):
         selected_extensions = selected_kwargs.pop("loader_extensions", {})
         self._loader_kwargs_by_name[loader_name] = selected_kwargs
         self._loader_extensions_by_name[loader_name] = selected_extensions
+        self._emit_workspace_state_changed()
 
     def _manager_load_kwargs(
         self, kwargs: dict[str, typing.Any]
