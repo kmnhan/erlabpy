@@ -402,6 +402,7 @@ class _DetailsPanelController:
         self._manager.concat_action.setEnabled(
             multiple_selected and len(selection_children) == 0
         )
+        self._manager.batch_action.setEnabled(self._manager.batch_target_count() >= 2)
         self._manager.store_action.setEnabled(
             bool(self._manager.tree_view.selected_imagetool_indices)
         )

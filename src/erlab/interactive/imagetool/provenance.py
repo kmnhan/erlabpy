@@ -290,6 +290,7 @@ class ScriptCodeOperation(ToolProvenanceOperation):
 
 class QSelOperation(ToolProvenanceOperation):
     op: typing.Literal["qsel"] = "qsel"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             accessor_path=("qsel",),
@@ -317,6 +318,7 @@ class QSelOperation(ToolProvenanceOperation):
 
 class IselOperation(ToolProvenanceOperation):
     op: typing.Literal["isel"] = "isel"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             dataarray_method="isel",
@@ -345,6 +347,7 @@ class IselOperation(ToolProvenanceOperation):
 
 class SelOperation(ToolProvenanceOperation):
     op: typing.Literal["sel"] = "sel"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             dataarray_method="sel",
@@ -523,6 +526,7 @@ class RenameOperation(ToolProvenanceOperation):
 
 class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
     op: typing.Literal["restore_nonuniform_dims"] = "restore_nonuniform_dims"
+    batch_available: typing.ClassVar[bool] = True
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
         return erlab.interactive.imagetool.slicer.restore_nonuniform_dims(data)
@@ -540,6 +544,7 @@ class RestoreNonuniformDimsOperation(ToolProvenanceOperation):
 
 class RotateOperation(ToolProvenanceOperation):
     op: typing.Literal["rotate"] = "rotate"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             target="erlab.analysis.transform.rotate",
@@ -647,6 +652,7 @@ class AverageOperation(ToolProvenanceOperation):
 
 class QSelAggregationOperation(ToolProvenanceOperation):
     op: typing.Literal["qsel_aggregate"] = "qsel_aggregate"
+    batch_available: typing.ClassVar[bool] = True
     dims: ProvenanceHashableTuple
     func: typing.Literal["mean", "min", "max", "sum"] = "mean"
 
@@ -696,6 +702,7 @@ class QSelAggregationOperation(ToolProvenanceOperation):
 
 class InterpolationOperation(ToolProvenanceOperation):
     op: typing.Literal["interpolate"] = "interpolate"
+    batch_available: typing.ClassVar[bool] = True
     dim: ProvenanceHashable
     values: typing.Any
     method: typing.Literal["linear", "nearest"] = "linear"
@@ -785,6 +792,7 @@ class InterpolationOperation(ToolProvenanceOperation):
 
 class LeadingEdgeOperation(ToolProvenanceOperation):
     op: typing.Literal["leading_edge"] = "leading_edge"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             target="erlab.analysis.interpolate.leading_edge",
@@ -827,6 +835,7 @@ class LeadingEdgeOperation(ToolProvenanceOperation):
 
 class DivideByCoordOperation(ToolProvenanceOperation):
     op: typing.Literal["divide_by_coord"] = "divide_by_coord"
+    batch_available: typing.ClassVar[bool] = True
     coord_name: ProvenanceHashable
 
     @staticmethod
@@ -863,6 +872,7 @@ class DivideByCoordOperation(ToolProvenanceOperation):
 
 class GaussianFilterOperation(ToolProvenanceOperation):
     op: typing.Literal["gaussian_filter"] = "gaussian_filter"
+    batch_available: typing.ClassVar[bool] = True
     sigma: ProvenanceFloatMapping = pydantic.Field(default_factory=dict)
 
     def apply(self, data: xr.DataArray, *, parent_data: xr.DataArray) -> xr.DataArray:
@@ -885,6 +895,7 @@ class GaussianFilterOperation(ToolProvenanceOperation):
 
 class NormalizeOperation(ToolProvenanceOperation):
     op: typing.Literal["normalize"] = "normalize"
+    batch_available: typing.ClassVar[bool] = True
     dims: ProvenanceHashableTuple = ()
     mode: typing.Literal["area", "minmax", "min", "min_area"] = "area"
     denominator_rtol: float = 1e-12
@@ -978,6 +989,7 @@ class NormalizeOperation(ToolProvenanceOperation):
 
 class CoarsenOperation(ToolProvenanceOperation):
     op: typing.Literal["coarsen"] = "coarsen"
+    batch_available: typing.ClassVar[bool] = True
     dim: ProvenanceIntMapping = pydantic.Field(default_factory=dict)
     boundary: str
     side: str
@@ -1067,6 +1079,7 @@ class CoarsenOperation(ToolProvenanceOperation):
 
 class ThinOperation(ToolProvenanceOperation):
     op: typing.Literal["thin"] = "thin"
+    batch_available: typing.ClassVar[bool] = True
     mode: typing.Literal["global", "per_dim"]
     factor: int | None = None
     factors: ProvenanceIntMapping = pydantic.Field(default_factory=dict)
@@ -1136,6 +1149,7 @@ class ThinOperation(ToolProvenanceOperation):
 
 class SymmetrizeOperation(ToolProvenanceOperation):
     op: typing.Literal["symmetrize"] = "symmetrize"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             target="erlab.analysis.transform.symmetrize",
@@ -1184,6 +1198,7 @@ class SymmetrizeOperation(ToolProvenanceOperation):
 
 class SymmetrizeNfoldOperation(ToolProvenanceOperation):
     op: typing.Literal["symmetrize_nfold"] = "symmetrize_nfold"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             target="erlab.analysis.transform.symmetrize_nfold",
@@ -1310,6 +1325,7 @@ class CorrectWithEdgeOperation(ToolProvenanceOperation):
 
 class SwapDimsOperation(ToolProvenanceOperation):
     op: typing.Literal["swap_dims"] = "swap_dims"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(
             dataarray_method="swap_dims",
@@ -1336,6 +1352,7 @@ class SwapDimsOperation(ToolProvenanceOperation):
 
 class RenameDimsCoordsOperation(ToolProvenanceOperation):
     op: typing.Literal["rename_dims_coords"] = "rename_dims_coords"
+    batch_available: typing.ClassVar[bool] = True
     mapping: ProvenanceHashableMapping = pydantic.Field(default_factory=dict)
 
     @classmethod
@@ -1375,6 +1392,7 @@ class RenameDimsCoordsOperation(ToolProvenanceOperation):
 
 class AffineCoordOperation(ToolProvenanceOperation):
     op: typing.Literal["affine_coord"] = "affine_coord"
+    batch_available: typing.ClassVar[bool] = True
     coord_name: str
     scale: float
     offset: float
@@ -1433,6 +1451,7 @@ class AffineCoordOperation(ToolProvenanceOperation):
 
 class AssignCoordsOperation(ToolProvenanceOperation):
     op: typing.Literal["assign_coords"] = "assign_coords"
+    batch_available: typing.ClassVar[bool] = True
     coord_name: str
     values: typing.Any
 
@@ -1506,6 +1525,7 @@ class AssignCoordsOperation(ToolProvenanceOperation):
 
 class AssignScalarCoordOperation(ToolProvenanceOperation):
     op: typing.Literal["assign_scalar_coord"] = "assign_scalar_coord"
+    batch_available: typing.ClassVar[bool] = True
     coord_name: ProvenanceHashable
     value: typing.Any
 
@@ -1558,6 +1578,7 @@ class AssignScalarCoordOperation(ToolProvenanceOperation):
 
 class AssignCoord1DOperation(ToolProvenanceOperation):
     op: typing.Literal["assign_coord_1d"] = "assign_coord_1d"
+    batch_available: typing.ClassVar[bool] = True
     coord_name: ProvenanceHashable
     dim: ProvenanceHashable
     values: typing.Any
@@ -1639,6 +1660,7 @@ class AssignCoord1DOperation(ToolProvenanceOperation):
 
 class AssignAttrsOperation(ToolProvenanceOperation):
     op: typing.Literal["assign_attrs"] = "assign_attrs"
+    batch_available: typing.ClassVar[bool] = True
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = (
         ConsoleOperationPattern(dataarray_method="assign_attrs", kwargs_field="attrs"),
     )

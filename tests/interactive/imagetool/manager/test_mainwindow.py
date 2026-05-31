@@ -12,6 +12,8 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.dialogs as imagetool_dialogs
+import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
@@ -20,7 +22,12 @@ from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
 from erlab.interactive.imagetool.manager import fetch, replace_data
-from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog, _RenameDialog
+from erlab.interactive.imagetool.manager._dialogs import (
+    _batch_operation_dialog_classes,
+    _BatchOperationDialog,
+    _ConcatDialog,
+    _RenameDialog,
+)
 from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
@@ -52,6 +59,850 @@ if typing.TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
+
+
+def _batch_data(
+    name: str,
+    *,
+    dims: tuple[str, str] = ("x", "y"),
+    offset: float = 0.0,
+    first_coord: list[float] | None = None,
+) -> xr.DataArray:
+    coords = {
+        dims[0]: np.arange(3, dtype=float) if first_coord is None else first_coord,
+        dims[1]: np.arange(4, dtype=float),
+    }
+    return xr.DataArray(
+        np.arange(12, dtype=float).reshape(3, 4) + offset,
+        dims=dims,
+        coords=coords,
+        name=name,
+    )
+
+
+def _batch_volume(
+    name: str,
+    *,
+    dims: tuple[str, str, str] = ("x", "y", "z"),
+    offset: float = 0.0,
+    first_coord: list[float] | None = None,
+) -> xr.DataArray:
+    coords = {
+        dims[0]: np.arange(3, dtype=float) if first_coord is None else first_coord,
+        dims[1]: np.arange(3, dtype=float),
+        dims[2]: np.arange(4, dtype=float),
+    }
+    return xr.DataArray(
+        np.arange(36, dtype=float).reshape(3, 3, 4) + offset,
+        dims=dims,
+        coords=coords,
+        name=name,
+    )
+
+
+def _add_batch_tools(
+    qtbot,
+    manager: erlab.interactive.imagetool.manager.ImageToolManager,
+    *data_arrays: xr.DataArray,
+) -> None:
+    initial_count = manager.ntools
+    for data in data_arrays:
+        itool(data, manager=True)
+    qtbot.wait_until(
+        lambda: manager.ntools == initial_count + len(data_arrays),
+        timeout=5000,
+    )
+
+
+def _block_message_dialog(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tuple, dict]]:
+    calls: list[tuple[tuple, dict]] = []
+
+    def _critical(*args, **kwargs) -> int:
+        calls.append((args, kwargs))
+        return int(QtWidgets.QDialog.DialogCode.Accepted)
+
+    monkeypatch.setattr(
+        erlab.interactive.utils.MessageDialog,
+        "critical",
+        staticmethod(_critical),
+    )
+    return calls
+
+
+def _select_batch_operation(
+    dialog: _BatchOperationDialog,
+    dialog_cls: type[imagetool_dialogs._DataManipulationDialog],
+) -> None:
+    for top_index in range(dialog._operation_tree.topLevelItemCount()):
+        top_item = dialog._operation_tree.topLevelItem(top_index)
+        for child_index in range(top_item.childCount()):
+            child_item = top_item.child(child_index)
+            if child_item.data(0, QtCore.Qt.ItemDataRole.UserRole) is dialog_cls:
+                dialog._operation_tree.setCurrentItem(child_item)
+                return
+    raise AssertionError(f"{dialog_cls.__name__} was not rendered")
+
+
+class _BatchTransformStub:
+    operation_types = (provenance.AssignAttrsOperation,)
+
+    def __init__(
+        self,
+        operations: list[provenance.ToolProvenanceOperation] | None = None,
+        *,
+        source_error: Exception | None = None,
+        public_source: bool = False,
+    ) -> None:
+        self._operations = operations
+        self._source_error = source_error
+        self._public_source = public_source
+        self.keep_colors = False
+
+    def source_operations(self) -> list[provenance.ToolProvenanceOperation]:
+        if self._source_error is not None:
+            raise self._source_error
+        if self._operations is not None:
+            return list(self._operations)
+        return [provenance.AssignAttrsOperation(attrs={"batch": True})]
+
+    def source_spec_for_data(
+        self,
+        data: xr.DataArray,
+        new_name: str | None = None,
+    ) -> provenance.ToolProvenanceSpec:
+        del data, new_name
+        builder = (
+            provenance.public_data if self._public_source else provenance.full_data
+        )
+        return builder(*self.source_operations())
+
+    def _detached_provenance_spec(
+        self,
+        parent_provenance: provenance.ToolProvenanceSpec | None,
+        source_spec: provenance.ToolProvenanceSpec,
+        new_name: str,
+    ) -> provenance.ToolProvenanceSpec:
+        del parent_provenance, new_name
+        return source_spec
+
+    def _compose_transform_provenance(
+        self,
+        base_spec: provenance.ToolProvenanceSpec | None,
+        source_spec: provenance.ToolProvenanceSpec,
+        new_name: str,
+    ) -> provenance.ToolProvenanceSpec:
+        del base_spec, new_name
+        return source_spec
+
+    def _itool_kwargs(
+        self,
+        processed: xr.DataArray,
+        slicer_area=None,
+    ) -> dict[str, typing.Any]:
+        del slicer_area
+        return {"data": processed, "execute": False}
+
+
+class _BatchFilterStub:
+    operation_types = (provenance.NormalizeOperation,)
+
+    def __init__(
+        self,
+        operation: provenance.ToolProvenanceOperation | None,
+    ) -> None:
+        self._operation = operation
+
+    def filter_operation(self) -> provenance.ToolProvenanceOperation | None:
+        return self._operation
+
+
+def test_batch_operation_metadata_matches_launcher() -> None:
+    dialog_classes = _batch_operation_dialog_classes()
+    assert dialog_classes
+    assert imagetool_dialogs.EdgeCorrectionDialog not in dialog_classes
+    assert imagetool_dialogs.ROIPathDialog not in dialog_classes
+    assert imagetool_dialogs.ROIMaskDialog not in dialog_classes
+    assert [
+        dialog_cls for dialog_cls in dialog_classes if not dialog_cls.operation_types
+    ] == []
+    assert [
+        operation_type
+        for dialog_cls in dialog_classes
+        for operation_type in dialog_cls.operation_types
+        if not operation_type.batch_available
+    ] == []
+    assert provenance.RestoreNonuniformDimsOperation.batch_available
+
+
+def test_batch_dialog_defensive_paths_and_launch(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_data("scan0"),
+            _batch_data("scan1", offset=100.0),
+        )
+        select_tools(manager, [0, 1])
+        dialog = _BatchOperationDialog(manager)
+        qtbot.addWidget(dialog)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                manager_dialogs,
+                "_BATCH_OPERATION_CATEGORIES",
+                (("Hidden", (imagetool_dialogs.EdgeCorrectionDialog,)),),
+            )
+            dialog._populate_operations()
+            assert dialog._operation_tree.topLevelItemCount() == 0
+        dialog._populate_operations()
+
+        dialog.show()
+        qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
+        dialog.close()
+
+        _select_batch_operation(dialog, imagetool_dialogs.NormalizeDialog)
+        manager.tree_view.deselect_all()
+        select_tools(manager, [0])
+        dialog._launch_selected_operation()
+        assert messages
+
+        launched_dialogs = []
+
+        def _capture_tool_window(widget, **kwargs) -> None:
+            launched_dialogs.append((widget, kwargs))
+
+        select_tools(manager, [0, 1])
+        monkeypatch.setattr(
+            manager.get_imagetool(0).slicer_area,
+            "add_tool_window",
+            _capture_tool_window,
+        )
+        dialog._launch_selected_operation()
+        assert isinstance(
+            launched_dialogs[0][0],
+            imagetool_dialogs.NormalizeDialog,
+        )
+        assert launched_dialogs[0][1] == {
+            "update_title": False,
+            "transfer_to_manager": False,
+        }
+
+        invalid_item = QtWidgets.QTreeWidgetItem(["invalid"])
+        invalid_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, object())
+        dialog._target_item_changed(invalid_item, 0)
+
+        missing_item = QtWidgets.QTreeWidgetItem(["missing"])
+        missing_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, "missing")
+        dialog._target_item_changed(missing_item, 0)
+
+        valid_item = dialog._target_items[0]
+        monkeypatch.setattr(manager.tree_view, "selectionModel", lambda: None)
+        dialog._target_item_changed(valid_item, 0)
+
+        invalid_operation_item = QtWidgets.QTreeWidgetItem(["invalid"])
+        invalid_operation_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, object())
+        dialog._operation_tree.addTopLevelItem(invalid_operation_item)
+        dialog._operation_tree.setCurrentItem(invalid_operation_item)
+        assert dialog._selected_dialog_cls() is None
+
+        old_launch_button = dialog._launch_button
+        dialog._launch_button = None
+        dialog._update_launch_enabled()
+        dialog._launch_button = old_launch_button
+
+        dialog._manager = lambda: None
+        dialog._populate_targets()
+        dialog._add_target_item(0)
+        dialog._sync_target_checks()
+        dialog._target_item_changed(valid_item, 0)
+        dialog._launch_selected_operation()
+
+
+def test_batch_action_transform_error_paths(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, _batch_data("scan0"))
+        manager.show_batch_operations()
+        assert manager._actions_controller._ActionsController__batch_dialog is None
+
+        _add_batch_tools(qtbot, manager, _batch_data("scan1", offset=100.0))
+        select_tools(manager, [0, 1])
+
+        with monkeypatch.context() as mp:
+            mp.setattr(manager, "_selected_imagetool_targets", lambda: [0])
+            assert not manager.apply_batch_transform_dialog(
+                _BatchTransformStub(),
+                "replace",
+            )
+            mp.setattr(manager, "_selected_imagetool_targets", lambda: [0, "tool"])
+            mp.setattr(
+                manager,
+                "_is_imagetool_target",
+                lambda target: target == 0,
+            )
+            assert not manager.apply_batch_transform_dialog(
+                _BatchTransformStub(),
+                "replace",
+            )
+        select_tools(manager, [0, 1])
+
+        assert not manager.apply_batch_transform_dialog(
+            _BatchTransformStub(source_error=RuntimeError("source failed")),
+            "replace",
+        )
+        assert not manager.apply_batch_transform_dialog(
+            _BatchTransformStub([]),
+            "replace",
+        )
+        assert not manager.apply_batch_transform_dialog(
+            _BatchTransformStub([provenance.NormalizeOperation(dims=("x",))]),
+            "replace",
+        )
+
+        class _ScriptTransformStub(_BatchTransformStub):
+            operation_types = (provenance.ScriptCodeOperation,)
+
+        assert not manager.apply_batch_transform_dialog(
+            _ScriptTransformStub(
+                [provenance.ScriptCodeOperation(label="Custom", code=None)]
+            ),
+            "replace",
+        )
+
+        manager._node_for_target(0).set_source_binding(provenance.full_data())
+        manager._node_for_target(1).set_detached_provenance(provenance.full_data())
+        assert manager.apply_batch_transform_dialog(
+            _BatchTransformStub(public_source=True),
+            "replace",
+        )
+
+        monkeypatch.setattr(erlab.interactive, "itool", lambda **kwargs: None)
+        assert not manager.apply_batch_transform_dialog(
+            _BatchTransformStub(),
+            "detach",
+        )
+
+        def _raise_replace(*args, **kwargs) -> None:
+            raise RuntimeError("replace failed")
+
+        monkeypatch.setattr(
+            manager.get_imagetool(0).slicer_area,
+            "replace_source_data",
+            _raise_replace,
+        )
+        assert not manager.apply_batch_transform_dialog(
+            _BatchTransformStub(),
+            "replace",
+        )
+        assert len(messages) >= 6
+
+
+def test_batch_filter_error_paths(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_data("scan0"),
+            _batch_data("scan1", offset=100.0),
+        )
+        select_tools(manager, [0, 1])
+
+        class _ScriptFilterStub(_BatchFilterStub):
+            operation_types = (provenance.ScriptCodeOperation,)
+
+        assert not manager.apply_batch_filter_dialog(
+            _ScriptFilterStub(provenance.ScriptCodeOperation(label="Custom", code=None))
+        )
+        assert not manager.apply_batch_filter_dialog(
+            _BatchFilterStub(provenance.NormalizeOperation(dims=("missing",)))
+        )
+
+        real_get_imagetool = manager.get_imagetool
+        get_imagetool_calls = 0
+
+        def _raise_during_commit(target):
+            nonlocal get_imagetool_calls
+            get_imagetool_calls += 1
+            if get_imagetool_calls > 2:
+                raise RuntimeError("commit failed")
+            return real_get_imagetool(target)
+
+        monkeypatch.setattr(manager, "get_imagetool", _raise_during_commit)
+        assert not manager.apply_batch_filter_dialog(
+            _BatchFilterStub(provenance.NormalizeOperation(dims=("x",)))
+        )
+        assert len(messages) >= 3
+
+
+def test_batch_dialog_accept_wrappers(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_volume("scan0"),
+            _batch_volume("scan1", offset=100.0),
+        )
+        area = manager.get_imagetool(0).slicer_area
+
+        single_dialog = imagetool_dialogs.RotationDialog(area)
+        qtbot.addWidget(single_dialog)
+        assert single_dialog.batch_manager is None
+        assert single_dialog.source_spec().kind == "full_data"
+        assert single_dialog._itool_kwargs(area.data)["data"] is area.data
+
+        transform_dialog = imagetool_dialogs.RotationDialog(
+            area,
+            batch_manager=manager,
+        )
+        monkeypatch.setattr(
+            manager,
+            "apply_batch_transform_dialog",
+            lambda dialog, launch_mode: False,
+        )
+        transform_dialog.accept()
+        assert transform_dialog.result() == int(QtWidgets.QDialog.DialogCode.Rejected)
+
+        transform_dialog = imagetool_dialogs.RotationDialog(
+            area,
+            batch_manager=manager,
+        )
+        monkeypatch.setattr(
+            manager,
+            "apply_batch_transform_dialog",
+            lambda dialog, launch_mode: True,
+        )
+        transform_dialog.accept()
+        assert transform_dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        transform_dialog = imagetool_dialogs.RotationDialog(
+            area,
+            batch_manager=manager,
+        )
+
+        def _raise_transform(dialog, launch_mode) -> bool:
+            raise RuntimeError("batch failed")
+
+        monkeypatch.setattr(
+            manager,
+            "apply_batch_transform_dialog",
+            _raise_transform,
+        )
+        transform_dialog.accept()
+
+        filter_dialog = imagetool_dialogs.NormalizeDialog(area, batch_manager=manager)
+        monkeypatch.setattr(
+            manager,
+            "apply_batch_filter_dialog",
+            lambda dialog: False,
+        )
+        filter_dialog.accept()
+        assert filter_dialog.result() == int(QtWidgets.QDialog.DialogCode.Rejected)
+
+        filter_dialog = imagetool_dialogs.NormalizeDialog(area, batch_manager=manager)
+        monkeypatch.setattr(
+            manager,
+            "apply_batch_filter_dialog",
+            lambda dialog: True,
+        )
+        filter_dialog.accept()
+        assert filter_dialog.result() == int(QtWidgets.QDialog.DialogCode.Accepted)
+
+        filter_dialog = imagetool_dialogs.NormalizeDialog(area, batch_manager=manager)
+
+        def _raise_filter(dialog) -> bool:
+            raise RuntimeError("batch failed")
+
+        monkeypatch.setattr(manager, "apply_batch_filter_dialog", _raise_filter)
+        filter_dialog.accept()
+        assert messages
+
+
+def test_batch_dialog_categories_and_target_checks_update_manager_selection(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_data("scan0"),
+            _batch_data("scan1", offset=100.0),
+        )
+        manager.tree_view.deselect_all()
+        manager._update_actions()
+        assert manager.batch_action.isEnabled()
+
+        select_tools(manager, [0, 1])
+        dialog = _BatchOperationDialog(manager)
+        qtbot.addWidget(dialog)
+
+        assert dialog._operation_tree.topLevelItemCount() == 4
+        rendered_dialogs = []
+        for top_index in range(dialog._operation_tree.topLevelItemCount()):
+            top_item = dialog._operation_tree.topLevelItem(top_index)
+            assert top_item.childCount() > 0
+            rendered_dialogs.extend(
+                top_item.child(child_index).data(0, QtCore.Qt.ItemDataRole.UserRole)
+                for child_index in range(top_item.childCount())
+            )
+        assert set(_batch_operation_dialog_classes()) == set(rendered_dialogs)
+
+        assert dialog._launch_button is not None
+        assert not dialog._launch_button.isEnabled()
+        _select_batch_operation(dialog, imagetool_dialogs.NormalizeDialog)
+        assert dialog._launch_button.isEnabled()
+
+        dialog._target_items[1].setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+        qtbot.wait_until(
+            lambda: manager._selected_imagetool_targets() == [0],
+            timeout=1000,
+        )
+        assert not dialog._launch_button.isEnabled()
+
+        dialog._target_items[1].setCheckState(0, QtCore.Qt.CheckState.Checked)
+        qtbot.wait_until(
+            lambda: manager._selected_imagetool_targets() == [0, 1],
+            timeout=1000,
+        )
+        assert dialog._launch_button.isEnabled()
+
+
+def test_batch_dialog_open_refreshes_cached_targets(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_data("scan0"),
+            _batch_data("scan1", offset=100.0),
+        )
+
+        manager.show_batch_operations()
+        dialog = manager._actions_controller._batch_dialog
+        qtbot.addWidget(dialog)
+        qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
+        assert set(dialog._target_items) == {0, 1}
+
+        dialog.close()
+        _add_batch_tools(qtbot, manager, _batch_data("scan2", offset=200.0))
+
+        manager.show_batch_operations()
+        qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
+        assert set(dialog._target_items) == {0, 1, 2}
+
+
+def test_batch_action_updates_when_child_imagetool_count_changes(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, _batch_data("scan0"))
+        assert manager.batch_target_count() == 1
+        assert not manager.batch_action.isEnabled()
+
+        child_tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(_batch_data("child"), manager=False, execute=False),
+        )
+        child_uid = manager.add_imagetool_child(child_tool, 0, show=False)
+        assert manager.batch_target_count() == 2
+        assert manager.batch_action.isEnabled()
+
+        manager._remove_childtool(child_uid)
+        assert manager.batch_target_count() == 1
+        assert not manager.batch_action.isEnabled()
+
+
+def test_batch_dialog_expands_child_targets(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, _batch_data("scan0"))
+
+        child_tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(_batch_data("child"), manager=False, execute=False),
+        )
+        child_uid = manager.add_imagetool_child(child_tool, 0, show=False)
+
+        manager.show_batch_operations()
+        dialog = manager._actions_controller._batch_dialog
+        qtbot.addWidget(dialog)
+        qtbot.wait_until(lambda: dialog.isVisible(), timeout=1000)
+
+        parent_item = dialog._target_tree.topLevelItem(0)
+        assert parent_item is dialog._target_items[0]
+        assert dialog._target_items[child_uid].parent() is parent_item
+        assert parent_item.isExpanded()
+
+
+def test_batch_action_updates_when_tool_child_subtree_removes_imagetool(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, _batch_data("scan0"))
+
+        tool_uid = manager.add_childtool(
+            erlab.interactive.utils.ToolWindow(),
+            0,
+            show=False,
+        )
+        child_tool = typing.cast(
+            "erlab.interactive.imagetool.ImageTool",
+            itool(_batch_data("child"), manager=False, execute=False),
+        )
+        manager.add_imagetool_child(child_tool, tool_uid, show=False)
+        assert manager.batch_target_count() == 2
+        assert manager.batch_action.isEnabled()
+
+        manager._remove_childtool(tool_uid)
+        assert manager.batch_target_count() == 1
+        assert not manager.batch_action.isEnabled()
+
+
+@pytest.mark.parametrize("launch_mode", ["replace", "nest", "detach"])
+def test_batch_transform_placements(
+    qtbot,
+    launch_mode: str,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    data0 = _batch_volume("scan0")
+    data1 = _batch_volume("scan1", offset=100.0)
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.AggregateDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        dialog.dim_checks["y"].setChecked(True)
+
+        assert manager.apply_batch_transform_dialog(
+            dialog,
+            typing.cast("typing.Literal['replace', 'detach', 'nest']", launch_mode),
+        )
+
+        expected = [data0.qsel.mean("y"), data1.qsel.mean("y")]
+        if launch_mode == "replace":
+            assert manager.ntools == 2
+            for index, expected_data in enumerate(expected):
+                xarray.testing.assert_identical(
+                    manager.get_imagetool(index).slicer_area._data.rename(None),
+                    expected_data.rename(None),
+                )
+        elif launch_mode == "nest":
+            assert manager.ntools == 2
+            for index, expected_data in enumerate(expected):
+                child_uids = manager._tool_graph.root_wrappers[index]._childtool_indices
+                assert len(child_uids) == 1
+                child_tool = manager.get_imagetool(child_uids[0])
+                xarray.testing.assert_identical(
+                    child_tool.slicer_area._data.rename(None),
+                    expected_data.rename(None),
+                )
+        else:
+            assert manager.ntools == 4
+            for index, expected_data in zip((2, 3), expected, strict=True):
+                xarray.testing.assert_identical(
+                    manager.get_imagetool(index).slicer_area._data.rename(None),
+                    expected_data.rename(None),
+                )
+
+
+def test_batch_filter_applies_in_place_only(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(
+            qtbot,
+            manager,
+            _batch_data("scan0"),
+            _batch_data("scan1", offset=100.0),
+        )
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.NormalizeDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        dialog.dim_checks["y"].setChecked(True)
+
+        assert manager.apply_batch_filter_dialog(dialog)
+        assert manager.ntools == 2
+        for index in (0, 1):
+            operation = manager.get_imagetool(
+                index
+            ).slicer_area._accepted_filter_provenance_operation
+            assert isinstance(operation, provenance.NormalizeOperation)
+
+
+def test_batch_transform_preflight_failure_leaves_all_targets_unchanged(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    data0 = _batch_volume("scan0")
+    data1 = _batch_volume("scan1", dims=("x", "other", "z"), offset=100.0)
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.AggregateDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        dialog.dim_checks["y"].setChecked(True)
+
+        assert not manager.apply_batch_transform_dialog(dialog, "replace")
+        assert messages
+        xarray.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area._data.rename(None),
+            data0.rename(None),
+        )
+        xarray.testing.assert_identical(
+            manager.get_imagetool(1).slicer_area._data.rename(None),
+            data1.rename(None),
+        )
+
+
+def test_batch_add_coord_duplicate_target_aborts_all_unchanged(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    messages = _block_message_dialog(monkeypatch)
+    data0 = _batch_data("scan0")
+    data1 = _batch_data("scan1", offset=100.0).assign_coords(foo=5.0)
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, data0, data1)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.AssignCoordsDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        dialog._mode_tabs.setCurrentIndex(1)
+        dialog._add_name_edit.setText("foo")
+
+        assert not manager.apply_batch_transform_dialog(dialog, "replace")
+        assert messages
+        xarray.testing.assert_identical(
+            manager.get_imagetool(0).slicer_area._data.rename(None),
+            data0.rename(None),
+        )
+        xarray.testing.assert_identical(
+            manager.get_imagetool(1).slicer_area._data.rename(None),
+            data1.rename(None),
+        )
+
+
+def test_batch_nonuniform_restore_is_target_specific(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    uniform = _batch_volume("uniform")
+    nonuniform = _batch_volume(
+        "nonuniform",
+        offset=100.0,
+        first_coord=[0.0, 0.4, 1.1],
+    )
+
+    with manager_context() as manager:
+        manager.show()
+        _add_batch_tools(qtbot, manager, uniform, nonuniform)
+        select_tools(manager, [0, 1])
+
+        dialog = imagetool_dialogs.AggregateDialog(
+            manager.get_imagetool(0).slicer_area,
+            batch_manager=manager,
+        )
+        dialog.dim_checks["y"].setChecked(True)
+
+        assert manager.apply_batch_transform_dialog(dialog, "nest")
+
+        uniform_child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
+        nonuniform_child_uid = manager._tool_graph.root_wrappers[1]._childtool_indices[
+            0
+        ]
+        uniform_source_spec = manager._child_node(uniform_child_uid).source_spec
+        nonuniform_source_spec = manager._child_node(nonuniform_child_uid).source_spec
+        assert uniform_source_spec is not None
+        assert nonuniform_source_spec is not None
+        assert [op.op for op in uniform_source_spec.operations] == ["qsel_aggregate"]
+        assert [op.op for op in nonuniform_source_spec.operations] == [
+            "qsel_aggregate",
+            "restore_nonuniform_dims",
+        ]
 
 
 def test_manager_metadata_full_code_generated_only_when_copied(

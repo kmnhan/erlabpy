@@ -13,6 +13,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -20,6 +21,295 @@ if typing.TYPE_CHECKING:
     import xarray
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+
+
+_BatchDialogType = type[imagetool_dialogs._DataManipulationDialog]
+
+_BATCH_OPERATION_CATEGORIES: tuple[tuple[str, tuple[_BatchDialogType, ...]], ...] = (
+    (
+        "Coordinates",
+        (
+            imagetool_dialogs.AssignCoordsDialog,
+            imagetool_dialogs.AssignAttrsDialog,
+            imagetool_dialogs.RenameDimsCoordsDialog,
+            imagetool_dialogs.SwapDimsDialog,
+        ),
+    ),
+    (
+        "Selection",
+        (
+            imagetool_dialogs.SelectionDialog,
+            imagetool_dialogs.CropDialog,
+            imagetool_dialogs.CropToViewDialog,
+        ),
+    ),
+    (
+        "Transforms",
+        (
+            imagetool_dialogs.RotationDialog,
+            imagetool_dialogs.AggregateDialog,
+            imagetool_dialogs.InterpolationDialog,
+            imagetool_dialogs.LeadingEdgeDialog,
+            imagetool_dialogs.DivideByCoordDialog,
+            imagetool_dialogs.CoarsenDialog,
+            imagetool_dialogs.ThinDialog,
+            imagetool_dialogs.SymmetrizeDialog,
+            imagetool_dialogs.SymmetrizeNfoldDialog,
+        ),
+    ),
+    (
+        "Filters",
+        (
+            imagetool_dialogs.NormalizeDialog,
+            imagetool_dialogs.GaussianFilterDialog,
+        ),
+    ),
+)
+
+
+def _dialog_batch_available(dialog_cls: _BatchDialogType) -> bool:
+    return bool(dialog_cls.operation_types) and all(
+        operation_type.batch_available for operation_type in dialog_cls.operation_types
+    )
+
+
+def _batch_operation_dialog_classes() -> tuple[_BatchDialogType, ...]:
+    return tuple(
+        dialog_cls
+        for _category, dialog_classes in _BATCH_OPERATION_CATEGORIES
+        for dialog_cls in dialog_classes
+        if _dialog_batch_available(dialog_cls)
+    )
+
+
+class _BatchOperationDialog(QtWidgets.QDialog):
+    def __init__(self, manager: ImageToolManager) -> None:
+        super().__init__(manager)
+        self.setWindowTitle("Batch Operation")
+        self.setModal(True)
+        self.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self._manager = weakref.ref(manager)
+        self._syncing_targets = False
+        self._target_items: dict[int | str, QtWidgets.QTreeWidgetItem] = {}
+
+        layout = QtWidgets.QVBoxLayout(self)
+        self.setLayout(layout)
+
+        panes = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, self)
+        layout.addWidget(panes)
+
+        target_group = QtWidgets.QGroupBox("Targets", self)
+        target_layout = QtWidgets.QVBoxLayout(target_group)
+        self._target_tree = QtWidgets.QTreeWidget(target_group)
+        self._target_tree.setObjectName("manager_batch_target_tree")
+        self._target_tree.setHeaderHidden(True)
+        self._target_tree.itemChanged.connect(self._target_item_changed)
+        target_layout.addWidget(self._target_tree)
+        panes.addWidget(target_group)
+
+        operation_group = QtWidgets.QGroupBox("Operations", self)
+        operation_layout = QtWidgets.QVBoxLayout(operation_group)
+        self._operation_tree = QtWidgets.QTreeWidget(operation_group)
+        self._operation_tree.setObjectName("manager_batch_operation_tree")
+        self._operation_tree.setHeaderHidden(True)
+        self._operation_tree.itemSelectionChanged.connect(self._update_launch_enabled)
+        operation_layout.addWidget(self._operation_tree)
+        panes.addWidget(operation_group)
+
+        panes.setSizes([220, 280])
+
+        self._button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self._launch_button = self._button_box.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        if self._launch_button is not None:  # pragma: no branch
+            self._launch_button.setObjectName("manager_batch_launch_button")
+            self._launch_button.setText("Open")
+        self._button_box.accepted.connect(self._launch_selected_operation)
+        self._button_box.rejected.connect(self.reject)
+        layout.addWidget(self._button_box)
+
+        selection_model = manager.tree_view.selectionModel()
+        if selection_model is not None:  # pragma: no branch
+            selection_model.selectionChanged.connect(self._sync_target_checks)
+            selection_model.selectionChanged.connect(self._update_launch_enabled)
+
+        self._populate_operations()
+        self._populate_targets()
+        self._update_launch_enabled()
+
+    def _manager_instance(self) -> ImageToolManager | None:
+        return self._manager()
+
+    def _populate_operations(self) -> None:
+        self._operation_tree.clear()
+        for category, dialog_classes in _BATCH_OPERATION_CATEGORIES:
+            visible_dialogs = [
+                dialog_cls
+                for dialog_cls in dialog_classes
+                if _dialog_batch_available(dialog_cls)
+            ]
+            if not visible_dialogs:
+                continue
+            category_item = QtWidgets.QTreeWidgetItem([category])
+            category_item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+            self._operation_tree.addTopLevelItem(category_item)
+            for dialog_cls in visible_dialogs:
+                item = QtWidgets.QTreeWidgetItem(
+                    [dialog_cls.title or dialog_cls.__name__]
+                )
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, dialog_cls)
+                category_item.addChild(item)
+        self._operation_tree.expandAll()
+
+    def _populate_targets(self) -> None:
+        manager = self._manager_instance()
+        if manager is None:
+            return
+        self._syncing_targets = True
+        try:
+            self._target_tree.clear()
+            self._target_items.clear()
+            for target in manager._tool_graph.displayed_indices:
+                self._add_target_item(target)
+            self._target_tree.expandAll()
+        finally:
+            self._syncing_targets = False
+        self._sync_target_checks()
+
+    def _add_target_item(
+        self,
+        target: int | str,
+        parent: QtWidgets.QTreeWidgetItem | None = None,
+    ) -> None:
+        manager = self._manager_instance()
+        if manager is None:
+            return
+        node = manager._node_for_target(target)
+        item: QtWidgets.QTreeWidgetItem | None = None
+        if node.is_imagetool:
+            item = QtWidgets.QTreeWidgetItem([node.display_text])
+            item.setData(0, QtCore.Qt.ItemDataRole.UserRole, target)
+            item.setFlags(
+                item.flags()
+                | QtCore.Qt.ItemFlag.ItemIsUserCheckable
+                | QtCore.Qt.ItemFlag.ItemIsSelectable
+            )
+            item.setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+            self._target_items[target] = item
+            if parent is None:
+                self._target_tree.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+        child_parent = item if item is not None else parent
+        for child_uid in node._childtool_indices:
+            self._add_target_item(child_uid, child_parent)
+
+    @QtCore.Slot()
+    def _sync_target_checks(self) -> None:
+        manager = self._manager_instance()
+        if manager is None:
+            return
+        selected = set(manager._selected_imagetool_targets())
+        self._syncing_targets = True
+        try:
+            for target, item in self._target_items.items():
+                checked = target in selected
+                item.setCheckState(
+                    0,
+                    QtCore.Qt.CheckState.Checked
+                    if checked
+                    else QtCore.Qt.CheckState.Unchecked,
+                )
+        finally:
+            self._syncing_targets = False
+        self._update_launch_enabled()
+
+    @QtCore.Slot(QtWidgets.QTreeWidgetItem, int)
+    def _target_item_changed(
+        self, item: QtWidgets.QTreeWidgetItem, column: int
+    ) -> None:
+        if self._syncing_targets or column != 0:
+            return
+        manager = self._manager_instance()
+        if manager is None:
+            return
+        target = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(target, (int, str)):
+            return
+        qmodelindex = manager.tree_view._model._row_index(target)
+        if not qmodelindex.isValid():
+            return
+        selection_model = manager.tree_view.selectionModel()
+        if selection_model is None:
+            return
+        flag = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if item.checkState(0) == QtCore.Qt.CheckState.Checked
+            else QtCore.QItemSelectionModel.SelectionFlag.Deselect
+        )
+        selection_model.select(QtCore.QItemSelection(qmodelindex, qmodelindex), flag)
+        self._update_launch_enabled()
+
+    def _selected_dialog_cls(self) -> _BatchDialogType | None:
+        items = self._operation_tree.selectedItems()
+        if not items:
+            return None
+        dialog_cls = items[0].data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(dialog_cls, type) and issubclass(
+            dialog_cls, imagetool_dialogs._DataManipulationDialog
+        ):
+            return dialog_cls
+        return None
+
+    @QtCore.Slot()
+    def _update_launch_enabled(self) -> None:
+        if self._launch_button is None:
+            return
+        manager = self._manager_instance()
+        selected_targets = (
+            [] if manager is None else manager._selected_imagetool_targets()
+        )
+        self._launch_button.setEnabled(
+            self._selected_dialog_cls() is not None and len(selected_targets) >= 2
+        )
+
+    @QtCore.Slot()
+    def _launch_selected_operation(self) -> None:
+        manager = self._manager_instance()
+        dialog_cls = self._selected_dialog_cls()
+        if manager is None or dialog_cls is None:
+            return
+        targets = manager._selected_imagetool_targets()
+        if len(targets) < 2:
+            erlab.interactive.utils.MessageDialog.critical(
+                self,
+                "Error",
+                "Select at least two ImageTool targets.",
+            )
+            return
+        anchor_tool = manager.get_imagetool(targets[0])
+        dialog = dialog_cls(anchor_tool.slicer_area, batch_manager=manager)
+        dialog.setModal(True)
+        anchor_tool.slicer_area.add_tool_window(
+            dialog,
+            update_title=False,
+            transfer_to_manager=False,
+        )
+        super().accept()
+
+    def show(self) -> None:
+        self._populate_targets()
+        super().show()
+
+    def open(self) -> None:
+        self._populate_targets()
+        super().open()
 
 
 class _ConcatDialog(QtWidgets.QDialog):

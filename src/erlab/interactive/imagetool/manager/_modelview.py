@@ -1630,6 +1630,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._menu.addAction(manager.reindex_action)
         self._menu.addSeparator()
         self._menu.addAction(manager.concat_action)
+        self._menu.addAction(manager.batch_action)
         self._menu.addAction(manager.duplicate_action)
         self._menu.addAction(manager.promote_action)
         self._menu.addSeparator()
