@@ -29,6 +29,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._dask import DaskMenu
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool.manager._actions import _ActionsController
     from erlab.interactive.imagetool.manager._console import (
         _ImageToolManagerJupyterConsole,
     )
@@ -109,6 +110,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _additional_windows: dict[str, QtWidgets.QWidget]
     _alert_dialogs: list[erlab.interactive.utils.MessageDialog]
     _application_quit_filter: QtCore.QObject | None
+    _actions_controller: _ActionsController
     _bulk_remove_depth: int
     _dask_menu: DaskMenu
     _dependency_tracker: _ManagerDependencyTracker

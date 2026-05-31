@@ -11,7 +11,7 @@ import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool.manager import _server as _manager_server
-from erlab.interactive.imagetool.manager._actions import _ActionsMixin
+from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._lineage import _LineageMixin
@@ -45,8 +45,11 @@ from erlab.interactive.imagetool.manager._wrapper import (
 
 if typing.TYPE_CHECKING:
     import datetime
+    import pathlib
+    from collections.abc import Callable, Mapping
 
     import numpy as np
+    import xarray as xr
 
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
@@ -60,6 +63,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +71,6 @@ logger = logging.getLogger(__name__)
 class ImageToolManager(
     _WorkspaceIOMixin,
     _LineageMixin,
-    _ActionsMixin,
 ):
     """The ImageToolManager window.
 
@@ -116,6 +119,7 @@ class ImageToolManager(
         self._tool_graph = _ManagerToolGraph()
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
         self._details_panel = _DetailsPanelController(self)
+        self._actions_controller = _ActionsController(self)
         self._widgets_controller = _WidgetsController(self)
 
         try:
@@ -906,6 +910,281 @@ class ImageToolManager(
 
     def check_for_updates(self) -> None:
         self._widgets_controller.check_for_updates()
+
+    def rename_selected(self) -> None:
+        self._actions_controller.rename_selected()
+
+    def duplicate_selected(self) -> None:
+        self._actions_controller.duplicate_selected()
+
+    def promote_selected(self) -> None:
+        self._actions_controller.promote_selected()
+
+    def promote_child_imagetool(self, uid: str) -> int:
+        return self._actions_controller.promote_child_imagetool(uid)
+
+    def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
+        self._actions_controller.link_selected(
+            link_colors=link_colors, deselect=deselect
+        )
+
+    def unlink_selected(self, deselect: bool = True) -> None:
+        self._actions_controller.unlink_selected(deselect=deselect)
+
+    def offload_selected_to_workspace(self) -> None:
+        self._actions_controller.offload_selected_to_workspace()
+
+    def concat_selected(self) -> None:
+        self._actions_controller.concat_selected()
+
+    def store_selected(self) -> None:
+        self._actions_controller.store_selected()
+
+    def unwatch_selected(self) -> None:
+        self._actions_controller.unwatch_selected()
+
+    def rename_imagetool(self, index: int, new_name: str) -> None:
+        self._actions_controller.rename_imagetool(index, new_name)
+
+    def _duplicate_subtree(
+        self, target: int | str, *, parent_override: int | str | None = None
+    ) -> int | str:
+        return self._actions_controller._duplicate_subtree(
+            target, parent_override=parent_override
+        )
+
+    def duplicate_imagetool(self, index: int | str) -> int | str:
+        return self._actions_controller.duplicate_imagetool(index)
+
+    def duplicate_childtool(self, uid: str) -> str:
+        return self._actions_controller.duplicate_childtool(uid)
+
+    def link_imagetools(self, *indices: int | str, link_colors: bool = True) -> None:
+        self._actions_controller.link_imagetools(*indices, link_colors=link_colors)
+
+    def name_of_imagetool(self, index: int) -> str:
+        return self._actions_controller.name_of_imagetool(index)
+
+    def label_of_imagetool(self, index: int) -> str:
+        return self._actions_controller.label_of_imagetool(index)
+
+    def _data_load(
+        self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
+    ) -> None:
+        self._actions_controller._data_load(paths, loader_name, kwargs)
+
+    def _data_replace(
+        self, data_list: list[xr.DataArray], indices: list[int | str]
+    ) -> None:
+        self._actions_controller._data_replace(data_list, indices)
+
+    def _find_watched_idx(self, uid: str) -> int | None:
+        return self._actions_controller._find_watched_idx(uid)
+
+    def _watched_source_color_key(self, wrapper: _ImageToolWrapper) -> str:
+        return self._actions_controller._watched_source_color_key(wrapper)
+
+    def color_for_watched_var_source(self, wrapper: _ImageToolWrapper) -> QtGui.QColor:
+        return self._actions_controller.color_for_watched_var_source(wrapper)
+
+    def _remove_watched(self, uid: str) -> None:
+        self._actions_controller._remove_watched(uid)
+
+    def _show_watched(self, uid: str) -> None:
+        self._actions_controller._show_watched(uid)
+
+    def _data_watched_update(
+        self,
+        varname: str,
+        uid: str,
+        darr: xr.DataArray,
+        watched_metadata: Mapping[str, typing.Any] | None = None,
+    ) -> None:
+        self._actions_controller._data_watched_update(
+            varname, uid, darr, watched_metadata
+        )
+
+    def _data_unwatch(self, uid: str) -> None:
+        self._actions_controller._data_unwatch(uid)
+
+    def _get_imagetool_data(self, index_or_uid: int | str) -> xr.DataArray | None:
+        return self._actions_controller._get_imagetool_data(index_or_uid)
+
+    def _send_imagetool_data(self, index_or_uid: int | str) -> None:
+        self._actions_controller._send_imagetool_data(index_or_uid)
+
+    def _watch_info(self) -> dict[str, typing.Any]:
+        return self._actions_controller._watch_info()
+
+    def _send_watch_info(self) -> None:
+        self._actions_controller._send_watch_info()
+
+    def ensure_console_initialized(self) -> None:
+        self._actions_controller.ensure_console_initialized()
+
+    def toggle_console(self) -> None:
+        self._actions_controller.toggle_console()
+
+    @property
+    def _recent_loader_name(self) -> str | None:
+        return self._actions_controller._recent_loader_name
+
+    def ensure_explorer_initialized(self) -> None:
+        self._actions_controller.ensure_explorer_initialized()
+
+    def show_explorer(self) -> None:
+        self._actions_controller.show_explorer()
+
+    def show_ptable(self) -> None:
+        self._actions_controller.show_ptable()
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent | None) -> None:
+        self._actions_controller.dragEnterEvent(event)
+
+    def dropEvent(self, event: QtGui.QDropEvent | None) -> None:
+        self._actions_controller.dropEvent(event)
+
+    def _handle_dropped_files(self, file_paths: list[pathlib.Path]) -> None:
+        self._actions_controller._handle_dropped_files(file_paths)
+
+    def _show_loaded_info(
+        self,
+        loaded: list[pathlib.Path],
+        canceled: list[pathlib.Path],
+        failed: list[pathlib.Path],
+        retry_callback: Callable[[list[pathlib.Path]], typing.Any],
+    ) -> None:
+        self._actions_controller._show_loaded_info(
+            loaded, canceled, failed, retry_callback
+        )
+
+    def open_multiple_files(
+        self, queued: list[pathlib.Path], try_workspace: bool = False
+    ) -> None:
+        self._actions_controller.open_multiple_files(
+            queued, try_workspace=try_workspace
+        )
+
+    def _error_creating_imagetool(self) -> None:
+        self._actions_controller._error_creating_imagetool()
+
+    def _show_operation_error(self, log_message: str, text: str) -> None:
+        self._actions_controller._show_operation_error(log_message, text)
+
+    def _show_workspace_save_worker_error(self, error_text: str) -> None:
+        self._actions_controller._show_workspace_save_worker_error(error_text)
+
+    def _add_from_multiple_files(
+        self,
+        loaded: list[pathlib.Path],
+        queued: list[pathlib.Path],
+        failed: list[pathlib.Path],
+        func: Callable[..., typing.Any],
+        kwargs: dict[str, typing.Any],
+        retry_callback: Callable[..., typing.Any],
+    ) -> None:
+        self._actions_controller._add_from_multiple_files(
+            loaded, queued, failed, func, kwargs, retry_callback
+        )
+
+    def add_widget(self, widget: QtWidgets.QWidget) -> None:
+        self._actions_controller.add_widget(widget)
+
+    def add_childtool(
+        self,
+        tool: erlab.interactive.utils.ToolWindow,
+        index: int | str,
+        *,
+        show: bool = True,
+        uid: str | None = None,
+        snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
+    ) -> str:
+        return self._actions_controller.add_childtool(
+            tool,
+            index,
+            show=show,
+            uid=uid,
+            snapshot_token=snapshot_token,
+            created_time=created_time,
+        )
+
+    def add_imagetool_child(
+        self,
+        tool: ImageTool,
+        parent: int | str,
+        *,
+        show: bool = True,
+        activate: bool = False,
+        uid: str | None = None,
+        provenance_spec: ToolProvenanceSpec | None = None,
+        source_spec: ToolProvenanceSpec | None = None,
+        source_binding: ImageToolSelectionSourceBinding | None = None,
+        source_auto_update: bool = False,
+        source_state: _ManagedWindowNode._source_state_type = "fresh",
+        output_id: str | None = None,
+        snapshot_token: str | None = None,
+        created_time: datetime.datetime | str | bytes | None = None,
+    ) -> str:
+        return self._actions_controller.add_imagetool_child(
+            tool,
+            parent,
+            show=show,
+            activate=activate,
+            uid=uid,
+            provenance_spec=provenance_spec,
+            source_spec=source_spec,
+            source_binding=source_binding,
+            source_auto_update=source_auto_update,
+            source_state=source_state,
+            output_id=output_id,
+            snapshot_token=snapshot_token,
+            created_time=created_time,
+        )
+
+    def index_from_slicer_area(self, slicer_area: ImageSlicerArea) -> int | None:
+        return self._actions_controller.index_from_slicer_area(slicer_area)
+
+    def wrapper_from_slicer_area(
+        self, slicer_area: ImageSlicerArea
+    ) -> _ImageToolWrapper | None:
+        return self._actions_controller.wrapper_from_slicer_area(slicer_area)
+
+    def node_from_slicer_area(
+        self, slicer_area: ImageSlicerArea
+    ) -> _ImageToolWrapper | _ManagedWindowNode | None:
+        return self._actions_controller.node_from_slicer_area(slicer_area)
+
+    def target_from_slicer_area(self, slicer_area: ImageSlicerArea) -> int | str | None:
+        return self._actions_controller.target_from_slicer_area(slicer_area)
+
+    def _add_childtool_from_slicerarea(
+        self,
+        tool: QtWidgets.QWidget,
+        parent_slicer_area: ImageSlicerArea,
+    ) -> None:
+        self._actions_controller._add_childtool_from_slicerarea(
+            tool, parent_slicer_area
+        )
+
+    def _get_childtool_and_parent(
+        self, uid: str
+    ) -> tuple[erlab.interactive.utils.ToolWindow, int]:
+        return self._actions_controller._get_childtool_and_parent(uid)
+
+    def get_childtool(self, uid: str) -> erlab.interactive.utils.ToolWindow:
+        return self._actions_controller.get_childtool(uid)
+
+    def show_childtool(self, uid: str) -> None:
+        self._actions_controller.show_childtool(uid)
+
+    def _remove_childtool(self, uid: str) -> None:
+        self._actions_controller._remove_childtool(uid)
+
+    def eventFilter(
+        self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
+    ) -> bool:
+        return self._actions_controller.eventFilter(obj, event)
 
     def add_imagetool(
         self,

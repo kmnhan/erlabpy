@@ -20,6 +20,7 @@ import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
+from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import _MIME, _RowBadge
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
@@ -726,7 +727,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
         lambda *_args: valid_loaders,
     )
 
-    ImageToolManager.open_multiple_files(manager, [file_path])
+    _ActionsController(manager).open_multiple_files([file_path])
 
     assert dialogs[-1].checked_name == example_filter
 
@@ -1193,7 +1194,7 @@ def test_open_multiple_files_loader_selection_branches(
         lambda *_args: valid_loaders,
     )
 
-    ImageToolManager.open_multiple_files(manager, [file_path])
+    _ActionsController(manager).open_multiple_files([file_path])
 
     if case == "single_non_loader":
         assert select_calls == []
