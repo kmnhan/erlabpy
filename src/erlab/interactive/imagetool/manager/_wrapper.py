@@ -33,7 +33,7 @@ from erlab.interactive.imagetool._mainwindow import ImageTool
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
@@ -242,7 +242,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def __init__(
         self,
-        manager: ImageToolManager,
+        manager: _ImageToolManagerBase,
         uid: str,
         parent_uid: str | None,
         window: QtWidgets.QWidget,
@@ -318,7 +318,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._suspend_snapshot_token_updates = False
 
     @property
-    def manager(self) -> ImageToolManager:
+    def manager(self) -> _ImageToolManagerBase:
         manager = self._manager()
         if manager:
             return manager
@@ -396,7 +396,7 @@ class _ManagedWindowNode(QtCore.QObject):
         manager = self._manager()
         if manager is None:
             return
-        if manager._all_nodes.get(self.uid) is not self:
+        if manager._tool_graph.nodes.get(self.uid) is not self:
             return
         manager._remove_childtool(self.uid)
 
@@ -1133,9 +1133,9 @@ class _ManagedWindowNode(QtCore.QObject):
                 )
 
             mark_dirty = (
-                self.manager._workspace_loading_depth == 0
-                and self.manager._workspace_saving_depth == 0
-                and not self.manager._closing_workspace_document
+                self.manager._workspace_state.loading_depth == 0
+                and self.manager._workspace_state.saving_depth == 0
+                and not self.manager._workspace_state.closing_document
             )
 
             def _mark_visibility_changed() -> None:
@@ -1223,7 +1223,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     @QtCore.Slot()
     def _handle_imagetool_state_changed(self) -> None:
-        if self.manager._closing_workspace_document:
+        if self.manager._workspace_state.closing_document:
             return
         self.manager._mark_node_state_dirty(self.uid)
 
@@ -1387,7 +1387,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
 
     def __init__(
         self,
-        manager: ImageToolManager,
+        manager: _ImageToolManagerBase,
         index: int,
         uid: str,
         tool: ImageTool,

@@ -337,18 +337,48 @@ def _hover_sequence_between_widgets(
     app = QtWidgets.QApplication.instance()
     assert app is not None
 
-    start_pos = start_widget.mapTo(container, start_widget.rect().center())
-    end_pos = end_widget.mapTo(container, end_widget.rect().center())
+    def _contains_widget_at(position: QtCore.QPoint, expected: QtWidgets.QWidget):
+        child = container.childAt(position)
+        while child is not None:
+            if child is expected:
+                return True
+            child = child.parentWidget()
+        return False
+
+    layout = container.layout()
+    for _ in range(50):
+        if layout is not None:
+            layout.activate()
+        app.processEvents()
+        start_pos = start_widget.mapTo(container, start_widget.rect().center())
+        end_pos = end_widget.mapTo(container, end_widget.rect().center())
+        if (
+            start_widget.width() > 0
+            and start_widget.height() > 0
+            and end_widget.width() > 0
+            and end_widget.height() > 0
+            and start_pos != end_pos
+            and _contains_widget_at(start_pos, start_widget)
+            and _contains_widget_at(end_pos, end_widget)
+        ):
+            break
+    else:
+        raise AssertionError("Hover path helper expected laid-out widgets")
+
     if start_pos.x() != end_pos.x():
         raise AssertionError("Hover path helper expects vertically aligned widgets")
 
     step = 1 if end_pos.y() >= start_pos.y() else -1
     seen: list[str | None] = []
     last: str | None | object = object()
+    sync_hovered = getattr(container, "_sync_hovered_category_from_position", None)
 
     for y in range(start_pos.y(), end_pos.y() + step, step):
-        QtTest.QTest.mouseMove(container, QtCore.QPoint(start_pos.x(), y))
+        position = QtCore.QPoint(start_pos.x(), y)
+        QtTest.QTest.mouseMove(container, position)
         app.processEvents()
+        if callable(sync_hovered):
+            sync_hovered(position)
         current = current_value()
         if current != last:
             seen.append(current)

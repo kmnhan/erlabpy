@@ -22,6 +22,7 @@ from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemModel,
 )
+from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -1076,8 +1077,12 @@ def test_tool_window_copy_code_ignores_parent_provenance_but_keeps_source(
             return f"{input_name or 'data'}.mean()"
 
     data = xr.DataArray(np.arange(16).reshape((4, 4)), dims=("x", "y"), name="data")
-    parent_provenance = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
-    source = prov.selection(prov.IselOperation(kwargs={"y": slice(1, 3)}))
+    parent_provenance = prov.selection(
+        provenance_operations.IselOperation(kwargs={"x": slice(0, 2)})
+    )
+    source = prov.selection(
+        provenance_operations.IselOperation(kwargs={"y": slice(1, 3)})
+    )
     tool = _DummyTool(source.apply(data))
     qtbot.addWidget(tool)
     tool.set_source_binding(source)
@@ -1386,8 +1391,6 @@ def test_tool_window_dynamic_expression_provenance_uses_input_provenance(qtbot) 
 
 
 def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
-
     class _OperationsTool(erlab.interactive.utils.ToolWindow[_PersistentToolState]):
         StateModel = _PersistentToolState
         tool_name = "operations-dummy"
@@ -1451,7 +1454,7 @@ def test_tool_window_operations_provenance_methods_normalize_results(qtbot) -> N
             del input_name, data
             return "derived = data"
 
-    operation = prov.ScriptCodeOperation(
+    operation = provenance_operations.ScriptCodeOperation(
         label="Scale values",
         code="derived = data * 2",
     )
@@ -1490,7 +1493,9 @@ def test_tool_window_copy_provenance_code_handles_empty_specs(
         lambda content: copied.append(content) or content,
     )
     spec = prov.script(
-        prov.ScriptCodeOperation(label="Compute output", code="result = data + 1"),
+        provenance_operations.ScriptCodeOperation(
+            label="Compute output", code="result = data + 1"
+        ),
         start_label="Start from current data",
         active_name="result",
     )
@@ -1522,11 +1527,14 @@ def test_tool_window_output_target_cleanup_branches(qtbot, monkeypatch) -> None:
 
     class _FakeManager:
         def __init__(self) -> None:
-            self._all_nodes: dict[str, object] = {}
+            self._tool_graph = _ManagerToolGraph()
 
         def _node_uid_from_window(self, window: object) -> str:
             assert window is tool
             return "parent"
+
+        def _node_for_target(self, target: int | str) -> object:
+            return self._tool_graph.node(target)
 
     fake_manager = _FakeManager()
     monkeypatch.setattr(manager_module, "_manager_instance", fake_manager)
@@ -1541,14 +1549,14 @@ def test_tool_window_output_target_cleanup_branches(qtbot, monkeypatch) -> None:
     tool._output_imagetool_targets["out"] = "missing"
     assert tool._output_imagetool_target("out") is None
 
-    fake_manager._all_nodes["wrong-parent"] = types.SimpleNamespace(
+    fake_manager._tool_graph.nodes["wrong-parent"] = types.SimpleNamespace(
         is_imagetool=True,
         parent_uid="other",
     )
     tool._output_imagetool_targets["out"] = "wrong-parent"
     assert tool._output_imagetool_target("out") is None
 
-    fake_manager._all_nodes["child"] = types.SimpleNamespace(
+    fake_manager._tool_graph.nodes["child"] = types.SimpleNamespace(
         is_imagetool=True,
         parent_uid="parent",
     )
@@ -1626,9 +1634,13 @@ def test_tool_window_dataset_roundtrips_source_and_input_provenance(qtbot) -> No
     tool = _PersistentTool(data)
     qtbot.addWidget(tool)
 
-    source_spec = prov.full_data(prov.IselOperation(kwargs={"x": slice(0, 2)}))
+    source_spec = prov.full_data(
+        provenance_operations.IselOperation(kwargs={"x": slice(0, 2)})
+    )
     input_spec = prov.script(
-        prov.ScriptCodeOperation(label="Use watched data", code="derived = watched"),
+        provenance_operations.ScriptCodeOperation(
+            label="Use watched data", code="derived = watched"
+        ),
         start_label="Start from watched data",
         seed_code="derived = watched",
         active_name="derived",
@@ -1734,7 +1746,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
-            self._all_nodes: dict[str, object] = {}
+            self._tool_graph = _ManagerToolGraph()
 
         def _update_info(self, *, uid: str) -> None:
             self.updated.append(uid)
@@ -1757,7 +1769,7 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
 
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
-            self._all_nodes.pop(uid, None)
+            self._tool_graph.nodes.pop(uid, None)
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
@@ -1782,12 +1794,12 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     tool = _PersistentTool(xr.DataArray(np.arange(4.0), dims=("x",), name="data"))
     qtbot.addWidget(tool)
     node = _ManagedWindowNode(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        manager,
         "child",
         None,
         tool,
     )
-    manager._all_nodes["child"] = node
+    manager._tool_graph.nodes["child"] = node
 
     with pytest.raises(TypeError, match="source_spec must be"):
         node.set_source_binding(typing.cast("object", {"kind": "full_data"}))
@@ -1853,12 +1865,12 @@ def test_managed_tool_window_node_source_binding_branches(qtbot, monkeypatch) ->
     unbound_tool = _PersistentTool(tool.tool_data)
     qtbot.addWidget(unbound_tool)
     unbound_node = _ManagedWindowNode(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        manager,
         "unbound",
         None,
         unbound_tool,
     )
-    manager._all_nodes["unbound"] = unbound_node
+    manager._tool_graph.nodes["unbound"] = unbound_node
     assert not unbound_node.handle_parent_source_replaced(tool.tool_data)
 
     updated = xr.DataArray(np.arange(4.0) + 10.0, dims=("x",), name="updated")
@@ -1940,7 +1952,7 @@ def test_managed_tool_window_node_detached_update_branches(
             self.marked: list[tuple[str, str]] = []
             self.unavailable: list[str] = []
             self.removed: list[str] = []
-            self._all_nodes: dict[str, object] = {}
+            self._tool_graph = _ManagerToolGraph()
             self.parent_node = types.SimpleNamespace(
                 tool_window=parent_tool,
                 provenance_spec=None,
@@ -1972,7 +1984,7 @@ def test_managed_tool_window_node_detached_update_branches(
 
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
-            self._all_nodes.pop(uid, None)
+            self._tool_graph.nodes.pop(uid, None)
 
         def _install_workspace_save_shortcut(self, _widget: QtWidgets.QWidget) -> None:
             return
@@ -1999,12 +2011,12 @@ def test_managed_tool_window_node_detached_update_branches(
     tool = _PersistentTool(parent_data)
     qtbot.addWidget(tool)
     node = _ManagedWindowNode(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        manager,
         "child",
         "parent",
         tool,
     )
-    manager._all_nodes["child"] = node
+    manager._tool_graph.nodes["child"] = node
     with pytest.raises(RuntimeError, match="not bound"):
         node._materialized_source_spec(parent_data)
 
@@ -2015,13 +2027,13 @@ def test_managed_tool_window_node_detached_update_branches(
     bound_tool = _PersistentTool(parent_data.isel(x=slice(0, 2)))
     qtbot.addWidget(bound_tool)
     bound_node = _ManagedWindowNode(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        manager,
         "bound",
         "parent",
         bound_tool,
         source_binding=source_binding,
     )
-    manager._all_nodes["bound"] = bound_node
+    manager._tool_graph.nodes["bound"] = bound_node
     assert bound_node._source_binding == source_binding
     assert bound_node._source_spec == source_binding.materialize(parent_data)
 
@@ -2034,7 +2046,9 @@ def test_managed_tool_window_node_detached_update_branches(
         node.set_detached_provenance(typing.cast("object", {"kind": "script"}))
 
     display_spec = prov.script(
-        prov.ScriptCodeOperation(label="Use output", code="result = data + 1"),
+        provenance_operations.ScriptCodeOperation(
+            label="Use output", code="result = data + 1"
+        ),
         start_label="Start from data",
         active_name="result",
     )
@@ -2091,7 +2105,7 @@ def test_managed_tool_window_node_detached_update_branches(
     assert not node.handle_parent_source_replaced(parent_data)
 
     node.set_source_binding(
-        prov.full_data(prov.IselOperation(kwargs={"missing": 0})),
+        prov.full_data(provenance_operations.IselOperation(kwargs={"missing": 0})),
         state="stale",
     )
     assert not node.handle_parent_source_replaced(parent_data)
@@ -2147,9 +2161,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
         def __init__(self) -> None:
             super().__init__()
             self.tree_view = _FakeTreeView()
-            self._displayed_indices: list[int] = []
-            self._imagetool_wrappers: list[object] = []
-            self._all_nodes: dict[str, object] = {}
+            self._tool_graph = _ManagerToolGraph()
             self.updated: list[str] = []
             self.removed: list[str] = []
             self.renamed: list[tuple[int, object]] = []
@@ -2159,10 +2171,10 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
 
         def _remove_childtool(self, uid: str) -> None:
             self.removed.append(uid)
-            self._all_nodes.pop(uid, None)
+            self._tool_graph.nodes.pop(uid, None)
 
         def _child_node(self, uid: str) -> _ManagedWindowNode:
-            return typing.cast("_ManagedWindowNode", self._all_nodes[uid])
+            return typing.cast("_ManagedWindowNode", self._tool_graph.nodes[uid])
 
         def rename_imagetool(self, index: int, value: object) -> None:
             self.renamed.append((index, value))
@@ -2195,27 +2207,27 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
     qtbot.addWidget(orphan_tool)
 
     parent_node = _ImageToolWrapper(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        manager,
         0,
         "parent",
         parent_tool,
     )
     child_node = _ManagedWindowNode(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        manager,
         "child",
         "parent",
         child_tool,
     )
     orphan_node = _ManagedWindowNode(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager),
+        manager,
         "orphan",
         None,
         orphan_tool,
     )
     parent_node.add_child_reference("child", child_tool)
-    manager._displayed_indices.append(0)
-    manager._imagetool_wrappers.append(parent_node)
-    manager._all_nodes.update(
+    manager._tool_graph.displayed_indices.append(0)
+    manager._tool_graph.root_wrappers[0] = parent_node
+    manager._tool_graph.nodes.update(
         {
             "parent": parent_node,
             "child": child_node,
@@ -2223,9 +2235,7 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
         }
     )
 
-    model = _ImageToolWrapperItemModel(
-        typing.cast("erlab.interactive.imagetool.manager.ImageToolManager", manager)
-    )
+    model = _ImageToolWrapperItemModel(manager)
     model_tester = QtTest.QAbstractItemModelTester(
         model,
         QtTest.QAbstractItemModelTester.FailureReportingMode.Fatal,
@@ -2385,7 +2395,7 @@ def test_tool_window_launch_paths_keep_declared_outputs_and_unbound_windows_sepa
 
     detached_data = tool.tool_data * 2
     detached_spec = prov.script(
-        prov.ScriptCodeOperation(
+        provenance_operations.ScriptCodeOperation(
             label="Compute detached dummy output",
             code="result = data * 2",
         ),
@@ -2448,7 +2458,7 @@ def test_tool_window_managed_detached_output_preserves_provenance(
     root_data = xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"))
     output_data = xr.DataArray(np.arange(3.0), dims=("x",), name="detached")
     detached_spec = prov.script(
-        prov.ScriptCodeOperation(
+        provenance_operations.ScriptCodeOperation(
             label="Compute detached dummy output",
             code="result = data.sum('y')",
         ),
@@ -2474,7 +2484,7 @@ def test_tool_window_managed_detached_output_preserves_provenance(
 
         assert isinstance(launched, erlab.interactive.imagetool.ImageTool)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        node = manager._imagetool_wrappers[1]
+        node = manager._tool_graph.root_wrappers[1]
         assert node.parent_uid is None
         assert node.source_spec is None
         assert node.output_id is None

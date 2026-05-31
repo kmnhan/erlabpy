@@ -4,7 +4,6 @@ import gc
 import logging
 import sys
 import typing
-import uuid
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -12,7 +11,6 @@ import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool.manager import _server as _manager_server
-from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager._actions import _ActionsMixin
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelMixin
 from erlab.interactive.imagetool.manager._lineage import _LineageMixin
@@ -22,6 +20,7 @@ from erlab.interactive.imagetool.manager._registry import (
     reserve_manager_record,
     unregister_manager_record,
 )
+from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._widgets import (
     _LINKER_COLORS,
     _SHM_NAME,
@@ -35,6 +34,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WidgetsMixin,
 )
 from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOMixin
+from erlab.interactive.imagetool.manager._workspace_state import _ManagerWorkspaceState
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
@@ -42,7 +42,6 @@ from erlab.interactive.imagetool.manager._wrapper import (
 
 if typing.TYPE_CHECKING:
     import datetime
-    import pathlib
 
     import numpy as np
 
@@ -65,7 +64,6 @@ class ImageToolManager(
     _DetailsPanelMixin,
     _ActionsMixin,
     _WidgetsMixin,
-    QtWidgets.QMainWindow,
 ):
     """The ImageToolManager window.
 
@@ -111,6 +109,7 @@ class ImageToolManager(
 
         self._manager_record = reserve_manager_record(host=_manager_server.HOST_IP)
         self.manager_index = self._manager_record.index
+        self._tool_graph = _ManagerToolGraph()
 
         try:
             (
@@ -142,24 +141,7 @@ class ImageToolManager(
             "QtWidgets.QMenuBar", self.menuBar()
         )
 
-        self._workspace_path: pathlib.Path | None = None
-        self._workspace_link_id: str = uuid.uuid4().hex
-        self._workspace_loading_depth: int = 0
-        self._workspace_saving_depth: int = 0
-        self._workspace_structure_modified: bool = False
-        self._workspace_dirty_added: set[str] = set()
-        self._workspace_dirty_data: set[str] = set()
-        self._workspace_dirty_state: set[str] = set()
-        self._workspace_dirty_removed: list[str] = []
-        self._workspace_structure_reasons: list[str] = []
-        self._workspace_needs_full_save: bool = False
-        self._workspace_dirty_generation: int = 0
-        self._workspace_dirty_events: list[_manager_workspace._WorkspaceDirtyEvent] = []
-        self._workspace_save_in_progress: bool = False
-        self._workspace_delta_save_count: int = 0
-        self._workspace_schema_version: int = (
-            _manager_workspace._current_workspace_schema_version()
-        )
+        self._workspace_state = _ManagerWorkspaceState()
         self._pending_tool_metadata_update_uids: set[str] = set()
         self._tool_metadata_update_timer = QtCore.QTimer(self)
         self._tool_metadata_update_timer.setSingleShot(True)
@@ -167,8 +149,6 @@ class ImageToolManager(
         self._tool_metadata_update_timer.timeout.connect(
             self._flush_pending_tool_metadata_updates
         )
-        self._workspace_lock: QtCore.QLockFile | None = None
-        self._closing_workspace_document: bool = False
         self._update_workspace_window_title()
 
         qapp = QtWidgets.QApplication.instance()
@@ -177,8 +157,6 @@ class ImageToolManager(
             self._application_quit_filter = _ApplicationQuitFilter(self)
             qapp.installEventFilter(self._application_quit_filter)
 
-        self._imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
-        self._all_nodes: dict[str, _ImageToolWrapper | _ManagedWindowNode] = {}
         self._dependency_ref_cache: dict[
             str,
             tuple[
@@ -190,8 +168,6 @@ class ImageToolManager(
             ],
         ] = {}
         self._pending_source_refresh_targets: dict[str, set[str]] = {}
-        self._displayed_indices: list[int] = []
-        self._node_uid_counter: int = 0
         self._linkers: list[
             erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
         ] = []
@@ -699,44 +675,113 @@ class ImageToolManager(
         # Initialize status bar
         self._status_bar.showMessage("")
 
+    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        """Handle proper termination of resources before closing the application."""
+        logger.debug("Closing ImageTool Manager...")
+        previous_closing_workspace_document = self._workspace_state.closing_document
+        self._workspace_state.closing_document = True
+        try:
+            if not self._confirm_save_dirty_workspace(
+                "Closing this manager will discard unsaved workspace changes."
+            ):
+                if event:
+                    event.ignore()
+                return
+
+            logger.debug("Waiting for file handlers to finish...")
+            if len(self._file_handlers) > 0:  # pragma: no cover
+                with erlab.interactive.utils.wait_dialog(
+                    self, "Waiting for file operations to finish..."
+                ):
+                    for handler in list(self._file_handlers):
+                        handler.wait()
+
+            logger.debug("Stopping servers...")
+            self._registry_heartbeat_timer.stop()
+            self._stop_servers()
+            unregister_manager_record(self._manager_record.internal_id)
+
+            self._compact_workspace_before_shutdown()
+
+            logger.debug("Removing all ImageTool windows...")
+            with self._workspace_load_context():
+                self.remove_all_tools()
+
+            logger.debug("Closing additional windows...")
+            for widget in dict(self._additional_windows).values():
+                widget.close()
+                widget.deleteLater()
+
+            logger.debug("Removing event filters...")
+            qapp = QtWidgets.QApplication.instance()
+            if (
+                isinstance(qapp, QtWidgets.QApplication)
+                and self._application_quit_filter is not None
+            ):
+                qapp.removeEventFilter(self._application_quit_filter)
+                self._application_quit_filter = None
+            for widget in (
+                self.text_box,
+                self.metadata_derivation_list,
+            ):
+                widget.removeEventFilter(self._kb_filter)
+            self.tree_view._delegate._cleanup_filter()
+
+            if hasattr(self, "console"):
+                logger.debug("Shutting down console kernel...")
+                self.console._console_widget.shutdown_kernel()
+                self.console.close()
+                self.console.deleteLater()
+
+            if self._standalone_app_windows:
+                logger.debug("Closing standalone apps...")
+                self._close_standalone_apps()
+
+            logger.debug("Releasing workspace lock...")
+            self._release_workspace_lock()
+
+            logger.debug("Closing dask client (if any)...")
+            self._dask_menu.close_client()
+
+            root_logger = logging.getLogger()
+            if self._warning_handler in root_logger.handlers:  # pragma: no branch
+                root_logger.removeHandler(self._warning_handler)
+
+            self._clear_all_alerts()
+
+            if sys.excepthook == self._handle_uncaught_exception:
+                sys.excepthook = self._previous_excepthook
+
+            super().closeEvent(event)
+        finally:
+            self._workspace_state.closing_document = previous_closing_workspace_document
+
     @property
     def ntools(self) -> int:
         """Number of ImageTool windows being handled by the manager."""
-        return len(self._imagetool_wrappers)
+        return self._tool_graph.ntools
 
     @property
     def next_idx(self) -> int:
         """Index for the next window."""
-        return max(self._imagetool_wrappers.keys(), default=-1) + 1
+        return self._tool_graph.next_index
 
     def _next_node_uid(self, preferred: str | None = None) -> str:
-        if preferred is not None and preferred not in self._all_nodes:
-            self._consume_node_uid(preferred)
-            return preferred
-        while True:
-            uid = f"n{self._node_uid_counter}"
-            self._node_uid_counter += 1
-            if uid not in self._all_nodes:
-                return uid
+        return self._tool_graph.next_uid(preferred)
 
     def _consume_node_uid(self, uid: str) -> None:
-        if uid.startswith("n") and uid[1:].isdigit():
-            self._node_uid_counter = max(self._node_uid_counter, int(uid[1:]) + 1)
+        self._tool_graph.consume_uid(uid)
 
     def _register_root_wrapper(self, wrapper: _ImageToolWrapper) -> None:
-        self._all_nodes[wrapper.uid] = wrapper
+        self._tool_graph.register_root(wrapper)
 
     def _register_child_node(self, node: _ManagedWindowNode) -> None:
-        self._all_nodes[node.uid] = node
-        parent = self._parent_node(node)
-        parent.add_child_reference(
-            node.uid, typing.cast("QtWidgets.QWidget", node.window)
-        )
+        self._tool_graph.register_child(node)
         if node.tool_window is not None:
             node.tool_window._refresh_reload_data_action()
 
     def _unregister_node(self, uid: str) -> None:
-        node = self._all_nodes.pop(uid, None)
+        node = self._tool_graph.unregister_node(uid)
         if node is None:
             return
         self._dependency_ref_cache.pop(uid, None)
@@ -748,13 +793,6 @@ class ImageToolManager(
             target_uids.discard(uid)
             if not target_uids:
                 self._pending_source_refresh_targets.pop(blocker_uid, None)
-        if node.parent_uid is not None:
-            parent = typing.cast(
-                "_ImageToolWrapper | _ManagedWindowNode",
-                self._all_nodes.get(node.parent_uid),
-            )
-            if parent is not None:
-                parent.remove_child_reference(uid)
 
     def color_for_linker(
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
@@ -810,7 +848,7 @@ class ImageToolManager(
         """
         if provenance_spec is not None:
             tool.set_provenance_spec(provenance_spec)
-        if index is None or index in self._imagetool_wrappers:
+        if index is None or index in self._tool_graph.root_wrappers:
             index = int(self.next_idx)
         else:
             index = int(index)
@@ -834,7 +872,6 @@ class ImageToolManager(
             snapshot_token=snapshot_token,
             created_time=created_time,
         )
-        self._imagetool_wrappers[index] = wrapper
         self._register_root_wrapper(wrapper)
         wrapper.update_title()
 

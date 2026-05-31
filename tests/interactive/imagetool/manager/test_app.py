@@ -27,12 +27,12 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
 from erlab.interactive.imagetool.manager import load_in_manager
-from erlab.interactive.imagetool.manager._mainwindow import _WorkspacePropertiesState
 from erlab.interactive.imagetool.manager._server import (
     AddDataPacket,
     Response,
     _recv_multipart,
 )
+from erlab.interactive.imagetool.manager._widgets import _WorkspacePropertiesState
 from erlab.interactive.ptable import PeriodicTableWindow
 
 from .helpers import action_map_by_object_name, menu_map_by_object_name

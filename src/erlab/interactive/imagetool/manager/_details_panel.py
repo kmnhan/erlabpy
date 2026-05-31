@@ -8,7 +8,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool import provenance_framework
-from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
+from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
@@ -27,8 +27,7 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class _DetailsPanelMixin(_ManagerMixinBase):
-    @QtCore.Slot()
+class _DetailsPanelMixin(_ImageToolManagerBase):
     def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
         return node.info_text
 
@@ -226,7 +225,6 @@ class _DetailsPanelMixin(_ManagerMixinBase):
             menu.addAction(self._metadata_copy_full_action)
         return menu
 
-    @QtCore.Slot(QtCore.QPoint)
     def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
         if self.metadata_derivation_list.itemAt(pos) is None:
             return
@@ -238,18 +236,16 @@ class _DetailsPanelMixin(_ManagerMixinBase):
             return
         menu.exec(viewport.mapToGlobal(pos))
 
-    @QtCore.Slot()
     def _copy_selected_derivation_code(self) -> None:
         code = self._selected_derivation_code()
         if code:
             erlab.interactive.utils.copy_to_clipboard(code)
 
-    @QtCore.Slot()
     def _copy_full_derivation_code(self) -> None:
         node = (
             None
             if self._metadata_node_uid is None
-            else self._all_nodes.get(self._metadata_node_uid)
+            else self._tool_graph.nodes.get(self._metadata_node_uid)
         )
         if node is None or not self._metadata_full_code_available:
             return
@@ -274,7 +270,6 @@ class _DetailsPanelMixin(_ManagerMixinBase):
         if code:
             erlab.interactive.utils.copy_to_clipboard(code)
 
-    @QtCore.Slot()
     def _update_info(self, *, uid: str | None = None) -> None:
         """Update the information text box.
 
@@ -349,14 +344,12 @@ class _DetailsPanelMixin(_ManagerMixinBase):
         self._pending_tool_metadata_update_uids.add(uid)
         self._tool_metadata_update_timer.start()
 
-    @QtCore.Slot()
     def _flush_pending_tool_metadata_updates(self) -> None:
         pending = self._pending_tool_metadata_update_uids
         self._pending_tool_metadata_update_uids = set()
         for uid in sorted(pending):
             self._update_info(uid=uid)
 
-    @QtCore.Slot()
     def _update_actions(self) -> None:
         """Update the state of the actions based on the current selection."""
         selection_children = self._selected_tool_uids()

@@ -14,9 +14,11 @@ import erlab
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
 from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import provenance_operations as ops
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
+from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 
 from .helpers import (
     _exec_generated_code,
@@ -90,11 +92,11 @@ def test_manager_console(
         assert shell.user_ns["alias"] is shell.user_ns["lst"]
 
         # Select all
-        select_tools(manager, list(manager._imagetool_wrappers.keys()))
+        select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
         manager.console._console_widget.execute("tools.selected_data")
         assert _get_last_output_contents() == [
             wrapper.imagetool.slicer_area._data
-            for wrapper in manager._imagetool_wrappers.values()
+            for wrapper in manager._tool_graph.root_wrappers.values()
         ]
 
         # Test storing with ipython
@@ -122,7 +124,7 @@ def test_manager_console(
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, data)
 
         # Remove all tools
-        select_tools(manager, list(manager._imagetool_wrappers.keys()))
+        select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
         accept_dialog(manager.remove_action.trigger)
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -181,7 +183,7 @@ def test_manager_console_handles_use_filtered_display_data(
                 active_name="derived",
                 label="Assign filtered console result",
             )
-            == manager._imagetool_wrappers[0].displayed_provenance_spec
+            == manager._tool_graph.root_wrappers[0].displayed_provenance_spec
         )
 
         derived = handle + 1.0
@@ -313,7 +315,7 @@ def test_tool_namespace_get_data_item(
         itool([test_data], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
         xr.testing.assert_identical(
             namespace._get_data_item((slice(None), 0)), test_data[:, 0]
         )
@@ -336,11 +338,12 @@ def test_tool_namespace_set_data_replaces_source(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        namespace = ToolNamespace(manager._imagetool_wrappers[0])
-        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+        namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
+        child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
         updated = (test_data * 2).rename(test_data.name)
 
         namespace.data = updated
@@ -366,11 +369,12 @@ def test_tool_namespace_set_data_item_marks_child_tools_stale(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        namespace = ToolNamespace(manager._imagetool_wrappers[0])
-        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+        namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
+        child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
 
         namespace[(0, 0)] = -5.0
 
@@ -402,7 +406,7 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
 
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.apply_filter_operation(operation)
-        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
         expected = filtered.copy(deep=True)
         expected[(0, 0)] = -5.0
 
@@ -410,7 +414,7 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
 
         assert parent_tool.slicer_area._accepted_filter_provenance_operation is None
         xr.testing.assert_identical(parent_tool.slicer_area.data, expected)
-        provenance_spec = manager._imagetool_wrappers[0].displayed_provenance_spec
+        provenance_spec = manager._tool_graph.root_wrappers[0].displayed_provenance_spec
         assert provenance_spec is not None
         display_code = provenance_spec.display_code()
         assert display_code is not None
@@ -442,7 +446,7 @@ def test_tool_namespace_set_unfiltered_data_item_avoids_display_copy(
 
         parent_tool = manager.get_imagetool(0)
         source_data = parent_tool.slicer_area._data
-        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
         copy_calls = []
         original_copy = xr.DataArray.copy
 
@@ -472,7 +476,7 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+    operation = ops.GaussianFilterOperation(sigma={"x": 1.0})
     filtered = operation.apply(data, parent_data=data)
     expected = filtered.copy(deep=True)
     expected[(0, 0)] = -5.0
@@ -497,7 +501,7 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
         parent_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
         qtbot.wait_until(lambda: fetch(child_uid).identical(filtered), timeout=5000)
 
-        namespace = ToolNamespace(manager._imagetool_wrappers[0])
+        namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
         namespace[(0, 0)] = -5.0
 
         qtbot.wait_until(
@@ -537,18 +541,19 @@ def test_tool_namespace_set_data_item_failure_keeps_child_tools_fresh(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        namespace = ToolNamespace(manager._imagetool_wrappers[0])
-        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+        namespace = ToolNamespace(manager._tool_graph.root_wrappers[0])
+        child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
 
         with pytest.raises(IndexError, match="too many indices"):
             namespace[(0, 0, 0)] = -5.0
 
         assert child.source_state == "fresh"
         assert float(parent_tool.slicer_area._data.values[0, 0]) == 0.0
-        assert manager._imagetool_wrappers[0].provenance_spec is None
+        assert manager._tool_graph.root_wrappers[0].provenance_spec is None
 
 
 def test_manager_console_bare_expression_opens_provenance_root(
@@ -587,22 +592,22 @@ def test_manager_console_bare_expression_opens_provenance_root(
         xr.testing.assert_identical(
             manager.get_imagetool(2).slicer_area.data, data0 - data1
         )
-        provenance = manager._imagetool_wrappers[2].provenance_spec
+        provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         assert [source.name for source in provenance.script_inputs] == [
             "data_0",
             "data_1",
         ]
         assert [source.node_uid for source in provenance.script_inputs] == [
-            manager._imagetool_wrappers[0].uid,
-            manager._imagetool_wrappers[1].uid,
+            manager._tool_graph.root_wrappers[0].uid,
+            manager._tool_graph.root_wrappers[1].uid,
         ]
         assert [source.node_snapshot_token for source in provenance.script_inputs] == [
-            manager._imagetool_wrappers[0].snapshot_token,
-            manager._imagetool_wrappers[1].snapshot_token,
+            manager._tool_graph.root_wrappers[0].snapshot_token,
+            manager._tool_graph.root_wrappers[1].snapshot_token,
         ]
         assert (
-            manager.dependency_status_for_uid(manager._imagetool_wrappers[2].uid)
+            manager.dependency_status_for_uid(manager._tool_graph.root_wrappers[2].uid)
             == "current"
         )
         assert provenance.operations
@@ -619,7 +624,7 @@ def test_manager_console_bare_expression_opens_provenance_root(
 
         loaded = [
             wrapper.provenance_spec
-            for wrapper in manager._imagetool_wrappers.values()
+            for wrapper in manager._tool_graph.root_wrappers.values()
             if wrapper.provenance_spec is not None
             and len(wrapper.provenance_spec.script_inputs) == 2
         ]
@@ -628,7 +633,7 @@ def test_manager_console_bare_expression_opens_provenance_root(
             "data_0",
             "data_1",
         ]
-        derived_uid = manager._imagetool_wrappers[2].uid
+        derived_uid = manager._tool_graph.root_wrappers[2].uid
         assert manager.dependency_status_for_uid(derived_uid) == "current"
 
         original_difference = manager.get_imagetool(2).slicer_area.data.copy()
@@ -960,7 +965,7 @@ def test_manager_console_tools_namespace_helper_branches(
         manager_index = 3
 
         def __init__(self) -> None:
-            self._imagetool_wrappers = {}
+            self._tool_graph = _ManagerToolGraph()
             self.added: list[tuple[xr.DataArray, typing.Any]] = []
 
         def add_imagetool(self, tool, **kwargs) -> None:
@@ -1005,7 +1010,7 @@ def test_manager_console_tools_namespace_helper_branches(
     shown = tools._show_dataarray_with_provenance(
         data,
         prov.script(
-            prov.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+            ops.ScriptCodeOperation(label="Copy", code="derived = data_0"),
             start_label="Run script",
             active_name="derived",
             script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
@@ -1163,7 +1168,7 @@ def test_manager_console_assignment_tracks_until_explicit_show(
         xr.testing.assert_identical(
             manager.get_imagetool(2).slicer_area.data, data0 - data1
         )
-        qshow_provenance = manager._imagetool_wrappers[2].provenance_spec
+        qshow_provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert qshow_provenance is not None
         assert qshow_provenance.active_name == "diff"
 
@@ -1179,7 +1184,7 @@ def test_manager_console_assignment_tracks_until_explicit_show(
         xr.testing.assert_identical(
             manager.get_imagetool(3).slicer_area.data, data0 - data1
         )
-        itool_provenance = manager._imagetool_wrappers[3].provenance_spec
+        itool_provenance = manager._tool_graph.root_wrappers[3].provenance_spec
         assert itool_provenance == qshow_provenance
 
         manager.console._console_widget.execute("diff + tools[0]")
@@ -1188,13 +1193,13 @@ def test_manager_console_assignment_tracks_until_explicit_show(
             manager.get_imagetool(4).slicer_area.data,
             data0 - data1 + data0,
         )
-        nested_provenance = manager._imagetool_wrappers[4].provenance_spec
+        nested_provenance = manager._tool_graph.root_wrappers[4].provenance_spec
         assert nested_provenance is not None
         assert [source.name for source in nested_provenance.script_inputs] == [
             "diff",
             "data_0",
         ]
-        nested_uid = manager._imagetool_wrappers[4].uid
+        nested_uid = manager._tool_graph.root_wrappers[4].uid
         assert manager.dependency_status_for_uid(nested_uid) == "current"
         nested_data = manager.get_imagetool(4).slicer_area.data.copy()
         manager.get_imagetool(1).slicer_area.replace_source_data(data1 + 5.0)
@@ -1243,7 +1248,7 @@ def test_manager_console_selected_expression_opens_provenance_root(
             manager.get_imagetool(2).slicer_area.data,
             data0 - data1,
         )
-        provenance = manager._imagetool_wrappers[2].provenance_spec
+        provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         assert [source.name for source in provenance.script_inputs] == [
             "data_0",
@@ -1313,7 +1318,7 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
             manager.get_imagetool(2).slicer_area.data,
             child_data - data1,
         )
-        provenance = manager._imagetool_wrappers[2].provenance_spec
+        provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         assert [source.name for source in provenance.script_inputs] == [
             "data_0_0",
@@ -1321,11 +1326,11 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         ]
         assert [source.node_uid for source in provenance.script_inputs] == [
             child_uid,
-            manager._imagetool_wrappers[1].uid,
+            manager._tool_graph.root_wrappers[1].uid,
         ]
         assert [source.node_snapshot_token for source in provenance.script_inputs] == [
             child_node.snapshot_token,
-            manager._imagetool_wrappers[1].snapshot_token,
+            manager._tool_graph.root_wrappers[1].snapshot_token,
         ]
 
         manager.tree_view.clearSelection()
@@ -1336,7 +1341,7 @@ def test_manager_console_child_imagetool_access_tracks_provenance(
         assert len(shell.user_ns["_"]) == 1
         xr.testing.assert_identical(shell.user_ns["_"][0], child_data)
 
-        derived_uid = manager._imagetool_wrappers[2].uid
+        derived_uid = manager._tool_graph.root_wrappers[2].uid
         updated_child = child_data + 5.0
         child_tool.slicer_area.replace_source_data(updated_child)
         qtbot.wait_until(
@@ -1387,7 +1392,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
 
         manager.console._console_widget.execute("tools[0].qsel(alpha=slice(0.0, 1.0))")
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
-        qsel_spec = manager._imagetool_wrappers[2].provenance_spec
+        qsel_spec = manager._tool_graph.root_wrappers[2].provenance_spec
         assert qsel_spec is not None
         assert [operation.op for operation in qsel_spec.operations] == ["qsel"]
         xr.testing.assert_identical(
@@ -1401,7 +1406,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "itool(avg, manager=True, execute=False)"
         )
         qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
-        avg_spec = manager._imagetool_wrappers[3].provenance_spec
+        avg_spec = manager._tool_graph.root_wrappers[3].provenance_spec
         assert avg_spec is not None
         assert [operation.op for operation in avg_spec.operations] == ["average"]
         avg_data = manager.get_imagetool(3).slicer_area.data
@@ -1425,7 +1430,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "itool(rot, manager=True, execute=False)"
         )
         qtbot.wait_until(lambda: manager.ntools == 5, timeout=5000)
-        rotate_spec = manager._imagetool_wrappers[4].provenance_spec
+        rotate_spec = manager._tool_graph.root_wrappers[4].provenance_spec
         assert rotate_spec is not None
         assert [operation.op for operation in rotate_spec.operations] == ["rotate"]
         xr.testing.assert_identical(
@@ -1448,7 +1453,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "itool(rot_kw, manager=True, execute=False)"
         )
         qtbot.wait_until(lambda: manager.ntools == 6, timeout=5000)
-        rotate_kw_spec = manager._imagetool_wrappers[5].provenance_spec
+        rotate_kw_spec = manager._tool_graph.root_wrappers[5].provenance_spec
         assert rotate_kw_spec is not None
         assert [operation.op for operation in rotate_kw_spec.operations] == ["rotate"]
         xr.testing.assert_identical(
@@ -1470,7 +1475,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "itool(cat, manager=True, execute=False)"
         )
         qtbot.wait_until(lambda: manager.ntools == 7, timeout=5000)
-        concat_spec = manager._imagetool_wrappers[6].provenance_spec
+        concat_spec = manager._tool_graph.root_wrappers[6].provenance_spec
         assert concat_spec is not None
         assert [source.name for source in concat_spec.script_inputs] == [
             "data_0",
@@ -1489,7 +1494,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             "itool(chain, manager=True, execute=False)"
         )
         qtbot.wait_until(lambda: manager.ntools == 8, timeout=5000)
-        chain_spec = manager._imagetool_wrappers[7].provenance_spec
+        chain_spec = manager._tool_graph.root_wrappers[7].provenance_spec
         assert chain_spec is not None
         assert chain_spec.seed_code == "chain = data_0"
         assert [operation.op for operation in chain_spec.operations] == [
@@ -1598,7 +1603,7 @@ def test_manager_console_captures_self_contained_function_source(
             "itool(shifted, manager=True, execute=False)"
         )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        shifted_spec = manager._imagetool_wrappers[1].provenance_spec
+        shifted_spec = manager._tool_graph.root_wrappers[1].provenance_spec
         assert shifted_spec is not None
         shifted_code = shifted_spec.derivation_entries()[-1].code
         assert shifted_code is not None
@@ -1655,7 +1660,7 @@ def test_manager_console_derived_tool_reload_action_routes_to_manager(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         derived = manager.get_imagetool(2)
-        derived_uid = manager._imagetool_wrappers[2].uid
+        derived_uid = manager._tool_graph.root_wrappers[2].uid
         updated0 = data0 + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
         qtbot.wait_until(
@@ -1709,7 +1714,7 @@ def test_manager_console_derived_reload_reapplies_filter(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         derived = manager.get_imagetool(2)
-        derived_uid = manager._imagetool_wrappers[2].uid
+        derived_uid = manager._tool_graph.root_wrappers[2].uid
         derived.slicer_area.apply_filter_operation(operation, emit_edited=True)
 
         updated0 = data0 + 10.0
@@ -1729,7 +1734,7 @@ def test_manager_console_derived_reload_reapplies_filter(
         expected = operation.apply(raw_expected, parent_data=raw_expected)
         xr.testing.assert_identical(derived.slicer_area.data, expected)
         xr.testing.assert_identical(derived.slicer_area.displayed_data, expected)
-        display_spec = manager._imagetool_wrappers[2].displayed_provenance_spec
+        display_spec = manager._tool_graph.root_wrappers[2].displayed_provenance_spec
         assert display_spec is not None
         assert any(
             entry.label.startswith("Gaussian Filter")
@@ -1776,7 +1781,7 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
-        concat_wrapper = manager._imagetool_wrappers[2]
+        concat_wrapper = manager._tool_graph.root_wrappers[2]
         provenance = concat_wrapper.provenance_spec
         assert provenance is not None
         assert [source.name for source in provenance.script_inputs] == [
@@ -1784,12 +1789,12 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
             "data_1",
         ]
         assert [source.node_uid for source in provenance.script_inputs] == [
-            manager._imagetool_wrappers[0].uid,
-            manager._imagetool_wrappers[1].uid,
+            manager._tool_graph.root_wrappers[0].uid,
+            manager._tool_graph.root_wrappers[1].uid,
         ]
         assert [source.node_snapshot_token for source in provenance.script_inputs] == [
-            manager._imagetool_wrappers[0].snapshot_token,
-            manager._imagetool_wrappers[1].snapshot_token,
+            manager._tool_graph.root_wrappers[0].snapshot_token,
+            manager._tool_graph.root_wrappers[1].snapshot_token,
         ]
         operation_entry = provenance.operations[-1].derivation_entry()
         assert operation_entry.label == "Concatenate selected ImageTools"
@@ -1826,7 +1831,7 @@ def test_manager_concat_records_dependencies_and_handles_removed_inputs(
         accept_dialog(manager.concat_action.trigger, pre_call=_remove_originals)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        removed_inputs_wrapper = manager._imagetool_wrappers[3]
+        removed_inputs_wrapper = manager._tool_graph.root_wrappers[3]
         assert (
             manager.dependency_status_for_uid(removed_inputs_wrapper.uid) == "missing"
         )
@@ -1878,7 +1883,7 @@ def test_manager_concat_uses_filtered_display_data(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         xr.testing.assert_identical(manager.get_imagetool(2).slicer_area.data, expected)
-        provenance = manager._imagetool_wrappers[2].provenance_spec
+        provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         first_input_spec = provenance.script_inputs[0].parsed_provenance_spec()
         assert first_input_spec is not None
@@ -1922,9 +1927,9 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
 
         derived = manager.get_imagetool(2)
         derived.slicer_area.array_slicer.set_indices(0, [2, 1], update=False)
-        before_token = manager._imagetool_wrappers[2].snapshot_token
+        before_token = manager._tool_graph.root_wrappers[2].snapshot_token
         manager.get_imagetool(0).slicer_area.replace_source_data(data0 + 10.0)
-        derived_uid = manager._imagetool_wrappers[2].uid
+        derived_uid = manager._tool_graph.root_wrappers[2].uid
         qtbot.wait_until(
             lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
             timeout=5000,
@@ -1966,7 +1971,7 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
             data0 - data1,
         )
         assert manager.dependency_status_for_uid(derived_uid) == "changed"
-        assert manager._imagetool_wrappers[2].snapshot_token == before_token
+        assert manager._tool_graph.root_wrappers[2].snapshot_token == before_token
 
         accept_dialog(
             lambda: click_tree_view_pos(manager.tree_view, badge_rect.center())
@@ -1981,7 +1986,7 @@ def test_manager_reload_script_inputs_replaces_compatible_and_preserves_cursor(
             1,
         ]
         assert manager.dependency_status_for_uid(derived_uid) == "current"
-        assert manager._imagetool_wrappers[2].snapshot_token != before_token
+        assert manager._tool_graph.root_wrappers[2].snapshot_token != before_token
 
 
 def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
@@ -2015,10 +2020,10 @@ def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
         derived = manager.get_imagetool(1)
         assert derived.slicer_area.data.dims == ("x", "stack_dim")
         derived.slicer_area.array_slicer.set_indices(0, [2, 0], update=False)
-        before_token = manager._imagetool_wrappers[1].snapshot_token
+        before_token = manager._tool_graph.root_wrappers[1].snapshot_token
         updated = data + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated)
-        derived_uid = manager._imagetool_wrappers[1].uid
+        derived_uid = manager._tool_graph.root_wrappers[1].uid
         qtbot.wait_until(
             lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
             timeout=5000,
@@ -2042,7 +2047,7 @@ def test_manager_reload_script_inputs_normalizes_derived_1d_stack_dim(
             0,
         ]
         assert manager.dependency_status_for_uid(derived_uid) == "current"
-        assert manager._imagetool_wrappers[1].snapshot_token != before_token
+        assert manager._tool_graph.root_wrappers[1].snapshot_token != before_token
 
 
 def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
@@ -2081,7 +2086,7 @@ def test_manager_reload_script_inputs_normalizes_nonuniform_idx_dims(
 
         updated = data + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated)
-        derived_uid = manager._imagetool_wrappers[1].uid
+        derived_uid = manager._tool_graph.root_wrappers[1].uid
         qtbot.wait_until(
             lambda: manager.dependency_status_for_uid(derived_uid) == "changed",
             timeout=5000,
@@ -2143,7 +2148,7 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
         )
         qtbot.wait_until(lambda: manager.ntools == 4, timeout=5000)
 
-        final_uid = manager._imagetool_wrappers[3].uid
+        final_uid = manager._tool_graph.root_wrappers[3].uid
         updated0 = data0 + 10.0
         manager.get_imagetool(0).slicer_area.replace_source_data(updated0)
         qtbot.wait_until(
@@ -2160,14 +2165,14 @@ def test_manager_reload_script_inputs_rebuilds_live_nested_input(
             (updated0 - data1) + updated0,
         )
         assert manager.dependency_status_for_uid(final_uid) == "current"
-        rebuilt_spec = manager._imagetool_wrappers[3].provenance_spec
+        rebuilt_spec = manager._tool_graph.root_wrappers[3].provenance_spec
         assert rebuilt_spec is not None
         assert rebuilt_spec.script_inputs[0].node_uid is None
         nested_spec = rebuilt_spec.script_inputs[0].parsed_provenance_spec()
         assert nested_spec is not None
         assert [source.node_uid for source in nested_spec.script_inputs] == [
-            manager._imagetool_wrappers[0].uid,
-            manager._imagetool_wrappers[1].uid,
+            manager._tool_graph.root_wrappers[0].uid,
+            manager._tool_graph.root_wrappers[1].uid,
         ]
 
 
@@ -2213,12 +2218,12 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
 
         loaded_result = manager.get_imagetool(2).slicer_area.data.copy()
         xr.testing.assert_identical(loaded_result, data0 - data1)
-        derived_uid = manager._imagetool_wrappers[2].uid
-        provenance = manager._imagetool_wrappers[2].provenance_spec
+        derived_uid = manager._tool_graph.root_wrappers[2].uid
+        provenance = manager._tool_graph.root_wrappers[2].provenance_spec
         assert provenance is not None
         assert [source.node_uid for source in provenance.script_inputs] == [
-            manager._imagetool_wrappers[0].uid,
-            manager._imagetool_wrappers[1].uid,
+            manager._tool_graph.root_wrappers[0].uid,
+            manager._tool_graph.root_wrappers[1].uid,
         ]
         assert manager.dependency_status_for_uid(derived_uid) == "current"
 
@@ -2232,7 +2237,7 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
             manager.get_imagetool(2).slicer_area.data, loaded_result
         )
 
-        before_token = manager._imagetool_wrappers[2].snapshot_token
+        before_token = manager._tool_graph.root_wrappers[2].snapshot_token
         manager.tree_view.deselect_all()
         select_tools(manager, [2])
         manager._update_actions()
@@ -2245,7 +2250,7 @@ def test_manager_reload_script_inputs_after_workspace_roundtrip(
             updated0 - data1,
         )
         assert manager.dependency_status_for_uid(derived_uid) == "current"
-        assert manager._imagetool_wrappers[2].snapshot_token != before_token
+        assert manager._tool_graph.root_wrappers[2].snapshot_token != before_token
 
 
 def test_manager_reload_script_inputs_incompatible_prompt_paths(
@@ -2346,7 +2351,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         manager.show()
         itool([data0, data1], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        manager._imagetool_wrappers[1].set_detached_provenance(file_spec)
+        manager._tool_graph.root_wrappers[1].set_detached_provenance(file_spec)
         assert (
             manager._show_multi_input_script_result(
                 data0 - data1,
@@ -2359,7 +2364,7 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
         manager.remove_imagetool(1)
-        derived_uid = manager._imagetool_wrappers[2].uid
+        derived_uid = manager._tool_graph.root_wrappers[2].uid
         qtbot.wait_until(
             lambda: manager.dependency_status_for_uid(derived_uid) == "missing",
             timeout=5000,
@@ -2411,10 +2416,11 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
             manager.get_imagetool(2).slicer_area.data,
             data0 - data1,
         )
-        rebuilt_spec = manager._imagetool_wrappers[2].provenance_spec
+        rebuilt_spec = manager._tool_graph.root_wrappers[2].provenance_spec
         assert rebuilt_spec is not None
         assert (
-            rebuilt_spec.script_inputs[0].node_uid == manager._imagetool_wrappers[0].uid
+            rebuilt_spec.script_inputs[0].node_uid
+            == manager._tool_graph.root_wrappers[0].uid
         )
         assert rebuilt_spec.script_inputs[1].node_uid is None
         assert rebuilt_spec.script_inputs[1].parsed_provenance_spec() == file_spec
@@ -2456,14 +2462,14 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
             ),
         ),
     )
-    shared_stage = prov.full_data(prov.AverageOperation(dims=("k",)))
+    shared_stage = prov.full_data(ops.AverageOperation(dims=("k",)))
     left_stage = prov.selection(
-        prov.SelOperation(kwargs={"pol": "LH"}),
-        prov.SqueezeOperation(),
+        ops.SelOperation(kwargs={"pol": "LH"}),
+        ops.SqueezeOperation(),
     )
     right_stage = prov.selection(
-        prov.SelOperation(kwargs={"pol": "LV"}),
-        prov.SqueezeOperation(),
+        ops.SelOperation(kwargs={"pol": "LV"}),
+        ops.SqueezeOperation(),
     )
     left_data = left_stage.apply(shared_stage.apply(source))
     right_data = right_stage.apply(shared_stage.apply(source))
@@ -2490,8 +2496,8 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         manager.show()
         itool([left_data, right_data], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        manager._imagetool_wrappers[0].set_detached_provenance(left_spec)
-        manager._imagetool_wrappers[1].set_detached_provenance(right_spec)
+        manager._tool_graph.root_wrappers[0].set_detached_provenance(left_spec)
+        manager._tool_graph.root_wrappers[1].set_detached_provenance(right_spec)
         assert (
             manager._show_multi_input_script_result(
                 left_data - right_data,
@@ -2672,7 +2678,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             == 2
         )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
-        derived_wrapper = manager._imagetool_wrappers[2]
+        derived_wrapper = manager._tool_graph.root_wrappers[2]
         derived_uid = derived_wrapper.uid
         script_spec = derived_wrapper.provenance_spec
         assert script_spec is not None
@@ -2732,7 +2738,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
             provenance_spec=file_spec.model_dump(mode="json"),
         )
         nested_spec = prov.script(
-            prov.ScriptCodeOperation(label="Use file", code="derived = file_input"),
+            ops.ScriptCodeOperation(label="Use file", code="derived = file_input"),
             start_label="Run script",
             active_name="derived",
             script_inputs=(file_input,),
@@ -2842,7 +2848,7 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         old_parent_uid = "saved-parent"
         derived_wrapper.set_displayed_provenance(
             prov.script(
-                prov.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+                ops.ScriptCodeOperation(label="Copy", code="derived = data_0"),
                 start_label="Run script",
                 active_name="derived",
                 script_inputs=(
@@ -2857,14 +2863,15 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         )
         assert manager._workspace_loaded_uid_map(
             {old_parent_uid: 0, "missing": "missing"}
-        ) == {old_parent_uid: manager._imagetool_wrappers[0].uid}
+        ) == {old_parent_uid: manager._tool_graph.root_wrappers[0].uid}
         manager._rebase_loaded_workspace_dependency_refs(
             {old_parent_uid: 0, derived_wrapper.uid: 2, "missing": "missing"}
         )
         rebased_spec = derived_wrapper.provenance_spec
         assert rebased_spec is not None
         assert (
-            rebased_spec.script_inputs[0].node_uid == manager._imagetool_wrappers[0].uid
+            rebased_spec.script_inputs[0].node_uid
+            == manager._tool_graph.root_wrappers[0].uid
         )
 
 
@@ -2906,7 +2913,7 @@ def test_manager_reload_self_replacement_uses_recorded_source(
         qtbot.wait_until(manager.console.isVisible, timeout=5000)
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(file_spec)
 
         manager.console._console_widget.execute("tools[0].data = tools[0] + 1.0")
@@ -2955,7 +2962,7 @@ def test_manager_reload_raw_self_replacement_unavailable(
         expected = data + 1.0
         xr.testing.assert_identical(manager.get_imagetool(0).slicer_area.data, expected)
 
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         manager.tree_view.deselect_all()
         select_tools(manager, [0])
         manager._update_actions()
@@ -2988,10 +2995,10 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         manager.show()
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
             prov.script(
-                prov.ScriptCodeOperation(
+                ops.ScriptCodeOperation(
                     label="Run opaque code",
                     code=None,
                     copyable=False,
@@ -3039,10 +3046,10 @@ def test_manager_console_replacement_updates_provenance_and_descendants(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
             timeout=5000,
         )
-        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+        child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
 
         manager.console._console_widget.execute(
             "tools[0].data = tools[0].assign_coords(time=tools[1].time)"
@@ -3053,9 +3060,9 @@ def test_manager_console_replacement_updates_provenance_and_descendants(
             manager.get_imagetool(0).slicer_area.data,
             data0.assign_coords(time=data1.time),
         )
-        provenance = manager._imagetool_wrappers[0].provenance_spec
+        provenance = manager._tool_graph.root_wrappers[0].provenance_spec
         assert provenance is not None
-        assert manager._imagetool_wrappers[0].source_spec is None
+        assert manager._tool_graph.root_wrappers[0].source_spec is None
         assert [source.name for source in provenance.script_inputs] == [
             "data_0",
             "data_1",
@@ -3072,7 +3079,7 @@ def test_manager_console_replacement_updates_provenance_and_descendants(
             manager._load_workspace_node(typing.cast("xr.DataTree", node))
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        loaded_provenance = manager._imagetool_wrappers[0].provenance_spec
+        loaded_provenance = manager._tool_graph.root_wrappers[0].provenance_spec
         assert loaded_provenance is not None
         assert [source.name for source in loaded_provenance.script_inputs] == [
             "data_0",

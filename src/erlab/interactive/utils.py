@@ -3229,8 +3229,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             self._clear_output_imagetool_target(key)
             return None
 
-        node = manager._all_nodes.get(target)
-        if node is None or not node.is_imagetool or node.parent_uid != parent_uid:
+        try:
+            node = manager._node_for_target(target)
+        except KeyError:
+            self._clear_output_imagetool_target(key)
+            return None
+        if not node.is_imagetool or node.parent_uid != parent_uid:
             self._clear_output_imagetool_target(key)
             return None
         return target

@@ -117,7 +117,7 @@ def child_status_badge(
     node = manager._child_node(uid)
     while node.parent_uid is not None:
         ancestors.append(node.parent_uid)
-        parent = manager._all_nodes[node.parent_uid]
+        parent = manager._tool_graph.nodes[node.parent_uid]
         if not hasattr(parent, "parent_uid"):
             break
         node = typing.cast("typing.Any", parent)

@@ -12,7 +12,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._wrapper as manager_wrapper
 from erlab.interactive._fit2d import Fit2DTool
@@ -24,6 +24,7 @@ from erlab.interactive.imagetool import (
     provenance_framework,
     provenance_operations,
 )
+from erlab.interactive.imagetool import provenance_operations as ops
 from erlab.interactive.imagetool.dialogs import SelectionDialog
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._modelview import (
@@ -124,11 +125,11 @@ def test_manager_childtool_from_filtered_parent_uses_display_provenance(
         parent_tool.slicer_area.apply_filter_operation(operation)
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert child.input_provenance_spec is not None
         display_code = child.input_provenance_spec.display_code()
@@ -155,7 +156,7 @@ def test_manager_filtered_parent_updates_source_bound_child(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = ops.GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -207,7 +208,7 @@ def test_manager_filtered_source_bound_child_refresh_keeps_filter(
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
     updated = data + 100.0
-    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = ops.GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(updated, parent_data=updated)
 
     with manager_context() as manager:
@@ -269,7 +270,7 @@ def test_manager_filtered_source_bound_child_failed_refresh_keeps_filter(
         dims=["u", "y"],
         coords={"u": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+    operation = ops.GaussianFilterOperation(sigma={"x": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -315,7 +316,7 @@ def test_manager_duplicate_filtered_child_records_filter_once(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = ops.GaussianFilterOperation(sigma={"alpha": 1.0})
     expected = operation.apply(data, parent_data=data)
 
     with manager_context() as manager:
@@ -364,7 +365,7 @@ def test_manager_workspace_roundtrip_filtered_child_records_filter_once(
         dims=["alpha", "eV"],
         coords={"alpha": np.arange(5, dtype=float), "eV": np.arange(5, dtype=float)},
     )
-    operation = prov.GaussianFilterOperation(sigma={"alpha": 1.0})
+    operation = ops.GaussianFilterOperation(sigma={"alpha": 1.0})
 
     with manager_context() as manager:
         manager.show()
@@ -460,7 +461,7 @@ def test_manager_operation_filter_preserves_output_binding(
             assert output_id == "out"
             del data
             return prov.script(
-                prov.ScriptCodeOperation(label="Use output", code="result = data + 10"),
+                ops.ScriptCodeOperation(label="Use output", code="result = data + 10"),
                 start_label="Start from parent",
                 active_name="result",
             )
@@ -495,7 +496,7 @@ def test_manager_operation_filter_preserves_output_binding(
             source_state="fresh",
             output_id="out",
         )
-        operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+        operation = ops.GaussianFilterOperation(sigma={"x": 1.0})
         output_tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
         expected = operation.apply(initial_output, parent_data=initial_output)
 
@@ -567,7 +568,7 @@ def test_manager_non_imagetool_node_displayed_provenance_uses_tool_provenance(
 
     data = xr.DataArray(np.arange(4.0), dims=("x",))
     provenance_spec = prov.script(
-        prov.ScriptCodeOperation(label="Double data", code="result = data * 2"),
+        ops.ScriptCodeOperation(label="Double data", code="result = data * 2"),
         start_label="Start from data",
         seed_code="data = source",
         active_name="result",
@@ -646,10 +647,11 @@ def test_manager_ximageitem_open_itool_creates_independent_top_level_window(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
         assert child.main_image.data_array is not None
 
@@ -659,7 +661,7 @@ def test_manager_ximageitem_open_itool_creates_independent_top_level_window(
 
         child_node = manager._child_node(child_uid)
         assert child_node._childtool_indices == []
-        output_node = manager._imagetool_wrappers[1]
+        output_node = manager._tool_graph.root_wrappers[1]
         assert output_node.parent_uid is None
         assert output_node.output_id is None
         assert output_node.source_spec is None
@@ -680,7 +682,7 @@ def test_manager_ximageitem_open_itool_creates_independent_top_level_window(
 
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         assert child_node._childtool_indices == []
-        second_output_node = manager._imagetool_wrappers[2]
+        second_output_node = manager._tool_graph.root_wrappers[2]
         assert second_output_node.parent_uid is None
         assert second_output_node.output_id is None
         assert second_output_node.source_spec is None
@@ -706,10 +708,11 @@ def test_manager_workspace_roundtrip_independent_unbound_imagetool(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
         expected = child.main_image.data_array.T.copy(deep=True)
 
@@ -728,7 +731,7 @@ def test_manager_workspace_roundtrip_independent_unbound_imagetool(
 
         matching_roots = [
             wrapper
-            for index, wrapper in manager._imagetool_wrappers.items()
+            for index, wrapper in manager._tool_graph.root_wrappers.items()
             if wrapper.parent_uid is None
             and wrapper.source_spec is None
             and wrapper.provenance_spec is not None
@@ -763,11 +766,11 @@ def test_manager_metadata_uses_streamlined_child_derivation(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         manager.tree_view.clearSelection()
         select_child_tool(manager, child_uid)
         manager._update_info(uid=child_uid)
@@ -804,8 +807,8 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
         coords={"x": np.arange(4), "y": np.arange(4)},
         name="scan",
     )
-    initial_root_spec = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
-    updated_root_spec = prov.selection(prov.IselOperation(kwargs={"x": slice(1, 3)}))
+    initial_root_spec = prov.selection(ops.IselOperation(kwargs={"x": slice(0, 2)}))
+    updated_root_spec = prov.selection(ops.IselOperation(kwargs={"x": slice(1, 3)}))
 
     with manager_context() as manager:
         manager.show()
@@ -833,11 +836,11 @@ def test_manager_nested_imagetool_refresh_updates_descendant_dependency(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=True,
         )
 
-        root_node = manager._imagetool_wrappers[0]
+        root_node = manager._tool_graph.root_wrappers[0]
         grandchild_node = manager._child_node(grandchild_uid)
         assert grandchild_node.provenance_spec is not None
         assert "slice(0, 2)" in typing.cast(
@@ -888,7 +891,7 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
             root_tool,
             show=False,
             provenance_spec=prov.selection(
-                prov.IselOperation(kwargs={"x": slice(0, 2)})
+                ops.IselOperation(kwargs={"x": slice(0, 2)})
             ),
         )
 
@@ -904,8 +907,8 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
         child_node = manager._child_node(child_uid)
 
         updated = base.isel(x=slice(2, 4))
-        manager._imagetool_wrappers[0].set_detached_provenance(
-            prov.selection(prov.IselOperation(kwargs={"x": slice(2, 4)}))
+        manager._tool_graph.root_wrappers[0].set_detached_provenance(
+            prov.selection(ops.IselOperation(kwargs={"x": slice(2, 4)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated)
@@ -973,8 +976,8 @@ def test_manager_nested_imagetool_auto_update_can_be_disabled_from_auto_badge(
         assert not manager.source_update_action.isVisible()
 
         updated2 = base.isel(x=slice(4, 6))
-        manager._imagetool_wrappers[0].set_detached_provenance(
-            prov.selection(prov.IselOperation(kwargs={"x": slice(4, 6)}))
+        manager._tool_graph.root_wrappers[0].set_detached_provenance(
+            prov.selection(ops.IselOperation(kwargs={"x": slice(4, 6)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated2)
@@ -1008,7 +1011,7 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
             root_tool,
             show=False,
             provenance_spec=prov.selection(
-                prov.IselOperation(kwargs={"x": slice(0, 2)})
+                ops.IselOperation(kwargs={"x": slice(0, 2)})
             ),
         )
 
@@ -1030,16 +1033,16 @@ def test_manager_nested_stale_imagetool_marks_grandchildren_stale(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=True,
         )
 
-        root_node = manager._imagetool_wrappers[0]
+        root_node = manager._tool_graph.root_wrappers[0]
         child_node = manager._child_node(child_uid)
         grandchild_node = manager._child_node(grandchild_uid)
 
         root_node.set_detached_provenance(
-            prov.selection(prov.IselOperation(kwargs={"x": slice(1, 3)}))
+            prov.selection(ops.IselOperation(kwargs={"x": slice(1, 3)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, base.isel(x=slice(1, 3)))
@@ -1074,7 +1077,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
             root_tool,
             show=False,
             provenance_spec=prov.selection(
-                prov.IselOperation(kwargs={"x": slice(0, 2)})
+                ops.IselOperation(kwargs={"x": slice(0, 2)})
             ),
         )
 
@@ -1096,7 +1099,7 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=False,
         )
 
@@ -1104,8 +1107,8 @@ def test_manager_manual_nested_refresh_updates_stale_ancestors(
         grandchild_node = manager._child_node(grandchild_uid)
         updated_root = base.isel(x=slice(2, 4))
 
-        manager._imagetool_wrappers[0].set_detached_provenance(
-            prov.selection(prov.IselOperation(kwargs={"x": slice(2, 4)}))
+        manager._tool_graph.root_wrappers[0].set_detached_provenance(
+            prov.selection(ops.IselOperation(kwargs={"x": slice(2, 4)}))
         )
         with qtbot.wait_signal(manager._sigDataReplaced):
             replace_data(0, updated_root)
@@ -1204,7 +1207,7 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
             leaf_tool,
             parent_uid,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=False,
         )
 
@@ -1249,10 +1252,11 @@ def test_manager_meshtool_output_itools_use_distinct_output_ids(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
         monkeypatch.setattr(
             child,
@@ -1322,7 +1326,7 @@ def test_manager_selection_dialog_opens_child_with_source_spec(
 
         dialog.accept()
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
         child_uid = parent._childtool_indices[0]
         child_node = manager._child_node(child_uid)
@@ -1369,10 +1373,11 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
         child._corrected = child.tool_data.copy(deep=True) + 1
         child._mesh = child.tool_data.copy(deep=True) - 1
@@ -1395,7 +1400,7 @@ def test_manager_meshtool_output_child_qsel_copy_code_tracks_selected_output_id(
             output_uid,
             show=False,
             source_spec=prov.selection(
-                prov.QSelOperation(kwargs={"alpha": 1, "alpha_width": 1})
+                ops.QSelOperation(kwargs={"alpha": 1, "alpha_width": 1})
             ),
             source_auto_update=True,
         )
@@ -1430,7 +1435,7 @@ def test_manager_fit2d_output_itools_use_distinct_output_ids(
         parent_tool = manager.get_imagetool(0)
         parent_tool.set_provenance_spec(
             prov.script(
-                prov.ScriptCodeOperation(
+                ops.ScriptCodeOperation(
                     label="Prepare parent data",
                     code="prepared_parent = data + 1",
                 ),
@@ -1540,7 +1545,7 @@ def test_manager_output_refresh_updates_stale_parent_source(
         ) -> provenance_framework.ToolProvenanceSpec | None:
             assert output_id == "out"
             return prov.script(
-                prov.ScriptCodeOperation(label="Use output", code="result = data + 10"),
+                ops.ScriptCodeOperation(label="Use output", code="result = data + 10"),
                 start_label="Start from parent",
                 active_name="result",
             )
@@ -1625,7 +1630,7 @@ def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_window
         child_node = manager._child_node(child_uid)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
         assert child_node._childtool_indices == []
-        first_output_node = manager._imagetool_wrappers[1]
+        first_output_node = manager._tool_graph.root_wrappers[1]
         assert first_output_node.parent_uid is None
         assert first_output_node.output_id is None
         assert first_output_node.source_spec is None
@@ -1642,7 +1647,7 @@ def test_manager_fit2d_unbound_output_itool_creates_independent_top_level_window
 
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         assert child_node._childtool_indices == []
-        second_output_node = manager._imagetool_wrappers[2]
+        second_output_node = manager._tool_graph.root_wrappers[2]
         assert second_output_node.parent_uid is None
         assert second_output_node.output_id is None
         assert second_output_node.source_spec is None
@@ -1678,7 +1683,7 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         manager.tree_view.clearSelection()
         select_tools(manager, [0])
         manager._update_info()
@@ -1799,7 +1804,7 @@ def test_manager_promote_action_enablement_and_menus(
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         manager.get_imagetool(0).slicer_area.images[0].open_in_new_window()
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
 
@@ -1858,7 +1863,7 @@ def test_manager_rename_action_enablement_for_child_selection(
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         manager.get_imagetool(0).slicer_area.images[0].open_in_new_window()
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
 
@@ -1928,7 +1933,7 @@ def test_manager_promote_selected_cancel_keeps_nested_imagetool(
         itool(test_data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         manager.get_imagetool(0).slicer_area.images[0].open_in_new_window()
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
 
@@ -1994,7 +1999,7 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
 
         accept_dialog(parent_tool.mnb._average, pre_call=_nest_average)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
 
         child_uid = parent._childtool_indices[0]
@@ -2025,7 +2030,7 @@ def test_manager_promote_child_imagetool_rehomes_subtree_and_detaches_provenance
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
         promoted_index = 1
-        promoted = manager._imagetool_wrappers[promoted_index]
+        promoted = manager._tool_graph.root_wrappers[promoted_index]
         assert promoted.uid == child_uid
         assert child_uid not in parent._childtool_indices
         assert promoted.parent_uid is None
@@ -2080,7 +2085,7 @@ def test_manager_replace_current_sets_provenance_on_provenance_free_root(
         itool(data, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        root = manager._imagetool_wrappers[0]
+        root = manager._tool_graph.root_wrappers[0]
         root_tool = manager.get_imagetool(0)
         assert root.provenance_spec is None
 
@@ -2140,7 +2145,7 @@ def test_manager_aggregate_child_refreshes_from_parent(
 
         accept_dialog(parent_tool.mnb._aggregate, pre_call=_nest_sum)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
         child_uid = parent._childtool_indices[0]
         child_node = manager._child_node(child_uid)
@@ -2178,7 +2183,7 @@ def test_manager_replace_transform_on_filtered_source_child_keeps_live_source(
         coords={"x": np.arange(3, dtype=float), "y": np.arange(4, dtype=float)},
         name="scan",
     )
-    operation = prov.GaussianFilterOperation(sigma={"x": 1.0})
+    operation = ops.GaussianFilterOperation(sigma={"x": 1.0})
 
     with manager_context() as manager:
         manager.show()
@@ -2260,7 +2265,7 @@ def test_manager_file_backed_replace_current_keeps_file_provenance(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        root = manager._imagetool_wrappers[0]
+        root = manager._tool_graph.root_wrappers[0]
         root_tool = manager.get_imagetool(0)
         assert root.provenance_spec is not None
         assert root.provenance_spec.display_entries()[0].label == (
@@ -2375,7 +2380,7 @@ def test_manager_detached_file_provenance_metadata_and_reload_roundtrip(
             manager._load_workspace_node(typing.cast("xr.DataTree", node))
 
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
-        detached = manager._imagetool_wrappers[1]
+        detached = manager._tool_graph.root_wrappers[1]
         detached_tool = manager.get_imagetool(1)
         assert detached.parent_uid is None
         assert detached.output_id is None
@@ -2474,7 +2479,7 @@ def test_manager_workspace_loads_legacy_321_provenance_payload(
             manager._load_workspace_node(typing.cast("xr.DataTree", node))
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        loaded = manager._imagetool_wrappers[0]
+        loaded = manager._tool_graph.root_wrappers[0]
         assert loaded.provenance_spec is not None
         assert loaded.provenance_spec.schema_version == 2
         assert loaded.provenance_spec.kind == "script"
@@ -2606,7 +2611,7 @@ def test_manager_nonuniform_transform_children_refresh_from_public_data(
 
         accept_dialog(parent_tool.mnb._coarsen, pre_call=_nest_coarsen)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
 
         child_uid = parent._childtool_indices[0]
@@ -2677,7 +2682,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
 
         accept_dialog(parent_tool.mnb._average, pre_call=_nest_average)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
 
         child_uid = parent._childtool_indices[0]
@@ -2824,7 +2829,7 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         accept_dialog(parent_tool.mnb._average, pre_call=_detach_average)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        detached = manager._imagetool_wrappers[1]
+        detached = manager._tool_graph.root_wrappers[1]
         assert detached.source_spec is None
         assert detached.provenance_spec is not None
         detached_tool = manager.get_imagetool(1)
@@ -2868,7 +2873,9 @@ def test_manager_transform_launch_modes_refresh_nested_and_detached(
         assert "Aggregate" in detached_derivation[2]
 
         duplicated_detached_index = typing.cast("int", manager.duplicate_imagetool(1))
-        duplicated_detached = manager._imagetool_wrappers[duplicated_detached_index]
+        duplicated_detached = manager._tool_graph.root_wrappers[
+            duplicated_detached_index
+        ]
         assert duplicated_detached.source_spec is None
         assert duplicated_detached.provenance_spec == detached.provenance_spec
         xr.testing.assert_identical(
@@ -2934,7 +2941,7 @@ def test_manager_divide_by_coord_child_refresh_and_code(
 
         accept_dialog(parent_tool.mnb._divide_by_coord, pre_call=_nest_divide)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
         child_uid = parent._childtool_indices[0]
         child_node = manager._child_node(child_uid)
@@ -3024,7 +3031,7 @@ def test_manager_affine_coord_child_refreshes_from_formula(
 
         accept_dialog(parent_tool.mnb._assign_coords, pre_call=_nest_affine)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
         child_uid = parent._childtool_indices[0]
         child_node = manager._child_node(child_uid)
@@ -3099,7 +3106,7 @@ def test_manager_assign_attrs_child_refreshes_from_operation(
 
         accept_dialog(parent_tool.mnb._assign_attrs, pre_call=_nest_attrs)
 
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(parent._childtool_indices) == 1, timeout=5000)
         child_uid = parent._childtool_indices[0]
         child_node = manager._child_node(child_uid)
@@ -3143,17 +3150,19 @@ def test_manager_reindex(
         itool([test_data, test_data, test_data], manager=True)
         qtbot.wait_until(lambda: manager.ntools == 3)
 
-        assert manager._displayed_indices == [0, 1, 2]
+        assert manager._tool_graph.displayed_indices == [0, 1, 2]
 
         # Remove tool at index 1
         manager.remove_imagetool(1)
         qtbot.wait_until(lambda: manager.ntools == 2)
 
-        assert manager._displayed_indices == [0, 2]
+        assert manager._tool_graph.displayed_indices == [0, 2]
 
         # Reindex
         manager.reindex_action.trigger()
-        qtbot.wait_until(lambda: manager._displayed_indices == [0, 1], timeout=5000)
+        qtbot.wait_until(
+            lambda: manager._tool_graph.displayed_indices == [0, 1], timeout=5000
+        )
 
 
 def test_manager_server_show_remove(
@@ -3219,7 +3228,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
             {},
             watched_var=("data", "watch:stable-data"),
             watched_metadata={
-                "workspace_link_id": manager._workspace_link_id,
+                "workspace_link_id": manager._workspace_state.link_id,
                 "source_label": "notebook-a",
                 "source_uid": "kernel-a",
                 "connected": True,
@@ -3227,7 +3236,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        workspace_link_id = manager._workspace_link_id
+        workspace_link_id = manager._workspace_state.link_id
         tree = manager._to_datatree()
         tree.attrs.update(manager._workspace_root_attrs_payload(delta_save_count=0))
         manifest = json.loads(tree.attrs["imagetool_workspace_manifest"])
@@ -3241,12 +3250,12 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
 
         manager.remove_all_tools()
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
-        manager._workspace_link_id = "different-workspace-link"
+        manager._workspace_state.link_id = "different-workspace-link"
 
         manager._load_workspace_node(typing.cast("xr.DataTree", tree["0"]))
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         assert wrapper.watched
         assert wrapper._watched_varname == "data"
         assert wrapper._watched_uid == "watch:stable-data"
@@ -3263,7 +3272,7 @@ def test_manager_workspace_roundtrip_preserves_watched_binding(
         assert blocker.args[0]["watched"][0]["source_uid"] == "kernel-a"
 
         manager._from_datatree(tree, replace=True, select=False)
-        assert manager._workspace_link_id == workspace_link_id
+        assert manager._workspace_state.link_id == workspace_link_id
 
 
 def test_manager_workspace_watched_attrs_skip_missing_workspace_link(
@@ -3313,21 +3322,21 @@ def test_manager_watched_badge_color_groups_by_source_uid(
             )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
-        left = manager._imagetool_wrappers[0]
-        right = manager._imagetool_wrappers[1]
-        other = manager._imagetool_wrappers[2]
+        left = manager._tool_graph.root_wrappers[0]
+        right = manager._tool_graph.root_wrappers[1]
+        other = manager._tool_graph.root_wrappers[2]
 
         assert (
             manager.color_for_watched_var_source(left)
-            == manager_mainwindow._WATCHED_VAR_COLORS[0]
+            == manager_widgets._WATCHED_VAR_COLORS[0]
         )
         assert (
             manager.color_for_watched_var_source(right)
-            == manager_mainwindow._WATCHED_VAR_COLORS[0]
+            == manager_widgets._WATCHED_VAR_COLORS[0]
         )
         assert (
             manager.color_for_watched_var_source(other)
-            == manager_mainwindow._WATCHED_VAR_COLORS[1]
+            == manager_widgets._WATCHED_VAR_COLORS[1]
         )
 
 
@@ -3359,9 +3368,9 @@ def test_manager_watched_badge_color_falls_back_to_source_label(
         )
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
 
-        left = manager._imagetool_wrappers[0]
-        right = manager._imagetool_wrappers[1]
-        other = manager._imagetool_wrappers[2]
+        left = manager._tool_graph.root_wrappers[0]
+        right = manager._tool_graph.root_wrappers[1]
+        other = manager._tool_graph.root_wrappers[2]
         assert manager.color_for_watched_var_source(
             left
         ) == manager.color_for_watched_var_source(right)
@@ -3391,8 +3400,8 @@ def test_manager_watched_badge_color_uses_legacy_uid_suffix(
         )
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        left = manager._imagetool_wrappers[0]
-        right = manager._imagetool_wrappers[1]
+        left = manager._tool_graph.root_wrappers[0]
+        right = manager._tool_graph.root_wrappers[1]
         assert manager.color_for_watched_var_source(
             left
         ) == manager.color_for_watched_var_source(right)
@@ -3413,7 +3422,7 @@ def test_manager_watched_root_provenance_uses_variable_name(
         manager._data_recv([test_data], {}, watched_var=("my_data", "kernel-0"))
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        node = manager._imagetool_wrappers[0]
+        node = manager._tool_graph.root_wrappers[0]
         provenance = node.provenance_spec
         assert provenance is not None
         code = provenance.display_code()
@@ -3467,7 +3476,7 @@ def test_manager_non_watched_full_code_prompts_for_source_variable(
         manager._data_recv([test_data], {})
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        node = manager._imagetool_wrappers[0]
+        node = manager._tool_graph.root_wrappers[0]
         node.set_detached_provenance(
             provenance_framework.full_data(
                 provenance_operations.AverageOperation(dims=("alpha",))
@@ -3517,7 +3526,7 @@ def test_manager_non_watched_full_code_prompt_cancel_does_not_copy(
         manager._data_recv([test_data], {})
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        node = manager._imagetool_wrappers[0]
+        node = manager._tool_graph.root_wrappers[0]
         node.set_detached_provenance(
             provenance_framework.full_data(
                 provenance_operations.AverageOperation(dims=("alpha",))
@@ -3565,7 +3574,7 @@ def test_manager_file_backed_full_code_uses_load_code(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        node = manager._imagetool_wrappers[0]
+        node = manager._tool_graph.root_wrappers[0]
         node.set_detached_provenance(
             provenance_framework.full_data(
                 provenance_operations.AverageOperation(dims=("alpha",))
@@ -3620,7 +3629,7 @@ def test_manager_file_backed_full_code_prefers_scan_number_loader(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        node = manager._imagetool_wrappers[0]
+        node = manager._tool_graph.root_wrappers[0]
         node.set_detached_provenance(
             provenance_framework.full_data(
                 provenance_operations.AverageOperation(dims=("alpha",))
@@ -3669,11 +3678,11 @@ def test_manager_watched_root_child_tool_copy_code_uses_variable_name(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
         namespace = _exec_generated_code(
             copied,
@@ -3704,11 +3713,11 @@ def test_manager_watched_root_child_imagetool_copy_code_uses_variable_name(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_new_window()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         copied = copy_full_code_for_uid(monkeypatch, manager, child_uid)
         namespace = _exec_generated_code(
             copied,
@@ -3737,11 +3746,11 @@ def test_manager_watched_root_ftool_copy_code_1d_omits_duplicate_seed_and_noop_s
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_ftool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child_tool = manager.get_childtool(child_uid)
         assert isinstance(child_tool, Fit2DTool)
 
@@ -3775,11 +3784,11 @@ def test_manager_selecting_unfit_ftool_child_does_not_warn(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_ftool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child_tool = manager.get_childtool(child_uid)
         assert isinstance(child_tool, Fit2DTool)
 
@@ -4093,11 +4102,11 @@ def test_manager_watched_1d_root_ftool_copy_code_omits_synthetic_squeeze(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_ftool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child_tool = manager.get_childtool(child_uid)
 
         copied: list[str] = []
@@ -4135,11 +4144,11 @@ def test_manager_watched_update_to_1d_refreshes_copy_code_cleanup(
 
         parent_tool.slicer_area.images[0].open_in_ftool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child_tool = manager.get_childtool(child_uid)
 
         copied: list[str] = []
@@ -4177,12 +4186,13 @@ def test_manager_duplicate_watched_1d_root_preserves_copy_code_cleanup(
         parent_tool.slicer_area.images[0].open_in_ftool()
         qtbot.wait_until(
             lambda: (
-                len(manager._imagetool_wrappers[duplicated]._childtool_indices) == 1
+                len(manager._tool_graph.root_wrappers[duplicated]._childtool_indices)
+                == 1
             ),
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[duplicated]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[duplicated]._childtool_indices[0]
         child_tool = manager.get_childtool(child_uid)
 
         copied: list[str] = []
@@ -4227,11 +4237,11 @@ def test_manager_workspace_roundtrip_watched_1d_root_preserves_copy_code_cleanup
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_ftool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtool_indices) == 1,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtool_indices) == 1,
             timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child_tool = manager.get_childtool(child_uid)
 
         copied: list[str] = []

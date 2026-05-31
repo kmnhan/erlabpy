@@ -19,11 +19,11 @@ if typing.TYPE_CHECKING:
 
     import xarray
 
-    from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 
 
 class _ConcatDialog(QtWidgets.QDialog):
-    def __init__(self, manager: ImageToolManager) -> None:
+    def __init__(self, manager: _ImageToolManagerBase) -> None:
         super().__init__(manager)
         self.setWindowTitle("Concatenate Selected Tools")
         self.setModal(True)
@@ -157,7 +157,7 @@ class _ConcatDialog(QtWidgets.QDialog):
 
 
 class _RenameDialog(QtWidgets.QDialog):
-    def __init__(self, manager: ImageToolManager) -> None:
+    def __init__(self, manager: _ImageToolManagerBase) -> None:
         super().__init__(manager)
         self.setWindowTitle("Rename Selected Tools")
         self.setModal(True)
@@ -228,7 +228,9 @@ class _RenameDialog(QtWidgets.QDialog):
 
 
 class _StoreDialog(QtWidgets.QDialog):
-    def __init__(self, manager: ImageToolManager, target_indices: list[int]) -> None:
+    def __init__(
+        self, manager: _ImageToolManagerBase, target_indices: list[int]
+    ) -> None:
         super().__init__(manager)
         self.setWindowTitle("Store with IPython")
         self._manager = weakref.ref(manager)
@@ -243,7 +245,7 @@ class _StoreDialog(QtWidgets.QDialog):
 
         for tool_idx in target_indices:
             data = manager.get_imagetool(tool_idx).slicer_area.displayed_data
-            wrapper = manager._imagetool_wrappers[tool_idx]
+            wrapper = manager._tool_graph.root_wrappers[tool_idx]
             default_name = data.name
             if not erlab.interactive.utils._is_kwarg_name(default_name):
                 if erlab.interactive.utils._is_kwarg_name(wrapper.name):
@@ -1024,7 +1026,7 @@ class _NameFilterDialog(QtWidgets.QDialog):
 class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
     def __init__(
         self,
-        manager: ImageToolManager,
+        manager: _ImageToolManagerBase,
         tree: xarray.DataTree,
         mode: typing.Literal["save", "load"],
         root_keys: Iterable[str] | None = None,

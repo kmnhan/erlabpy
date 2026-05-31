@@ -269,10 +269,11 @@ def test_wrapper_source_data_replaced_uses_parent_fallback_and_skips_missing_chi
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         _, child = next(iter(wrapper._childtools.items()))
         updated = test_data.copy(deep=True)
         updated.data = np.asarray(updated.data) * 7

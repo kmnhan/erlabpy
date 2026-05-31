@@ -20,11 +20,11 @@ from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
+from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _is_loader_func,
 )
-from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
 from erlab.interactive.imagetool.manager._registry import refresh_manager_record
 from erlab.interactive.imagetool.manager._widgets import (
     _MAX_RECENT_WORKSPACES,
@@ -55,8 +55,9 @@ if typing.TYPE_CHECKING:
         Sequence,
     )
 
-    from erlab.interactive.imagetool.manager import ImageToolManager
-
+    from erlab.interactive.imagetool.manager._workspace_state import (
+        _WorkspaceStateSnapshot,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def _legacy_saved_title_data_name(
     return title
 
 
-class _WorkspaceIOMixin(_ManagerMixinBase):
+class _WorkspaceIOMixin(_ImageToolManagerBase):
     @staticmethod
     def _normalize_recent_workspace_paths(
         paths: Iterable[str | os.PathLike[str]],
@@ -180,7 +181,6 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         if erlab.utils.misc._IS_PACKAGED:
             _desktop.record_recent_workspace(path)
 
-    @QtCore.Slot()
     def _clear_recent_workspaces(self) -> None:
         self._set_recent_workspace_paths([])
         self._populate_open_recent_menu()
@@ -221,7 +221,6 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         clear_action.triggered.connect(self._clear_recent_workspaces)
         self.open_recent_menu.addAction(clear_action)
 
-    @QtCore.Slot(str)
     def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
         """Open a recently used workspace file."""
         path = pathlib.Path(fname).expanduser().resolve()
@@ -278,9 +277,12 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
     @property
     def workspace_path(self) -> str | None:
         """Path of the workspace document associated with this manager."""
-        return None if self._workspace_path is None else str(self._workspace_path)
+        return (
+            None
+            if self._workspace_state.path is None
+            else str(self._workspace_state.path)
+        )
 
-    @QtCore.Slot()
     def show_workspace_properties(self) -> None:
         """Show properties for the workspace associated with this manager."""
         _WorkspacePropertiesDialog(
@@ -298,15 +300,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
     @property
     def is_workspace_modified(self) -> bool:
         """Return whether this workspace has unsaved restorable changes."""
-        if self._workspace_path is None and not getattr(self, "_all_nodes", {}):
-            return False
-        return (
-            self._workspace_structure_modified
-            or bool(self._workspace_dirty_added)
-            or bool(self._workspace_dirty_data)
-            or bool(self._workspace_dirty_state)
-            or bool(self._workspace_dirty_removed)
-        )
+        return self._workspace_state.is_modified(has_nodes=bool(self._tool_graph.nodes))
 
     def _refresh_manager_record(self) -> None:
         refresh_manager_record(
@@ -314,7 +308,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         )
 
     def _update_workspace_window_title(self) -> None:
-        if self._workspace_path is None:
+        if self._workspace_state.path is None:
             window_file_path = ""
         else:
             window_file_path = typing.cast("str", self.workspace_path)
@@ -322,10 +316,12 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         # saves in QWidget.setWindowFilePath() -> QImage.toCGImage(). The window is
         # closing, so the document proxy icon update is unnecessary here. Add the
         # QTBUG ID once a reproducible report exists and remove this guard once fixed.
-        if not (sys.platform == "darwin" and self._closing_workspace_document):
+        if not (sys.platform == "darwin" and self._workspace_state.closing_document):
             self.setWindowFilePath(window_file_path)
         workspace_display_name = (
-            "Untitled" if self._workspace_path is None else self._workspace_path.name
+            "Untitled"
+            if self._workspace_state.path is None
+            else self._workspace_state.path.name
         )
         self.setWindowTitle(
             f"{_window_title_with_modified_placeholder(workspace_display_name)}"
@@ -334,17 +330,17 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         self.setWindowModified(self.is_workspace_modified)
 
     def _release_workspace_lock(self) -> None:
-        if self._workspace_lock is None:
+        if self._workspace_state.lock is None:
             return
-        self._workspace_lock.unlock()
-        self._workspace_lock = None
+        self._workspace_state.lock.unlock()
+        self._workspace_state.lock = None
 
     def _workspace_document_access(
         self, fname: str | os.PathLike[str]
     ) -> _WorkspaceDocumentAccess:
         workspace_path = pathlib.Path(fname).resolve()
         workspace_lock = None
-        if workspace_path != self._workspace_path:
+        if workspace_path != self._workspace_state.path:
             workspace_lock = _manager_workspace._acquire_workspace_document_lock(
                 workspace_path
             )
@@ -367,7 +363,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         workspace_lock: QtCore.QLockFile | None = None,
     ) -> None:
         workspace_path = None if fname is None else pathlib.Path(fname).resolve()
-        if workspace_path == self._workspace_path:
+        if workspace_path == self._workspace_state.path:
             if workspace_lock is not None:
                 workspace_lock.unlock()
             self._update_workspace_window_title()
@@ -379,10 +375,10 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 "Changing the workspace path requires a pre-acquired document lock"
             )
         self._release_workspace_lock()
-        self._workspace_lock = workspace_lock
-        self._workspace_path = workspace_path
-        if self._workspace_path is not None:
-            self._recent_directory = str(self._workspace_path.parent)
+        self._workspace_state.lock = workspace_lock
+        self._workspace_state.path = workspace_path
+        if self._workspace_state.path is not None:
+            self._recent_directory = str(self._workspace_state.path.parent)
         self._update_workspace_window_title()
         self._refresh_manager_record()
 
@@ -426,29 +422,31 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
     def _dirty_details_text(self) -> str:
         def _node_names(uids: set[str]) -> tuple[str, ...]:
             return tuple(
-                self._all_nodes[uid].display_text
+                self._tool_graph.nodes[uid].display_text
                 for uid in sorted(uids)
-                if uid in self._all_nodes
+                if uid in self._tool_graph.nodes
             )
 
         sections = (
-            ("Added", _node_names(self._workspace_dirty_added)),
-            ("Removed", tuple(dict.fromkeys(self._workspace_dirty_removed))),
+            ("Added", _node_names(self._workspace_state.dirty_added)),
+            ("Removed", tuple(dict.fromkeys(self._workspace_state.dirty_removed))),
             (
                 "Data modified",
-                _node_names(self._workspace_dirty_data - self._workspace_dirty_added),
+                _node_names(
+                    self._workspace_state.dirty_data - self._workspace_state.dirty_added
+                ),
             ),
             (
                 "State modified",
                 _node_names(
-                    self._workspace_dirty_state
-                    - self._workspace_dirty_data
-                    - self._workspace_dirty_added
+                    self._workspace_state.dirty_state
+                    - self._workspace_state.dirty_data
+                    - self._workspace_state.dirty_added
                 ),
             ),
             (
                 "Structure modified",
-                tuple(dict.fromkeys(self._workspace_structure_reasons)),
+                tuple(dict.fromkeys(self._workspace_state.structure_reasons)),
             ),
         )
         blocks: list[str] = []
@@ -458,7 +456,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         return "\n\n".join(blocks)
 
     def _set_node_window_modified(self, uid: str, modified: bool) -> None:
-        node = self._all_nodes.get(uid)
+        node = self._tool_graph.nodes.get(uid)
         if node is None:
             return
         window = node.window
@@ -481,26 +479,9 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
     def _apply_workspace_dirty_event(
         self, event: _manager_workspace._WorkspaceDirtyEvent
     ) -> bool:
-        dirty_changed = False
-        if event.uid is not None:
-            if event.added:
-                self._workspace_dirty_added.add(event.uid)
-            elif event.data:
-                self._workspace_dirty_data.add(event.uid)
-            elif event.state:
-                self._workspace_dirty_state.add(event.uid)
-            if event.added or event.data or event.state:
-                dirty_changed = True
-                self._set_node_window_modified(event.uid, True)
-        if event.removed is not None:
-            self._workspace_dirty_removed.append(event.removed)
-            self._workspace_structure_modified = True
-            dirty_changed = True
-        if event.structure is not None:
-            self._workspace_structure_reasons.append(event.structure)
-            self._workspace_structure_modified = True
-            dirty_changed = True
-        return dirty_changed
+        if event.uid is not None and (event.added or event.data or event.state):
+            self._set_node_window_modified(event.uid, True)
+        return self._workspace_state.apply_dirty_event(event)
 
     def _mark_workspace_dirty(
         self,
@@ -512,10 +493,13 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         removed: str | None = None,
         structure: str | None = None,
     ) -> None:
-        if self._workspace_loading_depth > 0 or self._workspace_saving_depth > 0:
+        if (
+            self._workspace_state.loading_depth > 0
+            or self._workspace_state.saving_depth > 0
+        ):
             return
         event = _manager_workspace._WorkspaceDirtyEvent(
-            generation=self._workspace_dirty_generation + 1,
+            generation=self._workspace_state.dirty_generation + 1,
             uid=uid,
             data=data,
             state=state,
@@ -523,9 +507,9 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             removed=removed,
             structure=structure,
         )
-        if self._apply_workspace_dirty_event(event):
-            self._workspace_dirty_generation = event.generation
-            self._workspace_dirty_events.append(event)
+        if event.uid is not None and (event.added or event.data or event.state):
+            self._set_node_window_modified(event.uid, True)
+        self._workspace_state.mark_dirty(event)
         self._update_workspace_window_title()
 
     def _mark_node_added(self, uid: str) -> None:
@@ -538,21 +522,15 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         self._mark_workspace_dirty(uid=uid, state=True)
 
     def _mark_tool_info_dirty(self, uid: str) -> None:
-        if uid not in self._workspace_dirty_state:
+        if uid not in self._workspace_state.dirty_state:
             self._mark_node_state_dirty(uid)
 
     def _mark_workspace_structure_dirty(self, reason: str) -> None:
         self._mark_workspace_dirty(structure=reason)
 
     def _mark_workspace_clean(self) -> None:
-        self._workspace_structure_modified = False
-        self._workspace_dirty_added.clear()
-        self._workspace_dirty_data.clear()
-        self._workspace_dirty_state.clear()
-        self._workspace_dirty_removed.clear()
-        self._workspace_structure_reasons.clear()
-        self._workspace_dirty_events.clear()
-        for uid in tuple(self._all_nodes):
+        self._workspace_state.mark_clean()
+        for uid in tuple(self._tool_graph.nodes):
             self._set_node_window_modified(uid, False)
         self._update_workspace_window_title()
 
@@ -560,66 +538,37 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         self, events: Iterable[_manager_workspace._WorkspaceDirtyEvent]
     ) -> None:
         retained_events = list(events)
-        self._mark_workspace_clean()
+        self._workspace_state.mark_clean()
+        for uid in tuple(self._tool_graph.nodes):
+            self._set_node_window_modified(uid, False)
         for event in retained_events:
             self._apply_workspace_dirty_event(event)
-        self._workspace_dirty_events = retained_events
+        self._workspace_state.dirty_events = retained_events
         self._update_workspace_window_title()
 
     @contextlib.contextmanager
     def _workspace_load_context(self) -> Iterator[None]:
-        self._workspace_loading_depth += 1
-        try:
+        with self._workspace_state.load_context():
             yield
-        finally:
-            self._workspace_loading_depth -= 1
 
     def _drain_workspace_deferred_events(self) -> None:
         for _ in range(3):
             QtWidgets.QApplication.sendPostedEvents(None, 0)
             QtWidgets.QApplication.processEvents()
 
-    def _workspace_state_snapshot(self) -> dict[str, typing.Any]:
-        return {
-            "path": self._workspace_path,
-            "link_id": self._workspace_link_id,
-            "needs_full_save": self._workspace_needs_full_save,
-            "node_uid_counter": self._node_uid_counter,
-            "structure_modified": self._workspace_structure_modified,
-            "dirty_added": frozenset(self._workspace_dirty_added),
-            "dirty_data": frozenset(self._workspace_dirty_data),
-            "dirty_state": frozenset(self._workspace_dirty_state),
-            "dirty_removed": tuple(self._workspace_dirty_removed),
-            "structure_reasons": tuple(self._workspace_structure_reasons),
-            "dirty_generation": self._workspace_dirty_generation,
-            "dirty_events": tuple(self._workspace_dirty_events),
-            "delta_save_count": self._workspace_delta_save_count,
-            "schema_version": self._workspace_schema_version,
-        }
+    def _workspace_state_snapshot(self) -> _WorkspaceStateSnapshot:
+        return self._workspace_state.snapshot(
+            node_uid_counter=self._tool_graph.uid_counter
+        )
 
     def _restore_workspace_state_snapshot(
-        self, snapshot: dict[str, typing.Any]
+        self, snapshot: _WorkspaceStateSnapshot
     ) -> None:
-        self._workspace_path = snapshot["path"]
-        self._workspace_link_id = snapshot["link_id"]
-        self._workspace_needs_full_save = snapshot["needs_full_save"]
-        self._node_uid_counter = snapshot["node_uid_counter"]
-        self._workspace_structure_modified = snapshot["structure_modified"]
-        self._workspace_dirty_added = set(snapshot["dirty_added"])
-        self._workspace_dirty_data = set(snapshot["dirty_data"])
-        self._workspace_dirty_state = set(snapshot["dirty_state"])
-        self._workspace_dirty_removed = list(snapshot["dirty_removed"])
-        self._workspace_structure_reasons = list(snapshot["structure_reasons"])
-        self._workspace_dirty_generation = snapshot["dirty_generation"]
-        self._workspace_dirty_events = list(snapshot["dirty_events"])
-        self._workspace_delta_save_count = snapshot["delta_save_count"]
-        self._workspace_schema_version = snapshot["schema_version"]
-        if self._workspace_path is not None:
-            self._recent_directory = str(self._workspace_path.parent)
-        dirty_uids = (
-            snapshot["dirty_added"] | snapshot["dirty_data"] | snapshot["dirty_state"]
-        )
-        for uid in tuple(self._all_nodes):
+        self._tool_graph.restore_uid_counter(snapshot["node_uid_counter"])
+        dirty_uids = self._workspace_state.restore(snapshot)
+        if self._workspace_state.path is not None:
+            self._recent_directory = str(self._workspace_state.path.parent)
+        for uid in tuple(self._tool_graph.nodes):
             self._set_node_window_modified(uid, uid in dirty_uids)
         self._update_workspace_window_title()
         self._refresh_manager_record()
@@ -746,7 +695,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         for index in self._workspace_root_indices():
             self._serialize_workspace_node(
                 constructor,
-                self._imagetool_wrappers[index],
+                self._tool_graph.root_wrappers[index],
                 str(index),
                 include_children=include_children,
             )
@@ -1229,7 +1178,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
 
         if replace:
             manifest_workspace_link_id = manifest.get("workspace_link_id")
-            self._workspace_link_id = (
+            self._workspace_state.link_id = (
                 str(manifest_workspace_link_id)
                 if manifest_workspace_link_id
                 else uuid.uuid4().hex
@@ -1241,7 +1190,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             else contextlib.nullcontext()
         )
         backup_tree: xr.DataTree | None = None
-        backup_snapshot: dict[str, typing.Any] | None = None
+        backup_snapshot: _WorkspaceStateSnapshot | None = None
         with (
             maybe_guard,
             erlab.interactive.utils.wait_dialog(self, "Loading workspace..."),
@@ -1272,7 +1221,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
     def _restore_replaced_workspace(
         self,
         backup_tree: xr.DataTree,
-        snapshot: dict[str, typing.Any],
+        snapshot: _WorkspaceStateSnapshot,
     ) -> None:
         with self._workspace_load_context():
             self.remove_all_tools()
@@ -1316,7 +1265,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 manifest_workspace_link_id = (
                     None if manifest is None else manifest.get("workspace_link_id")
                 )
-                self._workspace_link_id = (
+                self._workspace_state.link_id = (
                     str(manifest_workspace_link_id)
                     if manifest_workspace_link_id
                     else uuid.uuid4().hex
@@ -1327,7 +1276,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             dialog: _ChooseFromDataTreeDialog | None = None
             if select:
                 dialog = _ChooseFromDataTreeDialog(
-                    typing.cast("ImageToolManager", self),
+                    self,
                     tree,
                     mode="load",
                     root_keys=root_keys,
@@ -1341,7 +1290,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 else contextlib.nullcontext()
             )
             backup_tree: xr.DataTree | None = None
-            backup_snapshot: dict[str, typing.Any] | None = None
+            backup_snapshot: _WorkspaceStateSnapshot | None = None
             loaded_targets_by_uid: dict[str, int | str] = {}
             with (
                 maybe_guard,
@@ -1422,7 +1371,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         return tree.attrs.get("is_itool_workspace", 0) == 1
 
     def _workspace_node_path(self, uid: str) -> str:
-        node = self._all_nodes[uid]
+        node = self._tool_graph.nodes[uid]
         if isinstance(node, _ImageToolWrapper):
             return str(node.index)
         if node.parent_uid is None:
@@ -1430,20 +1379,12 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         return f"{self._workspace_node_path(node.parent_uid)}/childtools/{uid}"
 
     def _workspace_payload_path(self, uid: str) -> str:
-        node = self._all_nodes[uid]
+        node = self._tool_graph.nodes[uid]
         payload_name = "imagetool" if node.is_imagetool else "tool"
         return f"{self._workspace_node_path(uid)}/{payload_name}"
 
     def _workspace_root_indices(self) -> tuple[int, ...]:
-        displayed = [
-            idx for idx in self._displayed_indices if idx in self._imagetool_wrappers
-        ]
-        remaining = [
-            idx
-            for idx in self._imagetool_wrappers
-            if idx not in self._displayed_indices
-        ]
-        return (*displayed, *remaining)
+        return self._tool_graph.root_indices_for_workspace()
 
     def _workspace_link_metadata_by_uid(self) -> dict[str, tuple[int, bool]]:
         metadata: dict[str, tuple[int, bool]] = {}
@@ -1472,7 +1413,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         link_metadata = self._workspace_link_metadata_by_uid()
 
         def _append(uid: str) -> None:
-            node = self._all_nodes[uid]
+            node = self._tool_graph.nodes[uid]
             entry: dict[str, typing.Any] = {
                 "uid": uid,
                 "path": self._workspace_node_path(uid),
@@ -1488,11 +1429,11 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                     entry["link_group"], entry["link_colors"] = link_info
             entries.append(entry)
             for child_uid in node._childtool_indices:
-                if child_uid in self._all_nodes:
+                if child_uid in self._tool_graph.nodes:
                     _append(child_uid)
 
         for index in self._workspace_root_indices():
-            _append(self._imagetool_wrappers[index].uid)
+            _append(self._tool_graph.root_wrappers[index].uid)
         return entries
 
     @staticmethod
@@ -1514,13 +1455,13 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         self, *, delta_save_count: int | None = None
     ) -> dict[str, typing.Any]:
         if delta_save_count is None:
-            delta_save_count = self._workspace_delta_save_count
+            delta_save_count = self._workspace_state.delta_save_count
         return _manager_workspace._workspace_root_attrs_payload(
             root_order=self._workspace_root_indices(),
             nodes=self._workspace_node_manifest_entries(),
             delta_save_count=delta_save_count,
             erlab_version=str(erlab.__version__),
-            workspace_link_id=self._workspace_link_id,
+            workspace_link_id=self._workspace_state.link_id,
         )
 
     def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
@@ -1539,29 +1480,31 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
 
     def _workspace_highest_dirty_data_roots(self) -> list[str]:
         dirty_existing = [
-            uid for uid in self._workspace_dirty_data if uid in self._all_nodes
+            uid
+            for uid in self._workspace_state.dirty_data
+            if uid in self._tool_graph.nodes
         ]
         dirty_set = set(dirty_existing)
         roots: list[str] = []
         for uid in sorted(
             dirty_existing, key=lambda value: self._workspace_node_path(value)
         ):
-            node = self._all_nodes[uid]
+            node = self._tool_graph.nodes[uid]
             parent_uid = node.parent_uid
             has_dirty_ancestor = False
             while parent_uid is not None:
                 if parent_uid in dirty_set:
                     has_dirty_ancestor = True
                     break
-                parent_uid = self._all_nodes[parent_uid].parent_uid
+                parent_uid = self._tool_graph.nodes[parent_uid].parent_uid
             if not has_dirty_ancestor:
                 roots.append(uid)
         return roots
 
     def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
-        delta_save_count = self._workspace_delta_save_count + 1
+        delta_save_count = self._workspace_state.delta_save_count + 1
         snapshot = self._workspace_delta_save_snapshot(
-            self._workspace_dirty_generation,
+            self._workspace_state.dirty_generation,
             self._workspace_root_attrs_payload(delta_save_count=delta_save_count),
             delta_save_count,
         )
@@ -1592,22 +1535,22 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             return
 
         fname = document_access.path
-        self._workspace_saving_depth += 1
+        self._workspace_state.saving_depth += 1
         try:
             _manager_workspace._recover_workspace_transactions(fname)
             requires_full_save = force_full or self._workspace_requires_full_save(fname)
             if requires_full_save:
                 self._write_full_workspace_file(fname)
-                self._workspace_delta_save_count = 0
-                self._workspace_schema_version = (
+                self._workspace_state.delta_save_count = 0
+                self._workspace_state.schema_version = (
                     _manager_workspace._current_workspace_schema_version()
                 )
             else:
                 self._save_workspace_delta(fname)
-                self._workspace_delta_save_count += 1
+                self._workspace_state.delta_save_count += 1
         finally:
-            self._workspace_saving_depth -= 1
-        self._workspace_needs_full_save = False
+            self._workspace_state.saving_depth -= 1
+        self._workspace_state.needs_full_save = False
         self._mark_workspace_clean()
 
     def _workspace_save_dialog(
@@ -1624,8 +1567,8 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         dialog.setDefaultSuffix("itws")
         if selected_file is not None:
             dialog.selectFile(str(selected_file))
-        elif self._workspace_path is not None:
-            dialog.selectFile(str(self._workspace_path))
+        elif self._workspace_state.path is not None:
+            dialog.selectFile(str(self._workspace_state.path))
         elif self._recent_directory is not None:
             dialog.setDirectory(self._recent_directory)
         if not native:  # pragma: no branch
@@ -1724,7 +1667,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             )
             if converted is None:
                 self._set_workspace_path(None)
-                self._workspace_needs_full_save = True
+                self._workspace_state.needs_full_save = True
                 self._mark_workspace_structure_dirty(
                     "Legacy workspace needs conversion"
                 )
@@ -1736,9 +1679,9 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             associated_lock = workspace_access.take_lock()
 
         self._set_workspace_path(associated_fname, workspace_lock=associated_lock)
-        self._workspace_delta_save_count = delta_save_count
-        self._workspace_schema_version = schema_version
-        self._workspace_needs_full_save = (
+        self._workspace_state.delta_save_count = delta_save_count
+        self._workspace_state.schema_version = schema_version
+        self._workspace_state.needs_full_save = (
             _manager_workspace._workspace_schema_requires_full_save(schema_version)
         )
         if rebind_data:
@@ -1773,7 +1716,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         self,
     ) -> dict[str, tuple[str, tuple[str, ...]]]:
         snapshot: dict[str, tuple[str, tuple[str, ...]]] = {}
-        for node in self._all_nodes.values():
+        for node in self._tool_graph.nodes.values():
             if not node.is_imagetool or node.imagetool is None:
                 continue
             persistence = node.persistence_view()
@@ -1801,7 +1744,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         if targets is None:
             nodes = [
                 node
-                for node in self._all_nodes.values()
+                for node in self._tool_graph.nodes.values()
                 if node.is_imagetool and node.imagetool is not None
             ]
         else:
@@ -1874,15 +1817,15 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         if not offload_targets:
             return False
 
-        if self._workspace_path is None:
+        if self._workspace_state.path is None:
             if not self.save_as(native=native):
                 return False
         elif (
-            self.is_workspace_modified or self._workspace_needs_full_save
+            self.is_workspace_modified or self._workspace_state.needs_full_save
         ) and not self.save(native=native):
             return False
 
-        if self._workspace_path is None:
+        if self._workspace_state.path is None:
             return False
 
         origin = self._active_managed_window()
@@ -1891,14 +1834,14 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 origin or self, "Offloading to workspace..."
             ):
                 self._rebind_workspace_backed_imagetools(
-                    self._workspace_path,
+                    self._workspace_state.path,
                     targets=offload_targets,
                     chunks={},
                 )
                 _manager_workspace._write_workspace_root_attrs_to_file(
-                    self._workspace_path,
+                    self._workspace_state.path,
                     self._workspace_root_attrs_payload(
-                        delta_save_count=self._workspace_delta_save_count
+                        delta_save_count=self._workspace_state.delta_save_count
                     ),
                 )
             self._status_bar.showMessage("Data offloaded to workspace", 5000)
@@ -1918,18 +1861,18 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
     def _workspace_requires_full_save(self, fname: str | os.PathLike[str]) -> bool:
         return _manager_workspace._workspace_requires_full_save(
             fname,
-            needs_full_save=self._workspace_needs_full_save,
-            schema_version=self._workspace_schema_version,
-            structure_modified=self._workspace_structure_modified,
-            has_dirty_added=bool(self._workspace_dirty_added),
-            has_dirty_removed=bool(self._workspace_dirty_removed),
+            needs_full_save=self._workspace_state.needs_full_save,
+            schema_version=self._workspace_state.schema_version,
+            structure_modified=self._workspace_state.structure_modified,
+            has_dirty_added=bool(self._workspace_state.dirty_added),
+            has_dirty_removed=bool(self._workspace_state.dirty_removed),
         )
 
     def _workspace_rewrite_group_snapshot(
         self, uid: str
     ) -> tuple[str, dict[str, xr.Dataset]]:
         constructor: dict[str, xr.Dataset] = {}
-        node = self._all_nodes[uid]
+        node = self._tool_graph.nodes[uid]
         node_path = self._workspace_node_path(uid)
         self._serialize_workspace_node(
             constructor, node, node_path, include_children=True
@@ -1940,7 +1883,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         self, uid: str
     ) -> tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]] | None:
         constructor: dict[str, xr.Dataset] = {}
-        node = self._all_nodes[uid]
+        node = self._tool_graph.nodes[uid]
         node_path = self._workspace_node_path(uid)
         self._serialize_workspace_node(
             constructor, node, node_path, include_children=False
@@ -1967,8 +1910,8 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         attr_updates: list[
             tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]]
         ] = []
-        for uid in sorted(self._workspace_dirty_state - rewritten_uids):
-            if uid not in self._all_nodes:
+        for uid in sorted(self._workspace_state.dirty_state - rewritten_uids):
+            if uid not in self._tool_graph.nodes:
                 continue
             update = self._workspace_attr_update_snapshot(uid)
             if update is not None:
@@ -1986,12 +1929,12 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         self, fname: str | os.PathLike[str]
     ) -> _manager_workspace._WorkspaceSaveSnapshot:
         self._drain_workspace_deferred_events()
-        generation = self._workspace_dirty_generation
-        self._workspace_saving_depth += 1
+        generation = self._workspace_state.dirty_generation
+        self._workspace_state.saving_depth += 1
         try:
             if self._workspace_requires_full_save(fname):
                 return self._workspace_full_save_snapshot(generation)
-            delta_save_count = self._workspace_delta_save_count + 1
+            delta_save_count = self._workspace_state.delta_save_count + 1
             root_attrs = self._workspace_root_attrs_payload(
                 delta_save_count=delta_save_count
             )
@@ -1999,7 +1942,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 generation, root_attrs, delta_save_count
             )
         finally:
-            self._workspace_saving_depth -= 1
+            self._workspace_state.saving_depth -= 1
 
     def _workspace_full_save_snapshot(
         self, generation: int
@@ -2018,11 +1961,11 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
     def _workspace_full_save_copy_groups(
         self, tree: xr.DataTree
     ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
-        if self._workspace_path is None:
+        if self._workspace_state.path is None:
             return None, ()
-        workspace_path = pathlib.Path(self._workspace_path)
+        workspace_path = pathlib.Path(self._workspace_state.path)
         if (
-            self._workspace_schema_version
+            self._workspace_state.schema_version
             != _manager_workspace._current_workspace_schema_version()
             or not workspace_path.exists()
         ):
@@ -2060,8 +2003,11 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 ):
                     identities[(uid, kind)] = f"{path}/{kind}"
         copy_groups: list[tuple[str, str, dict[str, typing.Any] | None]] = []
-        for uid, node in self._all_nodes.items():
-            if uid in self._workspace_dirty_data or uid in self._workspace_dirty_added:
+        for uid, node in self._tool_graph.nodes.items():
+            if (
+                uid in self._workspace_state.dirty_data
+                or uid in self._workspace_state.dirty_added
+            ):
                 continue
             if not node.is_imagetool:
                 tool = node.tool_window
@@ -2077,7 +2023,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             except KeyError:
                 continue
             attrs = None
-            if uid in self._workspace_dirty_state or source_path != payload_path:
+            if uid in self._workspace_state.dirty_state or source_path != payload_path:
                 attrs = dict(payload_tree.to_dataset(inherit=False).attrs)
             copy_groups.append((source_path, payload_path, attrs))
         return str(workspace_path), tuple(copy_groups)
@@ -2139,7 +2085,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
 
         def _show_wait_dialog() -> None:
             nonlocal wait_dialog
-            if wait_dialog is None and self._workspace_save_in_progress:
+            if wait_dialog is None and self._workspace_state.save_in_progress:
                 wait_dialog = self._open_workspace_save_wait_dialog(
                     origin or self,
                     title=wait_dialog_title,
@@ -2148,7 +2094,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
 
         wait_timer.timeout.connect(_show_wait_dialog)
         worker.signals.finished.connect(receiver.finish)
-        self._workspace_save_in_progress = True
+        self._workspace_state.save_in_progress = True
         previous_action_states = self._set_workspace_save_actions_enabled(False)
         try:
             wait_timer.start(
@@ -2160,7 +2106,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             thread_pool.start(worker)
             loop.exec()
         finally:
-            self._workspace_save_in_progress = False
+            self._workspace_state.save_in_progress = False
             wait_timer.stop()
             wait_timer.deleteLater()
             if wait_dialog is not None:
@@ -2174,7 +2120,6 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             typing.cast("str", result["error"]),
         )
 
-    @QtCore.Slot()
     def save(self, *, native: bool = True) -> bool:
         """Save the current workspace document.
 
@@ -2184,20 +2129,20 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             Whether to use the native file dialog, by default `True`. This option is
             used when testing the application to ensure reproducibility.
         """
-        if self._workspace_path is None:
+        if self._workspace_state.path is None:
             return self.save_as(native=native)
-        if self._workspace_save_in_progress:
+        if self._workspace_state.save_in_progress:
             self._status_bar.showMessage("Workspace save already in progress", 3000)
             return False
         origin = self._active_managed_window()
-        old_workspace_path = self._workspace_path
+        old_workspace_path = self._workspace_state.path
         backing_snapshot = self._workspace_data_backing_snapshot()
         self._status_bar.showMessage("Saving workspace...")
         try:
-            snapshot = self._workspace_save_snapshot(self._workspace_path)
+            snapshot = self._workspace_save_snapshot(self._workspace_state.path)
             try:
                 ok, elapsed, error_text = self._run_workspace_save_worker(
-                    self._workspace_path, snapshot, origin
+                    self._workspace_state.path, snapshot, origin
                 )
             except Exception:
                 snapshot.close()
@@ -2216,21 +2161,21 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             self._restore_focus_after_workspace_save(origin)
             return False
 
-        self._workspace_needs_full_save = False
-        self._workspace_delta_save_count = snapshot.delta_save_count
+        self._workspace_state.needs_full_save = False
+        self._workspace_state.delta_save_count = snapshot.delta_save_count
         if snapshot.full_tree is not None:
-            self._workspace_schema_version = (
+            self._workspace_state.schema_version = (
                 _manager_workspace._current_workspace_schema_version()
             )
             self._rebind_workspace_backed_imagetools(
-                self._workspace_path,
+                self._workspace_state.path,
                 backing_snapshot=backing_snapshot,
                 old_workspace_path=old_workspace_path,
             )
         self._drain_workspace_deferred_events()
         post_save_events = tuple(
             event
-            for event in self._workspace_dirty_events
+            for event in self._workspace_state.dirty_events
             if event.generation > snapshot.generation
         )
         if post_save_events:
@@ -2245,17 +2190,16 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             )
         self._status_bar.showMessage(message, 5000)
         self._restore_focus_after_workspace_save(origin)
-        self._record_recent_workspace(self._workspace_path)
+        self._record_recent_workspace(self._workspace_state.path)
         return True
 
-    @QtCore.Slot()
     def save_as(self, *, native: bool = True) -> bool:
         """Save the current workspace under a new path and bind to that path."""
         origin = self._active_managed_window()
         fname = self._workspace_save_dialog(native=native, caption="Save Workspace As")
         if fname is None:
             return False
-        old_workspace_path = self._workspace_path
+        old_workspace_path = self._workspace_state.path
         backing_snapshot = self._workspace_data_backing_snapshot()
         try:
             dialog_parent = origin or self
@@ -2274,7 +2218,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                         old_workspace_path=old_workspace_path,
                     )
                 self._set_workspace_path(access.path, workspace_lock=access.take_lock())
-            self._workspace_needs_full_save = False
+            self._workspace_state.needs_full_save = False
             self._drain_workspace_deferred_events()
             self._mark_workspace_clean()
             self._record_recent_workspace(access.path)
@@ -2289,25 +2233,25 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
 
     def _compact_workspace_before_shutdown(self) -> None:
         if (
-            self._workspace_path is None
-            or self._workspace_delta_save_count <= 0
+            self._workspace_state.path is None
+            or self._workspace_state.delta_save_count <= 0
             or self.is_workspace_modified
-            or self._workspace_save_in_progress
-            or self._workspace_loading_depth > 0
+            or self._workspace_state.save_in_progress
+            or self._workspace_state.loading_depth > 0
         ):
             return
         try:
             logger.debug("Compacting workspace before shutdown...")
             self._drain_workspace_deferred_events()
-            generation = self._workspace_dirty_generation
-            self._workspace_saving_depth += 1
+            generation = self._workspace_state.dirty_generation
+            self._workspace_state.saving_depth += 1
             try:
                 snapshot = self._workspace_full_save_snapshot(generation)
             finally:
-                self._workspace_saving_depth -= 1
+                self._workspace_state.saving_depth -= 1
             try:
                 ok, _, error_text = self._run_workspace_save_worker(
-                    self._workspace_path,
+                    self._workspace_state.path,
                     snapshot,
                     self,
                     wait_dialog_title="Optimizing Workspace",
@@ -2323,15 +2267,15 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                     extra={"suppress_ui_alert": True},
                 )
                 return
-            self._workspace_needs_full_save = False
-            self._workspace_delta_save_count = 0
-            self._workspace_schema_version = (
+            self._workspace_state.needs_full_save = False
+            self._workspace_state.delta_save_count = 0
+            self._workspace_state.schema_version = (
                 _manager_workspace._current_workspace_schema_version()
             )
             self._drain_workspace_deferred_events()
             post_save_events = tuple(
                 event
-                for event in self._workspace_dirty_events
+                for event in self._workspace_state.dirty_events
                 if event.generation > snapshot.generation
             )
             if post_save_events:
@@ -2344,29 +2288,30 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 extra={"suppress_ui_alert": True},
             )
 
-    @QtCore.Slot()
     def compact_workspace(self) -> bool:
         """Rewrite the current workspace file to remove unused space."""
-        if self._workspace_path is None:
+        if self._workspace_state.path is None:
             return self.save_as()
-        if self._workspace_save_in_progress:
+        if self._workspace_state.save_in_progress:
             self._status_bar.showMessage("Workspace save already in progress", 3000)
             return False
 
         origin = self._active_managed_window()
-        old_workspace_path = self._workspace_path
+        old_workspace_path = self._workspace_state.path
         backing_snapshot = self._workspace_data_backing_snapshot()
         try:
             with erlab.interactive.utils.wait_dialog(
                 origin or self, "Compacting workspace..."
             ):
-                self._save_workspace_document(self._workspace_path, force_full=True)
+                self._save_workspace_document(
+                    self._workspace_state.path, force_full=True
+                )
                 self._rebind_workspace_backed_imagetools(
-                    self._workspace_path,
+                    self._workspace_state.path,
                     backing_snapshot=backing_snapshot,
                     old_workspace_path=old_workspace_path,
                 )
-            self._workspace_delta_save_count = 0
+            self._workspace_state.delta_save_count = 0
             self._status_bar.showMessage("Workspace compacted", 5000)
         except Exception:
             self._show_operation_error(
@@ -2388,9 +2333,7 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
         """
         tree: xr.DataTree = self._to_datatree()
         try:
-            dialog = _ChooseFromDataTreeDialog(
-                typing.cast("ImageToolManager", self), tree, mode="save"
-            )
+            dialog = _ChooseFromDataTreeDialog(self, tree, mode="save")
             if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
                 return
 
@@ -2500,7 +2443,6 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 )
             return loaded
 
-    @QtCore.Slot()
     def load(self, *, native: bool = True) -> bool:
         """Replace this manager with a workspace file."""
         dialog = QtWidgets.QFileDialog(self)
@@ -2552,7 +2494,6 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 )
             return False
 
-    @QtCore.Slot()
     def import_workspace(self, *, native: bool = True) -> bool:
         """Import selected windows from another workspace file."""
         dialog = QtWidgets.QFileDialog(self)
@@ -2602,7 +2543,6 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 self._record_recent_workspace(fname)
             return loaded
 
-    @QtCore.Slot()
     def open(self, *, native: bool = True) -> None:
         """Open files in a new ImageTool window.
 
@@ -2651,7 +2591,6 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
                 retry_callback=lambda _: self.open(native=native),
             )
 
-    @QtCore.Slot(list, dict)
     def _data_recv(
         self,
         data: list[xr.DataArray] | list[xr.Dataset],
@@ -2716,7 +2655,9 @@ class _WorkspaceIOMixin(_ManagerMixinBase):
             show = len(data) == 1
         watched_metadata = dict(watched_metadata or {})
         if watched_var is not None:
-            watched_metadata.setdefault("workspace_link_id", self._workspace_link_id)
+            watched_metadata.setdefault(
+                "workspace_link_id", self._workspace_state.link_id
+            )
 
         for i, d in enumerate(data):
             # Set selection-specific load function if provided

@@ -979,7 +979,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     def _imagetool_index(self, row_index: QtCore.QModelIndex | int) -> int:
         if isinstance(row_index, QtCore.QModelIndex):
             row_index = row_index.row()
-        return self.manager._displayed_indices[row_index]
+        return self.manager._tool_graph.displayed_indices[row_index]
 
     def _imagetool_wrapper(
         self, row_index: QtCore.QModelIndex | int
@@ -989,10 +989,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             if not isinstance(ptr, _ImageToolWrapper):
                 raise KeyError("Index does not point to a tool wrapper")
             return ptr
-        return self.manager._imagetool_wrappers[self._imagetool_index(row_index)]
+        return self.manager._tool_graph.root_wrappers[self._imagetool_index(row_index)]
 
     def _node_from_uid(self, uid: str) -> _ManagedWindowNode | None:
-        node = self.manager._all_nodes.get(uid)
+        node = self.manager._tool_graph.nodes.get(uid)
         if isinstance(node, _ManagedWindowNode):
             return node
         return None
@@ -1019,7 +1019,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     def _row_index(self, index_or_uid: int | str) -> QtCore.QModelIndex:
         """Get the corresponding QModelIndex for a parent index or child UID."""
         if isinstance(index_or_uid, str):
-            node = self.manager._all_nodes.get(index_or_uid)
+            node = self.manager._tool_graph.nodes.get(index_or_uid)
             if node is None:
                 return QtCore.QModelIndex()
             if isinstance(node, _ImageToolWrapper):
@@ -1027,7 +1027,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             parent_uid = node.parent_uid
             if parent_uid is None:
                 return QtCore.QModelIndex()
-            parent_node = self.manager._all_nodes[parent_uid]
+            parent_node = self.manager._tool_graph.nodes[parent_uid]
             if isinstance(parent_node, _ImageToolWrapper):
                 parent_index = self._row_index(parent_node.index)
                 row = parent_node._childtool_indices.index(index_or_uid)
@@ -1035,9 +1035,11 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 parent_index = self._row_index(parent_uid)
                 row = parent_node._childtool_indices.index(index_or_uid)
             return self.index(row, 0, parent_index)
-        if index_or_uid not in self.manager._displayed_indices:
+        if index_or_uid not in self.manager._tool_graph.displayed_indices:
             return QtCore.QModelIndex()
-        return self.index(self.manager._displayed_indices.index(index_or_uid), 0)
+        return self.index(
+            self.manager._tool_graph.displayed_indices.index(index_or_uid), 0
+        )
 
     def index(
         self, row: int, column: int, parent: QtCore.QModelIndex | None = None
@@ -1049,7 +1051,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
         if not parent.isValid():  # pragma: no branch
             # Top-level; ImageTool
-            if row >= len(self.manager._displayed_indices):
+            if row >= len(self.manager._tool_graph.displayed_indices):
                 return QtCore.QModelIndex()
             wrapper = self._imagetool_wrapper(row)
             return self.createIndex(row, column, wrapper)
@@ -1092,7 +1094,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 return QtCore.QModelIndex()
             if node.parent_uid is None:
                 return QtCore.QModelIndex()
-            parent = self.manager._all_nodes[node.parent_uid]
+            parent = self.manager._tool_graph.nodes[node.parent_uid]
             if isinstance(parent, _ImageToolWrapper):
                 return self._row_index(parent.index)
             return self._row_index(parent.uid)
@@ -1105,7 +1107,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if parent.column() > 0:
             return False
         if not parent.isValid():
-            return len(self.manager._displayed_indices) > 0
+            return len(self.manager._tool_graph.displayed_indices) > 0
 
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
@@ -1123,7 +1125,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return 0
         if not parent.isValid():
             # Top-level; ImageTool
-            return len(self.manager._displayed_indices)
+            return len(self.manager._tool_graph.displayed_indices)
 
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
@@ -1152,7 +1154,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
     def _data_imagetool(self, index: QtCore.QModelIndex, role: int) -> typing.Any:
         tool_idx: int = self._imagetool_index(index)
-        wrapper = self.manager._imagetool_wrappers[tool_idx]
+        wrapper = self.manager._tool_graph.root_wrappers[tool_idx]
 
         if role == QtCore.Qt.ItemDataRole.DisplayRole:
             return self.manager.label_of_imagetool(tool_idx)
@@ -1231,7 +1233,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         n_rows = self.rowCount()
 
         self.beginInsertRows(QtCore.QModelIndex(), n_rows, n_rows)  # Insert at end
-        self.manager._displayed_indices.insert(n_rows, index)
+        self.manager._tool_graph.insert_root_order(index, n_rows)
         self.endInsertRows()
 
     def _insert_childtool(self, uid: str, parent_idx: int | str) -> None:
@@ -1272,14 +1274,14 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if not parent.isValid():
             # Top-level; ImageTool
             self.beginRemoveRows(parent, row, row + count - 1)
-            del self.manager._displayed_indices[row : row + count]
+            self.manager._tool_graph.remove_root_rows(row, count)
             self.endRemoveRows()
             return
 
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
             self.beginRemoveRows(parent, row, row + count - 1)
-            del ptr._childtool_indices[row : row + count]
+            self.manager._tool_graph.remove_child_rows(ptr.uid, row, count)
             self.endRemoveRows()
             return
         if isinstance(ptr, str):
@@ -1287,7 +1289,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             if node is None:
                 return
             self.beginRemoveRows(parent, row, row + count - 1)
-            del node._childtool_indices[row : row + count]
+            self.manager._tool_graph.remove_child_rows(node.uid, row, count)
             self.endRemoveRows()
             return
 
@@ -1471,25 +1473,21 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         destination_parent: QtCore.QModelIndex,
     ) -> bool:
         if parent_id is None:
-            root_result = self.manager._displayed_indices.copy()
             for src, dest in moves:
-                root_result.insert(dest, root_result.pop(src))
                 if not self.beginMoveRows(
                     source_parent, src, src, destination_parent, dest
                 ):
                     return False
-                self.manager._displayed_indices = root_result
+                self.manager._tool_graph.move_root_rows(((src, dest),))
                 self.endMoveRows()
             return True
 
-        child_result = self.manager._all_nodes[parent_id]._childtool_indices.copy()
         for src, dest in moves:
-            child_result.insert(dest, child_result.pop(src))
             if not self.beginMoveRows(
                 source_parent, src, src, destination_parent, dest
             ):
                 return False
-            self.manager._all_nodes[parent_id]._childtool_indices = child_result
+            self.manager._tool_graph.move_child_rows(parent_id, ((src, dest),))
             self.endMoveRows()
         return True
 
@@ -1532,13 +1530,17 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         # Destination list and parent index
         if parent_id is None:
             parent_index = QtCore.QModelIndex()
-            original: list[str] | list[int] = self.manager._displayed_indices.copy()
+            original: list[str] | list[int] = (
+                self.manager._tool_graph.displayed_indices.copy()
+            )
             if parent.isValid():
                 # Dropping on a parent, adjust row to be relative to that item
                 row = parent.row() + 1
         else:
             parent_index = parent
-            original = self.manager._all_nodes[parent_id]._childtool_indices.copy()
+            original = self.manager._tool_graph.nodes[
+                parent_id
+            ]._childtool_indices.copy()
 
         if not original or not source_rows:
             logger.debug("dropMimeData: empty target or source")
@@ -1663,7 +1665,9 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
             for index in self.selectedIndexes()
             if isinstance(index.internalPointer(), _ImageToolWrapper)
         )
-        return [self._model.manager._displayed_indices[i] for i in row_indices]
+        return [
+            self._model.manager._tool_graph.displayed_indices[i] for i in row_indices
+        ]
 
     @property
     def selected_childtool_uids(self) -> list[str]:
@@ -1851,7 +1855,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         This must be called before the ImageTool is removed from the manager.
         """
         for i, tool_idx in enumerate(
-            self._model.manager._displayed_indices
+            self._model.manager._tool_graph.displayed_indices
         ):  # pragma: no branch
             if tool_idx == index:  # pragma: no branch
                 self._model.remove_rows(i, 1)
@@ -1861,7 +1865,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         """Clear all top-level ImageTool rows in a single model reset."""
         self.clearSelection()
         self._model.beginResetModel()
-        self._model.manager._displayed_indices.clear()
+        self._model.manager._tool_graph.clear_root_order()
         self._model.endResetModel()
 
     def childtool_added(self, uid: str, parent_idx: int | str) -> None:
@@ -1877,12 +1881,12 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
 
         This must be called before the child tool is removed from the manager.
         """
-        node = self._model.manager._all_nodes.get(uid)
+        node = self._model.manager._tool_graph.nodes.get(uid)
         if node is None or isinstance(node, _ImageToolWrapper):
             return
         if node.parent_uid is None:
             return
-        parent_node = self._model.manager._all_nodes.get(node.parent_uid)
+        parent_node = self._model.manager._tool_graph.nodes.get(node.parent_uid)
         if parent_node is None:
             return
         parent_index = (

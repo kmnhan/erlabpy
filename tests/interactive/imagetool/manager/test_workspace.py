@@ -26,6 +26,7 @@ import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace as manager_workspace
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 import erlab.interactive.imagetool.manager._xarray as manager_xarray
@@ -75,6 +76,17 @@ class _AddedTimeChildTool(erlab.interactive.utils.ToolWindow[_AddedTimeChildStat
     @tool_status.setter
     def tool_status(self, status: _AddedTimeChildState) -> None:
         self._status = status
+
+
+def _wait_for_fit_idle(qtbot, tool: Fit1DTool, *, timeout: int = 10000) -> None:
+    def _fit_idle() -> bool:
+        if tool._fit_thread is not None:
+            return False
+        if isinstance(tool, Fit2DTool):
+            return tool._fit_2d_total == 0 and not tool._fit_2d_indices
+        return True
+
+    qtbot.wait_until(_fit_idle, timeout=timeout)
 
 
 def _workspace_test_file_spec(path: pathlib.Path):
@@ -177,8 +189,8 @@ def test_manager_duplicate(
                 duplicated_tool.slicer_area._data
             )
             assert (
-                manager._imagetool_wrappers[i].name
-                == manager._imagetool_wrappers[i + 2].name
+                manager._tool_graph.root_wrappers[i].name
+                == manager._tool_graph.root_wrappers[i + 2].name
             )
 
 
@@ -281,7 +293,7 @@ def test_manager_workspace_load_preserves_added_time(
             select=False,
         )
 
-        assert manager._imagetool_wrappers[root_index].created_time == root_added
+        assert manager._tool_graph.root_wrappers[root_index].created_time == root_added
         assert manager._child_node(child_uid).created_time == child_added
         assert manager._child_node(tool_uid).created_time == tool_added
 
@@ -311,7 +323,7 @@ def test_manager_added_time_display_uses_zone_name_and_offset(
             created_time=added,
         )
 
-        node = manager._imagetool_wrappers[0]
+        node = manager._tool_graph.root_wrappers[0]
         expected = added.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z (%z)")
         assert node.added_time_display == expected
         assert node.added_time_iso == added.isoformat(timespec="seconds")
@@ -359,7 +371,7 @@ def test_manager_workspace_load_falls_back_for_legacy_or_invalid_added_time(
             select=False,
         )
 
-        loaded = manager._imagetool_wrappers[0].created_time
+        loaded = manager._tool_graph.root_wrappers[0].created_time
         assert loaded.tzinfo is not None
         assert loaded.utcoffset() is not None
 
@@ -396,7 +408,7 @@ def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
             tool = manager.get_imagetool(0)
             tool.slicer_area.apply_filter_operation(operation, emit_edited=True)
 
-            uid = manager._imagetool_wrappers[0].uid
+            uid = manager._tool_graph.root_wrappers[0].uid
             entry = next(
                 item
                 for item in manager._workspace_node_manifest_entries()
@@ -436,13 +448,13 @@ def test_manager_duplicate_goldtool_child(
         select_child_tool(manager, child_uid)
         manager.duplicate_selected()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 2,
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 2,
             timeout=5000,
         )
 
         duplicate_uid = next(
             uid
-            for uid in manager._imagetool_wrappers[0]._childtool_indices
+            for uid in manager._tool_graph.root_wrappers[0]._childtool_indices
             if uid != child_uid
         )
         duplicated = manager.get_childtool(duplicate_uid)
@@ -578,7 +590,8 @@ def test_manager_workspace_io(
         # Open dtool for first tool
         manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
         # Save and load workspace
@@ -607,9 +620,9 @@ def test_manager_workspace_io(
             assert manager.ntools == 2
 
             # Check if the child dtool is also loaded
-            assert len(manager._imagetool_wrappers[0]._childtools) == 1
+            assert len(manager._tool_graph.root_wrappers[0]._childtools) == 1
 
-            select_tools(manager, list(manager._imagetool_wrappers.keys()))
+            select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
             accept_dialog(manager.remove_action.trigger)
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 
@@ -797,8 +810,10 @@ def test_manager_workspace_load_selection_skips_unchecked_children(
             tree.close()
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        assert manager._imagetool_wrappers[0]._childtool_indices == [child_uids[0]]
-        assert child_uids[1] not in manager._all_nodes
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == [
+            child_uids[0]
+        ]
+        assert child_uids[1] not in manager._tool_graph.nodes
 
 
 def test_manager_workspace_load_migrates_legacy_manual_title_to_data_name(
@@ -2038,7 +2053,7 @@ def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
             ds, parent_target=None, node_path="-1"
         )
 
-        assert target in manager._imagetool_wrappers
+        assert target in manager._tool_graph.root_wrappers
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
 
@@ -2184,7 +2199,7 @@ def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
         root = itool(data, manager=False, execute=False, auto_compute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
         calls: list[typing.Any] = []
 
         def _fake_rebind_data(_fname, _uid, *, chunks):
@@ -2202,7 +2217,7 @@ def test_manager_workspace_rebind_skips_missing_snapshot_and_keeps_chunks(
 
         manager._rebind_workspace_backed_imagetools(tmp_path / "workspace.itws")
 
-        assert uid in manager._all_nodes
+        assert uid in manager._tool_graph.nodes
         assert calls == [{}]
 
 
@@ -2219,7 +2234,7 @@ def test_manager_workspace_full_save_copy_group_edge_cases(
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
-        manager._workspace_path = workspace_path
+        manager._workspace_state.path = workspace_path
         monkeypatch.setattr(
             manager_workspace,
             "_read_workspace_root_attrs_h5py",
@@ -2238,7 +2253,7 @@ def test_manager_workspace_full_save_copy_group_edge_cases(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
         tool = DerivativeTool(data)
         monkeypatch.setattr(tool, "can_save_and_load", lambda: False)
         manager.add_childtool(tool, 0, show=False)
@@ -2969,7 +2984,7 @@ def test_workspace_lock_error_message_names_owner(monkeypatch, tmp_path) -> None
 
     monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
     try:
-        manager_mainwindow._show_workspace_file_lock_error(None, fname)
+        manager_widgets._show_workspace_file_lock_error(None, fname)
     finally:
         lock.unlock()
 
@@ -3015,13 +3030,11 @@ def test_workspace_lock_text_variants(tmp_path) -> None:
         pid=123,
     )
 
-    assert manager_mainwindow._workspace_lock_owner_text(app_only) == (
+    assert manager_widgets._workspace_lock_owner_text(app_only) == (
         "user using ImageTool"
     )
-    assert manager_mainwindow._workspace_lock_owner_text(pid_only) == (
-        "using process 123"
-    )
-    assert manager_mainwindow._workspace_lock_owner_text(full_info) == (
+    assert manager_widgets._workspace_lock_owner_text(pid_only) == ("using process 123")
+    assert manager_widgets._workspace_lock_owner_text(full_info) == (
         "user on workstation using ImageTool (process 123)"
     )
 
@@ -3032,7 +3045,7 @@ def test_workspace_lock_text_variants(tmp_path) -> None:
         try:
             _raise_owner_details_failed()
         except RuntimeError:
-            return manager_mainwindow._workspace_lock_details_text(
+            return manager_widgets._workspace_lock_details_text(
                 tmp_path / "workspace.itws", full_info
             )
 
@@ -3045,8 +3058,8 @@ def test_workspace_lock_text_variants(tmp_path) -> None:
 def test_workspace_window_title_placeholder_non_macos(monkeypatch) -> None:
     monkeypatch.setattr(manager_mainwindow.sys, "platform", "linux")
 
-    assert manager_mainwindow._strip_workspace_modified_placeholder("Name[*]") == "Name"
-    assert manager_mainwindow._window_title_with_modified_placeholder("Name[*]") == (
+    assert manager_widgets._strip_workspace_modified_placeholder("Name[*]") == "Name"
+    assert manager_widgets._window_title_with_modified_placeholder("Name[*]") == (
         "Name[*]"
     )
 
@@ -3060,8 +3073,8 @@ def test_manager_workspace_window_title_sets_file_path_normally(
 ) -> None:
     with manager_context() as manager:
         workspace = tmp_path / "normal.itws"
-        manager._workspace_path = workspace
-        manager._workspace_structure_modified = True
+        manager._workspace_state.path = workspace
+        manager._workspace_state.structure_modified = True
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
@@ -3086,10 +3099,10 @@ def test_manager_workspace_window_title_skips_file_path_during_macos_close(
 ) -> None:
     with manager_context() as manager:
         workspace = tmp_path / "close-save.itws"
-        manager._workspace_path = workspace
-        manager._workspace_structure_modified = True
-        previous_closing = manager._closing_workspace_document
-        manager._closing_workspace_document = True
+        manager._workspace_state.path = workspace
+        manager._workspace_state.structure_modified = True
+        previous_closing = manager._workspace_state.closing_document
+        manager._workspace_state.closing_document = True
 
         def _fail_if_called(_manager, _path: str) -> None:
             raise AssertionError("setWindowFilePath should be skipped")
@@ -3100,7 +3113,7 @@ def test_manager_workspace_window_title_skips_file_path_during_macos_close(
                 patch.setattr(ImageToolManager, "setWindowFilePath", _fail_if_called)
                 manager._update_workspace_window_title()
         finally:
-            manager._closing_workspace_document = previous_closing
+            manager._workspace_state.closing_document = previous_closing
 
         assert workspace.name in manager.windowTitle()
         assert manager.isWindowModified()
@@ -3115,9 +3128,9 @@ def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
 ) -> None:
     with manager_context() as manager:
         workspace = tmp_path / "linux-close.itws"
-        manager._workspace_path = workspace
-        previous_closing = manager._closing_workspace_document
-        manager._closing_workspace_document = True
+        manager._workspace_state.path = workspace
+        previous_closing = manager._workspace_state.closing_document
+        manager._workspace_state.closing_document = True
         file_path_calls: list[str] = []
 
         try:
@@ -3130,7 +3143,7 @@ def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
                 )
                 manager._update_workspace_window_title()
         finally:
-            manager._closing_workspace_document = previous_closing
+            manager._workspace_state.closing_document = previous_closing
 
         assert file_path_calls == [str(workspace)]
 
@@ -3142,8 +3155,8 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
     ],
 ) -> None:
     with manager_context() as manager:
-        manager._workspace_structure_modified = True
-        manager._closing_workspace_document = False
+        manager._workspace_state.structure_modified = True
+        manager._workspace_state.closing_document = False
         event = QtGui.QCloseEvent()
         with monkeypatch.context() as patch:
             patch.setattr(
@@ -3152,7 +3165,7 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
             manager.closeEvent(event)
 
         assert not event.isAccepted()
-        assert not manager._closing_workspace_document
+        assert not manager._workspace_state.closing_document
 
 
 def test_manager_close_save_path_skips_macos_file_path_update(
@@ -3163,18 +3176,18 @@ def test_manager_close_save_path_skips_macos_file_path_update(
     ],
 ) -> None:
     with manager_context() as manager:
-        manager._workspace_path = tmp_path / "close-save.itws"
-        manager._workspace_structure_modified = True
+        manager._workspace_state.path = tmp_path / "close-save.itws"
+        manager._workspace_state.structure_modified = True
         save_closing_states: list[bool] = []
 
         def _fail_during_close_file_path_update(
             window: ImageToolManager, _path: str
         ) -> None:
-            if window._closing_workspace_document:
+            if window._workspace_state.closing_document:
                 raise AssertionError("setWindowFilePath should be skipped")
 
         def _save(*, native: bool = True) -> bool:
-            save_closing_states.append(manager._closing_workspace_document)
+            save_closing_states.append(manager._workspace_state.closing_document)
             manager._mark_workspace_clean()
             return True
 
@@ -3194,7 +3207,7 @@ def test_manager_close_save_path_skips_macos_file_path_update(
             assert manager.close()
 
         assert save_closing_states == [True]
-        assert not manager._closing_workspace_document
+        assert not manager._workspace_state.closing_document
 
 
 def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> None:
@@ -3217,7 +3230,7 @@ def test_workspace_lock_error_message_without_owner(monkeypatch, tmp_path) -> No
     )
     monkeypatch.setattr(erlab.interactive.utils.MessageDialog, "critical", _critical)
 
-    manager_mainwindow._show_workspace_file_lock_error(None, fname)
+    manager_widgets._show_workspace_file_lock_error(None, fname)
 
     args = calls[0]["args"]
     assert isinstance(args, tuple)
@@ -3234,9 +3247,7 @@ def test_application_quit_filter_routes_quit_events(qtbot) -> None:
     qtbot.addWidget(manager)
     calls: list[str] = []
     manager.close = lambda: calls.append("close") or False
-    event_filter = manager_mainwindow._ApplicationQuitFilter(
-        typing.cast("ImageToolManager", manager)
-    )
+    event_filter = manager_widgets._ApplicationQuitFilter(manager)
 
     assert not event_filter.eventFilter(None, None)
     assert event_filter.eventFilter(None, QtCore.QEvent(QtCore.QEvent.Type.Quit))
@@ -3272,17 +3283,13 @@ def test_workspace_document_access_releases_lock(tmp_path) -> None:
             self.unlock_count += 1
 
     lock = _FakeLock()
-    access = manager_mainwindow._WorkspaceDocumentAccess(
-        tmp_path / "workspace.itws", lock
-    )
+    access = manager_widgets._WorkspaceDocumentAccess(tmp_path / "workspace.itws", lock)
 
     assert access.take_lock() is lock
     access.release()
     assert lock.unlock_count == 0
 
-    access = manager_mainwindow._WorkspaceDocumentAccess(
-        tmp_path / "workspace.itws", lock
-    )
+    access = manager_widgets._WorkspaceDocumentAccess(tmp_path / "workspace.itws", lock)
     access.release()
     access.release()
     assert lock.unlock_count == 1
@@ -3301,7 +3308,7 @@ def test_choose_from_datatree_dialog_root_keys_skip_missing(qtbot) -> None:
     )
     try:
         dialog = _ChooseFromDataTreeDialog(
-            typing.cast("ImageToolManager", manager),
+            manager,
             tree,
             mode="load",
             root_keys=("missing", "0"),
@@ -3399,7 +3406,7 @@ def test_manager_workspace_path_lock_contract(
 
     with manager_context() as manager:
         current = (tmp_path / "current.itws").resolve()
-        manager._workspace_path = current
+        manager._workspace_state.path = current
         lock = _FakeLock()
 
         manager._set_workspace_path(current, workspace_lock=lock)
@@ -3495,9 +3502,9 @@ def test_manager_recent_workspace_normalization_and_settings(
     ) == [workspace.resolve()]
 
     with manager_context() as manager:
-        settings = manager_mainwindow._manager_settings()
+        settings = manager_widgets._manager_settings()
         settings.setValue(
-            manager_mainwindow._RECENT_WORKSPACES_SETTINGS_KEY, str(workspace)
+            manager_widgets._RECENT_WORKSPACES_SETTINGS_KEY, str(workspace)
         )
         settings.sync()
         assert manager._recent_workspace_paths() == [workspace.resolve()]
@@ -3509,9 +3516,6 @@ def test_manager_recent_workspace_normalization_and_settings(
             def value(self, _key, _default):
                 return object()
 
-        monkeypatch.setattr(
-            manager_mainwindow, "_manager_settings", lambda: _ObjectSettings()
-        )
         monkeypatch.setattr(
             erlab.interactive.imagetool.manager._workspace_io,
             "_manager_settings",
@@ -3823,10 +3827,10 @@ def test_manager_compact_workspace_edge_paths(
         monkeypatch.setattr(manager, "save_as", lambda: True)
         assert manager.compact_workspace()
 
-        manager._workspace_path = tmp_path / "workspace.itws"
-        manager._workspace_save_in_progress = True
+        manager._workspace_state.path = tmp_path / "workspace.itws"
+        manager._workspace_state.save_in_progress = True
         assert not manager.compact_workspace()
-        manager._workspace_save_in_progress = False
+        manager._workspace_state.save_in_progress = False
 
         operation_errors: list[tuple[typing.Any, ...]] = []
         focus_restores: list[QtWidgets.QWidget | None] = []
@@ -3872,8 +3876,8 @@ def test_manager_shutdown_compaction_logs_failure(
     ],
 ) -> None:
     with manager_context() as manager:
-        manager._workspace_path = tmp_path / "workspace.itws"
-        manager._workspace_delta_save_count = 1
+        manager._workspace_state.path = tmp_path / "workspace.itws"
+        manager._workspace_state.delta_save_count = 1
 
         def _fail_worker(
             _fname: str | os.PathLike[str],
@@ -3954,13 +3958,13 @@ def test_manager_workspace_save_dialog_paths(
         assert ("select", str(tmp_path / "explicit.itws")) in calls
 
         _FakeFileDialog.exec_result = 1
-        manager._workspace_path = tmp_path / "bound.itws"
+        manager._workspace_state.path = tmp_path / "bound.itws"
         assert manager._workspace_save_dialog(native=True) == str(
             tmp_path / "selected.itws"
         )
         assert ("select", str(tmp_path / "bound.itws")) in calls
 
-        manager._workspace_path = None
+        manager._workspace_state.path = None
         manager._recent_directory = str(tmp_path)
         assert manager._workspace_save_dialog(native=True) == str(
             tmp_path / "selected.itws"
@@ -3975,7 +3979,7 @@ def test_manager_confirm_save_dirty_workspace_save_branch(
     ],
 ) -> None:
     with manager_context() as manager:
-        manager._workspace_structure_modified = True
+        manager._workspace_state.structure_modified = True
         monkeypatch.setattr(manager, "save", lambda: True)
         monkeypatch.setattr(
             QtWidgets.QMessageBox,
@@ -4018,8 +4022,8 @@ def test_manager_legacy_workspace_save_helpers(
             manager_workspace._WORKSPACE_LEGACY_SCHEMA_VERSION - 1,
         )
 
-        assert manager._workspace_path is None
-        assert manager._workspace_needs_full_save
+        assert manager._workspace_state.path is None
+        assert manager._workspace_state.needs_full_save
         assert dirty_reasons == ["Legacy workspace needs conversion"]
 
 
@@ -4052,11 +4056,11 @@ def test_manager_save_and_wait_dialog_error_paths(
             "An error occurred while saving the workspace file."
         )
 
-        manager._workspace_path = tmp_path / "workspace.itws"
-        manager._workspace_save_in_progress = True
+        manager._workspace_state.path = tmp_path / "workspace.itws"
+        manager._workspace_state.save_in_progress = True
         assert not manager.save()
 
-        manager._workspace_save_in_progress = False
+        manager._workspace_state.save_in_progress = False
         monkeypatch.setattr(
             manager,
             "_workspace_save_snapshot",
@@ -4437,7 +4441,7 @@ def test_manager_workspace_v4_save_open_replaces_and_binds_path(
             manifest = json.loads(h5_file.attrs["imagetool_workspace_manifest"])
         assert manifest["schema_version"] == 4
         assert {node["uid"] for node in manifest["nodes"]} >= {
-            manager._imagetool_wrappers[0].uid,
+            manager._tool_graph.root_wrappers[0].uid,
             child_uid,
         }
 
@@ -4452,7 +4456,7 @@ def test_manager_workspace_v4_save_open_replaces_and_binds_path(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         assert manager.workspace_path == str(fname.resolve())
         assert not manager.is_workspace_modified
-        assert manager._imagetool_wrappers[0]._childtool_indices == [child_uid]
+        assert manager._tool_graph.root_wrappers[0]._childtool_indices == [child_uid]
         assert manager.get_imagetool(0).slicer_area._data.chunks is None
         assert _compute_first_value(manager.get_imagetool(0).slicer_area._data) == 0
 
@@ -4623,7 +4627,9 @@ def test_manager_workspace_save_as_preserves_live_in_memory_windows(
             assert not manager.is_workspace_modified
             assert manager.get_imagetool(0) is root
             assert manager._child_node(child_uid).imagetool is child
-            assert manager._imagetool_wrappers[0]._childtool_indices == [child_uid]
+            assert manager._tool_graph.root_wrappers[0]._childtool_indices == [
+                child_uid
+            ]
             assert root.slicer_area._data.chunks is None
             assert child.slicer_area._data.chunks is None
     finally:
@@ -4877,7 +4883,7 @@ def test_manager_compute_offloaded_workspace_data_marks_backing_dirty(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "compute-offloaded.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -4891,7 +4897,7 @@ def test_manager_compute_offloaded_workspace_data_marks_backing_dirty(
         root.slicer_area._compute_chunked()
 
         assert root.slicer_area._data.chunks is None
-        assert uid in manager._workspace_dirty_data
+        assert uid in manager._workspace_state.dirty_data
         assert manager.is_workspace_modified
 
         select_tools(manager, [0])
@@ -4931,7 +4937,7 @@ def test_manager_offload_to_workspace_save_cancel_or_failure_noop(
         manager._save_workspace_document(fname, force_full=True)
         manager._adopt_workspace_path(fname)
         manager._mark_workspace_clean()
-        manager._mark_node_data_dirty(manager._imagetool_wrappers[0].uid)
+        manager._mark_node_data_dirty(manager._tool_graph.root_wrappers[0].uid)
 
         monkeypatch.setattr(manager, "save", lambda *, native=True: False)
         assert not manager.offload_to_workspace([0], native=False)
@@ -4972,8 +4978,8 @@ def test_manager_offload_to_workspace_edge_paths(
 
     with manager_context() as manager:
         workspace = tmp_path / "offload-error.itws"
-        manager._workspace_path = workspace
-        manager._workspace_needs_full_save = False
+        manager._workspace_state.path = workspace
+        manager._workspace_state.needs_full_save = False
         monkeypatch.setattr(manager, "_node_for_target", lambda _target: fake_node)
         monkeypatch.setattr(
             manager, "_active_managed_window", lambda: typing.cast("typing.Any", None)
@@ -5077,7 +5083,7 @@ def test_manager_manual_chunk_edits_persist_on_next_workspace_save(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "manual-chunks.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5087,7 +5093,7 @@ def test_manager_manual_chunk_edits_persist_on_next_workspace_save(
         root.slicer_area._set_chunks({"x": 2, "y": 3})
 
         assert root.slicer_area._data.chunks == ((2, 2, 1), (3, 2))
-        assert uid in manager._workspace_dirty_data
+        assert uid in manager._workspace_state.dirty_data
         assert manager.is_workspace_modified
 
         with h5py.File(fname, "r") as h5_file:
@@ -5135,7 +5141,7 @@ def test_manager_workspace_full_save_preserves_non_dask_data(
             manager._save_workspace_document(fname, force_full=True)
             manager._adopt_workspace_path(fname)
             manager._mark_workspace_clean()
-            manager._workspace_needs_full_save = True
+            manager._workspace_state.needs_full_save = True
 
             assert manager.save()
             assert root.slicer_area._data.chunks is None
@@ -5401,7 +5407,7 @@ def test_manager_workspace_save_clears_deferred_dirty_events(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "deferred-dirty.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5448,7 +5454,7 @@ def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "state-delta.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5522,7 +5528,7 @@ def test_manager_workspace_save_does_not_close_live_workspace_handles(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "live-handles.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5558,7 +5564,7 @@ def test_manager_workspace_save_preserves_live_lazy_readers_during_write(
             fname, replace=True, associate=True, mark_dirty=False, select=False
         )
         root = manager.get_imagetool(0)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
         root.slicer_area.replace_source_data(
             manager._workspace_rebind_data_for_uid(fname, uid, chunks="auto"),
             auto_compute=False,
@@ -5609,7 +5615,7 @@ def test_manager_workspace_save_shows_wait_dialog_when_actual_save_is_slow(
         manager._save_workspace_document(fname, force_full=True)
         manager._adopt_workspace_path(fname)
         manager._mark_workspace_clean()
-        manager._mark_node_state_dirty(manager._imagetool_wrappers[0].uid)
+        manager._mark_node_state_dirty(manager._tool_graph.root_wrappers[0].uid)
 
         original_write = manager_workspace._write_workspace_transaction_file
 
@@ -5671,7 +5677,7 @@ def test_manager_workspace_save_keeps_post_command_changes_dirty(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "post-command-dirty.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5720,7 +5726,7 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "compact.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5728,7 +5734,7 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
         manager._mark_workspace_clean()
         manager._mark_node_state_dirty(uid)
         assert manager.save()
-        assert manager._workspace_delta_save_count == 1
+        assert manager._workspace_state.delta_save_count == 1
 
         monkeypatch.setattr(
             erlab.interactive.utils,
@@ -5737,7 +5743,7 @@ def test_manager_workspace_compact_resets_delta_count_and_cleans_internal_groups
         )
 
         assert manager.compact_workspace()
-        assert manager._workspace_delta_save_count == 0
+        assert manager._workspace_state.delta_save_count == 0
         _assert_no_workspace_internal_groups(fname)
         with h5py.File(fname, "r") as h5_file:
             assert (
@@ -5765,7 +5771,7 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "shutdown-compact.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5773,11 +5779,11 @@ def test_manager_workspace_shutdown_compacts_clean_delta_workspace(
         manager._mark_workspace_clean()
         manager._mark_node_state_dirty(uid)
         assert manager.save()
-        assert manager._workspace_delta_save_count == 1
+        assert manager._workspace_state.delta_save_count == 1
 
         manager._compact_workspace_before_shutdown()
 
-        assert manager._workspace_delta_save_count == 0
+        assert manager._workspace_state.delta_save_count == 0
         with h5py.File(fname, "r") as h5_file:
             assert (
                 manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs)
@@ -5803,7 +5809,7 @@ def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "slow-shutdown-compact.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5811,7 +5817,7 @@ def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
         manager._mark_workspace_clean()
         manager._mark_node_state_dirty(uid)
         assert manager.save()
-        assert manager._workspace_delta_save_count == 1
+        assert manager._workspace_state.delta_save_count == 1
 
         original_write = manager_workspace._write_full_workspace_tree_file
 
@@ -5851,7 +5857,7 @@ def test_manager_workspace_shutdown_compact_shows_optimization_wait_dialog(
         assert wait_calls == [
             (manager, "Optimizing Workspace", "Optimizing workspace file…")
         ]
-        assert manager._workspace_delta_save_count == 0
+        assert manager._workspace_state.delta_save_count == 0
 
 
 def test_manager_workspace_shutdown_compact_skips_dirty_workspace(
@@ -5869,13 +5875,13 @@ def test_manager_workspace_shutdown_compact_skips_dirty_workspace(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "dirty-shutdown-compact.itws"
         manager._save_workspace_document(fname, force_full=True)
         manager._adopt_workspace_path(fname)
         manager._mark_workspace_clean()
-        manager._workspace_delta_save_count = 1
+        manager._workspace_state.delta_save_count = 1
         manager._mark_node_state_dirty(uid)
 
         monkeypatch.setattr(
@@ -5904,7 +5910,7 @@ def test_manager_workspace_high_risk_path_forces_full_save_snapshot(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
 
         fname = tmp_path / "high-risk.itws"
         manager._save_workspace_document(fname, force_full=True)
@@ -5976,9 +5982,9 @@ def test_manager_close_suppresses_child_visibility_dirty(
         manager._mark_workspace_clean()
         assert not manager.is_workspace_modified
 
-        manager._closing_workspace_document = True
+        manager._workspace_state.closing_document = True
         root.hide()
-        manager._closing_workspace_document = False
+        manager._workspace_state.closing_document = False
         manager._drain_workspace_deferred_events()
 
         assert not manager.is_workspace_modified
@@ -6021,7 +6027,7 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
         manager.add_imagetool(root, show=False)
-        root_uid = manager._imagetool_wrappers[0].uid
+        root_uid = manager._tool_graph.root_wrappers[0].uid
         tool = DerivativeTool(data)
         tool_uid = manager.add_childtool(tool, 0, show=False)
 
@@ -6030,9 +6036,9 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
         assert ("[*]" in tool.windowTitle()) is expect_title_placeholder
 
         root.setWindowTitle("stale root title[*]")
-        manager._imagetool_wrappers[0].update_title()
-        assert "stale root title" not in manager._imagetool_wrappers[0].label_text
-        assert "[*]" not in manager._imagetool_wrappers[0].label_text
+        manager._tool_graph.root_wrappers[0].update_title()
+        assert "stale root title" not in manager._tool_graph.root_wrappers[0].label_text
+        assert "[*]" not in manager._tool_graph.root_wrappers[0].label_text
 
         root.setWindowTitle("stale root title[*]")
         tool.setWindowTitle("stale tool title[*]")
@@ -6041,13 +6047,13 @@ def test_manager_workspace_dirty_marker_not_saved_in_titles(
 
         assert (
             root.windowTitle()
-            == manager_mainwindow._window_title_with_modified_placeholder(
-                manager._imagetool_wrappers[0].label_text
+            == manager_widgets._window_title_with_modified_placeholder(
+                manager._tool_graph.root_wrappers[0].label_text
             )
         )
         assert (
             tool.windowTitle()
-            == manager_mainwindow._window_title_with_modified_placeholder(
+            == manager_widgets._window_title_with_modified_placeholder(
                 f"{tool.tool_name}: {tool._tool_display_name}"
             )
         )
@@ -6131,7 +6137,7 @@ def test_manager_workspace_save_preserves_reordered_roots(
             0,
             QtCore.QModelIndex(),
         )
-        assert manager._displayed_indices == [1, 2, 0]
+        assert manager._tool_graph.displayed_indices == [1, 2, 0]
         assert manager.is_workspace_modified
         assert manager.save()
 
@@ -6145,7 +6151,7 @@ def test_manager_workspace_save_preserves_reordered_roots(
         qtbot.wait_until(lambda: manager.ntools == 3, timeout=5000)
         loaded_order = [
             int(manager.get_imagetool(index).slicer_area._data.values[0, 0])
-            for index in manager._displayed_indices
+            for index in manager._tool_graph.displayed_indices
         ]
         assert loaded_order == [1, 2, 0]
 
@@ -6544,7 +6550,7 @@ def test_manager_workspace_same_file_lazy_data_delta_save_does_not_deadlock(
         assert manager.get_imagetool(0).slicer_area.data_chunked
         manager.get_imagetool(0).slicer_area._set_chunks({"x": 128, "y": 64})
 
-        uid = manager._imagetool_wrappers[0].uid
+        uid = manager._tool_graph.root_wrappers[0].uid
         manager._mark_node_data_dirty(uid)
         assert manager.save()
 
@@ -6886,7 +6892,7 @@ def test_manager_workspace_roundtrip_goldtool_child(
             manager._load_workspace_node(typing.cast("xr.DataTree", node))
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        loaded_root = manager._imagetool_wrappers[0]
+        loaded_root = manager._tool_graph.root_wrappers[0]
         assert loaded_root._childtool_indices == [child_uid]
 
         loaded_child = manager.get_childtool(child_uid)
@@ -6928,10 +6934,11 @@ def test_manager_workspace_roundtrip_dtool_child(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
 
@@ -6956,7 +6963,7 @@ def test_manager_workspace_roundtrip_dtool_child(
             manager._load_workspace_node(typing.cast("xr.DataTree", node))
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        loaded_root = manager._imagetool_wrappers[0]
+        loaded_root = manager._tool_graph.root_wrappers[0]
         assert loaded_root._childtool_indices == [child_uid]
 
         loaded_child = manager.get_childtool(child_uid)
@@ -7009,6 +7016,7 @@ def test_manager_workspace_roundtrip_fit1d_child(
 
         assert child._run_fit()
         qtbot.wait_until(lambda: child._last_result_ds is not None, timeout=10000)
+        _wait_for_fit_idle(qtbot, child)
         assert child._last_result_ds is not None
         expected_fit_ds = child._last_result_ds.copy(deep=True)
         expected_status = child.tool_status.model_dump()
@@ -7071,6 +7079,7 @@ def test_manager_workspace_roundtrip_fit2d_child(
             lambda: all(ds is not None for ds in child._result_ds_full),
             timeout=10000,
         )
+        _wait_for_fit_idle(qtbot, child)
         expected_results = [
             None if ds is None else ds.copy(deep=True) for ds in child._result_ds_full
         ]
@@ -7154,6 +7163,7 @@ def test_manager_workspace_roundtrip_fit2d_child_with_spaced_axis(
             lambda: all(ds is not None for ds in child._result_ds_full),
             timeout=10000,
         )
+        _wait_for_fit_idle(qtbot, child)
         assert child.current_provenance_spec() is not None
 
         fname = tmp_path / "fit2d-spaced-axis.itws"
@@ -7208,7 +7218,7 @@ def test_manager_workspace_roundtrip_recursive_nested_imagetools(
 
         accept_dialog(manager.get_imagetool(0).mnb._average, pre_call=_nest_average)
 
-        root_wrapper = manager._imagetool_wrappers[0]
+        root_wrapper = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(
             lambda: len(root_wrapper._childtool_indices) == 1, timeout=5000
         )
@@ -7251,7 +7261,7 @@ def test_manager_workspace_roundtrip_recursive_nested_imagetools(
                 loaded.close()
 
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        loaded_root = manager._imagetool_wrappers[0]
+        loaded_root = manager._tool_graph.root_wrappers[0]
         assert loaded_root._childtool_indices == [child_uid]
 
         loaded_child = manager._child_node(child_uid)
@@ -7344,7 +7354,7 @@ def test_manager_workspace_load_legacy(
         with h5py.File(legacy_workspace, "r") as h5_file:
             assert h5_file.attrs["imagetool_workspace_schema_version"] == 4
 
-        select_tools(manager, list(manager._imagetool_wrappers.keys()))
+        select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
         accept_dialog(manager.remove_action.trigger)
         qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
 

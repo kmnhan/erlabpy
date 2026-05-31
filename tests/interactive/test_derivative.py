@@ -10,6 +10,7 @@ from qtpy import QtWidgets
 
 import erlab
 from erlab.interactive.derivative import DerivativeTool, dtool
+from erlab.interactive.imagetool import provenance_operations as ops
 
 
 def _exec_generated_code(
@@ -127,8 +128,8 @@ def test_dtool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> No
     data = xr.DataArray(
         np.arange(49).reshape((7, 7)), dims=["x", "y"], name="data"
     ).astype(np.float64)
-    source = prov.selection(prov.IselOperation(kwargs={"y": slice(1, 6)}))
-    parent_provenance = prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)}))
+    source = prov.selection(ops.IselOperation(kwargs={"y": slice(1, 6)}))
+    parent_provenance = prov.selection(ops.IselOperation(kwargs={"x": slice(0, 2)}))
     source_data = source.apply(data)
     win: DerivativeTool = dtool(source_data, execute=False)
     qtbot.addWidget(win)
@@ -889,7 +890,7 @@ def test_tool_input_provenance_resyncs_when_parent_fetcher_arrives_late(qtbot) -
 
     tool = _DummyTool(data)
     qtbot.addWidget(tool)
-    tool.set_source_binding(prov.selection(prov.SqueezeOperation()))
+    tool.set_source_binding(prov.selection(ops.SqueezeOperation()))
     tool.set_input_provenance_parent_fetcher(lambda: None)
 
     early_code = tool.copy_code()

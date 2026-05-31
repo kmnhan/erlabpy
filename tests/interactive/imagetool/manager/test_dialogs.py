@@ -21,9 +21,6 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _text_to_loader_extension_value,
 )
 
-if typing.TYPE_CHECKING:
-    from erlab.interactive.imagetool.manager import ImageToolManager
-
 
 def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     tmp_path: pathlib.Path,
@@ -962,7 +959,7 @@ def test_choose_from_datatree_dialog_tree_helper_branches(qtbot) -> None:
     )
 
     dialog = _ChooseFromDataTreeDialog(
-        typing.cast("ImageToolManager", manager),
+        manager,
         tree,
         "load",
     )

@@ -182,7 +182,7 @@ def test_manager_duplicate_unserializable_child_shows_error(
         select_child_tool(manager, child_uid)
         manager.duplicate_selected()
 
-        assert len(manager._imagetool_wrappers[0]._childtools) == 1
+        assert len(manager._tool_graph.root_wrappers[0]._childtools) == 1
         assert len(critical_calls) == 1
         assert critical_calls[0][0][2] == (
             "An error occurred while duplicating the selected window."
@@ -266,7 +266,7 @@ def test_data_recv_dataset_creation_error_no_duplicate_alert(
         staticmethod(_fake_critical),
     )
     monkeypatch.setattr(
-        erlab.interactive.imagetool.manager._mainwindow.ImageTool,
+        manager_workspace_io.ImageTool,
         "from_dataset",
         staticmethod(_raise_from_dataset),
     )
