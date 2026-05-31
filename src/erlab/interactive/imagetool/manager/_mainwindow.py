@@ -15,6 +15,7 @@ from erlab.interactive.imagetool.manager._actions import _ActionsMixin
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelMixin
 from erlab.interactive.imagetool.manager._lineage import _LineageMixin
+from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
 from erlab.interactive.imagetool.manager._registry import (
     activate_manager_record,
@@ -141,12 +142,8 @@ class ImageToolManager(
         )
 
         self._workspace_state = _ManagerWorkspaceState()
-        self._pending_tool_metadata_update_uids: set[str] = set()
-        self._tool_metadata_update_timer = QtCore.QTimer(self)
-        self._tool_metadata_update_timer.setSingleShot(True)
-        self._tool_metadata_update_timer.setInterval(300)
-        self._tool_metadata_update_timer.timeout.connect(
-            self._flush_pending_tool_metadata_updates
+        self._tool_metadata_queue = _ManagerToolMetadataQueue(
+            self, self._flush_pending_tool_metadata_updates
         )
         self._update_workspace_window_title()
 
