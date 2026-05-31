@@ -1,3 +1,51 @@
+## v3.23.2 (2026-05-31)
+
+### 🐞 Bug Fixes
+
+- **manager:** harden window geometry save/load path (#385) ([d22d5ef](https://github.com/kmnhan/erlabpy/commit/d22d5efa0239a60016358f6508c29f9cdfa9e527))
+
+- **manager:** resolve colormap restore recursion (#384) ([b5bc726](https://github.com/kmnhan/erlabpy/commit/b5bc726daccb38165fcaf6dcc6439d2086454237))
+
+  Fixes an issue where ImageTool Manager could recurse indefinitely when opening a workspace that referenced a colormap unavailable in the current environment. Manager now falls back to the default colormap and shows a warning listing the affected workspace windows.
+
+- **manager:** fixes an issue where resizing the ImageTool Manager details pane could stutter when the selected window had a long file path in its metadata (#383) ([91a9794](https://github.com/kmnhan/erlabpy/commit/91a97947062b1fe8732d8132cd47bd31a1e4654f))
+
+- **manager:** fixes an issue where axis limits were sometimes not properly restored when loading a workspace (#382) ([de016bf](https://github.com/kmnhan/erlabpy/commit/de016bf01bd1e3b3716ba299676a0a342c881286))
+
+- **imagetool:** refine generated code in Edit Coordinates dialog (#381) ([2178f85](https://github.com/kmnhan/erlabpy/commit/2178f858f73fe7b20e15e9f2069cd1d4f0de1093))
+
+- **imagetool:** change renaming behavior (#375) ([1733b23](https://github.com/kmnhan/erlabpy/commit/1733b233d3e1c785355ebff53a7cedfc07b87729))
+
+  Changes the behavior when renaming tools. Renaming will rename the underlying DataArray, and suffixes are no longer added when editing data. Also, file name labels are preserved even after the data is modified.
+
+- **imagetool:** fix code generation and selection for data with descending coordinates (#376) ([dc94962](https://github.com/kmnhan/erlabpy/commit/dc949624135b32a9d42e9ac54876b87617b8d998))
+
+- **interactive:** do not include full provenance inside copied code from tools (#374) ([f966c25](https://github.com/kmnhan/erlabpy/commit/f966c2593498f4963c3f4e4a856f131d78149430))
+
+- **manager:** preserve added time in workspace files (#373) ([fba3f8e](https://github.com/kmnhan/erlabpy/commit/fba3f8ea958a1078293365563ce2e319d3e3249e))
+
+  The added time was reset every time a workspace was newly loaded. With this commit, timestamps are properly stored in the workspace file, and restored when re-opening.
+
+- **manager:** fixes reloading child tools not updating parents (#370) ([136856c](https://github.com/kmnhan/erlabpy/commit/136856c765fbda712e0b2dd0e77106a73b111911))
+
+- **manager:** properly preserve history for filter operations (#369) ([6964e28](https://github.com/kmnhan/erlabpy/commit/6964e28bfbaa981840c4ba95f3ba07b0d06564c0))
+
+- **manager:** strip invalid attribute names when saving workspaces (#367) ([64a9faf](https://github.com/kmnhan/erlabpy/commit/64a9faf8cbb11c5e645b083000ad76a7e02f8c8e))
+
+### ⚡️ Performance
+
+- **manager:** debounce manager details refreshes (#368) ([14481b4](https://github.com/kmnhan/erlabpy/commit/14481b409a44eb9e0d649c1fcf83064882e40f2c))
+
+- **manager:** persist matplotlib font cache to improve startup in standalone version (#366) ([f8cd8ef](https://github.com/kmnhan/erlabpy/commit/f8cd8efd39e29545fe645e1d2368b5c25b1ac060))
+
+### ♻️ Code Refactor
+
+- **manager:** persist workspace loader and app state (#386) ([549e4cc](https://github.com/kmnhan/erlabpy/commit/549e4cc0b0456fce359d366456311bcbae07250e))
+
+  Extends workspace files to store more information, like data explorer tabs and geometry.
+
+- **manager:** show settings tooltips on the entire row (#379) ([61d15de](https://github.com/kmnhan/erlabpy/commit/61d15de9a5462f0a33e1442fa8ab8ef7b28eef22))
+
 ## v3.23.1 (2026-05-28)
 
 ### 🐞 Bug Fixes
