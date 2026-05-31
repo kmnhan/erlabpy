@@ -386,7 +386,7 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
             original_set_metadata_node(node)
 
         monkeypatch.setattr(manager, "_set_metadata_node", _record_metadata_rebuild)
-        manager._tool_metadata_update_timer.setInterval(1)
+        manager._tool_metadata_queue.set_interval(1)
 
         child_node = manager._child_node(uid)
         tool._info_text = "updated child info"
@@ -398,8 +398,8 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
 
         assert "updated child info" not in manager.text_box.toPlainText()
         assert metadata_updates == []
-        assert manager._pending_tool_metadata_update_uids == {uid}
-        manager._flush_pending_tool_metadata_updates()
+        assert manager._tool_metadata_queue.pending_uids == frozenset({uid})
+        manager._tool_metadata_queue.flush()
         assert metadata_updates == [uid]
         assert "updated child info final" in manager.text_box.toPlainText()
 
@@ -427,11 +427,11 @@ def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
         select_tools(manager, [0])
         manager._update_info()
         visible_html = manager.text_box.toHtml()
-        manager._tool_metadata_update_timer.setInterval(1)
+        manager._tool_metadata_queue.set_interval(1)
 
         tool.emit_info_text("updated child info")
         qtbot.wait_until(
-            lambda: not manager._tool_metadata_update_timer.isActive(), timeout=1000
+            lambda: not manager._tool_metadata_queue.is_active(), timeout=1000
         )
 
         assert manager.text_box.toHtml() == visible_html

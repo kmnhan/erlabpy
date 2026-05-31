@@ -36,6 +36,7 @@ if typing.TYPE_CHECKING:
         _ManagerDependencyTracker,
     )
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+    from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
     from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
     from erlab.interactive.imagetool.manager._registry import _ManagerRecord
     from erlab.interactive.imagetool.manager._server import (
@@ -118,7 +119,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _metadata_monospace_font: QtGui.QFont
     _metadata_node_uid: str | None
     _pending_linker_reload: bool
-    _pending_tool_metadata_update_uids: set[str]
     _previous_excepthook: Callable[
         [type[BaseException], BaseException, types.TracebackType | None], typing.Any
     ]
@@ -135,7 +135,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _standalone_app_specs: dict[str, _StandaloneAppSpec]
     _standalone_app_windows: dict[str, QtWidgets.QWidget]
     _tool_graph: _ManagerToolGraph
-    _tool_metadata_update_timer: QtCore.QTimer
+    _tool_metadata_queue: _ManagerToolMetadataQueue
     _warning_handler: _WarningNotificationHandler
     _workspace_state: _ManagerWorkspaceState
 

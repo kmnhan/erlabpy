@@ -341,12 +341,9 @@ class _DetailsPanelMixin(_ImageToolManagerBase):
 
     def _schedule_tool_metadata_update(self, uid: str) -> None:
         """Refresh expensive selected-tool metadata after bursty info updates settle."""
-        self._pending_tool_metadata_update_uids.add(uid)
-        self._tool_metadata_update_timer.start()
+        self._tool_metadata_queue.schedule(uid)
 
-    def _flush_pending_tool_metadata_updates(self) -> None:
-        pending = self._pending_tool_metadata_update_uids
-        self._pending_tool_metadata_update_uids = set()
+    def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
         for uid in sorted(pending):
             self._update_info(uid=uid)
 
