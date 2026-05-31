@@ -37,7 +37,7 @@ if typing.TYPE_CHECKING:
     )
 
     from erlab.interactive.imagetool import ImageTool
-    from erlab.interactive.imagetool.manager import ImageToolManager
+    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
         _ManagedWindowNode,
@@ -1529,13 +1529,13 @@ class ToolsNamespace:
 
     """
 
-    def __init__(self, manager: ImageToolManager) -> None:
+    def __init__(self, manager: _ImageToolManagerBase) -> None:
         self._manager_ref = weakref.ref(manager)
         self._shell_ref: weakref.ReferenceType[InteractiveShell] | None = None
         self._namespace_snapshot: dict[str, int] = {}
 
     @property
-    def _manager(self) -> ImageToolManager:
+    def _manager(self) -> _ImageToolManagerBase:
         """Access the ImageToolManager instance."""
         manager = self._manager_ref()
         if manager:
@@ -1560,11 +1560,11 @@ class ToolsNamespace:
 
     def __getitem__(self, index: int) -> ToolNamespace | None:
         """Access a top-level ImageTool by manager index."""
-        if index not in self._manager._imagetool_wrappers:
+        if index not in self._manager._tool_graph.root_wrappers:
             print(f"Tool {index} not found")
             return None
 
-        return ToolNamespace(self._manager._imagetool_wrappers[index], self)
+        return ToolNamespace(self._manager._tool_graph.root_wrappers[index], self)
 
     def _node_path(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -1582,7 +1582,7 @@ class ToolsNamespace:
             child_index = child_uids.index(current.uid)
             path.append(child_index)
             current = image_parent
-        for root_index, wrapper in self._manager._imagetool_wrappers.items():
+        for root_index, wrapper in self._manager._tool_graph.root_wrappers.items():
             if wrapper.uid == current.uid:
                 return [root_index, *reversed(path)]
         return None
@@ -1594,7 +1594,7 @@ class ToolsNamespace:
 
         def collect(parent: _ImageToolWrapper | _ManagedWindowNode) -> None:
             for child_uid in parent._childtool_indices:
-                child = self._manager._all_nodes.get(child_uid)
+                child = self._manager._tool_graph.nodes.get(child_uid)
                 if child is None:
                     continue
                 if child.is_imagetool:
@@ -1610,7 +1610,7 @@ class ToolsNamespace:
     ) -> _ImageToolWrapper | _ManagedWindowNode | None:
         parent_uid = node.parent_uid
         while parent_uid is not None:
-            parent = self._manager._all_nodes.get(parent_uid)
+            parent = self._manager._tool_graph.nodes.get(parent_uid)
             if parent is None:
                 return None
             if parent.is_imagetool:
@@ -1795,7 +1795,7 @@ class ToolsNamespace:
 
     def __repr__(self) -> str:
         output = []
-        for index, wrapper in self._manager._imagetool_wrappers.items():
+        for index, wrapper in self._manager._tool_graph.root_wrappers.items():
             output.append(f"{index}: {wrapper.name}")
         if not output:
             return "No tools"
@@ -2003,7 +2003,7 @@ del VerboseTB
 class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
     """A dock widget containing the Jupyter console."""
 
-    def __init__(self, manager: ImageToolManager) -> None:
+    def __init__(self, manager: _ImageToolManagerBase) -> None:
         super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
         tools_namespace = ToolsNamespace(manager)
 

@@ -15,13 +15,14 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-import erlab.interactive.imagetool.manager._actions as manager_actions
+import erlab.interactive.imagetool.manager._base as manager_base
 import erlab.interactive.imagetool.manager._io as manager_io
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive.imagetool import itool
 from erlab.interactive.imagetool.manager import ImageToolManager, load_in_manager
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import _MIME, _RowBadge
+from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 
 from .helpers import (
     assert_nonempty_tooltip,
@@ -95,17 +96,20 @@ def test_drop_mimedata(
         logger.info("Adding three childtools to the first tool")
         manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
         logger.info("First childtool added")
         manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 2, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 2,
+            timeout=5000,
         )
         logger.info("Second childtool added")
         manager.get_imagetool(0).slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 3, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 3,
+            timeout=5000,
         )
         logger.info("Third childtool added")
         manager.hide_all()  # Prevent windows from obstructing the manager
@@ -172,7 +176,7 @@ def test_drop_mimedata(
         )
 
         # Check new order
-        assert manager._displayed_indices == [1, 2, 0]
+        assert manager._tool_graph.displayed_indices == [1, 2, 0]
 
         # No-op drop (drop on itself)
         assert not model.dropMimeData(
@@ -184,10 +188,10 @@ def test_drop_mimedata(
         )
 
         # Check unchanged
-        assert manager._displayed_indices == [1, 2, 0]
+        assert manager._tool_graph.displayed_indices == [1, 2, 0]
 
         # Test move child tool
-        parent_wrapper = model.manager._imagetool_wrappers[0]
+        parent_wrapper = model.manager._tool_graph.root_wrappers[0]
         child_uid: str = parent_wrapper._childtool_indices[0]
         old_order = list(parent_wrapper._childtool_indices)
         parent_index: QtCore.QModelIndex = model._row_index(0)
@@ -231,7 +235,7 @@ def test_drop_mimedata(
 
         # Test mixed top-level and childtool selection (should be rejected)
         logger.info("Testing mixed top-level and childtool selection drop")
-        parent_wrapper = model.manager._imagetool_wrappers[0]
+        parent_wrapper = model.manager._tool_graph.root_wrappers[0]
         child_uid: str = parent_wrapper._childtool_indices[0]
         mime_mixed = model.mimeData([model._row_index(0), model._row_index(child_uid)])
         assert not model.dropMimeData(
@@ -260,12 +264,12 @@ def test_treeview(qtbot, accept_dialog, test_data) -> None:
     manager = ImageToolManager()
 
     def _cleanup_manager(widget: ImageToolManager) -> None:
-        widget._workspace_loading_depth += 1
+        widget._workspace_state.loading_depth += 1
         try:
             widget.remove_all_tools()
             widget._mark_workspace_clean()
         finally:
-            widget._workspace_loading_depth -= 1
+            widget._workspace_state.loading_depth -= 1
 
     qtbot.addWidget(manager, before_close_func=_cleanup_manager)
 
@@ -332,17 +336,18 @@ def test_childtool_remove_after_tree_clear(
 
         uid = manager.add_childtool(erlab.interactive.utils.ToolWindow(), 0, show=False)
         qtbot.wait_until(
-            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
 
         manager.tree_view.clear_imagetools()
-        assert manager._displayed_indices == []
+        assert manager._tool_graph.displayed_indices == []
 
         # Child destruction callbacks can arrive after top-level rows are reset.
         manager._remove_childtool(uid)
         qtbot.wait_until(
-            lambda: uid not in manager._imagetool_wrappers[0]._childtools, timeout=5000
+            lambda: uid not in manager._tool_graph.root_wrappers[0]._childtools,
+            timeout=5000,
         )
 
 
@@ -362,7 +367,7 @@ def test_childtool_info_changed_debounces_manager_details_refresh(
         tool = _InfoRefreshTool(test_data)
         uid = manager.add_childtool(tool, 0, show=False)
         qtbot.wait_until(
-            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
         selection_model = manager.tree_view.selectionModel()
@@ -414,7 +419,7 @@ def test_childtool_info_changed_for_unselected_node_keeps_visible_details(
         tool = _InfoRefreshTool(test_data)
         uid = manager.add_childtool(tool, 0, show=False)
         qtbot.wait_until(
-            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
         selection_model = manager.tree_view.selectionModel()
@@ -448,7 +453,7 @@ def test_childtool_repeated_info_changes_mark_state_dirty_once(
         tool = _InfoRefreshTool(test_data)
         uid = manager.add_childtool(tool, 0, show=False)
         qtbot.wait_until(
-            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
         manager._mark_workspace_clean()
@@ -457,10 +462,10 @@ def test_childtool_repeated_info_changes_mark_state_dirty_once(
         tool.emit_info_text("second")
         tool.emit_info_text("third")
 
-        assert manager._workspace_dirty_state == {uid}
+        assert manager._workspace_state.dirty_state == {uid}
         assert [
-            event for event in manager._workspace_dirty_events if event.uid == uid
-        ] == [manager._workspace_dirty_events[-1]]
+            event for event in manager._workspace_state.dirty_events if event.uid == uid
+        ] == [manager._workspace_state.dirty_events[-1]]
 
 
 def test_remove_imagetool_removes_childtools() -> None:
@@ -482,9 +487,11 @@ def test_remove_imagetool_removes_childtools() -> None:
             self.deleted = True
 
     wrapper = _DummyWrapper()
+    tool_graph = _ManagerToolGraph()
+    tool_graph.root_wrappers[0] = wrapper
+    tool_graph.nodes[wrapper.uid] = wrapper
     manager = types.SimpleNamespace(
-        _imagetool_wrappers={0: wrapper},
-        _all_nodes={wrapper.uid: wrapper},
+        _tool_graph=tool_graph,
         _mark_removed_subtree_dirty=lambda _uid: None,
         _remove_uid_target=lambda child_uid: removed_uids.append(child_uid),
         _refresh_dependency_dependents=lambda _uid: None,
@@ -498,8 +505,8 @@ def test_remove_imagetool_removes_childtools() -> None:
     assert removed_rows == [0]
     assert wrapper.disposed
     assert wrapper.deleted
-    assert manager._imagetool_wrappers == {}
-    assert manager._all_nodes == {}
+    assert manager._tool_graph.root_wrappers == {}
+    assert manager._tool_graph.nodes == {}
 
 
 def test_remove_imagetools_deduplicates_explicit_child_uids() -> None:
@@ -507,18 +514,22 @@ def test_remove_imagetools_deduplicates_explicit_child_uids() -> None:
     uid1 = "child-uid-1"
 
     manager = types.SimpleNamespace(
-        _imagetool_wrappers={
-            0: types.SimpleNamespace(_childtool_indices=[uid0]),
-            1: types.SimpleNamespace(_childtool_indices=[uid1]),
-        },
+        _tool_graph=_ManagerToolGraph(),
         removed_indices=[],
         removed_uids=[],
+    )
+    manager._tool_graph.root_wrappers.update(
+        {
+            0: types.SimpleNamespace(_childtool_indices=[uid0]),
+            1: types.SimpleNamespace(_childtool_indices=[uid1]),
+        }
     )
     manager._bulk_remove_context = contextlib.nullcontext
     manager.remove_imagetool = lambda index, *, update_view=True: (
         manager.removed_indices.append((index, update_view))
     )
     manager._remove_childtool = lambda uid: manager.removed_uids.append(uid)
+    manager._iter_descendant_uids = lambda uid: []
 
     ImageToolManager._remove_imagetools(manager, [0], child_uids=[uid0, uid1, uid1])
     assert manager.removed_indices == [(0, True)]
@@ -541,7 +552,7 @@ def test_remove_selected_calls_batch_remove(
 
         uid = manager.add_childtool(erlab.interactive.utils.ToolWindow(), 0, show=False)
         qtbot.wait_until(
-            lambda: uid in manager._imagetool_wrappers[0]._childtool_indices,
+            lambda: uid in manager._tool_graph.root_wrappers[0]._childtool_indices,
             timeout=5000,
         )
 
@@ -594,7 +605,7 @@ def test_select_loader_options_cancel_keeps_recent_filter(
             assert self.checked_name == "Example Raw Data (*.h5)"
             return False
 
-    monkeypatch.setattr(manager_actions, "_NameFilterDialog", _CancelNameFilterDialog)
+    monkeypatch.setattr(manager_base, "_NameFilterDialog", _CancelNameFilterDialog)
     manager = types.SimpleNamespace(
         _recent_loader_extensions_by_filter={"Example Raw Data (*.h5)": {}},
         _recent_name_filter="Previous",
@@ -708,7 +719,7 @@ def test_open_multiple_files_preselects_default_loader_filter(
     manager._select_loader_options = types.MethodType(
         ImageToolManager._select_loader_options, manager
     )
-    monkeypatch.setattr(manager_actions, "_NameFilterDialog", _CancelNameFilterDialog)
+    monkeypatch.setattr(manager_base, "_NameFilterDialog", _CancelNameFilterDialog)
     monkeypatch.setattr(
         erlab.interactive.utils,
         "file_loaders",
@@ -978,7 +989,7 @@ def test_manager_multifile_handler_selection_failure_branches(
 
     manager = _Manager()
     handler = manager_io._MultiFileHandler(
-        typing.cast("ImageToolManager", manager),
+        manager,
         [queued_path] if case == "failed_reject" else [],
         lambda _path: data,
         {},
@@ -1379,7 +1390,7 @@ def test_manager_hover_tooltip(
         assert manager.get_imagetool(1).slicer_area.is_linked
         assert manager.get_imagetool(2).slicer_area.is_linked
 
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_watched_binding("sample", "sample kernel", connected=False)
         option = QtWidgets.QStyleOptionViewItem()
         delegate.initStyleOption(option, index)
@@ -1570,7 +1581,7 @@ def test_manager_badge_hit_testing_edge_paths(
         model = view._model
         delegate = view._delegate
         index = model.index(0, 0)
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
 
         manager.get_imagetool(0).slicer_area._auto_chunk()
         view.refresh(0)

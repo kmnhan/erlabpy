@@ -855,8 +855,23 @@ def uses_default_replay_input(code: str) -> bool:
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 
-def _provenance_operations() -> typing.Any:
-    return importlib.import_module("erlab.interactive.imagetool.provenance_operations")
+def _operation_is(operation: ToolProvenanceOperation, *ops: str) -> bool:
+    return getattr(operation, "op", None) in ops
+
+
+def _operation_type(op: str) -> type[ToolProvenanceOperation]:
+    operation_type = _OPERATION_TYPES.get(op)
+    if operation_type is None:
+        raise RuntimeError(
+            "Concrete provenance operations are not registered. "
+            "Import erlab.interactive.imagetool.provenance_operations before "
+            "constructing or deserializing operation-backed provenance."
+        )
+    return operation_type
+
+
+def _operation_instance(op: str, **kwargs: typing.Any) -> ToolProvenanceOperation:
+    return _operation_type(op)(**kwargs)
 
 
 def _callable_paths(func: Callable[..., typing.Any]) -> set[str]:
@@ -1374,7 +1389,6 @@ def operations_expression_code(
 
 def operation_from_console_call(call: ConsoleCall) -> ToolProvenanceOperation | None:
     """Return the structured operation represented by a console call, if known."""
-    _provenance_operations()
     for operation_type in _OPERATION_TYPES.values():
         operation = operation_type.from_console_call(call)
         if operation is not None:
@@ -1557,7 +1571,6 @@ def parse_tool_provenance_operation(
     if not isinstance(op, str):
         raise TypeError("Serialized provenance operations must include a string `op`")
 
-    _provenance_operations()
     operation_type = _OPERATION_TYPES.get(op)
     if operation_type is None:
         raise ValueError(
@@ -1956,9 +1969,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def drop_trailing_rename(self) -> ToolProvenanceSpec:
         operations = self.operations
-        if operations and isinstance(
-            operations[-1], _provenance_operations().RenameOperation
-        ):
+        if operations and _operation_is(operations[-1], "rename"):
             operations = operations[:-1]
         return self.model_copy(update={"operations": operations})
 
@@ -1976,9 +1987,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         if not self.is_live_source:
             raise TypeError("Display operations can only be appended to live sources")
         operations = self.operations
-        if operations and isinstance(
-            operations[-1], _provenance_operations().RenameOperation
-        ):
+        if operations and _operation_is(operations[-1], "rename"):
             return self.model_copy(
                 update={"operations": (*operations[:-1], operation, operations[-1])}
             )
@@ -1986,7 +1995,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
 
     def append_final_rename(self, name: str) -> ToolProvenanceSpec:
         return self.drop_trailing_rename().append_operations(
-            _provenance_operations().RenameOperation(name=name)
+            _operation_instance("rename", name=name)
         )
 
     def append_replay_stage(self, source: ToolProvenanceSpec) -> ToolProvenanceSpec:
@@ -2050,7 +2059,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
         for index, operation in enumerate(operations):
             hide_operation = False
 
-            if isinstance(operation, _provenance_operations().ScriptCodeOperation):
+            if _operation_is(operation, "script_code"):
                 entry = operation.derivation_entry()
                 hide_operation = entry.code in {
                     "derived = derived.isel()",
@@ -2059,49 +2068,30 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 } or _is_internal_sort_coord_order_entry(entry)
                 if not hide_operation and _is_whole_array_rename_entry(entry):
                     hide_operation = not any(
-                        isinstance(
-                            later_operation,
-                            _provenance_operations().ScriptCodeOperation,
-                        )
+                        _operation_is(later_operation, "script_code")
                         for later_operation in operations[index + 1 :]
                     )
             # Rule 1: drop empty selection operations.
-            elif isinstance(
-                operation,
-                (
-                    _provenance_operations().QSelOperation,
-                    _provenance_operations().IselOperation,
-                    _provenance_operations().SelOperation,
-                ),
-            ):
-                hide_operation = not operation.decoded_kwargs
+            elif _operation_is(operation, "qsel", "isel", "sel"):
+                hide_operation = not getattr(operation, "decoded_kwargs", {})
             # Rule 2: hide internal coordinate-order normalization.
-            elif isinstance(
-                operation, _provenance_operations().SortCoordOrderOperation
-            ):
+            elif _operation_is(operation, "sort_coord_order"):
                 hide_operation = True
             # Rule 3: drop transpose calls that do not change dimension order.
-            elif (
-                isinstance(operation, _provenance_operations().TransposeOperation)
-                and current_data is not None
-            ):
+            elif _operation_is(operation, "transpose") and current_data is not None:
+                operation_dims = getattr(operation, "dims", None)
                 target_dims = (
-                    tuple(operation.dims)
-                    if operation.dims is not None
+                    tuple(operation_dims)
+                    if operation_dims is not None
                     else tuple(reversed(current_data.dims))
                 )
                 hide_operation = target_dims == tuple(current_data.dims)
             # Rule 4: drop squeeze calls that would not remove singleton dimensions.
-            elif (
-                isinstance(operation, _provenance_operations().SqueezeOperation)
-                and current_data is not None
-            ):
+            elif _operation_is(operation, "squeeze") and current_data is not None:
                 hide_operation = not any(size == 1 for size in current_data.shape)
             # Rule 5: drop nonuniform restoration when it would not change dimensions.
             elif (
-                isinstance(
-                    operation, _provenance_operations().RestoreNonuniformDimsOperation
-                )
+                _operation_is(operation, "restore_nonuniform_dims")
                 and current_data is not None
             ):
                 hide_operation = (
@@ -2112,11 +2102,9 @@ class ToolProvenanceSpec(pydantic.BaseModel):
                 )
             # Rule 6: hide whole-array name changes in derivation display. Dimension
             # and coordinate renames use RenameDimsCoordsOperation and remain visible.
-            elif isinstance(operation, _provenance_operations().RenameOperation):
+            elif _operation_is(operation, "rename"):
                 hide_operation = not any(
-                    isinstance(
-                        later_operation, _provenance_operations().ScriptCodeOperation
-                    )
+                    _operation_is(later_operation, "script_code")
                     for later_operation in operations[index + 1 :]
                 )
 
@@ -2173,7 +2161,8 @@ class ToolProvenanceSpec(pydantic.BaseModel):
             active_name="derived",
             file_load_source=self.file_load_source,
             operations=tuple(
-                _provenance_operations().ScriptCodeOperation(
+                _operation_instance(
+                    "script_code",
                     label=entry.label,
                     code=entry.code,
                     copyable=entry.copyable,
@@ -2477,20 +2466,13 @@ def compose_display_provenance(
     ):
         saw_squeeze = False
         for operation in source.operations:
-            if isinstance(
-                operation,
-                (
-                    _provenance_operations().QSelOperation,
-                    _provenance_operations().IselOperation,
-                    _provenance_operations().SelOperation,
-                ),
-            ):
-                if operation.decoded_kwargs:
+            if _operation_is(operation, "qsel", "isel", "sel"):
+                if getattr(operation, "decoded_kwargs", {}):
                     break
                 continue
-            if isinstance(operation, _provenance_operations().SortCoordOrderOperation):
+            if _operation_is(operation, "sort_coord_order"):
                 continue
-            if isinstance(operation, _provenance_operations().SqueezeOperation):
+            if _operation_is(operation, "squeeze"):
                 saw_squeeze = True
                 continue
             break
@@ -2505,7 +2487,8 @@ def compose_display_provenance(
         seed_code=_DEFAULT_REPLAY_SEED_CODE,
         active_name="derived",
         operations=tuple(
-            _provenance_operations().ScriptCodeOperation(
+            _operation_instance(
+                "script_code",
                 label=entry.label,
                 code=entry.code,
                 copyable=entry.copyable,
@@ -2594,7 +2577,8 @@ def _as_script_replay_spec(spec: ToolProvenanceSpec) -> ToolProvenanceSpec:
             active_name=spec.active_name,
             file_load_source=spec.file_load_source,
             operations=tuple(
-                _provenance_operations().ScriptCodeOperation(
+                _operation_instance(
+                    "script_code",
                     label=entry.label,
                     code=entry.code,
                     copyable=entry.copyable,
@@ -2650,7 +2634,8 @@ def compose_full_provenance(
         if seed_code is not None:
             local_operations.insert(
                 0,
-                _provenance_operations().ScriptCodeOperation(
+                _operation_instance(
+                    "script_code",
                     label=typing.cast("str", local_spec.start_label),
                     code=seed_code,
                 ),
@@ -2665,7 +2650,8 @@ def compose_full_provenance(
         ):
             local_operations.insert(
                 0,
-                _provenance_operations().ScriptCodeOperation(
+                _operation_instance(
+                    "script_code",
                     label="Use current parent output as the active data",
                     code=f"derived = {parent_input}",
                 ),

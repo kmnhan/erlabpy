@@ -5,7 +5,7 @@ import pathlib
 import typing
 
 import numpy as np
-from qtpy import QtCore, QtWidgets
+from qtpy import QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
@@ -15,7 +15,7 @@ from erlab.interactive.imagetool import (
     provenance_operations,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
+from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
     _DEPENDENCY_STATUS_LABELS,
@@ -37,18 +37,11 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class _LineageMixin(_ManagerMixinBase):
-    def _node_for_target(
-        self, target: int | str
-    ) -> _ImageToolWrapper | _ManagedWindowNode:
-        if isinstance(target, int):
-            return self._imagetool_wrappers[target]
-        return self._all_nodes[target]
-
+class _LineageMixin(_ImageToolManagerBase):
     def _dependency_refs_for_uid(
         self, uid: str
     ) -> tuple[provenance_framework.ScriptInputDependencyRef, ...]:
-        node = self._all_nodes.get(uid)
+        node = self._tool_graph.nodes.get(uid)
         if node is None or node.provenance_spec is None:
             self._dependency_ref_cache.pop(uid, None)
             return ()
@@ -69,7 +62,7 @@ class _LineageMixin(_ManagerMixinBase):
 
         changed = False
         for ref in refs:
-            parent = self._all_nodes.get(ref.node_uid)
+            parent = self._tool_graph.nodes.get(ref.node_uid)
             if parent is None:
                 return "missing"
             if (
@@ -96,7 +89,7 @@ class _LineageMixin(_ManagerMixinBase):
         if status is None:
             return None
         tooltip = _DEPENDENCY_STATUS_TOOLTIPS[status]
-        node = self._all_nodes.get(uid)
+        node = self._tool_graph.nodes.get(uid)
         if node is not None and self._node_can_reload_script_inputs(node):
             tooltip += " Click for Reload Data options."
         if status == "missing" and self._missing_dependencies_have_recorded_file(uid):
@@ -108,7 +101,7 @@ class _LineageMixin(_ManagerMixinBase):
         if not refs:
             return None
 
-        node = self._all_nodes.get(uid)
+        node = self._tool_graph.nodes.get(uid)
         spec = None if node is None else node.provenance_spec
         parts: list[str] = []
         seen: set[tuple[str, str, str | None]] = set()
@@ -117,7 +110,7 @@ class _LineageMixin(_ManagerMixinBase):
             if key in seen:
                 continue
             seen.add(key)
-            parent = self._all_nodes.get(ref.node_uid)
+            parent = self._tool_graph.nodes.get(ref.node_uid)
             if isinstance(parent, _ImageToolWrapper):
                 current = f"currently ImageTool {parent.index}"
             elif parent is not None:
@@ -214,10 +207,10 @@ class _LineageMixin(_ManagerMixinBase):
         return False
 
     def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
-        node = self._all_nodes.get(uid)
+        node = self._tool_graph.nodes.get(uid)
         spec = None if node is None else node.provenance_spec
         return any(
-            self._all_nodes.get(ref.node_uid) is None
+            self._tool_graph.nodes.get(ref.node_uid) is None
             and self._dependency_ref_has_recorded_file(spec, ref)
             for ref in self._dependency_refs_for_uid(uid)
         )
@@ -225,7 +218,7 @@ class _LineageMixin(_ManagerMixinBase):
     def _dependency_dependent_uids(self, uid: str) -> list[str]:
         return [
             node_uid
-            for node_uid in self._all_nodes
+            for node_uid in self._tool_graph.nodes
             if node_uid != uid
             and any(
                 ref.node_uid == uid for ref in self._dependency_refs_for_uid(node_uid)
@@ -236,7 +229,7 @@ class _LineageMixin(_ManagerMixinBase):
         for dependent_uid in self._dependency_dependent_uids(uid):
             self.tree_view.refresh(dependent_uid)
             if self._metadata_node_uid == dependent_uid:
-                self._set_metadata_node(self._all_nodes[dependent_uid])
+                self._set_metadata_node(self._tool_graph.nodes[dependent_uid])
 
     def _script_input_name_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -323,7 +316,7 @@ class _LineageMixin(_ManagerMixinBase):
         self, spec: provenance_framework.ToolProvenanceSpec
     ) -> bool:
         for ref in provenance_framework.script_input_dependency_refs(spec):
-            parent = self._all_nodes.get(ref.node_uid)
+            parent = self._tool_graph.nodes.get(ref.node_uid)
             if parent is None:
                 return False
             if (
@@ -344,7 +337,7 @@ class _LineageMixin(_ManagerMixinBase):
             return None
         if target_node_uid is not None and script_input.node_uid == target_node_uid:
             return None
-        node = self._all_nodes.get(script_input.node_uid)
+        node = self._tool_graph.nodes.get(script_input.node_uid)
         if node is None:
             return None
         if (
@@ -371,7 +364,7 @@ class _LineageMixin(_ManagerMixinBase):
             target_node_uid is not None and script_input.node_uid == target_node_uid
         )
         if script_input.node_uid is not None and not is_target_input:
-            node = self._all_nodes.get(script_input.node_uid)
+            node = self._tool_graph.nodes.get(script_input.node_uid)
             if node is not None and (
                 spec is None
                 or spec.kind != "script"
@@ -498,74 +491,6 @@ class _LineageMixin(_ManagerMixinBase):
             if rebased != node.provenance_spec:
                 node.set_displayed_provenance(rebased, advance_snapshot=False)
 
-    def _child_node(self, uid: str) -> _ManagedWindowNode:
-        node = self._all_nodes[uid]
-        if isinstance(node, _ImageToolWrapper):
-            raise KeyError(f"{uid!r} refers to a root ImageTool")
-        return node
-
-    def _parent_node(
-        self, node: _ManagedWindowNode
-    ) -> _ImageToolWrapper | _ManagedWindowNode:
-        if node.parent_uid is None:
-            raise KeyError(f"Node {node.uid!r} has no parent")
-        return self._all_nodes[node.parent_uid]
-
-    def _root_wrapper_for_uid(self, uid: str) -> _ImageToolWrapper:
-        node = self._node_for_target(uid)
-        while not isinstance(node, _ImageToolWrapper):
-            node = self._parent_node(node)
-        return node
-
-    def _node_uid_from_window(self, widget: QtWidgets.QWidget) -> str | None:
-        for uid, node in self._all_nodes.items():
-            if node.window is widget:
-                return uid
-        return None
-
-    def _is_imagetool_target(self, target: int | str) -> bool:
-        node = self._node_for_target(target)
-        return node.is_imagetool
-
-    def _selected_imagetool_targets(self) -> list[int | str]:
-        targets: list[int | str] = list(self.tree_view.selected_imagetool_indices)
-        targets.extend(
-            uid
-            for uid in self.tree_view.selected_childtool_uids
-            if self._is_imagetool_target(uid)
-        )
-        return targets
-
-    def _selected_tool_uids(self) -> list[str]:
-        return [
-            uid
-            for uid in self.tree_view.selected_childtool_uids
-            if not self._is_imagetool_target(uid)
-        ]
-
-    def _selected_promotable_child_imagetool_uid(self) -> str | None:
-        child_imagetool_uids = [
-            uid
-            for uid in self.tree_view.selected_childtool_uids
-            if self._is_imagetool_target(uid)
-        ]
-        if len(child_imagetool_uids) != 1:
-            return None
-        if self.tree_view.selected_imagetool_indices or self._selected_tool_uids():
-            return None
-        return child_imagetool_uids[0]
-
-    def _selected_source_update_child_uid(self) -> str | None:
-        selected_child_uids = self.tree_view.selected_childtool_uids
-        if len(selected_child_uids) != 1 or self.tree_view.selected_imagetool_indices:
-            return None
-        uid = selected_child_uids[0]
-        try:
-            node = self._child_node(uid)
-        except KeyError:
-            return None
-        return uid if node.has_source_binding else None
-
     def _selected_reload_targets(
         self,
     ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
@@ -633,7 +558,6 @@ class _LineageMixin(_ManagerMixinBase):
             return False
         return self._refresh_source_chain_to_uid(uid)
 
-    @QtCore.Slot()
     def show_selected_source_updates(self) -> None:
         """Show automatic update controls for the selected child window."""
         uid = self._selected_source_update_child_uid()
@@ -643,28 +567,6 @@ class _LineageMixin(_ManagerMixinBase):
 
     def _child_targets_of(self, target: int | str) -> list[str]:
         return list(self._node_for_target(target)._childtool_indices)
-
-    def _iter_descendant_uids(self, uid: str) -> list[str]:
-        descendants: list[str] = []
-        stack = [uid]
-        while stack:
-            current = stack.pop()
-            node = self._all_nodes.get(current)
-            if not isinstance(node, _ManagedWindowNode):
-                continue
-            for child_uid in node._childtool_indices:
-                descendants.append(child_uid)
-                stack.append(child_uid)
-        return descendants
-
-    def _mark_removed_subtree_dirty(self, uid: str) -> None:
-        for node_uid in [uid, *self._iter_descendant_uids(uid)]:
-            node = self._all_nodes.get(node_uid)
-            if node is not None:
-                self._set_node_window_modified(node_uid, False)
-                self._mark_workspace_dirty(
-                    removed=node.display_text, structure="Removed window"
-                )
 
     def _refresh_source_chain_to_uid(self, uid: str) -> bool:
         """Refresh stale ancestors before refreshing a managed child node."""
@@ -714,7 +616,7 @@ class _LineageMixin(_ManagerMixinBase):
     def _resume_pending_source_refreshes(self, uid: str) -> None:
         target_uids = self._pending_source_refresh_targets.pop(uid, set())
         for target_uid in list(target_uids):
-            if target_uid not in self._all_nodes:
+            if target_uid not in self._tool_graph.nodes:
                 continue
             self._refresh_source_chain_to_uid(target_uid)
 
@@ -759,23 +661,6 @@ class _LineageMixin(_ManagerMixinBase):
             elif child.source_state != "fresh":
                 self._mark_descendants_source_state(child_uid, child.source_state)
 
-    def _remove_uid_target(self, uid: str) -> None:
-        if uid not in self._all_nodes:
-            return
-        subtree = [*self._iter_descendant_uids(uid), uid]
-        subtree.reverse()
-        for child_uid in subtree:
-            child = typing.cast("_ManagedWindowNode", self._all_nodes.get(child_uid))
-            if child is None:
-                continue
-            self._unregister_node(child_uid)
-            if child.tool_window is not None:
-                child.tool_window.set_source_parent_fetcher(None)
-                child.tool_window.set_input_provenance_parent_fetcher(None)
-            child.dispose()
-        self.tree_view.childtool_removed(uid)
-
-    @QtCore.Slot()
     def show_selected(self) -> None:
         """Show selected windows."""
         index_list = self._selected_imagetool_targets()
@@ -787,7 +672,6 @@ class _LineageMixin(_ManagerMixinBase):
         for uid in uid_list:
             self.show_childtool(uid)
 
-    @QtCore.Slot()
     def hide_selected(self) -> None:
         """Hide selected windows."""
         for index in self._selected_imagetool_targets():
@@ -795,13 +679,11 @@ class _LineageMixin(_ManagerMixinBase):
         for uid in self._selected_tool_uids():
             self.get_childtool(uid).hide()
 
-    @QtCore.Slot()
     def hide_all(self) -> None:
         """Hide all windows."""
-        for node in self._all_nodes.values():
+        for node in self._tool_graph.nodes.values():
             node.hide()
 
-    @QtCore.Slot()
     def reload_selected(self) -> None:
         """Reload data in selected ImageTool windows."""
         selected_reload_targets = self._selected_reload_targets()
@@ -966,7 +848,6 @@ class _LineageMixin(_ManagerMixinBase):
             case _:
                 return False
 
-    @QtCore.Slot()
     def remove_selected(self) -> None:
         """Discard selected ImageTool windows."""
         indices = list(self._selected_imagetool_targets())

@@ -19,6 +19,7 @@ import numpy as np
 import xarray as xr
 
 import erlab
+import erlab.interactive.imagetool.provenance_framework as prov
 
 
 class ReplayGraphError(Exception):
@@ -112,12 +113,6 @@ _REPLAY_ALIASES = {
 }
 _REPLAY_RESERVED_PUBLIC_NAMES = {"data", "derived", "tools"}
 _REPLAY_TEMP_PREFIX = "_itool_replay_"
-
-
-def _prov():
-    from erlab.interactive.imagetool import provenance_framework
-
-    return provenance_framework
 
 
 def _canonical_key(kind: str, payload: Mapping[str, typing.Any]) -> str:
@@ -320,7 +315,6 @@ def _validate_script_provenance(
     external_input_names: set[str] | None = None,
     allow_free_seed_names: bool = False,
 ) -> None:
-    prov = _prov()
     if spec.kind != "script":
         raise ReplayGraphError("Expected script provenance")
     if spec.active_name is None:
@@ -367,7 +361,7 @@ def _validate_script_provenance(
             spec.seed_code, spec.active_name
         )
     for operation in spec.operations:
-        if isinstance(operation, prov.ScriptCodeOperation):
+        if getattr(operation, "op", None) == "script_code":
             if not operation.copyable or operation.code is None:
                 raise ReplayGraphError("Script provenance contains non-replayable code")
             has_replay_step = True
@@ -400,7 +394,6 @@ def _validate_script_provenance(
 
 
 def _file_seed_code_parts(seed_code: str, active_name: str) -> tuple[str | None, str]:
-    prov = _prov()
 
     def module_code(
         body: Sequence[ast.stmt],
@@ -462,7 +455,6 @@ def _operation_replay_code(
     context_name: str,
     parent_name: str | None = None,
 ) -> str:
-    prov = _prov()
     input_name = active_name if parent_name is None else parent_name
     try:
         code = operation.replay_code(
@@ -491,7 +483,6 @@ def _compile_spec(
     external_inputs: Mapping[str, xr.DataArray] | None,
     live_input_resolver: LiveInputResolver | None,
 ) -> str:
-    prov = _prov()
     parsed = prov.parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
@@ -696,8 +687,8 @@ def _compile_spec(
         operations = tuple(parsed.operations)
         for index, operation in enumerate(operations):
             if display:
-                if isinstance(operation, prov.RenameOperation) and not any(
-                    isinstance(later_operation, prov.ScriptCodeOperation)
+                if getattr(operation, "op", None) == "rename" and not any(
+                    getattr(later_operation, "op", None) == "script_code"
                     for later_operation in operations[index + 1 :]
                 ):
                     continue
@@ -709,17 +700,20 @@ def _compile_spec(
                 } or prov._is_internal_sort_coord_order_entry(entry):
                     continue
                 if prov._is_whole_array_rename_entry(entry) and not any(
-                    isinstance(later_operation, prov.ScriptCodeOperation)
+                    getattr(later_operation, "op", None) == "script_code"
                     for later_operation in operations[index + 1 :]
                 ):
                     continue
-            if isinstance(operation, prov.ScriptCodeOperation):
-                if not operation.copyable or operation.code is None:
+            if getattr(operation, "op", None) == "script_code":
+                operation_code = typing.cast(
+                    "str | None", getattr(operation, "code", None)
+                )
+                if not getattr(operation, "copyable", False) or operation_code is None:
                     raise ReplayGraphError(
                         "Script provenance contains non-replayable code"
                     )
-                if not apply_simple_alias(operation.code):
-                    pending_codes.append(operation.code)
+                if not apply_simple_alias(operation_code):
+                    pending_codes.append(operation_code)
                 continue
 
             if pending_codes:
@@ -773,7 +767,7 @@ def compile_replay_graph(
     external_inputs: Mapping[str, xr.DataArray] | None = None,
     live_input_resolver: LiveInputResolver | None = None,
 ) -> ReplayGraph:
-    parsed = _prov().parse_tool_provenance_spec(spec)
+    parsed = prov.parse_tool_provenance_spec(spec)
     if parsed is None:
         raise ReplayGraphError("Expected provenance spec")
     reserved_names = _reserved_names_from_spec(parsed)
@@ -860,8 +854,6 @@ def _inline_adjacent_replay_assignments(code: str) -> str:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return code
-
-    prov = _prov()
     changed = False
 
     def clone_expr(expr: ast.expr) -> ast.expr:
@@ -922,8 +914,6 @@ def _inline_single_use_replay_expressions(code: str) -> str:
         module = ast.parse(code, mode="exec")
     except SyntaxError:
         return code
-
-    prov = _prov()
     changed = False
 
     def clone_expr(expr: ast.expr) -> ast.expr:
@@ -1068,7 +1058,6 @@ def _cleanup_emitted_replay_code(code: str) -> str:
 
 
 def emit_replay_code(graph: ReplayGraph, *, output_name: str | None = None) -> str:
-    prov = _prov()
     names = _node_names(graph, output_name=output_name)
     node_by_key = {node.key: node for node in graph.nodes}
     lines: list[str] = []
@@ -1216,7 +1205,6 @@ def execute_replay_graph(
     *,
     cache: dict[str, xr.DataArray] | None = None,
 ) -> xr.DataArray:
-    prov = _prov()
     replay_cache = {} if cache is None else cache
     values: dict[str, xr.DataArray] = {}
 
@@ -1308,7 +1296,7 @@ def replay_file_provenance(
 
 
 def script_provenance_replayable(spec: typing.Any) -> bool:
-    parsed = _prov().parse_tool_provenance_spec(spec)
+    parsed = prov.parse_tool_provenance_spec(spec)
     if parsed is None:
         return False
     try:
@@ -1333,7 +1321,6 @@ def rebuild_script_provenance(
     cache: dict[str, xr.DataArray] | None = None,
     depth: int = 0,
 ) -> tuple[xr.DataArray, typing.Any]:
-    prov = _prov()
     parsed = prov.parse_tool_provenance_spec(spec)
     if parsed is None or parsed.kind != "script":
         raise ReplayGraphError("Selected provenance is not script-derived")

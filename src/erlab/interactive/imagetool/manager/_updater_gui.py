@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import typing
 import zipfile
 
 import packaging.version
@@ -22,6 +23,9 @@ from erlab.interactive.imagetool.manager._updater_core import (
     get_install_root,
     verify_sha256,
 )
+
+if typing.TYPE_CHECKING:
+    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 
 
 class Downloader(QtCore.QThread):
@@ -109,9 +113,7 @@ class AutoUpdater(QtCore.QObject):
             current_version = erlab.__version__
         self.current_version = current_version
 
-    def check_for_updates(
-        self, parent: erlab.interactive.imagetool.manager.ImageToolManager
-    ):
+    def check_for_updates(self, parent: _ImageToolManagerBase):
         try:
             info = fetch_latest_release()
         except Exception:
@@ -275,7 +277,7 @@ class AutoUpdater(QtCore.QObject):
     def _extract_and_update(
         self,
         zip_path: pathlib.Path,
-        parent: erlab.interactive.imagetool.manager.ImageToolManager,
+        parent: _ImageToolManagerBase,
     ):
         install_root = get_install_root()
 
@@ -379,9 +381,7 @@ class AutoUpdater(QtCore.QObject):
             qapp.quit()
 
     @staticmethod
-    def _confirm_install_ready(
-        parent: erlab.interactive.imagetool.manager.ImageToolManager,
-    ) -> None:
+    def _confirm_install_ready(parent: _ImageToolManagerBase) -> None:
         msg = parent._make_icon_msgbox()
         msg.setWindowTitle("Updating ImageTool Manager")
         msg.setText("Ready to install")

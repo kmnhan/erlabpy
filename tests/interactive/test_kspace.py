@@ -9,6 +9,7 @@ import xarray as xr
 
 import erlab
 from erlab.constants import AxesConfiguration
+from erlab.interactive.imagetool import provenance_operations as ops
 from erlab.interactive.kspace import KspaceTool, ktool
 from erlab.io.exampledata import generate_hvdep_cuts
 
@@ -551,8 +552,8 @@ def test_ktool_copy_code_aliases_expression_input_names(qtbot) -> None:
 def test_ktool_copy_code_ignores_parent_provenance_but_keeps_source(qtbot) -> None:
     prov = erlab.interactive.imagetool.provenance_framework
     data = generate_hvdep_cuts((15, 30, 20), hvrange=(20.0, 30.0), noise=False)
-    source = prov.selection(prov.IselOperation(kwargs={"alpha": slice(2, 24)}))
-    parent_provenance = prov.selection(prov.IselOperation(kwargs={"hv": slice(0, 5)}))
+    source = prov.selection(ops.IselOperation(kwargs={"alpha": slice(2, 24)}))
+    parent_provenance = prov.selection(ops.IselOperation(kwargs={"hv": slice(0, 5)}))
     source_data = source.apply(data)
     win = ktool(source_data, execute=False)
     qtbot.addWidget(win)

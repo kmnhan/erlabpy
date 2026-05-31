@@ -67,6 +67,7 @@ from erlab.interactive.imagetool.provenance_framework import (
     ProvenanceIntMapping,
     ProvenanceMapping,
     ToolProvenanceOperation,
+    ToolProvenanceSpec,
     _coerce_float_mapping_field,
     _console_mapping_values,
     _console_values_equal,
@@ -110,8 +111,6 @@ class ImageToolSelectionSourceBinding(pydantic.BaseModel):
 
     def materialize(self, parent_data: xr.DataArray):
         """Build a source spec for the current parent data."""
-        from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
-
         operations: list[ToolProvenanceOperation] = []
         selection_data = ToolProvenanceSpec._starting_data_for_kind(
             "selection", parent_data

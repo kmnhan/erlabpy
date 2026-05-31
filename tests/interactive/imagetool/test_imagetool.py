@@ -27,6 +27,7 @@ import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool
+from erlab.interactive.imagetool import provenance_operations as ops
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
@@ -1971,7 +1972,7 @@ def test_itool_provenance_reload_rejects_incomplete_or_invalid_replay(
                 prov.ReplayStage(
                     source_kind="full_data",
                     operations=[
-                        prov.ScriptCodeOperation(
+                        ops.ScriptCodeOperation(
                             label="Generated code",
                             code="derived = derived + 1",
                         )
@@ -2604,7 +2605,7 @@ def test_child_tool_copy_code_streamlines_noop_source_steps(qtbot) -> None:
     )
     qtbot.addWidget(squeezed_child)
     squeezed_child.set_source_parent_fetcher(lambda: _TEST_DATA["2D"].copy())
-    squeezed_child.set_source_binding(prov.selection(prov.SqueezeOperation()))
+    squeezed_child.set_source_binding(prov.selection(ops.SqueezeOperation()))
 
     squeezed_code = squeezed_child.copy_code()
     assert ".isel()" not in squeezed_code
@@ -4620,7 +4621,6 @@ def test_itool_open_in_ftool_sets_squeezed_source_binding(qtbot, monkeypatch) ->
 def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
     qtbot, monkeypatch
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     win = itool(_TEST_DATA["2D"].copy(), execute=False)
     qtbot.addWidget(win)
 
@@ -4632,7 +4632,7 @@ def test_profile_open_in_ftool_omits_noop_squeeze_source_binding(
 
     assert child.source_spec is not None
     assert not any(
-        isinstance(operation, prov.SqueezeOperation)
+        isinstance(operation, ops.SqueezeOperation)
         for operation in child.source_spec.operations
     )
 

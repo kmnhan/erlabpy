@@ -15,15 +15,14 @@ from erlab.interactive.imagetool import provenance_framework
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
+from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dialogs import (
     _ConcatDialog,
     _is_loader_func,
-    _NameFilterDialog,
     _RenameDialog,
     _StoreDialog,
 )
 from erlab.interactive.imagetool.manager._io import _MultiFileHandler
-from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
 from erlab.interactive.imagetool.manager._widgets import (
     _WATCHED_VAR_COLORS,
     _show_workspace_file_lock_error,
@@ -35,253 +34,25 @@ from erlab.interactive.imagetool.manager._wrapper import (
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Mapping
 
     import xarray as xr
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-    from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
-    from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
 
 
-class _ActionsMixin(_ManagerMixinBase):
-    @QtCore.Slot(int)
-    def remove_imagetool(self, index: int, *, update_view: bool = True) -> None:
-        """Remove the ImageTool window corresponding to the given index."""
-        if index not in self._imagetool_wrappers:
-            return
-        wrapper = self._imagetool_wrappers[index]
-        self._mark_removed_subtree_dirty(wrapper.uid)
-        descendant_uids = list(wrapper._childtool_indices)
-        if update_view:
-            self.tree_view.imagetool_removed(index)
-
-        for uid in list(descendant_uids):
-            self._remove_uid_target(uid)
-
-        self._imagetool_wrappers.pop(index)
-        self._all_nodes.pop(wrapper.uid, None)
-        self._refresh_dependency_dependents(wrapper.uid)
-        wrapper.dispose()
-        wrapper.deleteLater()
-
-    @contextlib.contextmanager
-    def _bulk_remove_context(self):
-        outermost = self._bulk_remove_depth == 0
-        self._bulk_remove_depth += 1
-        if outermost:
-            self._pending_linker_reload = False
-            self.setUpdatesEnabled(False)
-            self.tree_view.setUpdatesEnabled(False)
-        try:
-            yield
-        finally:
-            self._bulk_remove_depth -= 1
-            if outermost:
-                self.tree_view.setUpdatesEnabled(True)
-                self.setUpdatesEnabled(True)
-
-                if self._pending_linker_reload:
-                    self._pending_linker_reload = False
-                    self._cleanup_linkers()
-
-                self._update_actions()
-                self._update_info()
-
-    def _remove_imagetools(
-        self,
-        indices: list[int | str],
-        *,
-        child_uids: list[str] | None = None,
-        clear_view: bool = False,
-    ) -> None:
-        root_indices: list[int] = []
-        child_targets: list[str] = []
-        covered_child_uids: set[str] = set()
-        for target in indices:
-            if isinstance(target, int):
-                root_indices.append(target)
-                wrapper = self._imagetool_wrappers.get(target)
-                if wrapper is not None:
-                    direct_children = list(wrapper._childtool_indices)
-                    covered_child_uids.update(direct_children)
-                    iter_descendants = getattr(self, "_iter_descendant_uids", None)
-                    if callable(iter_descendants):
-                        for child_uid in direct_children:
-                            covered_child_uids.update(iter_descendants(child_uid))
-            else:
-                child_targets.append(target)
-
-        for uid in child_uids or []:
-            if uid not in covered_child_uids and uid not in child_targets:
-                child_targets.append(uid)
-
-        if len(root_indices) == 0 and len(child_targets) == 0:
-            return
-
-        with self._bulk_remove_context():
-            if clear_view:
-                self.tree_view.clear_imagetools()
-
-            for index in root_indices:
-                self.remove_imagetool(index, update_view=not clear_view)
-
-            for uid in child_targets:
-                self._remove_childtool(uid)
-
-    def remove_all_tools(self) -> None:
-        """Remove all ImageTool windows."""
-        self._remove_imagetools(list(self._imagetool_wrappers.keys()), clear_view=True)
-
-    @QtCore.Slot(int)
-    def show_imagetool(self, index: int) -> None:
-        """Show the ImageTool window corresponding to the given index."""
-        if index in self._imagetool_wrappers:  # pragma: no branch
-            self._imagetool_wrappers[index].show()
-
-    @QtCore.Slot()
-    def _request_reload_linkers(self) -> None:
-        if self._bulk_remove_depth > 0:
-            self._pending_linker_reload = True
-            return
-
-        self._cleanup_linkers()
-
-    @QtCore.Slot()
-    def _cleanup_linkers(self) -> None:
-        """Remove linkers with one or no children."""
-        for linker in list(self._linkers):
-            if linker.num_children <= 1:
-                linker.unlink_all()
-                self._linkers.remove(linker)
-        self.sigLinkersChanged.emit()
-
-    @property
-    def explorer(self) -> _TabbedExplorer:
-        widget = self._standalone_app_windows.get("explorer")
-        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
-            raise AttributeError("Data explorer is not initialized.")
-        return typing.cast("_TabbedExplorer", widget)
-
-    @property
-    def ptable_window(self) -> PeriodicTableWindow:
-        widget = self._standalone_app_windows.get("ptable")
-        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
-            raise AttributeError("Periodic table window is not initialized.")
-        return typing.cast("PeriodicTableWindow", widget)
-
-    def _create_explorer_window(self) -> QtWidgets.QWidget:
-        from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-
-        return _TabbedExplorer(
-            root_path=self._recent_directory, loader_name=self._recent_loader_name
-        )
-
-    def _create_ptable_window(self) -> QtWidgets.QWidget:
-        from erlab.interactive.ptable import PeriodicTableWindow
-
-        return PeriodicTableWindow()
-
-    def _preferred_name_filter(
-        self, valid_loaders: dict[str, tuple[Callable, dict]]
-    ) -> str | None:
-        if self._recent_name_filter in valid_loaders:
-            return self._recent_name_filter
-
-        default_loader = erlab.interactive.options.model.io.default_loader
-        if default_loader == "None" or default_loader not in erlab.io.loaders:
-            return None
-
-        return next(
-            (
-                name_filter
-                for name_filter in erlab.io.loaders[default_loader].file_dialog_methods
-                if name_filter in valid_loaders
-            ),
-            None,
-        )
-
-    def _select_loader_options(
-        self,
-        valid_loaders: dict[str, tuple[Callable, dict]],
-        name_filter: str | None = None,
-        *,
-        sample_paths: Iterable[str | pathlib.Path] | None = None,
-    ) -> tuple[str, Callable, dict[str, typing.Any]] | None:
-        dialog = _NameFilterDialog(
-            self,
-            valid_loaders,
-            loader_extensions=self._recent_loader_extensions_by_filter,
-            sample_paths=sample_paths,
-        )
-        dialog.check_filter(name_filter or self._preferred_name_filter(valid_loaders))
-
-        if not dialog.exec():
-            return None
-
-        selected_filter, func, kwargs = dialog.checked_filter()
-        self._recent_name_filter = selected_filter
-        loader_extensions = kwargs.get("loader_extensions", {})
-        self._recent_loader_extensions_by_filter[selected_filter] = (
-            loader_extensions.copy() if isinstance(loader_extensions, dict) else {}
-        )
-        return selected_filter, func, kwargs
-
-    def _create_standalone_app_action(self, key: str) -> QtWidgets.QAction:
-        spec = self._standalone_app_specs[key]
-        action = QtWidgets.QAction(spec.text, self)
-        action.setObjectName(f"manager_{key}_action")
-        action.triggered.connect(
-            lambda _checked=False, app_key=key: self._show_standalone_app(app_key)
-        )
-        if spec.shortcut is not None:
-            action.setShortcut(spec.shortcut)
-        action.setToolTip(spec.tooltip)
-        if spec.icon_name is not None:
-            action.setIcon(QtGui.QIcon.fromTheme(spec.icon_name))
-        self._standalone_app_actions[key] = action
-        return action
-
-    def _create_standalone_app_window(self, key: str) -> QtWidgets.QWidget:
-        widget = self._standalone_app_specs[key].factory()
-        widget.destroyed.connect(
-            lambda _=None, app_key=key: self._standalone_app_windows.pop(app_key, None)
-        )
-        self._standalone_app_windows[key] = widget
-        return widget
-
-    def _ensure_standalone_app(self, key: str) -> QtWidgets.QWidget:
-        widget = self._standalone_app_windows.get(key)
-        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
-            widget = self._create_standalone_app_window(key)
-        return widget
-
-    def _show_standalone_app(self, key: str) -> QtWidgets.QWidget:
-        widget = self._ensure_standalone_app(key)
-        widget.show()
-        widget.activateWindow()
-        widget.raise_()
-        return widget
-
-    def _close_standalone_apps(self) -> None:
-        for widget in tuple(self._standalone_app_windows.values()):
-            if erlab.interactive.utils.qt_is_valid(widget):
-                widget.close()
-                widget.deleteLater()
-        self._standalone_app_windows.clear()
-
+class _ActionsMixin(_ImageToolManagerBase):
     @property
     def _rename_dialog(self) -> _RenameDialog:
         if not hasattr(self, "__rename_dialog"):
-            self.__rename_dialog = _RenameDialog(typing.cast("ImageToolManager", self))
+            self.__rename_dialog = _RenameDialog(self)
         return self.__rename_dialog
 
-    @QtCore.Slot()
     def rename_selected(self) -> None:
         """Rename selected ImageTool windows."""
         selected_images = self._selected_imagetool_targets()
@@ -299,11 +70,11 @@ class _ActionsMixin(_ManagerMixinBase):
         dlg = self._rename_dialog
         root_selected = typing.cast("list[int]", selected_images)
         dlg.set_names(
-            root_selected, [self._imagetool_wrappers[i].name for i in root_selected]
+            root_selected,
+            [self._tool_graph.root_wrappers[i].name for i in root_selected],
         )
         dlg.open()
 
-    @QtCore.Slot()
     def duplicate_selected(self) -> None:
         """Duplicate selected windows."""
         indices = list(self._selected_imagetool_targets())
@@ -339,7 +110,6 @@ class _ActionsMixin(_ManagerMixinBase):
                 "An error occurred while duplicating the selected window.",
             )
 
-    @QtCore.Slot()
     def promote_selected(self) -> None:
         """Promote the selected nested ImageTool to a top-level window."""
         uid = self._selected_promotable_child_imagetool_uid()
@@ -365,7 +135,6 @@ class _ActionsMixin(_ManagerMixinBase):
 
         self.promote_child_imagetool(uid)
 
-    @QtCore.Slot(str)
     def promote_child_imagetool(self, uid: str) -> int:
         """Promote the nested ImageTool identified by ``uid`` to a top-level row."""
         node = self._child_node(uid)
@@ -399,10 +168,11 @@ class _ActionsMixin(_ManagerMixinBase):
                 snapshot_token=snapshot_token,
                 created_time=created_time,
             )
-        wrapper = self._imagetool_wrappers[new_index]
+        wrapper = self._tool_graph.root_wrappers[new_index]
         wrapper._recent_geometry = recent_geometry
-        wrapper._childtool_indices = childtool_indices
-        wrapper._childtools = childtools
+        self._tool_graph.replace_child_references(
+            wrapper.uid, childtool_indices, childtools
+        )
         if wrapper.imagetool is not None:
             wrapper.imagetool.setWindowTitle(wrapper.label_text)
         node.deleteLater()
@@ -426,9 +196,6 @@ class _ActionsMixin(_ManagerMixinBase):
         self._mark_workspace_structure_dirty("Promoted child ImageTool")
         return new_index
 
-    @QtCore.Slot()
-    @QtCore.Slot(bool)
-    @QtCore.Slot(bool, bool)
     def link_selected(self, link_colors: bool = True, deselect: bool = True) -> None:
         """Link selected ImageTool windows."""
         self.unlink_selected(deselect=False)
@@ -438,8 +205,6 @@ class _ActionsMixin(_ManagerMixinBase):
         if deselect:
             self.tree_view.deselect_all()
 
-    @QtCore.Slot()
-    @QtCore.Slot(bool)
     def unlink_selected(self, deselect: bool = True) -> None:
         """Unlink selected ImageTool windows."""
         dirty_uids: list[str] = []
@@ -455,7 +220,6 @@ class _ActionsMixin(_ManagerMixinBase):
         if deselect:
             self.tree_view.deselect_all()
 
-    @QtCore.Slot()
     def offload_selected_to_workspace(self) -> None:
         """Replace selected in-memory data with dask-backed workspace data.
 
@@ -466,20 +230,18 @@ class _ActionsMixin(_ManagerMixinBase):
     @property
     def _concat_dialog(self) -> _ConcatDialog:
         if not hasattr(self, "__concat_dialog"):
-            self.__concat_dialog = _ConcatDialog(typing.cast("ImageToolManager", self))
+            self.__concat_dialog = _ConcatDialog(self)
         return self.__concat_dialog
 
-    @QtCore.Slot()
     def concat_selected(self) -> None:
         """Concatenate the selected data using :func:`xarray.concat`."""
         dlg = self._concat_dialog
         dlg.open()
 
-    @QtCore.Slot()
     def store_selected(self) -> None:
         self.ensure_console_initialized()
         dialog = _StoreDialog(
-            typing.cast("ImageToolManager", self),
+            self,
             [
                 target
                 for target in self._selected_imagetool_targets()
@@ -488,15 +250,14 @@ class _ActionsMixin(_ManagerMixinBase):
         )
         dialog.exec()
 
-    @QtCore.Slot()
     def unwatch_selected(self) -> None:
         """Unwatch selected ImageTool windows."""
         for index in self.tree_view.selected_imagetool_indices:
-            self._imagetool_wrappers[index].unwatch()
+            self._tool_graph.root_wrappers[index].unwatch()
 
     def rename_imagetool(self, index: int, new_name: str) -> None:
         """Rename the ImageTool window corresponding to the given index."""
-        self._imagetool_wrappers[index].name = str(new_name)
+        self._tool_graph.root_wrappers[index].name = str(new_name)
 
     def _duplicate_subtree(
         self, target: int | str, *, parent_override: int | str | None = None
@@ -594,13 +355,12 @@ class _ActionsMixin(_ManagerMixinBase):
 
     def name_of_imagetool(self, index: int) -> str:
         """Get the name of the ImageTool window corresponding to the given index."""
-        return self._imagetool_wrappers[index].name
+        return self._tool_graph.root_wrappers[index].name
 
     def label_of_imagetool(self, index: int) -> str:
         """Get the label of the ImageTool window corresponding to the given index."""
-        return self._imagetool_wrappers[index].label_text
+        return self._tool_graph.root_wrappers[index].label_text
 
-    @QtCore.Slot(list, str, dict)
     def _data_load(
         self, paths: list[str], loader_name: str, kwargs: dict[str, typing.Any]
     ) -> None:
@@ -618,7 +378,6 @@ class _ActionsMixin(_ManagerMixinBase):
             retry_callback=lambda _: self._data_load(paths, loader_name, kwargs),
         )
 
-    @QtCore.Slot(list, list)
     def _data_replace(
         self, data_list: list[xr.DataArray], indices: list[int | str]
     ) -> None:
@@ -626,7 +385,7 @@ class _ActionsMixin(_ManagerMixinBase):
         for darr, idx in zip(data_list, indices, strict=True):
             if isinstance(idx, int) and idx < 0:
                 # Negative index counts from the end
-                idx = sorted(self._imagetool_wrappers.keys())[idx]
+                idx = sorted(self._tool_graph.root_wrappers.keys())[idx]
             elif isinstance(idx, int) and idx == self.next_idx:
                 # If not yet created, add new tool
                 self._data_recv([darr], {})
@@ -636,7 +395,7 @@ class _ActionsMixin(_ManagerMixinBase):
 
     def _find_watched_idx(self, uid: str) -> int | None:
         """Find the index of the watched ImageTool corresponding to the given UID."""
-        for k, v in self._imagetool_wrappers.items():
+        for k, v in self._tool_graph.root_wrappers.items():
             if v._watched_uid == uid:
                 return k
         return None
@@ -656,39 +415,36 @@ class _ActionsMixin(_ManagerMixinBase):
         all_source_keys = tuple(
             dict.fromkeys(
                 self._watched_source_color_key(v)
-                for v in self._imagetool_wrappers.values()
+                for v in self._tool_graph.root_wrappers.values()
                 if v.watched
             )
         )
         idx = all_source_keys.index(source_key)
         return _WATCHED_VAR_COLORS[idx % len(_WATCHED_VAR_COLORS)]
 
-    @QtCore.Slot(str)
     def _remove_watched(self, uid: str) -> None:
         """Remove the ImageTool corresponding to the given watched variable UID."""
         idx = self._find_watched_idx(uid)
         if idx is not None:  # pragma: no branch
             self.remove_imagetool(idx)
             return
-        if uid in self._all_nodes:
-            if isinstance(self._all_nodes[uid], _ImageToolWrapper):
+        if uid in self._tool_graph.nodes:
+            if isinstance(self._tool_graph.nodes[uid], _ImageToolWrapper):
                 self.remove_imagetool(
-                    typing.cast("_ImageToolWrapper", self._all_nodes[uid]).index
+                    typing.cast("_ImageToolWrapper", self._tool_graph.nodes[uid]).index
                 )
             else:
                 self._remove_childtool(uid)
 
-    @QtCore.Slot(str)
     def _show_watched(self, uid: str) -> None:
         """Show the ImageTool corresponding to the given watched variable UID."""
         idx = self._find_watched_idx(uid)
         if idx is not None:
             self.show_imagetool(idx)
             return
-        if uid in self._all_nodes:
+        if uid in self._tool_graph.nodes:
             self._node_for_target(uid).show()
 
-    @QtCore.Slot(str, str, object, object)
     def _data_watched_update(
         self,
         varname: str,
@@ -712,7 +468,7 @@ class _ActionsMixin(_ManagerMixinBase):
             )
         else:
             # Update data in the existing tool
-            wrapper = self._imagetool_wrappers[idx]
+            wrapper = self._tool_graph.root_wrappers[idx]
             wrapper.set_watched_binding(
                 varname,
                 uid,
@@ -736,18 +492,16 @@ class _ActionsMixin(_ManagerMixinBase):
             wrapper.set_source_input_dtype(darr.dtype)
             self.get_imagetool(idx).slicer_area.replace_source_data(darr)
 
-    @QtCore.Slot(str)
     def _data_unwatch(self, uid: str) -> None:
         idx = self._find_watched_idx(uid)
         if idx is not None:
             # Convert the tool to a normal one
-            self._imagetool_wrappers[idx].unwatch()
+            self._tool_graph.root_wrappers[idx].unwatch()
 
-    @QtCore.Slot(object)
     def _get_imagetool_data(self, index_or_uid: int | str) -> xr.DataArray | None:
         """Request data from the ImageTool window corresponding to the given index."""
         if isinstance(index_or_uid, str):
-            if index_or_uid in self._all_nodes and self._is_imagetool_target(
+            if index_or_uid in self._tool_graph.nodes and self._is_imagetool_target(
                 index_or_uid
             ):
                 index: int | str | None = index_or_uid
@@ -762,7 +516,6 @@ class _ActionsMixin(_ManagerMixinBase):
             return self.get_imagetool(index).slicer_area.displayed_data
         return None
 
-    @QtCore.Slot(object)
     def _send_imagetool_data(self, index_or_uid: int | str) -> None:
         """Send data of the ImageTool window corresponding to the given index."""
         self._sigReplyData.emit(self._get_imagetool_data(index_or_uid))
@@ -770,15 +523,14 @@ class _ActionsMixin(_ManagerMixinBase):
     def _watch_info(self) -> dict[str, typing.Any]:
         """Return watched-variable metadata used by notebook reconnect workflows."""
         return {
-            "workspace_link_id": self._workspace_link_id,
+            "workspace_link_id": self._workspace_state.link_id,
             "watched": [
                 wrapper.watched_metadata()
-                for wrapper in self._imagetool_wrappers.values()
+                for wrapper in self._tool_graph.root_wrappers.values()
                 if wrapper.watched
             ],
         }
 
-    @QtCore.Slot()
     def _send_watch_info(self) -> None:
         """Send watched-variable metadata to the manager server."""
         self._sigReplyData.emit(self._watch_info())
@@ -790,11 +542,8 @@ class _ActionsMixin(_ManagerMixinBase):
                 _ImageToolManagerJupyterConsole,
             )
 
-            self.console = _ImageToolManagerJupyterConsole(
-                typing.cast("ImageToolManager", self)
-            )
+            self.console = _ImageToolManagerJupyterConsole(self)
 
-    @QtCore.Slot()
     def toggle_console(self) -> None:
         """Toggle the console window."""
         self.ensure_console_initialized()
@@ -819,12 +568,10 @@ class _ActionsMixin(_ManagerMixinBase):
         """Ensure that the data explorer window is initialized."""
         self._ensure_standalone_app("explorer")
 
-    @QtCore.Slot()
     def show_explorer(self) -> None:
         """Show data explorer window."""
         self._show_standalone_app("explorer")
 
-    @QtCore.Slot()
     def show_ptable(self) -> None:
         """Show the periodic-table explorer window."""
         self._show_standalone_app("ptable")
@@ -1137,9 +884,7 @@ class _ActionsMixin(_ManagerMixinBase):
         kwargs: dict[str, typing.Any],
         retry_callback: Callable,
     ) -> None:
-        handler = _MultiFileHandler(
-            typing.cast("ImageToolManager", self), queued, func, kwargs
-        )
+        handler = _MultiFileHandler(self, queued, func, kwargs)
         self._file_handlers.add(handler)
 
         def _finished_callback(loaded_new, aborted, failed_new) -> None:
@@ -1202,7 +947,7 @@ class _ActionsMixin(_ManagerMixinBase):
         """
         parent = self._node_for_target(index)
         node = _ManagedWindowNode(
-            typing.cast("ImageToolManager", self),
+            self,
             self._next_node_uid(uid),
             parent.uid,
             tool,
@@ -1258,7 +1003,7 @@ class _ActionsMixin(_ManagerMixinBase):
         if provenance_spec is not None:
             tool.set_provenance_spec(provenance_spec)
         node = _ManagedWindowNode(
-            typing.cast("ImageToolManager", self),
+            self,
             self._next_node_uid(uid),
             parent_node.uid,
             tool,
@@ -1289,7 +1034,8 @@ class _ActionsMixin(_ManagerMixinBase):
         self, slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea
     ) -> int | None:
         """Get the index corresponding to the given slicer area."""
-        for index, wrapper in self._imagetool_wrappers.items():  # pragma: no branch
+        root_wrappers = self._tool_graph.root_wrappers
+        for index, wrapper in root_wrappers.items():  # pragma: no branch
             if (wrapper.imagetool is not None) and (wrapper.slicer_area is slicer_area):
                 return index
         return None
@@ -1300,13 +1046,13 @@ class _ActionsMixin(_ManagerMixinBase):
         """Get the ImageTool wrapper corresponding to the given slicer area."""
         index = self.index_from_slicer_area(slicer_area)
         if index is not None:
-            return self._imagetool_wrappers[index]
+            return self._tool_graph.root_wrappers[index]
         return None
 
     def node_from_slicer_area(
         self, slicer_area: erlab.interactive.imagetool.viewer.ImageSlicerArea
     ) -> _ImageToolWrapper | _ManagedWindowNode | None:
-        for node in self._all_nodes.values():
+        for node in self._tool_graph.nodes.values():
             if node.imagetool is not None and node.slicer_area is slicer_area:
                 return node
         return None
@@ -1389,7 +1135,7 @@ class _ActionsMixin(_ManagerMixinBase):
         uid
             The unique ID of the child tool to remove.
         """
-        if uid not in self._all_nodes:
+        if uid not in self._tool_graph.nodes:
             return
         self._mark_removed_subtree_dirty(uid)
         self.tree_view.childtool_removed(uid)

@@ -13,21 +13,23 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
 from erlab.interactive.imagetool import itool, provenance_operations
+from erlab.interactive.imagetool import provenance_operations as ops
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog, _RenameDialog
-from erlab.interactive.imagetool.manager._mainwindow import (
-    _LoadSourceDetailsDialog,
-    _WorkspacePropertiesDialog,
-    _WorkspacePropertiesState,
-)
 from erlab.interactive.imagetool.manager._modelview import (
     _TOOL_TYPE_ROLE,
     _ImageToolWrapperItemDelegate,
+)
+from erlab.interactive.imagetool.manager._widgets import (
+    _LoadSourceDetailsDialog,
+    _WorkspacePropertiesDialog,
+    _WorkspacePropertiesState,
 )
 
 from .helpers import (
@@ -78,9 +80,9 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         manager.show()
         itool(xr.DataArray([1.0], dims=("x",)), manager=True)
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
-            prov.full_data(prov.RenameOperation(name="renamed")).to_replay_spec()
+            prov.full_data(ops.RenameOperation(name="renamed")).to_replay_spec()
         )
 
         monkeypatch.setattr(
@@ -239,37 +241,33 @@ def test_workspace_properties_dialog_file_detail_branches(
     assert dialog.value_labels["open_windows"].text() == "1"
     assert dialog._status_text(missing_workspace, state) == "Associated file"
 
-    assert manager_mainwindow._workspace_file_type_text(None) == (
+    assert manager_widgets._workspace_file_type_text(None) == (
         "Unsaved ImageTool workspace"
     )
-    assert manager_mainwindow._workspace_file_type_text(
-        tmp_path / "workspace.itws"
-    ) == ("ImageTool Workspace (.itws)")
-    assert manager_mainwindow._workspace_file_type_text(tmp_path / "workspace.h5") == (
+    assert manager_widgets._workspace_file_type_text(tmp_path / "workspace.itws") == (
+        "ImageTool Workspace (.itws)"
+    )
+    assert manager_widgets._workspace_file_type_text(tmp_path / "workspace.h5") == (
         "xarray HDF5 Workspace (.h5)"
     )
-    assert manager_mainwindow._workspace_file_type_text(tmp_path / "notes.txt") == (
+    assert manager_widgets._workspace_file_type_text(tmp_path / "notes.txt") == (
         "TXT file"
     )
-    assert manager_mainwindow._workspace_file_type_text(tmp_path / "README") == "File"
+    assert manager_widgets._workspace_file_type_text(tmp_path / "README") == "File"
 
-    assert manager_mainwindow._format_workspace_file_size(1) == "1 byte"
-    assert manager_mainwindow._format_workspace_file_size(999) == "999 bytes"
-    assert manager_mainwindow._format_workspace_file_size(1_000).startswith("1.00 KB")
-    assert manager_mainwindow._format_workspace_file_size(10**16).startswith(
-        "10000.00 PB"
-    )
+    assert manager_widgets._format_workspace_file_size(1) == "1 byte"
+    assert manager_widgets._format_workspace_file_size(999) == "999 bytes"
+    assert manager_widgets._format_workspace_file_size(1_000).startswith("1.00 KB")
+    assert manager_widgets._format_workspace_file_size(10**16).startswith("10000.00 PB")
 
     monkeypatch.setattr(manager_mainwindow.sys, "platform", "darwin")
-    assert manager_mainwindow._workspace_file_manager_action_text() == (
-        "Reveal in Finder"
-    )
+    assert manager_widgets._workspace_file_manager_action_text() == ("Reveal in Finder")
     monkeypatch.setattr(manager_mainwindow.sys, "platform", "win32")
-    assert manager_mainwindow._workspace_file_manager_action_text() == (
+    assert manager_widgets._workspace_file_manager_action_text() == (
         "Reveal in File Explorer"
     )
     monkeypatch.setattr(manager_mainwindow.sys, "platform", "linux")
-    assert manager_mainwindow._workspace_file_manager_action_text() == (
+    assert manager_widgets._workspace_file_manager_action_text() == (
         "Open Containing Folder"
     )
 
@@ -338,9 +336,9 @@ def test_manager(
 
         # Toggle visibility
         geometry = manager.get_imagetool(1).geometry()
-        manager._imagetool_wrappers[1].hide()
+        manager._tool_graph.root_wrappers[1].hide()
         assert not manager.get_imagetool(1).isVisible()
-        manager._imagetool_wrappers[1].show()
+        manager._tool_graph.root_wrappers[1].show()
         assert manager.get_imagetool(1).geometry() == geometry
 
         # Removing tool
@@ -355,8 +353,8 @@ def test_manager(
             dialog._new_name_lines[2].setText("new_name_2")
 
         accept_dialog(manager.rename_action.trigger, pre_call=_handle_renaming)
-        assert manager._imagetool_wrappers[1].name == "new_name_1"
-        assert manager._imagetool_wrappers[2].name == "new_name_2"
+        assert manager._tool_graph.root_wrappers[1].name == "new_name_1"
+        assert manager._tool_graph.root_wrappers[2].name == "new_name_2"
 
         # Rename single
         select_tools(manager, [2], deselect=True)
@@ -376,7 +374,7 @@ def test_manager(
         delegate._current_editor.setText("new_name_1_single")
         qtbot.keyClick(delegate._current_editor, QtCore.Qt.Key.Key_Return)
         qtbot.wait_until(
-            lambda: manager._imagetool_wrappers[1].name == "new_name_1_single",
+            lambda: manager._tool_graph.root_wrappers[1].name == "new_name_1_single",
             timeout=5000,
         )
 
@@ -415,10 +413,12 @@ def test_manager(
         logger.info("Opening goldtool")
         manager.get_imagetool(3).slicer_area.images[2].open_in_goldtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[3]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[3]._childtools) == 1,
+            timeout=5000,
         )
         assert isinstance(
-            next(iter(manager._imagetool_wrappers[3]._childtools.values())), GoldTool
+            next(iter(manager._tool_graph.root_wrappers[3]._childtools.values())),
+            GoldTool,
         )
         logger.info("Confirmed goldtool is added")
 
@@ -426,7 +426,7 @@ def test_manager(
         manager.tree_view.expandAll()
 
         # Test rename goldtool
-        goldtool_uid: str = manager._imagetool_wrappers[3]._childtool_indices[0]
+        goldtool_uid: str = manager._tool_graph.root_wrappers[3]._childtool_indices[0]
 
         # Bring manager to top
         manager.tree_view.clearSelection()
@@ -451,7 +451,7 @@ def test_manager(
         qtbot.wait_until(
             lambda: (
                 next(
-                    iter(manager._imagetool_wrappers[3]._childtools.values())
+                    iter(manager._tool_graph.root_wrappers[3]._childtools.values())
                 )._tool_display_name
                 == "new_goldtool_name"
             ),
@@ -461,22 +461,23 @@ def test_manager(
         # Close goldtool
         logger.info("Closing goldtool")
         manager._remove_childtool(
-            next(iter(manager._imagetool_wrappers[3]._childtools.keys()))
+            next(iter(manager._tool_graph.root_wrappers[3]._childtools.keys()))
         )
 
         # Show dtool
         logger.info("Opening dtool")
         manager.get_imagetool(3).slicer_area.images[2].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[3]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[3]._childtools) == 1,
+            timeout=5000,
         )
         assert isinstance(
-            next(iter(manager._imagetool_wrappers[3]._childtools.values())),
+            next(iter(manager._tool_graph.root_wrappers[3]._childtools.values())),
             DerivativeTool,
         )
         logger.info("Confirmed dtool is added")
         manager.tree_view.expandAll()
-        tool_uid: str = manager._imagetool_wrappers[3]._childtool_indices[0]
+        tool_uid: str = manager._tool_graph.root_wrappers[3]._childtool_indices[0]
 
         # Show dtool
         manager.show_childtool(tool_uid)
@@ -502,7 +503,8 @@ def test_manager(
         manager.tree_view.refresh(None)
 
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[3]._childtools) == 2, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[3]._childtools) == 2,
+            timeout=5000,
         )
 
         # Check calling invalid indices
@@ -520,11 +522,12 @@ def test_manager(
 
         # Close dtools
         logger.info("Closing dtools")
-        for uid in list(manager._imagetool_wrappers[3]._childtools.keys()):
+        for uid in list(manager._tool_graph.root_wrappers[3]._childtools.keys()):
             manager._remove_childtool(uid)
 
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[3]._childtools) == 0, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[3]._childtools) == 0,
+            timeout=5000,
         )
         logger.info("Confirmed dtools are removed")
 
@@ -635,9 +638,10 @@ def test_remove_childtool_delete_shortcut(
         parent_tool.slicer_area.images[0].open_in_dtool()
 
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         uid, child = next(iter(wrapper._childtools.items()))
 
         with qtbot.waitExposed(child):
@@ -669,7 +673,7 @@ def test_manager_childtool_type_badge_only_for_tool_windows(
         delegate = typing.cast(
             "_ImageToolWrapperItemDelegate", manager.tree_view.itemDelegate()
         )
-        parent = manager._imagetool_wrappers[0]
+        parent = manager._tool_graph.root_wrappers[0]
         parent_tool = manager.get_imagetool(0)
         root_index = model._row_index(0)
         assert root_index.data(_TOOL_TYPE_ROLE) is None
@@ -833,10 +837,11 @@ def test_manager_childtool_source_updates(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        wrapper = manager._imagetool_wrappers[0]
+        wrapper = manager._tool_graph.root_wrappers[0]
         uid, child = next(iter(wrapper._childtools.items()))
         assert isinstance(child, DerivativeTool)
         assert child.source_spec is not None
@@ -1294,7 +1299,7 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        loaded_child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        loaded_child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         loaded_child_node = manager._child_node(loaded_child_uid)
         loaded_child_tool = manager.get_imagetool(loaded_child_uid)
         assert loaded_child_node.name == "saved manual child"
@@ -1346,10 +1351,11 @@ def test_manager_reload_selected_child_tool_refreshes_from_file_parent(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
         child.set_source_binding(child.source_spec, auto_update=auto_update)
@@ -1398,10 +1404,11 @@ def test_managed_child_tool_file_menu_reload_refreshes_file_parent(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
         assert child.source_state == "fresh"
@@ -1458,7 +1465,7 @@ def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child_source_spec = prov.selection(
-            prov.IselOperation(kwargs={"alpha": slice(0, 4)})
+            ops.IselOperation(kwargs={"alpha": slice(0, 4)})
         )
         child_tool = itool(
             child_source_spec.apply(source), manager=False, execute=False
@@ -1520,10 +1527,11 @@ def test_managed_child_tool_hides_reload_without_reloadable_ancestor(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
 
@@ -1584,7 +1592,7 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"y": slice(0, 2)})),
             source_auto_update=False,
         )
 
@@ -1647,18 +1655,18 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
             first_tool,
             0,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"x": slice(0, 2)})),
             source_auto_update=False,
         )
         second_uid = manager.add_imagetool_child(
             second_tool,
             0,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"x": slice(2, 4)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"x": slice(2, 4)})),
             source_auto_update=False,
         )
 
-        root_node = manager._imagetool_wrappers[0]
+        root_node = manager._tool_graph.root_wrappers[0]
         root_area = root_node.slicer_area
         original_reload = root_area._reload
         reload_calls: list[int] = []
@@ -1730,12 +1738,12 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
             eligible_tool,
             0,
             show=False,
-            source_spec=prov.selection(prov.IselOperation(kwargs={"x": slice(0, 2)})),
+            source_spec=prov.selection(ops.IselOperation(kwargs={"x": slice(0, 2)})),
             source_auto_update=False,
         )
         unbound_uid = manager.add_imagetool_child(unbound_tool, 0, show=False)
 
-        root_node = manager._imagetool_wrappers[0]
+        root_node = manager._tool_graph.root_wrappers[0]
         reload_calls: list[int] = []
         monkeypatch.setattr(
             root_node.slicer_area,
@@ -1838,10 +1846,11 @@ def test_manager_full_data_childtool_updates_follow_transposed_view(
 
         parent_tool.slicer_area.open_in_meshtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child = next(iter(manager._imagetool_wrappers[0]._childtools.values()))
+        child = next(iter(manager._tool_graph.root_wrappers[0]._childtools.values()))
         xarray.testing.assert_identical(child.tool_data, parent_tool.slicer_area.data)
 
         replaced = test_data.copy(deep=True)
@@ -1890,7 +1899,7 @@ def test_manager_selection_child_binding_survives_coordinate_shift_and_workspace
         parent_tool.array_slicer.set_bin(0, axis=2, value=3, update=True)
         parent_tool.slicer_area.images[0].open_in_new_window()
 
-        root = manager._imagetool_wrappers[0]
+        root = manager._tool_graph.root_wrappers[0]
         qtbot.wait_until(lambda: len(root._childtool_indices) == 1, timeout=5000)
         child_uid = root._childtool_indices[0]
         child_node = manager._child_node(child_uid)
@@ -2032,10 +2041,11 @@ def test_manager_dtool_output_itool_nests_under_tool(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
 
@@ -2090,10 +2100,11 @@ def test_manager_ktool_output_itool_nests_under_tool(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.open_in_ktool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
         child.show_converted()
 
@@ -2156,10 +2167,11 @@ def test_manager_ktool_output_itool_marks_stale_without_recomputing(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.open_in_ktool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
         child.show_converted()
 
@@ -2212,10 +2224,11 @@ def test_manager_reused_output_child_keeps_stale_state(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.open_in_ktool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = typing.cast("typing.Any", manager.get_childtool(child_uid))
         child.show_converted()
 
@@ -2259,10 +2272,11 @@ def test_manager_dtool_output_itool_refreshes_with_parent_updates(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
 
@@ -2318,10 +2332,11 @@ def test_manager_output_itool_auto_update_can_be_disabled_from_auto_badge(
         parent_tool = manager.get_imagetool(0)
         parent_tool.slicer_area.images[0].open_in_dtool()
         qtbot.wait_until(
-            lambda: len(manager._imagetool_wrappers[0]._childtools) == 1, timeout=5000
+            lambda: len(manager._tool_graph.root_wrappers[0]._childtools) == 1,
+            timeout=5000,
         )
 
-        child_uid = manager._imagetool_wrappers[0]._childtool_indices[0]
+        child_uid = manager._tool_graph.root_wrappers[0]._childtool_indices[0]
         child = manager.get_childtool(child_uid)
         assert isinstance(child, DerivativeTool)
         child.open_itool()

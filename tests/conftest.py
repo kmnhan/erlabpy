@@ -279,10 +279,12 @@ def manager_context() -> Callable[
         finally:
             manager = imagetool_manager._manager_instance
             if manager is not None:
-                manager._workspace_loading_depth += 1
+                manager._workspace_state.loading_depth += 1
                 try:
                     QtWidgets.QApplication.sendPostedEvents(None, 0)
                     QtWidgets.QApplication.processEvents()
+                    manager.server.stop(timeout_ms=1000)
+                    manager.watcher_server.stop(timeout_ms=1000)
                     manager.remove_all_tools()
                     manager._mark_workspace_clean()
                     manager.close()
@@ -302,7 +304,7 @@ def manager_context() -> Callable[
                         QtWidgets.QApplication.sendPostedEvents(None, 0)
                         QtWidgets.QApplication.processEvents()
                 finally:
-                    manager._workspace_loading_depth -= 1
+                    manager._workspace_state.loading_depth -= 1
                     manager._mark_workspace_clean()
             imagetool_manager._manager_instance = None
             imagetool_manager._always_use_socket = False

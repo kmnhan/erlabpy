@@ -8,7 +8,6 @@ import pathlib
 import platform
 import subprocess
 import sys
-import threading
 import traceback
 import typing
 from dataclasses import dataclass
@@ -23,22 +22,16 @@ import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
-from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
+from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._logging import get_log_file_path
-from erlab.interactive.imagetool.manager._mixin import _ManagerMixinBase
-from erlab.interactive.imagetool.manager._registry import unregister_manager_record
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable
 
-    from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
-    from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager import ImageToolManager
-    from erlab.interactive.imagetool.manager._wrapper import _ImageToolWrapper
     from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
-    from erlab.interactive.ptable import PeriodicTableWindow
 
 logger = logging.getLogger(__name__)
 
@@ -894,24 +887,7 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
             event.ignore()
 
 
-class _WidgetsMixin(_ManagerMixinBase):
-    @property
-    def _status_bar(self) -> QtWidgets.QStatusBar:
-        return typing.cast("QtWidgets.QStatusBar", self.statusBar())
-
-    def _make_icon_msgbox(self) -> QtWidgets.QMessageBox:
-        """Create a QMessageBox with the application icon."""
-        msg_box = QtWidgets.QMessageBox(self)
-        style = self.style()
-        if style is not None:  # pragma: no branch
-            icon_size = (
-                style.pixelMetric(QtWidgets.QStyle.PixelMetric.PM_MessageBoxIconSize)
-                or 48
-            )
-            msg_box.setIconPixmap(self.windowIcon().pixmap(icon_size, icon_size))
-        return msg_box
-
-    @QtCore.Slot()
+class _WidgetsMixin(_ImageToolManagerBase):
     def about(self) -> None:
         """Show the about dialog."""
         import h5netcdf
@@ -981,7 +957,6 @@ class _WidgetsMixin(_ManagerMixinBase):
                 "https://erlabpy.readthedocs.io/en/stable/user-guide/interactive/imagetool.html"
             )
 
-    @QtCore.Slot()
     def open_log_directory(self) -> None:
         """Open the log directory in the system file explorer."""
         erlab.utils.misc.open_in_file_manager(get_log_file_path().parent)
@@ -1016,7 +991,6 @@ class _WidgetsMixin(_ManagerMixinBase):
 
         pbar.setValue(current)
 
-    @QtCore.Slot(str, int, str, str)
     def _show_alert(
         self, levelname: str, levelno: int, message: str, formatted_traceback: str
     ) -> None:
@@ -1091,7 +1065,6 @@ class _WidgetsMixin(_ManagerMixinBase):
         with contextlib.suppress(ValueError):  # pragma: no cover - defensive cleanup
             self._alert_dialogs.remove(alert)
 
-    @QtCore.Slot()
     def _clear_all_alerts(self) -> None:
         for notification in list(self._alert_dialogs):
             notification.close()
@@ -1106,188 +1079,6 @@ class _WidgetsMixin(_ManagerMixinBase):
         if self._previous_excepthook is not None:  # pragma: no branch
             with contextlib.suppress(Exception):
                 self._previous_excepthook(exc_type, exc_value, exc_traceback)
-
-    @property
-    def _reindex_lock(self) -> threading.Lock:
-        """Lock for reindexing operation."""
-        if not hasattr(self, "__reindex_lock"):
-            lock = threading.Lock()
-            self.__reindex_lock = lock
-        return self.__reindex_lock
-
-    @QtCore.Slot()
-    def reindex(self) -> None:
-        """Reset indices of ImageTool windows to be consecutive in displayed order."""
-        with self._reindex_lock:
-            new_imagetool_wrappers: dict[int, _ImageToolWrapper] = {}
-            displayed_indices = list(self._displayed_indices)
-            for row_idx, tool_idx in enumerate(displayed_indices):
-                self._displayed_indices[row_idx] = row_idx
-                self._imagetool_wrappers[tool_idx]._index = row_idx
-                new_imagetool_wrappers[row_idx] = self._imagetool_wrappers[tool_idx]
-            self._imagetool_wrappers = new_imagetool_wrappers
-
-        self.tree_view.refresh()
-        self._mark_workspace_structure_dirty("Reindexed root windows")
-
-    def get_imagetool(self, index: int | str) -> ImageTool:
-        """Get the ImageTool object corresponding to the given index.
-
-        Parameters
-        ----------
-        index
-            Index of the ImageTool window to retrieve.
-
-        Returns
-        -------
-        ImageTool
-            The ImageTool object corresponding to the index.
-        """
-        node = self._node_for_target(index)
-        if not node.is_imagetool:
-            raise KeyError(f"Target {index!r} is not an ImageTool")
-
-        tool = node.imagetool
-        if tool is None or not erlab.interactive.utils.qt_is_valid(tool):
-            raise KeyError(f"Tool of target '{index}' is not available")
-        return tool
-
-    @QtCore.Slot(int)
-    def show_imagetool(self, index: int) -> None:
-        """Show the ImageTool window corresponding to the given index."""
-        if index in self._imagetool_wrappers:  # pragma: no branch
-            self._imagetool_wrappers[index].show()
-
-    @QtCore.Slot()
-    def _request_reload_linkers(self) -> None:
-        if self._bulk_remove_depth > 0:
-            self._pending_linker_reload = True
-            return
-
-        self._cleanup_linkers()
-
-    @QtCore.Slot()
-    def _cleanup_linkers(self) -> None:
-        """Remove linkers with one or no children."""
-        for linker in list(self._linkers):
-            if linker.num_children <= 1:
-                linker.unlink_all()
-                self._linkers.remove(linker)
-        self.sigLinkersChanged.emit()
-
-    @property
-    def explorer(self) -> _TabbedExplorer:
-        widget = self._standalone_app_windows.get("explorer")
-        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
-            raise AttributeError("Data explorer is not initialized.")
-        return typing.cast("_TabbedExplorer", widget)
-
-    @property
-    def ptable_window(self) -> PeriodicTableWindow:
-        widget = self._standalone_app_windows.get("ptable")
-        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
-            raise AttributeError("Periodic table window is not initialized.")
-        return typing.cast("PeriodicTableWindow", widget)
-
-    def _create_explorer_window(self) -> QtWidgets.QWidget:
-        from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
-
-        return _TabbedExplorer(
-            root_path=self._recent_directory, loader_name=self._recent_loader_name
-        )
-
-    def _create_ptable_window(self) -> QtWidgets.QWidget:
-        from erlab.interactive.ptable import PeriodicTableWindow
-
-        return PeriodicTableWindow()
-
-    def _preferred_name_filter(
-        self, valid_loaders: dict[str, tuple[Callable, dict]]
-    ) -> str | None:
-        if self._recent_name_filter in valid_loaders:
-            return self._recent_name_filter
-
-        default_loader = erlab.interactive.options.model.io.default_loader
-        if default_loader == "None" or default_loader not in erlab.io.loaders:
-            return None
-
-        return next(
-            (
-                name_filter
-                for name_filter in erlab.io.loaders[default_loader].file_dialog_methods
-                if name_filter in valid_loaders
-            ),
-            None,
-        )
-
-    def _select_loader_options(
-        self,
-        valid_loaders: dict[str, tuple[Callable, dict]],
-        name_filter: str | None = None,
-        *,
-        sample_paths: Iterable[str | pathlib.Path] | None = None,
-    ) -> tuple[str, Callable, dict[str, typing.Any]] | None:
-        dialog = _NameFilterDialog(
-            self,
-            valid_loaders,
-            loader_extensions=self._recent_loader_extensions_by_filter,
-            sample_paths=sample_paths,
-        )
-        dialog.check_filter(name_filter or self._preferred_name_filter(valid_loaders))
-
-        if not dialog.exec():
-            return None
-
-        selected_filter, func, kwargs = dialog.checked_filter()
-        self._recent_name_filter = selected_filter
-        loader_extensions = kwargs.get("loader_extensions", {})
-        self._recent_loader_extensions_by_filter[selected_filter] = (
-            loader_extensions.copy() if isinstance(loader_extensions, dict) else {}
-        )
-        return selected_filter, func, kwargs
-
-    def _create_standalone_app_action(self, key: str) -> QtWidgets.QAction:
-        spec = self._standalone_app_specs[key]
-        action = QtWidgets.QAction(spec.text, self)
-        action.setObjectName(f"manager_{key}_action")
-        action.triggered.connect(
-            lambda _checked=False, app_key=key: self._show_standalone_app(app_key)
-        )
-        if spec.shortcut is not None:
-            action.setShortcut(spec.shortcut)
-        action.setToolTip(spec.tooltip)
-        if spec.icon_name is not None:
-            action.setIcon(QtGui.QIcon.fromTheme(spec.icon_name))
-        self._standalone_app_actions[key] = action
-        return action
-
-    def _create_standalone_app_window(self, key: str) -> QtWidgets.QWidget:
-        widget = self._standalone_app_specs[key].factory()
-        widget.destroyed.connect(
-            lambda _=None, app_key=key: self._standalone_app_windows.pop(app_key, None)
-        )
-        self._standalone_app_windows[key] = widget
-        return widget
-
-    def _ensure_standalone_app(self, key: str) -> QtWidgets.QWidget:
-        widget = self._standalone_app_windows.get(key)
-        if widget is None or not erlab.interactive.utils.qt_is_valid(widget):
-            widget = self._create_standalone_app_window(key)
-        return widget
-
-    def _show_standalone_app(self, key: str) -> QtWidgets.QWidget:
-        widget = self._ensure_standalone_app(key)
-        widget.show()
-        widget.activateWindow()
-        widget.raise_()
-        return widget
-
-    def _close_standalone_apps(self) -> None:
-        for widget in tuple(self._standalone_app_windows.values()):
-            if erlab.interactive.utils.qt_is_valid(widget):
-                widget.close()
-                widget.deleteLater()
-        self._standalone_app_windows.clear()
 
     def _start_server_pair(
         self, *, port: int, watch_port: int
@@ -1348,13 +1139,11 @@ class _WidgetsMixin(_ManagerMixinBase):
         if self.watcher_server.isRunning():  # pragma: no branch
             self.watcher_server.stop()
 
-    @QtCore.Slot()
     def open_settings(self) -> None:
         """Open the settings dialog for the ImageTool manager."""
         dialog = erlab.interactive._options.OptionDialog(self)
         dialog.exec()
 
-    @QtCore.Slot()
     def open_new_manager_instance(self) -> None:
         """Open another ImageTool Manager window."""
         try:
@@ -1367,93 +1156,11 @@ class _WidgetsMixin(_ManagerMixinBase):
                 text="Could not open another ImageTool Manager window.",
             )
 
-    @QtCore.Slot()
     def check_for_updates(self) -> None:
         from erlab.interactive.imagetool.manager._updater_gui import AutoUpdater
 
         updater = AutoUpdater()
-        updater.check_for_updates(typing.cast("ImageToolManager", self))
-
-    def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
-        """Handle proper termination of resources before closing the application."""
-        logger.debug("Closing ImageTool Manager...")
-        previous_closing_workspace_document = self._closing_workspace_document
-        self._closing_workspace_document = True
-        try:
-            if not self._confirm_save_dirty_workspace(
-                "Closing this manager will discard unsaved workspace changes."
-            ):
-                if event:
-                    event.ignore()
-                return
-
-            logger.debug("Waiting for file handlers to finish...")
-            if len(self._file_handlers) > 0:  # pragma: no cover
-                with erlab.interactive.utils.wait_dialog(
-                    self, "Waiting for file operations to finish..."
-                ):
-                    for handler in list(self._file_handlers):
-                        handler.wait()
-
-            self._compact_workspace_before_shutdown()
-
-            logger.debug("Removing all ImageTool windows...")
-            with self._workspace_load_context():
-                self.remove_all_tools()
-
-            logger.debug("Closing additional windows...")
-            for widget in dict(self._additional_windows).values():
-                widget.close()
-                widget.deleteLater()
-
-            logger.debug("Removing event filters...")
-            qapp = QtWidgets.QApplication.instance()
-            if (
-                isinstance(qapp, QtWidgets.QApplication)
-                and self._application_quit_filter is not None
-            ):
-                qapp.removeEventFilter(self._application_quit_filter)
-                self._application_quit_filter = None
-            for widget in (
-                self.text_box,
-                self.metadata_derivation_list,
-            ):
-                widget.removeEventFilter(self._kb_filter)
-            self.tree_view._delegate._cleanup_filter()
-
-            if hasattr(self, "console"):
-                logger.debug("Shutting down console kernel...")
-                self.console._console_widget.shutdown_kernel()
-                self.console.close()
-                self.console.deleteLater()
-
-            if self._standalone_app_windows:
-                logger.debug("Closing standalone apps...")
-                self._close_standalone_apps()
-
-            logger.debug("Releasing workspace lock...")
-            self._release_workspace_lock()
-
-            logger.debug("Stopping servers...")
-            self._registry_heartbeat_timer.stop()
-            self._stop_servers()
-            unregister_manager_record(self._manager_record.internal_id)
-
-            logger.debug("Closing dask client (if any)...")
-            self._dask_menu.close_client()
-
-            root_logger = logging.getLogger()
-            if self._warning_handler in root_logger.handlers:  # pragma: no branch
-                root_logger.removeHandler(self._warning_handler)
-
-            self._clear_all_alerts()
-
-            if sys.excepthook == self._handle_uncaught_exception:
-                sys.excepthook = self._previous_excepthook
-
-            super().closeEvent(event)
-        finally:
-            self._closing_workspace_document = previous_closing_workspace_document
+        updater.check_for_updates(self)
 
 
 __all__ = [
