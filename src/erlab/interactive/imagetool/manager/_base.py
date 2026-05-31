@@ -40,6 +40,7 @@ if typing.TYPE_CHECKING:
         _DetailsPanelController,
     )
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+    from erlab.interactive.imagetool.manager._lineage import _LineageController
     from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
     from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
     from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
@@ -119,6 +120,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
     _link_registry: _ManagerLinkRegistry
+    _lineage_controller: _LineageController
     _manager_record: _ManagerRecord
     _metadata_copy_full_action: QtGui.QAction
     _metadata_copy_selected_action: QtGui.QAction

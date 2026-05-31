@@ -14,7 +14,7 @@ from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
-from erlab.interactive.imagetool.manager._lineage import _LineageMixin
+from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
@@ -46,20 +46,26 @@ from erlab.interactive.imagetool.manager._wrapper import (
 if typing.TYPE_CHECKING:
     import datetime
     import pathlib
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     import numpy as np
     import xarray as xr
 
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
         _WatcherServer,
     )
+    from erlab.interactive.imagetool.manager._widgets import _ScriptRebuildResult
     from erlab.interactive.imagetool.manager._wrapper import _MetadataField
-    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
+    from erlab.interactive.imagetool.provenance_framework import (
+        ScriptInput,
+        ScriptInputDependencyRef,
+        ToolProvenanceSpec,
+    )
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
@@ -70,7 +76,6 @@ logger = logging.getLogger(__name__)
 
 class ImageToolManager(
     _WorkspaceIOMixin,
-    _LineageMixin,
 ):
     """The ImageToolManager window.
 
@@ -118,6 +123,7 @@ class ImageToolManager(
         self.manager_index = self._manager_record.index
         self._tool_graph = _ManagerToolGraph()
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+        self._lineage_controller = _LineageController(self)
         self._details_panel = _DetailsPanelController(self)
         self._actions_controller = _ActionsController(self)
         self._widgets_controller = _WidgetsController(self)
@@ -910,6 +916,230 @@ class ImageToolManager(
 
     def check_for_updates(self) -> None:
         self._widgets_controller.check_for_updates()
+
+    def _dependency_refs_for_uid(
+        self, uid: str
+    ) -> tuple[ScriptInputDependencyRef, ...]:
+        return self._lineage_controller._dependency_refs_for_uid(uid)
+
+    def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
+        return self._lineage_controller.dependency_status_for_uid(uid)
+
+    def dependency_status_label_for_uid(self, uid: str) -> str | None:
+        return self._lineage_controller.dependency_status_label_for_uid(uid)
+
+    def dependency_status_badge_for_uid(self, uid: str) -> str | None:
+        return self._lineage_controller.dependency_status_badge_for_uid(uid)
+
+    def dependency_status_tooltip_for_uid(self, uid: str) -> str | None:
+        return self._lineage_controller.dependency_status_tooltip_for_uid(uid)
+
+    def dependency_input_summary_for_uid(self, uid: str) -> str | None:
+        return self._lineage_controller.dependency_input_summary_for_uid(uid)
+
+    def _show_dependency_reload_dialog(self, target: int | str) -> None:
+        self._lineage_controller._show_dependency_reload_dialog(target)
+
+    @staticmethod
+    def _script_input_has_recorded_file(script_input: ScriptInput) -> bool:
+        return _LineageController._script_input_has_recorded_file(script_input)
+
+    @staticmethod
+    def _dependency_ref_has_recorded_file(
+        spec: ToolProvenanceSpec | None,
+        ref: ScriptInputDependencyRef,
+    ) -> bool:
+        return _LineageController._dependency_ref_has_recorded_file(spec, ref)
+
+    def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
+        return self._lineage_controller._missing_dependencies_have_recorded_file(uid)
+
+    def _dependency_dependent_uids(self, uid: str) -> list[str]:
+        return self._lineage_controller._dependency_dependent_uids(uid)
+
+    def _refresh_dependency_dependents(self, uid: str) -> None:
+        self._lineage_controller._refresh_dependency_dependents(uid)
+
+    def _script_input_name_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str:
+        return self._lineage_controller._script_input_name_for_node(node)
+
+    def _script_input_for_node(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> ScriptInput:
+        return self._lineage_controller._script_input_for_node(node)
+
+    def _multi_input_script_provenance(
+        self,
+        input_targets: Iterable[int | str],
+        *,
+        operation_label: str,
+        operation_code: str,
+        active_name: str = "derived",
+        start_label: str = "Run ImageTool manager action",
+    ) -> ToolProvenanceSpec:
+        return self._lineage_controller._multi_input_script_provenance(
+            input_targets,
+            operation_label=operation_label,
+            operation_code=operation_code,
+            active_name=active_name,
+            start_label=start_label,
+        )
+
+    def _show_multi_input_script_result(
+        self,
+        data: xr.DataArray,
+        input_targets: Iterable[int | str],
+        *,
+        operation_label: str,
+        operation_code: str,
+    ) -> int | None:
+        return self._lineage_controller._show_multi_input_script_result(
+            data,
+            input_targets,
+            operation_label=operation_label,
+            operation_code=operation_code,
+        )
+
+    def _script_provenance_inputs_current(self, spec: ToolProvenanceSpec) -> bool:
+        return self._lineage_controller._script_provenance_inputs_current(spec)
+
+    def _resolve_live_script_input_for_reload(
+        self,
+        script_input: ScriptInput,
+        *,
+        target_node_uid: str | None = None,
+    ) -> tuple[xr.DataArray, ScriptInput] | None:
+        return self._lineage_controller._resolve_live_script_input_for_reload(
+            script_input,
+            target_node_uid=target_node_uid,
+        )
+
+    def _script_input_can_reload(
+        self,
+        script_input: ScriptInput,
+        *,
+        target_node_uid: str | None = None,
+    ) -> bool:
+        return self._lineage_controller._script_input_can_reload(
+            script_input,
+            target_node_uid=target_node_uid,
+        )
+
+    def _rebuild_script_provenance(
+        self,
+        spec: ToolProvenanceSpec,
+        *,
+        target_node_uid: str | None = None,
+    ) -> _ScriptRebuildResult:
+        return self._lineage_controller._rebuild_script_provenance(
+            spec,
+            target_node_uid=target_node_uid,
+        )
+
+    def _node_can_reload_script_inputs(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> bool:
+        return self._lineage_controller._node_can_reload_script_inputs(node)
+
+    def _script_reload_from_slicer_area(
+        self,
+        slicer_area: ImageSlicerArea,
+        *,
+        execute: bool,
+    ) -> bool:
+        return self._lineage_controller._script_reload_from_slicer_area(
+            slicer_area,
+            execute=execute,
+        )
+
+    def _workspace_loaded_uid_map(
+        self, loaded_targets_by_uid: Mapping[str, int | str]
+    ) -> dict[str, str]:
+        return self._lineage_controller._workspace_loaded_uid_map(loaded_targets_by_uid)
+
+    def _rebase_loaded_workspace_dependency_refs(
+        self, loaded_targets_by_uid: Mapping[str, int | str]
+    ) -> None:
+        self._lineage_controller._rebase_loaded_workspace_dependency_refs(
+            loaded_targets_by_uid
+        )
+
+    def _selected_reload_targets(
+        self,
+    ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
+        return self._lineage_controller._selected_reload_targets()
+
+    def _reload_target_for_child(self, uid: str) -> int | str | None:
+        return self._lineage_controller._reload_target_for_child(uid)
+
+    def _reload_source_chain_for_child(self, uid: str) -> bool:
+        return self._lineage_controller._reload_source_chain_for_child(uid)
+
+    def show_selected_source_updates(self) -> None:
+        self._lineage_controller.show_selected_source_updates()
+
+    def _child_targets_of(self, target: int | str) -> list[str]:
+        return self._lineage_controller._child_targets_of(target)
+
+    def _refresh_source_chain_to_uid(self, uid: str) -> bool:
+        return self._lineage_controller._refresh_source_chain_to_uid(uid)
+
+    def _resume_pending_source_refreshes(self, uid: str) -> None:
+        self._lineage_controller._resume_pending_source_refreshes(uid)
+
+    def _parent_source_data_for_uid(self, uid: str) -> xr.DataArray:
+        return self._lineage_controller._parent_source_data_for_uid(uid)
+
+    def _mark_descendants_source_state(
+        self,
+        uid: str,
+        state: _ManagedWindowNode._source_state_type,
+    ) -> None:
+        self._lineage_controller._mark_descendants_source_state(uid, state)
+
+    def _mark_descendants_source_unavailable(self, uid: str) -> None:
+        self._lineage_controller._mark_descendants_source_unavailable(uid)
+
+    def _propagate_source_change_from_uid(
+        self, uid: str, parent_data: xr.DataArray | None = None
+    ) -> None:
+        self._lineage_controller._propagate_source_change_from_uid(uid, parent_data)
+
+    def show_selected(self) -> None:
+        self._lineage_controller.show_selected()
+
+    def hide_selected(self) -> None:
+        self._lineage_controller.hide_selected()
+
+    def hide_all(self) -> None:
+        self._lineage_controller.hide_all()
+
+    def reload_selected(self) -> None:
+        self._lineage_controller.reload_selected()
+
+    @staticmethod
+    def _reload_incompatibility_details(
+        current: xr.DataArray, rebuilt: xr.DataArray
+    ) -> str:
+        return _LineageController._reload_incompatibility_details(current, rebuilt)
+
+    def _prompt_incompatible_reload_commit(self, details: str) -> str:
+        return self._lineage_controller._prompt_incompatible_reload_commit(details)
+
+    def _replace_script_reload_target(
+        self,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        result: _ScriptRebuildResult,
+    ) -> None:
+        self._lineage_controller._replace_script_reload_target(node, result)
+
+    def _reload_script_derived_target(self, target: int | str) -> bool:
+        return self._lineage_controller._reload_script_derived_target(target)
+
+    def remove_selected(self) -> None:
+        self._lineage_controller.remove_selected()
 
     def rename_selected(self) -> None:
         self._actions_controller.rename_selected()
