@@ -151,6 +151,7 @@ class _HeightForWidthFrame(QtWidgets.QFrame):
 
 class _ElidedInteractiveLabel(QtWidgets.QLabel):
     clicked = QtCore.Signal()
+    _SIZE_HINT_EMS = 24
 
     def __init__(
         self,
@@ -160,48 +161,83 @@ class _ElidedInteractiveLabel(QtWidgets.QLabel):
         elide_mode: QtCore.Qt.TextElideMode = QtCore.Qt.TextElideMode.ElideMiddle,
     ) -> None:
         super().__init__(parent)
-        self._full_text = text
+        self._full_text = ""
         self._elide_mode = elide_mode
+        self.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.setMinimumWidth(0)
         self.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Preferred,
         )
-        self._update_elided_text()
+        self.set_full_text(text)
 
     @property
     def full_text(self) -> str:
         return self._full_text
 
+    def setText(self, text: str | None) -> None:
+        self.set_full_text("" if text is None else text)
+
     def set_full_text(self, text: str) -> None:
+        if text == self._full_text:
+            return
         self._full_text = text
+        super().setText(text)
         self.setToolTip(text)
-        self._update_elided_text()
+        self.setAccessibleName(text)
+        self.update()
 
-    def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:
-        super().resizeEvent(event)
-        self._update_elided_text()
+    def sizeHint(self) -> QtCore.QSize:
+        hint = super().sizeHint()
+        hint.setWidth(self._stable_hint_width())
+        return hint
 
-    def setFont(self, font: QtGui.QFont) -> None:
-        super().setFont(font)
-        self._update_elided_text()
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        del event
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing)
+        rect = self.contentsRect()
+        margin = self.margin()
+        if margin > 0:
+            rect = rect.adjusted(margin, margin, -margin, -margin)
+        text = self.fontMetrics().elidedText(
+            self._full_text, self._elide_mode, max(rect.width(), 0)
+        )
+        style = self.style()
+        if style is None:
+            style = QtWidgets.QApplication.style()
+        if style is None:  # pragma: no cover
+            return
+        style.drawItemText(
+            painter,
+            rect,
+            int(self.alignment()) | int(QtCore.Qt.TextFlag.TextSingleLine.value),
+            self.palette(),
+            self.isEnabled(),
+            text,
+            self.foregroundRole(),
+        )
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
-        if event is not None and event.button() == QtCore.Qt.MouseButton.LeftButton:
+        if event is None:
+            return
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.clicked.emit()
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
-    def _update_elided_text(self) -> None:
-        width = max(self.contentsRect().width(), 0)
-        if width <= 0:
-            super().setText("")
-            return
-        super().setText(
-            self.fontMetrics().elidedText(self._full_text, self._elide_mode, width)
-        )
+    def _stable_hint_width(self) -> int:
+        padding = 2 * (self.margin() + self.frameWidth())
+        if self.indent() > 0:
+            padding += self.indent()
+        return self.fontMetrics().horizontalAdvance("m" * self._SIZE_HINT_EMS) + padding
 
 
 class _LoadSourceArgumentsEdit(QtWidgets.QPlainTextEdit):

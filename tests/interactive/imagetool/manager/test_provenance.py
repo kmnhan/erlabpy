@@ -9,7 +9,7 @@ import pydantic
 import pytest
 import xarray
 import xarray as xr
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._widgets as manager_widgets
@@ -65,6 +65,58 @@ def _manager_provenance_file_spec(path: pathlib.Path):
             ),
         ),
     )
+
+
+def test_elided_interactive_label_keeps_full_text_during_resize(qtbot) -> None:
+    class _FallbackStyleLabel(manager_widgets._ElidedInteractiveLabel):
+        def style(self) -> QtWidgets.QStyle | None:
+            return None
+
+    label = _FallbackStyleLabel("/very/long/path/to/data/scan_with_long_name.h5")
+    qtbot.addWidget(label)
+    label.setMargin(2)
+    label.setIndent(4)
+    label.resize(90, label.sizeHint().height())
+    label.show()
+
+    assert label.text() == label.full_text
+    assert label.toolTip() == label.full_text
+    assert label.sizeHint().width() > label.minimumSizeHint().width()
+    assert label.grab().isNull() is False
+    assert label.text() == label.full_text
+
+    label.setText(None)
+    assert label.text() == ""
+    assert label.full_text == ""
+
+    clicks: list[None] = []
+    label.clicked.connect(lambda: clicks.append(None))
+    click_pos = QtCore.QPointF(1, 1)
+    left_event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease,
+        click_pos,
+        click_pos,
+        click_pos,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    label.mouseReleaseEvent(left_event)
+    assert clicks == [None]
+    assert left_event.isAccepted()
+
+    right_event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease,
+        click_pos,
+        click_pos,
+        click_pos,
+        QtCore.Qt.MouseButton.RightButton,
+        QtCore.Qt.MouseButton.RightButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    label.mouseReleaseEvent(right_event)
+    label.mouseReleaseEvent(None)
+    assert clicks == [None]
 
 
 def test_manager_file_label_helpers_and_file_replay_rename_update(tmp_path) -> None:
@@ -1702,12 +1754,10 @@ def test_manager_open_in_new_window_nests_imagetool_children(
         file_label = manager._metadata_detail_labels["File"]
         assert file_label.toolTip() == str(file_path)
         file_label.setFixedWidth(84)
-        qtbot.waitUntil(
-            lambda: (
-                getattr(file_label, "full_text", file_label.text()) != file_label.text()
-            ),
-            timeout=2000,
-        )
+        qtbot.wait(10)
+        assert getattr(file_label, "full_text", file_label.text()) == str(file_path)
+        assert file_label.text() == str(file_path)
+        assert metadata_detail_map(manager)["File"] == str(file_path)
 
         def _inspect_source_dialog(dialog: QtWidgets.QDialog) -> None:
             assert dialog.path_edit.text() == str(file_path)  # type: ignore[attr-defined]
