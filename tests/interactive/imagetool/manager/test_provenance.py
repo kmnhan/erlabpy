@@ -1231,7 +1231,7 @@ def test_manager_manual_nested_refresh_resumes_after_deferred_parent(
         qtbot.wait_until(lambda: leaf_node.source_state == "fresh", timeout=5000)
         xr.testing.assert_identical(parent_tool.tool_data, updated_root)
         xr.testing.assert_identical(fetch(leaf_uid), updated_root.isel(y=slice(0, 2)))
-        assert manager._pending_source_refresh_targets == {}
+        assert not manager._dependency_tracker.has_pending_source_refreshes()
 
 
 def test_manager_meshtool_output_itools_use_distinct_output_ids(
