@@ -7,7 +7,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import provenance_framework
+from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool.manager._widgets import (
     _METADATA_DERIVATION_CODE_ROLE,
     _METADATA_DERIVATION_COPYABLE_ROLE,
@@ -262,7 +262,6 @@ class _DetailsPanelController:
                 "Replay code is unavailable for this result", 5000
             )
             return
-        provenance = provenance_framework
         if provenance.uses_default_replay_input(code):
             load_source = self._manager._load_source_for_replay(node)
             if load_source is None:

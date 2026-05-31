@@ -10,8 +10,7 @@ import pytest
 import xarray as xr
 
 import erlab
-from erlab.interactive.imagetool import _replay_graph
-from erlab.interactive.imagetool import provenance_operations as ops
+from erlab.interactive.imagetool import _provenance_framework, _replay_graph, provenance
 
 
 def _exec_generated_code(
@@ -32,13 +31,12 @@ def _exec_generated_code(
 
 
 def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
-    prov = erlab.interactive.imagetool.provenance_framework
-    return prov.FileLoadSource(
+    return provenance.FileLoadSource(
         path=str(path),
         loader_label="xarray.load_dataarray",
         loader_text="xarray.load_dataarray",
         kwargs_text="",
-        replay_call=prov.FileReplayCall(
+        replay_call=provenance.FileReplayCall(
             kind="callable",
             target="xarray.load_dataarray",
             selected_index=selected_index,
@@ -47,8 +45,7 @@ def _file_replay_source(path: pathlib.Path | str, *, selected_index: int = 0):
 
 
 def _file_spec(path: pathlib.Path | str, *, selected_index: int = 0):
-    prov = erlab.interactive.imagetool.provenance_framework
-    return prov.file_load(
+    return provenance.file_load(
         start_label="Load source",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
         file_load_source=_file_replay_source(path, selected_index=selected_index),
@@ -56,18 +53,17 @@ def _file_spec(path: pathlib.Path | str, *, selected_index: int = 0):
 
 
 def _erlab_file_spec(path: pathlib.Path | str, loader: str):
-    prov = erlab.interactive.imagetool.provenance_framework
-    return prov.file_load(
+    return provenance.file_load(
         start_label=f"Load {path}",
         seed_code=(
             f"erlab.io.set_loader({loader!r})\nderived = erlab.io.load({str(path)!r})"
         ),
-        file_load_source=prov.FileLoadSource(
+        file_load_source=provenance.FileLoadSource(
             path=str(path),
             loader_label="Loader",
             loader_text=loader,
             kwargs_text="",
-            replay_call=prov.FileReplayCall(
+            replay_call=provenance.FileReplayCall(
                 kind="erlab_loader",
                 target=loader,
                 selected_index=0,
@@ -95,7 +91,6 @@ def _assert_dense_replay_temps(code: str) -> None:
 
 
 def test_replay_graph_low_level_validation_helpers() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
 
     assert _replay_graph._code_uses_name("derived = data", "data")
     assert not _replay_graph._code_uses_name("derived =", "data")
@@ -165,7 +160,7 @@ class Child(Base, metaclass=data_5):
 
     with pytest.raises(_replay_graph.ReplayGraphError, match="Expected script"):
         _replay_graph._validate_script_provenance(
-            prov.full_data(ops.SqueezeOperation())
+            provenance.full_data(provenance.SqueezeOperation())
         )
     with pytest.raises(_replay_graph.ReplayGraphError, match="without active_name"):
         _replay_graph._validate_script_provenance(
@@ -173,36 +168,36 @@ class Child(Base, metaclass=data_5):
         )
     with pytest.raises(_replay_graph.ReplayGraphError, match="unsupported Import"):
         _replay_graph._validate_script_provenance(
-            prov.script(
+            provenance.script(
                 start_label="Run script",
                 seed_code="import os",
                 active_name="derived",
-                script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+                script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
             )
         )
     with pytest.raises(_replay_graph.ReplayGraphError, match="no replay code"):
         _replay_graph._validate_script_provenance(
-            prov.script(
-                ops.AverageOperation(dims=("x",)),
+            provenance.script(
+                provenance.AverageOperation(dims=("x",)),
                 start_label="Run script",
                 active_name="derived",
             )
         )
     with pytest.raises(_replay_graph.ReplayGraphError, match="no replay code"):
         _replay_graph._validate_script_provenance(
-            prov.script(start_label="Run script", active_name="derived")
+            provenance.script(start_label="Run script", active_name="derived")
         )
     with pytest.raises(_replay_graph.ReplayGraphError, match="non-replayable"):
         _replay_graph._validate_script_provenance(
-            prov.script(
-                ops.ScriptCodeOperation(
+            provenance.script(
+                provenance.ScriptCodeOperation(
                     label="Opaque",
                     code=None,
                     copyable=False,
                 ),
                 start_label="Run script",
                 active_name="derived",
-                script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+                script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
             )
         )
     assert not _replay_graph.script_provenance_replayable(None)
@@ -280,7 +275,6 @@ def test_replay_graph_manual_error_and_cache_paths() -> None:
 def test_replay_graph_file_script_input_and_rebuild_edges(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
     path = tmp_path / "source.nc"
     data.to_netcdf(path)
@@ -299,7 +293,7 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
         with pytest.raises(_replay_graph.ReplayGraphError, match=message):
             _replay_graph._file_seed_code_parts(seed_code, "derived")
 
-    loaded_input = prov.ScriptInput(
+    loaded_input = provenance.ScriptInput(
         name="loaded",
         label="Loaded source",
         provenance_spec=file_spec,
@@ -309,18 +303,18 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     xr.testing.assert_identical(namespace["loaded"], data)
     with pytest.raises(_replay_graph.ReplayGraphError, match="recorded source"):
         _replay_graph.script_inputs_code(
-            (prov.ScriptInput(name="missing", label="Missing source"),),
+            (provenance.ScriptInput(name="missing", label="Missing source"),),
             display=False,
         )
 
     with pytest.raises(_replay_graph.ReplayGraphError, match="script-derived"):
         _replay_graph.rebuild_script_provenance(file_spec)
-    script_spec = prov.script(
-        ops.ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
+    script_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Loaded source",
                 provenance_spec=file_spec,
@@ -333,11 +327,11 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
 
     with pytest.raises(_replay_graph.ReplayGraphError, match="maximum reload depth"):
         _replay_graph.rebuild_script_provenance(script_spec, depth=21)
-    missing_spec = prov.script(
-        ops.ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
+    missing_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Add one", code="derived = data_0 + 1.0"),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(prov.ScriptInput(name="data_0", label="Closed input"),),
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Closed input"),),
     )
     with pytest.raises(_replay_graph.ReplayGraphError, match="not open"):
         _replay_graph.rebuild_script_provenance(missing_spec)
@@ -345,14 +339,14 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     live_calls = 0
     initial_marker = "initial-marker"
     current_marker = "current-marker"
-    live_input = prov.ScriptInput(
+    live_input = provenance.ScriptInput(
         name="data_0",
         label="Live input",
         node_uid="uid-0",
         node_snapshot_token=initial_marker,
     )
-    live_spec = prov.script(
-        ops.ScriptCodeOperation(label="Double", code="derived = data_0 * 2.0"),
+    live_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Double", code="derived = data_0 * 2.0"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(live_input,),
@@ -374,14 +368,14 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     assert live_rebuilt_spec.script_inputs[0].node_snapshot_token == current_marker
 
     miss_calls = 0
-    duplicate_file_input = prov.ScriptInput(
+    duplicate_file_input = provenance.ScriptInput(
         name="data_0",
         label="Closed file input",
         node_uid="same-uid",
         provenance_spec=file_spec,
     )
-    duplicate_file_spec = prov.script(
-        ops.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+    duplicate_file_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = data_0"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(duplicate_file_input, duplicate_file_input),
@@ -401,19 +395,19 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     xr.testing.assert_identical(rebuilt_from_miss, data)
     assert miss_calls == 2
 
-    unsupported_nested = prov.script(
-        ops.ScriptCodeOperation(label="Opaque", code=None, copyable=False),
+    unsupported_nested = provenance.script(
+        provenance.ScriptCodeOperation(label="Opaque", code=None, copyable=False),
         start_label="Run script",
         active_name="derived",
-        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
     )
-    unsupported_input = prov.ScriptInput(
+    unsupported_input = provenance.ScriptInput(
         name="data_0",
         label="Unsupported nested input",
         provenance_spec=unsupported_nested,
     )
-    unsupported_spec = prov.script(
-        ops.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+    unsupported_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = data_0"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(unsupported_input,),
@@ -421,15 +415,15 @@ def test_replay_graph_file_script_input_and_rebuild_edges(
     with pytest.raises(_replay_graph.ReplayGraphError, match="cannot be replayed"):
         _replay_graph.rebuild_script_provenance(unsupported_spec)
 
-    full_data_spec = prov.script(
-        ops.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+    full_data_spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Copy", code="derived = data_0"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Full data",
-                provenance_spec=prov.full_data(),
+                provenance_spec=provenance.full_data(),
             ),
         ),
     )
@@ -506,36 +500,41 @@ def test_replay_graph_operation_code_uses_parameterized_names() -> None:
 def test_replay_graph_emits_shared_file_and_operation_prefix(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "polarization.nc"
     source = _polarization_source(path)
     file_spec = _file_spec(path)
-    shared_stage = prov.full_data(ops.AverageOperation(dims=("k",)))
-    left_stage = prov.selection(
-        ops.SelOperation(kwargs={"pol": "LH"}),
-        ops.SqueezeOperation(),
+    shared_stage = provenance.full_data(provenance.AverageOperation(dims=("k",)))
+    left_stage = provenance.selection(
+        provenance.SelOperation(kwargs={"pol": "LH"}),
+        provenance.SqueezeOperation(),
     )
-    right_stage = prov.selection(
-        ops.SelOperation(kwargs={"pol": "LV"}),
-        ops.SqueezeOperation(),
+    right_stage = provenance.selection(
+        provenance.SelOperation(kwargs={"pol": "LV"}),
+        provenance.SqueezeOperation(),
     )
-    left_spec = prov.compose_full_provenance(
-        prov.compose_full_provenance(file_spec, shared_stage),
+    left_spec = provenance.compose_full_provenance(
+        provenance.compose_full_provenance(file_spec, shared_stage),
         left_stage,
     )
-    right_spec = prov.compose_full_provenance(
-        prov.compose_full_provenance(file_spec, shared_stage),
+    right_spec = provenance.compose_full_provenance(
+        provenance.compose_full_provenance(file_spec, shared_stage),
         right_stage,
     )
     assert left_spec is not None
     assert right_spec is not None
-    spec = prov.script(
-        ops.ScriptCodeOperation(label="Subtract", code="derived = data_0 - data_1"),
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Subtract", code="derived = data_0 - data_1"
+        ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="LH", provenance_spec=left_spec),
-            prov.ScriptInput(name="data_1", label="LV", provenance_spec=right_spec),
+            provenance.ScriptInput(
+                name="data_0", label="LH", provenance_spec=left_spec
+            ),
+            provenance.ScriptInput(
+                name="data_1", label="LV", provenance_spec=right_spec
+            ),
         ),
     )
 
@@ -553,7 +552,6 @@ def test_replay_graph_emits_shared_file_and_operation_prefix(
 def test_replay_graph_handles_structured_script_operations(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -561,13 +559,13 @@ def test_replay_graph_handles_structured_script_operations(
         coords={"alpha": [0.0, 1.0], "eV": [0.0, 1.0, 2.0]},
     )
     data.to_netcdf(path)
-    spec = prov.script(
-        ops.AverageOperation(dims=("alpha",)),
+    spec = provenance.script(
+        provenance.AverageOperation(dims=("alpha",)),
         start_label="Run script",
         seed_code="avg = data_0",
         active_name="avg",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Scan",
                 provenance_spec=_file_spec(path),
@@ -590,7 +588,6 @@ def test_replay_graph_handles_structured_script_operations(
 def test_replay_graph_emits_structured_script_operation_without_identity_relays(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -598,13 +595,13 @@ def test_replay_graph_emits_structured_script_operation_without_identity_relays(
         coords={"polarization": [-1, 1], "eV": [0.0, 1.0]},
     )
     data.to_netcdf(path)
-    spec = prov.script(
-        ops.SelOperation(kwargs={"polarization": -1}),
+    spec = provenance.script(
+        provenance.SelOperation(kwargs={"polarization": -1}),
         start_label="Run script",
         seed_code="derived = data_0",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Scan",
                 provenance_spec=_file_spec(path),
@@ -625,18 +622,17 @@ def test_replay_graph_emits_structured_script_operation_without_identity_relays(
 
 
 def test_replay_graph_preserves_script_inputs_after_structured_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
-    spec = prov.script(
-        ops.AverageOperation(dims=("x",)),
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.AverageOperation(dims=("x",)),
+        provenance.ScriptCodeOperation(
             label="Use original input",
             code="derived = derived + data_0.qsel.average('x')",
         ),
         start_label="Run script",
         seed_code="derived = data_0",
         active_name="derived",
-        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
     )
 
     graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
@@ -655,18 +651,17 @@ def test_replay_graph_preserves_script_inputs_after_structured_operation() -> No
 
 
 def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
-    spec = prov.script(
-        ops.AverageOperation(dims=("x",)),
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.AverageOperation(dims=("x",)),
+        provenance.ScriptCodeOperation(
             label="Use temp",
             code="derived = derived + tmp.qsel.average('x') + data_0.qsel.average('x')",
         ),
         start_label="Run script",
         seed_code="tmp = data_0 + 1\nderived = tmp",
         active_name="derived",
-        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
     )
 
     graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
@@ -687,29 +682,28 @@ def test_replay_graph_keeps_structured_operations_in_opaque_script() -> None:
 
 
 def test_replay_graph_rebases_context_for_inlined_operation() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
         dims=("x", "y"),
         coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
     )
-    spec = prov.script(
-        ops.SortCoordOrderOperation(),
+    spec = provenance.script(
+        provenance.SortCoordOrderOperation(),
         start_label="Run script",
         seed_code="tmp = data_0 + 1\nderived = tmp",
         active_name="derived",
-        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
     )
 
     graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
     script_nodes = [node for node in graph.nodes if node.kind == "script"]
     inlined_code = "\n".join(script_nodes[0].payload["codes"])
 
-    assert prov.script_provenance_replayable(spec)
+    assert provenance.script_provenance_replayable(spec)
     assert "data.coords" not in inlined_code
     assert "derived.coords.keys()" in inlined_code
     xr.testing.assert_identical(
-        prov.replay_script_provenance(spec, {"data_0": data}),
+        provenance.replay_script_provenance(spec, {"data_0": data}),
         erlab.utils.array.sort_coord_order(data + 1, (data + 1).coords.keys()),
     )
 
@@ -717,7 +711,6 @@ def test_replay_graph_rebases_context_for_inlined_operation() -> None:
 def test_replay_graph_rebases_context_in_script_input_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -725,13 +718,13 @@ def test_replay_graph_rebases_context_in_script_input_code(
         coords={"x": [0.0, 1.0], "y": [0.0, 1.0, 2.0]},
     )
     data.to_netcdf(path)
-    spec = prov.script(
-        ops.SortCoordOrderOperation(),
+    spec = provenance.script(
+        provenance.SortCoordOrderOperation(),
         start_label="Run script",
         seed_code="tmp = data_0 + 1\nderived = tmp",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Input",
                 provenance_spec=_file_spec(path),
@@ -754,29 +747,30 @@ def test_replay_graph_rebases_context_in_script_input_code(
 def test_replay_graph_shares_structured_console_alias_prefixes(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "polarization.nc"
     source = _polarization_source(path)
-    averaged = prov.script(
-        ops.AverageOperation(dims=("k",)),
+    averaged = provenance.script(
+        provenance.AverageOperation(dims=("k",)),
         start_label="Run script",
         seed_code="avg = data_0",
         active_name="avg",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Scan",
                 provenance_spec=_file_spec(path),
             ),
         ),
     )
-    spec = prov.script(
-        ops.ScriptCodeOperation(label="Subtract", code="derived = data_0 - data_1"),
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Subtract", code="derived = data_0 - data_1"
+        ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="LH", provenance_spec=averaged),
-            prov.ScriptInput(name="data_1", label="LV", provenance_spec=averaged),
+            provenance.ScriptInput(name="data_0", label="LH", provenance_spec=averaged),
+            provenance.ScriptInput(name="data_1", label="LV", provenance_spec=averaged),
         ),
     )
 
@@ -801,7 +795,6 @@ def test_replay_graph_shares_structured_console_alias_prefixes(
 def test_replay_graph_display_normalizes_nested_derived_console_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "cd_map.nc"
     source = xr.DataArray(
         np.arange(2 * 6 * 10, dtype=float).reshape(2, 6, 10) + 1.0,
@@ -817,11 +810,11 @@ def test_replay_graph_display_normalizes_nested_derived_console_code(
         },
     )
     source.to_netcdf(path)
-    processed = prov.compose_full_provenance(
+    processed = provenance.compose_full_provenance(
         _file_spec(path),
-        prov.public_data(
-            ops.DivideByCoordOperation(coord_name="mesh_current"),
-            ops.CoarsenOperation(
+        provenance.public_data(
+            provenance.DivideByCoordOperation(coord_name="mesh_current"),
+            provenance.CoarsenOperation(
                 dim={"alpha": 3, "eV": 5},
                 boundary="trim",
                 side="left",
@@ -832,74 +825,78 @@ def test_replay_graph_display_normalizes_nested_derived_console_code(
     )
     assert processed is not None
 
-    rc = prov.script(
-        ops.SelOperation(kwargs={"polarization": -1}),
+    rc = provenance.script(
+        provenance.SelOperation(kwargs={"polarization": -1}),
         start_label="Run ImageTool manager console code",
         seed_code="rc = data_0",
         active_name="rc",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Processed map",
                 provenance_spec=processed,
             ),
         ),
     )
-    lc = prov.script(
-        ops.SelOperation(kwargs={"polarization": 1}),
+    lc = provenance.script(
+        provenance.SelOperation(kwargs={"polarization": 1}),
         start_label="Run ImageTool manager console code",
         seed_code="lc = data_0",
         active_name="lc",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Processed map",
                 provenance_spec=processed,
             ),
         ),
     )
-    diff = prov.script(
-        ops.ScriptCodeOperation(
+    diff = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Evaluate console expression",
             code="derived = rc - lc",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="rc", label="console variable 'rc'", provenance_spec=rc
             ),
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="lc", label="console variable 'lc'", provenance_spec=lc
             ),
         ),
     )
-    total = prov.script(
-        ops.ScriptCodeOperation(
+    total = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Evaluate console expression",
             code="derived = rc + lc",
         ),
         start_label="Run ImageTool manager console code",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="rc", label="console variable 'rc'", provenance_spec=rc
             ),
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="lc", label="console variable 'lc'", provenance_spec=lc
             ),
         ),
     )
-    ncd = prov.script(
-        ops.ScriptCodeOperation(
+    ncd = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Evaluate console expression",
             code="ncd = data_1 / data_2",
         ),
         start_label="Run ImageTool manager console code",
         active_name="ncd",
         script_inputs=(
-            prov.ScriptInput(name="data_1", label="ImageTool 1", provenance_spec=diff),
-            prov.ScriptInput(name="data_2", label="ImageTool 2", provenance_spec=total),
+            provenance.ScriptInput(
+                name="data_1", label="ImageTool 1", provenance_spec=diff
+            ),
+            provenance.ScriptInput(
+                name="data_2", label="ImageTool 2", provenance_spec=total
+            ),
         ),
     )
 
@@ -987,7 +984,6 @@ def test_replay_graph_cleanup_helpers_cover_edge_cases() -> None:
 
 
 def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
 
     graph = _replay_graph.ReplayGraph(display=True)
     source_key = graph.add_node(
@@ -1006,14 +1002,18 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
         },
     )
 
-    original_replace = prov._replace_code_identifiers
+    original_replace = _provenance_framework._replace_code_identifiers
 
     def _raise_on_input_replacement(code: str, replacements: Mapping[str, str]) -> str:
         if "data_0" in replacements:
             raise SyntaxError("bad script input")
         return original_replace(code, replacements)
 
-    monkeypatch.setattr(prov, "_replace_code_identifiers", _raise_on_input_replacement)
+    monkeypatch.setattr(
+        _provenance_framework,
+        "_replace_code_identifiers",
+        _raise_on_input_replacement,
+    )
     with pytest.raises(_replay_graph.ReplayGraphError, match="Script replay code"):
         _replay_graph.emit_replay_code(graph)
 
@@ -1034,29 +1034,30 @@ def test_replay_graph_emit_reports_script_rewrite_syntax_errors(monkeypatch) -> 
 def test_replay_graph_display_promotes_ui_style_script_input_names(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     source = _polarization_source(path)
-    left = prov.compose_full_provenance(
+    left = provenance.compose_full_provenance(
         _file_spec(path),
-        prov.full_data(ops.SelOperation(kwargs={"pol": "LH"})),
+        provenance.full_data(provenance.SelOperation(kwargs={"pol": "LH"})),
     )
-    right = prov.compose_full_provenance(
+    right = provenance.compose_full_provenance(
         _file_spec(path),
-        prov.full_data(ops.SelOperation(kwargs={"pol": "LV"})),
+        provenance.full_data(provenance.SelOperation(kwargs={"pol": "LV"})),
     )
     assert left is not None
     assert right is not None
-    spec = prov.script(
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Concatenate selected inputs",
             code="combined = xr.concat([left, right], dim='pol')",
         ),
         start_label="Run ImageTool manager UI action",
         active_name="combined",
         script_inputs=(
-            prov.ScriptInput(name="left", label="Selected left", provenance_spec=left),
-            prov.ScriptInput(
+            provenance.ScriptInput(
+                name="left", label="Selected left", provenance_spec=left
+            ),
+            provenance.ScriptInput(
                 name="right", label="Selected right", provenance_spec=right
             ),
         ),
@@ -1082,29 +1083,32 @@ def test_replay_graph_display_promotes_ui_style_script_input_names(
 
 
 def test_replay_graph_display_uses_watched_roots_as_raw_inputs() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     rc_data = xr.DataArray(np.arange(3.0), dims=("x",))
     lc_data = xr.DataArray(np.arange(3.0) + 10.0, dims=("x",))
-    rc = prov.script(
+    rc = provenance.script(
         start_label="Start from watched variable 'rc'",
         seed_code="derived = rc",
         active_name="derived",
     )
-    lc = prov.script(
+    lc = provenance.script(
         start_label="Start from watched variable 'lc'",
         seed_code="derived = lc",
         active_name="derived",
     )
-    spec = prov.script(
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Subtract selected inputs",
             code="derived = data_0 - data_1",
         ),
         start_label="Run ImageTool manager action",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="ImageTool 0", provenance_spec=rc),
-            prov.ScriptInput(name="data_1", label="ImageTool 1", provenance_spec=lc),
+            provenance.ScriptInput(
+                name="data_0", label="ImageTool 0", provenance_spec=rc
+            ),
+            provenance.ScriptInput(
+                name="data_1", label="ImageTool 1", provenance_spec=lc
+            ),
         ),
     )
 
@@ -1116,22 +1120,23 @@ def test_replay_graph_display_uses_watched_roots_as_raw_inputs() -> None:
 
 
 def test_replay_graph_display_keeps_helpers_from_raw_seed_inputs() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     raw_data = xr.DataArray(np.arange(1.0, 4.0), dims=("x",))
-    root = prov.script(
+    root = provenance.script(
         start_label="Start from watched variable 'raw'",
         seed_code="def normalize():\n    return raw / raw.max()\nderived = normalize()",
         active_name="derived",
     )
-    spec = prov.script(
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Average normalized input",
             code="result = data_0.mean()",
         ),
         start_label="Run ImageTool manager action",
         active_name="result",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="ImageTool 0", provenance_spec=root),
+            provenance.ScriptInput(
+                name="data_0", label="ImageTool 0", provenance_spec=root
+            ),
         ),
     )
 
@@ -1146,7 +1151,6 @@ def test_replay_graph_display_keeps_helpers_from_raw_seed_inputs() -> None:
 def test_replay_graph_display_hides_internal_source_view_restore_only(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "nonuniform.nc"
     source = xr.DataArray(
         np.arange(6.0).reshape(3, 2),
@@ -1154,12 +1158,12 @@ def test_replay_graph_display_hides_internal_source_view_restore_only(
         coords={"x": [0.0, 0.2, 1.0], "y": [0.0, 1.0]},
     )
     source.to_netcdf(path)
-    public_spec = prov.compose_full_provenance(
+    public_spec = provenance.compose_full_provenance(
         _file_spec(path),
-        prov.public_data(ops.SelOperation(kwargs={"x": 0.2})),
+        provenance.public_data(provenance.SelOperation(kwargs={"x": 0.2})),
     )
     assert public_spec is not None
-    script_input = prov.ScriptInput(
+    script_input = provenance.ScriptInput(
         name="selected",
         label="Selected nonuniform data",
         provenance_spec=public_spec,
@@ -1179,17 +1183,16 @@ def test_replay_graph_display_hides_internal_source_view_restore_only(
 def test_replay_graph_display_keeps_bindings_for_scoped_or_rebound_inputs(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     source = xr.DataArray(np.arange(3.0), dims=("x",))
     source.to_netcdf(path)
-    script_input = prov.ScriptInput(
+    script_input = provenance.ScriptInput(
         name="data_0",
         label="ImageTool 0",
         provenance_spec=_file_spec(path),
     )
-    helper_spec = prov.script(
-        ops.ScriptCodeOperation(
+    helper_spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Use helper",
             code="def offset():\n    return data_0 + 1\nresult = offset()",
         ),
@@ -1197,8 +1200,8 @@ def test_replay_graph_display_keeps_bindings_for_scoped_or_rebound_inputs(
         active_name="result",
         script_inputs=(script_input,),
     )
-    rebound_spec = prov.script(
-        ops.ScriptCodeOperation(
+    rebound_spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Rebind input",
             code="data_0 = data_0 + 1\nresult = data_0 * 2",
         ),
@@ -1230,14 +1233,13 @@ def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
     seed_code: str | None,
     active_name: str,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
-    spec = prov.script(
-        ops.RenameOperation(name="renamed"),
+    spec = provenance.script(
+        provenance.RenameOperation(name="renamed"),
         start_label="Run script",
         seed_code=seed_code,
         active_name=active_name,
-        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
     )
 
     graph = _replay_graph.compile_replay_graph(spec, external_inputs={"data_0": data})
@@ -1251,16 +1253,15 @@ def test_replay_graph_structured_script_inputs_keep_execution_copy_boundary(
 def test_replay_graph_display_skips_whole_array_rename(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
     path = tmp_path / "source.nc"
     data.to_netcdf(path)
-    spec = prov.script(
-        ops.RenameOperation(name="renamed"),
+    spec = provenance.script(
+        provenance.RenameOperation(name="renamed"),
         start_label="Run script",
         active_name="data_0",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Input",
                 provenance_spec=_file_spec(path),
@@ -1281,13 +1282,12 @@ def test_replay_graph_display_skips_whole_array_rename(
 def test_replay_graph_display_keeps_name_rename_before_script_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",), name="source")
     path = tmp_path / "source.nc"
     data.to_netcdf(path)
-    spec = prov.script(
-        ops.RenameOperation(name="renamed"),
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.RenameOperation(name="renamed"),
+        provenance.ScriptCodeOperation(
             label="Use DataArray name",
             code="derived = derived.rename(derived.name + '_used')",
         ),
@@ -1295,7 +1295,7 @@ def test_replay_graph_display_keeps_name_rename_before_script_code(
         seed_code="derived = data_0",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Input",
                 provenance_spec=_file_spec(path),
@@ -1319,27 +1319,27 @@ def test_replay_graph_display_keeps_name_rename_before_script_code(
 def test_script_replayability_does_not_generate_structured_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
-    spec = prov.script(
-        ops.RenameOperation(name="renamed"),
+    spec = provenance.script(
+        provenance.RenameOperation(name="renamed"),
         start_label="Run script",
         seed_code="derived = data_0",
         active_name="derived",
-        script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+        script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
     )
 
     def fail_derivation_entry(self):
         raise AssertionError("replayability checks must not generate copied code")
 
-    monkeypatch.setattr(ops.RenameOperation, "derivation_entry", fail_derivation_entry)
+    monkeypatch.setattr(
+        provenance.RenameOperation, "derivation_entry", fail_derivation_entry
+    )
 
-    assert prov.script_provenance_replayable(spec)
+    assert provenance.script_provenance_replayable(spec)
 
 
 def test_replay_graph_uses_existing_console_alias_for_script_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -1347,8 +1347,8 @@ def test_replay_graph_uses_existing_console_alias_for_script_code(
         coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
     )
     data.to_netcdf(path)
-    spec = prov.script(
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Rotate",
             code=(
                 "derived = era.transform.rotate("
@@ -1358,7 +1358,7 @@ def test_replay_graph_uses_existing_console_alias_for_script_code(
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Scan",
                 provenance_spec=_file_spec(path),
@@ -1379,7 +1379,6 @@ def test_replay_graph_uses_existing_console_alias_for_script_code(
 def test_replay_graph_uses_existing_console_alias_for_structured_code(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -1387,8 +1386,8 @@ def test_replay_graph_uses_existing_console_alias_for_structured_code(
         coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
     )
     data.to_netcdf(path)
-    spec = prov.script(
-        ops.RotateOperation(
+    spec = provenance.script(
+        provenance.RotateOperation(
             angle=123.456,
             axes=("x", "y"),
             center=(1.234, 5.678),
@@ -1399,7 +1398,7 @@ def test_replay_graph_uses_existing_console_alias_for_structured_code(
         seed_code="derived = data_0",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Scan",
                 provenance_spec=_file_spec(path),
@@ -1425,16 +1424,19 @@ def test_replay_graph_uses_existing_console_alias_for_structured_code(
 
 
 def test_replay_graph_keeps_structurally_distinct_file_loads() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     first = _file_spec("scan.h5", selected_index=0)
     second = _file_spec("scan.h5", selected_index=1)
-    spec = prov.script(
-        ops.ScriptCodeOperation(label="Subtract", code="derived = data_0 - data_1"),
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Subtract", code="derived = data_0 - data_1"
+        ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="First", provenance_spec=first),
-            prov.ScriptInput(name="data_1", label="Second", provenance_spec=second),
+            provenance.ScriptInput(name="data_0", label="First", provenance_spec=first),
+            provenance.ScriptInput(
+                name="data_1", label="Second", provenance_spec=second
+            ),
         ),
     )
 
@@ -1444,21 +1446,20 @@ def test_replay_graph_keeps_structurally_distinct_file_loads() -> None:
 
 
 def test_replay_graph_reuses_shared_loader_setup() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
-    spec = prov.script(
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Add",
             code="derived = data_0 + data_1",
         ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="First",
                 provenance_spec=_erlab_file_spec("scan0.h5", "example"),
             ),
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_1",
                 label="Second",
                 provenance_spec=_erlab_file_spec("scan1.h5", "example"),
@@ -1474,26 +1475,25 @@ def test_replay_graph_reuses_shared_loader_setup() -> None:
 
 
 def test_replay_graph_reemits_stateful_setup_after_loader_change() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
-    spec = prov.script(
-        ops.ScriptCodeOperation(
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
             label="Add",
             code="derived = data_0 + data_1 + data_2",
         ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_0",
                 label="Alpha 0",
                 provenance_spec=_erlab_file_spec("alpha0.h5", "alpha"),
             ),
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_1",
                 label="Beta",
                 provenance_spec=_erlab_file_spec("beta.h5", "beta"),
             ),
-            prov.ScriptInput(
+            provenance.ScriptInput(
                 name="data_2",
                 label="Alpha 1",
                 provenance_spec=_erlab_file_spec("alpha1.h5", "alpha"),
@@ -1511,25 +1511,28 @@ def test_replay_graph_reemits_stateful_setup_after_loader_change() -> None:
 
 
 def test_replay_graph_does_not_merge_operations_with_different_contexts() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     file_spec = _file_spec("scan.h5")
-    first_spec = prov.compose_full_provenance(
+    first_spec = provenance.compose_full_provenance(
         file_spec,
-        prov.full_data(ops.IselOperation(kwargs={"pol": 0})),
+        provenance.full_data(provenance.IselOperation(kwargs={"pol": 0})),
     )
-    second_spec = prov.compose_full_provenance(
+    second_spec = provenance.compose_full_provenance(
         file_spec,
-        prov.selection(ops.IselOperation(kwargs={"pol": 0})),
+        provenance.selection(provenance.IselOperation(kwargs={"pol": 0})),
     )
     assert first_spec is not None
     assert second_spec is not None
-    spec = prov.script(
-        ops.ScriptCodeOperation(label="Subtract", code="derived = data_0 - data_1"),
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Subtract", code="derived = data_0 - data_1"
+        ),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="Full", provenance_spec=first_spec),
-            prov.ScriptInput(
+            provenance.ScriptInput(
+                name="data_0", label="Full", provenance_spec=first_spec
+            ),
+            provenance.ScriptInput(
                 name="data_1",
                 label="Selection",
                 provenance_spec=second_spec,
@@ -1543,24 +1546,25 @@ def test_replay_graph_does_not_merge_operations_with_different_contexts() -> Non
 
 
 def test_replay_graph_script_nodes_are_not_deduplicated() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
-    first = prov.script(
+    first = provenance.script(
         start_label="Make first",
         seed_code="derived = xr.DataArray([1.0, 2.0], dims=['x'])",
         active_name="derived",
     )
-    second = prov.script(
+    second = provenance.script(
         start_label="Make second",
         seed_code="derived = xr.DataArray([10.0, 20.0], dims=['x'])",
         active_name="derived",
     )
-    spec = prov.script(
-        ops.ScriptCodeOperation(label="Add", code="derived = data_0 + data_1"),
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(label="Add", code="derived = data_0 + data_1"),
         start_label="Run script",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="First", provenance_spec=first),
-            prov.ScriptInput(name="data_1", label="Second", provenance_spec=second),
+            provenance.ScriptInput(name="data_0", label="First", provenance_spec=first),
+            provenance.ScriptInput(
+                name="data_1", label="Second", provenance_spec=second
+            ),
         ),
     )
 
@@ -1575,10 +1579,11 @@ def test_replay_graph_script_nodes_are_not_deduplicated() -> None:
 
 
 def test_replay_graph_raises_typed_errors_for_unsupported_script() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray([1.0], dims=("x",))
-    spec = prov.script(
-        ops.ScriptCodeOperation(label="Unsupported", code="import os\nderived = data"),
+    spec = provenance.script(
+        provenance.ScriptCodeOperation(
+            label="Unsupported", code="import os\nderived = data"
+        ),
         start_label="Run script",
         active_name="derived",
     )
@@ -1591,7 +1596,6 @@ def test_replay_graph_emits_correct_with_edge_operation_code(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "scan.nc"
     data = xr.DataArray([1.0, 2.0], dims=("x",), coords={"x": [0.0, 1.0]})
     data.to_netcdf(path)
@@ -1602,10 +1606,10 @@ def test_replay_graph_emits_correct_with_edge_operation_code(
         return data_arg.assign_attrs(shift_coords=shift_coords)
 
     monkeypatch.setattr(erlab.analysis.gold, "correct_with_edge", correct_with_edge)
-    spec = prov.compose_full_provenance(
+    spec = provenance.compose_full_provenance(
         _file_spec(path),
-        prov.full_data(
-            ops.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
+        provenance.full_data(
+            provenance.CorrectWithEdgeOperation(edge_fit=edge_fit, shift_coords=False)
         ),
     )
     assert spec is not None
@@ -1619,7 +1623,6 @@ def test_replay_graph_emits_correct_with_edge_operation_code(
 
 
 def test_replay_graph_execution_matches_emitted_code(tmp_path: pathlib.Path) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     path = tmp_path / "source.nc"
     source = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -1627,9 +1630,9 @@ def test_replay_graph_execution_matches_emitted_code(tmp_path: pathlib.Path) -> 
         coords={"x": [0, 1], "y": [0, 1, 2]},
     )
     source.to_netcdf(path)
-    spec = prov.compose_full_provenance(
+    spec = provenance.compose_full_provenance(
         _file_spec(path),
-        prov.full_data(ops.AverageOperation(dims=("y",))),
+        provenance.full_data(provenance.AverageOperation(dims=("y",))),
     )
     assert spec is not None
 

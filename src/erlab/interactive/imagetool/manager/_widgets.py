@@ -28,9 +28,9 @@ from erlab.interactive.imagetool.manager._server import _ManagerServer, _Watcher
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
 
+    from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool.manager import ImageToolManager
-    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ _DEPENDENCY_STATUS_TOOLTIPS: dict[str, str] = {
 @dataclass(frozen=True)
 class _ScriptRebuildResult:
     data: xr.DataArray
-    provenance_spec: ToolProvenanceSpec
+    provenance_spec: provenance.ToolProvenanceSpec
 
 
 class _ScriptRebuildError(RuntimeError):

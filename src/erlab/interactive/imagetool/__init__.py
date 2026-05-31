@@ -17,8 +17,7 @@ Modules
    controls
    dialogs
    manager
-   provenance_framework
-   provenance_operations
+   provenance
 
 """
 

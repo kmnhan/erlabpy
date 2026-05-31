@@ -29,6 +29,7 @@ import xarray as xr
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     import varname
@@ -43,7 +44,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
     COPY_PROVENANCE: typing.ClassVar = (
         erlab.interactive.utils.ToolScriptProvenanceDefinition(
             start_label="Start from current dtool input data",
-            operations_method="_copy_provenance_operations",
+            operations_method="_copy_provenance",
             active_name="result",
         )
     )
@@ -56,7 +57,7 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
             data_method="_result_output_data",
             provenance=erlab.interactive.utils.ToolScriptProvenanceDefinition(
                 start_label="Start from current dtool input data",
-                operations_method="_output_provenance_operations",
+                operations_method="_output_provenance",
                 active_name="result",
             ),
         )
@@ -570,45 +571,39 @@ class DerivativeTool(erlab.interactive.utils.ToolWindow):
 
         return "\n".join(lines)
 
-    def _result_provenance_operations(
+    def _result_provenance(
         self, *, input_name: str | None = None, transpose_output: bool = False
-    ) -> tuple[
-        erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation, ...
-    ]:
+    ) -> tuple[provenance.ScriptCodeOperation, ...]:
         operations = [
-            erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation(
+            provenance.ScriptCodeOperation(
                 label="Compute derivative output",
                 code=self._build_copy_code(input_name=input_name),
             )
         ]
         if transpose_output:
             operations.append(
-                erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation(
+                provenance.ScriptCodeOperation(
                     label="Transpose derivative output for ImageTool display",
                     code="result = result.transpose()",
                 )
             )
         return tuple(operations)
 
-    def _copy_provenance_operations(
+    def _copy_provenance(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> tuple[
-        erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation, ...
-    ]:
-        return self._result_provenance_operations(input_name=input_name)
+    ) -> tuple[provenance.ScriptCodeOperation, ...]:
+        return self._result_provenance(input_name=input_name)
 
-    def _output_provenance_operations(
+    def _output_provenance(
         self,
         *,
         input_name: str | None = None,
         data: xr.DataArray | None = None,
-    ) -> tuple[
-        erlab.interactive.imagetool.provenance_operations.ScriptCodeOperation, ...
-    ]:
-        return self._result_provenance_operations(
+    ) -> tuple[provenance.ScriptCodeOperation, ...]:
+        return self._result_provenance(
             input_name=input_name,
             transpose_output=True,
         )

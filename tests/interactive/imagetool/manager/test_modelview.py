@@ -887,7 +887,7 @@ def test_manager_file_open_uses_selected_dataset_variable(
         coords={"u": np.arange(4), "v": np.arange(5)},
         name="second",
     )
-    selection = erlab.interactive.imagetool.provenance_framework.FileDataSelection(
+    selection = erlab.interactive.imagetool.provenance.FileDataSelection(
         kind="dataset_variable",
         value="second",
     )
@@ -1474,7 +1474,7 @@ def test_manager_child_imagetool_dask_badge(
             child_tool,
             0,
             show=False,
-            source_spec=erlab.interactive.imagetool.provenance_framework.full_data(),
+            source_spec=erlab.interactive.imagetool.provenance.full_data(),
             source_auto_update=True,
         )
         child_tool.slicer_area._auto_chunk()

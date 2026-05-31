@@ -19,14 +19,13 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import _serialization
+from erlab.interactive.imagetool import _serialization, provenance
 from erlab.interactive.imagetool._load_source import _load_provenance_from_file_details
 from erlab.interactive.imagetool.viewer_state import _select_input_dataarrays
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
     from erlab.interactive.imagetool.slicer import ArraySlicer
 
 _ITOOL_DATA_NAME: str = _serialization.ITOOL_DATA_NAME
@@ -62,9 +61,7 @@ class BaseImageTool(QtWidgets.QMainWindow):
         super().__init__(parent=parent)
         state = kwargs.pop("state", None)
         transpose = bool(kwargs.pop("transpose", False))
-        self._provenance_spec: (
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None
-        ) = None
+        self._provenance_spec: provenance.ToolProvenanceSpec | None = None
         self._slicer_area = erlab.interactive.imagetool.viewer.ImageSlicerArea(
             self, data, **kwargs
         )
@@ -161,20 +158,18 @@ class BaseImageTool(QtWidgets.QMainWindow):
     @property
     def provenance_spec(
         self,
-    ) -> ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
         return self._provenance_spec
 
     def set_provenance_spec(
         self,
-        provenance_spec: ToolProvenanceSpec | Mapping[str, typing.Any] | None,
+        provenance_spec: provenance.ToolProvenanceSpec
+        | Mapping[str, typing.Any]
+        | None,
     ) -> None:
         """Set canonical replay provenance for the current ImageTool data."""
-        self._provenance_spec = (
-            erlab.interactive.imagetool.provenance_framework.parse_tool_provenance_spec(
-                provenance_spec
-            )
-        )
+        self._provenance_spec = provenance.parse_tool_provenance_spec(provenance_spec)
 
     def _sync_file_load_provenance(self) -> None:
         """Use file-load details as replay provenance when the current data has them."""
