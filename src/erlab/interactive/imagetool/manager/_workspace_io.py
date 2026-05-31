@@ -530,6 +530,12 @@ class _WorkspaceIOController:
                 "Structure modified",
                 tuple(dict.fromkeys(self._manager._workspace_state.structure_reasons)),
             ),
+            (
+                "Layout modified",
+                ("Manager window layout",)
+                if self._manager._workspace_state.layout_modified
+                else (),
+            ),
         )
         blocks: list[str] = []
         for label, items in sections:
@@ -611,6 +617,18 @@ class _WorkspaceIOController:
 
     def _mark_workspace_structure_dirty(self, reason: str) -> None:
         self._manager._mark_workspace_dirty(structure=reason)
+
+    def _mark_workspace_layout_dirty(self) -> None:
+        if (
+            not getattr(self._manager, "_manager_layout_tracking_enabled", False)
+            or self._manager._workspace_state.path is None
+            or self._manager._workspace_state.loading_depth > 0
+            or self._manager._workspace_state.saving_depth > 0
+            or self._manager._workspace_state.closing_document
+        ):
+            return
+        if self._manager._workspace_state.mark_layout_dirty():
+            self._manager._update_workspace_window_title()
 
     def _mark_workspace_clean(self) -> None:
         self._manager._workspace_state.mark_clean()
@@ -1299,6 +1317,8 @@ class _WorkspaceIOController:
                 self._manager._restore_workspace_link_groups(
                     manifest, loaded_targets_by_uid
                 )
+                if replace:
+                    self._manager._restore_workspace_layout(manifest)
                 if not mark_dirty:
                     self._manager._drain_workspace_deferred_events()
             except Exception:
@@ -1421,6 +1441,8 @@ class _WorkspaceIOController:
                     self._manager._restore_workspace_link_groups(
                         manifest, loaded_targets_by_uid
                     )
+                    if replace:
+                        self._manager._restore_workspace_layout(manifest)
                     if not mark_dirty:
                         self._manager._drain_workspace_deferred_events()
                 except Exception:
@@ -1567,7 +1589,48 @@ class _WorkspaceIOController:
             delta_save_count=delta_save_count,
             erlab_version=str(erlab.__version__),
             workspace_link_id=self._manager._workspace_state.link_id,
+            manager_layout=self._manager._workspace_layout_snapshot(),
         )
+
+    def _workspace_layout_snapshot(self) -> dict[str, str]:
+        return {
+            "geometry": erlab.interactive.utils._qt_bytearray_to_base64(
+                self._manager.saveGeometry()
+            ),
+            "main_splitter": erlab.interactive.utils._qt_bytearray_to_base64(
+                self._manager.main_splitter.saveState()
+            ),
+            "right_splitter": erlab.interactive.utils._qt_bytearray_to_base64(
+                self._manager.right_splitter.saveState()
+            ),
+        }
+
+    def _restore_workspace_layout(
+        self, manifest: Mapping[str, typing.Any] | None
+    ) -> None:
+        if manifest is None:
+            return
+        layout = manifest.get("manager_layout")
+        if not isinstance(layout, dict):
+            return
+
+        geometry = erlab.interactive.utils._qt_bytearray_from_base64(
+            layout.get("geometry")
+        )
+        if geometry is not None:
+            self._manager.restoreGeometry(geometry)
+
+        main_splitter = erlab.interactive.utils._qt_bytearray_from_base64(
+            layout.get("main_splitter")
+        )
+        if main_splitter is not None:
+            self._manager.main_splitter.restoreState(main_splitter)
+
+        right_splitter = erlab.interactive.utils._qt_bytearray_from_base64(
+            layout.get("right_splitter")
+        )
+        if right_splitter is not None:
+            self._manager.right_splitter.restoreState(right_splitter)
 
     def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
         tree: xr.DataTree = self._manager._to_datatree()
@@ -1988,6 +2051,22 @@ class _WorkspaceIOController:
             has_dirty_removed=bool(self._manager._workspace_state.dirty_removed),
         )
 
+    def _workspace_has_non_layout_modifications(self) -> bool:
+        state = self._manager._workspace_state
+        return (
+            state.structure_modified
+            or bool(state.dirty_added)
+            or bool(state.dirty_data)
+            or bool(state.dirty_state)
+            or bool(state.dirty_removed)
+        )
+
+    def _workspace_layout_only_modified(self) -> bool:
+        return (
+            self._manager._workspace_state.layout_modified
+            and not self._workspace_has_non_layout_modifications()
+        )
+
     def _workspace_rewrite_group_snapshot(
         self, uid: str
     ) -> tuple[str, dict[str, xr.Dataset]]:
@@ -2054,6 +2133,14 @@ class _WorkspaceIOController:
         try:
             if self._manager._workspace_requires_full_save(fname):
                 return self._manager._workspace_full_save_snapshot(generation)
+            if self._workspace_layout_only_modified():
+                delta_save_count = self._manager._workspace_state.delta_save_count
+                root_attrs = self._manager._workspace_root_attrs_payload(
+                    delta_save_count=delta_save_count
+                )
+                return self._manager._workspace_delta_save_snapshot(
+                    generation, root_attrs, delta_save_count
+                )
             delta_save_count = self._manager._workspace_state.delta_save_count + 1
             root_attrs = self._manager._workspace_root_attrs_payload(
                 delta_save_count=delta_save_count

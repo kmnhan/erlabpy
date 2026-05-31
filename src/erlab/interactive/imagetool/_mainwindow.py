@@ -193,6 +193,9 @@ class BaseImageTool(QtWidgets.QMainWindow):
             "itool_state": json.dumps(state),
             "itool_title": self.windowTitle(),
             "itool_name": str(name),
+            "itool_qt_geometry": (
+                erlab.interactive.utils._qt_bytearray_to_base64(self.saveGeometry())
+            ),
             "itool_rect": self.geometry().getRect(),
             "itool_visible": bool(self.isVisible()),
             "erlab_version": erlab.__version__,
@@ -257,7 +260,14 @@ class BaseImageTool(QtWidgets.QMainWindow):
                     "Ignoring invalid saved ImageTool provenance metadata.",
                 )
         tool.setWindowTitle(ds.attrs["itool_title"])
-        tool.setGeometry(*ds.attrs["itool_rect"])
+        restored_geometry = False
+        geometry = erlab.interactive.utils._qt_bytearray_from_base64(
+            ds.attrs.get("itool_qt_geometry")
+        )
+        if geometry is not None:
+            restored_geometry = tool.restoreGeometry(geometry)
+        if not restored_geometry and "itool_rect" in ds.attrs:
+            tool.setGeometry(*ds.attrs["itool_rect"])
         return tool
 
     @classmethod

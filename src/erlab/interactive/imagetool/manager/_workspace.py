@@ -310,6 +310,7 @@ def _workspace_root_attrs_payload(
     delta_save_count: int,
     erlab_version: str,
     workspace_link_id: str | None = None,
+    manager_layout: Mapping[str, typing.Any] | None = None,
 ) -> dict[str, typing.Any]:
     manifest: dict[str, typing.Any] = {
         "schema_version": _WORKSPACE_SCHEMA_VERSION,
@@ -319,6 +320,8 @@ def _workspace_root_attrs_payload(
     }
     if workspace_link_id is not None:
         manifest["workspace_link_id"] = workspace_link_id
+    if manager_layout is not None:
+        manifest["manager_layout"] = dict(manager_layout)
     if delta_save_count > 0:
         manifest["transaction_protocol"] = _WORKSPACE_TRANSACTION_PROTOCOL
         manifest["delta_save_count"] = int(delta_save_count)

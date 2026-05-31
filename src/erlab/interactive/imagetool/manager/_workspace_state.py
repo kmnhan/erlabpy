@@ -28,6 +28,7 @@ class _WorkspaceStateSnapshot(typing.TypedDict):
     dirty_state: frozenset[str]
     dirty_removed: tuple[str, ...]
     structure_reasons: tuple[str, ...]
+    layout_modified: bool
     dirty_generation: int
     dirty_events: tuple[_manager_workspace._WorkspaceDirtyEvent, ...]
     delta_save_count: int
@@ -48,6 +49,7 @@ class _ManagerWorkspaceState:
         self.dirty_state: set[str] = set()
         self.dirty_removed: list[str] = []
         self.structure_reasons: list[str] = []
+        self.layout_modified: bool = False
         self.needs_full_save: bool = False
         self.dirty_generation: int = 0
         self.dirty_events: list[_manager_workspace._WorkspaceDirtyEvent] = []
@@ -64,6 +66,7 @@ class _ManagerWorkspaceState:
             return False
         return (
             self.structure_modified
+            or self.layout_modified
             or bool(self.dirty_added)
             or bool(self.dirty_data)
             or bool(self.dirty_state)
@@ -98,8 +101,16 @@ class _ManagerWorkspaceState:
             return True
         return False
 
+    def mark_layout_dirty(self) -> bool:
+        if self.layout_modified:
+            return False
+        self.layout_modified = True
+        self.dirty_generation += 1
+        return True
+
     def mark_clean(self) -> None:
         self.structure_modified = False
+        self.layout_modified = False
         self.dirty_added.clear()
         self.dirty_data.clear()
         self.dirty_state.clear()
@@ -135,6 +146,7 @@ class _ManagerWorkspaceState:
             "dirty_state": frozenset(self.dirty_state),
             "dirty_removed": tuple(self.dirty_removed),
             "structure_reasons": tuple(self.structure_reasons),
+            "layout_modified": self.layout_modified,
             "dirty_generation": self.dirty_generation,
             "dirty_events": tuple(self.dirty_events),
             "delta_save_count": self.delta_save_count,
@@ -151,6 +163,7 @@ class _ManagerWorkspaceState:
         self.dirty_state = set(snapshot["dirty_state"])
         self.dirty_removed = list(snapshot["dirty_removed"])
         self.structure_reasons = list(snapshot["structure_reasons"])
+        self.layout_modified = snapshot["layout_modified"]
         self.dirty_generation = snapshot["dirty_generation"]
         self.dirty_events = list(snapshot["dirty_events"])
         self.delta_save_count = snapshot["delta_save_count"]

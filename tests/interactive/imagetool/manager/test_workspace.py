@@ -523,6 +523,70 @@ def test_manager_workspace_load_falls_back_for_legacy_or_invalid_added_time(
         assert loaded.utcoffset() is not None
 
 
+def test_qt_bytearray_base64_helpers_reject_invalid_values() -> None:
+    value = QtCore.QByteArray(b"layout-state")
+    encoded = erlab.interactive.utils._qt_bytearray_to_base64(value)
+
+    decoded = erlab.interactive.utils._qt_bytearray_from_base64(encoded)
+    assert decoded == value
+
+    assert erlab.interactive.utils._qt_bytearray_from_base64(b"\xff") is None
+    assert erlab.interactive.utils._qt_bytearray_from_base64("%%not-base64%%") is None
+    assert erlab.interactive.utils._qt_bytearray_from_base64("") is None
+
+
+def test_imagetool_dataset_prefers_qt_geometry_and_keeps_rect_fallback(
+    qtbot, test_data
+) -> None:
+    tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+    qtbot.addWidget(tool)
+    tool.resize(533, 477)
+    ds = tool.to_dataset()
+    assert ds.attrs["itool_qt_geometry"]
+
+    qt_geometry_ds = ds.copy(deep=False)
+    del qt_geometry_ds.attrs["itool_rect"]
+    restored = erlab.interactive.imagetool.ImageTool.from_dataset(
+        qt_geometry_ds, _in_manager=True
+    )
+    qtbot.addWidget(restored)
+    assert restored.size() == tool.size()
+
+    legacy_ds = ds.copy(deep=False)
+    del legacy_ds.attrs["itool_qt_geometry"]
+    legacy = erlab.interactive.imagetool.ImageTool.from_dataset(
+        legacy_ds, _in_manager=True
+    )
+    qtbot.addWidget(legacy)
+    assert tuple(legacy.geometry().getRect()) == tuple(
+        int(value) for value in ds.attrs["itool_rect"]
+    )
+
+
+def test_toolwindow_dataset_prefers_qt_geometry_and_keeps_rect_fallback(
+    qtbot, test_data
+) -> None:
+    tool = _AddedTimeChildTool(test_data)
+    qtbot.addWidget(tool)
+    tool.resize(421, 333)
+    ds = tool.to_dataset()
+    assert ds.attrs["tool_qt_geometry"]
+
+    qt_geometry_ds = ds.copy(deep=False)
+    del qt_geometry_ds.attrs["tool_rect"]
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(qt_geometry_ds)
+    qtbot.addWidget(restored)
+    assert restored.size() == tool.size()
+
+    legacy_ds = ds.copy(deep=False)
+    del legacy_ds.attrs["tool_qt_geometry"]
+    legacy = erlab.interactive.utils.ToolWindow.from_dataset(legacy_ds)
+    qtbot.addWidget(legacy)
+    assert tuple(legacy.geometry().getRect()) == tuple(
+        int(value) for value in ds.attrs["tool_rect"]
+    )
+
+
 def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
     qtbot,
     tmp_path: pathlib.Path,
@@ -770,6 +834,180 @@ def test_manager_workspace_io(
             select_tools(manager, list(manager._tool_graph.root_wrappers.keys()))
             accept_dialog(manager.remove_action.trigger)
             qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+
+def test_manager_workspace_roundtrip_restores_manager_layout(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        manager.add_imagetool(root, show=False)
+
+        manager.resize(640, 520)
+        manager.main_splitter.setSizes([220, 420])
+        manager.right_splitter.setSizes([300, 160])
+        expected_layout = manager._workspace_layout_snapshot()
+        expected_size = manager.size()
+        expected_main_sizes = manager.main_splitter.sizes()
+        expected_right_sizes = manager.right_splitter.sizes()
+
+        fname = tmp_path / "manager-layout.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert manifest["manager_layout"] == expected_layout
+
+        manager.resize(480, 500)
+        manager.main_splitter.setSizes([120, 360])
+        manager.right_splitter.setSizes([120, 280])
+        assert manager._workspace_layout_snapshot() != expected_layout
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=True,
+            mark_dirty=False,
+            select=False,
+        )
+        qtbot.wait_until(
+            lambda: (
+                manager.size() == expected_size
+                and manager.main_splitter.sizes() == expected_main_sizes
+                and manager.right_splitter.sizes() == expected_right_sizes
+            ),
+            timeout=5000,
+        )
+        assert not manager.is_workspace_modified
+
+
+def test_manager_workspace_layout_only_save_updates_root_manifest_only(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "layout-only.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager._adopt_workspace_path(fname)
+        manager._mark_workspace_clean()
+        delta_save_count = manager._workspace_state.delta_save_count
+
+        manager.resize(manager.width() + 40, manager.height() + 30)
+        qtbot.wait_until(lambda: manager.is_workspace_modified, timeout=5000)
+        assert manager._workspace_state.layout_modified
+        assert manager._dirty_details_text()
+        manager._mark_workspace_layout_dirty()
+
+        def _forbid_node_serialization(*_args, **_kwargs):
+            raise AssertionError("layout-only save serialized a node")
+
+        def _forbid_full_save(*_args, **_kwargs):
+            raise AssertionError("layout-only save requested a full workspace write")
+
+        monkeypatch.setattr(
+            manager, "_serialize_workspace_node", _forbid_node_serialization
+        )
+        monkeypatch.setattr(
+            manager_workspace, "_write_full_workspace_tree_file", _forbid_full_save
+        )
+
+        assert manager.save()
+        assert manager._workspace_state.delta_save_count == delta_save_count
+        assert not manager.is_workspace_modified
+
+        with h5py.File(fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert "delta_save_count" not in manifest
+        assert manifest["manager_layout"] == manager._workspace_layout_snapshot()
+
+
+def test_manager_workspace_import_does_not_restore_manager_layout(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        manager.show()
+        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        manager.add_imagetool(root, show=False)
+
+        manager.resize(640, 520)
+        manager.main_splitter.setSizes([220, 420])
+        manager.right_splitter.setSizes([300, 160])
+        import_fname = tmp_path / "import-layout.itws"
+        manager._save_workspace_document(import_fname, force_full=True)
+
+        manager.resize(480, 500)
+        manager.main_splitter.setSizes([120, 360])
+        manager.right_splitter.setSizes([120, 280])
+        current_layout = manager._workspace_layout_snapshot()
+
+        import h5py
+
+        with h5py.File(import_fname, "r") as h5_file:
+            manifest = manager_workspace._workspace_manifest_from_attrs(h5_file.attrs)
+        assert manager._from_h5py_workspace_file(
+            import_fname, manifest, replace=False, mark_dirty=True
+        )
+        assert manager._workspace_layout_snapshot() == current_layout
+
+        tree = manager_xarray.open_workspace_datatree(import_fname, chunks=None)
+        assert manager._from_datatree(
+            tree,
+            replace=False,
+            mark_dirty=True,
+            select=False,
+            workspace_file_path=import_fname,
+        )
+        assert manager._workspace_layout_snapshot() == current_layout
+
+
+def test_manager_workspace_restore_layout_ignores_missing_or_invalid_values(
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        layout = manager._workspace_layout_snapshot()
+
+        manager._restore_workspace_layout(None)
+        manager._restore_workspace_layout({})
+        manager._restore_workspace_layout({"manager_layout": "invalid"})
+        manager._restore_workspace_layout(
+            {
+                "manager_layout": {
+                    "geometry": "",
+                    "main_splitter": "",
+                    "right_splitter": "",
+                }
+            }
+        )
+        assert manager._workspace_layout_snapshot() == layout
 
 
 def test_manager_workspace_preserves_link_groups(
