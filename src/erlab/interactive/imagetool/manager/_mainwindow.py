@@ -796,6 +796,145 @@ class ImageToolManager(_ImageToolManagerBase):
         self._dependency_tracker.clear_uid(uid)
         self._refresh_dependency_dependents(uid)
 
+    def _iter_descendant_uids(self, uid: str) -> list[str]:
+        return self._tool_graph.descendant_uids(uid)
+
+    def _mark_removed_subtree_dirty(self, uid: str) -> None:
+        for node_uid in self._tool_graph.subtree_uids(uid):
+            node = self._tool_graph.nodes.get(node_uid)
+            if node is not None:
+                self._set_node_window_modified(node_uid, False)
+                self._mark_workspace_dirty(
+                    removed=node.display_text, structure="Removed window"
+                )
+
+    def _remove_uid_target(self, uid: str) -> None:
+        if uid not in self._tool_graph.nodes:
+            return
+        subtree = self._tool_graph.subtree_uids(uid)
+        subtree.reverse()
+        for child_uid in subtree:
+            child = self._tool_graph.nodes.get(child_uid)
+            if child is None or isinstance(child, _ImageToolWrapper):
+                continue
+            self._unregister_node(child_uid)
+            if child.tool_window is not None:
+                child.tool_window.set_source_parent_fetcher(None)
+                child.tool_window.set_input_provenance_parent_fetcher(None)
+            child.dispose()
+
+    @QtCore.Slot()
+    def reindex(self) -> None:
+        """Reset indices of ImageTool windows to be consecutive in display order."""
+        with self._reindex_lock:
+            self._tool_graph.reindex_roots()
+
+        self.tree_view.refresh()
+        self._mark_workspace_structure_dirty("Reindexed root windows")
+
+    @QtCore.Slot(int)
+    def remove_imagetool(self, index: int, *, update_view: bool = True) -> None:
+        """Remove the ImageTool window corresponding to the given index."""
+        if index not in self._tool_graph.root_wrappers:
+            return
+        wrapper = self._tool_graph.root_wrappers[index]
+        self._mark_removed_subtree_dirty(wrapper.uid)
+        descendant_uids = list(wrapper._childtool_indices)
+        if update_view:
+            self.tree_view.imagetool_removed(index)
+
+        for uid in list(descendant_uids):
+            self._remove_uid_target(uid)
+
+        self._tool_graph.unregister_root(index)
+        self._refresh_dependency_dependents(wrapper.uid)
+        wrapper.dispose()
+        wrapper.deleteLater()
+
+    @contextlib.contextmanager
+    def _bulk_remove_context(self) -> Iterator[None]:
+        outermost = self._bulk_remove_depth == 0
+        self._bulk_remove_depth += 1
+        if outermost:
+            self._link_registry.clear_pending_cleanup()
+            self.setUpdatesEnabled(False)
+            self.tree_view.setUpdatesEnabled(False)
+        try:
+            yield
+        finally:
+            self._bulk_remove_depth -= 1
+            if outermost:
+                self.tree_view.setUpdatesEnabled(True)
+                self.setUpdatesEnabled(True)
+
+                if self._link_registry.pop_pending_cleanup():
+                    self._cleanup_linkers()
+
+                self._update_actions()
+                self._update_info()
+
+    def _remove_imagetools(
+        self,
+        indices: list[int | str],
+        *,
+        child_uids: list[str] | None = None,
+        clear_view: bool = False,
+    ) -> None:
+        root_indices: list[int] = []
+        child_targets: list[str] = []
+        covered_child_uids: set[str] = set()
+        for target in indices:
+            if isinstance(target, int):
+                root_indices.append(target)
+                wrapper = self._tool_graph.root_wrappers.get(target)
+                if wrapper is not None:
+                    direct_children = list(wrapper._childtool_indices)
+                    covered_child_uids.update(direct_children)
+                    for child_uid in direct_children:
+                        covered_child_uids.update(self._iter_descendant_uids(child_uid))
+            else:
+                child_targets.append(target)
+
+        for uid in child_uids or []:
+            if uid not in covered_child_uids and uid not in child_targets:
+                child_targets.append(uid)
+
+        if len(root_indices) == 0 and len(child_targets) == 0:
+            return
+
+        with self._bulk_remove_context():
+            if clear_view:
+                self.tree_view.clear_imagetools()
+
+            for index in root_indices:
+                self.remove_imagetool(index, update_view=not clear_view)
+
+            for uid in child_targets:
+                self._remove_childtool(uid)
+
+    def remove_all_tools(self) -> None:
+        """Remove all ImageTool windows."""
+        self._remove_imagetools(
+            list(self._tool_graph.root_wrappers.keys()), clear_view=True
+        )
+
+    @QtCore.Slot(int)
+    def show_imagetool(self, index: int) -> None:
+        """Show the ImageTool window corresponding to the given index."""
+        if index in self._tool_graph.root_wrappers:
+            self._tool_graph.root_wrappers[index].show()
+
+    @QtCore.Slot()
+    def _request_reload_linkers(self) -> None:
+        if self._link_registry.request_cleanup(defer=self._bulk_remove_depth > 0):
+            self.sigLinkersChanged.emit()
+
+    @QtCore.Slot()
+    def _cleanup_linkers(self) -> None:
+        """Remove linkers with one or no children."""
+        self._link_registry.cleanup_stale()
+        self.sigLinkersChanged.emit()
+
     def color_for_linker(
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
     ) -> QtGui.QColor:

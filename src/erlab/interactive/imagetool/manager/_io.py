@@ -23,7 +23,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
-    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
+    from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.provenance_framework import FileDataSelection
 
 
@@ -111,7 +111,7 @@ class _MultiFileHandler(QtCore.QObject):
 
     def __init__(
         self,
-        manager: _ImageToolManagerBase,
+        manager: ImageToolManager,
         file_list: list[pathlib.Path],
         func: Callable,
         kwargs: dict[str, typing.Any],
@@ -134,7 +134,7 @@ class _MultiFileHandler(QtCore.QObject):
         self._threadpool.setExpiryTimeout(0)
 
     @property
-    def manager(self) -> _ImageToolManagerBase:
+    def manager(self) -> ImageToolManager:
         """Access the parent manager instance."""
         manager = self._manager()
         if manager is None:

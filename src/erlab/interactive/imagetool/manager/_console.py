@@ -37,7 +37,7 @@ if typing.TYPE_CHECKING:
     )
 
     from erlab.interactive.imagetool import ImageTool
-    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
+    from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.manager._wrapper import (
         _ImageToolWrapper,
         _ManagedWindowNode,
@@ -327,7 +327,7 @@ def _derived_operand_code(expression: str) -> str:
 
 
 def _unwrap_console_value(value: typing.Any) -> typing.Any:
-    if isinstance(value, _ConsoleDataHandleMixin):
+    if isinstance(value, _ConsoleDataHandleBase):
         return value.data
     if isinstance(value, tuple):
         return tuple(_unwrap_console_value(item) for item in value)
@@ -341,8 +341,8 @@ def _unwrap_console_value(value: typing.Any) -> typing.Any:
     return value
 
 
-def _first_console_handle(value: typing.Any) -> _ConsoleDataHandleMixin | None:
-    if isinstance(value, _ConsoleDataHandleMixin):
+def _first_console_handle(value: typing.Any) -> _ConsoleDataHandleBase | None:
+    if isinstance(value, _ConsoleDataHandleBase):
         return value
     if isinstance(value, (tuple, list)):
         for item in value:
@@ -356,7 +356,7 @@ def _first_console_handle(value: typing.Any) -> _ConsoleDataHandleMixin | None:
 
 
 def _operand_from_value(value: typing.Any) -> _ConsoleOperand:
-    if isinstance(value, _ConsoleDataHandleMixin):
+    if isinstance(value, _ConsoleDataHandleBase):
         return value._console_operand()
     if (callable_operand := _callable_operand(value)) is not None:
         return callable_operand
@@ -463,7 +463,7 @@ def _structured_seed_and_operations(
 class _ConsoleAccessorProxy:
     def __init__(
         self,
-        owner: _ConsoleDataHandleMixin,
+        owner: _ConsoleDataHandleBase,
         accessor: typing.Any,
         path: tuple[str, ...],
         expression: str,
@@ -565,7 +565,7 @@ class _ConsoleAccessorProxy:
 class _ConsoleCoarsenProxy:
     def __init__(
         self,
-        owner: _ConsoleDataHandleMixin,
+        owner: _ConsoleDataHandleBase,
         coarsened: typing.Any,
         source_operand: _ConsoleOperand,
         expression: str,
@@ -696,13 +696,13 @@ class _ConsoleModuleProxy(types.ModuleType):
                     (
                         name
                         for name, arg in bound_args.items()
-                        if isinstance(arg, _ConsoleDataHandleMixin)
+                        if isinstance(arg, _ConsoleDataHandleBase)
                     ),
                     None,
                 )
                 if source_param is not None:
                     source = bound_args[source_param]
-                    if isinstance(source, _ConsoleDataHandleMixin):
+                    if isinstance(source, _ConsoleDataHandleBase):
                         source_operand = source._console_operand()
                         call_args = ()
                         call_kwargs = {
@@ -806,7 +806,7 @@ class _ConsoleFunctionProxy:
         )
 
 
-class _ConsoleDataHandleMixin:
+class _ConsoleDataHandleBase:
     __array_priority__ = 1000
 
     @property
@@ -1140,7 +1140,7 @@ class _ConsoleDataHandleMixin:
         return sorted(names)
 
 
-class ToolNamespace(_ConsoleDataHandleMixin):
+class ToolNamespace(_ConsoleDataHandleBase):
     """Provenance-aware console handle for one managed ImageTool.
 
     In the manager console, ``tools[idx]`` accesses a top-level ImageTool, and
@@ -1192,9 +1192,9 @@ class ToolNamespace(_ConsoleDataHandleMixin):
         return self.tool.slicer_area.displayed_data
 
     @data.setter
-    def data(self, value: xr.DataArray | _ConsoleDataHandleMixin) -> None:
+    def data(self, value: xr.DataArray | _ConsoleDataHandleBase) -> None:
         provenance_spec = None
-        if isinstance(value, _ConsoleDataHandleMixin):
+        if isinstance(value, _ConsoleDataHandleBase):
             raw_value = value.data
             provenance_spec = value._console_provenance_spec(
                 active_name=self._console_input_name,
@@ -1405,7 +1405,7 @@ class _ToolChildren:
         return "\n".join(lines)
 
 
-class _DerivedDataNamespace(_ConsoleDataHandleMixin):
+class _DerivedDataNamespace(_ConsoleDataHandleBase):
     def __init__(
         self,
         tools: ToolsNamespace | None,
@@ -1529,13 +1529,13 @@ class ToolsNamespace:
 
     """
 
-    def __init__(self, manager: _ImageToolManagerBase) -> None:
+    def __init__(self, manager: ImageToolManager) -> None:
         self._manager_ref = weakref.ref(manager)
         self._shell_ref: weakref.ReferenceType[InteractiveShell] | None = None
         self._namespace_snapshot: dict[str, int] = {}
 
     @property
-    def _manager(self) -> _ImageToolManagerBase:
+    def _manager(self) -> ImageToolManager:
         """Access the ImageToolManager instance."""
         manager = self._manager_ref()
         if manager:
@@ -1725,7 +1725,7 @@ class ToolsNamespace:
 
     def _show_handle(
         self,
-        handle: _ConsoleDataHandleMixin,
+        handle: _ConsoleDataHandleBase,
         *,
         active_name: str,
         label: str,
@@ -1747,7 +1747,7 @@ class ToolsNamespace:
         manager = kwargs.get("manager")
         replace = kwargs.get("replace")
         if (
-            isinstance(data, _ConsoleDataHandleMixin)
+            isinstance(data, _ConsoleDataHandleBase)
             and not args
             and replace is None
             and self._manager_argument_targets_this_manager(manager)
@@ -1771,7 +1771,7 @@ class ToolsNamespace:
 
     def _qshow_handle(
         self,
-        data: _ConsoleDataHandleMixin,
+        data: _ConsoleDataHandleBase,
         *args: typing.Any,
         **kwargs: typing.Any,
     ) -> typing.Any:
@@ -2003,7 +2003,7 @@ del VerboseTB
 class _ImageToolManagerJupyterConsole(QtWidgets.QDockWidget):
     """A dock widget containing the Jupyter console."""
 
-    def __init__(self, manager: _ImageToolManagerBase) -> None:
+    def __init__(self, manager: ImageToolManager) -> None:
         super().__init__("Console", manager, flags=QtCore.Qt.WindowType.Window)
         tools_namespace = ToolsNamespace(manager)
 
