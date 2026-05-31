@@ -59,6 +59,7 @@ if typing.TYPE_CHECKING:
     )
     from erlab.interactive.imagetool.manager._workspace_io import (
         _WorkspaceDocumentAccess,
+        _WorkspaceIOController,
     )
     from erlab.interactive.imagetool.manager._workspace_state import (
         _ManagerWorkspaceState,
@@ -146,6 +147,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _tool_graph: _ManagerToolGraph
     _tool_metadata_queue: _ManagerToolMetadataQueue
     _warning_handler: _WarningNotificationHandler
+    _workspace_controller: _WorkspaceIOController
     _workspace_state: _ManagerWorkspaceState
     _widgets_controller: _WidgetsController
 

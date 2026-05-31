@@ -24,6 +24,7 @@ from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._dialogs import _NameFilterDialog
 from erlab.interactive.imagetool.manager._modelview import _MIME, _RowBadge
 from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
+from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
 
 from .helpers import (
     assert_nonempty_tooltip,
@@ -789,7 +790,7 @@ def test_manager_open_preselects_default_loader_filter(
         },
     )
 
-    ImageToolManager.open(manager, native=False)
+    _WorkspaceIOController(manager).open(native=False)
 
     assert selected_filters == [example_filter]
 
@@ -1116,7 +1117,7 @@ def test_manager_open_loader_selection_branches(
         },
     )
 
-    ImageToolManager.open(manager, native=False)
+    _WorkspaceIOController(manager).open(native=False)
 
     if case == "loader_cancel":
         assert len(select_calls) == 1
@@ -1262,7 +1263,7 @@ def test_manager_file_loads_with_loader_extensions(
         if entry_point == "open":
 
             def _trigger_load():
-                return ImageToolManager.open(manager, native=False)
+                return manager.open(native=False)
 
         else:
 
