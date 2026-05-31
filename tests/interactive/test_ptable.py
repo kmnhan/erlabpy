@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 import numpy as np
+import pydantic
 import pyqtgraph as pg
 import pytest
 import xarray as xr
@@ -30,12 +31,33 @@ from erlab.interactive.ptable._shared import (
     _effective_point_size,
     _format_mass,
 )
+from erlab.interactive.ptable._window import PeriodicTableState
 
 
 def _show_window(qtbot, win: PeriodicTableWindow) -> None:
     qtbot.addWidget(win)
     with qtbot.waitExposed(win):
         win.show()
+
+
+def test_ptable_workspace_state_validators() -> None:
+    state = PeriodicTableState.model_validate(
+        {
+            "selected_atomic_numbers": None,
+            "photon_energy": None,
+            "work_function": 4.5,
+        }
+    )
+    assert state.selected_atomic_numbers == ()
+    assert state.photon_energy == ""
+    assert state.work_function == "4.5"
+
+    with pytest.raises(pydantic.ValidationError):
+        PeriodicTableState.model_validate({"photon_energy": object()})
+
+    assert PeriodicTableWindow._atomic_number_from_state(True) is None
+    assert PeriodicTableWindow._atomic_number_from_state("not an element") is None
+    assert PeriodicTableWindow._atomic_number_from_state(119) is None
 
 
 @pytest.fixture(autouse=True)

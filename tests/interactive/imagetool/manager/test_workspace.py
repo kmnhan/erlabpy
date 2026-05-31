@@ -22,6 +22,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._qt_state as qt_state
 import erlab.interactive.imagetool._serialization as imagetool_serialization
 import erlab.interactive.imagetool.manager as manager_module
 import erlab.interactive.imagetool.manager._desktop as manager_desktop
@@ -533,6 +534,24 @@ def test_qt_bytearray_base64_helpers_reject_invalid_values() -> None:
     assert erlab.interactive.utils._qt_bytearray_from_base64(b"\xff") is None
     assert erlab.interactive.utils._qt_bytearray_from_base64("%%not-base64%%") is None
     assert erlab.interactive.utils._qt_bytearray_from_base64("") is None
+
+
+def test_qt_window_state_helpers_parse_invalid_and_restore_rect(qtbot) -> None:
+    assert qt_state.QtWindowState.model_validate({"rect": None}).rect is None
+    with pytest.raises(pydantic.ValidationError):
+        qt_state.QtWindowState.model_validate({"rect": [1, 2, 3]})
+
+    assert qt_state.qt_bytearray_from_base64(object()) is None
+    assert qt_state.parse_qt_window_state(b"\xff") is None
+    assert qt_state.parse_qt_window_state("{") is None
+    assert qt_state.parse_qt_window_state({"rect": [1, 2, 3]}) is None
+
+    widget = QtWidgets.QWidget()
+    qtbot.addWidget(widget)
+    assert qt_state.restore_qt_window_state(
+        widget, {"geometry": "", "rect": [10, 20, 123, 45]}
+    )
+    assert widget.geometry().getRect() == (10, 20, 123, 45)
 
 
 def test_imagetool_dataset_uses_window_state_and_keeps_rect_fallback(
@@ -1276,6 +1295,89 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
             explorer.loader_extensions_by_name()[loader_name]
             == explorer_extensions[loader_name]
         )
+
+
+def test_workspace_loader_and_standalone_app_state_edge_cases(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        controller = manager._workspace_controller
+
+        controller._restore_workspace_loader_state({"loader_state": []})
+        controller._restore_workspace_loader_state(
+            {"loader_state": {"manager_loader_kwargs_by_filter": []}}
+        )
+
+        loader_calls: list[
+            tuple[dict[str, dict[str, typing.Any]], dict[str, dict[str, typing.Any]]]
+        ] = []
+
+        class _LoaderStateExplorer(QtWidgets.QWidget):
+            def apply_loader_state(
+                self,
+                *,
+                kwargs_by_name: dict[str, dict[str, typing.Any]],
+                extensions_by_name: dict[str, dict[str, typing.Any]],
+            ) -> None:
+                loader_calls.append((kwargs_by_name, extensions_by_name))
+
+        explorer = _LoaderStateExplorer()
+        qtbot.addWidget(explorer)
+        manager._standalone_app_windows["explorer"] = explorer
+        controller._restore_workspace_loader_state(
+            {
+                "loader_state": {
+                    "explorer_loader_kwargs_by_name": {"example": {"single": True}},
+                    "explorer_loader_extensions_by_name": {
+                        "example": {"coordinate_attrs": ["sample"]}
+                    },
+                }
+            }
+        )
+        assert loader_calls == [
+            (
+                {"example": {"single": True}},
+                {"example": {"coordinate_attrs": ["sample"]}},
+            )
+        ]
+        manager._standalone_app_windows.pop("explorer")
+
+        assert controller._validated_standalone_app_state("missing", {}) is None
+        assert (
+            controller._validated_standalone_app_state("explorer", {"tabs": "bad"})
+            is None
+        )
+
+        manager._standalone_app_pending_states["ptable"] = {
+            "window_state": {"visible": False},
+            "selected_atomic_numbers": [1],
+        }
+        snapshot = controller._workspace_standalone_apps_snapshot()
+        assert snapshot["apps"]["ptable"]["selected_atomic_numbers"] == [1]
+
+        controller._restore_standalone_apps_state({"standalone_apps": []})
+        controller._restore_standalone_apps_state({"standalone_apps": {"apps": []}})
+        controller._restore_standalone_apps_state(
+            {"standalone_apps": {"apps": {"missing": {}}}}
+        )
+
+        manager.show_ptable()
+        ptable = manager.ptable_window
+        assert ptable.isVisible()
+        hidden_ptable_state = ptable.workspace_state_payload()
+        hidden_ptable_state["window_state"]["visible"] = False
+        controller._restore_standalone_apps_state(
+            {"standalone_apps": {"apps": {"ptable": hidden_ptable_state}}}
+        )
+        assert not ptable.isVisible()
+
+        widget = QtWidgets.QWidget()
+        qtbot.addWidget(widget)
+        manager._apply_standalone_app_state("missing", widget, {})
 
 
 def test_manager_workspace_import_does_not_restore_standalone_apps(
