@@ -34,7 +34,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _StandaloneAppSpec,
     _WarningEmitter,
     _WarningNotificationHandler,
-    _WidgetsMixin,
+    _WidgetsController,
 )
 from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOMixin
 from erlab.interactive.imagetool.manager._workspace_state import _ManagerWorkspaceState
@@ -51,6 +51,10 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+    from erlab.interactive.imagetool.manager._server import (
+        _ManagerServer,
+        _WatcherServer,
+    )
     from erlab.interactive.imagetool.manager._wrapper import _MetadataField
     from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
     from erlab.interactive.imagetool.provenance_operations import (
@@ -64,7 +68,6 @@ class ImageToolManager(
     _WorkspaceIOMixin,
     _LineageMixin,
     _ActionsMixin,
-    _WidgetsMixin,
 ):
     """The ImageToolManager window.
 
@@ -113,6 +116,7 @@ class ImageToolManager(
         self._tool_graph = _ManagerToolGraph()
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
         self._details_panel = _DetailsPanelController(self)
+        self._widgets_controller = _WidgetsController(self)
 
         try:
             (
@@ -840,6 +844,68 @@ class ImageToolManager(
 
     def _update_actions(self) -> None:
         self._details_panel._update_actions()
+
+    def about(self) -> None:
+        self._widgets_controller.about()
+
+    def updated(self, old_version: str, new_version: str) -> None:
+        self._widgets_controller.updated(old_version, new_version)
+
+    def open_log_directory(self) -> None:
+        self._widgets_controller.open_log_directory()
+
+    def _parse_progressbar(self, message: str) -> None:
+        self._widgets_controller._parse_progressbar(message)
+
+    def _show_alert(
+        self, levelname: str, levelno: int, message: str, formatted_traceback: str
+    ) -> None:
+        self._widgets_controller._show_alert(
+            levelname, levelno, message, formatted_traceback
+        )
+
+    def _ignore_warning_message(self, message: str) -> None:
+        self._widgets_controller._ignore_warning_message(message)
+
+    def _unregister_alert(self, alert: erlab.interactive.utils.MessageDialog) -> None:
+        self._widgets_controller._unregister_alert(alert)
+
+    def _clear_all_alerts(self) -> None:
+        self._widgets_controller._clear_all_alerts()
+
+    def _handle_uncaught_exception(
+        self,
+        exc_type: type[BaseException],
+        exc_value: BaseException,
+        exc_traceback: typing.Any,
+    ) -> None:
+        self._widgets_controller._handle_uncaught_exception(
+            exc_type, exc_value, exc_traceback
+        )
+
+    def _start_server_pair(
+        self, *, port: int, watch_port: int
+    ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
+        return self._widgets_controller._start_server_pair(
+            port=port, watch_port=watch_port
+        )
+
+    def _start_manager_servers(
+        self,
+    ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
+        return self._widgets_controller._start_manager_servers()
+
+    def _stop_servers(self) -> None:
+        self._widgets_controller._stop_servers()
+
+    def open_settings(self) -> None:
+        self._widgets_controller.open_settings()
+
+    def open_new_manager_instance(self) -> None:
+        self._widgets_controller.open_new_manager_instance()
+
+    def check_for_updates(self) -> None:
+        self._widgets_controller.check_for_updates()
 
     def add_imagetool(
         self,

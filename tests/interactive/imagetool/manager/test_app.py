@@ -1021,8 +1021,8 @@ def test_open_new_manager_instance_shows_error_dialog(monkeypatch) -> None:
         lambda parent, *, title, text: dialogs.append((parent, title, text)),
     )
 
-    parent = object()
-    manager_mainwindow.ImageToolManager.open_new_manager_instance(parent)
+    parent = typing.cast("manager_mainwindow.ImageToolManager", object())
+    manager_widgets._WidgetsController(parent).open_new_manager_instance()
 
     assert dialogs == [
         (

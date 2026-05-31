@@ -22,7 +22,6 @@ import erlab
 import erlab.interactive.imagetool.slicer
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
-from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._logging import get_log_file_path
 from erlab.interactive.imagetool.manager._server import _ManagerServer, _WatcherServer
 
@@ -887,13 +886,16 @@ class _SingleImagePreview(QtWidgets.QGraphicsView):
             event.ignore()
 
 
-class _WidgetsMixin(_ImageToolManagerBase):
+class _WidgetsController:
+    def __init__(self, manager: ImageToolManager) -> None:
+        self._manager = manager
+
     def about(self) -> None:
         """Show the about dialog."""
         import h5netcdf
         import xarray_lmfit
 
-        msg_box = self._make_icon_msgbox()
+        msg_box = self._manager._make_icon_msgbox()
 
         version_info = {
             "numpy": np.__version__,
@@ -925,7 +927,7 @@ class _WidgetsMixin(_ImageToolManagerBase):
 
     def updated(self, old_version: str, new_version: str) -> None:
         """Notify the user that the application has been updated."""
-        msg_box = self._make_icon_msgbox()
+        msg_box = self._manager._make_icon_msgbox()
         if old_version == "":
             # First time installation
             msg_box.setText("ImageTool Manager Installed")
@@ -968,10 +970,10 @@ class _WidgetsMixin(_ImageToolManagerBase):
         current: int = int(info_part.split("/", 1)[0].strip())
         total: int = int(info_part.split("/", 1)[1].split("[", 1)[0].strip())
 
-        if total in self._progress_bars:
-            pbar = self._progress_bars[total]
+        if total in self._manager._progress_bars:
+            pbar = self._manager._progress_bars[total]
         else:
-            pbar = QtWidgets.QProgressDialog(self)
+            pbar = QtWidgets.QProgressDialog(self._manager)
             pbar.setLabelText(title)
             pbar.setMinimum(0)
             pbar.setMaximum(total)
@@ -984,7 +986,7 @@ class _WidgetsMixin(_ImageToolManagerBase):
                 | QtCore.Qt.WindowType.WindowStaysOnTopHint
             )
             pbar.findChild(QtWidgets.QProgressBar).setFormat("%p% (%v/%m)")
-            self._progress_bars[total] = pbar
+            self._manager._progress_bars[total] = pbar
             pbar.show()
             pbar.raise_()
             pbar.activateWindow()
@@ -997,13 +999,13 @@ class _WidgetsMixin(_ImageToolManagerBase):
         """Show a non-intrusive warning message in a floating window."""
         if _check_message_is_progressbar(message):
             try:
-                self._parse_progressbar(message)
+                self._manager._parse_progressbar(message)
             except Exception:  # pragma: no cover
                 logger.exception("Failed to parse progress bar message %r", message)
             else:
                 return
 
-        if message in self._ignored_warning_messages:
+        if message in self._manager._ignored_warning_messages:
             return
 
         if levelno >= logging.ERROR:
@@ -1014,7 +1016,7 @@ class _WidgetsMixin(_ImageToolManagerBase):
             icon_pixmap = QtWidgets.QStyle.StandardPixmap.SP_MessageBoxInformation
 
         dialog = erlab.interactive.utils.MessageDialog(
-            self,
+            self._manager,
             title=levelname,
             text=message,
             detailed_text=formatted_traceback,
@@ -1031,7 +1033,7 @@ class _WidgetsMixin(_ImageToolManagerBase):
         ignore_btn = QtWidgets.QPushButton("Ignore", dialog)
         ignore_btn.setObjectName("warningIgnoreButton")
         ignore_btn.clicked.connect(
-            lambda *, msg=message: self._ignore_warning_message(msg)
+            lambda *, msg=message: self._manager._ignore_warning_message(msg)
         )
         ignore_btn.setDefault(False)
         ignore_btn.setAutoDefault(False)
@@ -1041,14 +1043,14 @@ class _WidgetsMixin(_ImageToolManagerBase):
 
         dismiss_btn = QtWidgets.QPushButton("Dismiss All", dialog)
         dismiss_btn.setObjectName("warningDismissAllButton")
-        dismiss_btn.clicked.connect(self._clear_all_alerts)
+        dismiss_btn.clicked.connect(self._manager._clear_all_alerts)
         dismiss_btn.setDefault(False)
         dismiss_btn.setAutoDefault(False)
         dialog._button_box.addButton(
             dismiss_btn, QtWidgets.QDialogButtonBox.ButtonRole.ActionRole
         )
-        self._alert_dialogs.append(dialog)
-        dialog.finished.connect(lambda *, d=dialog: self._unregister_alert(d))
+        self._manager._alert_dialogs.append(dialog)
+        dialog.finished.connect(lambda *, d=dialog: self._manager._unregister_alert(d))
 
         dialog.show()
         dialog.raise_()
@@ -1056,17 +1058,17 @@ class _WidgetsMixin(_ImageToolManagerBase):
 
     def _ignore_warning_message(self, message: str) -> None:
         """Ignore future warnings with the same message for this session."""
-        self._ignored_warning_messages.add(message)
-        for notification in list(self._alert_dialogs):
+        self._manager._ignored_warning_messages.add(message)
+        for notification in list(self._manager._alert_dialogs):
             if notification.text() == message:
                 notification.close()
 
     def _unregister_alert(self, alert: erlab.interactive.utils.MessageDialog) -> None:
         with contextlib.suppress(ValueError):  # pragma: no cover - defensive cleanup
-            self._alert_dialogs.remove(alert)
+            self._manager._alert_dialogs.remove(alert)
 
     def _clear_all_alerts(self) -> None:
-        for notification in list(self._alert_dialogs):
+        for notification in list(self._manager._alert_dialogs):
             notification.close()
 
     def _handle_uncaught_exception(self, exc_type, exc_value, exc_traceback):
@@ -1076,28 +1078,28 @@ class _WidgetsMixin(_ImageToolManagerBase):
                 "An unexpected error occurred.",
                 exc_info=(exc_type, exc_value, exc_traceback),
             )
-        if self._previous_excepthook is not None:  # pragma: no branch
+        if self._manager._previous_excepthook is not None:  # pragma: no branch
             with contextlib.suppress(Exception):
-                self._previous_excepthook(exc_type, exc_value, exc_traceback)
+                self._manager._previous_excepthook(exc_type, exc_value, exc_traceback)
 
     def _start_server_pair(
         self, *, port: int, watch_port: int
     ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
         server = _ManagerServer(port=port)
-        server.sigReceived.connect(self._data_recv)
-        server.sigLoadRequested.connect(self._data_load)
-        server.sigReplaceRequested.connect(self._data_replace)
-        server.sigDataRequested.connect(self._send_imagetool_data)
-        server.sigWatchInfoRequested.connect(self._send_watch_info)
-        self._sigReplyData.connect(server.set_return_value)
-        server.sigRemoveIndex.connect(self.remove_imagetool)
-        server.sigShowIndex.connect(self.show_imagetool)
-        server.sigRemoveUID.connect(self._remove_watched)
-        server.sigShowUID.connect(self._show_watched)
-        server.sigUnwatchUID.connect(self._data_unwatch)
-        server.sigWatchedVarChanged.connect(self._data_watched_update)
+        server.sigReceived.connect(self._manager._data_recv)
+        server.sigLoadRequested.connect(self._manager._data_load)
+        server.sigReplaceRequested.connect(self._manager._data_replace)
+        server.sigDataRequested.connect(self._manager._send_imagetool_data)
+        server.sigWatchInfoRequested.connect(self._manager._send_watch_info)
+        self._manager._sigReplyData.connect(server.set_return_value)
+        server.sigRemoveIndex.connect(self._manager.remove_imagetool)
+        server.sigShowIndex.connect(self._manager.show_imagetool)
+        server.sigRemoveUID.connect(self._manager._remove_watched)
+        server.sigShowUID.connect(self._manager._show_watched)
+        server.sigUnwatchUID.connect(self._manager._data_unwatch)
+        server.sigWatchedVarChanged.connect(self._manager._data_watched_update)
         watcher_server = _WatcherServer(port=watch_port)
-        self._sigWatchedDataEdited.connect(watcher_server.send_parameters)
+        self._manager._sigWatchedDataEdited.connect(watcher_server.send_parameters)
         try:
             server.start()
             bound_port = server.wait_until_bound()
@@ -1105,9 +1107,11 @@ class _WidgetsMixin(_ImageToolManagerBase):
             bound_watch_port = watcher_server.wait_until_bound()
         except Exception:
             with contextlib.suppress(TypeError, RuntimeError):
-                self._sigReplyData.disconnect(server.set_return_value)
+                self._manager._sigReplyData.disconnect(server.set_return_value)
             with contextlib.suppress(TypeError, RuntimeError):
-                self._sigWatchedDataEdited.disconnect(watcher_server.send_parameters)
+                self._manager._sigWatchedDataEdited.disconnect(
+                    watcher_server.send_parameters
+                )
             server.stop()
             watcher_server.stop()
             server.deleteLater()
@@ -1119,9 +1123,9 @@ class _WidgetsMixin(_ImageToolManagerBase):
         self,
     ) -> tuple[_ManagerServer, _WatcherServer, int, int]:
         legacy_ports = (_manager_server.PORT, _manager_server.PORT_WATCH)
-        if self.manager_index == 0 and legacy_ports != (0, 0):
+        if self._manager.manager_index == 0 and legacy_ports != (0, 0):
             try:
-                return self._start_server_pair(
+                return self._manager._start_server_pair(
                     port=legacy_ports[0], watch_port=legacy_ports[1]
                 )
             except Exception:
@@ -1130,18 +1134,18 @@ class _WidgetsMixin(_ImageToolManagerBase):
                     "using dynamic ports instead."
                 )
 
-        return self._start_server_pair(port=0, watch_port=0)
+        return self._manager._start_server_pair(port=0, watch_port=0)
 
     def _stop_servers(self) -> None:
         """Stop the server thread properly."""
-        if self.server.isRunning():  # pragma: no branch
-            self.server.stop()
-        if self.watcher_server.isRunning():  # pragma: no branch
-            self.watcher_server.stop()
+        if self._manager.server.isRunning():  # pragma: no branch
+            self._manager.server.stop()
+        if self._manager.watcher_server.isRunning():  # pragma: no branch
+            self._manager.watcher_server.stop()
 
     def open_settings(self) -> None:
         """Open the settings dialog for the ImageTool manager."""
-        dialog = erlab.interactive._options.OptionDialog(self)
+        dialog = erlab.interactive._options.OptionDialog(self._manager)
         dialog.exec()
 
     def open_new_manager_instance(self) -> None:
@@ -1151,7 +1155,7 @@ class _WidgetsMixin(_ImageToolManagerBase):
         except Exception:
             logger.exception("Failed to open a new ImageTool Manager window")
             erlab.interactive.utils.MessageDialog.critical(
-                self,
+                self._manager,
                 title="New Manager Window",
                 text="Could not open another ImageTool Manager window.",
             )
@@ -1160,7 +1164,7 @@ class _WidgetsMixin(_ImageToolManagerBase):
         from erlab.interactive.imagetool.manager._updater_gui import AutoUpdater
 
         updater = AutoUpdater()
-        updater.check_for_updates(self)
+        updater.check_for_updates(self._manager)
 
 
 __all__ = [
