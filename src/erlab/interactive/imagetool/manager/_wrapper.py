@@ -33,7 +33,7 @@ from erlab.interactive.imagetool._mainwindow import ImageTool
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
+    from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
@@ -242,7 +242,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def __init__(
         self,
-        manager: _ImageToolManagerBase,
+        manager: ImageToolManager,
         uid: str,
         parent_uid: str | None,
         window: QtWidgets.QWidget,
@@ -318,7 +318,7 @@ class _ManagedWindowNode(QtCore.QObject):
             self._suspend_snapshot_token_updates = False
 
     @property
-    def manager(self) -> _ImageToolManagerBase:
+    def manager(self) -> ImageToolManager:
         manager = self._manager()
         if manager:
             return manager
@@ -1387,7 +1387,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
 
     def __init__(
         self,
-        manager: _ImageToolManagerBase,
+        manager: ImageToolManager,
         index: int,
         uid: str,
         tool: ImageTool,

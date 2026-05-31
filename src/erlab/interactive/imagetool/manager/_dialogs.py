@@ -19,11 +19,11 @@ if typing.TYPE_CHECKING:
 
     import xarray
 
-    from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
+    from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
 class _ConcatDialog(QtWidgets.QDialog):
-    def __init__(self, manager: _ImageToolManagerBase) -> None:
+    def __init__(self, manager: ImageToolManager) -> None:
         super().__init__(manager)
         self.setWindowTitle("Concatenate Selected Tools")
         self.setModal(True)
@@ -157,7 +157,7 @@ class _ConcatDialog(QtWidgets.QDialog):
 
 
 class _RenameDialog(QtWidgets.QDialog):
-    def __init__(self, manager: _ImageToolManagerBase) -> None:
+    def __init__(self, manager: ImageToolManager) -> None:
         super().__init__(manager)
         self.setWindowTitle("Rename Selected Tools")
         self.setModal(True)
@@ -228,9 +228,7 @@ class _RenameDialog(QtWidgets.QDialog):
 
 
 class _StoreDialog(QtWidgets.QDialog):
-    def __init__(
-        self, manager: _ImageToolManagerBase, target_indices: list[int]
-    ) -> None:
+    def __init__(self, manager: ImageToolManager, target_indices: list[int]) -> None:
         super().__init__(manager)
         self.setWindowTitle("Store with IPython")
         self._manager = weakref.ref(manager)
@@ -1026,7 +1024,7 @@ class _NameFilterDialog(QtWidgets.QDialog):
 class _ChooseFromDataTreeDialog(QtWidgets.QDialog):
     def __init__(
         self,
-        manager: _ImageToolManagerBase,
+        manager: ImageToolManager,
         tree: xarray.DataTree,
         mode: typing.Literal["save", "load"],
         root_keys: Iterable[str] | None = None,
