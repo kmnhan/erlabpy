@@ -580,9 +580,6 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 ax._serializable_state = plotitem_state
         logger.debug("Restored plotitem states")
 
-        self.set_manual_limits(state.get("manual_limits", {}))
-        logger.debug("Restored manual limits")
-
         self.make_cursors(state["cursor_colors"], update=False)
         logger.debug("Restored cursor number and colors")
 
@@ -594,6 +591,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
             if ax.is_image:
                 ax.sync_guidelines_to_active_cursor()
         logger.debug("Restored array slicer state")
+
+        self.set_manual_limits(state.get("manual_limits", {}))
+        logger.debug("Restored manual limits")
 
         axis_inversions = state.get("axis_inversions", None)
         if axis_inversions is None:

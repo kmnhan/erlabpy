@@ -3259,6 +3259,19 @@ def _assert_dimension_inverted(area: ImageSlicerArea, dim: str, inverted: bool) 
     assert matched
 
 
+def _assert_manual_limits_view_ranges(
+    area: ImageSlicerArea, expected_limits: dict[str, list[float]]
+) -> None:
+    matched_dims: set[str] = set()
+    for plot_item in area.axes:
+        view_ranges = plot_item.getViewBox().viewRange()
+        for axis, axis_dim in enumerate(plot_item.axis_dims_uniform):
+            if axis_dim in expected_limits:
+                matched_dims.add(axis_dim)
+                np.testing.assert_allclose(view_ranges[axis], expected_limits[axis_dim])
+    assert matched_dims == set(expected_limits)
+
+
 def test_axis_inversion_viewbox_shared_undo_redo_and_roundtrip(qtbot) -> None:
     data = xr.DataArray(np.arange(25).reshape((5, 5)).astype(float), dims=["x", "y"])
     win = itool(data, execute=False)
@@ -3283,6 +3296,37 @@ def test_axis_inversion_viewbox_shared_undo_redo_and_roundtrip(qtbot) -> None:
     restored = ImageTool.from_dataset(win.to_dataset())
     qtbot.addWidget(restored)
     assert restored.slicer_area.axis_inversions == {"x": True}
+    _assert_dimension_inverted(restored.slicer_area, "x", True)
+
+    restored.close()
+    win.close()
+
+
+def test_axis_inversion_transposed_manual_limits_roundtrip(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(125).reshape((5, 5, 5)).astype(float),
+        dims=["x", "y", "z"],
+        coords={"x": np.arange(5.0), "y": np.arange(5.0), "z": np.arange(5.0)},
+    )
+    expected_limits = {"x": [1.0, 3.0], "y": [0.0, 2.0], "z": [2.0, 4.0]}
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.set_manual_limits(expected_limits)
+    win.slicer_area.set_axis_inverted("x", True)
+    win.slicer_area.transpose_main_image()
+    assert win.slicer_area.data.dims == ("y", "x", "z")
+
+    ds = win.to_dataset()
+    saved_state = json.loads(ds.attrs["itool_state"])
+    assert saved_state["manual_limits"] == expected_limits
+
+    restored = ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+
+    assert restored.slicer_area.data.dims == ("y", "x", "z")
+    assert restored.slicer_area.manual_limits == expected_limits
+    _assert_manual_limits_view_ranges(restored.slicer_area, expected_limits)
     _assert_dimension_inverted(restored.slicer_area, "x", True)
 
     restored.close()
