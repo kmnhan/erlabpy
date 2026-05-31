@@ -1041,6 +1041,69 @@ def test_tool_provenance_affine_coord_operation(
     )
 
 
+@pytest.mark.parametrize(
+    ("scale", "offset", "expected_fragments", "forbidden_fragments"),
+    [
+        (1.0, -3.7, ("['y'].values - 3.7",), ("1.0 *", "+ -3.7")),
+        (2.0, -3.7, ("2.0 *", "['y'].values - 3.7"), ("+ -3.7",)),
+        (
+            1.0,
+            0.0,
+            ("['y'].values)",),
+            ("1.0 *", "+ 0.0", "- 0.0"),
+        ),
+    ],
+)
+def test_tool_provenance_affine_coord_display_code_formats_no_ops(
+    scale: float,
+    offset: float,
+    expected_fragments: tuple[str, ...],
+    forbidden_fragments: tuple[str, ...],
+) -> None:
+    data = _base_data()
+    operation = provenance.AffineCoordOperation(
+        coord_name="y",
+        scale=scale,
+        offset=offset,
+    )
+
+    code = (
+        provenance.full_data(operation).to_replay_spec().display_code(parent_data=data)
+    )
+    assert code is not None
+    for fragment in expected_fragments:
+        assert fragment in code
+    for fragment in forbidden_fragments:
+        assert fragment not in code
+
+    namespace = _exec_generated_code(code, {"data": data.copy(deep=True)})
+    xr.testing.assert_identical(
+        namespace["derived"], _expected_affine_coord(data, "y", scale, offset)
+    )
+
+
+@pytest.mark.parametrize(
+    ("scale", "offset"),
+    [
+        (np.nan, 0.0),
+        (np.inf, 0.0),
+        (1.0, np.nan),
+        (1.0, -np.inf),
+    ],
+)
+def test_tool_provenance_affine_coord_rejects_nonfinite_values(
+    scale: float, offset: float
+) -> None:
+    with pytest.raises(
+        ValidationError, match="affine coordinate scale and offset must be finite"
+    ):
+        provenance.AffineCoordOperation(
+            coord_name="y",
+            scale=scale,
+            offset=offset,
+        )
+
+
 def test_tool_provenance_divide_by_coord_operation() -> None:
     data = _base_data().assign_coords(mesh_current=("x", [1.0, 2.0, 4.0]))
 
