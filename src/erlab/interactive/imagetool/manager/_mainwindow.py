@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import sys
@@ -12,6 +13,7 @@ import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._actions import _ActionsController
+from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._lineage import _LineageController
@@ -27,6 +29,7 @@ from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
 from erlab.interactive.imagetool.manager._widgets import (
     _LINKER_COLORS,
     _SHM_NAME,
+    _WORKSPACE_REBIND_KEEP_CHUNKS,
     _ApplicationQuitFilter,
     _HeightForWidthFrame,
     _MetadataDerivationListWidget,
@@ -36,7 +39,7 @@ from erlab.interactive.imagetool.manager._widgets import (
     _WarningNotificationHandler,
     _WidgetsController,
 )
-from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOMixin
+from erlab.interactive.imagetool.manager._workspace_io import _WorkspaceIOController
 from erlab.interactive.imagetool.manager._workspace_state import _ManagerWorkspaceState
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
@@ -45,21 +48,30 @@ from erlab.interactive.imagetool.manager._wrapper import (
 
 if typing.TYPE_CHECKING:
     import datetime
+    import os
     import pathlib
-    from collections.abc import Callable, Iterable, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     import numpy as np
     import xarray as xr
 
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
+    from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._server import (
         _ManagerServer,
         _WatcherServer,
     )
-    from erlab.interactive.imagetool.manager._widgets import _ScriptRebuildResult
+    from erlab.interactive.imagetool.manager._widgets import (
+        _ScriptRebuildResult,
+        _WorkspaceDocumentAccess,
+        _WorkspacePropertiesState,
+    )
+    from erlab.interactive.imagetool.manager._workspace_state import (
+        _WorkspaceStateSnapshot,
+    )
     from erlab.interactive.imagetool.manager._wrapper import _MetadataField
     from erlab.interactive.imagetool.provenance_framework import (
         ScriptInput,
@@ -74,9 +86,7 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ImageToolManager(
-    _WorkspaceIOMixin,
-):
+class ImageToolManager(_ImageToolManagerBase):
     """The ImageToolManager window.
 
     This class implements a GUI application for managing multiple ImageTool windows.
@@ -159,6 +169,7 @@ class ImageToolManager(
         )
 
         self._workspace_state = _ManagerWorkspaceState()
+        self._workspace_controller = _WorkspaceIOController(self)
         self._tool_metadata_queue = _ManagerToolMetadataQueue(
             self, self._flush_pending_tool_metadata_updates
         )
@@ -916,6 +927,588 @@ class ImageToolManager(
 
     def check_for_updates(self) -> None:
         self._widgets_controller.check_for_updates()
+
+    @staticmethod
+    def _normalize_recent_workspace_paths(
+        paths: Iterable[str | os.PathLike[str]],
+    ) -> list[pathlib.Path]:
+        return _WorkspaceIOController._normalize_recent_workspace_paths(paths)
+
+    def _recent_workspace_paths(self) -> list[pathlib.Path]:
+        return self._workspace_controller._recent_workspace_paths()
+
+    def _set_recent_workspace_paths(
+        self, paths: Iterable[str | os.PathLike[str]]
+    ) -> None:
+        self._workspace_controller._set_recent_workspace_paths(paths)
+
+    def _record_recent_workspace(self, fname: str | os.PathLike[str]) -> None:
+        self._workspace_controller._record_recent_workspace(fname)
+
+    def _clear_recent_workspaces(self) -> None:
+        self._workspace_controller._clear_recent_workspaces()
+
+    def _refresh_open_recent_menu_action(self) -> None:
+        self._workspace_controller._refresh_open_recent_menu_action()
+
+    def _populate_open_recent_menu(self) -> None:
+        self._workspace_controller._populate_open_recent_menu()
+
+    def open_recent_workspace(self, fname: str | os.PathLike[str]) -> bool:
+        return self._workspace_controller.open_recent_workspace(fname)
+
+    @property
+    def workspace_path(self) -> str | None:
+        return self._workspace_controller.workspace_path
+
+    def show_workspace_properties(self) -> None:
+        self._workspace_controller.show_workspace_properties()
+
+    def _workspace_properties_state(self) -> _WorkspacePropertiesState:
+        return self._workspace_controller._workspace_properties_state()
+
+    @property
+    def is_workspace_modified(self) -> bool:
+        return self._workspace_controller.is_workspace_modified
+
+    def _refresh_manager_record(self) -> None:
+        self._workspace_controller._refresh_manager_record()
+
+    def _update_workspace_window_title(self) -> None:
+        self._workspace_controller._update_workspace_window_title()
+
+    def _release_workspace_lock(self) -> None:
+        self._workspace_controller._release_workspace_lock()
+
+    def _workspace_document_access(
+        self, fname: str | os.PathLike[str]
+    ) -> _WorkspaceDocumentAccess:
+        return self._workspace_controller._workspace_document_access(fname)
+
+    @contextlib.contextmanager
+    def _workspace_document_access_context(
+        self, fname: str | os.PathLike[str]
+    ) -> Iterator[_WorkspaceDocumentAccess]:
+        with self._workspace_controller._workspace_document_access_context(
+            fname
+        ) as access:
+            yield access
+
+    def _set_workspace_path(
+        self,
+        fname: str | os.PathLike[str] | None,
+        *,
+        workspace_lock: QtCore.QLockFile | None = None,
+    ) -> None:
+        self._workspace_controller._set_workspace_path(
+            fname, workspace_lock=workspace_lock
+        )
+
+    def _adopt_workspace_path(self, fname: str | os.PathLike[str]) -> None:
+        self._workspace_controller._adopt_workspace_path(fname)
+
+    def _active_managed_window(self) -> QtWidgets.QWidget | None:
+        return self._workspace_controller._active_managed_window()
+
+    def _restore_focus_after_workspace_save(
+        self, origin: QtWidgets.QWidget | None
+    ) -> None:
+        self._workspace_controller._restore_focus_after_workspace_save(origin)
+
+    def _dirty_details_text(self) -> str:
+        return self._workspace_controller._dirty_details_text()
+
+    def _set_node_window_modified(self, uid: str, modified: bool) -> None:
+        self._workspace_controller._set_node_window_modified(uid, modified)
+
+    def _apply_workspace_dirty_event(
+        self, event: _manager_workspace._WorkspaceDirtyEvent
+    ) -> bool:
+        return self._workspace_controller._apply_workspace_dirty_event(event)
+
+    def _mark_workspace_dirty(
+        self,
+        *,
+        uid: str | None = None,
+        data: bool = False,
+        state: bool = False,
+        added: bool = False,
+        removed: str | None = None,
+        structure: str | None = None,
+    ) -> None:
+        self._workspace_controller._mark_workspace_dirty(
+            uid=uid,
+            data=data,
+            state=state,
+            added=added,
+            removed=removed,
+            structure=structure,
+        )
+
+    def _mark_node_added(self, uid: str) -> None:
+        self._workspace_controller._mark_node_added(uid)
+
+    def _mark_node_data_dirty(self, uid: str) -> None:
+        self._workspace_controller._mark_node_data_dirty(uid)
+
+    def _mark_node_state_dirty(self, uid: str) -> None:
+        self._workspace_controller._mark_node_state_dirty(uid)
+
+    def _mark_tool_info_dirty(self, uid: str) -> None:
+        self._workspace_controller._mark_tool_info_dirty(uid)
+
+    def _mark_workspace_structure_dirty(self, reason: str) -> None:
+        self._workspace_controller._mark_workspace_structure_dirty(reason)
+
+    def _mark_workspace_clean(self) -> None:
+        self._workspace_controller._mark_workspace_clean()
+
+    def _restore_workspace_dirty_events(
+        self, events: Iterable[_manager_workspace._WorkspaceDirtyEvent]
+    ) -> None:
+        self._workspace_controller._restore_workspace_dirty_events(events)
+
+    @contextlib.contextmanager
+    def _workspace_load_context(self) -> Iterator[None]:
+        with self._workspace_controller._workspace_load_context():
+            yield
+
+    def _drain_workspace_deferred_events(self) -> None:
+        self._workspace_controller._drain_workspace_deferred_events()
+
+    def _workspace_state_snapshot(self) -> _WorkspaceStateSnapshot:
+        return self._workspace_controller._workspace_state_snapshot()
+
+    def _restore_workspace_state_snapshot(
+        self, snapshot: _WorkspaceStateSnapshot
+    ) -> None:
+        self._workspace_controller._restore_workspace_state_snapshot(snapshot)
+
+    def _install_workspace_save_shortcut(self, widget: QtWidgets.QWidget) -> None:
+        self._workspace_controller._install_workspace_save_shortcut(widget)
+
+    def _annotate_workspace_dataset(
+        self,
+        ds: xr.Dataset,
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        *,
+        kind: typing.Literal["imagetool", "tool"],
+    ) -> xr.Dataset:
+        return self._workspace_controller._annotate_workspace_dataset(
+            ds, node, kind=kind
+        )
+
+    def _serialize_workspace_node(
+        self,
+        constructor: dict[str, xr.Dataset],
+        node: _ImageToolWrapper | _ManagedWindowNode,
+        path: str,
+        *,
+        include_children: bool,
+    ) -> None:
+        self._workspace_controller._serialize_workspace_node(
+            constructor, node, path, include_children=include_children
+        )
+
+    def _to_datatree(
+        self, close: bool = False, include_children: bool = True
+    ) -> xr.DataTree:
+        return self._workspace_controller._to_datatree(close, include_children)
+
+    def _load_workspace_imagetool_dataset(
+        self,
+        ds: xr.Dataset,
+        *,
+        parent_target: int | str | None,
+        node_path: str | None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
+    ) -> int | str:
+        return self._workspace_controller._load_workspace_imagetool_dataset(
+            ds,
+            parent_target=parent_target,
+            node_path=node_path,
+            loaded_targets_by_uid=loaded_targets_by_uid,
+        )
+
+    def _load_workspace_tool_dataset(
+        self, ds: xr.Dataset, *, parent_target: int | str | None
+    ) -> int | str:
+        return self._workspace_controller._load_workspace_tool_dataset(
+            ds, parent_target=parent_target
+        )
+
+    @staticmethod
+    def _workspace_saved_uid_from_dataset(ds: xr.Dataset) -> str | None:
+        return _WorkspaceIOController._workspace_saved_uid_from_dataset(ds)
+
+    def _record_workspace_loaded_imagetool_target(
+        self,
+        ds: xr.Dataset,
+        target: int | str,
+        loaded_targets_by_uid: dict[str, int | str] | None,
+    ) -> None:
+        self._workspace_controller._record_workspace_loaded_imagetool_target(
+            ds, target, loaded_targets_by_uid
+        )
+
+    def _restore_workspace_link_groups(
+        self,
+        manifest: Mapping[str, typing.Any] | None,
+        loaded_targets_by_uid: Mapping[str, int | str],
+    ) -> None:
+        self._workspace_controller._restore_workspace_link_groups(
+            manifest, loaded_targets_by_uid
+        )
+
+    def _load_workspace_node(
+        self,
+        node_tree: xr.DataTree,
+        *,
+        parent_target: int | str | None = None,
+        selection_item: QtWidgets.QTreeWidgetItem | None = None,
+        manifest: dict[str, typing.Any] | None = None,
+        node_path: str | None = None,
+        workspace_file_path: str | os.PathLike[str] | None = None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
+    ) -> int | str:
+        return self._workspace_controller._load_workspace_node(
+            node_tree,
+            parent_target=parent_target,
+            selection_item=selection_item,
+            manifest=manifest,
+            node_path=node_path,
+            workspace_file_path=workspace_file_path,
+            loaded_targets_by_uid=loaded_targets_by_uid,
+        )
+
+    def _load_workspace_roots(
+        self,
+        tree: xr.DataTree,
+        root_keys: Iterable[str],
+        *,
+        root_item: QtWidgets.QTreeWidgetItem | None = None,
+        manifest: dict[str, typing.Any] | None = None,
+        workspace_file_path: str | os.PathLike[str] | None = None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
+    ) -> None:
+        self._workspace_controller._load_workspace_roots(
+            tree,
+            root_keys,
+            root_item=root_item,
+            manifest=manifest,
+            workspace_file_path=workspace_file_path,
+            loaded_targets_by_uid=loaded_targets_by_uid,
+        )
+
+    def _from_h5py_workspace_file(
+        self,
+        fname: str | os.PathLike[str],
+        manifest: Mapping[str, typing.Any],
+        *,
+        replace: bool,
+        mark_dirty: bool,
+    ) -> bool:
+        return self._workspace_controller._from_h5py_workspace_file(
+            fname, manifest, replace=replace, mark_dirty=mark_dirty
+        )
+
+    def _restore_replaced_workspace(
+        self, backup_tree: xr.DataTree, snapshot: _WorkspaceStateSnapshot
+    ) -> None:
+        self._workspace_controller._restore_replaced_workspace(backup_tree, snapshot)
+
+    def _from_datatree(
+        self,
+        tree: xr.DataTree,
+        *,
+        replace: bool = False,
+        mark_dirty: bool = True,
+        select: bool = True,
+        workspace_file_path: str | os.PathLike[str] | None = None,
+    ) -> bool:
+        return self._workspace_controller._from_datatree(
+            tree,
+            replace=replace,
+            mark_dirty=mark_dirty,
+            select=select,
+            workspace_file_path=workspace_file_path,
+        )
+
+    def _parse_datatree_compat_v1(self, tree: xr.DataTree) -> xr.DataTree:
+        return self._workspace_controller._parse_datatree_compat_v1(tree)
+
+    def _parse_datatree_compat_v2(self, tree: xr.DataTree) -> xr.DataTree:
+        return self._workspace_controller._parse_datatree_compat_v2(tree)
+
+    def _is_datatree_workspace(self, tree: xr.DataTree) -> bool:
+        return self._workspace_controller._is_datatree_workspace(tree)
+
+    def _workspace_node_path(self, uid: str) -> str:
+        return self._workspace_controller._workspace_node_path(uid)
+
+    def _workspace_payload_path(self, uid: str) -> str:
+        return self._workspace_controller._workspace_payload_path(uid)
+
+    def _workspace_root_indices(self) -> tuple[int, ...]:
+        return self._workspace_controller._workspace_root_indices()
+
+    def _workspace_link_metadata_by_uid(self) -> dict[str, tuple[int, bool]]:
+        return self._workspace_controller._workspace_link_metadata_by_uid()
+
+    def _workspace_node_manifest_entries(self) -> list[dict[str, typing.Any]]:
+        return self._workspace_controller._workspace_node_manifest_entries()
+
+    @staticmethod
+    def _tree_item_child_by_key(
+        item: QtWidgets.QTreeWidgetItem | None, key: str
+    ) -> QtWidgets.QTreeWidgetItem | None:
+        return _WorkspaceIOController._tree_item_child_by_key(item, key)
+
+    def _workspace_root_attrs_payload(
+        self, *, delta_save_count: int | None = None
+    ) -> dict[str, typing.Any]:
+        return self._workspace_controller._workspace_root_attrs_payload(
+            delta_save_count=delta_save_count
+        )
+
+    def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
+        self._workspace_controller._write_full_workspace_file(fname)
+
+    def _workspace_highest_dirty_data_roots(self) -> list[str]:
+        return self._workspace_controller._workspace_highest_dirty_data_roots()
+
+    def _save_workspace_delta(self, fname: str | os.PathLike[str]) -> None:
+        self._workspace_controller._save_workspace_delta(fname)
+
+    def _save_workspace_document(
+        self,
+        fname: str | os.PathLike[str],
+        *,
+        force_full: bool = False,
+        document_access: _WorkspaceDocumentAccess | None = None,
+    ) -> None:
+        self._workspace_controller._save_workspace_document(
+            fname, force_full=force_full, document_access=document_access
+        )
+
+    def _workspace_save_dialog(
+        self,
+        *,
+        native: bool = True,
+        caption: str = "Save Workspace",
+        selected_file: str | os.PathLike[str] | None = None,
+    ) -> str | None:
+        return self._workspace_controller._workspace_save_dialog(
+            native=native, caption=caption, selected_file=selected_file
+        )
+
+    def _confirm_save_dirty_workspace(self, action_text: str) -> bool:
+        return self._workspace_controller._confirm_save_dirty_workspace(action_text)
+
+    def _show_legacy_workspace_upgrade_message(
+        self, fname: str | os.PathLike[str]
+    ) -> None:
+        self._workspace_controller._show_legacy_workspace_upgrade_message(fname)
+
+    def _save_legacy_workspace_as_v4(
+        self,
+        fname: str | os.PathLike[str],
+        *,
+        native: bool = True,
+        existing_access: _WorkspaceDocumentAccess | None = None,
+    ) -> tuple[str, QtCore.QLockFile | None] | None:
+        return self._workspace_controller._save_legacy_workspace_as_v4(
+            fname, native=native, existing_access=existing_access
+        )
+
+    def _associate_loaded_workspace_file(
+        self,
+        fname: str | os.PathLike[str],
+        schema_version: int,
+        *,
+        native: bool = True,
+        delta_save_count: int = 0,
+        workspace_access: _WorkspaceDocumentAccess | None = None,
+        rebind_data: bool = True,
+    ) -> None:
+        self._workspace_controller._associate_loaded_workspace_file(
+            fname,
+            schema_version,
+            native=native,
+            delta_save_count=delta_save_count,
+            workspace_access=workspace_access,
+            rebind_data=rebind_data,
+        )
+
+    def _workspace_rebind_data_for_uid(
+        self, fname: str | os.PathLike[str], uid: str, *, chunks: typing.Any
+    ) -> xr.DataArray:
+        return self._workspace_controller._workspace_rebind_data_for_uid(
+            fname, uid, chunks=chunks
+        )
+
+    def _workspace_data_backing_snapshot(
+        self,
+    ) -> dict[str, tuple[str, tuple[str, ...]]]:
+        return self._workspace_controller._workspace_data_backing_snapshot()
+
+    def _rebind_workspace_backed_imagetools(
+        self,
+        fname: str | os.PathLike[str],
+        *,
+        targets: Iterable[int | str] | None = None,
+        chunks: typing.Any = _WORKSPACE_REBIND_KEEP_CHUNKS,
+        backing_snapshot: Mapping[str, tuple[str, tuple[str, ...]]] | None = None,
+        old_workspace_path: str | os.PathLike[str] | None = None,
+    ) -> None:
+        self._workspace_controller._rebind_workspace_backed_imagetools(
+            fname,
+            targets=targets,
+            chunks=chunks,
+            backing_snapshot=backing_snapshot,
+            old_workspace_path=old_workspace_path,
+        )
+
+    def offload_to_workspace(
+        self, targets: Iterable[int | str], *, native: bool = True
+    ) -> bool:
+        return self._workspace_controller.offload_to_workspace(targets, native=native)
+
+    def _workspace_requires_full_save(self, fname: str | os.PathLike[str]) -> bool:
+        return self._workspace_controller._workspace_requires_full_save(fname)
+
+    def _workspace_rewrite_group_snapshot(
+        self, uid: str
+    ) -> tuple[str, dict[str, xr.Dataset]]:
+        return self._workspace_controller._workspace_rewrite_group_snapshot(uid)
+
+    def _workspace_attr_update_snapshot(
+        self, uid: str
+    ) -> tuple[str, dict[str, typing.Any], tuple[str, dict[str, xr.Dataset]]] | None:
+        return self._workspace_controller._workspace_attr_update_snapshot(uid)
+
+    def _workspace_delta_save_snapshot(
+        self,
+        generation: int,
+        root_attrs: dict[str, typing.Any],
+        delta_save_count: int,
+    ) -> _manager_workspace._WorkspaceSaveSnapshot:
+        return self._workspace_controller._workspace_delta_save_snapshot(
+            generation, root_attrs, delta_save_count
+        )
+
+    def _workspace_save_snapshot(
+        self, fname: str | os.PathLike[str]
+    ) -> _manager_workspace._WorkspaceSaveSnapshot:
+        return self._workspace_controller._workspace_save_snapshot(fname)
+
+    def _workspace_full_save_snapshot(
+        self, generation: int
+    ) -> _manager_workspace._WorkspaceSaveSnapshot:
+        return self._workspace_controller._workspace_full_save_snapshot(generation)
+
+    def _workspace_full_save_copy_groups(
+        self, tree: xr.DataTree
+    ) -> tuple[str | None, tuple[tuple[str, str, dict[str, typing.Any] | None], ...]]:
+        return self._workspace_controller._workspace_full_save_copy_groups(tree)
+
+    def _open_workspace_save_wait_dialog(
+        self,
+        parent: QtWidgets.QWidget,
+        *,
+        title: str = "Saving Workspace",
+        label_text: str = "Saving workspace...",
+    ) -> QtWidgets.QDialog:
+        return self._workspace_controller._open_workspace_save_wait_dialog(
+            parent, title=title, label_text=label_text
+        )
+
+    def _set_workspace_save_actions_enabled(
+        self, enabled: bool
+    ) -> tuple[bool, bool, bool]:
+        return self._workspace_controller._set_workspace_save_actions_enabled(enabled)
+
+    def _restore_workspace_save_actions_enabled(
+        self, previous: tuple[bool, bool, bool]
+    ) -> None:
+        self._workspace_controller._restore_workspace_save_actions_enabled(previous)
+
+    def _run_workspace_save_worker(
+        self,
+        fname: str | os.PathLike[str],
+        snapshot: _manager_workspace._WorkspaceSaveSnapshot,
+        origin: QtWidgets.QWidget | None,
+        *,
+        wait_dialog_title: str = "Saving Workspace",
+        wait_dialog_text: str = "Saving workspace...",
+    ) -> tuple[bool, float, str]:
+        return self._workspace_controller._run_workspace_save_worker(
+            fname,
+            snapshot,
+            origin,
+            wait_dialog_title=wait_dialog_title,
+            wait_dialog_text=wait_dialog_text,
+        )
+
+    def save(self, *, native: bool = True) -> bool:
+        return self._workspace_controller.save(native=native)
+
+    def save_as(self, *, native: bool = True) -> bool:
+        return self._workspace_controller.save_as(native=native)
+
+    def _compact_workspace_before_shutdown(self) -> None:
+        self._workspace_controller._compact_workspace_before_shutdown()
+
+    def compact_workspace(self) -> bool:
+        return self._workspace_controller.compact_workspace()
+
+    def _save_to_file(self, fname: str) -> None:
+        self._workspace_controller._save_to_file(fname)
+
+    def _load_workspace_file(
+        self,
+        fname: str | os.PathLike[str],
+        *,
+        replace: bool,
+        associate: bool,
+        mark_dirty: bool,
+        select: bool,
+        native: bool = True,
+    ) -> bool:
+        return self._workspace_controller._load_workspace_file(
+            fname,
+            replace=replace,
+            associate=associate,
+            mark_dirty=mark_dirty,
+            select=select,
+            native=native,
+        )
+
+    def load(self, *, native: bool = True) -> bool:
+        return self._workspace_controller.load(native=native)
+
+    def import_workspace(self, *, native: bool = True) -> bool:
+        return self._workspace_controller.import_workspace(native=native)
+
+    def open(self, *, native: bool = True) -> None:
+        self._workspace_controller.open(native=native)
+
+    def _data_recv(
+        self,
+        data: list[xr.DataArray] | list[xr.Dataset],
+        kwargs: dict[str, typing.Any],
+        *,
+        watched_var: tuple[str, str] | None = None,
+        watched_metadata: Mapping[str, typing.Any] | None = None,
+        show: bool | None = None,
+    ) -> list[bool]:
+        return self._workspace_controller._data_recv(
+            data,
+            kwargs,
+            watched_var=watched_var,
+            watched_metadata=watched_metadata,
+            show=show,
+        )
 
     def _dependency_refs_for_uid(
         self, uid: str
