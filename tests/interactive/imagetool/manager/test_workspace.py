@@ -107,6 +107,19 @@ def _workspace_test_file_spec(path: pathlib.Path):
     )
 
 
+def _assert_manual_limits_view_ranges(
+    area: typing.Any, expected_limits: dict[str, list[float]]
+) -> None:
+    matched_dims: set[str] = set()
+    for plot_item in area.axes:
+        view_ranges = plot_item.getViewBox().viewRange()
+        for axis, axis_dim in enumerate(plot_item.axis_dims_uniform):
+            if axis_dim in expected_limits:
+                matched_dims.add(axis_dim)
+                np.testing.assert_allclose(view_ranges[axis], expected_limits[axis_dim])
+    assert matched_dims == set(expected_limits)
+
+
 def test_workspace_file_suffix_helpers_collect_nested_inputs(tmp_path) -> None:
     first = _workspace_test_file_spec(tmp_path / "scan_a.h5")
     second = _workspace_test_file_spec(tmp_path / "scan_b.h5")
@@ -6403,6 +6416,57 @@ def test_manager_workspace_load_uses_h5py_fast_path(
         assert not loaded.data_chunked
         assert not loaded.data_file_backed
         np.testing.assert_array_equal(loaded._data.values, data.values)
+
+
+def test_manager_workspace_load_preserves_transposed_inverted_axis_limits(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(125, dtype=np.float64).reshape((5, 5, 5)),
+            dims=["x", "y", "z"],
+            coords={"x": np.arange(5.0), "y": np.arange(5.0), "z": np.arange(5.0)},
+        )
+        expected_limits = {"x": [1.0, 3.0], "y": [0.0, 2.0], "z": [2.0, 4.0]}
+
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        root.slicer_area.set_manual_limits(expected_limits)
+        root.slicer_area.set_axis_inverted("x", True)
+        root.slicer_area.transpose_main_image()
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "transposed-inverted-limits.itws"
+        manager._save_workspace_document(fname, force_full=True)
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+
+        monkeypatch.setattr(
+            manager_xarray,
+            "open_workspace_datatree",
+            lambda *args, **kwargs: pytest.fail(
+                "simple v4 load should not open the workspace DataTree"
+            ),
+        )
+
+        assert manager._load_workspace_file(
+            fname, replace=True, associate=True, mark_dirty=False, select=False
+        )
+        loaded = manager.get_imagetool(0).slicer_area
+        assert loaded.data.dims == ("y", "x", "z")
+        assert loaded.manual_limits == expected_limits
+        _assert_manual_limits_view_ranges(loaded, expected_limits)
+        assert loaded.axis_inversions == {"x": True}
+        assert manager_xarray.dataarray_is_numpy_backed(loaded._data)
+        np.testing.assert_array_equal(
+            loaded._data.transpose(*data.dims).values, data.values
+        )
 
 
 def test_manager_workspace_load_h5py_fast_path_falls_back_per_payload(
