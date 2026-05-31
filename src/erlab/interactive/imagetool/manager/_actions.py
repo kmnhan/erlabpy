@@ -348,7 +348,7 @@ class _ActionsMixin(_ImageToolManagerBase):
             *[self.get_imagetool(t).slicer_area for t in indices],
             link_colors=link_colors,
         )
-        self._linkers.append(linker)
+        self._link_registry.append(linker)
         for index in indices:
             self._mark_node_state_dirty(self._node_for_target(index).uid)
         self._sigReloadLinkers.emit()

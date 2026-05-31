@@ -1389,7 +1389,7 @@ class _WorkspaceIOMixin(_ImageToolManagerBase):
     def _workspace_link_metadata_by_uid(self) -> dict[str, tuple[int, bool]]:
         metadata: dict[str, tuple[int, bool]] = {}
         group_index = 0
-        for linker in self._linkers:
+        for linker in self._link_registry.linkers:
             linked_nodes: list[_ImageToolWrapper | _ManagedWindowNode] = []
             for slicer_area in linker.children:
                 node = self.node_from_slicer_area(slicer_area)

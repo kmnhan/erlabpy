@@ -815,7 +815,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
             if link_rect is not None and link_rect.contains(pos):
                 proxy = node.slicer_area._linking_proxy
                 if proxy is not None:
-                    linker_index = self.manager._linkers.index(proxy)
+                    linker_index = self.manager.linker_index(proxy)
                     return _RowBadge(
                         "link",
                         link_rect,
