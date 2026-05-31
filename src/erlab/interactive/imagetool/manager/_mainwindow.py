@@ -12,6 +12,7 @@ import erlab.interactive.imagetool.slicer
 from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._actions import _ActionsMixin
+from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelMixin
 from erlab.interactive.imagetool.manager._lineage import _LineageMixin
 from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
@@ -47,10 +48,7 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
-    from erlab.interactive.imagetool.provenance_framework import (
-        ScriptInputDependencyRef,
-        ToolProvenanceSpec,
-    )
+    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
@@ -110,6 +108,7 @@ class ImageToolManager(
         self._manager_record = reserve_manager_record(host=_manager_server.HOST_IP)
         self.manager_index = self._manager_record.index
         self._tool_graph = _ManagerToolGraph()
+        self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
 
         try:
             (
@@ -157,17 +156,6 @@ class ImageToolManager(
             self._application_quit_filter = _ApplicationQuitFilter(self)
             qapp.installEventFilter(self._application_quit_filter)
 
-        self._dependency_ref_cache: dict[
-            str,
-            tuple[
-                int,
-                tuple[
-                    ScriptInputDependencyRef,
-                    ...,
-                ],
-            ],
-        ] = {}
-        self._pending_source_refresh_targets: dict[str, set[str]] = {}
         self._linkers: list[
             erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
         ] = []
@@ -784,15 +772,8 @@ class ImageToolManager(
         node = self._tool_graph.unregister_node(uid)
         if node is None:
             return
-        self._dependency_ref_cache.pop(uid, None)
+        self._dependency_tracker.clear_uid(uid)
         self._refresh_dependency_dependents(uid)
-        self._pending_source_refresh_targets.pop(uid, None)
-        for blocker_uid, target_uids in list(
-            self._pending_source_refresh_targets.items()
-        ):
-            target_uids.discard(uid)
-            if not target_uids:
-                self._pending_source_refresh_targets.pop(blocker_uid, None)
 
     def color_for_linker(
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy

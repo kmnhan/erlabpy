@@ -32,6 +32,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._console import (
         _ImageToolManagerJupyterConsole,
     )
+    from erlab.interactive.imagetool.manager._dependency import (
+        _ManagerDependencyTracker,
+    )
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._modelview import _ImageToolWrapperTreeView
     from erlab.interactive.imagetool.manager._registry import _ManagerRecord
@@ -52,10 +55,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._workspace_state import (
         _ManagerWorkspaceState,
     )
-    from erlab.interactive.imagetool.provenance_framework import (
-        ScriptInputDependencyRef,
-        ToolProvenanceSpec,
-    )
+    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
     )
@@ -105,7 +105,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _application_quit_filter: QtCore.QObject | None
     _bulk_remove_depth: int
     _dask_menu: DaskMenu
-    _dependency_ref_cache: dict[str, tuple[int, tuple[ScriptInputDependencyRef, ...]]]
+    _dependency_tracker: _ManagerDependencyTracker
     _file_handlers: set[_MultiFileHandler]
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
@@ -118,7 +118,6 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _metadata_monospace_font: QtGui.QFont
     _metadata_node_uid: str | None
     _pending_linker_reload: bool
-    _pending_source_refresh_targets: dict[str, set[str]]
     _pending_tool_metadata_update_uids: set[str]
     _previous_excepthook: Callable[
         [type[BaseException], BaseException, types.TracebackType | None], typing.Any

@@ -33,6 +33,8 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,36 +43,10 @@ class _LineageMixin(_ImageToolManagerBase):
     def _dependency_refs_for_uid(
         self, uid: str
     ) -> tuple[provenance_framework.ScriptInputDependencyRef, ...]:
-        node = self._tool_graph.nodes.get(uid)
-        if node is None or node.provenance_spec is None:
-            self._dependency_ref_cache.pop(uid, None)
-            return ()
-        spec_id = id(node.provenance_spec)
-        cached = self._dependency_ref_cache.get(uid)
-        if cached is not None and cached[0] == spec_id:
-            return cached[1]
-        refs = provenance_framework.script_input_dependency_refs(node.provenance_spec)
-        self._dependency_ref_cache[uid] = (spec_id, refs)
-        return refs
+        return self._dependency_tracker.refs_for_uid(uid)
 
-    def dependency_status_for_uid(
-        self, uid: str
-    ) -> typing.Literal["current", "changed", "missing"] | None:
-        refs = self._dependency_refs_for_uid(uid)
-        if not refs:
-            return None
-
-        changed = False
-        for ref in refs:
-            parent = self._tool_graph.nodes.get(ref.node_uid)
-            if parent is None:
-                return "missing"
-            if (
-                ref.node_snapshot_token is not None
-                and parent.snapshot_token != ref.node_snapshot_token
-            ):
-                changed = True
-        return "changed" if changed else "current"
+    def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
+        return self._dependency_tracker.status_for_uid(uid)
 
     def dependency_status_label_for_uid(self, uid: str) -> str | None:
         status = self.dependency_status_for_uid(uid)
@@ -216,14 +192,7 @@ class _LineageMixin(_ImageToolManagerBase):
         )
 
     def _dependency_dependent_uids(self, uid: str) -> list[str]:
-        return [
-            node_uid
-            for node_uid in self._tool_graph.nodes
-            if node_uid != uid
-            and any(
-                ref.node_uid == uid for ref in self._dependency_refs_for_uid(node_uid)
-            )
-        ]
+        return self._dependency_tracker.dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
         for dependent_uid in self._dependency_dependent_uids(uid):
@@ -600,9 +569,7 @@ class _LineageMixin(_ImageToolManagerBase):
                 and tool.source_state == "stale"
                 and getattr(tool, "_source_refresh_deferred", False)
             ):
-                self._pending_source_refresh_targets.setdefault(current_uid, set()).add(
-                    uid
-                )
+                self._dependency_tracker.queue_source_refresh(current_uid, uid)
                 return False
             if node.source_state != "fresh":
                 self._mark_descendants_source_state(current_uid, node.source_state)
@@ -614,7 +581,7 @@ class _LineageMixin(_ImageToolManagerBase):
             return False
 
     def _resume_pending_source_refreshes(self, uid: str) -> None:
-        target_uids = self._pending_source_refresh_targets.pop(uid, set())
+        target_uids = self._dependency_tracker.pop_source_refreshes(uid)
         for target_uid in list(target_uids):
             if target_uid not in self._tool_graph.nodes:
                 continue
