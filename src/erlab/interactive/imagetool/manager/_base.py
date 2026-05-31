@@ -35,6 +35,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._dependency import (
         _ManagerDependencyTracker,
     )
+    from erlab.interactive.imagetool.manager._details_panel import (
+        _DetailsPanelController,
+    )
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
     from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
@@ -108,6 +111,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _bulk_remove_depth: int
     _dask_menu: DaskMenu
     _dependency_tracker: _ManagerDependencyTracker
+    _details_panel: _DetailsPanelController
     _file_handlers: set[_MultiFileHandler]
     _ignored_warning_messages: set[str]
     _kb_filter: erlab.interactive.utils.KeyboardEventFilter
