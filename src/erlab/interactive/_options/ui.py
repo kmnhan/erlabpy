@@ -16,10 +16,28 @@ class _CustomParameterTree(pyqtgraph.parametertree.ParameterTree):
     def setParameters(self, *args, **kwargs):
         self._parameter = args[0] if args else None
         super().setParameters(*args, **kwargs)
+        if self._parameter is not None:
+            self._apply_parameter_tooltips(self._parameter)
 
     @property
     def parameter(self) -> pyqtgraph.parametertree.Parameter | None:
         return self._parameter
+
+    def _apply_parameter_tooltips(
+        self, parameter: pyqtgraph.parametertree.Parameter
+    ) -> None:
+        tip = parameter.opts.get("tip")
+        if tip:
+            for item in parameter.items:
+                item.setToolTip(0, tip)
+                item.setToolTip(1, tip)
+                for attr in ("layoutWidget", "displayLabel", "widget", "defaultBtn"):
+                    widget = getattr(item, attr, None)
+                    if widget is not None:
+                        widget.setToolTip(tip)
+
+        for child in parameter:
+            self._apply_parameter_tooltips(child)
 
 
 class OptionDialog(QtWidgets.QDialog):

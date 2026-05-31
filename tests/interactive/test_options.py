@@ -32,6 +32,20 @@ def test_apply_button_enables_on_change(dialog: OptionDialog, qtbot):
     assert dialog.btn_apply.isEnabled()
 
 
+def test_dialog_parameter_tips_apply_to_label_and_row_widgets(
+    dialog: OptionDialog,
+):
+    param = dialog.tree.parameter.child("io").child("dask").child("compute_threshold")
+    tip = param.opts["tip"]
+    (item,) = tuple(param.items)
+
+    assert item.toolTip(0) == tip
+    assert item.toolTip(1) == tip
+    assert item.layoutWidget.toolTip() == tip
+    assert item.displayLabel.toolTip() == tip
+    assert item.widget.toolTip() == tip
+
+
 def test_apply_saves_settings(dialog: OptionDialog, qtbot):
     dialog.tree.parameter.child("colors").child("cmap").child("name").setValue("bwr")
     dialog.apply()
