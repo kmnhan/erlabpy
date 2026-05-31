@@ -16,6 +16,7 @@ from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
 from erlab.interactive.imagetool.manager._dialogs import (
+    _BatchOperationDialog,
     _ConcatDialog,
     _is_loader_func,
     _RenameDialog,
@@ -33,12 +34,13 @@ from erlab.interactive.imagetool.manager._wrapper import (
 
 if typing.TYPE_CHECKING:
     import datetime
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
 
     import xarray as xr
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
+    from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ class _ActionsController:
         self._manager = manager
         self.__rename_dialog: _RenameDialog | None = None
         self.__concat_dialog: _ConcatDialog | None = None
+        self.__batch_dialog: _BatchOperationDialog | None = None
 
     @property
     def _rename_dialog(self) -> _RenameDialog:
@@ -243,6 +246,331 @@ class _ActionsController:
         """Concatenate the selected data using :func:`xarray.concat`."""
         dlg = self._concat_dialog
         dlg.open()
+
+    @property
+    def _batch_dialog(self) -> _BatchOperationDialog:
+        if self.__batch_dialog is None:
+            self.__batch_dialog = _BatchOperationDialog(self._manager)
+        return self.__batch_dialog
+
+    def batch_target_count(self) -> int:
+        return sum(
+            1
+            for node in self._manager._tool_graph.nodes.values()
+            if node.is_imagetool and node.imagetool is not None
+        )
+
+    def show_batch_operations(self) -> None:
+        if self._manager.batch_target_count() < 2:
+            return
+        dialog = self._batch_dialog
+        dialog.open()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _selected_batch_targets(self) -> list[int | str]:
+        targets = list(self._manager._selected_imagetool_targets())
+        if len(targets) < 2:
+            raise ValueError("Select at least two ImageTool targets.")
+        for target in targets:
+            if not self._manager._is_imagetool_target(target):
+                raise TypeError(f"Target {target!r} is not an ImageTool.")
+        return targets
+
+    def _target_display_text(self, target: int | str) -> str:
+        return self._manager._node_for_target(target).display_text
+
+    def _validate_batch_operations(
+        self,
+        dialog: typing.Any,
+        operations: Iterable[provenance.ToolProvenanceOperation],
+        *,
+        extra_types: tuple[type[provenance.ToolProvenanceOperation], ...] = (),
+    ) -> None:
+        declared_types = tuple(dialog.operation_types)
+        accepted_types = declared_types + extra_types
+        for operation in operations:
+            if accepted_types and not isinstance(operation, accepted_types):
+                raise TypeError(
+                    f"{type(dialog).__name__} produced unsupported batch operation "
+                    f"{type(operation).__name__}."
+                )
+            if not type(operation).batch_available:
+                raise TypeError(
+                    f"{type(operation).__name__} is not available for batch use."
+                )
+
+    def _validate_batch_target_operations(
+        self,
+        operations: Iterable[provenance.ToolProvenanceOperation],
+        data: xr.DataArray,
+    ) -> None:
+        for operation in operations:
+            if not isinstance(
+                operation,
+                (
+                    provenance.AssignScalarCoordOperation,
+                    provenance.AssignCoord1DOperation,
+                ),
+            ):
+                continue
+            if operation.coord_name in data.dims or operation.coord_name in data.coords:
+                raise ValueError(
+                    f"Coordinate or dimension {operation.coord_name!r} already exists."
+                )
+
+    def _show_batch_error(
+        self,
+        text: str,
+        *,
+        target: int | str | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        details = ""
+        if target is not None:
+            details = f"Target: {self._target_display_text(target)}"
+        if error is not None:
+            details = "\n".join(part for part in (details, str(error)) if part)
+        traceback_text = traceback.format_exc()
+        detailed_text = (
+            ""
+            if traceback_text == "NoneType: None\n"
+            else erlab.interactive.utils._format_traceback(traceback_text)
+        )
+        erlab.interactive.utils.MessageDialog.critical(
+            self._manager,
+            "Error",
+            text,
+            informative_text=details,
+            detailed_text=detailed_text,
+        )
+
+    def apply_batch_transform_dialog(
+        self,
+        dialog: typing.Any,
+        launch_mode: typing.Literal["replace", "detach", "nest"],
+    ) -> bool:
+        try:
+            targets = self._selected_batch_targets()
+            operations = dialog.source_operations()
+        except Exception as exc:
+            self._show_batch_error("Batch operation could not be started.", error=exc)
+            return False
+        if not operations:
+            self._show_batch_error(
+                "Batch operation could not be started.",
+                error=ValueError("The dialog did not produce an operation."),
+            )
+            return False
+        try:
+            self._validate_batch_operations(dialog, operations)
+        except Exception as exc:
+            self._show_batch_error("Batch operation could not be started.", error=exc)
+            return False
+
+        plan: list[tuple[typing.Any, ...]] = []
+        for target in targets:
+            try:
+                node = self._manager._node_for_target(target)
+                slicer_area = self._manager.get_imagetool(target).slicer_area
+                input_name = slicer_area.data.name
+                new_name = "" if input_name is None else str(input_name)
+                source_spec = dialog.source_spec_for_data(slicer_area.data, new_name)
+                self._validate_batch_operations(
+                    dialog,
+                    source_spec.operations,
+                    extra_types=(provenance.RestoreNonuniformDimsOperation,),
+                )
+                source_data = slicer_area.data
+                if source_spec.kind == "public_data":
+                    source_data = (
+                        erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
+                            source_data
+                        )
+                    )
+                self._validate_batch_target_operations(
+                    source_spec.operations,
+                    source_data,
+                )
+                processed = source_spec.apply(slicer_area.data).rename(input_name)
+                erlab.interactive.imagetool.slicer.ArraySlicer.validate_array(
+                    processed,
+                    copy_values=False,
+                )
+
+                parent_provenance = node.displayed_provenance_spec
+                if parent_provenance is None:
+                    parent_provenance = slicer_area.displayed_provenance_spec()
+                nested_provenance = provenance.compose_full_provenance(
+                    parent_provenance,
+                    source_spec,
+                )
+                detached_provenance = dialog._detached_provenance_spec(
+                    parent_provenance,
+                    source_spec,
+                    new_name,
+                )
+
+                replace_kind = ""
+                replace_provenance = None
+                if launch_mode == "replace":
+                    displayed_source = node.displayed_source_spec
+                    if displayed_source is not None:
+                        replace_kind = "source"
+                        replace_provenance = dialog._compose_transform_provenance(
+                            displayed_source,
+                            source_spec,
+                            new_name,
+                        )
+                    elif node.displayed_provenance_spec is not None:
+                        replace_kind = "detached"
+                        replace_provenance = dialog._compose_transform_provenance(
+                            node.displayed_provenance_spec,
+                            source_spec,
+                            new_name,
+                        )
+                    else:
+                        replace_kind = "detached"
+                        replace_provenance = detached_provenance
+
+                plan.append(
+                    (
+                        target,
+                        node,
+                        slicer_area,
+                        processed,
+                        source_spec,
+                        nested_provenance,
+                        detached_provenance,
+                        replace_kind,
+                        replace_provenance,
+                    )
+                )
+            except Exception as exc:
+                self._show_batch_error(
+                    "Batch operation failed before changing data.",
+                    target=target,
+                    error=exc,
+                )
+                return False
+
+        try:
+            for (
+                target,
+                node,
+                slicer_area,
+                processed,
+                source_spec,
+                nested_provenance,
+                detached_provenance,
+                replace_kind,
+                replace_provenance,
+            ) in plan:
+                if launch_mode == "replace":
+                    if replace_provenance is not None:
+                        if replace_kind == "source":
+                            node.set_source_binding(
+                                replace_provenance,
+                                auto_update=node.source_auto_update,
+                                state=node.source_state,
+                            )
+                        else:
+                            node.set_detached_provenance(replace_provenance)
+                    slicer_area.replace_source_data(processed, emit_edited=True)
+                    continue
+
+                itool_kw = dialog._itool_kwargs(processed, slicer_area)
+                tool = typing.cast(
+                    "ImageTool | None",
+                    erlab.interactive.itool(manager=False, **itool_kw),
+                )
+                if tool is None:
+                    self._show_batch_error(
+                        "An error occurred while applying batch data.",
+                        error=RuntimeError("Could not create the ImageTool window."),
+                    )
+                    return False
+
+                if launch_mode == "nest":
+                    tool.set_provenance_spec(nested_provenance)
+                    self._manager.add_imagetool_child(
+                        tool,
+                        target,
+                        source_spec=source_spec,
+                    )
+                else:
+                    tool.set_provenance_spec(detached_provenance)
+                    self._manager.add_imagetool(
+                        tool,
+                        activate=True,
+                        provenance_spec=detached_provenance,
+                    )
+            if launch_mode == "replace":
+                self._manager._sigDataReplaced.emit()
+        except Exception as exc:
+            self._show_batch_error(
+                "An error occurred while applying batch data.",
+                error=exc,
+            )
+            return False
+        return True
+
+    def apply_batch_filter_dialog(self, dialog: typing.Any) -> bool:
+        try:
+            targets = self._selected_batch_targets()
+            operation = dialog.filter_operation()
+            if operation is not None:
+                self._validate_batch_operations(dialog, (operation,))
+        except Exception as exc:
+            self._show_batch_error("Batch filter could not be started.", error=exc)
+            return False
+
+        for target in targets:
+            try:
+                slicer_area = self._manager.get_imagetool(target).slicer_area
+                if operation is not None:
+                    slicer_area._filter_operation_result_for_data(
+                        slicer_area._data,
+                        operation,
+                        tuple(slicer_area.data.dims),
+                    )
+            except Exception as exc:
+                self._show_batch_error(
+                    "Batch filter failed before changing data.",
+                    target=target,
+                    error=exc,
+                )
+                return False
+
+        try:
+            for target in targets:
+                slicer_area = self._manager.get_imagetool(target).slicer_area
+                emit_edited = (
+                    operation is not None
+                    or slicer_area._accepted_filter_provenance_operation is not None
+                    or slicer_area._applied_func is not None
+                    or slicer_area.has_active_filter
+                )
+
+                def _apply_filter(
+                    *,
+                    area: ImageSlicerArea = slicer_area,
+                    op: provenance.ToolProvenanceOperation | None = operation,
+                    edited: bool = emit_edited,
+                ) -> None:
+                    area.apply_filter_operation(op, emit_edited=edited)
+
+                slicer_area.record_history_mutation(
+                    None,
+                    _apply_filter,
+                )
+        except Exception as exc:
+            self._show_batch_error(
+                "An error occurred while applying batch filter.",
+                error=exc,
+            )
+            return False
+        return True
 
     def store_selected(self) -> None:
         self._manager.ensure_console_initialized()
@@ -1049,6 +1377,7 @@ class _ActionsController:
             )
         self._manager.tree_view.childtool_added(node.uid, parent)
         self._manager._mark_node_added(node.uid)
+        self._manager._update_actions()
         if show:
             node.show()
         if activate and node.window is not None:
@@ -1166,6 +1495,7 @@ class _ActionsController:
         self._manager._mark_removed_subtree_dirty(uid)
         self._manager.tree_view.childtool_removed(uid)
         self._manager._remove_uid_target(uid)
+        self._manager._update_actions()
 
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None

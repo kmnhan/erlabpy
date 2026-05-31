@@ -51,6 +51,7 @@ if typing.TYPE_CHECKING:
 
     import xarray as xr
 
+    from erlab.interactive.imagetool.manager import ImageToolManager
     from erlab.interactive.imagetool.plot_items import ItoolPolyLineROI
     from erlab.interactive.imagetool.slicer import ArraySlicer
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
@@ -78,14 +79,27 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     overridden to provide the code to be copied.
     """
 
+    operation_types: typing.ClassVar[
+        tuple[type[provenance.ToolProvenanceOperation], ...]
+    ] = ()
+    """Operation classes this dialog can emit directly."""
+
     _sigCodeCopied = QtCore.Signal(str)
 
-    def __init__(self, slicer_area: ImageSlicerArea) -> None:
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea,
+        *,
+        batch_manager: ImageToolManager | None = None,
+    ) -> None:
         super().__init__(slicer_area)
         if self.title is not None:
             self.setWindowTitle(self.title)
 
         self.slicer_area = slicer_area
+        self._batch_manager = (
+            None if batch_manager is None else weakref.ref(batch_manager)
+        )
 
         self._layout = QtWidgets.QFormLayout()
         self.setLayout(self._layout)
@@ -131,6 +145,16 @@ class _DataManipulationDialog(QtWidgets.QDialog):
     @property
     def array_slicer(self) -> ArraySlicer:
         return self.slicer_area.array_slicer
+
+    @property
+    def batch_manager(self) -> ImageToolManager | None:
+        if self._batch_manager is None:
+            return None
+        return self._batch_manager()
+
+    @property
+    def is_batch_mode(self) -> bool:
+        return self.batch_manager is not None
 
     @QtCore.Slot()
     def _copy(self) -> None:
@@ -241,8 +265,31 @@ class DataTransformDialog(_DataManipulationDialog):
         ),
     )
 
-    def __init__(self, slicer_area: ImageSlicerArea) -> None:
-        super().__init__(slicer_area)
+    _BATCH_LAUNCH_MODES: typing.ClassVar[tuple[tuple[str, str, str], ...]] = (
+        (
+            "replace",
+            "Replace Selected",
+            "Replace the data in each selected ImageTool.",
+        ),
+        (
+            "nest",
+            "Open Child Window Under Each",
+            "Create one child ImageTool under each selected ImageTool.",
+        ),
+        (
+            "detach",
+            "Open Top-Level Copies",
+            "Create one detached top-level ImageTool for each selected ImageTool.",
+        ),
+    )
+
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea,
+        *,
+        batch_manager: ImageToolManager | None = None,
+    ) -> None:
+        super().__init__(slicer_area, batch_manager=batch_manager)
         self.launch_mode_combo = QtWidgets.QComboBox()
         for value, label, tooltip in self._available_launch_modes():
             self.launch_mode_combo.addItem(label, userData=value)
@@ -269,11 +316,15 @@ class DataTransformDialog(_DataManipulationDialog):
         )
 
     def _available_launch_modes(self) -> tuple[tuple[str, str, str], ...]:
+        if self.is_batch_mode:
+            return self._BATCH_LAUNCH_MODES
         if self._manager_target()[1] is not None:
             return self._LAUNCH_MODES
         return tuple(mode for mode in self._LAUNCH_MODES if mode[0] != "nest")
 
     def _default_launch_mode(self) -> typing.Literal["replace", "detach", "nest"]:
+        if self.is_batch_mode:
+            return "replace"
         if any(mode[0] == "nest" for mode in self._available_launch_modes()):
             return "replace"
         return "detach"
@@ -303,7 +354,11 @@ class DataTransformDialog(_DataManipulationDialog):
     ) -> provenance.ToolProvenanceOperation | None:
         return None
 
-    def source_spec(self, new_name: str | None = None) -> provenance.ToolProvenanceSpec:
+    def source_spec_for_data(
+        self,
+        data: xr.DataArray,
+        new_name: str | None = None,
+    ) -> provenance.ToolProvenanceSpec:
         del new_name
         operations = self.source_operations()
         builder = (
@@ -312,12 +367,14 @@ class DataTransformDialog(_DataManipulationDialog):
             else provenance.full_data
         )
         if not self.apply_on_nonuniform_data and any(
-            str(dim).endswith("_idx")
-            and str(dim).removesuffix("_idx") in self.slicer_area.data.coords
-            for dim in self.slicer_area.data.dims
+            str(dim).endswith("_idx") and str(dim).removesuffix("_idx") in data.coords
+            for dim in data.dims
         ):
             operations.append(provenance.RestoreNonuniformDimsOperation())
         return builder(*operations)
+
+    def source_spec(self, new_name: str | None = None) -> provenance.ToolProvenanceSpec:
+        return self.source_spec_for_data(self.slicer_area.data, new_name)
 
     def _detached_provenance_spec(
         self,
@@ -420,14 +477,20 @@ class DataTransformDialog(_DataManipulationDialog):
         except Exception:
             return ""
 
-    def _itool_kwargs(self, processed) -> dict[str, typing.Any]:
+    def _itool_kwargs(
+        self,
+        processed,
+        slicer_area: ImageSlicerArea | None = None,
+    ) -> dict[str, typing.Any]:
         itool_kw: dict[str, typing.Any] = {
             "data": processed,
             "execute": False,
         }
 
         if self.keep_colors:
-            color_props: ColorMapState = self.slicer_area.colormap_properties
+            if slicer_area is None:
+                slicer_area = self.slicer_area
+            color_props: ColorMapState = slicer_area.colormap_properties
 
             itool_kw["cmap"] = color_props["cmap"]
             itool_kw["gamma"] = color_props["gamma"]
@@ -461,6 +524,19 @@ class DataTransformDialog(_DataManipulationDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
+        manager = self.batch_manager
+        if manager is not None:
+            try:
+                if not manager.apply_batch_transform_dialog(self, self.launch_mode):
+                    return
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    self, "Error", "An error occurred while processing data."
+                )
+                return
+            super().accept()
+            return
+
         input_name = self.slicer_area.data.name
         new_name = ""
         if input_name is not None:
@@ -581,15 +657,20 @@ class DataFilterDialog(_DataManipulationDialog):
     enable_preview: bool = True
     """Whether to show a preview button."""
 
-    def __init__(self, slicer_area: ImageSlicerArea) -> None:
-        super().__init__(slicer_area)
+    def __init__(
+        self,
+        slicer_area: ImageSlicerArea,
+        *,
+        batch_manager: ImageToolManager | None = None,
+    ) -> None:
+        super().__init__(slicer_area, batch_manager=batch_manager)
         self._previewed: bool = False
         self._starting_applied_func = self.slicer_area._applied_func
         self._starting_filter_operation = (
             self.slicer_area._accepted_filter_provenance_operation
         )
 
-        if self.enable_preview:
+        if self.enable_preview and not self.is_batch_mode:
             self.preview_button = QtWidgets.QPushButton("Preview")
             self.preview_button.clicked.connect(self._preview)
             self.buttonBox.addButton(
@@ -665,6 +746,19 @@ class DataFilterDialog(_DataManipulationDialog):
 
     @QtCore.Slot()
     def accept(self) -> None:
+        manager = self.batch_manager
+        if manager is not None:
+            try:
+                if not manager.apply_batch_filter_dialog(self):
+                    return
+            except Exception:
+                erlab.interactive.utils.MessageDialog.critical(
+                    self, "Error", "An error occurred while processing data."
+                )
+                return
+            super().accept()
+            return
+
         try:
             operation = self.filter_operation()
             emit_edited = (
@@ -707,6 +801,7 @@ class DataFilterDialog(_DataManipulationDialog):
 
 class RotationDialog(DataTransformDialog):
     enable_copy = True
+    operation_types = (provenance.RotateOperation,)
 
     @property
     def _rotate_params(self) -> dict[str, typing.Any]:
@@ -775,6 +870,7 @@ class RotationDialog(DataTransformDialog):
 class AggregateDialog(DataTransformDialog):
     title = "Aggregate Over Dimensions"
     enable_copy = True
+    operation_types = (provenance.QSelAggregationOperation,)
 
     _REDUCERS: typing.ClassVar[dict[str, str]] = {
         "mean": "Mean",
@@ -1062,6 +1158,11 @@ class SelectionDialog(DataTransformDialog):
     title = "Select Data"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (
+        provenance.IselOperation,
+        provenance.SelOperation,
+        provenance.QSelOperation,
+    )
 
     def setup_widgets(self) -> None:
         self.public_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -1228,6 +1329,7 @@ class InterpolationDialog(DataTransformDialog):
     title = "Interpolate"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (provenance.InterpolationOperation,)
 
     def setup_widgets(self) -> None:
         self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -1363,6 +1465,7 @@ class LeadingEdgeDialog(DataTransformDialog):
     title = "Leading Edge"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (provenance.LeadingEdgeOperation,)
 
     def setup_widgets(self) -> None:
         self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -1460,6 +1563,7 @@ class CoarsenDialog(DataTransformDialog):
     title = "Coarsen"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (provenance.CoarsenOperation,)
 
     _REDUCERS: tuple[str, ...] = (
         "all",
@@ -1609,6 +1713,7 @@ class ThinDialog(DataTransformDialog):
     title = "Thin Data"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (provenance.ThinOperation,)
 
     def setup_widgets(self) -> None:
         self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -1739,6 +1844,7 @@ class ThinDialog(DataTransformDialog):
 class SymmetrizeDialog(DataTransformDialog):
     title = "Symmetrize"
     enable_copy = True
+    operation_types = (provenance.SymmetrizeOperation,)
 
     def setup_widgets(self) -> None:
         dim_group = QtWidgets.QGroupBox("Mirror plane")
@@ -1832,6 +1938,7 @@ class SymmetrizeDialog(DataTransformDialog):
 class SymmetrizeNfoldDialog(DataTransformDialog):
     title = "Rotational Symmetrize"
     enable_copy = True
+    operation_types = (provenance.SymmetrizeNfoldOperation,)
 
     @property
     def _params(self) -> dict[str, typing.Any]:
@@ -1945,6 +2052,7 @@ class EdgeCorrectionDialog(DataTransformDialog):
 
 class _BaseCropDialog(DataTransformDialog):
     enable_copy = True
+    operation_types = (provenance.SelOperation, provenance.IselOperation)
 
     @property
     def _slice_kwargs(self) -> dict[Hashable, slice]:
@@ -2127,6 +2235,7 @@ class CropDialog(_BaseCropDialog):
 class NormalizeDialog(DataFilterDialog):
     title = "Normalize"
     enable_copy = True
+    operation_types = (provenance.NormalizeOperation,)
     denominator_rtol: float = 1e-12
     _MODES: typing.ClassVar[
         tuple[typing.Literal["area", "minmax", "min", "min_area"], ...]
@@ -2210,6 +2319,7 @@ class DivideByCoordDialog(DataTransformDialog):
     title = "Divide by Coordinate"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (provenance.DivideByCoordOperation,)
 
     def setup_widgets(self) -> None:
         self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -2299,6 +2409,7 @@ class DivideByCoordDialog(DataTransformDialog):
 class GaussianFilterDialog(DataFilterDialog):
     title = "Gaussian Filter"
     enable_copy = True
+    operation_types = (provenance.GaussianFilterOperation,)
 
     def setup_widgets(self) -> None:
         self._source_data = self.slicer_area._data
@@ -2503,6 +2614,7 @@ class SwapDimsDialog(DataTransformDialog):
     title = "Swap Dimensions"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (provenance.SwapDimsOperation,)
 
     def setup_widgets(self) -> None:
         self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -2608,6 +2720,7 @@ class RenameDimsCoordsDialog(DataTransformDialog):
     title = "Rename Coordinates and Dimensions"
     enable_copy = True
     apply_on_nonuniform_data = True
+    operation_types = (provenance.RenameDimsCoordsOperation,)
 
     def setup_widgets(self) -> None:
         self._source_data = erlab.interactive.imagetool.slicer.restore_nonuniform_dims(
@@ -2737,6 +2850,12 @@ class RenameDimsCoordsDialog(DataTransformDialog):
 
 class AssignCoordsDialog(DataTransformDialog):
     title = "Coordinate Editor"
+    operation_types = (
+        provenance.AffineCoordOperation,
+        provenance.AssignCoordsOperation,
+        provenance.AssignScalarCoordOperation,
+        provenance.AssignCoord1DOperation,
+    )
 
     def setup_widgets(self) -> None:
         self._mode_tabs = QtWidgets.QTabWidget(self)
@@ -3016,6 +3135,7 @@ def _attr_values_equal(left: typing.Any, right: typing.Any) -> bool:
 
 class AssignAttrsDialog(DataTransformDialog):
     title = "Attribute Editor"
+    operation_types = (provenance.AssignAttrsOperation,)
 
     def setup_widgets(self) -> None:
         self._original_attrs = dict(self.slicer_area.data.attrs)

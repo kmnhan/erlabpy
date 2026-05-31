@@ -1101,6 +1101,7 @@ class ToolProvenanceOperation(pydantic.BaseModel):
     """
 
     live_applicable: typing.ClassVar[bool] = True
+    batch_available: typing.ClassVar[bool] = False
     console_patterns: typing.ClassVar[tuple[ConsoleOperationPattern, ...]] = ()
 
     model_config = pydantic.ConfigDict(
