@@ -9,11 +9,7 @@ from qtpy import QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import (
-    _replay_graph,
-    provenance_framework,
-    provenance_operations,
-)
+from erlab.interactive.imagetool import _replay_graph, provenance
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
@@ -45,7 +41,7 @@ class _LineageController:
 
     def _dependency_refs_for_uid(
         self, uid: str
-    ) -> tuple[provenance_framework.ScriptInputDependencyRef, ...]:
+    ) -> tuple[provenance.ScriptInputDependencyRef, ...]:
         return self._manager._dependency_tracker.refs_for_uid(uid)
 
     def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
@@ -154,7 +150,7 @@ class _LineageController:
     @classmethod
     def _script_input_has_recorded_file(
         cls,
-        script_input: provenance_framework.ScriptInput,
+        script_input: provenance.ScriptInput,
     ) -> bool:
         spec = script_input.parsed_provenance_spec()
         if spec is None:
@@ -169,8 +165,8 @@ class _LineageController:
     @classmethod
     def _dependency_ref_has_recorded_file(
         cls,
-        spec: provenance_framework.ToolProvenanceSpec | None,
-        ref: provenance_framework.ScriptInputDependencyRef,
+        spec: provenance.ToolProvenanceSpec | None,
+        ref: provenance.ScriptInputDependencyRef,
     ) -> bool:
         if spec is None:
             return False
@@ -223,7 +219,7 @@ class _LineageController:
 
     def _script_input_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> provenance_framework.ScriptInput:
+    ) -> provenance.ScriptInput:
         displayed_provenance = node.displayed_provenance_spec
         provenance_spec = (
             displayed_provenance.model_dump(mode="json")
@@ -236,7 +232,7 @@ class _LineageController:
             label = node.display_text
         if isinstance(node, _ImageToolWrapper) and node.name:
             label += f": {node.name}"
-        return provenance_framework.ScriptInput(
+        return provenance.ScriptInput(
             name=self._manager._script_input_name_for_node(node),
             label=label,
             node_uid=node.uid,
@@ -252,9 +248,9 @@ class _LineageController:
         operation_code: str,
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
-    ) -> provenance_framework.ToolProvenanceSpec:
-        return provenance_framework.script(
-            provenance_operations.ScriptCodeOperation(
+    ) -> provenance.ToolProvenanceSpec:
+        return provenance.script(
+            provenance.ScriptCodeOperation(
                 label=operation_label,
                 code=operation_code,
             ),
@@ -292,9 +288,9 @@ class _LineageController:
         )
 
     def _script_provenance_inputs_current(
-        self, spec: provenance_framework.ToolProvenanceSpec
+        self, spec: provenance.ToolProvenanceSpec
     ) -> bool:
-        for ref in provenance_framework.script_input_dependency_refs(spec):
+        for ref in provenance.script_input_dependency_refs(spec):
             parent = self._manager._tool_graph.nodes.get(ref.node_uid)
             if parent is None:
                 return False
@@ -307,10 +303,10 @@ class _LineageController:
 
     def _resolve_live_script_input_for_reload(
         self,
-        script_input: provenance_framework.ScriptInput,
+        script_input: provenance.ScriptInput,
         *,
         target_node_uid: str | None = None,
-    ) -> tuple[xr.DataArray, provenance_framework.ScriptInput] | None:
+    ) -> tuple[xr.DataArray, provenance.ScriptInput] | None:
         spec = script_input.parsed_provenance_spec()
         if script_input.node_uid is None:
             return None
@@ -334,7 +330,7 @@ class _LineageController:
 
     def _script_input_can_reload(
         self,
-        script_input: provenance_framework.ScriptInput,
+        script_input: provenance.ScriptInput,
         *,
         target_node_uid: str | None = None,
     ) -> bool:
@@ -359,7 +355,7 @@ class _LineageController:
             )
         if spec.kind != "script":
             return False
-        return provenance_framework.script_provenance_replayable(spec) and all(
+        return provenance.script_provenance_replayable(spec) and all(
             self._manager._script_input_can_reload(
                 nested_input,
                 target_node_uid=target_node_uid,
@@ -369,16 +365,16 @@ class _LineageController:
 
     def _rebuild_script_provenance(
         self,
-        spec: provenance_framework.ToolProvenanceSpec,
+        spec: provenance.ToolProvenanceSpec,
         *,
         target_node_uid: str | None = None,
     ) -> _ScriptRebuildResult:
         def _resolve_live_input(
-            script_input: provenance_framework.ScriptInput,
+            script_input: provenance.ScriptInput,
         ) -> (
             tuple[
                 xr.DataArray,
-                provenance_framework.ScriptInput,
+                provenance.ScriptInput,
             ]
             | None
         ):
@@ -412,7 +408,7 @@ class _LineageController:
             and spec is not None
             and spec.kind == "script"
             and bool(spec.script_inputs)
-            and provenance_framework.script_provenance_replayable(spec)
+            and provenance.script_provenance_replayable(spec)
             and all(
                 self._manager._script_input_can_reload(
                     script_input,
@@ -465,7 +461,7 @@ class _LineageController:
                 continue
             if node.provenance_spec is None:
                 continue
-            rebased = provenance_framework.rebase_script_input_node_uids(
+            rebased = provenance.rebase_script_input_node_uids(
                 node.provenance_spec,
                 uid_map,
             )

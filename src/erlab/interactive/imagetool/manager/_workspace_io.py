@@ -15,7 +15,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import provenance_framework, provenance_operations
+from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._mainwindow import _ITOOL_DATA_NAME, ImageTool
 from erlab.interactive.imagetool.manager import _desktop
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
@@ -63,12 +63,12 @@ logger = logging.getLogger(__name__)
 
 
 def _workspace_provenance_file_stems(
-    spec: provenance_framework.ToolProvenanceSpec | None,
+    spec: provenance.ToolProvenanceSpec | None,
 ) -> tuple[str, ...]:
     stems: list[str] = []
 
     def collect(
-        current: provenance_framework.ToolProvenanceSpec | None,
+        current: provenance.ToolProvenanceSpec | None,
     ) -> None:
         if current is None:
             return
@@ -93,7 +93,7 @@ def _workspace_compact_file_suffix(stems: tuple[str, ...]) -> str:
 
 def _legacy_saved_title_data_name(
     ds: xr.Dataset,
-    provenance_spec: provenance_framework.ToolProvenanceSpec | None,
+    provenance_spec: provenance.ToolProvenanceSpec | None,
 ) -> str | None:
     title = _strip_workspace_modified_placeholder(str(ds.attrs.get("itool_title", "")))
     if ": " in title:
@@ -739,7 +739,7 @@ class _WorkspaceIOController:
         provenance_spec = ds.attrs.get("manager_node_provenance_spec")
         live_source_spec = ds.attrs.get("manager_node_live_source_spec")
         live_source_binding = ds.attrs.get("manager_node_live_source_binding")
-        parse_provenance_spec = provenance_framework.parse_tool_provenance_spec
+        parse_provenance_spec = provenance.parse_tool_provenance_spec
         parsed_provenance_spec = None
         if provenance_spec is not None:
             try:
@@ -761,7 +761,7 @@ class _WorkspaceIOController:
                     "Mapping[str, typing.Any]",
                     json.loads(live_source_spec),
                 )
-                parsed_source_spec = provenance_framework.require_live_source_spec(
+                parsed_source_spec = provenance.require_live_source_spec(
                     parse_provenance_spec(source_payload)
                 )
             except Exception:
@@ -777,7 +777,7 @@ class _WorkspaceIOController:
                     "Mapping[str, typing.Any]",
                     json.loads(live_source_binding),
                 )
-                binding_type = provenance_operations.ImageToolSelectionSourceBinding
+                binding_type = provenance.ImageToolSelectionSourceBinding
                 parsed_source_binding = binding_type.model_validate(binding_payload)
             except Exception:
                 logger.warning(

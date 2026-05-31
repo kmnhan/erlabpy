@@ -26,7 +26,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import _history
+from erlab.interactive.imagetool import _history, provenance
 from erlab.interactive.imagetool._viewer_dialogs import (
     _AssociatedCoordsDialog,
     _CursorColorCoordDialog,
@@ -42,10 +42,6 @@ if typing.TYPE_CHECKING:
         ItoolGraphicsLayoutWidget,
         ItoolImageItem,
         ItoolPlotItem,
-    )
-    from erlab.interactive.imagetool.provenance_framework import (
-        ToolProvenanceOperation,
-        ToolProvenanceSpec,
     )
 else:
     import lazy_loader as _lazy
@@ -69,7 +65,7 @@ from erlab.interactive.imagetool.viewer_state import (
 
 logger = logging.getLogger(__name__)
 
-_FileDataSelection = erlab.interactive.imagetool.provenance_framework.FileDataSelection
+_FileDataSelection = provenance.FileDataSelection
 _FileSelection: typing.TypeAlias = int | dict[str, typing.Any] | _FileDataSelection
 _LoadFunc: typing.TypeAlias = tuple[
     collections.abc.Callable[..., typing.Any] | str,
@@ -163,10 +159,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
     @property
     def provenance_spec(
         self,
-    ) -> ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         """Canonical replay provenance for the current ImageTool data."""
         return typing.cast(
-            "ToolProvenanceSpec | None",
+            "provenance.ToolProvenanceSpec | None",
             getattr(self.parent(), "provenance_spec", None),
         )
 
@@ -281,12 +277,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
         # Current plot filter. Accepted filters are represented by the operation below.
         self._applied_func: Callable[[xr.DataArray], xr.DataArray] | None = None
         self._applied_provenance_operation: (
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-            | None
+            provenance.ToolProvenanceOperation | None
         ) = None
         self._accepted_filter_provenance_operation: (
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-            | None
+            provenance.ToolProvenanceOperation | None
         ) = None
         self._accepted_filter_data: xr.DataArray | None = None
         # `_data` is the public/source array, while `ArraySlicer._obj` is the internal
@@ -796,15 +790,10 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def displayed_live_source_spec(
         self,
-        base_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None,
-    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+        base_spec: provenance.ToolProvenanceSpec | None,
+    ) -> provenance.ToolProvenanceSpec | None:
         """Return live source provenance including the accepted display filter."""
-        source_spec = (
-            erlab.interactive.imagetool.provenance_framework.require_live_source_spec(
-                base_spec
-            )
-        )
+        source_spec = provenance.require_live_source_spec(base_spec)
         operation = self._accepted_filter_provenance_operation
         if source_spec is None or operation is None:
             return source_spec
@@ -879,7 +868,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _filter_operation_result_for_data(
         self,
         data: xr.DataArray,
-        operation: ToolProvenanceOperation,
+        operation: provenance.ToolProvenanceOperation,
         dims: tuple[Hashable, ...],
     ) -> xr.DataArray:
         return self._normalize_filter_result_for_source_dims(
@@ -903,7 +892,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _filter_operation_result_for_replacement(
         self,
         data: xr.DataArray,
-        operation: ToolProvenanceOperation,
+        operation: provenance.ToolProvenanceOperation,
     ) -> xr.DataArray:
         return self._filter_operation_result_for_data(
             data,
@@ -913,7 +902,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     @staticmethod
     def _filter_func_from_operation(
-        operation: ToolProvenanceOperation,
+        operation: provenance.ToolProvenanceOperation,
     ) -> Callable[[xr.DataArray], xr.DataArray]:
         def _apply_filter(darr: xr.DataArray) -> xr.DataArray:
             return operation.apply(darr, parent_data=darr)
@@ -923,10 +912,9 @@ class ImageSlicerArea(QtWidgets.QWidget):
     def _parse_filter_operation_state(
         self,
         payload: dict[str, typing.Any] | None,
-    ) -> ToolProvenanceOperation | None:
+    ) -> provenance.ToolProvenanceOperation | None:
         if payload is None:
             return None
-        provenance = erlab.interactive.imagetool.provenance_framework
         return provenance.parse_tool_provenance_operation(payload)
 
     def _restore_filter_operation_from_state(
@@ -2002,7 +1990,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             "xr.DataArray | xr.Dataset | xr.DataTree",
             func(file_path, **load_func[1]),
         )
-        return erlab.interactive.imagetool.provenance_framework._select_replay_input(
+        return provenance._select_replay_input(
             reloaded,
             load_func[2],
         )
@@ -2019,9 +2007,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         file_path = pathlib.Path(provenance_spec.file_load_source.path)
         if not file_path.exists():
             raise FileNotFoundError(file_path)
-        return erlab.interactive.imagetool.provenance_framework.replay_file_provenance(
-            provenance_spec
-        )
+        return provenance.replay_file_provenance(provenance_spec)
 
     def _fetch_reload_data(self) -> tuple[xr.DataArray, dict[str, typing.Any]]:
         """Return reload data and replacement kwargs for the active reload source."""
@@ -2167,18 +2153,17 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def displayed_provenance_spec(
         self,
-        base_spec: erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec
-        | None = None,
-    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec | None:
+        base_spec: provenance.ToolProvenanceSpec | None = None,
+    ) -> provenance.ToolProvenanceSpec | None:
         """Return provenance for the currently displayed data values."""
         if base_spec is None:
             base_spec = self.provenance_spec
         operation = self._accepted_filter_provenance_operation
         if operation is None:
             return base_spec
-        return erlab.interactive.imagetool.provenance_framework.compose_full_provenance(
+        return provenance.compose_full_provenance(
             base_spec,
-            erlab.interactive.imagetool.provenance_framework.full_data(operation),
+            provenance.full_data(operation),
         )
 
     def apply_func(
@@ -2186,10 +2171,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         func: Callable[[xr.DataArray], xr.DataArray] | None,
         update: bool = True,
         *,
-        operation: (
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-            | None
-        ) = None,
+        operation: (provenance.ToolProvenanceOperation | None) = None,
         emit_edited: bool = False,
         preview: bool = True,
     ) -> None:
@@ -2236,10 +2218,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         func: Callable[[xr.DataArray], xr.DataArray] | None,
         update: bool = True,
         *,
-        operation: (
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-            | None
-        ) = None,
+        operation: (provenance.ToolProvenanceOperation | None) = None,
         accept: bool = False,
         emit_edited: bool = False,
     ) -> None:
@@ -2271,10 +2250,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
         func: Callable[[xr.DataArray], xr.DataArray],
         update: bool = True,
         *,
-        operation: (
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-            | None
-        ) = None,
+        operation: (provenance.ToolProvenanceOperation | None) = None,
         accept: bool = False,
         emit_edited: bool = False,
     ) -> None:
@@ -2312,10 +2288,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
     def apply_filter_operation(
         self,
-        operation: (
-            erlab.interactive.imagetool.provenance_framework.ToolProvenanceOperation
-            | None
-        ),
+        operation: (provenance.ToolProvenanceOperation | None),
         update: bool = True,
         *,
         emit_edited: bool = False,
@@ -2991,9 +2964,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             execute=False,
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(
-                erlab.interactive.imagetool.provenance_framework.full_data()
-            )
+            tool.set_source_binding(provenance.full_data())
         self.add_tool_window(tool)
 
     @QtCore.Slot()
@@ -3003,9 +2974,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
             self.data, data_name=self.watched_data_name, execute=False
         )
         if isinstance(tool, erlab.interactive.utils.ToolWindow):
-            tool.set_source_binding(
-                erlab.interactive.imagetool.provenance_framework.full_data()
-            )
+            tool.set_source_binding(provenance.full_data())
         self.add_tool_window(tool)
 
     def adjust_layout(

@@ -20,7 +20,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance_framework, provenance_operations
+from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._load_source import (
     _default_load_source_name,
     _load_code_from_file_details,
@@ -34,9 +34,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
-    from erlab.interactive.imagetool.provenance_operations import (
-        ImageToolSelectionSourceBinding,
-    )
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
     from erlab.interactive.imagetool.viewer_state import ImageSlicerState
 
@@ -151,9 +148,9 @@ class _MetadataField:
 class _NodePersistenceView:
     data: xr.DataArray | None
     state: ImageSlicerState | None
-    provenance_spec: provenance_framework.ToolProvenanceSpec | None
-    source_spec: provenance_framework.ToolProvenanceSpec | None
-    source_binding: ImageToolSelectionSourceBinding | None
+    provenance_spec: provenance.ToolProvenanceSpec | None
+    source_spec: provenance.ToolProvenanceSpec | None
+    source_binding: provenance.ImageToolSelectionSourceBinding | None
     output_id: str | None
     source_state: typing.Literal["fresh", "stale", "unavailable"]
     source_auto_update: bool
@@ -192,7 +189,7 @@ def _append_unique_path(paths: list[pathlib.Path], path: str | pathlib.Path) -> 
 
 
 def _collect_provenance_file_paths(
-    spec: provenance_framework.ToolProvenanceSpec | None,
+    spec: provenance.ToolProvenanceSpec | None,
     paths: list[pathlib.Path],
 ) -> None:
     if spec is None:
@@ -213,10 +210,10 @@ def _compact_file_suffix(paths: Sequence[pathlib.Path]) -> str:
 
 
 def _spec_with_final_data_name(
-    spec: provenance_framework.ToolProvenanceSpec,
+    spec: provenance.ToolProvenanceSpec,
     name: str,
-) -> provenance_framework.ToolProvenanceSpec:
-    rename = provenance_operations.RenameOperation(name=name)
+) -> provenance.ToolProvenanceSpec:
+    rename = provenance.RenameOperation(name=name)
     if spec.kind != "file":
         return spec.append_final_rename(name)
 
@@ -224,15 +221,13 @@ def _spec_with_final_data_name(
     if stages:
         last_stage = stages[-1]
         operations = tuple(last_stage.operations)
-        if operations and isinstance(
-            operations[-1], provenance_operations.RenameOperation
-        ):
+        if operations and isinstance(operations[-1], provenance.RenameOperation):
             stages[-1] = last_stage.model_copy(
                 update={"operations": (*operations[:-1], rename)}
             )
             return spec.model_copy(update={"replay_stages": tuple(stages)})
 
-    return spec.append_replay_stage(provenance_framework.full_data(rename))
+    return spec.append_replay_stage(provenance.full_data(rename))
 
 
 class _ManagedWindowNode(QtCore.QObject):
@@ -247,9 +242,9 @@ class _ManagedWindowNode(QtCore.QObject):
         parent_uid: str | None,
         window: QtWidgets.QWidget,
         *,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None = None,
-        source_spec: provenance_framework.ToolProvenanceSpec | None = None,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: provenance.ToolProvenanceSpec | None = None,
+        source_spec: provenance.ToolProvenanceSpec | None = None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _source_state_type = "fresh",
         output_id: str | None = None,
@@ -273,9 +268,9 @@ class _ManagedWindowNode(QtCore.QObject):
         )
         self._name = window.windowTitle()
 
-        self._source_spec: provenance_framework.ToolProvenanceSpec | None = None
-        self._source_binding: ImageToolSelectionSourceBinding | None = None
-        self._provenance_spec: provenance_framework.ToolProvenanceSpec | None = None
+        self._source_spec: provenance.ToolProvenanceSpec | None = None
+        self._source_binding: provenance.ImageToolSelectionSourceBinding | None = None
+        self._provenance_spec: provenance.ToolProvenanceSpec | None = None
         self._source_state: _ManagedWindowNode._source_state_type = "fresh"
         self._source_auto_update: bool = False
         self._output_id: str | None = None
@@ -513,7 +508,7 @@ class _ManagedWindowNode(QtCore.QObject):
             if self.imagetool is not None:
                 self.imagetool.set_provenance_spec(self._provenance_spec)
         if self._source_spec is not None:
-            self._source_spec = provenance_framework.require_live_source_spec(
+            self._source_spec = provenance.require_live_source_spec(
                 _spec_with_final_data_name(self._source_spec, name)
             )
 
@@ -680,7 +675,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def source_spec(
         self,
-    ) -> provenance_framework.ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         if self.tool_window is not None:
             return self.tool_window.source_spec
         return self._source_spec
@@ -688,7 +683,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def displayed_source_spec(
         self,
-    ) -> provenance_framework.ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         source_spec = self.source_spec
         if self.imagetool is not None:
             return self.slicer_area.displayed_live_source_spec(source_spec)
@@ -697,7 +692,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def source_binding(
         self,
-    ) -> ImageToolSelectionSourceBinding | None:
+    ) -> provenance.ImageToolSelectionSourceBinding | None:
         if self.tool_window is not None:
             return self.tool_window.source_binding
         return self._source_binding
@@ -705,7 +700,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def provenance_spec(
         self,
-    ) -> provenance_framework.ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         if self.tool_window is not None:
             return self.tool_window.current_provenance_spec()
         if self._provenance_spec is not None:
@@ -715,7 +710,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def displayed_provenance_spec(
         self,
-    ) -> provenance_framework.ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         if self.imagetool is not None:
             return self.slicer_area.displayed_provenance_spec(self.provenance_spec)
         return self.provenance_spec
@@ -799,13 +794,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def set_displayed_provenance(
         self,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None,
+        provenance_spec: provenance.ToolProvenanceSpec | None,
         *,
         advance_snapshot: bool = True,
     ) -> None:
-        self._provenance_spec = provenance_framework.parse_tool_provenance_spec(
-            provenance_spec
-        )
+        self._provenance_spec = provenance.parse_tool_provenance_spec(provenance_spec)
         if self.imagetool is not None:
             self.imagetool.set_provenance_spec(self.provenance_spec)
         if advance_snapshot:
@@ -814,7 +807,7 @@ class _ManagedWindowNode(QtCore.QObject):
     @property
     def derivation_entries(
         self,
-    ) -> list[provenance_framework.DerivationEntry]:
+    ) -> list[provenance.DerivationEntry]:
         provenance_spec = self.displayed_provenance_spec
         if provenance_spec is None:
             return []
@@ -843,10 +836,10 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def set_source_binding(
         self,
-        source_spec: provenance_framework.ToolProvenanceSpec | None,
+        source_spec: provenance.ToolProvenanceSpec | None,
         *,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None = None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: provenance.ToolProvenanceSpec | None = None,
         auto_update: bool = False,
         state: _source_state_type = "fresh",
     ) -> None:
@@ -871,7 +864,7 @@ class _ManagedWindowNode(QtCore.QObject):
         """
         if source_spec is not None and not isinstance(
             source_spec,
-            provenance_framework.ToolProvenanceSpec,
+            provenance.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "source_spec must be a ToolProvenanceSpec or None. Use "
@@ -879,7 +872,7 @@ class _ManagedWindowNode(QtCore.QObject):
             )
         if source_binding is not None and not isinstance(
             source_binding,
-            provenance_operations.ImageToolSelectionSourceBinding,
+            provenance.ImageToolSelectionSourceBinding,
         ):
             raise TypeError("source_binding must be an ImageToolSelectionSourceBinding")
         self._source_binding = source_binding
@@ -887,10 +880,10 @@ class _ManagedWindowNode(QtCore.QObject):
             source_spec = self._source_binding.materialize(
                 self.manager._parent_node(self).current_source_data()
             )
-        self._source_spec = provenance_framework.require_live_source_spec(source_spec)
+        self._source_spec = provenance.require_live_source_spec(source_spec)
         if provenance_spec is not None and not isinstance(
             provenance_spec,
-            provenance_framework.ToolProvenanceSpec,
+            provenance.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
@@ -905,7 +898,7 @@ class _ManagedWindowNode(QtCore.QObject):
             parent_data = parent.current_source_data()
             source_spec = self._materialized_source_spec(parent_data)
             self.set_displayed_provenance(
-                provenance_framework.compose_display_provenance(
+                provenance.compose_display_provenance(
                     parent.displayed_provenance_spec,
                     source_spec,
                     parent_data=parent_data,
@@ -918,7 +911,7 @@ class _ManagedWindowNode(QtCore.QObject):
         self,
         output_id: str,
         *,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None = None,
+        provenance_spec: provenance.ToolProvenanceSpec | None = None,
         auto_update: bool = False,
         state: _source_state_type = "fresh",
     ) -> None:
@@ -930,7 +923,7 @@ class _ManagedWindowNode(QtCore.QObject):
             raise ValueError("output_id must not be empty")
         if provenance_spec is not None and not isinstance(
             provenance_spec,
-            provenance_framework.ToolProvenanceSpec,
+            provenance.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
@@ -947,11 +940,11 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def set_detached_provenance(
         self,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None,
+        provenance_spec: provenance.ToolProvenanceSpec | None,
     ) -> None:
         if provenance_spec is not None and not isinstance(
             provenance_spec,
-            provenance_framework.ToolProvenanceSpec,
+            provenance.ToolProvenanceSpec,
         ):
             raise TypeError(
                 "provenance_spec must be a ToolProvenanceSpec or None. Use "
@@ -967,7 +960,7 @@ class _ManagedWindowNode(QtCore.QObject):
 
     def _materialized_source_spec(
         self, parent_data: xr.DataArray
-    ) -> provenance_framework.ToolProvenanceSpec:
+    ) -> provenance.ToolProvenanceSpec:
         """Return the source spec to apply to ``parent_data``."""
         if self._source_binding is not None:
             self._source_spec = self._source_binding.materialize(parent_data)
@@ -981,7 +974,7 @@ class _ManagedWindowNode(QtCore.QObject):
     ) -> (
         tuple[
             xr.DataArray,
-            provenance_framework.ToolProvenanceSpec | None,
+            provenance.ToolProvenanceSpec | None,
         ]
         | None
     ):
@@ -1017,7 +1010,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def _replace_imagetool_data(
         self,
         data: xr.DataArray,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None,
+        provenance_spec: provenance.ToolProvenanceSpec | None,
         *,
         state: _source_state_type = "fresh",
         propagate_descendants: bool,
@@ -1058,7 +1051,7 @@ class _ManagedWindowNode(QtCore.QObject):
     def replace_with_detached_data(
         self,
         data: xr.DataArray,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None,
+        provenance_spec: provenance.ToolProvenanceSpec | None,
         *,
         propagate_descendants: bool = True,
         preserve_filter: bool = False,
@@ -1271,7 +1264,7 @@ class _ManagedWindowNode(QtCore.QObject):
                 parent_data = self.parent_source_data()
                 source_spec = self._materialized_source_spec(parent_data)
                 resolved = source_spec.apply(parent_data)
-                provenance_spec = provenance_framework.compose_display_provenance(
+                provenance_spec = provenance.compose_display_provenance(
                     self.manager._parent_node(self).displayed_provenance_spec,
                     source_spec,
                     parent_data=parent_data,
@@ -1320,7 +1313,7 @@ class _ManagedWindowNode(QtCore.QObject):
                     return False
                 source_spec = self._materialized_source_spec(parent_data)
                 resolved = source_spec.apply(parent_data)
-                provenance_spec = provenance_framework.compose_display_provenance(
+                provenance_spec = provenance.compose_display_provenance(
                     self.manager._parent_node(self).displayed_provenance_spec,
                     source_spec,
                     parent_data=parent_data,
@@ -1399,9 +1392,9 @@ class _ImageToolWrapper(_ManagedWindowNode):
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         *,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None = None,
-        source_spec: provenance_framework.ToolProvenanceSpec | None = None,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: provenance.ToolProvenanceSpec | None = None,
+        source_spec: provenance.ToolProvenanceSpec | None = None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         snapshot_token: str | None = None,
@@ -1499,7 +1492,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
 
     def _watched_root_provenance_spec(
         self,
-    ) -> provenance_framework.ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         varname = self._watched_varname
         if (
             not self.watched
@@ -1517,7 +1510,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
             np.dtype(np.float64),
         ):
             seed_source = f"{seed_source}.astype(np.float64)"
-        return provenance_framework.script(
+        return provenance.script(
             start_label=f"Start from watched variable {varname!r}",
             seed_code=f"derived = {seed_source}",
             active_name="derived",
@@ -1526,7 +1519,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
     @property
     def provenance_spec(
         self,
-    ) -> provenance_framework.ToolProvenanceSpec | None:
+    ) -> provenance.ToolProvenanceSpec | None:
         base_provenance = super().provenance_spec
         if base_provenance is not None:
             return base_provenance
@@ -1544,7 +1537,7 @@ class _ImageToolWrapper(_ManagedWindowNode):
     def current_source_data(self) -> xr.DataArray:
         data = super().current_source_data()
         if self._source_input_ndim == 1:
-            return provenance_framework.mark_promoted_1d_source(data)
+            return provenance.mark_promoted_1d_source(data)
         return data
 
     @QtCore.Slot()

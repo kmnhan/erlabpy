@@ -6,7 +6,7 @@ __all__ = ["_DependencyStatus", "_ManagerDependencyTracker"]
 
 import typing
 
-from erlab.interactive.imagetool import provenance_framework
+from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._tool_graph import _ManagerToolGraph
@@ -24,16 +24,14 @@ class _ManagerDependencyTracker:
             tuple[
                 int,
                 tuple[
-                    provenance_framework.ScriptInputDependencyRef,
+                    provenance.ScriptInputDependencyRef,
                     ...,
                 ],
             ],
         ] = {}
         self._pending_source_refresh_targets: dict[str, set[str]] = {}
 
-    def refs_for_uid(
-        self, uid: str
-    ) -> tuple[provenance_framework.ScriptInputDependencyRef, ...]:
+    def refs_for_uid(self, uid: str) -> tuple[provenance.ScriptInputDependencyRef, ...]:
         node = self._graph.nodes.get(uid)
         if node is None or node.provenance_spec is None:
             self._ref_cache.pop(uid, None)
@@ -42,7 +40,7 @@ class _ManagerDependencyTracker:
         cached = self._ref_cache.get(uid)
         if cached is not None and cached[0] == spec_id:
             return cached[1]
-        refs = provenance_framework.script_input_dependency_refs(node.provenance_spec)
+        refs = provenance.script_input_dependency_refs(node.provenance_spec)
         self._ref_cache[uid] = (spec_id, refs)
         return refs
 

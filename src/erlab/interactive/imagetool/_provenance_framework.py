@@ -35,7 +35,7 @@ saved.
 Manager children opened from an ImageTool cursor or bin selection do not keep the
 first generated ``qsel`` arguments as their refresh state. They store the selected
 parent indices in
-:class:`~erlab.interactive.imagetool.provenance_operations.ImageToolSelectionSourceBinding`
+:class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
 and rebuild ``qsel`` or ``isel`` operations from the current parent data each time
 they refresh.
 
@@ -855,8 +855,8 @@ def uses_default_replay_input(code: str) -> bool:
 _OPERATION_TYPES: dict[str, type[ToolProvenanceOperation]] = {}
 
 
-def _operation_is(operation: ToolProvenanceOperation, *ops: str) -> bool:
-    return getattr(operation, "op", None) in ops
+def _operation_is(operation: ToolProvenanceOperation, *operation_names: str) -> bool:
+    return getattr(operation, "op", None) in operation_names
 
 
 def _operation_type(op: str) -> type[ToolProvenanceOperation]:
@@ -864,7 +864,7 @@ def _operation_type(op: str) -> type[ToolProvenanceOperation]:
     if operation_type is None:
         raise RuntimeError(
             "Concrete provenance operations are not registered. "
-            "Import erlab.interactive.imagetool.provenance_operations before "
+            "Import erlab.interactive.imagetool.provenance before "
             "constructing or deserializing operation-backed provenance."
         )
     return operation_type
@@ -1835,7 +1835,7 @@ class ToolProvenanceSpec(pydantic.BaseModel):
     A spec records exact operation arguments for live refresh, runtime replay, copied
     code, and derivation display. Manager children opened from ImageTool cursor or bin
     selections should keep
-    :class:`~erlab.interactive.imagetool.provenance_operations.ImageToolSelectionSourceBinding`
+    :class:`~erlab.interactive.imagetool.provenance.ImageToolSelectionSourceBinding`
     as their refresh state; that binding builds a spec before refresh so edited parent
     coordinates are used.
     """

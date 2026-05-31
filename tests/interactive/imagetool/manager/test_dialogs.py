@@ -8,6 +8,7 @@ from qtpy import QtCore, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.manager._dialogs as manager_dialogs
+from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._load_source import (
     _load_code_from_file_details,
     _resolve_identified_path,
@@ -27,10 +28,8 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
     example_loader,
 ) -> None:
     file_path = tmp_path / "example.pxt"
-    dataarray_selection = (
-        erlab.interactive.imagetool.provenance_framework.FileDataSelection(
-            kind="dataarray"
-        )
+    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataarray"
     )
     code = _load_code_from_file_details(
         file_path,
@@ -72,7 +71,6 @@ def test_load_code_from_file_details_uses_erlab_io_loader_syntax(
 def test_load_code_from_file_details_uses_stable_file_selectors(
     tmp_path: pathlib.Path,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     file_path = tmp_path / "scan.h5"
 
     dataset_code = _load_code_from_file_details(
@@ -80,7 +78,7 @@ def test_load_code_from_file_details_uses_stable_file_selectors(
         (
             xr.load_dataset,
             {"engine": "h5netcdf"},
-            prov.FileDataSelection(kind="dataset_variable", value="second"),
+            provenance.FileDataSelection(kind="dataset_variable", value="second"),
         ),
     )
     assert dataset_code == (
@@ -95,7 +93,7 @@ def test_load_code_from_file_details_uses_stable_file_selectors(
         (
             xr.load_datatree,
             {"engine": "h5netcdf"},
-            prov.FileDataSelection(kind="datatree_path", value="/diag/image"),
+            provenance.FileDataSelection(kind="datatree_path", value="/diag/image"),
         ),
     )
     assert datatree_code == (
@@ -111,10 +109,8 @@ def test_load_code_from_file_details_uses_public_merlin_bcs_import(
 ) -> None:
     from erlab.io.plugins.merlin import load_bcs
 
-    dataarray_selection = (
-        erlab.interactive.imagetool.provenance_framework.FileDataSelection(
-            kind="dataarray"
-        )
+    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataarray"
     )
     file_path = tmp_path / "scan.txt"
 
@@ -132,10 +128,8 @@ def test_load_code_from_file_details_prefers_scan_number_for_erlab_loader(
     example_data_dir: pathlib.Path,
 ) -> None:
     file_path = example_data_dir / "data_002.h5"
-    dataarray_selection = (
-        erlab.interactive.imagetool.provenance_framework.FileDataSelection(
-            kind="dataarray"
-        )
+    dataarray_selection = erlab.interactive.imagetool.provenance.FileDataSelection(
+        kind="dataarray"
     )
     code = _load_code_from_file_details(file_path, ("example", {}, dataarray_selection))
     assert code == (

@@ -11,7 +11,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive.imagetool.slicer
-from erlab.interactive.imagetool import provenance_framework
+from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._mainwindow import ImageTool
 from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
 from erlab.interactive.imagetool.manager import _xarray as _manager_xarray
@@ -39,9 +39,6 @@ if typing.TYPE_CHECKING:
 
     from erlab.interactive.explorer._tabbed_explorer import _TabbedExplorer
     from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
-    from erlab.interactive.imagetool.provenance_operations import (
-        ImageToolSelectionSourceBinding,
-    )
 
 logger = logging.getLogger(__name__)
 
@@ -991,7 +988,7 @@ class _ActionsController:
 
         def _parent_provenance_fetcher(
             parent_uid: str = parent.uid,
-        ) -> provenance_framework.ToolProvenanceSpec | None:
+        ) -> provenance.ToolProvenanceSpec | None:
             return self._manager._node_for_target(parent_uid).displayed_provenance_spec
 
         tool.set_source_parent_fetcher(_parent_source_fetcher)
@@ -1011,9 +1008,9 @@ class _ActionsController:
         show: bool = True,
         activate: bool = False,
         uid: str | None = None,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None = None,
-        source_spec: provenance_framework.ToolProvenanceSpec | None = None,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: provenance.ToolProvenanceSpec | None = None,
+        source_spec: provenance.ToolProvenanceSpec | None = None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
@@ -1024,7 +1021,7 @@ class _ActionsController:
         if source_spec is None and source_binding is not None:
             source_spec = source_binding.materialize(parent_node.current_source_data())
         if provenance_spec is None and source_spec is not None:
-            provenance_spec = provenance_framework.compose_display_provenance(
+            provenance_spec = provenance.compose_display_provenance(
                 parent_node.displayed_provenance_spec,
                 source_spec,
                 parent_data=parent_node.current_source_data(),

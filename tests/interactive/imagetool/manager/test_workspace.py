@@ -34,7 +34,7 @@ from erlab.interactive._fit1d import Fit1DTool
 from erlab.interactive._fit2d import Fit2DTool
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool.controls import ItoolColormapControls
 from erlab.interactive.imagetool.manager import ImageToolManager, fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import _ChooseFromDataTreeDialog
@@ -90,16 +90,15 @@ def _wait_for_fit_idle(qtbot, tool: Fit1DTool, *, timeout: int = 10000) -> None:
 
 
 def _workspace_test_file_spec(path: pathlib.Path):
-    prov = erlab.interactive.imagetool.provenance_framework
-    return prov.file_load(
+    return provenance.file_load(
         start_label="Load source",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        file_load_source=prov.FileLoadSource(
+        file_load_source=provenance.FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=prov.FileReplayCall(
+            replay_call=provenance.FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -109,27 +108,30 @@ def _workspace_test_file_spec(path: pathlib.Path):
 
 
 def test_workspace_file_suffix_helpers_collect_nested_inputs(tmp_path) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     first = _workspace_test_file_spec(tmp_path / "scan_a.h5")
     second = _workspace_test_file_spec(tmp_path / "scan_b.h5")
     third = _workspace_test_file_spec(tmp_path / "scan_c.h5")
-    nested = prov.script(
+    nested = provenance.script(
         start_label="Combine",
         seed_code="derived = data_0 + data_1",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_1", label="B", provenance_spec=second),
-            prov.ScriptInput(name="data_2", label="C", provenance_spec=third),
-            prov.ScriptInput(name="data_0", label="A duplicate", provenance_spec=first),
+            provenance.ScriptInput(name="data_1", label="B", provenance_spec=second),
+            provenance.ScriptInput(name="data_2", label="C", provenance_spec=third),
+            provenance.ScriptInput(
+                name="data_0", label="A duplicate", provenance_spec=first
+            ),
         ),
     )
-    combined = prov.script(
+    combined = provenance.script(
         start_label="Combine nested",
         seed_code="derived = data_0",
         active_name="derived",
         script_inputs=(
-            prov.ScriptInput(name="data_0", label="A", provenance_spec=first),
-            prov.ScriptInput(name="nested", label="Nested", provenance_spec=nested),
+            provenance.ScriptInput(name="data_0", label="A", provenance_spec=first),
+            provenance.ScriptInput(
+                name="nested", label="Nested", provenance_spec=nested
+            ),
         ),
     )
 
@@ -391,10 +393,8 @@ def test_workspace_backing_uses_persistence_data_for_filtered_file_data(
         name="scan",
     )
     data.to_netcdf(file_path, engine="h5netcdf")
-    operation = (
-        erlab.interactive.imagetool.provenance_operations.GaussianFilterOperation(
-            sigma={"x": 1.0}
-        )
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={"x": 1.0}
     )
 
     with manager_context() as manager:
@@ -5022,7 +5022,6 @@ def test_manager_offload_to_workspace_preserves_child_source_state(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(25.0).reshape((5, 5)), dims=["x", "y"])
 
     with manager_context() as manager:
@@ -5030,7 +5029,7 @@ def test_manager_offload_to_workspace_preserves_child_source_state(
 
         root = itool(data, manager=False, execute=False)
         assert isinstance(root, erlab.interactive.imagetool.ImageTool)
-        manager.add_imagetool(root, show=False, provenance_spec=prov.full_data())
+        manager.add_imagetool(root, show=False, provenance_spec=provenance.full_data())
 
         child = itool(data.copy(deep=False), manager=False, execute=False)
         assert isinstance(child, erlab.interactive.imagetool.ImageTool)
@@ -5038,7 +5037,7 @@ def test_manager_offload_to_workspace_preserves_child_source_state(
             child,
             0,
             show=False,
-            source_spec=prov.full_data(),
+            source_spec=provenance.full_data(),
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
@@ -6865,9 +6864,7 @@ def test_manager_workspace_roundtrip_goldtool_child(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
         child = GoldTool(gold.copy(deep=True), data_name="gold_input")
-        child.set_source_binding(
-            erlab.interactive.imagetool.provenance_framework.full_data()
-        )
+        child.set_source_binding(erlab.interactive.imagetool.provenance.full_data())
         child_uid = manager.add_childtool(child, 0, show=False)
         configure_goldtool_child(child, fitted=True, spline=True)
 

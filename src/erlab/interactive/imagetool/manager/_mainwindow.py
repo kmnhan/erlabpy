@@ -55,6 +55,7 @@ if typing.TYPE_CHECKING:
     import numpy as np
     import xarray as xr
 
+    from erlab.interactive.imagetool import provenance
     from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager import _workspace as _manager_workspace
@@ -73,14 +74,6 @@ if typing.TYPE_CHECKING:
         _WorkspaceStateSnapshot,
     )
     from erlab.interactive.imagetool.manager._wrapper import _MetadataField
-    from erlab.interactive.imagetool.provenance_framework import (
-        ScriptInput,
-        ScriptInputDependencyRef,
-        ToolProvenanceSpec,
-    )
-    from erlab.interactive.imagetool.provenance_operations import (
-        ImageToolSelectionSourceBinding,
-    )
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 
 logger = logging.getLogger(__name__)
@@ -1651,7 +1644,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _dependency_refs_for_uid(
         self, uid: str
-    ) -> tuple[ScriptInputDependencyRef, ...]:
+    ) -> tuple[provenance.ScriptInputDependencyRef, ...]:
         return self._lineage_controller._dependency_refs_for_uid(uid)
 
     def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
@@ -1673,13 +1666,13 @@ class ImageToolManager(_ImageToolManagerBase):
         self._lineage_controller._show_dependency_reload_dialog(target)
 
     @staticmethod
-    def _script_input_has_recorded_file(script_input: ScriptInput) -> bool:
+    def _script_input_has_recorded_file(script_input: provenance.ScriptInput) -> bool:
         return _LineageController._script_input_has_recorded_file(script_input)
 
     @staticmethod
     def _dependency_ref_has_recorded_file(
-        spec: ToolProvenanceSpec | None,
-        ref: ScriptInputDependencyRef,
+        spec: provenance.ToolProvenanceSpec | None,
+        ref: provenance.ScriptInputDependencyRef,
     ) -> bool:
         return _LineageController._dependency_ref_has_recorded_file(spec, ref)
 
@@ -1699,7 +1692,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _script_input_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
-    ) -> ScriptInput:
+    ) -> provenance.ScriptInput:
         return self._lineage_controller._script_input_for_node(node)
 
     def _multi_input_script_provenance(
@@ -1710,7 +1703,7 @@ class ImageToolManager(_ImageToolManagerBase):
         operation_code: str,
         active_name: str = "derived",
         start_label: str = "Run ImageTool manager action",
-    ) -> ToolProvenanceSpec:
+    ) -> provenance.ToolProvenanceSpec:
         return self._lineage_controller._multi_input_script_provenance(
             input_targets,
             operation_label=operation_label,
@@ -1734,15 +1727,17 @@ class ImageToolManager(_ImageToolManagerBase):
             operation_code=operation_code,
         )
 
-    def _script_provenance_inputs_current(self, spec: ToolProvenanceSpec) -> bool:
+    def _script_provenance_inputs_current(
+        self, spec: provenance.ToolProvenanceSpec
+    ) -> bool:
         return self._lineage_controller._script_provenance_inputs_current(spec)
 
     def _resolve_live_script_input_for_reload(
         self,
-        script_input: ScriptInput,
+        script_input: provenance.ScriptInput,
         *,
         target_node_uid: str | None = None,
-    ) -> tuple[xr.DataArray, ScriptInput] | None:
+    ) -> tuple[xr.DataArray, provenance.ScriptInput] | None:
         return self._lineage_controller._resolve_live_script_input_for_reload(
             script_input,
             target_node_uid=target_node_uid,
@@ -1750,7 +1745,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _script_input_can_reload(
         self,
-        script_input: ScriptInput,
+        script_input: provenance.ScriptInput,
         *,
         target_node_uid: str | None = None,
     ) -> bool:
@@ -1761,7 +1756,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def _rebuild_script_provenance(
         self,
-        spec: ToolProvenanceSpec,
+        spec: provenance.ToolProvenanceSpec,
         *,
         target_node_uid: str | None = None,
     ) -> _ScriptRebuildResult:
@@ -2079,9 +2074,9 @@ class ImageToolManager(_ImageToolManagerBase):
         show: bool = True,
         activate: bool = False,
         uid: str | None = None,
-        provenance_spec: ToolProvenanceSpec | None = None,
-        source_spec: ToolProvenanceSpec | None = None,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: provenance.ToolProvenanceSpec | None = None,
+        source_spec: provenance.ToolProvenanceSpec | None = None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         output_id: str | None = None,
@@ -2162,9 +2157,9 @@ class ImageToolManager(_ImageToolManagerBase):
         source_input_ndim: int | None = None,
         source_input_dtype: np.dtype[typing.Any] | str | None = None,
         uid: str | None = None,
-        provenance_spec: ToolProvenanceSpec | None = None,
-        source_spec: ToolProvenanceSpec | None = None,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
+        provenance_spec: provenance.ToolProvenanceSpec | None = None,
+        source_spec: provenance.ToolProvenanceSpec | None = None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
         source_auto_update: bool = False,
         source_state: _ManagedWindowNode._source_state_type = "fresh",
         index: int | None = None,

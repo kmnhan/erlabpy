@@ -17,8 +17,7 @@ import erlab.interactive.imagetool.manager._widgets as manager_widgets
 import erlab.interactive.imagetool.manager._workspace_io as manager_workspace_io
 from erlab.interactive.derivative import DerivativeTool
 from erlab.interactive.fermiedge import GoldTool
-from erlab.interactive.imagetool import itool, provenance_operations
-from erlab.interactive.imagetool import provenance_operations as ops
+from erlab.interactive.imagetool import itool, provenance
 from erlab.interactive.imagetool._load_source import _LoadSourceDetails
 from erlab.interactive.imagetool.manager import fetch, replace_data
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog, _RenameDialog
@@ -62,7 +61,6 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     calls: list[str] = []
     copied: list[str] = []
 
@@ -82,7 +80,9 @@ def test_manager_metadata_full_code_generated_only_when_copied(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
-            prov.full_data(ops.RenameOperation(name="renamed")).to_replay_spec()
+            provenance.full_data(
+                provenance.RenameOperation(name="renamed")
+            ).to_replay_spec()
         )
 
         monkeypatch.setattr(
@@ -1088,7 +1088,7 @@ def test_manager_rename_updates_accepted_filter_data(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    operation = provenance_operations.NormalizeOperation(
+    operation = provenance.NormalizeOperation(
         dims=("alpha",),
         mode="min",
     )
@@ -1117,7 +1117,6 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1145,7 +1144,7 @@ def test_manager_reload_selected_preserves_manual_child_imagetool_name(
             child_tool,
             0,
             show=False,
-            source_spec=prov.full_data(),
+            source_spec=provenance.full_data(),
             source_auto_update=False,
         )
 
@@ -1254,7 +1253,6 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1282,7 +1280,7 @@ def test_manager_workspace_reload_preserves_manual_child_imagetool_name(
             child_tool,
             0,
             show=False,
-            source_spec=prov.full_data(),
+            source_spec=provenance.full_data(),
             source_auto_update=False,
         )
         manager._child_node(child_uid).name = "saved manual child"
@@ -1447,7 +1445,6 @@ def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     source = test_data.rename("scan")
     file_path = tmp_path / "scan.h5"
     source.to_netcdf(file_path, engine="h5netcdf")
@@ -1464,8 +1461,8 @@ def test_managed_nested_child_tool_file_menu_reload_refreshes_file_ancestor(
         )
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
 
-        child_source_spec = prov.selection(
-            ops.IselOperation(kwargs={"alpha": slice(0, 4)})
+        child_source_spec = provenance.selection(
+            provenance.IselOperation(kwargs={"alpha": slice(0, 4)})
         )
         child_tool = itool(
             child_source_spec.apply(source), manager=False, execute=False
@@ -1552,7 +1549,6 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1580,7 +1576,7 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             child_tool,
             0,
             show=False,
-            source_spec=prov.full_data(),
+            source_spec=provenance.full_data(),
             source_auto_update=False,
         )
 
@@ -1592,7 +1588,9 @@ def test_manager_reload_selected_nested_child_refreshes_from_file_ancestor(
             grandchild_tool,
             child_uid,
             show=False,
-            source_spec=prov.selection(ops.IselOperation(kwargs={"y": slice(0, 2)})),
+            source_spec=provenance.selection(
+                provenance.IselOperation(kwargs={"y": slice(0, 2)})
+            ),
             source_auto_update=False,
         )
 
@@ -1625,7 +1623,6 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24, dtype=float).reshape((6, 4)),
         dims=["x", "y"],
@@ -1655,14 +1652,18 @@ def test_manager_reload_multi_selected_children_dedupes_file_ancestor(
             first_tool,
             0,
             show=False,
-            source_spec=prov.selection(ops.IselOperation(kwargs={"x": slice(0, 2)})),
+            source_spec=provenance.selection(
+                provenance.IselOperation(kwargs={"x": slice(0, 2)})
+            ),
             source_auto_update=False,
         )
         second_uid = manager.add_imagetool_child(
             second_tool,
             0,
             show=False,
-            source_spec=prov.selection(ops.IselOperation(kwargs={"x": slice(2, 4)})),
+            source_spec=provenance.selection(
+                provenance.IselOperation(kwargs={"x": slice(2, 4)})
+            ),
             source_auto_update=False,
         )
 
@@ -1708,7 +1709,6 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(12, dtype=float).reshape((3, 4)),
         dims=["x", "y"],
@@ -1738,7 +1738,9 @@ def test_manager_reload_mixed_child_selection_requires_all_children_eligible(
             eligible_tool,
             0,
             show=False,
-            source_spec=prov.selection(ops.IselOperation(kwargs={"x": slice(0, 2)})),
+            source_spec=provenance.selection(
+                provenance.IselOperation(kwargs={"x": slice(0, 2)})
+            ),
             source_auto_update=False,
         )
         unbound_uid = manager.add_imagetool_child(unbound_tool, 0, show=False)
@@ -1945,7 +1947,7 @@ def test_manager_add_imagetool_child_materializes_source_binding_without_spec(
         coords={"x": np.arange(3.0), "y": np.arange(4.0)},
         name="scan",
     )
-    source_binding = provenance_operations.ImageToolSelectionSourceBinding(
+    source_binding = provenance.ImageToolSelectionSourceBinding(
         selection_mode="isel",
         selection_indexers={"y": slice(1, 3)},
     )

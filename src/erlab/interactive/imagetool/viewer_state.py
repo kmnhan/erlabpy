@@ -15,6 +15,7 @@ import xarray as xr
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool import provenance
 
 if typing.TYPE_CHECKING:
     from collections.abc import Collection, Hashable
@@ -30,7 +31,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
-_FileDataSelection = erlab.interactive.imagetool.provenance_framework.FileDataSelection
+_FileDataSelection = provenance.FileDataSelection
 _FileSelection: typing.TypeAlias = int | dict[str, typing.Any] | _FileDataSelection
 _ParsedInputData: typing.TypeAlias = tuple[xr.DataArray, _FileDataSelection]
 

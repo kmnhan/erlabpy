@@ -14,7 +14,7 @@ import pyqtgraph as pg
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
-from erlab.interactive.imagetool import provenance_framework, provenance_operations
+from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool._dialog_widgets import (
     CoordinateEditorWidget,
     CoordinateGridWidget,
@@ -294,39 +294,37 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def source_operations(
         self,
-    ) -> list[provenance_framework.ToolProvenanceOperation]:
+    ) -> list[provenance.ToolProvenanceOperation]:
         operation = self.source_transform_operation()
         return [] if operation is None else [operation]
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation | None:
+    ) -> provenance.ToolProvenanceOperation | None:
         return None
 
-    def source_spec(
-        self, new_name: str | None = None
-    ) -> provenance_framework.ToolProvenanceSpec:
+    def source_spec(self, new_name: str | None = None) -> provenance.ToolProvenanceSpec:
         del new_name
         operations = self.source_operations()
         builder = (
-            provenance_framework.public_data
+            provenance.public_data
             if self.apply_on_nonuniform_data
-            else provenance_framework.full_data
+            else provenance.full_data
         )
         if not self.apply_on_nonuniform_data and any(
             str(dim).endswith("_idx")
             and str(dim).removesuffix("_idx") in self.slicer_area.data.coords
             for dim in self.slicer_area.data.dims
         ):
-            operations.append(provenance_operations.RestoreNonuniformDimsOperation())
+            operations.append(provenance.RestoreNonuniformDimsOperation())
         return builder(*operations)
 
     def _detached_provenance_spec(
         self,
-        parent_provenance: provenance_framework.ToolProvenanceSpec | None,
-        source_spec: provenance_framework.ToolProvenanceSpec,
+        parent_provenance: provenance.ToolProvenanceSpec | None,
+        source_spec: provenance.ToolProvenanceSpec,
         new_name: str,
-    ) -> provenance_framework.ToolProvenanceSpec:
+    ) -> provenance.ToolProvenanceSpec:
         return self._compose_transform_provenance(
             parent_provenance,
             source_spec,
@@ -335,20 +333,20 @@ class DataTransformDialog(_DataManipulationDialog):
 
     @staticmethod
     def _compose_transform_provenance(
-        base_spec: provenance_framework.ToolProvenanceSpec | None,
-        source_spec: provenance_framework.ToolProvenanceSpec,
+        base_spec: provenance.ToolProvenanceSpec | None,
+        source_spec: provenance.ToolProvenanceSpec,
         new_name: str,
-    ) -> provenance_framework.ToolProvenanceSpec:
+    ) -> provenance.ToolProvenanceSpec:
         del new_name
         if base_spec is None:
             return source_spec
         with contextlib.suppress(TypeError):
-            live_parent = provenance_framework.require_live_source_spec(base_spec)
+            live_parent = provenance.require_live_source_spec(base_spec)
             if live_parent is not None:
                 return live_parent.append_replacement_operations(
                     *source_spec.operations
                 )
-        composed = provenance_framework.compose_full_provenance(
+        composed = provenance.compose_full_provenance(
             base_spec,
             source_spec,
         )
@@ -358,9 +356,9 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def _compose_replace_source_spec(
         self,
-        existing_spec: provenance_framework.ToolProvenanceSpec,
+        existing_spec: provenance.ToolProvenanceSpec,
         new_name: str,
-    ) -> provenance_framework.ToolProvenanceSpec:
+    ) -> provenance.ToolProvenanceSpec:
         return self._compose_transform_provenance(
             existing_spec,
             self.source_spec(new_name),
@@ -371,7 +369,7 @@ class DataTransformDialog(_DataManipulationDialog):
         self,
         target: int | str,
         new_name: str,
-        fallback_spec: provenance_framework.ToolProvenanceSpec | None,
+        fallback_spec: provenance.ToolProvenanceSpec | None,
     ) -> bool:
         manager, _ = self._manager_target()
         if manager is None:
@@ -398,7 +396,7 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def _set_current_tool_provenance(
         self,
-        provenance_spec: provenance_framework.ToolProvenanceSpec | None,
+        provenance_spec: provenance.ToolProvenanceSpec | None,
     ) -> None:
         parent = self.slicer_area.parent()
         if parent is not None and hasattr(parent, "set_provenance_spec"):
@@ -415,7 +413,7 @@ class DataTransformDialog(_DataManipulationDialog):
 
     def make_code(self) -> str:
         try:
-            return provenance_framework.operations_expression_code(
+            return provenance.operations_expression_code(
                 self.source_operations(),
                 self._copy_data_name(),
             )
@@ -489,7 +487,7 @@ class DataTransformDialog(_DataManipulationDialog):
                     parent_provenance = manager._node_for_target(
                         target
                     ).displayed_provenance_spec
-            nested_provenance_spec = provenance_framework.compose_full_provenance(
+            nested_provenance_spec = provenance.compose_full_provenance(
                 parent_provenance,
                 source_spec,
             )
@@ -606,7 +604,7 @@ class DataFilterDialog(_DataManipulationDialog):
 
     def restore_filter_operation(
         self,
-        operation: provenance_framework.ToolProvenanceOperation,
+        operation: provenance.ToolProvenanceOperation,
     ) -> None:
         """Restore widgets from an active filter operation when supported."""
         del operation
@@ -688,18 +686,18 @@ class DataFilterDialog(_DataManipulationDialog):
 
     def filter_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation | None:
+    ) -> provenance.ToolProvenanceOperation | None:
         return None
 
     def filter_operations(
         self,
-    ) -> list[provenance_framework.ToolProvenanceOperation]:
+    ) -> list[provenance.ToolProvenanceOperation]:
         operation = self.filter_operation()
         return [] if operation is None else [operation]
 
     def make_code(self) -> str:
         try:
-            return provenance_framework.operations_expression_code(
+            return provenance.operations_expression_code(
                 self.filter_operations(),
                 self._copy_data_name(),
             )
@@ -770,8 +768,8 @@ class RotationDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
-        return provenance_operations.RotateOperation(**self._rotate_params)
+    ) -> provenance.ToolProvenanceOperation:
+        return provenance.RotateOperation(**self._rotate_params)
 
 
 class AggregateDialog(DataTransformDialog):
@@ -816,10 +814,10 @@ class AggregateDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         if not self._target_dims:
             raise ValueError("No dimensions selected")
-        return provenance_operations.QSelAggregationOperation(
+        return provenance.QSelAggregationOperation(
             dims=self._target_dims,
             func=self._reducer,
         )
@@ -1146,15 +1144,15 @@ class SelectionDialog(DataTransformDialog):
 
     def source_operations(
         self,
-    ) -> list[provenance_framework.ToolProvenanceOperation]:
+    ) -> list[provenance.ToolProvenanceOperation]:
         isel_kwargs, sel_kwargs, qsel_kwargs = self._selection_kwargs()
-        operations: list[provenance_framework.ToolProvenanceOperation] = []
+        operations: list[provenance.ToolProvenanceOperation] = []
         if isel_kwargs:
-            operations.append(provenance_operations.IselOperation(kwargs=isel_kwargs))
+            operations.append(provenance.IselOperation(kwargs=isel_kwargs))
         if sel_kwargs:
-            operations.append(provenance_operations.SelOperation(kwargs=sel_kwargs))
+            operations.append(provenance.SelOperation(kwargs=sel_kwargs))
         if qsel_kwargs:
-            operations.append(provenance_operations.QSelOperation(kwargs=qsel_kwargs))
+            operations.append(provenance.QSelOperation(kwargs=qsel_kwargs))
         return operations
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
@@ -1314,14 +1312,14 @@ class InterpolationDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_operations.InterpolationOperation:
+    ) -> provenance.InterpolationOperation:
         dim = self._selected_dim
         if dim is None:
             raise ValueError("No dimension selected")
         source_error = self._source_coord_error(dim)
         if source_error is not None:
             raise ValueError(source_error)
-        return provenance_operations.InterpolationOperation(
+        return provenance.InterpolationOperation(
             dim=dim,
             values=self._target_values(),
             method=typing.cast(
@@ -1424,14 +1422,14 @@ class LeadingEdgeDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_operations.LeadingEdgeOperation:
+    ) -> provenance.LeadingEdgeOperation:
         dim = self._selected_dim
         if dim is None:
             raise ValueError("No dimension selected")
         source_error = self._source_coord_error(dim)
         if source_error is not None:
             raise ValueError(source_error)
-        return provenance_operations.LeadingEdgeOperation(
+        return provenance.LeadingEdgeOperation(
             fraction=float(self.fraction_spin.value()),
             dim=dim,
             direction=self._direction,
@@ -1552,10 +1550,10 @@ class CoarsenDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         if not self._selected_windows:
             raise ValueError("No dimensions selected")
-        return provenance_operations.CoarsenOperation(
+        return provenance.CoarsenOperation(
             dim=self._selected_windows,
             boundary=self.boundary_combo.currentText(),
             side=self.side_combo.currentText(),
@@ -1706,18 +1704,16 @@ class ThinDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         if self._use_global_mode:
             if self.global_spin.value() <= 1:
                 raise ValueError("No thinning requested")
-            return provenance_operations.ThinOperation(
+            return provenance.ThinOperation(
                 mode="global", factor=self.global_spin.value()
             )
         if not self._effective_factors:
             raise ValueError("No thinning requested")
-        return provenance_operations.ThinOperation(
-            mode="per_dim", factors=self._effective_factors
-        )
+        return provenance.ThinOperation(mode="per_dim", factors=self._effective_factors)
 
     @QtCore.Slot()
     def accept(self) -> None:
@@ -1829,8 +1825,8 @@ class SymmetrizeDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
-        return provenance_operations.SymmetrizeOperation(**self._params)
+    ) -> provenance.ToolProvenanceOperation:
+        return provenance.SymmetrizeOperation(**self._params)
 
 
 class SymmetrizeNfoldDialog(DataTransformDialog):
@@ -1906,8 +1902,8 @@ class SymmetrizeNfoldDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
-        return provenance_operations.SymmetrizeNfoldOperation(**self._params)
+    ) -> provenance.ToolProvenanceOperation:
+        return provenance.SymmetrizeNfoldOperation(**self._params)
 
 
 class EdgeCorrectionDialog(DataTransformDialog):
@@ -1922,11 +1918,11 @@ class EdgeCorrectionDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         edge_fit = getattr(self, "_edge_fit", None)
         if edge_fit is None:
             raise RuntimeError("Edge correction fit data has not been loaded.")
-        return provenance_operations.CorrectWithEdgeOperation(
+        return provenance.CorrectWithEdgeOperation(
             edge_fit=edge_fit,
             shift_coords=self.shift_coord_check.isChecked(),
         )
@@ -1956,19 +1952,19 @@ class _BaseCropDialog(DataTransformDialog):
 
     def source_operations(
         self,
-    ) -> list[provenance_framework.ToolProvenanceOperation]:
+    ) -> list[provenance.ToolProvenanceOperation]:
         sel_kwargs: dict[Hashable, slice] = dict(self._slice_kwargs)
         isel_kwargs: dict[Hashable, slice] = {}
-        operations: list[provenance_framework.ToolProvenanceOperation] = []
+        operations: list[provenance.ToolProvenanceOperation] = []
 
         for key in list(sel_kwargs.keys()):
             if isinstance(key, str) and key.endswith("_idx"):
                 isel_kwargs[key.removesuffix("_idx")] = sel_kwargs.pop(key)
 
         if sel_kwargs:
-            operations.append(provenance_operations.SelOperation(kwargs=sel_kwargs))
+            operations.append(provenance.SelOperation(kwargs=sel_kwargs))
         if isel_kwargs:
-            operations.append(provenance_operations.IselOperation(kwargs=isel_kwargs))
+            operations.append(provenance.IselOperation(kwargs=isel_kwargs))
         return operations
 
     def process_data(self, data: xr.DataArray) -> xr.DataArray:
@@ -2182,11 +2178,11 @@ class NormalizeDialog(DataFilterDialog):
 
     def filter_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation | None:
+    ) -> provenance.ToolProvenanceOperation | None:
         norm_dims = self._norm_dims
         if not norm_dims:
             return None
-        return provenance_operations.NormalizeOperation(
+        return provenance.NormalizeOperation(
             dims=norm_dims,
             mode=self._mode,
             denominator_rtol=self.denominator_rtol,
@@ -2194,11 +2190,11 @@ class NormalizeDialog(DataFilterDialog):
 
     def restore_filter_operation(
         self,
-        operation: provenance_framework.ToolProvenanceOperation,
+        operation: provenance.ToolProvenanceOperation,
     ) -> None:
         if not isinstance(
             operation,
-            provenance_operations.NormalizeOperation,
+            provenance.NormalizeOperation,
         ):
             return
         for check in self.dim_checks.values():
@@ -2280,7 +2276,7 @@ class DivideByCoordDialog(DataTransformDialog):
             return
         coord = self._source_data.coords[coord_name]
         try:
-            provenance_operations.DivideByCoordOperation._raise_if_zero(coord)
+            provenance.DivideByCoordOperation._raise_if_zero(coord)
         except ValueError:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -2293,11 +2289,11 @@ class DivideByCoordDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         coord_name = self._selected_coord_name
         if coord_name is None:
             raise ValueError("No coordinate selected")
-        return provenance_operations.DivideByCoordOperation(coord_name=coord_name)
+        return provenance.DivideByCoordOperation(coord_name=coord_name)
 
 
 class GaussianFilterDialog(DataFilterDialog):
@@ -2478,19 +2474,19 @@ class GaussianFilterDialog(DataFilterDialog):
 
     def filter_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation | None:
+    ) -> provenance.ToolProvenanceOperation | None:
         sigma_values, _ = self._sigma_values()
         if not sigma_values:
             return None
-        return provenance_operations.GaussianFilterOperation(sigma=sigma_values)
+        return provenance.GaussianFilterOperation(sigma=sigma_values)
 
     def restore_filter_operation(
         self,
-        operation: provenance_framework.ToolProvenanceOperation,
+        operation: provenance.ToolProvenanceOperation,
     ) -> None:
         if not isinstance(
             operation,
-            provenance_operations.GaussianFilterOperation,
+            provenance.GaussianFilterOperation,
         ):
             return
         for check in self.dim_checks.values():
@@ -2602,10 +2598,10 @@ class SwapDimsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         if not self._swap_mapping:
             raise ValueError("No dimensions changed")
-        return provenance_operations.SwapDimsOperation(mapping=self._swap_mapping)
+        return provenance.SwapDimsOperation(mapping=self._swap_mapping)
 
 
 class RenameDimsCoordsDialog(DataTransformDialog):
@@ -2731,10 +2727,10 @@ class RenameDimsCoordsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         if not self._rename_mapping:
             raise ValueError("No names changed")
-        return provenance_operations.RenameDimsCoordsOperation(
+        return provenance.RenameDimsCoordsOperation(
             mapping=typing.cast("dict[Hashable, Hashable]", self._rename_mapping)
         )
 
@@ -2933,27 +2929,27 @@ class AssignCoordsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
+    ) -> provenance.ToolProvenanceOperation:
         if self._mode_tabs.currentIndex() == 1:
             values, dim = self._add_coord_values()
             name = self._add_name_edit.text().strip()
             if dim is None:
-                return provenance_operations.AssignScalarCoordOperation(
+                return provenance.AssignScalarCoordOperation(
                     coord_name=name,
                     value=values,
                 )
-            return provenance_operations.AssignCoord1DOperation(
+            return provenance.AssignCoord1DOperation(
                 coord_name=name,
                 dim=dim,
                 values=values,
             )
         if self.coord_widget.use_affine_transform:
-            return provenance_operations.AffineCoordOperation(
+            return provenance.AffineCoordOperation(
                 coord_name=self.current_coord_name,
                 scale=self.coord_widget.affine_scale,
                 offset=self.coord_widget.affine_offset,
             )
-        return provenance_operations.AssignCoordsOperation(
+        return provenance.AssignCoordsOperation(
             coord_name=self.current_coord_name,
             values=self.coord_widget.new_coord,
         )
@@ -3159,8 +3155,8 @@ class AssignAttrsDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
-        return provenance_operations.AssignAttrsOperation(attrs=self._changed_attrs)
+    ) -> provenance.ToolProvenanceOperation:
+        return provenance.AssignAttrsOperation(attrs=self._changed_attrs)
 
 
 class ROIPathDialog(DataTransformDialog):
@@ -3219,8 +3215,8 @@ class ROIPathDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
-        return provenance_operations.SliceAlongPathOperation(**self._params)
+    ) -> provenance.ToolProvenanceOperation:
+        return provenance.SliceAlongPathOperation(**self._params)
 
 
 class ROIMaskDialog(DataTransformDialog):
@@ -3257,5 +3253,5 @@ class ROIMaskDialog(DataTransformDialog):
 
     def source_transform_operation(
         self,
-    ) -> provenance_framework.ToolProvenanceOperation:
-        return provenance_operations.MaskWithPolygonOperation(**self._params)
+    ) -> provenance.ToolProvenanceOperation:
+        return provenance.MaskWithPolygonOperation(**self._params)

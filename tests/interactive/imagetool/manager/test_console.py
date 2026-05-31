@@ -13,8 +13,7 @@ from qtpy import QtWidgets
 import erlab
 import erlab.interactive.imagetool.manager._console as manager_console
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
-from erlab.interactive.imagetool import itool
-from erlab.interactive.imagetool import provenance_operations as ops
+from erlab.interactive.imagetool import _provenance_framework, itool, provenance
 from erlab.interactive.imagetool.manager import fetch
 from erlab.interactive.imagetool.manager._console import ToolNamespace
 from erlab.interactive.imagetool.manager._dialogs import _ConcatDialog
@@ -160,7 +159,7 @@ def test_manager_console_handles_use_filtered_display_data(
         dims=["x", "y"],
         coords={"x": np.arange(5), "y": np.arange(5)},
     )
-    operation = erlab.interactive.imagetool.provenance_operations.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -390,10 +389,8 @@ def test_tool_namespace_set_filtered_data_item_uses_displayed_data(
     ],
 ) -> None:
     data = test_data.astype(float)
-    operation = (
-        erlab.interactive.imagetool.provenance_operations.GaussianFilterOperation(
-            sigma={data.dims[0]: 1.0}
-        )
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={data.dims[0]: 1.0}
     )
     filtered = operation.apply(data, parent_data=data)
 
@@ -470,13 +467,12 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(25, dtype=float).reshape((5, 5)),
         dims=["x", "y"],
         coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
     )
-    operation = ops.GaussianFilterOperation(sigma={"x": 1.0})
+    operation = provenance.GaussianFilterOperation(sigma={"x": 1.0})
     filtered = operation.apply(data, parent_data=data)
     expected = filtered.copy(deep=True)
     expected[(0, 0)] = -5.0
@@ -493,7 +489,7 @@ def test_tool_namespace_set_filtered_data_item_updates_child_provenance(
             child_tool,
             0,
             show=False,
-            source_spec=prov.full_data(),
+            source_spec=provenance.full_data(),
             source_auto_update=True,
         )
         child_node = manager._child_node(child_uid)
@@ -665,13 +661,12 @@ def test_manager_console_bare_expression_opens_provenance_root(
 def test_manager_console_rejects_reserved_result_names_for_provenance(
     reserved_name: str,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(2.0), dims=("x",))
     result = manager_console._DerivedDataNamespace(
         None,
         data + 1.0,
         "data_1 + 1.0",
-        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        (provenance.ScriptInput(name="data_1", label="ImageTool 1"),),
         copyable=True,
     )
 
@@ -682,21 +677,20 @@ def test_manager_console_rejects_reserved_result_names_for_provenance(
 
 
 def test_manager_console_reserved_result_name_replays_without_shadowing() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data0 = xr.DataArray(np.array([10.0]), dims=("x",))
     data1 = xr.DataArray(np.array([1.0]), dims=("x",))
     source = manager_console._DerivedDataNamespace(
         None,
         data0,
         "data_0",
-        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        (provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
         copyable=True,
     )
     result = manager_console._DerivedDataNamespace(
         None,
         data1 + 1.0,
         "data_1 + 1.0",
-        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        (provenance.ScriptInput(name="data_1", label="ImageTool 1"),),
         copyable=True,
     )
     result._set_console_name("data_0")
@@ -712,13 +706,12 @@ def test_manager_console_reserved_result_name_replays_without_shadowing() -> Non
         "data_0",
     ]
     xr.testing.assert_identical(
-        prov.replay_script_provenance(spec, {"data_0": data0, "data_1": data1}),
+        provenance.replay_script_provenance(spec, {"data_0": data0, "data_1": data1}),
         combined.data,
     )
 
 
 def test_manager_console_helpers_preserve_nested_operands() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -728,7 +721,7 @@ def test_manager_console_helpers_preserve_nested_operands() -> None:
         None,
         data,
         "data_0",
-        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        (provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
         copyable=True,
     )
 
@@ -765,7 +758,6 @@ def test_manager_console_helpers_preserve_nested_operands() -> None:
 
 
 def test_manager_console_namespace_protocols_and_proxies() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -775,7 +767,7 @@ def test_manager_console_namespace_protocols_and_proxies() -> None:
         None,
         data,
         "data_0",
-        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        (provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
         copyable=True,
     )
 
@@ -795,7 +787,7 @@ def test_manager_console_namespace_protocols_and_proxies() -> None:
         None,
         xr.DataArray([True, False], dims=("x",)),
         "data_1",
-        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        (provenance.ScriptInput(name="data_1", label="ImageTool 1"),),
         copyable=True,
     )
     inverted = ~bool_handle
@@ -813,7 +805,7 @@ def test_manager_console_namespace_protocols_and_proxies() -> None:
     )
     assert spec is not None
     xr.testing.assert_identical(
-        prov.replay_script_provenance(spec, {"data_0": data}),
+        provenance.replay_script_provenance(spec, {"data_0": data}),
         coarsened.data,
     )
 
@@ -838,7 +830,6 @@ def test_manager_console_namespace_protocols_and_proxies() -> None:
 
 
 def test_manager_console_operator_and_proxy_branches() -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(1, 5).reshape(2, 2),
         dims=("x", "y"),
@@ -848,7 +839,7 @@ def test_manager_console_operator_and_proxy_branches() -> None:
         None,
         data,
         "data_0",
-        (prov.ScriptInput(name="data_0", label="ImageTool 0"),),
+        (provenance.ScriptInput(name="data_0", label="ImageTool 0"),),
         copyable=True,
     )
 
@@ -882,7 +873,7 @@ def test_manager_console_operator_and_proxy_branches() -> None:
         None,
         data.astype(int),
         "data_1",
-        (prov.ScriptInput(name="data_1", label="ImageTool 1"),),
+        (provenance.ScriptInput(name="data_1", label="ImageTool 1"),),
         copyable=True,
     )
     for operation, expected in (
@@ -958,7 +949,6 @@ def test_manager_console_operator_and_proxy_branches() -> None:
 def test_manager_console_tools_namespace_helper_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(np.arange(3.0), dims=("x",))
 
     class FakeManager:
@@ -1009,11 +999,11 @@ def test_manager_console_tools_namespace_helper_branches(
     monkeypatch.setattr(erlab.interactive, "itool", lambda *_args, **_kwargs: object())
     shown = tools._show_dataarray_with_provenance(
         data,
-        prov.script(
-            ops.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+        provenance.script(
+            provenance.ScriptCodeOperation(label="Copy", code="derived = data_0"),
             start_label="Run script",
             active_name="derived",
-            script_inputs=(prov.ScriptInput(name="data_0", label="Input"),),
+            script_inputs=(provenance.ScriptInput(name="data_0", label="Input"),),
         ),
         execute=True,
     )
@@ -1130,7 +1120,7 @@ def test_manager_console_callable_operand_rejects_unreplayable_globals(
 
     with monkeypatch.context() as patch:
         patch.setattr(
-            erlab.interactive.imagetool.provenance_framework,
+            erlab.interactive.imagetool.provenance,
             "_validate_script_replay_code",
             lambda _code: (_ for _ in ()).throw(ValueError),
         )
@@ -1507,7 +1497,7 @@ def test_manager_console_structures_erlab_and_xarray_calls(
             expected_chain,
         )
         xr.testing.assert_identical(
-            erlab.interactive.imagetool.provenance_framework.replay_script_provenance(
+            erlab.interactive.imagetool.provenance.replay_script_provenance(
                 chain_spec, {"data_0": data0}
             ),
             expected_chain,
@@ -1610,7 +1600,7 @@ def test_manager_console_captures_self_contained_function_source(
         assert "def add_scale(data):" in shifted_code
         assert "def offset_data(data):" in shifted_code
         xr.testing.assert_identical(
-            erlab.interactive.imagetool.provenance_framework.replay_script_provenance(
+            erlab.interactive.imagetool.provenance.replay_script_provenance(
                 shifted_spec, {"data_0": data}
             ),
             data + 2.0,
@@ -1696,10 +1686,8 @@ def test_manager_console_derived_reload_reapplies_filter(
         coords={"x": np.arange(3), "y": np.arange(3)},
     )
     data1 = data0 + 1.0
-    operation = (
-        erlab.interactive.imagetool.provenance_operations.GaussianFilterOperation(
-            sigma={"x": 1.0}
-        )
+    operation = erlab.interactive.imagetool.provenance.GaussianFilterOperation(
+        sigma={"x": 1.0}
     )
 
     with manager_context() as manager:
@@ -1854,7 +1842,7 @@ def test_manager_concat_uses_filtered_display_data(
         coords={"x": np.arange(2), "y": np.arange(2)},
     )
     data1 = data0 + 10.0
-    operation = erlab.interactive.imagetool.provenance_operations.NormalizeOperation(
+    operation = erlab.interactive.imagetool.provenance.NormalizeOperation(
         dims=("x",),
         mode="min",
     )
@@ -2322,7 +2310,6 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data0 = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2331,15 +2318,15 @@ def test_manager_reload_script_inputs_uses_recorded_file_for_removed_parent(
     data1 = data0 + 5.0
     path1 = tmp_path / "right.nc"
     data1.to_netcdf(path1)
-    file_spec = prov.file_load(
+    file_spec = provenance.file_load(
         start_label="Load right",
         seed_code=f"derived = xr.load_dataarray({str(path1)!r})",
-        file_load_source=prov.FileLoadSource(
+        file_load_source=provenance.FileLoadSource(
             path=str(path1),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=prov.FileReplayCall(
+            replay_call=provenance.FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -2434,7 +2421,6 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     source = xr.DataArray(
         np.arange(24.0).reshape(2, 2, 3, 2),
         dims=("pol", "energy", "k", "beta"),
@@ -2447,38 +2433,38 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
     )
     path = tmp_path / "polarization.nc"
     source.to_netcdf(path)
-    file_spec = prov.file_load(
+    file_spec = provenance.file_load(
         start_label="Load both polarizations",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        file_load_source=prov.FileLoadSource(
+        file_load_source=provenance.FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=prov.FileReplayCall(
+            replay_call=provenance.FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
             ),
         ),
     )
-    shared_stage = prov.full_data(ops.AverageOperation(dims=("k",)))
-    left_stage = prov.selection(
-        ops.SelOperation(kwargs={"pol": "LH"}),
-        ops.SqueezeOperation(),
+    shared_stage = provenance.full_data(provenance.AverageOperation(dims=("k",)))
+    left_stage = provenance.selection(
+        provenance.SelOperation(kwargs={"pol": "LH"}),
+        provenance.SqueezeOperation(),
     )
-    right_stage = prov.selection(
-        ops.SelOperation(kwargs={"pol": "LV"}),
-        ops.SqueezeOperation(),
+    right_stage = provenance.selection(
+        provenance.SelOperation(kwargs={"pol": "LV"}),
+        provenance.SqueezeOperation(),
     )
     left_data = left_stage.apply(shared_stage.apply(source))
     right_data = right_stage.apply(shared_stage.apply(source))
-    left_spec = prov.compose_full_provenance(
-        prov.compose_full_provenance(file_spec, shared_stage),
+    left_spec = provenance.compose_full_provenance(
+        provenance.compose_full_provenance(file_spec, shared_stage),
         left_stage,
     )
-    right_spec = prov.compose_full_provenance(
-        prov.compose_full_provenance(file_spec, shared_stage),
+    right_spec = provenance.compose_full_provenance(
+        provenance.compose_full_provenance(file_spec, shared_stage),
         right_stage,
     )
     assert left_spec is not None
@@ -2490,7 +2476,11 @@ def test_manager_reload_script_inputs_reuses_shared_recorded_file_prefix(
         load_count += 1
         return source
 
-    monkeypatch.setattr(prov, "_load_file_source_data", _load_shared_source)
+    monkeypatch.setattr(
+        _provenance_framework,
+        "_load_file_source_data",
+        _load_shared_source,
+    )
 
     with manager_context() as manager:
         manager.show()
@@ -2596,7 +2586,6 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data0 = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2605,15 +2594,15 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
     data1 = data0 + 1.0
     path = tmp_path / "recorded.nc"
     data0.to_netcdf(path)
-    file_spec = prov.file_load(
+    file_spec = provenance.file_load(
         start_label="Load recorded",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        file_load_source=prov.FileLoadSource(
+        file_load_source=provenance.FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=prov.FileReplayCall(
+            replay_call=provenance.FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -2708,13 +2697,13 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         assert not manager._script_provenance_inputs_current(stale_spec)
         assert not manager._script_provenance_inputs_current(missing_spec)
 
-        full_data_input = prov.ScriptInput(
+        full_data_input = provenance.ScriptInput(
             name="full",
             label="Full data",
-            provenance_spec=prov.full_data().model_dump(mode="json"),
+            provenance_spec=provenance.full_data().model_dump(mode="json"),
         )
         assert not manager._script_input_can_reload(full_data_input)
-        missing_file_input = prov.ScriptInput(
+        missing_file_input = provenance.ScriptInput(
             name="missing_file",
             label="Missing file",
             provenance_spec=file_spec.model_copy(
@@ -2730,25 +2719,27 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
         file_marker = "file-marker"
         child_marker = "child-marker"
         saved_marker = "saved-marker"
-        file_input = prov.ScriptInput(
+        file_input = provenance.ScriptInput(
             name="file_input",
             label="File input",
             node_uid="missing-file-node",
             node_snapshot_token=file_marker,
             provenance_spec=file_spec.model_dump(mode="json"),
         )
-        nested_spec = prov.script(
-            ops.ScriptCodeOperation(label="Use file", code="derived = file_input"),
+        nested_spec = provenance.script(
+            provenance.ScriptCodeOperation(
+                label="Use file", code="derived = file_input"
+            ),
             start_label="Run script",
             active_name="derived",
             script_inputs=(file_input,),
         )
-        nested_input = prov.ScriptInput(
+        nested_input = provenance.ScriptInput(
             name="nested",
             label="Nested input",
             provenance_spec=nested_spec.model_dump(mode="json"),
         )
-        ref = prov.ScriptInputDependencyRef(
+        ref = provenance.ScriptInputDependencyRef(
             name="file_input",
             label="File input",
             node_uid="missing-file-node",
@@ -2847,12 +2838,12 @@ def test_manager_reload_helper_status_dialog_and_workspace_branches(
 
         old_parent_uid = "saved-parent"
         derived_wrapper.set_displayed_provenance(
-            prov.script(
-                ops.ScriptCodeOperation(label="Copy", code="derived = data_0"),
+            provenance.script(
+                provenance.ScriptCodeOperation(label="Copy", code="derived = data_0"),
                 start_label="Run script",
                 active_name="derived",
                 script_inputs=(
-                    prov.ScriptInput(
+                    provenance.ScriptInput(
                         name="data_0",
                         label="Saved parent",
                         node_uid=old_parent_uid,
@@ -2882,7 +2873,6 @@ def test_manager_reload_self_replacement_uses_recorded_source(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2891,15 +2881,15 @@ def test_manager_reload_self_replacement_uses_recorded_source(
     )
     path = tmp_path / "source.nc"
     data.to_netcdf(path)
-    file_spec = prov.file_load(
+    file_spec = provenance.file_load(
         start_label="Load source",
         seed_code=f"derived = xr.load_dataarray({str(path)!r})",
-        file_load_source=prov.FileLoadSource(
+        file_load_source=provenance.FileLoadSource(
             path=str(path),
             loader_label="xarray.load_dataarray",
             loader_text="xarray.load_dataarray",
             kwargs_text="",
-            replay_call=prov.FileReplayCall(
+            replay_call=provenance.FileReplayCall(
                 kind="callable",
                 target="xarray.load_dataarray",
                 selected_index=0,
@@ -2984,7 +2974,6 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
-    prov = erlab.interactive.imagetool.provenance_framework
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("x", "y"),
@@ -2997,8 +2986,8 @@ def test_manager_reload_data_hidden_for_non_replayable_script_provenance(
         qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
         wrapper = manager._tool_graph.root_wrappers[0]
         wrapper.set_detached_provenance(
-            prov.script(
-                ops.ScriptCodeOperation(
+            provenance.script(
+                provenance.ScriptCodeOperation(
                     label="Run opaque code",
                     code=None,
                     copyable=False,

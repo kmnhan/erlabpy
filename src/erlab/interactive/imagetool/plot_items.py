@@ -17,6 +17,7 @@ from pyqtgraph.GraphicsScene import mouseEvents
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+from erlab.interactive.imagetool import provenance
 from erlab.interactive.imagetool.viewer_linking import record_history, suppress_history
 from erlab.interactive.imagetool.viewer_state import (
     GuidelineState,
@@ -36,10 +37,6 @@ if typing.TYPE_CHECKING:
     import qtawesome
 
     from erlab.interactive.imagetool import ImageTool
-    from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
-    from erlab.interactive.imagetool.provenance_operations import (
-        ImageToolSelectionSourceBinding,
-    )
     from erlab.interactive.imagetool.viewer import ImageSlicerArea
 else:
     import lazy_loader as _lazy
@@ -1137,7 +1134,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     def make_tool_source_spec(
         self, *, transpose: bool = False, squeeze: bool = False
-    ) -> erlab.interactive.imagetool.provenance_framework.ToolProvenanceSpec:
+    ) -> provenance.ToolProvenanceSpec:
         """Return a source spec for the current plot selection.
 
         The spec contains ``qsel``, ``isel``, and ``sel`` operations for the current
@@ -1155,7 +1152,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         Returns
         -------
-        ToolProvenanceSpec
+        provenance.ToolProvenanceSpec
             Source spec for the current parent data.
         """
         return self.make_tool_source_binding(
@@ -1164,7 +1161,7 @@ class ItoolPlotItem(pg.PlotItem):
 
     def make_tool_source_binding(
         self, *, transpose: bool = False, squeeze: bool = False
-    ) -> ImageToolSelectionSourceBinding:
+    ) -> provenance.ImageToolSelectionSourceBinding:
         """Return ImageTool selection state for future manager refreshes.
 
         Parameters
@@ -1176,7 +1173,7 @@ class ItoolPlotItem(pg.PlotItem):
 
         Returns
         -------
-        ImageToolSelectionSourceBinding
+        provenance.ImageToolSelectionSourceBinding
             Selection state that stores cursor, bin, crop, transpose, and squeeze
             choices from this plot.
         """
@@ -1226,8 +1223,7 @@ class ItoolPlotItem(pg.PlotItem):
                     crop_sel_indexers[key] = index_selector
 
         transpose_dims = tuple(reversed(self.current_data.dims)) if transpose else None
-        operations_module = erlab.interactive.imagetool.provenance_operations
-        binding_type = operations_module.ImageToolSelectionSourceBinding
+        binding_type = provenance.ImageToolSelectionSourceBinding
         return binding_type(
             selection_mode=selection_mode,
             selection_indexers=selection_indexers,
@@ -2043,9 +2039,9 @@ class ItoolPlotItem(pg.PlotItem):
     def _open_data_in_new_window(
         self,
         data: xr.DataArray,
-        source_spec: ToolProvenanceSpec,
+        source_spec: provenance.ToolProvenanceSpec,
         *,
-        source_binding: ImageToolSelectionSourceBinding | None = None,
+        source_binding: provenance.ImageToolSelectionSourceBinding | None = None,
         use_parent_colormap: bool,
     ) -> None:
         itool_kw: dict[str, typing.Any] = {"data": data, "execute": False}
@@ -2095,7 +2091,7 @@ class ItoolPlotItem(pg.PlotItem):
         tool_window = erlab.interactive.itool(**itool_kw)
         if isinstance(tool_window, erlab.interactive.imagetool.ImageTool):
             tool_window.set_provenance_spec(
-                erlab.interactive.imagetool.provenance_framework.compose_display_provenance(
+                provenance.compose_display_provenance(
                     self.slicer_area.displayed_provenance_spec(),
                     source_spec,
                     parent_data=self.slicer_area._tool_source_parent_data(),
@@ -2120,15 +2116,11 @@ class ItoolPlotItem(pg.PlotItem):
     def open_associated_coord(
         self, coord_name: Hashable, *, displayed_profile: bool
     ) -> None:
-        operation = (
-            erlab.interactive.imagetool.provenance_operations.SelectCoordOperation(
-                coord_name=coord_name
-            )
-        )
+        operation = provenance.SelectCoordOperation(coord_name=coord_name)
         source_spec = (
             self.make_tool_source_spec().append_operations(operation)
             if displayed_profile
-            else erlab.interactive.imagetool.provenance_framework.public_data(operation)
+            else provenance.public_data(operation)
         )
         data = source_spec.apply(self.slicer_area._tool_source_parent_data())
         self._open_data_in_new_window(
