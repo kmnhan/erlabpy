@@ -69,6 +69,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     duplicate_action: QtGui.QAction
     hide_action: QtGui.QAction
     link_action: QtGui.QAction
+    main_splitter: QtWidgets.QSplitter
     metadata_derivation_list: QtWidgets.QListWidget
     metadata_details_layout: QtWidgets.QGridLayout
     metadata_details_widget: _HeightForWidthFrame
@@ -85,6 +86,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     show_action: QtGui.QAction
     source_update_action: QtGui.QAction
     store_action: QtGui.QAction
+    right_splitter: QtWidgets.QSplitter
     text_box: QtWidgets.QTextEdit
     tree_view: _ImageToolWrapperTreeView
     unlink_action: QtGui.QAction
@@ -110,6 +112,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _link_registry: _ManagerLinkRegistry
     _lineage_controller: _LineageController
     _manager_record: _ManagerRecord
+    _manager_layout_tracking_enabled: bool
     _metadata_copy_full_action: QtGui.QAction
     _metadata_copy_selected_action: QtGui.QAction
     _metadata_detail_labels: dict[str, QtWidgets.QLabel]

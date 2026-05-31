@@ -7,6 +7,8 @@ of pyqtgraph and Qt.
 from __future__ import annotations
 
 import ast
+import base64
+import binascii
 import bisect
 import contextlib
 import enum
@@ -95,6 +97,30 @@ __all__ = [
 
 _LOAD_UI_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
+
+
+def _qt_bytearray_to_base64(value: QtCore.QByteArray) -> str:
+    return base64.b64encode(value.data()).decode("ascii")
+
+
+def _qt_bytearray_from_base64(value: object) -> QtCore.QByteArray | None:
+    if isinstance(value, bytes):
+        try:
+            text = value.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    elif isinstance(value, str):
+        text = value
+    else:
+        return None
+
+    try:
+        raw = base64.b64decode(text.encode("ascii"), validate=True)
+    except (binascii.Error, ValueError, UnicodeEncodeError):
+        return None
+    if not raw:
+        return None
+    return QtCore.QByteArray(raw)
 
 
 def _qt_object_is_valid_fallback(arg__1: object) -> bool:
@@ -4267,6 +4293,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "tool_title": self.windowTitle(),
             "tool_cls_qualname": self._qual_name(),
             "tool_display_name": self._tool_display_name,
+            "tool_qt_geometry": _qt_bytearray_to_base64(self.saveGeometry()),
             "tool_rect": self.geometry().getRect(),
             "tool_visible": bool(self.isVisible()),
             "erlab_version": erlab.__version__,
@@ -4423,7 +4450,12 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
                 )
         tool._restore_persistence_payload(ds)
         tool.setWindowTitle(ds.attrs["tool_title"])
-        tool.setGeometry(*ds.attrs["tool_rect"])
+        restored_geometry = False
+        geometry = _qt_bytearray_from_base64(ds.attrs.get("tool_qt_geometry"))
+        if geometry is not None:
+            restored_geometry = tool.restoreGeometry(geometry)
+        if not restored_geometry and "tool_rect" in ds.attrs:
+            tool.setGeometry(*ds.attrs["tool_rect"])
         return tool
 
     def to_file(self, filename: str | os.PathLike) -> None:

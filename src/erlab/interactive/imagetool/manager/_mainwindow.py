@@ -205,6 +205,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self._progress_bars: dict[int, QtWidgets.QProgressDialog] = {}
 
         self._bulk_remove_depth: int = 0
+        self._manager_layout_tracking_enabled = False
 
         # Initialize actions
         self.settings_action = QtWidgets.QAction("Settings", self)
@@ -526,15 +527,18 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         # Initialize GUI
-        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        self.setCentralWidget(main_splitter)
+        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.main_splitter.splitterMoved.connect(
+            lambda _pos, _index: self._mark_workspace_layout_dirty()
+        )
+        self.setCentralWidget(self.main_splitter)
 
         # Construct left side of splitter
         left_container = QtWidgets.QWidget()
         left_layout = QtWidgets.QHBoxLayout(left_container)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
-        main_splitter.addWidget(left_container)
+        self.main_splitter.addWidget(left_container)
 
         titlebar = QtWidgets.QWidget()
         titlebar_layout = QtWidgets.QVBoxLayout()
@@ -558,17 +562,20 @@ class ImageToolManager(_ImageToolManagerBase):
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
-        main_splitter.addWidget(right_panel)
+        self.main_splitter.addWidget(right_panel)
 
-        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        right_layout.addWidget(right_splitter, 1)
+        self.right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.right_splitter.splitterMoved.connect(
+            lambda _pos, _index: self._mark_workspace_layout_dirty()
+        )
+        right_layout.addWidget(self.right_splitter, 1)
 
         self.text_box = QtWidgets.QTextEdit(self)
         self.text_box.setReadOnly(True)
-        right_splitter.addWidget(self.text_box)
+        self.right_splitter.addWidget(self.text_box)
 
         self.preview_widget = _SingleImagePreview(self)
-        right_splitter.addWidget(self.preview_widget)
+        self.right_splitter.addWidget(self.preview_widget)
 
         self.metadata_group = _HeightForWidthFrame(self)
         self.metadata_group.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
@@ -630,8 +637,8 @@ class ImageToolManager(_ImageToolManagerBase):
         right_layout.addWidget(self.metadata_group, 0)
 
         # Set initial splitter sizes
-        right_splitter.setSizes([280, 140])
-        main_splitter.setSizes([100, 150])
+        self.right_splitter.setSizes([280, 140])
+        self.main_splitter.setSizes([100, 150])
 
         # Store most recent name filter and directory for new windows
         self._recent_name_filter: str | None = None
@@ -676,6 +683,17 @@ class ImageToolManager(_ImageToolManagerBase):
 
         # Initialize status bar
         self._status_bar.showMessage("")
+        self._manager_layout_tracking_enabled = True
+
+    def event(self, event: QtCore.QEvent | None) -> bool:
+        handled = super().event(event)
+        if event is not None and event.type() in (
+            QtCore.QEvent.Type.Move,
+            QtCore.QEvent.Type.Resize,
+            QtCore.QEvent.Type.WindowStateChange,
+        ):
+            self._mark_workspace_layout_dirty()
+        return handled
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
         """Handle proper termination of resources before closing the application."""
@@ -1192,6 +1210,9 @@ class ImageToolManager(_ImageToolManagerBase):
     def _mark_workspace_structure_dirty(self, reason: str) -> None:
         self._workspace_controller._mark_workspace_structure_dirty(reason)
 
+    def _mark_workspace_layout_dirty(self) -> None:
+        self._workspace_controller._mark_workspace_layout_dirty()
+
     def _mark_workspace_clean(self) -> None:
         self._workspace_controller._mark_workspace_clean()
 
@@ -1402,6 +1423,14 @@ class ImageToolManager(_ImageToolManagerBase):
         return self._workspace_controller._workspace_root_attrs_payload(
             delta_save_count=delta_save_count
         )
+
+    def _workspace_layout_snapshot(self) -> dict[str, str]:
+        return self._workspace_controller._workspace_layout_snapshot()
+
+    def _restore_workspace_layout(
+        self, manifest: Mapping[str, typing.Any] | None
+    ) -> None:
+        self._workspace_controller._restore_workspace_layout(manifest)
 
     def _write_full_workspace_file(self, fname: str | os.PathLike[str]) -> None:
         self._workspace_controller._write_full_workspace_file(fname)
