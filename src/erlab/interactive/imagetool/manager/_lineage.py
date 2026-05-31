@@ -15,7 +15,6 @@ from erlab.interactive.imagetool import (
     provenance_operations,
 )
 from erlab.interactive.imagetool._mainwindow import ImageTool
-from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._widgets import (
     _DEPENDENCY_STATUS_BADGES,
     _DEPENDENCY_STATUS_LABELS,
@@ -34,50 +33,57 @@ if typing.TYPE_CHECKING:
     import xarray as xr
 
     from erlab.interactive.imagetool.manager._dependency import _DependencyStatus
+    from erlab.interactive.imagetool.manager._mainwindow import ImageToolManager
 
 
 logger = logging.getLogger(__name__)
 
 
-class _LineageMixin(_ImageToolManagerBase):
+class _LineageController:
+    def __init__(self, manager: ImageToolManager) -> None:
+        self._manager = manager
+
     def _dependency_refs_for_uid(
         self, uid: str
     ) -> tuple[provenance_framework.ScriptInputDependencyRef, ...]:
-        return self._dependency_tracker.refs_for_uid(uid)
+        return self._manager._dependency_tracker.refs_for_uid(uid)
 
     def dependency_status_for_uid(self, uid: str) -> _DependencyStatus | None:
-        return self._dependency_tracker.status_for_uid(uid)
+        return self._manager._dependency_tracker.status_for_uid(uid)
 
     def dependency_status_label_for_uid(self, uid: str) -> str | None:
-        status = self.dependency_status_for_uid(uid)
+        status = self._manager.dependency_status_for_uid(uid)
         if status is None:
             return None
         return _DEPENDENCY_STATUS_LABELS[status]
 
     def dependency_status_badge_for_uid(self, uid: str) -> str | None:
-        status = self.dependency_status_for_uid(uid)
+        status = self._manager.dependency_status_for_uid(uid)
         if status is None:
             return None
         return _DEPENDENCY_STATUS_BADGES.get(status)
 
     def dependency_status_tooltip_for_uid(self, uid: str) -> str | None:
-        status = self.dependency_status_for_uid(uid)
+        status = self._manager.dependency_status_for_uid(uid)
         if status is None:
             return None
         tooltip = _DEPENDENCY_STATUS_TOOLTIPS[status]
-        node = self._tool_graph.nodes.get(uid)
-        if node is not None and self._node_can_reload_script_inputs(node):
+        node = self._manager._tool_graph.nodes.get(uid)
+        if node is not None and self._manager._node_can_reload_script_inputs(node):
             tooltip += " Click for Reload Data options."
-        if status == "missing" and self._missing_dependencies_have_recorded_file(uid):
+        if (
+            status == "missing"
+            and self._manager._missing_dependencies_have_recorded_file(uid)
+        ):
             tooltip += " Recorded source files found for at least one missing input."
         return tooltip
 
     def dependency_input_summary_for_uid(self, uid: str) -> str | None:
-        refs = self._dependency_refs_for_uid(uid)
+        refs = self._manager._dependency_refs_for_uid(uid)
         if not refs:
             return None
 
-        node = self._tool_graph.nodes.get(uid)
+        node = self._manager._tool_graph.nodes.get(uid)
         spec = None if node is None else node.provenance_spec
         parts: list[str] = []
         seen: set[tuple[str, str, str | None]] = set()
@@ -86,14 +92,14 @@ class _LineageMixin(_ImageToolManagerBase):
             if key in seen:
                 continue
             seen.add(key)
-            parent = self._tool_graph.nodes.get(ref.node_uid)
+            parent = self._manager._tool_graph.nodes.get(ref.node_uid)
             if isinstance(parent, _ImageToolWrapper):
                 current = f"currently ImageTool {parent.index}"
             elif parent is not None:
                 current = f"currently {parent.display_text}"
             else:
                 current = "parent no longer open"
-                if self._dependency_ref_has_recorded_file(spec, ref):
+                if self._manager._dependency_ref_has_recorded_file(spec, ref):
                     current += "; recorded source file found"
             name = " ".join(ref.name.split())
             label = " ".join(ref.label.split())
@@ -105,18 +111,18 @@ class _LineageMixin(_ImageToolManagerBase):
         return "\n".join(parts)
 
     def _show_dependency_reload_dialog(self, target: int | str) -> None:
-        node = self._node_for_target(target)
-        status = self.dependency_status_for_uid(node.uid)
+        node = self._manager._node_for_target(target)
+        status = self._manager.dependency_status_for_uid(node.uid)
         if status is None:
             return
 
-        details = self.dependency_input_summary_for_uid(node.uid)
-        msg_box = QtWidgets.QMessageBox(self)
+        details = self._manager.dependency_input_summary_for_uid(node.uid)
+        msg_box = QtWidgets.QMessageBox(self._manager)
         msg_box.setWindowTitle("Reload Data")
         if details:
             msg_box.setDetailedText(details)
 
-        if not self._node_can_reload_script_inputs(node):
+        if not self._manager._node_can_reload_script_inputs(node):
             msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
             msg_box.setText("This result cannot be reloaded from its recorded inputs.")
             msg_box.setInformativeText(
@@ -141,7 +147,7 @@ class _LineageMixin(_ImageToolManagerBase):
         msg_box.setDefaultButton(typing.cast("QtWidgets.QPushButton", reload_button))
         msg_box.exec()
         if msg_box.clickedButton() is reload_button:
-            self._reload_script_derived_target(target)
+            self._manager._reload_script_derived_target(target)
         elif msg_box.clickedButton() is cancel_button:
             return
 
@@ -183,22 +189,24 @@ class _LineageMixin(_ImageToolManagerBase):
         return False
 
     def _missing_dependencies_have_recorded_file(self, uid: str) -> bool:
-        node = self._tool_graph.nodes.get(uid)
+        node = self._manager._tool_graph.nodes.get(uid)
         spec = None if node is None else node.provenance_spec
         return any(
-            self._tool_graph.nodes.get(ref.node_uid) is None
-            and self._dependency_ref_has_recorded_file(spec, ref)
-            for ref in self._dependency_refs_for_uid(uid)
+            self._manager._tool_graph.nodes.get(ref.node_uid) is None
+            and self._manager._dependency_ref_has_recorded_file(spec, ref)
+            for ref in self._manager._dependency_refs_for_uid(uid)
         )
 
     def _dependency_dependent_uids(self, uid: str) -> list[str]:
-        return self._dependency_tracker.dependent_uids(uid)
+        return self._manager._dependency_tracker.dependent_uids(uid)
 
     def _refresh_dependency_dependents(self, uid: str) -> None:
-        for dependent_uid in self._dependency_dependent_uids(uid):
-            self.tree_view.refresh(dependent_uid)
-            if self._metadata_node_uid == dependent_uid:
-                self._set_metadata_node(self._tool_graph.nodes[dependent_uid])
+        for dependent_uid in self._manager._dependency_dependent_uids(uid):
+            self._manager.tree_view.refresh(dependent_uid)
+            if self._manager._metadata_node_uid == dependent_uid:
+                self._manager._set_metadata_node(
+                    self._manager._tool_graph.nodes[dependent_uid]
+                )
 
     def _script_input_name_for_node(
         self, node: _ImageToolWrapper | _ManagedWindowNode
@@ -229,7 +237,7 @@ class _LineageMixin(_ImageToolManagerBase):
         if isinstance(node, _ImageToolWrapper) and node.name:
             label += f": {node.name}"
         return provenance_framework.ScriptInput(
-            name=self._script_input_name_for_node(node),
+            name=self._manager._script_input_name_for_node(node),
             label=label,
             node_uid=node.uid,
             node_snapshot_token=node.snapshot_token,
@@ -253,7 +261,9 @@ class _LineageMixin(_ImageToolManagerBase):
             start_label=start_label,
             active_name=active_name,
             script_inputs=tuple(
-                self._script_input_for_node(self._node_for_target(target))
+                self._manager._script_input_for_node(
+                    self._manager._node_for_target(target)
+                )
                 for target in input_targets
             ),
         )
@@ -270,11 +280,11 @@ class _LineageMixin(_ImageToolManagerBase):
         tool = erlab.interactive.itool(data, manager=False, execute=False)
         if not isinstance(tool, ImageTool):
             return None
-        return self.add_imagetool(
+        return self._manager.add_imagetool(
             tool,
             show=True,
             activate=True,
-            provenance_spec=self._multi_input_script_provenance(
+            provenance_spec=self._manager._multi_input_script_provenance(
                 input_targets,
                 operation_label=operation_label,
                 operation_code=operation_code,
@@ -285,7 +295,7 @@ class _LineageMixin(_ImageToolManagerBase):
         self, spec: provenance_framework.ToolProvenanceSpec
     ) -> bool:
         for ref in provenance_framework.script_input_dependency_refs(spec):
-            parent = self._tool_graph.nodes.get(ref.node_uid)
+            parent = self._manager._tool_graph.nodes.get(ref.node_uid)
             if parent is None:
                 return False
             if (
@@ -306,18 +316,18 @@ class _LineageMixin(_ImageToolManagerBase):
             return None
         if target_node_uid is not None and script_input.node_uid == target_node_uid:
             return None
-        node = self._tool_graph.nodes.get(script_input.node_uid)
+        node = self._manager._tool_graph.nodes.get(script_input.node_uid)
         if node is None:
             return None
         if (
             spec is not None
             and spec.kind == "script"
-            and not self._script_provenance_inputs_current(spec)
+            and not self._manager._script_provenance_inputs_current(spec)
         ):
             return None
         return (
             node.current_source_data(),
-            self._script_input_for_node(node).model_copy(
+            self._manager._script_input_for_node(node).model_copy(
                 update={"name": script_input.name}
             ),
         )
@@ -333,11 +343,11 @@ class _LineageMixin(_ImageToolManagerBase):
             target_node_uid is not None and script_input.node_uid == target_node_uid
         )
         if script_input.node_uid is not None and not is_target_input:
-            node = self._tool_graph.nodes.get(script_input.node_uid)
+            node = self._manager._tool_graph.nodes.get(script_input.node_uid)
             if node is not None and (
                 spec is None
                 or spec.kind != "script"
-                or self._script_provenance_inputs_current(spec)
+                or self._manager._script_provenance_inputs_current(spec)
             ):
                 return True
         if spec is None:
@@ -350,7 +360,7 @@ class _LineageMixin(_ImageToolManagerBase):
         if spec.kind != "script":
             return False
         return provenance_framework.script_provenance_replayable(spec) and all(
-            self._script_input_can_reload(
+            self._manager._script_input_can_reload(
                 nested_input,
                 target_node_uid=target_node_uid,
             )
@@ -372,7 +382,7 @@ class _LineageMixin(_ImageToolManagerBase):
             ]
             | None
         ):
-            return self._resolve_live_script_input_for_reload(
+            return self._manager._resolve_live_script_input_for_reload(
                 script_input,
                 target_node_uid=target_node_uid,
             )
@@ -404,7 +414,7 @@ class _LineageMixin(_ImageToolManagerBase):
             and bool(spec.script_inputs)
             and provenance_framework.script_provenance_replayable(spec)
             and all(
-                self._script_input_can_reload(
+                self._manager._script_input_can_reload(
                     script_input,
                     target_node_uid=node.uid,
                 )
@@ -419,12 +429,14 @@ class _LineageMixin(_ImageToolManagerBase):
         execute: bool,
     ) -> bool:
         """Check or reload script provenance for a managed slicer area."""
-        target = self.target_from_slicer_area(slicer_area)
+        target = self._manager.target_from_slicer_area(slicer_area)
         if target is None:
             return False
-        if not self._node_can_reload_script_inputs(self._node_for_target(target)):
+        if not self._manager._node_can_reload_script_inputs(
+            self._manager._node_for_target(target)
+        ):
             return False
-        return not execute or self._reload_script_derived_target(target)
+        return not execute or self._manager._reload_script_derived_target(target)
 
     def _workspace_loaded_uid_map(
         self, loaded_targets_by_uid: Mapping[str, int | str]
@@ -432,7 +444,7 @@ class _LineageMixin(_ImageToolManagerBase):
         uid_map: dict[str, str] = {}
         for saved_uid, target in loaded_targets_by_uid.items():
             try:
-                actual_uid = self._node_for_target(target).uid
+                actual_uid = self._manager._node_for_target(target).uid
             except KeyError:
                 continue
             if actual_uid != saved_uid:
@@ -442,13 +454,13 @@ class _LineageMixin(_ImageToolManagerBase):
     def _rebase_loaded_workspace_dependency_refs(
         self, loaded_targets_by_uid: Mapping[str, int | str]
     ) -> None:
-        uid_map = self._workspace_loaded_uid_map(loaded_targets_by_uid)
+        uid_map = self._manager._workspace_loaded_uid_map(loaded_targets_by_uid)
         if not uid_map:
             return
 
         for target in loaded_targets_by_uid.values():
             try:
-                node = self._node_for_target(target)
+                node = self._manager._node_for_target(target)
             except KeyError:
                 continue
             if node.provenance_spec is None:
@@ -463,8 +475,8 @@ class _LineageMixin(_ImageToolManagerBase):
     def _selected_reload_targets(
         self,
     ) -> tuple[list[int | str], dict[int | str, list[str]]] | None:
-        selected_roots = self.tree_view.selected_imagetool_indices
-        selected_children = self.tree_view.selected_childtool_uids
+        selected_roots = self._manager.tree_view.selected_imagetool_indices
+        selected_children = self._manager.tree_view.selected_childtool_uids
         if not selected_roots and not selected_children:
             return None
 
@@ -479,12 +491,12 @@ class _LineageMixin(_ImageToolManagerBase):
             reload_targets.append(target)
 
         for index in selected_roots:
-            if not self._node_for_target(index).reloadable:
+            if not self._manager._node_for_target(index).reloadable:
                 return None
             _add_reload_target(index)
 
         for uid in selected_children:
-            reload_target = self._reload_target_for_child(uid)
+            reload_target = self._manager._reload_target_for_child(uid)
             if reload_target is None:
                 return None
             _add_reload_target(reload_target)
@@ -494,7 +506,9 @@ class _LineageMixin(_ImageToolManagerBase):
 
     def _reload_target_for_child(self, uid: str) -> int | str | None:
         try:
-            current: _ImageToolWrapper | _ManagedWindowNode = self._child_node(uid)
+            current: _ImageToolWrapper | _ManagedWindowNode = self._manager._child_node(
+                uid
+            )
         except KeyError:
             return None
         if not current.has_source_binding:
@@ -503,7 +517,7 @@ class _LineageMixin(_ImageToolManagerBase):
         reload_target: int | str | None = None
         while True:
             try:
-                parent = self._parent_node(current)
+                parent = self._manager._parent_node(current)
             except KeyError:
                 break
             if parent.is_imagetool and parent.reloadable:
@@ -519,35 +533,35 @@ class _LineageMixin(_ImageToolManagerBase):
 
     def _reload_source_chain_for_child(self, uid: str) -> bool:
         """Reload the nearest reloadable ancestor, then refresh a child node."""
-        reload_target = self._reload_target_for_child(uid)
+        reload_target = self._manager._reload_target_for_child(uid)
         if reload_target is None:
             return False
-        node = self._node_for_target(reload_target)
+        node = self._manager._node_for_target(reload_target)
         if node.imagetool is None or not node.slicer_area._reload():
             return False
-        return self._refresh_source_chain_to_uid(uid)
+        return self._manager._refresh_source_chain_to_uid(uid)
 
     def show_selected_source_updates(self) -> None:
         """Show automatic update controls for the selected child window."""
-        uid = self._selected_source_update_child_uid()
+        uid = self._manager._selected_source_update_child_uid()
         if uid is None:
             return
-        self._child_node(uid).show_source_update_dialog(parent=self)
+        self._manager._child_node(uid).show_source_update_dialog(parent=self._manager)
 
     def _child_targets_of(self, target: int | str) -> list[str]:
-        return list(self._node_for_target(target)._childtool_indices)
+        return list(self._manager._node_for_target(target)._childtool_indices)
 
     def _refresh_source_chain_to_uid(self, uid: str) -> bool:
         """Refresh stale ancestors before refreshing a managed child node."""
         try:
-            node = self._child_node(uid)
+            node = self._manager._child_node(uid)
         except KeyError:
             return False
 
         refresh_chain = [node]
         while True:
             try:
-                parent = self._parent_node(node)
+                parent = self._manager._parent_node(node)
             except KeyError:
                 return False
             if isinstance(parent, _ImageToolWrapper):
@@ -569,27 +583,29 @@ class _LineageMixin(_ImageToolManagerBase):
                 and tool.source_state == "stale"
                 and getattr(tool, "_source_refresh_deferred", False)
             ):
-                self._dependency_tracker.queue_source_refresh(current_uid, uid)
+                self._manager._dependency_tracker.queue_source_refresh(current_uid, uid)
                 return False
             if node.source_state != "fresh":
-                self._mark_descendants_source_state(current_uid, node.source_state)
+                self._manager._mark_descendants_source_state(
+                    current_uid, node.source_state
+                )
             return False
 
         try:
-            return self._child_node(uid).source_state == "fresh"
+            return self._manager._child_node(uid).source_state == "fresh"
         except KeyError:
             return False
 
     def _resume_pending_source_refreshes(self, uid: str) -> None:
-        target_uids = self._dependency_tracker.pop_source_refreshes(uid)
+        target_uids = self._manager._dependency_tracker.pop_source_refreshes(uid)
         for target_uid in list(target_uids):
-            if target_uid not in self._tool_graph.nodes:
+            if target_uid not in self._manager._tool_graph.nodes:
                 continue
-            self._refresh_source_chain_to_uid(target_uid)
+            self._manager._refresh_source_chain_to_uid(target_uid)
 
     def _parent_source_data_for_uid(self, uid: str) -> xr.DataArray:
-        node = self._child_node(uid)
-        parent = self._parent_node(node)
+        node = self._manager._child_node(uid)
+        parent = self._manager._parent_node(node)
         return parent.current_source_data()
 
     def _mark_descendants_source_state(
@@ -597,70 +613,72 @@ class _LineageMixin(_ImageToolManagerBase):
         uid: str,
         state: _ManagedWindowNode._source_state_type,
     ) -> None:
-        for child_uid in self._iter_descendant_uids(uid):
-            node = self._child_node(child_uid)
+        for child_uid in self._manager._iter_descendant_uids(uid):
+            node = self._manager._child_node(child_uid)
             if node.tool_window is not None and node.tool_window.has_source_binding:
                 node.tool_window._set_source_state(state)
             elif node.has_source_binding:
                 node._set_source_state(state)
 
     def _mark_descendants_source_unavailable(self, uid: str) -> None:
-        self._mark_descendants_source_state(uid, "unavailable")
+        self._manager._mark_descendants_source_state(uid, "unavailable")
 
     def _propagate_source_change_from_uid(
         self, uid: str, parent_data: xr.DataArray | None = None
     ) -> None:
         if parent_data is None:
             try:
-                parent_data = self._node_for_target(uid).current_source_data()
+                parent_data = self._manager._node_for_target(uid).current_source_data()
             except Exception:
-                self._mark_descendants_source_unavailable(uid)
+                self._manager._mark_descendants_source_unavailable(uid)
                 return
-        for child_uid in list(self._node_for_target(uid)._childtool_indices):
+        for child_uid in list(self._manager._node_for_target(uid)._childtool_indices):
             try:
-                child = self._child_node(child_uid)
+                child = self._manager._child_node(child_uid)
             except KeyError:
                 continue
             updated = child.handle_parent_source_replaced(parent_data)
-            self.tree_view.refresh(child_uid)
+            self._manager.tree_view.refresh(child_uid)
             if updated:
-                self._propagate_source_change_from_uid(child_uid)
+                self._manager._propagate_source_change_from_uid(child_uid)
             elif child.source_state != "fresh":
-                self._mark_descendants_source_state(child_uid, child.source_state)
+                self._manager._mark_descendants_source_state(
+                    child_uid, child.source_state
+                )
 
     def show_selected(self) -> None:
         """Show selected windows."""
-        index_list = self._selected_imagetool_targets()
+        index_list = self._manager._selected_imagetool_targets()
         for index in index_list:
-            self._node_for_target(index).show()
+            self._manager._node_for_target(index).show()
 
-        uid_list = self._selected_tool_uids()
+        uid_list = self._manager._selected_tool_uids()
 
         for uid in uid_list:
-            self.show_childtool(uid)
+            self._manager.show_childtool(uid)
 
     def hide_selected(self) -> None:
         """Hide selected windows."""
-        for index in self._selected_imagetool_targets():
-            self._node_for_target(index).hide()
-        for uid in self._selected_tool_uids():
-            self.get_childtool(uid).hide()
+        for index in self._manager._selected_imagetool_targets():
+            self._manager._node_for_target(index).hide()
+        for uid in self._manager._selected_tool_uids():
+            self._manager.get_childtool(uid).hide()
 
     def hide_all(self) -> None:
         """Hide all windows."""
-        for node in self._tool_graph.nodes.values():
+        for node in self._manager._tool_graph.nodes.values():
             node.hide()
 
     def reload_selected(self) -> None:
         """Reload data in selected ImageTool windows."""
-        selected_reload_targets = self._selected_reload_targets()
+        selected_reload_targets = self._manager._selected_reload_targets()
         if selected_reload_targets is None:
             return
 
         reload_targets, child_targets = selected_reload_targets
         reloaded_targets: set[int | str] = set()
         for target in reload_targets:
-            node = self._node_for_target(target)
+            node = self._manager._node_for_target(target)
             if node.imagetool is not None and node.slicer_area._reload():
                 reloaded_targets.add(target)
 
@@ -668,7 +686,7 @@ class _LineageMixin(_ImageToolManagerBase):
             if target not in reloaded_targets:
                 continue
             for uid in child_uids:
-                self._refresh_source_chain_to_uid(uid)
+                self._manager._refresh_source_chain_to_uid(uid)
 
     @staticmethod
     def _reload_incompatibility_details(
@@ -716,7 +734,7 @@ class _LineageMixin(_ImageToolManagerBase):
         return "\n".join(lines)
 
     def _prompt_incompatible_reload_commit(self, details: str) -> str:
-        msg_box = QtWidgets.QMessageBox(self)
+        msg_box = QtWidgets.QMessageBox(self._manager)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg_box.setWindowTitle("Reload Data")
         msg_box.setText("The reloaded data has different coordinates.")
@@ -754,24 +772,24 @@ class _LineageMixin(_ImageToolManagerBase):
             propagate_descendants=True,
             preserve_filter=True,
         )
-        self.tree_view.refresh(node.uid)
-        if self._metadata_node_uid == node.uid:
-            self._set_metadata_node(node)
+        self._manager.tree_view.refresh(node.uid)
+        if self._manager._metadata_node_uid == node.uid:
+            self._manager._set_metadata_node(node)
 
     def _reload_script_derived_target(self, target: int | str) -> bool:
         """Reload a script-derived ImageTool from its recorded inputs."""
-        node = self._node_for_target(target)
+        node = self._manager._node_for_target(target)
         spec = node.provenance_spec
         if spec is None:
             return False
         try:
-            result = self._rebuild_script_provenance(
+            result = self._manager._rebuild_script_provenance(
                 spec,
                 target_node_uid=node.uid,
             )
         except _ScriptRebuildError as exc:
             erlab.interactive.utils.MessageDialog.critical(
-                self,
+                self._manager,
                 "Error",
                 str(exc),
                 detailed_text=exc.details,
@@ -782,15 +800,15 @@ class _LineageMixin(_ImageToolManagerBase):
         if erlab.interactive.imagetool.slicer.check_cursors_compatible(
             current, result.data
         ):
-            self._replace_script_reload_target(node, result)
-            self._status_bar.showMessage("Reloaded data from inputs", 5000)
+            self._manager._replace_script_reload_target(node, result)
+            self._manager._status_bar.showMessage("Reloaded data from inputs", 5000)
             return True
 
-        details = self._reload_incompatibility_details(current, result.data)
-        match self._prompt_incompatible_reload_commit(details):
+        details = self._manager._reload_incompatibility_details(current, result.data)
+        match self._manager._prompt_incompatible_reload_commit(details):
             case "replace":
-                self._replace_script_reload_target(node, result)
-                self._status_bar.showMessage("Reloaded data from inputs", 5000)
+                self._manager._replace_script_reload_target(node, result)
+                self._manager._status_bar.showMessage("Reloaded data from inputs", 5000)
                 return True
             case "new":
                 tool = erlab.interactive.itool(
@@ -798,29 +816,31 @@ class _LineageMixin(_ImageToolManagerBase):
                 )
                 if not isinstance(tool, ImageTool):
                     erlab.interactive.utils.MessageDialog.critical(
-                        self,
+                        self._manager,
                         "Error",
                         "An error occurred while opening reloaded data.",
                         detailed_text="",
                     )
                     return False
-                self.add_imagetool(
+                self._manager.add_imagetool(
                     tool,
                     show=True,
                     activate=True,
                     provenance_spec=result.provenance_spec,
                 )
-                self._status_bar.showMessage("Opened reloaded data as a new tool", 5000)
+                self._manager._status_bar.showMessage(
+                    "Opened reloaded data as a new tool", 5000
+                )
                 return True
             case _:
                 return False
 
     def remove_selected(self) -> None:
         """Discard selected ImageTool windows."""
-        indices = list(self._selected_imagetool_targets())
-        child_uids = list(self._selected_tool_uids())
+        indices = list(self._manager._selected_imagetool_targets())
+        child_uids = list(self._manager._selected_tool_uids())
 
-        msg_box = QtWidgets.QMessageBox(self)
+        msg_box = QtWidgets.QMessageBox(self._manager)
         msg_box.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg_box.setText("Remove selected windows?")
 
@@ -828,7 +848,7 @@ class _LineageMixin(_ImageToolManagerBase):
         num_selected_children: int = len(child_uids)
         num_implicit_children: int = 0
         for i in indices:
-            for uid in self._child_targets_of(i):
+            for uid in self._manager._child_targets_of(i):
                 if uid not in child_uids:  # pragma: no branch
                     num_implicit_children += 1
 
@@ -853,4 +873,4 @@ class _LineageMixin(_ImageToolManagerBase):
         msg_box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Yes)
 
         if msg_box.exec() == QtWidgets.QMessageBox.StandardButton.Yes:
-            self._remove_imagetools(indices, child_uids=child_uids)
+            self._manager._remove_imagetools(indices, child_uids=child_uids)
