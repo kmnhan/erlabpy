@@ -13,7 +13,7 @@ from erlab.interactive._dask import DaskMenu
 from erlab.interactive.imagetool.manager import _server as _manager_server
 from erlab.interactive.imagetool.manager._actions import _ActionsMixin
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
-from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelMixin
+from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
 from erlab.interactive.imagetool.manager._lineage import _LineageMixin
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
@@ -48,8 +48,10 @@ if typing.TYPE_CHECKING:
 
     import numpy as np
 
+    from erlab.interactive.imagetool._load_source import _LoadSourceDetails
     from erlab.interactive.imagetool._mainwindow import ImageTool
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
+    from erlab.interactive.imagetool.manager._wrapper import _MetadataField
     from erlab.interactive.imagetool.provenance_framework import ToolProvenanceSpec
     from erlab.interactive.imagetool.provenance_operations import (
         ImageToolSelectionSourceBinding,
@@ -61,7 +63,6 @@ logger = logging.getLogger(__name__)
 class ImageToolManager(
     _WorkspaceIOMixin,
     _LineageMixin,
-    _DetailsPanelMixin,
     _ActionsMixin,
     _WidgetsMixin,
 ):
@@ -111,6 +112,7 @@ class ImageToolManager(
         self.manager_index = self._manager_record.index
         self._tool_graph = _ManagerToolGraph()
         self._dependency_tracker = _ManagerDependencyTracker(self._tool_graph)
+        self._details_panel = _DetailsPanelController(self)
 
         try:
             (
@@ -780,6 +782,64 @@ class ImageToolManager(
         self, linker: erlab.interactive.imagetool.viewer_linking.SlicerLinkProxy
     ) -> int:
         return self._link_registry.index(linker)
+
+    def _node_info_html(self, node: _ImageToolWrapper | _ManagedWindowNode) -> str:
+        return self._details_panel._node_info_html(node)
+
+    def _clear_metadata(self) -> None:
+        self._details_panel._clear_metadata()
+
+    def _set_metadata_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> None:
+        self._details_panel._set_metadata_node(node)
+
+    def _set_metadata_fields(self, fields: list[_MetadataField]) -> None:
+        self._details_panel._set_metadata_fields(fields)
+
+    def _show_load_source_details(self, details: _LoadSourceDetails) -> None:
+        self._details_panel._show_load_source_details(details)
+
+    def _load_source_for_replay(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> tuple[str, str] | None:
+        return self._details_panel._load_source_for_replay(node)
+
+    def _prompt_replay_input_name(
+        self, node: _ImageToolWrapper | _ManagedWindowNode
+    ) -> str | None:
+        return self._details_panel._prompt_replay_input_name(node)
+
+    def _update_metadata_pane(self) -> None:
+        self._details_panel._update_metadata_pane()
+
+    def _selected_derivation_items(self) -> list[QtWidgets.QListWidgetItem]:
+        return self._details_panel._selected_derivation_items()
+
+    def _selected_derivation_code(self) -> str | None:
+        return self._details_panel._selected_derivation_code()
+
+    def _build_metadata_derivation_menu(self) -> QtWidgets.QMenu | None:
+        return self._details_panel._build_metadata_derivation_menu()
+
+    def _show_metadata_derivation_menu(self, pos: QtCore.QPoint) -> None:
+        self._details_panel._show_metadata_derivation_menu(pos)
+
+    def _copy_selected_derivation_code(self) -> None:
+        self._details_panel._copy_selected_derivation_code()
+
+    def _copy_full_derivation_code(self) -> None:
+        self._details_panel._copy_full_derivation_code()
+
+    def _update_info(self, *, uid: str | None = None) -> None:
+        self._details_panel._update_info(uid=uid)
+
+    def _schedule_tool_metadata_update(self, uid: str) -> None:
+        self._details_panel._schedule_tool_metadata_update(uid)
+
+    def _flush_pending_tool_metadata_updates(self, pending: set[str]) -> None:
+        self._details_panel._flush_pending_tool_metadata_updates(pending)
+
+    def _update_actions(self) -> None:
+        self._details_panel._update_actions()
 
     def add_imagetool(
         self,
