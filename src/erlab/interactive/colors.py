@@ -124,6 +124,15 @@ class ColorMapComboBox(QtWidgets.QComboBox):
         self.thumbnails_loaded = False
         self.resetCmap()
 
+    def _set_current_text_if_available(self, text: str | None) -> bool:
+        if text is None:
+            return False
+        index = self.findText(text)
+        if index < 0:
+            return False
+        self.setCurrentIndex(index)
+        return True
+
     # https://forum.qt.io/topic/105012/qcombobox-specify-width-less-than-content/11
     def showPopup(self) -> None:
         maxWidth = self.maximumWidth()
@@ -187,21 +196,25 @@ class ColorMapComboBox(QtWidgets.QComboBox):
             self.setCurrentText(cmap)
 
     def resetCmap(self) -> None:
-        if self.default_cmap is None:
+        if self.default_cmap is not None and self._set_current_text_if_available(
+            self.default_cmap
+        ):
+            return
+        if self.count():
             self.setCurrentIndex(0)
-        else:
-            self.setCurrentText(self.default_cmap)
 
     def setCurrentText(self, text: str | None) -> None:
         """Set the current text of the combobox."""
         if not self._populated:
             self._populate()
-        if self.findText(text) < 0:
-            # If the value is not in the combobox, try loading all and retry
+        if self._set_current_text_if_available(text):
+            return
+        if not self.loaded_all:
+            current_text = self.currentText()
             self.load_all()
-            self.setCurrentText(text)
-        else:
-            super().setCurrentText(text)
+            if self._set_current_text_if_available(text):
+                return
+            self._set_current_text_if_available(current_text)
 
 
 class ColorMapGammaWidget(QtWidgets.QWidget):

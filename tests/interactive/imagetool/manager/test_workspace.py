@@ -300,6 +300,138 @@ def test_manager_workspace_load_preserves_added_time(
         assert manager._child_node(tool_uid).created_time == tool_added
 
 
+def test_manager_workspace_load_warns_for_unavailable_colormap(
+    qtbot,
+    tmp_path: pathlib.Path,
+    test_data,
+    monkeypatch: pytest.MonkeyPatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    missing = "__erlab_missing_colormap__"
+    dialogs: list[typing.Any] = []
+
+    class _DummySignal:
+        def connect(self, *args, **kwargs) -> None:
+            pass
+
+    class _DummyButtonBox:
+        def addButton(self, *args, **kwargs) -> None:
+            pass
+
+    class _RecordingMessageDialog:
+        def __init__(self, parent=None, **kwargs) -> None:
+            self.parent = parent
+            self.kwargs = kwargs
+            self._button_box = _DummyButtonBox()
+            self.finished = _DummySignal()
+            dialogs.append(self)
+
+        def exec(self):
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+        def setModal(self, value: bool) -> None:
+            pass
+
+        def windowFlags(self):
+            return QtCore.Qt.WindowType.Widget
+
+        def setWindowFlags(self, flags) -> None:
+            pass
+
+        def text(self) -> str:
+            return str(self.kwargs.get("text", ""))
+
+        def close(self) -> None:
+            pass
+
+        def show(self) -> None:
+            pass
+
+        def raise_(self) -> None:
+            pass
+
+        def activateWindow(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        tool = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+        tool.slicer_area.set_colormap("viridis", gamma=1.5, reverse=True)
+        manager.add_imagetool(tool, show=False)
+
+        fname = tmp_path / "missing-cmap.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        with h5py.File(fname, "a") as h5_file:
+            state = json.loads(h5_file["0/imagetool"].attrs["itool_state"])
+            state["color"]["cmap"] = missing
+            h5_file["0/imagetool"].attrs["itool_state"] = json.dumps(state)
+
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+
+        props = manager.get_imagetool(0).slicer_area.colormap_properties
+        assert props["cmap"] == erlab.interactive.options.model.colors.cmap.name
+        assert props["gamma"] == pytest.approx(1.5)
+        assert props["reverse"] is True
+
+        colormap_dialogs = [
+            dialog
+            for dialog in dialogs
+            if dialog.kwargs.get("title") == "Unavailable Colormap"
+        ]
+        assert len(colormap_dialogs) == 1
+        assert colormap_dialogs[0].parent is manager
+        assert missing in colormap_dialogs[0].kwargs["informative_text"]
+        assert "0" in colormap_dialogs[0].kwargs["informative_text"]
+
+
+def test_standalone_imagetool_restore_unavailable_colormap_has_no_manager_dialog(
+    qtbot,
+    test_data,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = "__erlab_missing_colormap__"
+    dialogs: list[typing.Any] = []
+
+    class _RecordingMessageDialog:
+        def __init__(self, *args, **kwargs) -> None:
+            dialogs.append((args, kwargs))
+
+        def exec(self):
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.utils, "MessageDialog", _RecordingMessageDialog
+    )
+
+    tool = erlab.interactive.imagetool.ImageTool(test_data)
+    qtbot.addWidget(tool)
+    ds = tool.to_dataset()
+    state = json.loads(ds.attrs["itool_state"])
+    state["color"]["cmap"] = missing
+    ds.attrs["itool_state"] = json.dumps(state)
+
+    with pytest.warns(UserWarning, match="Failed to restore colormap settings"):
+        restored = erlab.interactive.imagetool.ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+
+    assert dialogs == []
+
+
 def test_manager_added_time_display_uses_zone_name_and_offset(
     qtbot,
     test_data,

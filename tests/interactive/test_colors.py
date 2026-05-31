@@ -315,6 +315,38 @@ def test_colormap_combobox_populates_on_show(qtbot):
     assert combo.currentText() == default
 
 
+def test_colormap_combobox_ignores_unavailable_text(qtbot):
+    names = pg_colormap_names("matplotlib", exclude_local=True)
+    assert names
+    valid = names[0]
+    missing = "__erlab_missing_colormap__"
+
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.setDefaultCmap(valid)
+    combo.show()
+
+    qtbot.wait_until(lambda: combo.count() > 0, timeout=2000)
+    combo.setCurrentText(valid)
+    combo.setCurrentText(missing)
+
+    assert combo.currentText() == valid
+
+
+def test_colormap_combobox_missing_default_load_all_falls_back(qtbot):
+    missing = "__erlab_missing_colormap__"
+
+    combo = ColorMapComboBox()
+    qtbot.addWidget(combo)
+    combo.setDefaultCmap(missing)
+    combo.show()
+
+    qtbot.wait_until(lambda: combo.count() > 0, timeout=2000)
+    combo.load_all()
+
+    assert combo.currentText() != missing
+
+
 def test_pg_colormap_names_respects_runtime_exclude():
     names = pg_colormap_names("matplotlib", exclude_local=True)
     assert names
