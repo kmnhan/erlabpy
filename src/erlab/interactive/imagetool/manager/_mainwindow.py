@@ -383,6 +383,11 @@ class ImageToolManager(_ImageToolManagerBase):
         self.concat_action.triggered.connect(self.concat_selected)
         self.concat_action.setToolTip("Concatenate data in selected windows")
 
+        self.batch_action = QtWidgets.QAction("Batch Operation…", self)
+        self.batch_action.setObjectName("manager_batch_operation_action")
+        self.batch_action.triggered.connect(self.show_batch_operations)
+        self.batch_action.setToolTip("Apply an operation to multiple ImageTools")
+
         self.reload_action = QtWidgets.QAction("Reload Data", self)
         self.reload_action.triggered.connect(self.reload_selected)
         self.reload_action.setToolTip(
@@ -466,6 +471,7 @@ class ImageToolManager(_ImageToolManagerBase):
         self.edit_menu.addAction(self.reindex_action)
         self.edit_menu.addSeparator()
         self.edit_menu.addAction(self.concat_action)
+        self.edit_menu.addAction(self.batch_action)
         self.edit_menu.addAction(self.duplicate_action)
         self.edit_menu.addAction(self.promote_action)
         self.edit_menu.addSeparator()
@@ -518,6 +524,9 @@ class ImageToolManager(_ImageToolManagerBase):
         self.rename_button = erlab.interactive.utils.IconActionButton(
             self.rename_action, "mdi6.rename"
         )
+        self.batch_button = erlab.interactive.utils.IconActionButton(
+            self.batch_action, "mdi6.table-edit"
+        )
         self.link_button = erlab.interactive.utils.IconActionButton(
             self.link_action, "mdi6.link-variant"
         )
@@ -548,6 +557,7 @@ class ImageToolManager(_ImageToolManagerBase):
         titlebar_layout.addWidget(self.open_button)
         titlebar_layout.addWidget(self.remove_button)
         titlebar_layout.addWidget(self.rename_button)
+        titlebar_layout.addWidget(self.batch_button)
         titlebar_layout.addWidget(self.link_button)
         titlebar_layout.addWidget(self.unlink_button)
         titlebar_layout.addStretch()
@@ -1922,6 +1932,25 @@ class ImageToolManager(_ImageToolManagerBase):
 
     def concat_selected(self) -> None:
         self._actions_controller.concat_selected()
+
+    def batch_target_count(self) -> int:
+        return self._actions_controller.batch_target_count()
+
+    def show_batch_operations(self) -> None:
+        self._actions_controller.show_batch_operations()
+
+    def apply_batch_transform_dialog(
+        self,
+        dialog: typing.Any,
+        launch_mode: typing.Literal["replace", "detach", "nest"],
+    ) -> bool:
+        return self._actions_controller.apply_batch_transform_dialog(
+            dialog,
+            launch_mode,
+        )
+
+    def apply_batch_filter_dialog(self, dialog: typing.Any) -> bool:
+        return self._actions_controller.apply_batch_filter_dialog(dialog)
 
     def store_selected(self) -> None:
         self._actions_controller.store_selected()
