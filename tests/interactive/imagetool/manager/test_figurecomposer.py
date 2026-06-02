@@ -631,7 +631,14 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     colors_page = tool.findChild(
         QtWidgets.QWidget, "figureComposerPlotSlicesColorsPage"
     )
+    cuts_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesCutsPage")
+    limits_page = tool.findChild(
+        QtWidgets.QWidget, "figureComposerPlotSlicesLimitsPage"
+    )
     style_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesStylePage")
+    crop_check = tool.findChild(
+        QtWidgets.QCheckBox, "figureComposerPlotSlicesCropCheck"
+    )
     same_limits_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerSameLimitsCombo"
     )
@@ -643,11 +650,16 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         QtWidgets.QLineEdit, "figureComposerColorbarKwEdit"
     )
     assert colors_page is not None
+    assert cuts_page is not None
+    assert limits_page is not None
     assert style_page is not None
+    assert crop_check is not None
     assert same_limits_combo is not None
     assert axis_combo is not None
     assert annotate_kwargs_edit is not None
     assert colorbar_kwargs_edit is not None
+    assert limits_page.isAncestorOf(crop_check)
+    assert not cuts_page.isAncestorOf(crop_check)
     assert same_limits_combo.parent() is style_page
     assert axis_combo.parent() is style_page
     assert annotate_kwargs_edit.parent() is style_page

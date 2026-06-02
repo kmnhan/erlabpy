@@ -186,14 +186,7 @@ def _build_plot_slices_editor(
     )
     transpose_check.setText("Transpose")
     transpose_check.setToolTip("Swap the plotted x/y orientation.")
-    crop_check = tool._check_box(
-        operation.crop,
-        lambda checked: tool._update_current_operation(crop=checked),
-    )
-    crop_check.setText("Crop")
-    crop_check.setToolTip("Crop each slice to explicit x/y limits before plotting.")
     options_layout.addWidget(transpose_check)
-    options_layout.addWidget(crop_check)
     options_layout.addStretch(1)
     tool._add_form_row(
         basic_layout,
@@ -222,6 +215,26 @@ def _build_plot_slices_editor(
             f"Optional {label}: one number for symmetric limits, "
             "or two comma-separated numbers for lower and upper limits.",
         )
+
+    limits_options_widget = QtWidgets.QWidget(limits_page)
+    limits_options_layout = QtWidgets.QHBoxLayout(limits_options_widget)
+    limits_options_layout.setContentsMargins(0, 0, 0, 0)
+    crop_check = tool._check_box(
+        operation.crop,
+        lambda checked: tool._update_current_operation(crop=checked),
+        parent=limits_page,
+    )
+    crop_check.setObjectName("figureComposerPlotSlicesCropCheck")
+    crop_check.setText("Crop")
+    crop_check.setToolTip("Crop each slice to explicit x/y limits before plotting.")
+    limits_options_layout.addWidget(crop_check)
+    limits_options_layout.addStretch(1)
+    tool._add_form_row(
+        limits_layout,
+        "Options",
+        limits_options_widget,
+        "Limit-related plot_slices options for this step.",
+    )
 
     if is_image_plot:
         colorbar_combo = tool._combo(
