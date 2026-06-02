@@ -11,6 +11,7 @@ import pytest
 import xarray as xr
 from matplotlib import style as mpl_style
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
@@ -93,6 +94,301 @@ def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
         for row in range(tool.operation_list.count())
         if tool.operation_list.item(row).isSelected()
     )
+
+
+def _render_figure_composer_rgba(tool: FigureComposerTool) -> np.ndarray:
+    with figurecomposer_defaults._figure_style_context():
+        figure = Figure(
+            figsize=tool.tool_status.setup.figsize,
+            dpi=tool.tool_status.setup.dpi,
+            layout=tool.tool_status.setup.layout,
+        )
+        canvas = FigureCanvasAgg(figure)
+        figurecomposer_rendering._render_into_figure(
+            tool,
+            figure,
+            sync_visible=False,
+        )
+        assert tool._operation_render_errors == {}
+        with figurecomposer_defaults._figure_draw_context():
+            canvas.draw()
+        return np.asarray(canvas.buffer_rgba()).copy()
+
+
+def _restored_figure_composer_from_netcdf(
+    tool: FigureComposerTool,
+    qtbot,
+    tmp_path,
+) -> FigureComposerTool:
+    filename = tmp_path / "figure-composer-tool.nc"
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="You are writing invalid netcdf features.*",
+            category=UserWarning,
+        )
+        tool.to_dataset().to_netcdf(
+            filename,
+            engine="h5netcdf",
+            invalid_netcdf=True,
+        )
+    saved = xr.load_dataset(filename, engine="h5netcdf")
+    restored = erlab.interactive.utils.ToolWindow.from_dataset(saved)
+    qtbot.addWidget(restored)
+    assert isinstance(restored, FigureComposerTool)
+    return restored
+
+
+def _assert_serialized_plot_restores_exactly(
+    tool: FigureComposerTool,
+    qtbot,
+    tmp_path,
+) -> FigureComposerTool:
+    before = _render_figure_composer_rgba(tool)
+    restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
+    assert restored.tool_status.model_dump(mode="json") == tool.tool_status.model_dump(
+        mode="json"
+    )
+    after = _render_figure_composer_rgba(restored)
+    np.testing.assert_array_equal(after, before)
+    return restored
+
+
+def _figure_composer_image_source(name: str = "image") -> xr.DataArray:
+    eV = np.array([-0.5, 0.0, 0.5])
+    beta = np.linspace(-1.0, 1.0, 8)
+    alpha = np.linspace(-0.75, 0.75, 7)
+    values = (
+        np.cos(np.pi * eV[:, None, None])
+        + 0.4 * np.sin(np.pi * beta[None, :, None])
+        + 0.2 * alpha[None, None, :] ** 2
+    )
+    return xr.DataArray(
+        values,
+        dims=("eV", "beta", "alpha"),
+        coords={"eV": eV, "beta": beta, "alpha": alpha},
+        name=name,
+    )
+
+
+def _figure_composer_profile_source(name: str = "profile") -> xr.DataArray:
+    kx = np.linspace(-1.0, 1.0, 21)
+    values = np.exp(-4.0 * kx**2) + 0.15 * kx
+    return xr.DataArray(values, dims=("kx",), coords={"kx": kx}, name=name)
+
+
+def _figure_composer_line_slice_source(name: str = "line_map") -> xr.DataArray:
+    eV = np.array([-0.5, 0.5])
+    kx = np.linspace(-1.0, 1.0, 17)
+    values = np.vstack(
+        (
+            np.exp(-8.0 * (kx + 0.25) ** 2),
+            np.exp(-8.0 * (kx - 0.25) ** 2),
+        )
+    )
+    return xr.DataArray(
+        values,
+        dims=("eV", "kx"),
+        coords={"eV": eV, "kx": kx},
+        name=name,
+    )
+
+
+def test_figure_composer_subplots_plot_roundtrip_restores_exact_render(
+    qtbot,
+    tmp_path,
+) -> None:
+    image = _figure_composer_image_source("image")
+    profile = _figure_composer_profile_source("profile")
+    source_data = {"image_source": image, "profile_source": profile}
+    setup = FigureSubplotsState(
+        nrows=2,
+        ncols=2,
+        figsize=(3.4, 2.1),
+        dpi=80,
+        layout=None,
+        sharex=False,
+        sharey=False,
+    )
+    plot_operation = FigureOperationState.plot_slices(
+        label="constant energy cuts",
+        sources=("image_source",),
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        slice_dim="eV",
+        slice_values=(-0.5, 0.5),
+    ).model_copy(
+        update={
+            "annotate": False,
+            "cmap": "viridis",
+            "same_limits": True,
+            "transpose": True,
+        }
+    )
+    line_operation = FigureOperationState.line(
+        label="profile",
+        source="profile_source",
+        axes=FigureAxesSelectionState(axes=((1, 0), (1, 1))),
+    ).model_copy(
+        update={
+            "line_color": "black",
+            "line_labels": ("restored profile",),
+            "line_normalize": "max",
+            "line_x": "kx",
+        }
+    )
+    axes_method = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="set_title",
+        axes=FigureAxesSelectionState(axes=((1, 0), (1, 1))),
+        args=("Profile",),
+    )
+    figure_method = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name="supxlabel",
+        args=("Shared coordinate",),
+    )
+    recipe = FigureRecipeState(
+        setup=setup,
+        sources=(
+            FigureSourceState(name="image_source", label="image"),
+            FigureSourceState(name="profile_source", label="profile"),
+        ),
+        operations=(plot_operation, line_operation, axes_method, figure_method),
+        primary_source="image_source",
+    )
+    tool = FigureComposerTool(image, recipe=recipe, source_data=source_data)
+    qtbot.addWidget(tool)
+
+    restored = _assert_serialized_plot_restores_exactly(tool, qtbot, tmp_path)
+    xr.testing.assert_identical(restored.source_data()["profile_source"], profile)
+
+
+def test_figure_composer_gridspec_plot_roundtrip_restores_exact_render(
+    qtbot,
+    tmp_path,
+) -> None:
+    image = _figure_composer_image_source("image")
+    line_map = _figure_composer_line_slice_source("line_map")
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        figsize=(3.4, 2.1),
+        dpi=80,
+        layout=None,
+        sharex=False,
+        sharey=False,
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root",
+                label="Root",
+                nrows=1,
+                ncols=2,
+                width_ratios=(2.0, 1.0),
+                axes=(
+                    FigureGridSpecAxesState(
+                        axes_id="image-axis",
+                        label="image",
+                        span=FigureGridSpecSpanState(
+                            row_start=0,
+                            row_stop=1,
+                            col_start=0,
+                            col_stop=1,
+                        ),
+                    ),
+                ),
+                child_grids=(
+                    FigureGridSpecGridState(
+                        grid_id="line-grid",
+                        label="line grid",
+                        nrows=2,
+                        ncols=1,
+                        span=FigureGridSpecSpanState(
+                            row_start=0,
+                            row_stop=1,
+                            col_start=1,
+                            col_stop=2,
+                        ),
+                        axes=(
+                            FigureGridSpecAxesState(
+                                axes_id="line-top",
+                                label="top",
+                                span=FigureGridSpecSpanState(
+                                    row_start=0,
+                                    row_stop=1,
+                                    col_start=0,
+                                    col_stop=1,
+                                ),
+                            ),
+                            FigureGridSpecAxesState(
+                                axes_id="line-bottom",
+                                label="bottom",
+                                span=FigureGridSpecSpanState(
+                                    row_start=1,
+                                    row_stop=2,
+                                    col_start=0,
+                                    col_stop=1,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        ),
+    )
+    image_operation = FigureOperationState.plot_slices(
+        label="image cut",
+        sources=("image_source",),
+        axes=FigureAxesSelectionState(axes_ids=("image-axis",)),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"annotate": False, "cmap": "magma"})
+    line_slices_operation = FigureOperationState.plot_slices(
+        label="line cuts",
+        sources=("line_source",),
+        axes=FigureAxesSelectionState(axes_ids=("line-top", "line-bottom")),
+        slice_dim="eV",
+        slice_values=(-0.5, 0.5),
+    ).model_copy(
+        update={
+            "annotate": False,
+            "colorbar": "none",
+            "gradient": True,
+        }
+    )
+    erlab_method = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="clean_labels",
+        axes=FigureAxesSelectionState(
+            axes_ids=("image-axis", "line-top", "line-bottom")
+        ),
+    )
+    figure_method = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name="suptitle",
+        args=("Nested GridSpec",),
+    )
+    recipe = FigureRecipeState(
+        setup=setup,
+        sources=(
+            FigureSourceState(name="image_source", label="image"),
+            FigureSourceState(name="line_source", label="line map"),
+        ),
+        operations=(
+            image_operation,
+            line_slices_operation,
+            erlab_method,
+            figure_method,
+        ),
+        primary_source="image_source",
+    )
+    tool = FigureComposerTool(
+        image,
+        recipe=recipe,
+        source_data={"image_source": image, "line_source": line_map},
+    )
+    qtbot.addWidget(tool)
+
+    restored = _assert_serialized_plot_restores_exactly(tool, qtbot, tmp_path)
+    xr.testing.assert_identical(restored.source_data()["line_source"], line_map)
 
 
 def test_axes_selector_size_hint_tracks_grid(qtbot):

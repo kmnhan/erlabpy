@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import textwrap
 import typing
@@ -14,6 +15,8 @@ from qtpy import QtCore, QtGui, QtWidgets
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 # isort: on
+
+import xarray as xr
 
 import erlab
 from erlab.interactive._figurecomposer import _codegen, _rendering
@@ -51,6 +54,8 @@ from erlab.interactive._figurecomposer._operations._base import (
 from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
     _default_setup_for_data,
+    _source_data_from_blob,
+    _source_data_to_blob,
     _source_label,
     _source_name,
 )
@@ -81,7 +86,6 @@ from erlab.interactive.imagetool import provenance
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    import xarray as xr
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 
@@ -89,6 +93,9 @@ _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
 _MIXED_VALUES_TEXT = "(multiple values)"
 _MIXED_VALUE = object()
+_PERSISTED_SOURCE_MAP_ATTR = "_figure_composer_source_payloads"
+_PERSISTED_SOURCE_VAR_PREFIX = "_figure_composer_source_payload_"
+_PERSISTED_SOURCE_DIM_PREFIX = "_figure_composer_source_payload_bytes_"
 
 
 class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
@@ -870,11 +877,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._refresh_source_list()
             self._rebuild_axes_grid()
             self._refresh_operation_list()
+            if self.operation_list.count() and self.operation_list.currentRow() < 0:
+                self.operation_list.setCurrentRow(0)
+            self._update_operation_editor()
         finally:
             self._updating_controls = False
-        if self.operation_list.count() and self.operation_list.currentRow() < 0:
-            self.operation_list.setCurrentRow(0)
-        self._update_operation_editor()
 
     @staticmethod
     def _set_combo_value(combo: QtWidgets.QComboBox, value: str) -> None:
@@ -1566,11 +1573,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.sigInfoChanged.emit()
 
     def _update_current_operation(self, **updates: typing.Any) -> None:
+        if self._updating_controls:
+            return
         self._update_operations(
             lambda _index, operation: operation.model_copy(update=updates)
         )
 
     def _update_current_operation_rebuild(self, **updates: typing.Any) -> None:
+        if self._updating_controls:
+            return
         self._update_operations(
             lambda _index, operation: operation.model_copy(update=updates),
             rebuild_editor=True,
@@ -1578,6 +1589,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     def _update_current_operation_in_place(self, **updates: typing.Any) -> None:
+        if self._updating_controls:
+            return
         self._update_operations(
             lambda _index, operation: operation.model_copy(update=updates),
             render=False,
@@ -2348,10 +2361,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             QtCore.QCoreApplication.removePostedEvents(child)
         QtCore.QCoreApplication.removePostedEvents(widget)
 
+    @staticmethod
+    def _block_signals_recursive(widget: QtWidgets.QWidget) -> None:
+        widget.blockSignals(True)
+        for child in widget.findChildren(QtCore.QObject):
+            if erlab.interactive.utils.qt_is_valid(child):
+                child.blockSignals(True)
+
     def _retire_editor_widget(self, widget: QtWidgets.QWidget) -> None:
         if not erlab.interactive.utils.qt_is_valid(widget):
             return
-        widget.blockSignals(True)
+        self._block_signals_recursive(widget)
         widget.setEnabled(False)
         widget.hide()
         if widget not in self._retired_editor_widgets:
@@ -2796,11 +2816,75 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             for operation in status.operations
         )
         self._recipe = status.model_copy(update={"operations": operations})
+        self._ensure_primary_source_data()
         self._apply_recipe_to_controls()
         _rendering._render_preview(self)
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data = dict(source_data)
+
+    def _ensure_primary_source_data(self) -> None:
+        if self._recipe.primary_source in self._source_data or not self._source_data:
+            return
+        recipe_sources = {source.name for source in self._recipe.sources}
+        fallback_name, fallback_data = next(iter(self._source_data.items()))
+        self._source_data[self._recipe.primary_source] = fallback_data
+        if fallback_name not in recipe_sources:
+            del self._source_data[fallback_name]
+
+    def _append_persistence_payload(self, ds: xr.Dataset) -> xr.Dataset:
+        """Persist secondary figure sources without merging their coordinates."""
+        source_entries: list[dict[str, str]] = []
+        saved = ds.copy()
+        for index, (source_name, source_data) in enumerate(self._source_data.items()):
+            if source_name == self._recipe.primary_source:
+                continue
+            variable_name = f"{_PERSISTED_SOURCE_VAR_PREFIX}{index}"
+            saved[variable_name] = xr.DataArray(
+                _source_data_to_blob(source_data),
+                dims=(f"{_PERSISTED_SOURCE_DIM_PREFIX}{index}",),
+            )
+            source_entries.append(
+                {
+                    "source": source_name,
+                    "variable": variable_name,
+                }
+            )
+        if source_entries:
+            saved.attrs[_PERSISTED_SOURCE_MAP_ATTR] = json.dumps(source_entries)
+        return saved
+
+    def _restore_persistence_payload(self, ds: xr.Dataset) -> None:
+        payload_json = ds.attrs.get(_PERSISTED_SOURCE_MAP_ATTR)
+        if not isinstance(payload_json, str):
+            return
+        try:
+            payloads = json.loads(payload_json)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payloads, list):
+            return
+        source_data = dict(self._source_data)
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                continue
+            source_name = payload.get("source")
+            variable_name = payload.get("variable")
+            if (
+                not isinstance(source_name, str)
+                or not isinstance(variable_name, str)
+                or variable_name not in ds
+            ):
+                continue
+            try:
+                source_data[source_name] = _source_data_from_blob(
+                    ds[variable_name].values
+                )
+            except (OSError, TypeError, ValueError, KeyError):
+                continue
+        self.set_source_data(source_data)
+        self._apply_recipe_to_controls()
+        _rendering._render_preview(self, show_window=False)
 
     @property
     def preview_pixmap(self) -> QtGui.QPixmap | None:

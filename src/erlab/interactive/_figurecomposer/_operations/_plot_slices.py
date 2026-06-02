@@ -8,7 +8,7 @@ import typing
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
@@ -391,19 +391,26 @@ def _build_plot_slices_editor(
         cmap_combo = erlab.interactive.colors.ColorMapComboBox(cmap_widget)
         cmap_combo.setObjectName("figureComposerCmapCombo")
         cmap_combo.setToolTip("Colormap passed to plot_slices.")
-        cmap_combo.setCurrentText(cmap_base)
+        cmap_combo.default_cmap = cmap_base
+        with QtCore.QSignalBlocker(cmap_combo):
+            cmap_combo.ensure_populated()
+            cmap_combo.setCurrentText(cmap_base)
         cmap_reverse_check = QtWidgets.QCheckBox("Reverse", cmap_widget)
         cmap_reverse_check.setObjectName("figureComposerCmapReverseCheck")
-        cmap_reverse_check.setChecked(cmap_reversed)
+        with QtCore.QSignalBlocker(cmap_reverse_check):
+            cmap_reverse_check.setChecked(cmap_reversed)
         cmap_reverse_check.setToolTip("Append _r to the selected Matplotlib colormap.")
 
         def update_cmap_from_controls(*_args: object) -> None:
+            if tool._updating_controls:
+                return
             _update_current_cmap(
                 tool, cmap_combo.currentText(), cmap_reverse_check.isChecked()
             )
 
         cmap_combo.currentTextChanged.connect(update_cmap_from_controls)
         cmap_reverse_check.toggled.connect(update_cmap_from_controls)
+        cmap_combo.blockSignals(False)
         cmap_layout.addWidget(cmap_combo, 1)
         cmap_layout.addWidget(cmap_reverse_check)
         tool._add_form_row(
