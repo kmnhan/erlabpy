@@ -80,6 +80,243 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _AppendFigureTargetDialog(QtWidgets.QDialog):
+    """Prompt for a Figure Composer target figure and axes selection."""
+
+    def __init__(
+        self,
+        manager: ImageToolManager,
+        figure_uids: tuple[str, ...],
+        operation: typing.Any | None,
+    ) -> None:
+        from erlab.interactive._figurecomposer._widgets import (
+            _AxesSelectorWidget,
+            _GridSpecViewWidget,
+        )
+
+        super().__init__(manager)
+        self._manager = manager
+        self._figure_uids = figure_uids
+        self._operation = operation
+        self.setObjectName("managerAppendFigureTargetDialog")
+        self.setWindowTitle("Append to Figure")
+        self.setModal(True)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSizeConstraint(QtWidgets.QLayout.SizeConstraint.SetFixedSize)
+
+        form = QtWidgets.QFormLayout()
+        form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        layout.addLayout(form)
+
+        self.figure_combo = QtWidgets.QComboBox(self)
+        self.figure_combo.setObjectName("managerAppendFigureCombo")
+        for uid in figure_uids:
+            self.figure_combo.addItem(manager._child_node(uid).display_text, uid)
+        self.figure_combo.setVisible(len(figure_uids) > 1)
+        if len(figure_uids) > 1:
+            form.addRow("Figure", self.figure_combo)
+        else:
+            form.addRow(
+                "Figure",
+                QtWidgets.QLabel(
+                    manager._child_node(figure_uids[0]).display_text, self
+                ),
+            )
+
+        self.selector_stack = QtWidgets.QStackedWidget(self)
+        self.selector_stack.setObjectName("managerAppendAxesSelectorStack")
+        self.axes_selector = _AxesSelectorWidget(self)
+        self.axes_selector.setObjectName("managerAppendAxesSelector")
+        self.gridspec_axes_selector = _GridSpecViewWidget(self, mode="select")
+        self.gridspec_axes_selector.setObjectName("managerAppendGridSpecAxesSelector")
+        self.selector_stack.addWidget(self.axes_selector)
+        self.selector_stack.addWidget(self.gridspec_axes_selector)
+        form.addRow("Axes", self.selector_stack)
+
+        self.status_label = QtWidgets.QLabel(self)
+        self.status_label.setObjectName("managerAppendAxesStatusLabel")
+        layout.addWidget(self.status_label)
+
+        action_layout = QtWidgets.QHBoxLayout()
+        self.all_axes_button = QtWidgets.QToolButton(self)
+        self.all_axes_button.setObjectName("managerAppendAllAxesButton")
+        self.all_axes_button.setText("All axes")
+        self.all_axes_button.setToolTip("Select every available axes in this figure.")
+        action_layout.addWidget(self.all_axes_button)
+        self.clear_axes_button = QtWidgets.QToolButton(self)
+        self.clear_axes_button.setObjectName("managerAppendClearAxesButton")
+        self.clear_axes_button.setText("Clear")
+        self.clear_axes_button.setToolTip("Clear the current axes selection.")
+        action_layout.addWidget(self.clear_axes_button)
+        action_layout.addStretch(1)
+        layout.addLayout(action_layout)
+
+        self.button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel,
+            self,
+        )
+        self.button_box.setObjectName("managerAppendFigureButtonBox")
+        layout.addWidget(self.button_box)
+
+        self.figure_combo.currentIndexChanged.connect(self._figure_changed)
+        self.axes_selector.sigSelectionChanged.connect(self._selection_changed)
+        self.gridspec_axes_selector.sigSelectionChanged.connect(self._selection_changed)
+        self.all_axes_button.clicked.connect(self._select_all_axes)
+        self.clear_axes_button.clicked.connect(self._clear_axes)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        self._figure_changed()
+
+    def figure_uid(self) -> str:
+        uid = self.figure_combo.currentData()
+        if isinstance(uid, str):
+            return uid
+        return self._figure_uids[0]
+
+    def axes_selection(self) -> typing.Any | None:
+        from erlab.interactive._figurecomposer import FigureAxesSelectionState
+
+        tool = self._figure_tool()
+        if tool is None:
+            return None
+        setup = tool.tool_status.setup
+        if setup.layout_mode == "gridspec":
+            axes_ids = self.gridspec_axes_selector.selected_axes_ids()
+            if not axes_ids:
+                return None
+            return FigureAxesSelectionState(axes_ids=axes_ids)
+        axes = self.axes_selector.selected_axes()
+        if not axes:
+            return None
+        return FigureAxesSelectionState(axes=axes)
+
+    def selected_target(self) -> tuple[str, typing.Any] | None:
+        selection = self.axes_selection()
+        if selection is None:
+            return None
+        return self.figure_uid(), selection
+
+    @QtCore.Slot()
+    def _figure_changed(self) -> None:
+        tool = self._figure_tool()
+        if tool is None:
+            self._ok_button().setEnabled(False)
+            self.status_label.setText("The selected figure is unavailable.")
+            return
+        setup = tool.tool_status.setup
+        if setup.layout_mode == "gridspec":
+            from erlab.interactive._figurecomposer._gridspec import (
+                _gridspec_all_axes_ids,
+                _gridspec_axis_display_names,
+                _gridspec_valid_axes_ids,
+            )
+
+            axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+            labels = dict(
+                zip(
+                    axes_ids,
+                    _gridspec_axis_display_names(setup, axes_ids),
+                    strict=True,
+                )
+            )
+            self.gridspec_axes_selector.set_layout(setup.gridspec.root, labels)
+            self.selector_stack.setCurrentWidget(self.gridspec_axes_selector)
+            self.gridspec_axes_selector.set_selected_axes_ids(
+                self._default_gridspec_axes(axes_ids)
+            )
+        else:
+            labels = {
+                (row, col): f"{row}, {col}"
+                for row in range(setup.nrows)
+                for col in range(setup.ncols)
+            }
+            self.axes_selector.set_grid(setup.nrows, setup.ncols, labels)
+            self.selector_stack.setCurrentWidget(self.axes_selector)
+            self.axes_selector.set_selected_axes(
+                self._default_subplot_axes(
+                    self._manager._figure_all_axes(setup.nrows, setup.ncols)
+                )
+            )
+        self._selection_changed()
+
+    @QtCore.Slot()
+    def _selection_changed(self, *_args: typing.Any) -> None:
+        selection = self.axes_selection()
+        self._ok_button().setEnabled(selection is not None)
+        if selection is None:
+            self.status_label.setText("Select at least one target axes.")
+            return
+        count = len(selection.axes_ids) if selection.axes_ids else len(selection.axes)
+        suffix = "axis" if count == 1 else "axes"
+        self.status_label.setText(f"{count} target {suffix} selected.")
+
+    @QtCore.Slot()
+    def _select_all_axes(self) -> None:
+        tool = self._figure_tool()
+        if tool is None:
+            return
+        setup = tool.tool_status.setup
+        if setup.layout_mode == "gridspec":
+            from erlab.interactive._figurecomposer._gridspec import (
+                _gridspec_all_axes_ids,
+                _gridspec_valid_axes_ids,
+            )
+
+            self.gridspec_axes_selector.set_selected_axes_ids(
+                _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup)),
+                emit=True,
+            )
+        else:
+            self.axes_selector.set_selected_axes(
+                self._manager._figure_all_axes(setup.nrows, setup.ncols),
+                emit=True,
+            )
+
+    @QtCore.Slot()
+    def _clear_axes(self) -> None:
+        if self.selector_stack.currentWidget() is self.gridspec_axes_selector:
+            self.gridspec_axes_selector.set_selected_axes_ids((), emit=True)
+        else:
+            self.axes_selector.set_selected_axes((), emit=True)
+
+    def _figure_tool(self) -> typing.Any | None:
+        from erlab.interactive._figurecomposer import FigureComposerTool
+
+        if not self._manager._is_figure_uid(self.figure_uid()):
+            return None
+        tool = self._manager._child_node(self.figure_uid()).tool_window
+        return tool if isinstance(tool, FigureComposerTool) else None
+
+    def _ok_button(self) -> QtWidgets.QPushButton:
+        button = self.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        if button is None:
+            raise RuntimeError("Append dialog OK button is unavailable")
+        return button
+
+    def _default_subplot_axes(
+        self, axes: tuple[tuple[int, int], ...]
+    ) -> tuple[tuple[int, int], ...]:
+        if self._operation_defaults_to_all_axes() or len(axes) <= 1:
+            return axes
+        return axes[:1]
+
+    def _default_gridspec_axes(self, axes_ids: tuple[str, ...]) -> tuple[str, ...]:
+        if self._operation_defaults_to_all_axes() or len(axes_ids) <= 1:
+            return axes_ids
+        return axes_ids[:1]
+
+    def _operation_defaults_to_all_axes(self) -> bool:
+        if self._operation is None:
+            return True
+        from erlab.interactive._figurecomposer import FigureOperationKind
+
+        return self._operation.kind == FigureOperationKind.PLOT_SLICES
+
+
 class ImageToolManager(_ImageToolManagerBase):
     """The ImageToolManager window.
 
@@ -1246,36 +1483,10 @@ class ImageToolManager(_ImageToolManagerBase):
             show=show,
         )
 
-    def _append_figure_uid(self) -> str | None:
-        figure_uids = self._figure_uids()
-        if not figure_uids:
-            return None
-        if len(figure_uids) == 1:
-            return figure_uids[0]
-
-        labels = [self._child_node(uid).display_text for uid in figure_uids]
-        selected, accepted = QtWidgets.QInputDialog.getItem(
-            self,
-            "Append to Figure",
-            "Figure",
-            labels,
-            0,
-            False,
-        )
-        if not accepted:
-            return None
-        return figure_uids[labels.index(selected)]
-
-    def _append_axes_selection(
-        self, figure_uid: str, operation: typing.Any
-    ) -> typing.Any | None:
-        from erlab.interactive._figurecomposer import (
-            FigureAxesSelectionState,
-            FigureOperationKind,
-        )
+    def _append_single_axis_selection(self, figure_uid: str) -> typing.Any | None:
+        from erlab.interactive._figurecomposer import FigureAxesSelectionState
         from erlab.interactive._figurecomposer._gridspec import (
             _gridspec_all_axes_ids,
-            _gridspec_axis_display_names,
             _gridspec_valid_axes_ids,
         )
 
@@ -1285,68 +1496,36 @@ class ImageToolManager(_ImageToolManagerBase):
         setup = tool.tool_status.setup
         if setup.layout_mode == "gridspec":
             axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
-            if not axes_ids:
-                return None
             if len(axes_ids) == 1:
                 return FigureAxesSelectionState(axes_ids=axes_ids)
-            display_names = _gridspec_axis_display_names(setup, axes_ids)
-            label_counts = {
-                label: sum(item == label for item in display_names)
-                for label in display_names
-            }
-            labels = ["All axes"]
-            selections = [FigureAxesSelectionState(axes_ids=axes_ids)]
-            seen_labels = {"All axes"}
-            label_seen_count: dict[str, int] = {}
-            for axes_id, label in zip(axes_ids, display_names, strict=True):
-                label_seen_count[label] = label_seen_count.get(label, 0) + 1
-                display_label = label
-                if label_counts[label] > 1:
-                    display_label = f"{label} ({label_seen_count[label]})"
-                while display_label in seen_labels:
-                    label_seen_count[label] += 1
-                    display_label = f"{label} ({label_seen_count[label]})"
-                labels.append(display_label)
-                seen_labels.add(display_label)
-                selections.append(FigureAxesSelectionState(axes_ids=(axes_id,)))
-            current = 0 if operation.kind == FigureOperationKind.PLOT_SLICES else 1
-            selected, accepted = QtWidgets.QInputDialog.getItem(
-                self,
-                "Append to Figure",
-                "Axes",
-                labels,
-                current,
-                False,
-            )
-            if not accepted:
-                return None
-            return selections[labels.index(selected)]
-
+            return None
         all_axes = self._figure_all_axes(setup.nrows, setup.ncols)
         if len(all_axes) == 1:
             return FigureAxesSelectionState(axes=all_axes)
+        return None
 
-        choices: dict[str, tuple[tuple[int, int], ...]] = {
-            "All axes": all_axes,
-            **{
-                f"axs[{row}, {col}]": ((row, col),)
-                for row in range(setup.nrows)
-                for col in range(setup.ncols)
-            },
-        }
-        labels = list(choices)
-        current = 0 if operation.kind == FigureOperationKind.PLOT_SLICES else 1
-        selected, accepted = QtWidgets.QInputDialog.getItem(
-            self,
-            "Append to Figure",
-            "Axes",
-            labels,
-            current,
-            False,
-        )
-        if not accepted:
+    def _prompt_append_figure_target(
+        self, operation: typing.Any | None, *, figure_uid: str | None = None
+    ) -> tuple[str, typing.Any] | None:
+        figure_uids = self._figure_uids()
+        if not figure_uids:
             return None
-        return FigureAxesSelectionState(axes=choices[selected])
+        if figure_uid is not None:
+            if not self._is_figure_uid(figure_uid):
+                return None
+            automatic = self._append_single_axis_selection(figure_uid)
+            if automatic is not None:
+                return figure_uid, automatic
+            figure_uids = (figure_uid,)
+        elif len(figure_uids) == 1:
+            automatic = self._append_single_axis_selection(figure_uids[0])
+            if automatic is not None:
+                return figure_uids[0], automatic
+
+        dialog = _AppendFigureTargetDialog(self, tuple(figure_uids), operation)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        return dialog.selected_target()
 
     def append_figure_from_targets(
         self,
@@ -1360,15 +1539,6 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureComposerTool,
             FigureSourceState,
         )
-
-        resolved_figure_uid = figure_uid or self._append_figure_uid()
-        if resolved_figure_uid is None or not self._is_figure_uid(resolved_figure_uid):
-            return False
-
-        node = self._child_node(resolved_figure_uid)
-        tool = node.tool_window
-        if not isinstance(tool, FigureComposerTool):
-            return False
 
         resolved_targets = tuple(dict.fromkeys(targets))
         if not resolved_targets:
@@ -1384,6 +1554,16 @@ class ImageToolManager(_ImageToolManagerBase):
             source_data[source_model.name] = data
             sources.append(source_model)
 
+        prompt = self._prompt_append_figure_target(operation, figure_uid=figure_uid)
+        if prompt is None:
+            return False
+        resolved_figure_uid, axes_selection = prompt
+
+        node = self._child_node(resolved_figure_uid)
+        tool = node.tool_window
+        if not isinstance(tool, FigureComposerTool):
+            return False
+
         tool.add_sources(tuple(sources), source_data)
         operations = (
             (operation,)
@@ -1393,10 +1573,7 @@ class ImageToolManager(_ImageToolManagerBase):
             )
         )
         for appended in operations:
-            selection = self._append_axes_selection(resolved_figure_uid, appended)
-            if selection is None:
-                return False
-            tool.add_operation(appended.model_copy(update={"axes": selection}))
+            tool.add_operation(appended.model_copy(update={"axes": axes_selection}))
 
         self._mark_workspace_dirty(uid=resolved_figure_uid, state=True)
         self._select_figure_uid(resolved_figure_uid)
