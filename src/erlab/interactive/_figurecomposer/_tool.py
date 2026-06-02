@@ -1434,11 +1434,23 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._set_step_sections(sections)
 
     def _update_operation_editor_safely(self) -> None:
-        sender = self.sender()
-        if isinstance(sender, QtWidgets.QLineEdit):
+        if self._operation_editor_sender_requires_deferred_rebuild():
             self._queue_operation_editor_update()
             return
         self._update_operation_editor()
+
+    def _operation_editor_sender_requires_deferred_rebuild(self) -> bool:
+        sender = self.sender()
+        if not isinstance(sender, QtWidgets.QWidget):
+            return False
+        editor_roots = (
+            self.step_editor_stack,
+            self.step_source_controls,
+            self.source_list,
+            self.target_axes_page,
+            self.step_navigator,
+        )
+        return any(root is sender or root.isAncestorOf(sender) for root in editor_roots)
 
     def _queue_operation_editor_update(self) -> None:
         if self._operation_editor_update_pending:

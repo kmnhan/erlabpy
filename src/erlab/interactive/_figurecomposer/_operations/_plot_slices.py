@@ -124,6 +124,7 @@ def _build_plot_slices_editor(
         operation.slice_dim or "",
         lambda text: tool._update_current_operation_rebuild(slice_dim=text or None),
     )
+    dim_combo.setObjectName("figureComposerPlotSlicesDimensionCombo")
     tool._add_form_row(
         basic_layout,
         "Cut dimension",

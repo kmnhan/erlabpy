@@ -2014,6 +2014,15 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     )
 
     offset_source_combo.setCurrentText("manual")
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QComboBox, "figureComposerLineOffsetCoordinateCombo"
+            )
+            is None
+        ),
+        timeout=1000,
+    )
     line_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].line_offset_source == "manual"
     assert tool.tool_status.operations[0].line_offset_scale == 1.0
@@ -2037,6 +2046,15 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     )
     assert offset_source_combo is not None
     offset_source_combo.setCurrentText("index")
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerLineOffsetScaleEdit"
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
     line_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].line_offset_source == "index"
     assert (
@@ -2337,7 +2355,9 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
     assert tool.tool_status.operations[0].line_labels == ("profile B",)
 
 
-def test_figure_composer_line_edit_rebuilds_are_deferred(qtbot, monkeypatch) -> None:
+def test_figure_composer_editor_widget_rebuilds_are_deferred(
+    qtbot, monkeypatch
+) -> None:
     data = xr.DataArray(
         np.arange(8.0).reshape(2, 2, 2),
         dims=("eV", "kx", "ky"),
@@ -2377,6 +2397,19 @@ def test_figure_composer_line_edit_rebuilds_are_deferred(qtbot, monkeypatch) -> 
     values_edit.editingFinished.emit()
 
     assert tool.tool_status.operations[0].slice_values == (0.0, 1.0)
+    assert rebuild_calls == []
+    assert tool._operation_editor_update_pending is True
+    qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
+    assert tool._operation_editor_update_pending is False
+
+    dimension_combo = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
+    )
+    assert dimension_combo is not None
+    rebuild_calls.clear()
+    dimension_combo.setCurrentText("kx")
+
+    assert tool.tool_status.operations[0].slice_dim == "kx"
     assert rebuild_calls == []
     assert tool._operation_editor_update_pending is True
     qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
@@ -2491,8 +2524,17 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     )
 
     norm_combo.setCurrentText("CenteredInversePowerNorm")
-    colors_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].norm_name == "CenteredInversePowerNorm"
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerVcenterNormEdit"
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+    colors_page = tool.step_editor_stack.currentWidget()
     vcenter_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerVcenterNormEdit"
     )
@@ -2503,8 +2545,17 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
     norm_combo.setCurrentText("CenteredPowerNorm")
-    colors_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].norm_name == "CenteredPowerNorm"
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+    colors_page = tool.step_editor_stack.currentWidget()
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,
@@ -2554,8 +2605,21 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
     norm_combo.setCurrentText("Normalize")
-    colors_page = tool.step_editor_stack.currentWidget()
     assert tool.tool_status.operations[0].norm_name == "Normalize"
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerVminNormEdit"
+            )
+            is not None
+            and tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
+            )
+            is None
+        ),
+        timeout=1000,
+    )
+    colors_page = tool.step_editor_stack.currentWidget()
     assert (
         colors_page.findChild(
             erlab.interactive.colors.ColorMapGammaWidget,
