@@ -1,14 +1,53 @@
 """New pyqtgraph parameter types for user customization options.
 
 This module defines custom parameter types for use in the options dialog of the
-ImageTool. It includes a color list parameter and a custom colormap parameter.
+ImageTool. It includes list-style parameters and a custom colormap parameter.
 """
+
+import importlib
 
 import pyqtgraph as pg
 import pyqtgraph.parametertree
+from matplotlib import style as mpl_style
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+
+_STYLESHEET_AVAILABLE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
+_STYLESHEET_NAME_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2
+
+
+def _stylesheet_names(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, list | tuple):
+        value = [value]
+    seen: set[str] = set()
+    names: list[str] = []
+    for item in value:
+        name = str(item).strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
+def _available_stylesheets() -> list[str]:
+    return sorted(mpl_style.available)
+
+
+def _load_erlab_plotting_stylesheets() -> None:
+    importlib.import_module("erlab.plotting")
+
+
+class _StylesheetComboBox(QtWidgets.QComboBox):
+    sigPopupAboutToShow = QtCore.Signal()
+
+    def showPopup(self) -> None:
+        self.sigPopupAboutToShow.emit()
+        super().showPopup()
 
 
 class _SimpleColorButton(QtWidgets.QPushButton):
@@ -154,6 +193,199 @@ class ColorListParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter)
         state = super().saveState(filter)
         state["value"] = [c.getRgb() for c in self.value()]
         return state
+
+
+class StylesheetListWidget(QtWidgets.QWidget):
+    """Widget for editing an ordered list of Matplotlib stylesheets."""
+
+    sigStylesheetsChanged = QtCore.Signal(list)
+
+    def __init__(
+        self,
+        stylesheets: list[str] | None = None,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.stylesheets = _stylesheet_names(stylesheets)
+
+        layout = QtWidgets.QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(4)
+        layout.setVerticalSpacing(3)
+
+        self.add_combo = _StylesheetComboBox(self)
+        self.add_combo.setObjectName("matplotlibStylesheetCombo")
+        self.add_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.add_combo.setMinimumContentsLength(18)
+        self.add_combo.setToolTip("Available Matplotlib stylesheet to add.")
+        self.add_combo.sigPopupAboutToShow.connect(self._load_available_stylesheets)
+        layout.addWidget(self.add_combo, 0, 0)
+
+        self.add_button = QtWidgets.QToolButton(self)
+        self.add_button.setObjectName("matplotlibStylesheetAddButton")
+        self.add_button.setText("Add")
+        self.add_button.setToolTip("Add the selected stylesheet.")
+        self.add_button.clicked.connect(self.add_stylesheet)
+        layout.addWidget(self.add_button, 0, 1)
+
+        self.list_widget = QtWidgets.QListWidget(self)
+        self.list_widget.setObjectName("matplotlibStylesheetList")
+        self.list_widget.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.list_widget.setFixedHeight(88)
+        self.list_widget.currentRowChanged.connect(self._update_button_state)
+        layout.addWidget(self.list_widget, 1, 0, 1, 2)
+
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(3)
+        self.remove_button = QtWidgets.QToolButton(self)
+        self.remove_button.setObjectName("matplotlibStylesheetRemoveButton")
+        self.remove_button.setText("Remove")
+        self.remove_button.setToolTip("Remove the selected stylesheet.")
+        self.remove_button.clicked.connect(self.remove_selected_stylesheet)
+        button_layout.addWidget(self.remove_button)
+
+        self.up_button = QtWidgets.QToolButton(self)
+        self.up_button.setObjectName("matplotlibStylesheetMoveUpButton")
+        self.up_button.setText("Up")
+        self.up_button.setToolTip("Move the selected stylesheet earlier.")
+        self.up_button.clicked.connect(lambda: self.move_selected_stylesheet(-1))
+        button_layout.addWidget(self.up_button)
+
+        self.down_button = QtWidgets.QToolButton(self)
+        self.down_button.setObjectName("matplotlibStylesheetMoveDownButton")
+        self.down_button.setText("Down")
+        self.down_button.setToolTip("Move the selected stylesheet later.")
+        self.down_button.clicked.connect(lambda: self.move_selected_stylesheet(1))
+        button_layout.addWidget(self.down_button)
+        button_layout.addStretch(1)
+        layout.addLayout(button_layout, 2, 0, 1, 2)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        current_name = self.current_stylesheet()
+        self._refresh_list()
+        self._refresh_add_combo()
+        if current_name in self.stylesheets:
+            self.list_widget.setCurrentRow(self.stylesheets.index(current_name))
+        elif self.stylesheets:
+            self.list_widget.setCurrentRow(0)
+        self._update_button_state()
+        self.sigStylesheetsChanged.emit(self.stylesheets)
+
+    def _refresh_list(self) -> None:
+        available = set(_available_stylesheets())
+        self.list_widget.clear()
+        for name in self.stylesheets:
+            is_available = name in available
+            text = name if is_available else f"{name} (unavailable)"
+            item = QtWidgets.QListWidgetItem(text)
+            item.setData(_STYLESHEET_NAME_ROLE, name)
+            item.setData(_STYLESHEET_AVAILABLE_ROLE, is_available)
+            if is_available:
+                item.setToolTip("This stylesheet is available in this environment.")
+            else:
+                item.setForeground(QtGui.QBrush(QtGui.QColor("#a65f00")))
+                item.setToolTip(
+                    "This saved stylesheet is unavailable here and will be skipped."
+                )
+            self.list_widget.addItem(item)
+
+    def _refresh_add_combo(self) -> None:
+        current = self.add_combo.currentText()
+        selected = set(self.stylesheets)
+        choices = [name for name in _available_stylesheets() if name not in selected]
+        self.add_combo.blockSignals(True)
+        try:
+            self.add_combo.clear()
+            self.add_combo.addItems(choices)
+            if current in choices:
+                self.add_combo.setCurrentText(current)
+        finally:
+            self.add_combo.blockSignals(False)
+        self.add_button.setEnabled(bool(choices))
+
+    @QtCore.Slot()
+    def _load_available_stylesheets(self) -> None:
+        current = self.add_combo.currentText()
+        _load_erlab_plotting_stylesheets()
+        self._refresh_list()
+        self._refresh_add_combo()
+        if current:
+            self.add_combo.setCurrentText(current)
+
+    def _update_button_state(self, *_args) -> None:
+        row = self.list_widget.currentRow()
+        has_selection = 0 <= row < len(self.stylesheets)
+        self.remove_button.setEnabled(has_selection)
+        self.up_button.setEnabled(has_selection and row > 0)
+        self.down_button.setEnabled(has_selection and row < len(self.stylesheets) - 1)
+
+    def current_stylesheet(self) -> str | None:
+        item = self.list_widget.currentItem()
+        if item is None:
+            return None
+        return item.data(_STYLESHEET_NAME_ROLE)
+
+    def add_stylesheet(self) -> None:
+        name = self.add_combo.currentText().strip()
+        if not name or name in self.stylesheets:
+            return
+        self.stylesheets.append(name)
+        self._refresh()
+        self.list_widget.setCurrentRow(len(self.stylesheets) - 1)
+
+    def remove_selected_stylesheet(self) -> None:
+        row = self.list_widget.currentRow()
+        if not 0 <= row < len(self.stylesheets):
+            return
+        self.stylesheets.pop(row)
+        self._refresh()
+        if self.stylesheets:
+            self.list_widget.setCurrentRow(min(row, len(self.stylesheets) - 1))
+
+    def move_selected_stylesheet(self, offset: int) -> None:
+        row = self.list_widget.currentRow()
+        new_row = row + offset
+        if not 0 <= row < len(self.stylesheets) or not 0 <= new_row < len(
+            self.stylesheets
+        ):
+            return
+        self.stylesheets.insert(new_row, self.stylesheets.pop(row))
+        self._refresh()
+        self.list_widget.setCurrentRow(new_row)
+
+    def set_stylesheets(self, stylesheets: list[str]) -> None:
+        self.stylesheets = _stylesheet_names(stylesheets)
+        self._refresh()
+
+    def get_stylesheets(self) -> list[str]:
+        return list(self.stylesheets)
+
+
+class StylesheetListParameterItem(
+    pyqtgraph.parametertree.parameterTypes.WidgetParameterItem
+):
+    def makeWidget(self) -> StylesheetListWidget:
+        w = StylesheetListWidget()
+        w.sigChanged = w.sigStylesheetsChanged  # type: ignore[attr-defined]
+        w.value = w.get_stylesheets  # type: ignore[attr-defined]
+        w.setValue = w.set_stylesheets  # type: ignore[attr-defined]
+        self.hideWidget = False
+        return w
+
+
+class StylesheetListParameter(pyqtgraph.parametertree.parameterTypes.SimpleParameter):
+    itemClass = StylesheetListParameterItem
+
+    def __init__(self, **opts):
+        opts.setdefault("type", "matplotlib_stylesheets")
+        super().__init__(**opts)
 
 
 class _CustomColorMapParameterItem(

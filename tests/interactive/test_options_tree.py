@@ -47,3 +47,17 @@ def test_make_parameter_defaults_and_missing_child_continue() -> None:
     opts = parameter_to_options(param)
     assert isinstance(opts, AppOptions)
     assert opts.colors == AppOptions().colors
+
+
+def test_make_parameter_round_trips_figure_stylesheets() -> None:
+    options = AppOptions.model_validate(
+        {"figure": {"stylesheets": ["classic", "missing-style"]}}
+    )
+    param = make_parameter(options)
+
+    stylesheet_param = param.child("figure").child("stylesheets")
+    assert stylesheet_param.opts["type"] == "matplotlib_stylesheets"
+    assert stylesheet_param.value() == ["classic", "missing-style"]
+
+    opts = parameter_to_options(param)
+    assert opts.figure.stylesheets == ["classic", "missing-style"]

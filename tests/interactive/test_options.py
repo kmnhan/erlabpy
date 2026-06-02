@@ -121,14 +121,17 @@ def test_options_get_set():
     options["io/workspace/compress"] = False
     options["io/workspace/use_incremental"] = False
     options["io/workspace/incremental_save_on_remote"] = True
+    options["figure/stylesheets"] = ["classic", "missing-style"]
 
     # Check if the value was set correctly
     assert options["colors/cmap/name"] == "viridis"
     assert options["io/workspace/compress"] is False
     assert options["io/workspace/use_incremental"] is False
     assert options["io/workspace/incremental_save_on_remote"] is True
+    assert options["figure/stylesheets"] == ["classic", "missing-style"]
     assert not options.model.io.workspace.compress
     assert not options.model.io.workspace.use_incremental
     assert options.model.io.workspace.incremental_save_on_remote
+    assert options.model.figure.stylesheets == ["classic", "missing-style"]
 
     options.restore()  # Reset settings after test

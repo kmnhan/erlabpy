@@ -56,6 +56,7 @@ __all__ = [
     "AppOptions",
     "ColorMapOptions",
     "ColorOptions",
+    "FigureOptions",
     "IOOptions",
     "WorkspaceOptions",
 ]
@@ -70,6 +71,16 @@ def _unique_seq(seq: list[str]) -> list[str]:
             seen.add(x)
             out.append(x)
     return out
+
+
+def _str_list(value: typing.Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.split(",")
+    if not isinstance(value, list | tuple):
+        value = [value]
+    return _unique_seq([str(item).strip() for item in value if str(item).strip()])
 
 
 class KToolBZOptions(BaseModel):
@@ -337,6 +348,25 @@ class ColorOptions(BaseModel):
         return v
 
 
+class FigureOptions(BaseModel):
+    """Figure Composer defaults."""
+
+    stylesheets: list[str] = Field(
+        default_factory=list,
+        title="Stylesheets",
+        description=(
+            "Ordered Matplotlib stylesheets applied to Figure Composer plots. "
+            "Unavailable saved styles are kept and skipped until available again."
+        ),
+        json_schema_extra={"ui_type": "matplotlib_stylesheets"},
+    )
+
+    @field_validator("stylesheets", mode="before")
+    @classmethod
+    def split_stylesheets(cls, v: typing.Any) -> list[str]:
+        return _str_list(v)
+
+
 class AppOptions(BaseModel):
     """Root configuration model for interactive tool options."""
 
@@ -354,4 +384,9 @@ class AppOptions(BaseModel):
         default_factory=KToolOptions,
         title="ktool",
         description="Momentum conversion tool defaults.",
+    )
+    figure: FigureOptions = Field(
+        default_factory=FigureOptions,
+        title="Figure Composer",
+        description="Matplotlib Figure Composer defaults.",
     )
