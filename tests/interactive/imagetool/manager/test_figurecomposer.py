@@ -3175,6 +3175,53 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert axs[0, 1].get_aspect() == 2.5
 
 
+def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_profile_source("data"))
+    qtbot.addWidget(tool)
+
+    axis = tool.figure.axes[0]
+    expected_xlim = tuple(float(value) for value in axis.get_xlim())
+    expected_ylim = tuple(float(value) for value in axis.get_ylim())
+
+    tool._add_operation("method:axes")
+    figurecomposer_method._update_current_method_name(tool, "set_xlim")
+    tool._select_step_section("method")
+    qtbot.wait_until(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
+            )
+            is not None
+        ),
+        timeout=5000,
+    )
+    limits_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
+    )
+    assert limits_edit is not None
+    assert tool.tool_status.operations[-1].method_args == pytest.approx(expected_xlim)
+    assert limits_edit.text() == f"{expected_xlim[0]:g}, {expected_xlim[1]:g}"
+
+    tool._add_operation("method:axes")
+    figurecomposer_method._update_current_method_name(tool, "set_ylim")
+    tool._select_step_section("method")
+    qtbot.wait_until(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
+            )
+            is not None
+        ),
+        timeout=5000,
+    )
+    limits_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodLimitsEdit"
+    )
+    assert limits_edit is not None
+    assert tool.tool_status.operations[-1].method_args == pytest.approx(expected_ylim)
+    assert limits_edit.text() == f"{expected_ylim[0]:g}, {expected_ylim[1]:g}"
+
+
 def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),

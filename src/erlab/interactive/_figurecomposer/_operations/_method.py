@@ -65,11 +65,16 @@ import enum
 import typing
 
 import matplotlib.scale
+import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
+from erlab.interactive._figurecomposer._gridspec import (
+    _gridspec_all_axes_ids,
+    _gridspec_valid_axes_ids,
+)
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
@@ -801,7 +806,6 @@ AXES_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs ax.set_xlim on every selected axis.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
-        default_args=(0.0, 1.0),
         controls=(
             _float_pair_args(
                 "Limits",
@@ -817,7 +821,6 @@ AXES_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs ax.set_ylim on every selected axis.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
-        default_args=(0.0, 1.0),
         controls=(
             _float_pair_args(
                 "Limits",
@@ -1898,6 +1901,70 @@ def _method_label(operation: FigureOperationState) -> str:
     return _method_spec(operation).label
 
 
+def _live_layout_axes(
+    tool: FigureComposerTool,
+) -> np.ndarray | dict[str, Axes] | None:
+    setup = tool._recipe.setup
+    if setup.layout_mode == "gridspec":
+        axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+        axes = tool.figure.axes[: len(axes_ids)]
+        if len(axes) < len(axes_ids):
+            return None
+        return dict(zip(axes_ids, axes, strict=True))
+
+    count = setup.nrows * setup.ncols
+    axes = tool.figure.axes[:count]
+    if len(axes) < count:
+        return None
+    return np.asarray(axes, dtype=object).reshape(setup.nrows, setup.ncols)
+
+
+def _first_live_axis(
+    tool: FigureComposerTool, selection: FigureAxesSelectionState
+) -> Axes | None:
+    layout_axes = _live_layout_axes(tool)
+    if layout_axes is None:
+        return None
+    if isinstance(layout_axes, dict) and not selection.axes_ids:
+        selection = selection.model_copy(
+            update={
+                "axes_ids": _gridspec_valid_axes_ids(
+                    tool._recipe.setup, _gridspec_all_axes_ids(tool._recipe.setup)
+                )[:1]
+            }
+        )
+    try:
+        selected_axes = _rendering._axes_from_selection(
+            tool, selection, layout_axes, for_plot_slices=False
+        )
+    except (IndexError, TypeError, ValueError):
+        return None
+    axes = _rendering._iter_axes(selected_axes)
+    return axes[0] if axes else None
+
+
+def _limit_method_default_args(
+    tool: FigureComposerTool,
+    spec: MethodSpec,
+    axes: FigureAxesSelectionState,
+) -> tuple[typing.Any, ...]:
+    axis = _first_live_axis(tool, axes)
+    if axis is None:
+        return ()
+    limits = axis.get_xlim() if spec.name == "set_xlim" else axis.get_ylim()
+    return float(limits[0]), float(limits[1])
+
+
+def _default_method_args(
+    tool: FigureComposerTool,
+    spec: MethodSpec,
+    axes: FigureAxesSelectionState,
+) -> tuple[typing.Any, ...]:
+    if spec.family == FigureMethodFamily.AXES and spec.name in {"set_xlim", "set_ylim"}:
+        return _limit_method_default_args(tool, spec, axes)
+    return spec.default_args
+
+
 def _method_operation(
     tool: FigureComposerTool, family: FigureMethodFamily
 ) -> FigureOperationState:
@@ -1912,7 +1979,7 @@ def _method_operation(
         name=spec.name,
         label=spec.label,
         axes=axes,
-        args=spec.default_args,
+        args=_default_method_args(tool, spec, axes),
     )
 
 
@@ -2308,7 +2375,7 @@ def _add_method_control_row(
         case MethodControlKind.FLOAT_PAIR_ARGS:
             text, mixed = tool._batch_text(
                 operation,
-                lambda target: _method_float_pair_args(target, spec),
+                lambda target: _method_float_pair_args(tool, target, spec),
                 _format_pair,
             )
             edit = tool._line_edit(text, parent=layout.parentWidget())
@@ -2534,9 +2601,9 @@ def _method_arg_value(
 
 
 def _method_float_pair_args(
-    operation: FigureOperationState, spec: MethodSpec
+    tool: FigureComposerTool, operation: FigureOperationState, spec: MethodSpec
 ) -> tuple[float, float] | None:
-    args = _method_args(operation, spec)
+    args = _method_args(operation, spec, tool)
     if len(args) < 2:
         return None
     return float(args[0]), float(args[1])
@@ -2821,7 +2888,7 @@ def _update_current_method_family(
         label=spec.label,
         method_family=family,
         method_name=spec.name,
-        method_args=spec.default_args,
+        method_args=_default_method_args(tool, spec, axes),
         method_kwargs={},
         method_call_policy=None,
         text_values=(),
@@ -2844,7 +2911,7 @@ def _update_current_method_name(tool: FigureComposerTool, name: str) -> None:
     tool._update_current_operation_rebuild(
         label=spec.label,
         method_name=spec.name,
-        method_args=spec.default_args,
+        method_args=_default_method_args(tool, spec, axes),
         method_kwargs={},
         method_call_policy=None,
         text_values=(),
@@ -2952,9 +3019,19 @@ def _update_current_method_text_values(tool: FigureComposerTool, text: str) -> N
 
 
 def _method_args(
-    operation: FigureOperationState, spec: MethodSpec
+    operation: FigureOperationState,
+    spec: MethodSpec,
+    tool: FigureComposerTool | None = None,
 ) -> tuple[typing.Any, ...]:
-    return operation.method_args or spec.default_args
+    if operation.method_args:
+        return operation.method_args
+    if (
+        tool is not None
+        and spec.family == FigureMethodFamily.AXES
+        and spec.name in {"set_xlim", "set_ylim"}
+    ):
+        return _limit_method_default_args(tool, spec, operation.axes)
+    return spec.default_args
 
 
 def _label_values(operation: FigureOperationState) -> str | list[str]:
@@ -2967,12 +3044,13 @@ def _label_values(operation: FigureOperationState) -> str | list[str]:
 
 
 def _render_args_kwargs(
+    tool: FigureComposerTool,
     operation: FigureOperationState,
     spec: MethodSpec,
     *,
     axis: Axes | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-    args = list(_method_args(operation, spec))
+    args = list(_method_args(operation, spec, tool))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
@@ -2995,12 +3073,13 @@ def _render_args_kwargs(
 
 
 def _code_args_kwargs(
+    tool: FigureComposerTool,
     operation: FigureOperationState,
     spec: MethodSpec,
     *,
     axis_transform: str | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
-    args = list(_method_args(operation, spec))
+    args = list(_method_args(operation, spec, tool))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
@@ -3045,32 +3124,32 @@ def _render_method(
             if axes is None:
                 return
             for axis in _rendering._iter_axes(axes):
-                args, kwargs = _render_args_kwargs(operation, spec, axis=axis)
+                args, kwargs = _render_args_kwargs(tool, operation, spec, axis=axis)
                 getattr(axis, spec.call_name)(*args, **kwargs)
         case MethodCallPolicy.AXES_POSITIONAL:
             if axes is None:
                 return
-            args, kwargs = _render_args_kwargs(operation, spec)
+            args, kwargs = _render_args_kwargs(tool, operation, spec)
             _erlab_callable(spec)(axes, *args, **kwargs)
         case MethodCallPolicy.AX_KEYWORD:
             if axes is None:
                 return
-            args, kwargs = _render_args_kwargs(operation, spec)
+            args, kwargs = _render_args_kwargs(tool, operation, spec)
             _erlab_callable(spec)(*args, ax=axes, **kwargs)
         case MethodCallPolicy.EACH_AXIS_AX_KEYWORD:
             if axes is None:
                 return
-            args, kwargs = _render_args_kwargs(operation, spec)
+            args, kwargs = _render_args_kwargs(tool, operation, spec)
             for axis in _rendering._iter_axes(axes):
                 _erlab_callable(spec)(*args, ax=axis, **kwargs)
         case MethodCallPolicy.BOUND_FIGURE:
-            args, kwargs = _render_args_kwargs(operation, spec)
+            args, kwargs = _render_args_kwargs(tool, operation, spec)
             getattr(figure, spec.call_name)(*args, **kwargs)
         case MethodCallPolicy.FIG_KEYWORD:
-            args, kwargs = _render_args_kwargs(operation, spec)
+            args, kwargs = _render_args_kwargs(tool, operation, spec)
             _erlab_callable(spec)(*args, fig=figure, **kwargs)
         case MethodCallPolicy.PLAIN_CALL:
-            args, kwargs = _render_args_kwargs(operation, spec)
+            args, kwargs = _render_args_kwargs(tool, operation, spec)
             _erlab_callable(spec)(*args, **kwargs)
 
 
@@ -3091,7 +3170,7 @@ def _method_code(
     match call_policy:
         case MethodCallPolicy.BOUND_EACH_AXIS:
             args, kwargs = _code_args_kwargs(
-                operation, spec, axis_transform="ax.transAxes"
+                tool, operation, spec, axis_transform="ax.transAxes"
             )
             call = _call_code(f"ax.{spec.call_name}", args, kwargs)
             return [
@@ -3100,18 +3179,18 @@ def _method_code(
             ]
         case MethodCallPolicy.AXES_POSITIONAL:
             axes_code = _axes_code(tool, operation.axes, for_plot_slices=False)
-            args, kwargs = _code_args_kwargs(operation, spec)
+            args, kwargs = _code_args_kwargs(tool, operation, spec)
             args_text = _code_args((_RawCode(axes_code), *args))
             kwargs_text = _code_kwargs(kwargs)
             parts = [part for part in (args_text, kwargs_text) if part]
             return [f"eplt.{spec.call_name}({', '.join(parts)})"]
         case MethodCallPolicy.AX_KEYWORD:
             axes_code = _axes_code(tool, operation.axes, for_plot_slices=False)
-            args, kwargs = _code_args_kwargs(operation, spec)
+            args, kwargs = _code_args_kwargs(tool, operation, spec)
             kwargs["ax"] = _RawCode(axes_code)
             return [f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"]
         case MethodCallPolicy.EACH_AXIS_AX_KEYWORD:
-            args, kwargs = _code_args_kwargs(operation, spec)
+            args, kwargs = _code_args_kwargs(tool, operation, spec)
             kwargs["ax"] = _RawCode("ax")
             call = f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"
             return [
@@ -3119,14 +3198,14 @@ def _method_code(
                 f"    {call}",
             ]
         case MethodCallPolicy.BOUND_FIGURE:
-            args, kwargs = _code_args_kwargs(operation, spec)
+            args, kwargs = _code_args_kwargs(tool, operation, spec)
             return [_call_code(f"fig.{spec.call_name}", args, kwargs)]
         case MethodCallPolicy.FIG_KEYWORD:
-            args, kwargs = _code_args_kwargs(operation, spec)
+            args, kwargs = _code_args_kwargs(tool, operation, spec)
             kwargs["fig"] = _RawCode("fig")
             return [f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"]
         case MethodCallPolicy.PLAIN_CALL:
-            args, kwargs = _code_args_kwargs(operation, spec)
+            args, kwargs = _code_args_kwargs(tool, operation, spec)
             return [f"eplt.{spec.call_name}({_call_parts(args, kwargs)})"]
 
 
