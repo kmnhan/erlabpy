@@ -1297,10 +1297,15 @@ class ImageToolManager(_ImageToolManagerBase):
             labels = ["All axes"]
             selections = [FigureAxesSelectionState(axes_ids=axes_ids)]
             seen_labels = {"All axes"}
+            label_seen_count: dict[str, int] = {}
             for axes_id, label in zip(axes_ids, display_names, strict=True):
+                label_seen_count[label] = label_seen_count.get(label, 0) + 1
                 display_label = label
-                if label_counts[label] > 1 or display_label in seen_labels:
-                    display_label = f"{label} ({axes_id[:8]})"
+                if label_counts[label] > 1:
+                    display_label = f"{label} ({label_seen_count[label]})"
+                while display_label in seen_labels:
+                    label_seen_count[label] += 1
+                    display_label = f"{label} ({label_seen_count[label]})"
                 labels.append(display_label)
                 seen_labels.add(display_label)
                 selections.append(FigureAxesSelectionState(axes_ids=(axes_id,)))

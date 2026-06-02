@@ -5822,6 +5822,8 @@ def test_manager_append_to_gridspec_figure_uses_axes_ids(
             _current: int,
             _editable: bool,
         ) -> tuple[str, bool]:
+            assert items == ["All axes", "panel (1)", "panel (2)"]
+            assert not any("axis-" in item for item in items)
             return items[2], True
 
         monkeypatch.setattr(QtWidgets.QInputDialog, "getItem", choose_second_axis)
