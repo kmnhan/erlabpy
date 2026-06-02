@@ -607,6 +607,7 @@ def _update_current_norm_name(tool: FigureComposerTool, name: str) -> None:
         index,
         operation.model_copy(update=updates),
         rebuild_editor=True,
+        defer_editor_rebuild=True,
     )
 
 
@@ -631,6 +632,7 @@ def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
         index,
         operation.model_copy(update=updates),
         rebuild_editor=True,
+        defer_editor_rebuild=True,
     )
 
 

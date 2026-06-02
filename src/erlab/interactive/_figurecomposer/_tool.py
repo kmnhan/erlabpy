@@ -61,6 +61,10 @@ if typing.TYPE_CHECKING:
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 
+_OPERATION_EDITOR_UPDATE_DELAY_MS = 25
+_RETIRED_EDITOR_DRAIN_DELAY_MS = 100
+
+
 class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     """Editable Matplotlib figure recipe window."""
 
@@ -80,6 +84,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._updating_controls = False
         self._rendering = False
         self._operation_editor_update_pending = False
+        self._retired_editor_drain_pending = False
+        self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
         self._figure_window: _FigureComposerDisplayWindow | None = None
@@ -886,6 +892,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         *,
         render: bool = True,
         rebuild_editor: bool = False,
+        defer_editor_rebuild: bool = False,
         sync_axes: bool = True,
     ) -> None:
         operations = list(self._recipe.operations)
@@ -899,7 +906,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_step_section_button_texts()
         self._update_source_status(operation)
         if rebuild_editor:
-            self._update_operation_editor_safely()
+            if defer_editor_rebuild:
+                self._queue_operation_editor_update()
+            else:
+                self._update_operation_editor_safely()
         if render:
             _rendering._render_preview(self)
             self.sigInfoChanged.emit()
@@ -920,6 +930,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             index,
             operation.model_copy(update=updates),
             rebuild_editor=True,
+            defer_editor_rebuild=True,
         )
 
     def _update_current_operation_in_place(self, **updates: typing.Any) -> None:
@@ -1257,19 +1268,78 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
 
     @staticmethod
-    def _clear_form_layout(layout: QtWidgets.QFormLayout) -> None:
+    def _remove_posted_events_recursive(widget: QtWidgets.QWidget) -> None:
+        for child in widget.findChildren(QtCore.QObject):
+            QtCore.QCoreApplication.removePostedEvents(child)
+        QtCore.QCoreApplication.removePostedEvents(widget)
+
+    def _retire_editor_widget(self, widget: QtWidgets.QWidget) -> None:
+        if not erlab.interactive.utils.qt_is_valid(widget):
+            return
+        widget.blockSignals(True)
+        widget.setEnabled(False)
+        widget.hide()
+        if widget not in self._retired_editor_widgets:
+            self._retired_editor_widgets.append(widget)
+        self._queue_retired_editor_drain()
+
+    def _queue_retired_editor_drain(self) -> None:
+        if self._retired_editor_drain_pending:
+            return
+        self._retired_editor_drain_pending = True
+        erlab.interactive.utils.single_shot(
+            self,
+            _RETIRED_EDITOR_DRAIN_DELAY_MS,
+            self._drain_retired_editor_widgets,
+        )
+
+    def _drain_retired_editor_widgets(self) -> None:
+        self._retired_editor_drain_pending = False
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        if (
+            not self._retired_editor_widgets
+            or self._operation_editor_rebuild_must_wait()
+            or self._retired_editor_has_focus()
+        ):
+            if self._retired_editor_widgets:
+                self._queue_retired_editor_drain()
+            return
+
+        retired_widgets = self._retired_editor_widgets
+        self._retired_editor_widgets = []
+        for widget in retired_widgets:
+            if not erlab.interactive.utils.qt_is_valid(widget):
+                continue
+            self._remove_posted_events_recursive(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+
+    def _retired_editor_has_focus(self) -> bool:
+        focus_widget = QtWidgets.QApplication.focusWidget()
+        return (
+            focus_widget is not None
+            and erlab.interactive.utils.qt_is_valid(focus_widget)
+            and any(
+                widget is focus_widget or widget.isAncestorOf(focus_widget)
+                for widget in self._retired_editor_widgets
+                if erlab.interactive.utils.qt_is_valid(widget)
+            )
+        )
+
+    def _clear_form_layout(self, layout: QtWidgets.QFormLayout) -> None:
         while layout.count():
             item = layout.takeAt(0)
             if item is None:
                 continue
             widget = item.widget()
             if widget is not None:
-                widget.deleteLater()
+                self._retire_editor_widget(widget)
 
     def _clear_operation_editor(self) -> None:
         for page in self._operation_editor_pages:
             self.step_editor_stack.removeWidget(page)
-            page.deleteLater()
+            self._retire_editor_widget(page)
         self._operation_editor_pages.clear()
 
     def _clear_step_source_controls(self) -> None:
@@ -1295,7 +1365,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 continue
             widget = item.widget()
             if widget is not None:
-                widget.deleteLater()
+                self._retire_editor_widget(widget)
         self.step_section_buttons.clear()
         self.step_section_keys = [section.key for section in sections]
 
@@ -1456,13 +1526,28 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._operation_editor_update_pending:
             return
         self._operation_editor_update_pending = True
+        self._schedule_queued_operation_editor_update()
 
-        def update_editor() -> None:
-            self._operation_editor_update_pending = False
-            if erlab.interactive.utils.qt_is_valid(self):
-                self._update_operation_editor()
+    def _schedule_queued_operation_editor_update(self) -> None:
+        erlab.interactive.utils.single_shot(
+            self,
+            _OPERATION_EDITOR_UPDATE_DELAY_MS,
+            self._run_queued_operation_editor_update,
+        )
 
-        erlab.interactive.utils.single_shot(self, 0, update_editor)
+    def _run_queued_operation_editor_update(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        if self._operation_editor_rebuild_must_wait():
+            self._schedule_queued_operation_editor_update()
+            return
+        self._operation_editor_update_pending = False
+        self._update_operation_editor()
+
+    @staticmethod
+    def _operation_editor_rebuild_must_wait() -> bool:
+        popup = QtWidgets.QApplication.activePopupWidget()
+        return popup is not None and erlab.interactive.utils.qt_is_valid(popup)
 
     def _line_edit(
         self, text: str, *, parent: QtWidgets.QWidget | None = None

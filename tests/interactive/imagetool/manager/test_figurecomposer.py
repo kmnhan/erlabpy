@@ -2402,6 +2402,29 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
     assert tool._operation_editor_update_pending is False
 
+    active_popup: list[QtWidgets.QWidget | None] = [QtWidgets.QMenu(tool)]
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "activePopupWidget",
+        staticmethod(lambda: active_popup[0]),
+    )
+    rebuild_calls.clear()
+    values_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
+    )
+    assert values_edit is not None
+    values_edit.setText("1")
+    values_edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].slice_values == (1.0,)
+    assert tool._operation_editor_update_pending is True
+    qtbot.wait(100)
+    assert rebuild_calls == []
+
+    active_popup[0] = None
+    qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
+    assert tool._operation_editor_update_pending is False
+
     dimension_combo = tool.step_editor_stack.currentWidget().findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
@@ -2414,6 +2437,57 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     assert tool._operation_editor_update_pending is True
     qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
     assert tool._operation_editor_update_pending is False
+
+
+def test_figure_composer_retired_editor_widgets_drain_after_popup(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(8.0).reshape(2, 2, 2),
+        dims=("eV", "kx", "ky"),
+        coords={"eV": [0.0, 1.0], "kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="cuts",
+                    sources=("data",),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("cuts")
+    old_page = tool.step_editor_stack.currentWidget()
+    active_popup: list[QtWidgets.QWidget | None] = [None]
+    monkeypatch.setattr(
+        QtWidgets.QApplication,
+        "activePopupWidget",
+        staticmethod(lambda: active_popup[0]),
+    )
+
+    tool._update_current_operation_rebuild(slice_values=(0.0, 1.0))
+    qtbot.waitUntil(lambda: old_page in tool._retired_editor_widgets, timeout=1000)
+    active_popup[0] = QtWidgets.QMenu(tool)
+
+    qtbot.wait(150)
+    assert old_page in tool._retired_editor_widgets
+    assert erlab.interactive.utils.qt_is_valid(old_page)
+
+    active_popup[0] = None
+    qtbot.waitUntil(lambda: not tool._retired_editor_widgets, timeout=1000)
+    qtbot.waitUntil(
+        lambda: not erlab.interactive.utils.qt_is_valid(old_page),
+        timeout=1000,
+    )
 
 
 def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
