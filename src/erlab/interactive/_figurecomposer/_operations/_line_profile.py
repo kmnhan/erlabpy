@@ -158,12 +158,19 @@ def _build_line_editor(
     page, layout = tool._new_step_form_page("figureComposerLinePage")
     tool.operation_editor = page
     tool.operation_editor_layout = layout
+    coordinate_options = _available_line_coordinate_names(tool, operation)
+    coordinate_options_match = tool._batch_options_match(
+        operation, lambda target: _available_line_coordinate_names(tool, target)
+    )
+    coordinate_mixed = tool._batch_is_mixed(operation, lambda target: target.line_x)
     coordinate_combo = tool._optional_name_combo(
-        _available_line_coordinate_names(tool, operation),
-        operation.line_x,
+        coordinate_options,
+        None if coordinate_mixed else operation.line_x,
         "Automatic profile coordinate",
         lambda value: tool._update_current_operation(line_x=value),
         parent=page,
+        mixed=coordinate_mixed,
+        enabled=coordinate_options_match,
     )
     coordinate_combo.setObjectName("figureComposerProfileCoordinateCombo")
     tool._add_form_row(
@@ -172,15 +179,27 @@ def _build_line_editor(
         coordinate_combo,
         "Coordinate along each profile.\n"
         "Automatic: use the only remaining dimension.\n"
-        "Data values axis decides where this coordinate is drawn.",
+        "Data values axis decides where this coordinate is drawn."
+        + (
+            "\nDisabled while selected steps have different valid choices."
+            if not coordinate_options_match
+            else ""
+        ),
     )
 
+    value_options = _available_line_value_names(tool, operation)
+    value_options_match = tool._batch_options_match(
+        operation, lambda target: _available_line_value_names(tool, target)
+    )
+    value_mixed = tool._batch_is_mixed(operation, lambda target: target.line_y)
     values_combo = tool._optional_name_combo(
-        _available_line_value_names(tool, operation),
-        operation.line_y,
+        value_options,
+        None if value_mixed else operation.line_y,
         "Data array values",
         lambda value: tool._update_current_operation_rebuild(line_y=value),
         parent=page,
+        mixed=value_mixed,
+        enabled=value_options_match,
     )
     values_combo.setObjectName("figureComposerProfileValuesCombo")
     tool._add_form_row(
@@ -189,14 +208,20 @@ def _build_line_editor(
         values_combo,
         "Values plotted from the selected profile.\n"
         "Data array values: use the selected data itself.\n"
-        "Choose a coordinate to plot that coordinate instead.",
+        "Choose a coordinate to plot that coordinate instead."
+        + (
+            "\nDisabled while selected steps have different valid choices."
+            if not value_options_match
+            else ""
+        ),
     )
 
-    for label, attr, value, tooltip, object_name in (
+    for label, attr, getter, formatter, tooltip, object_name in (
         (
             "Legend labels",
             "line_labels",
-            _format_string_tuple(operation.line_labels),
+            lambda target: target.line_labels,
+            lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
             "Optional legend labels.\n"
             "Use one value for every profile, or one value per profile.",
             "figureComposerLineLabelsEdit",
@@ -204,44 +229,68 @@ def _build_line_editor(
         (
             "Color",
             "line_color",
-            operation.line_color or "",
+            lambda target: target.line_color,
+            lambda value: "" if value is None else str(value),
             "Shared Matplotlib color for every profile.",
             "figureComposerLineColorEdit",
         ),
         (
             "Profile colors",
             "line_colors",
-            _format_string_tuple(operation.line_colors),
+            lambda target: target.line_colors,
+            lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
             "Optional per-profile Matplotlib colors.\n"
             "Use comma-separated values or a Python list literal.",
             "figureComposerLineColorsEdit",
         ),
     ):
-        edit = tool._line_edit(value)
+        text, mixed = tool._batch_text(operation, getter, formatter)
+        edit = tool._line_edit(text)
+        tool._apply_mixed_line_edit(edit, mixed)
         edit.setObjectName(object_name)
         if attr == "line_labels":
             edit.editingFinished.connect(
-                lambda edit=edit: _update_current_line_labels(tool, edit.text())
+                lambda edit=edit: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_line_labels(tool, edit.text())
+                )
             )
         elif attr == "line_colors":
             edit.editingFinished.connect(
-                lambda edit=edit: tool._update_current_operation(
-                    line_colors=_string_tuple_from_text(edit.text())
+                lambda edit=edit: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else tool._update_current_operation(
+                        line_colors=_string_tuple_from_text(edit.text())
+                    )
                 )
             )
         else:
             edit.editingFinished.connect(
-                lambda edit=edit: tool._update_current_operation(
-                    line_color=edit.text().strip() or None
+                lambda edit=edit: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else tool._update_current_operation(
+                        line_color=edit.text().strip() or None
+                    )
                 )
             )
         tool._add_form_row(tool.operation_editor_layout, label, edit, tooltip)
 
-    selection_edit = tool._line_edit(_format_dict(operation.line_selection))
+    selection_text, selection_mixed = tool._batch_text(
+        operation, lambda target: target.line_selection, _format_dict
+    )
+    selection_edit = tool._line_edit(selection_text)
+    tool._apply_mixed_line_edit(selection_edit, selection_mixed)
     selection_edit.setObjectName("figureComposerLineSelectionEdit")
     selection_edit.editingFinished.connect(
-        lambda edit=selection_edit: tool._update_current_operation(
-            line_selection=_dict_from_text(edit.text())
+        lambda edit=selection_edit: (
+            None
+            if tool._line_edit_batch_unchanged(edit)
+            else tool._update_current_operation(
+                line_selection=_dict_from_text(edit.text())
+            )
         )
     )
     tool._add_form_row(
@@ -251,33 +300,55 @@ def _build_line_editor(
         "Dict literal or keyword arguments used to select data.",
     )
 
-    iter_dim_combo = tool._combo(
-        [
+    iter_dim_options = [
+        "",
+        *_available_source_dims(tool._source_data, (operation.line_source or "",)),
+    ]
+    iter_dim_options_match = tool._batch_options_match(
+        operation,
+        lambda target: [
             "",
-            *_available_source_dims(tool._source_data, (operation.line_source or "",)),
+            *_available_source_dims(tool._source_data, (target.line_source or "",)),
         ],
-        operation.line_iter_dim or "",
+    )
+    iter_dim_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_iter_dim
+    )
+    iter_dim_combo = tool._combo(
+        iter_dim_options,
+        None if iter_dim_mixed else operation.line_iter_dim or "",
         lambda text: tool._update_current_operation_rebuild(line_iter_dim=text or None),
         parent=page,
+        mixed=iter_dim_mixed,
+        enabled=iter_dim_options_match,
     )
     tool._add_form_row(
         tool.operation_editor_layout,
         "One profile per",
         iter_dim_combo,
-        "Optional dimension used to split selected data into one profile per axis.",
+        "Optional dimension used to split selected data into one profile per axis."
+        + (
+            "\nDisabled while selected steps have different valid choices."
+            if not iter_dim_options_match
+            else ""
+        ),
     )
 
+    normalize_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_normalize
+    )
     normalize_combo = tool._combo(
         [
             _line_normalize_text("none"),
             _line_normalize_text("max"),
             _line_normalize_text("mean"),
         ],
-        _line_normalize_text(operation.line_normalize),
+        None if normalize_mixed else _line_normalize_text(operation.line_normalize),
         lambda text: tool._update_current_operation(
             line_normalize=_line_normalize_from_text(text)
         ),
         parent=page,
+        mixed=normalize_mixed,
     )
     normalize_combo.setObjectName("figureComposerLineNormalizeCombo")
     tool._add_form_row(
@@ -289,13 +360,17 @@ def _build_line_editor(
         "profiles together.",
     )
 
+    placement_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_placement
+    )
     placement_combo = tool._combo(
         ["All profiles on each axis", "One profile per axis"],
-        _line_placement_text(operation.line_placement),
+        None if placement_mixed else _line_placement_text(operation.line_placement),
         lambda text: tool._update_current_operation(
             line_placement=_line_placement_from_text(text)
         ),
         parent=page,
+        mixed=placement_mixed,
     )
     placement_combo.setObjectName("figureComposerProfilePlacementCombo")
     tool._add_form_row(
@@ -307,11 +382,15 @@ def _build_line_editor(
         "One per axis: pair profiles with axes in order.",
     )
 
+    values_axis_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_values_axis
+    )
     values_axis_combo = tool._combo(
         ["y", "x"],
-        operation.line_values_axis,
+        None if values_axis_mixed else operation.line_values_axis,
         lambda text: tool._update_current_operation(line_values_axis=text),
         parent=page,
+        mixed=values_axis_mixed,
     )
     values_axis_combo.setObjectName("figureComposerDataValuesAxisCombo")
     tool._add_form_row(
@@ -323,10 +402,18 @@ def _build_line_editor(
         "x: values on x, coordinate on y.",
     )
 
-    scales_edit = tool._line_edit(_format_tuple(operation.line_scales))
+    scales_text, scales_mixed = tool._batch_text(
+        operation, lambda target: target.line_scales, _format_tuple
+    )
+    scales_edit = tool._line_edit(scales_text)
+    tool._apply_mixed_line_edit(scales_edit, scales_mixed)
     scales_edit.editingFinished.connect(
-        lambda edit=scales_edit: tool._update_current_operation(
-            line_scales=_float_tuple_from_text(edit.text())
+        lambda edit=scales_edit: (
+            None
+            if tool._line_edit_batch_unchanged(edit)
+            else tool._update_current_operation(
+                line_scales=_float_tuple_from_text(edit.text())
+            )
         )
     )
     tool._add_form_row(
@@ -337,11 +424,15 @@ def _build_line_editor(
         "Use one value or comma-separated per-profile values.",
     )
 
+    offset_source_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.line_offset_source
+    )
     offset_source_combo = tool._combo(
         ["manual", "index", "coordinate", "associated"],
-        operation.line_offset_source,
+        None if offset_source_mixed else operation.line_offset_source,
         lambda source: _update_current_line_offset_source(tool, source),
         parent=page,
+        mixed=offset_source_mixed,
     )
     offset_source_combo.setObjectName("figureComposerLineOffsetSourceCombo")
     tool._add_form_row(
@@ -355,6 +446,13 @@ def _build_line_editor(
 
     if operation.line_offset_source == "associated":
         offset_coord_values = ["", *_available_line_offset_coords(tool, operation)]
+        offset_coord_options_match = tool._batch_options_match(
+            operation,
+            lambda target: ["", *_available_line_offset_coords(tool, target)],
+        )
+        offset_coord_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.line_offset_coord
+        )
         if (
             operation.line_offset_coord is not None
             and operation.line_offset_coord not in offset_coord_values
@@ -362,24 +460,41 @@ def _build_line_editor(
             offset_coord_values.append(operation.line_offset_coord)
         offset_coord_combo = tool._combo(
             offset_coord_values,
-            operation.line_offset_coord or "",
+            None if offset_coord_mixed else operation.line_offset_coord or "",
             lambda text: tool._update_current_operation(line_offset_coord=text or None),
             parent=page,
+            mixed=offset_coord_mixed,
+            enabled=offset_coord_options_match,
         )
         offset_coord_combo.setObjectName("figureComposerLineOffsetCoordinateCombo")
         tool._add_form_row(
             tool.operation_editor_layout,
             "Offset coordinate",
             offset_coord_combo,
-            "Associated coordinate used when Offset source is associated.",
+            "Associated coordinate used when Offset source is associated."
+            + (
+                "\nDisabled while selected steps have different valid choices."
+                if not offset_coord_options_match
+                else ""
+            ),
         )
 
     if operation.line_offset_source != "manual":
-        offset_scale_edit = tool._line_edit(f"{operation.line_offset_scale:g}")
+        offset_scale_text, offset_scale_mixed = tool._batch_text(
+            operation,
+            lambda target: target.line_offset_scale,
+            lambda value: f"{float(value):g}",
+        )
+        offset_scale_edit = tool._line_edit(offset_scale_text)
+        tool._apply_mixed_line_edit(offset_scale_edit, offset_scale_mixed)
         offset_scale_edit.setObjectName("figureComposerLineOffsetScaleEdit")
         offset_scale_edit.editingFinished.connect(
-            lambda edit=offset_scale_edit: tool._update_current_operation(
-                line_offset_scale=float(edit.text()) if edit.text().strip() else 1.0
+            lambda edit=offset_scale_edit: (
+                None
+                if tool._line_edit_batch_unchanged(edit)
+                else tool._update_current_operation(
+                    line_offset_scale=float(edit.text()) if edit.text().strip() else 1.0
+                )
             )
         )
         tool._add_form_row(
@@ -390,11 +505,19 @@ def _build_line_editor(
         )
 
     if operation.line_offset_source == "manual":
-        offsets_edit = tool._line_edit(_format_tuple(operation.line_offsets))
+        offsets_text, offsets_mixed = tool._batch_text(
+            operation, lambda target: target.line_offsets, _format_tuple
+        )
+        offsets_edit = tool._line_edit(offsets_text)
+        tool._apply_mixed_line_edit(offsets_edit, offsets_mixed)
         offsets_edit.setObjectName("figureComposerLineOffsetsEdit")
         offsets_edit.editingFinished.connect(
-            lambda edit=offsets_edit: tool._update_current_operation(
-                line_offsets=_float_tuple_from_text(edit.text())
+            lambda edit=offsets_edit: (
+                None
+                if tool._line_edit_batch_unchanged(edit)
+                else tool._update_current_operation(
+                    line_offsets=_float_tuple_from_text(edit.text())
+                )
             )
         )
         tool._add_form_row(
@@ -415,37 +538,57 @@ def _update_current_line_offset_source(tool: FigureComposerTool, source: str) ->
 
 
 def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
-    current = tool._current_operation()
-    if current is None:
+    editable = tool._editable_operations()
+    if not editable:
         return
-    index, operation = current
     labels = _string_tuple_from_text(text)
-    updated_operation = operation.model_copy(update={"line_labels": labels})
+    selected_ids = {operation.operation_id for _index, operation in editable}
+    original_operations = {
+        operation.operation_id: operation for _index, operation in editable
+    }
     operations = list(tool._recipe.operations)
-    operations[index] = updated_operation
-    if (
-        labels
-        and not operation.line_labels
-        and not _has_later_legend_step(operations, index, updated_operation)
+    newly_labeled_groups: dict[
+        tuple[tuple[tuple[int, int], ...], str], tuple[int, FigureOperationState]
+    ] = {}
+    for index, operation in enumerate(tuple(operations)):
+        if operation.operation_id not in selected_ids:
+            continue
+        updated = operation.model_copy(update={"line_labels": labels})
+        operations[index] = updated
+        original_operation = original_operations.get(operation.operation_id)
+        if original_operation is None or not labels or original_operation.line_labels:
+            continue
+        key = _line_axes_key(updated)
+        previous = newly_labeled_groups.get(key)
+        if previous is None or index > previous[0]:
+            newly_labeled_groups[key] = (index, updated)
+
+    for index, operation in sorted(
+        newly_labeled_groups.values(), key=lambda item: item[0], reverse=True
     ):
-        operations.insert(
-            index + 1,
-            FigureOperationState.method(
-                family=FigureMethodFamily.AXES,
-                name="legend",
-                label="Legend",
-                axes=updated_operation.axes.model_copy(deep=True),
-            ),
+        legend_operation = FigureOperationState.method(
+            family=FigureMethodFamily.AXES,
+            name="legend",
+            label="Legend",
+            axes=operation.axes.model_copy(deep=True),
         )
+        if not _has_later_legend_step(operations, index, legend_operation):
+            operations.insert(index + 1, legend_operation)
     tool._recipe = tool._recipe.model_copy(update={"operations": tuple(operations)})
     tool._refresh_operation_list()
-    tool._set_current_operation_row_silent(index)
     tool._sync_axes_selector()
     tool._update_step_action_buttons()
     tool._refresh_step_section_button_texts()
-    tool._update_source_status(updated_operation)
+    current = tool._current_operation()
+    tool._update_source_status(current[1] if current is not None else None)
     _rendering._render_preview(tool)
     tool.sigInfoChanged.emit()
+
+
+def _line_axes_key(
+    operation: FigureOperationState,
+) -> tuple[tuple[tuple[int, int], ...], str]:
+    return operation.axes.axes, operation.axes.expression
 
 
 def _has_later_legend_step(

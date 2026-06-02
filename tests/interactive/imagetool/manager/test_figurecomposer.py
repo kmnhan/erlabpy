@@ -67,6 +67,28 @@ def _expected_layout_from_rcparams() -> str | None:
     return None
 
 
+def _select_operation_rows(tool: FigureComposerTool, rows: tuple[int, ...]) -> None:
+    if not rows:
+        tool.operation_list.clearSelection()
+        tool._operation_selection_changed()
+        return
+    tool.operation_list.setCurrentRow(rows[0])
+    tool.operation_list.clearSelection()
+    for row in rows:
+        item = tool.operation_list.item(row)
+        assert item is not None
+        item.setSelected(True)
+    tool._operation_selection_changed()
+
+
+def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
+    return tuple(
+        row
+        for row in range(tool.operation_list.count())
+        if tool.operation_list.item(row).isSelected()
+    )
+
+
 def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
@@ -1509,6 +1531,101 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert axs[0, 1].get_aspect() == 2.5
 
 
+def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_title",
+                    args=("left",),
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_title",
+                    args=("right",),
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlabel",
+                    args=("unchanged",),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    title_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTitleEdit"
+    )
+    assert title_edit is not None
+    assert title_edit.text() == ""
+    assert title_edit.placeholderText() == "(multiple values)"
+
+    title_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_args == ("left",)
+    assert tool.tool_status.operations[1].method_args == ("right",)
+
+    title_edit.setText("shared")
+    title_edit.setModified(True)
+    title_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_args == ("shared",)
+    assert tool.tool_status.operations[1].method_args == ("shared",)
+    assert tool.tool_status.operations[2].method_args == ("unchanged",)
+    assert _selected_operation_rows(tool) == (0, 1)
+
+
+def test_figure_composer_batch_incompatible_methods_disable_editor(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_title",
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_ylabel",
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+
+    assert tool.step_editor_stack.currentWidget().objectName() == (
+        "figureComposerIncompatibleBatchPage"
+    )
+    assert (
+        tool.step_editor_stack.currentWidget().findChild(
+            QtWidgets.QLineEdit, "figureComposerAxesMethodTitleEdit"
+        )
+        is None
+    )
+
+
 def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -2482,6 +2599,198 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(
 
     assert len(tool.tool_status.operations) == 2
     assert tool.tool_status.operations[0].line_labels == ("profile B",)
+
+
+def test_figure_composer_batch_line_edits_update_selected_steps(qtbot) -> None:
+    profile = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="profile",
+    )
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(
+                FigureOperationState.line(label="first", source="profile"),
+                FigureOperationState.line(label="second", source="profile"),
+                FigureOperationState.line(label="third", source="profile"),
+                FigureOperationState.line(label="unselected", source="profile"),
+            ),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1, 2))
+    tool._select_step_section("line")
+    line_page = tool.step_editor_stack.currentWidget()
+    normalize_combo = line_page.findChild(
+        QtWidgets.QComboBox, "figureComposerLineNormalizeCombo"
+    )
+    assert normalize_combo is not None
+    normalize_combo.setCurrentText("Each profile by mean")
+
+    assert [operation.line_normalize for operation in tool.tool_status.operations] == [
+        "mean",
+        "mean",
+        "mean",
+        "none",
+    ]
+    assert _selected_operation_rows(tool) == (0, 1, 2)
+
+
+def test_figure_composer_batch_line_mixed_values_do_not_overwrite_on_blur(
+    qtbot,
+) -> None:
+    profile = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="profile",
+    )
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(
+                FigureOperationState.line(label="first", source="profile").model_copy(
+                    update={"line_color": "C0"}
+                ),
+                FigureOperationState.line(label="second", source="profile").model_copy(
+                    update={"line_color": "C1"}
+                ),
+            ),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool._select_step_section("line")
+    line_page = tool.step_editor_stack.currentWidget()
+    color_edit = line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineColorEdit")
+    assert color_edit is not None
+    assert color_edit.text() == ""
+    assert color_edit.placeholderText() == "(multiple values)"
+
+    color_edit.editingFinished.emit()
+    assert [operation.line_color for operation in tool.tool_status.operations] == [
+        "C0",
+        "C1",
+    ]
+
+    color_edit.setText("black")
+    color_edit.setModified(True)
+    color_edit.editingFinished.emit()
+    assert [operation.line_color for operation in tool.tool_status.operations] == [
+        "black",
+        "black",
+    ]
+
+
+def test_figure_composer_batch_line_source_dependent_combos_disable(
+    qtbot,
+) -> None:
+    first = xr.DataArray(
+        np.array([1.0, 2.0]),
+        dims=("kx",),
+        coords={"kx": [0.0, 1.0]},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.array([1.0, 2.0]),
+        dims=("ky",),
+        coords={"ky": [0.0, 1.0]},
+        name="second",
+    )
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="first", label="first"),
+                FigureSourceState(name="second", label="second"),
+            ),
+            operations=(
+                FigureOperationState.line(label="first", source="first"),
+                FigureOperationState.line(label="second", source="second"),
+            ),
+            primary_source="first",
+        ),
+        source_data={"first": first, "second": second},
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool._select_step_section("line")
+    line_page = tool.step_editor_stack.currentWidget()
+    coordinate_combo = line_page.findChild(
+        QtWidgets.QComboBox, "figureComposerProfileCoordinateCombo"
+    )
+    assert coordinate_combo is not None
+    assert coordinate_combo.isEnabled() is False
+    assert "different valid choices" in coordinate_combo.toolTip()
+
+
+def test_figure_composer_batch_line_labels_add_one_legend_per_axes_group(
+    qtbot,
+) -> None:
+    profile = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="profile",
+    )
+    first_axes = FigureAxesSelectionState(axes=((0, 0),))
+    second_axes = FigureAxesSelectionState(axes=((0, 1),))
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(
+                FigureOperationState.line(
+                    label="first",
+                    source="profile",
+                    axes=first_axes,
+                ),
+                FigureOperationState.line(
+                    label="second",
+                    source="profile",
+                    axes=first_axes,
+                ),
+                FigureOperationState.line(
+                    label="third",
+                    source="profile",
+                    axes=second_axes,
+                ),
+            ),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1, 2))
+    tool._select_step_section("line")
+    labels_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
+    )
+    assert labels_edit is not None
+    labels_edit.setText("profile")
+    labels_edit.editingFinished.emit()
+
+    operations = tool.tool_status.operations
+    assert len(operations) == 5
+    assert [
+        operation.line_labels
+        for operation in operations
+        if operation.kind == FigureOperationKind.LINE
+    ] == [("profile",), ("profile",), ("profile",)]
+    assert operations[2].method_name == "legend"
+    assert operations[2].axes == first_axes
+    assert operations[4].method_name == "legend"
+    assert operations[4].axes == second_axes
 
 
 def test_figure_composer_editor_widget_rebuilds_are_deferred(

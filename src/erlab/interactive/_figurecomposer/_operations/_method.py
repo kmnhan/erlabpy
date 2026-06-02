@@ -1899,16 +1899,20 @@ def _build_method_editor(
 
     if len(spec.selectable_call_policies) > 1:
         policy = _effective_call_policy(operation, spec)
+        policy_mixed = tool._batch_is_mixed(
+            operation, lambda target: _effective_call_policy(target, spec)
+        )
         policy_combo = tool._combo(
             [
                 _CALL_POLICY_LABELS.get(item, item.value)
                 for item in spec.selectable_call_policies
             ],
-            _CALL_POLICY_LABELS.get(policy, policy.value),
+            None if policy_mixed else _CALL_POLICY_LABELS.get(policy, policy.value),
             lambda text: _update_current_method_call_policy(
                 tool, _call_policy_from_label(text)
             ),
             parent=page,
+            mixed=policy_mixed,
         )
         policy_combo.setObjectName("figureComposerMethodCallPolicyCombo")
         tool._add_form_row(
@@ -1922,8 +1926,14 @@ def _build_method_editor(
         )
 
     if spec.text_values_policy != MethodTextValuesPolicy.NONE:
+        text_values_text, text_values_mixed = tool._batch_text(
+            operation,
+            lambda target: target.text_values,
+            lambda value: "\n".join(typing.cast("Sequence[str]", value)),
+        )
         text_edit = QtWidgets.QPlainTextEdit(page)
-        text_edit.setPlainText("\n".join(operation.text_values))
+        text_edit.setPlainText(text_values_text)
+        tool._apply_mixed_plain_text_edit(text_edit, text_values_mixed)
         text_edit.setMaximumHeight(70)
         text_edit.setVerticalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1933,8 +1943,13 @@ def _build_method_editor(
         )
         text_edit.setObjectName("figureComposerMethodTextValuesEdit")
         text_edit.textChanged.connect(
-            lambda edit=text_edit: _update_current_method_text_values(
-                tool, edit.toPlainText()
+            lambda edit=text_edit: (
+                None
+                if tool._plain_text_batch_unchanged(edit)
+                else _update_current_method_text_values(
+                    tool,
+                    edit.toPlainText(),
+                )
             )
         )
         tool._add_form_row(
@@ -1958,13 +1973,21 @@ def _build_method_editor(
         )
 
     if spec.allow_extra_kwargs:
-        kwargs_edit = tool._line_edit(
-            _format_dict(operation.method_kwargs), parent=page
+        kwargs_text, kwargs_mixed = tool._batch_text(
+            operation,
+            lambda target: target.method_kwargs,
+            lambda value: _format_dict(typing.cast("dict[str, typing.Any]", value)),
         )
+        kwargs_edit = tool._line_edit(kwargs_text, parent=page)
+        tool._apply_mixed_line_edit(kwargs_edit, kwargs_mixed)
         kwargs_edit.setObjectName(_method_kwargs_object_name(operation.method_family))
         kwargs_edit.editingFinished.connect(
-            lambda edit=kwargs_edit: tool._update_current_operation(
-                method_kwargs=_dict_from_text(edit.text())
+            lambda edit=kwargs_edit: (
+                None
+                if tool._line_edit_batch_unchanged(edit)
+                else tool._update_current_operation(
+                    method_kwargs=_dict_from_text(edit.text()),
+                )
             )
         )
         tool._add_form_row(
@@ -1991,253 +2014,404 @@ def _add_method_control_row(
     spec: MethodSpec,
     control: MethodControlSpec,
 ) -> None:
-    args = _method_args(operation, spec)
     match control.kind:
         case MethodControlKind.COORDINATE_SYSTEM:
+            mixed = tool._batch_is_mixed(
+                operation, lambda target: target.method_coordinate_system
+            )
             combo = tool._combo(
                 control.options,
-                operation.method_coordinate_system,
+                None if mixed else operation.method_coordinate_system,
                 lambda text: tool._update_current_operation(
                     method_coordinate_system=typing.cast(
                         'typing.Literal["data", "axes"]', text
                     )
                 ),
                 parent=layout.parentWidget(),
+                mixed=mixed,
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.ARG_COMBO:
             index = _control_arg_index(control)
+            mixed = tool._batch_is_mixed(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, control.default),
+            )
             combo = tool._combo(
                 control.options,
-                str(args[index]) if index < len(args) else str(control.default),
+                None
+                if mixed
+                else str(_method_arg_value(operation, spec, index, control.default)),
                 _method_arg_callback(tool, index),
                 parent=layout.parentWidget(),
+                mixed=mixed,
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.INT_ARG:
             index = _control_arg_index(control)
-            value = args[index] if index < len(args) else control.default
-            edit = tool._line_edit(
-                _format_int_value(value), parent=layout.parentWidget()
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, control.default),
+                _format_int_value,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, index=index: _update_current_method_arg(
-                    tool, index, int(edit.text())
+                lambda edit=edit, index=index: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_arg(tool, index, int(edit.text()))
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_ARG:
             index = _control_arg_index(control)
-            value = args[index] if index < len(args) else 0.0
-            edit = tool._line_edit(f"{float(value):g}", parent=layout.parentWidget())
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, 0.0),
+                lambda value: f"{float(value):g}",
+            )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, index=index: _update_current_method_arg(
-                    tool, index, float(edit.text())
+                lambda edit=edit, index=index: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_arg(tool, index, float(edit.text()))
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.TEXT_ARG:
             index = _control_arg_index(control)
-            edit = tool._line_edit(
-                str(args[index]) if index < len(args) else "",
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, ""),
+                str,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, index=index: _update_current_method_arg(
-                    tool, index, edit.text()
+                lambda edit=edit, index=index: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_arg(tool, index, edit.text())
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.LITERAL_ARG:
             index = _control_arg_index(control)
-            value = args[index] if index < len(args) else control.default
-            edit = tool._line_edit(
-                _format_literal_value(value), parent=layout.parentWidget()
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, control.default),
+                _format_literal_value,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, index=index: _update_current_method_arg(
-                    tool, index, _literal_value_from_text(edit.text())
+                lambda edit=edit, index=index: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_arg(
+                        tool, index, _literal_value_from_text(edit.text())
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.LITERAL_SEQUENCE_ARG:
             index = _control_arg_index(control)
-            value = args[index] if index < len(args) else ()
-            text = (
-                _format_literal_sequence(typing.cast("Sequence[typing.Any]", value))
-                if isinstance(value, (list, tuple))
-                else repr(value)
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, ()),
+                lambda value: (
+                    _format_literal_sequence(typing.cast("Sequence[typing.Any]", value))
+                    if isinstance(value, (list, tuple))
+                    else repr(value)
+                ),
             )
             edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, index=index: _update_current_method_arg(
-                    tool, index, _literal_sequence_from_text(edit.text())
+                lambda edit=edit, index=index: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_arg(
+                        tool, index, _literal_sequence_from_text(edit.text())
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.STRING_TUPLE_ARG:
             index = _control_arg_index(control)
-            value = args[index] if index < len(args) else ()
-            edit = tool._line_edit(
-                _format_string_tuple(typing.cast("Sequence[str]", value))
-                if isinstance(value, (list, tuple))
-                else "",
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, ()),
+                lambda value: (
+                    _format_string_tuple(typing.cast("Sequence[str]", value))
+                    if isinstance(value, (list, tuple))
+                    else ""
+                ),
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, index=index: _update_current_method_string_tuple_arg(
-                    tool, index, edit.text()
+                lambda edit=edit, index=index: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_string_tuple_arg(
+                        tool, index, edit.text()
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_PAIR_ARGS:
-            pair = (
-                (float(args[0]), float(args[1]))
-                if len(args) >= 2
-                else typing.cast("tuple[float, float] | None", None)
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_float_pair_args(target, spec),
+                _format_pair,
             )
-            edit = tool._line_edit(_format_pair(pair), parent=layout.parentWidget())
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit: _update_current_method_args(
-                    tool, _float_pair_from_text(edit.text()) or ()
+                lambda edit=edit: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_args(
+                        tool, _float_pair_from_text(edit.text()) or ()
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.ASPECT_ARG:
             index = _control_arg_index(control)
-            value = args[index] if index < len(args) else control.default
-            edit = tool._line_edit(
-                _format_aspect_value(value), parent=layout.parentWidget()
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_arg_value(target, spec, index, control.default),
+                _format_aspect_value,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, index=index: _update_current_method_arg(
-                    tool, index, _aspect_value_from_text(edit.text())
+                lambda edit=edit, index=index: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_arg(
+                        tool, index, _aspect_value_from_text(edit.text())
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.BOOL_ARG_COMBO:
             index = _control_arg_index(control)
+            mixed = tool._batch_is_mixed(
+                operation,
+                lambda target: bool(
+                    _method_arg_value(target, spec, index, control.default)
+                ),
+            )
             combo = tool._combo(
                 control.options,
-                str(bool(args[index])) if index < len(args) else str(control.default),
+                None
+                if mixed
+                else str(
+                    bool(_method_arg_value(operation, spec, index, control.default))
+                ),
                 _method_bool_arg_callback(tool, index),
                 parent=layout.parentWidget(),
+                mixed=mixed,
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.KWARG_COMBO:
             key = _control_key(control)
+            mixed = tool._batch_is_mixed(
+                operation,
+                lambda target: _method_kwarg_value(target, key, control.default),
+            )
             combo = tool._combo(
                 control.options,
-                str(operation.method_kwargs.get(key, control.default)),
+                None
+                if mixed
+                else str(_method_kwarg_value(operation, key, control.default)),
                 _method_kwarg_callback(tool, key),
                 parent=layout.parentWidget(),
+                mixed=mixed,
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.BOOL_KWARG_COMBO:
             key = _control_key(control)
+            mixed = tool._batch_is_mixed(
+                operation,
+                lambda target: bool(_method_kwarg_value(target, key, control.default)),
+            )
             combo = tool._combo(
                 control.options,
-                str(bool(operation.method_kwargs.get(key, control.default))),
+                None
+                if mixed
+                else str(bool(_method_kwarg_value(operation, key, control.default))),
                 _method_bool_kwarg_callback(tool, key),
                 parent=layout.parentWidget(),
+                mixed=mixed,
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.INT_KWARG:
             key = _control_key(control)
-            edit = tool._line_edit(
-                _format_int_value(operation.method_kwargs.get(key, control.default)),
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_kwarg_value(target, key, control.default),
+                _format_int_value,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, key=key: _update_current_method_kwarg(
-                    tool, key, _optional_int_from_text(edit.text())
+                lambda edit=edit, key=key: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_kwarg(
+                        tool, key, _optional_int_from_text(edit.text())
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_KWARG:
             key = _control_key(control)
-            edit = tool._line_edit(
-                _format_float_value(operation.method_kwargs.get(key, control.default)),
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_kwarg_value(target, key, control.default),
+                _format_float_value,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, key=key: _update_current_method_kwarg(
-                    tool, key, _optional_float_from_text(edit.text())
+                lambda edit=edit, key=key: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_kwarg(
+                        tool, key, _optional_float_from_text(edit.text())
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.TEXT_KWARG:
             key = _control_key(control)
-            edit = tool._line_edit(
-                str(operation.method_kwargs.get(key, control.default) or ""),
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_kwarg_value(target, key, control.default),
+                lambda value: str(value or ""),
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, key=key: _update_current_method_kwarg(
-                    tool, key, edit.text() or None
+                lambda edit=edit, key=key: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_kwarg(tool, key, edit.text() or None)
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.LITERAL_KWARG:
             key = _control_key(control)
-            edit = tool._line_edit(
-                _format_literal_value(
-                    operation.method_kwargs.get(key, control.default)
-                ),
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_kwarg_value(target, key, control.default),
+                _format_literal_value,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, key=key: _update_current_method_kwarg(
-                    tool, key, _optional_literal_from_text(edit.text())
+                lambda edit=edit, key=key: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_kwarg(
+                        tool, key, _optional_literal_from_text(edit.text())
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.STRING_TUPLE_KWARG:
             key = _control_key(control)
-            value = operation.method_kwargs.get(key, ())
-            edit = tool._line_edit(
-                _format_string_tuple(typing.cast("Sequence[str]", value))
-                if isinstance(value, (list, tuple))
-                else "",
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_kwarg_value(target, key, ()),
+                lambda value: (
+                    _format_string_tuple(typing.cast("Sequence[str]", value))
+                    if isinstance(value, (list, tuple))
+                    else ""
+                ),
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, key=key: _update_current_method_kwarg(
-                    tool, key, _string_tuple_from_text(edit.text()) or None
+                lambda edit=edit, key=key: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_kwarg(
+                        tool, key, _string_tuple_from_text(edit.text()) or None
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_PAIR_KWARG:
             key = _control_key(control)
-            edit = tool._line_edit(
-                _format_pair(operation.method_kwargs.get(key, control.default)),
-                parent=layout.parentWidget(),
+            text, mixed = tool._batch_text(
+                operation,
+                lambda target: _method_kwarg_value(target, key, control.default),
+                _format_pair,
             )
+            edit = tool._line_edit(text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
             edit.editingFinished.connect(
-                lambda edit=edit, key=key: _update_current_method_kwarg(
-                    tool, key, _float_pair_from_text(edit.text())
+                lambda edit=edit, key=key: (
+                    None
+                    if tool._line_edit_batch_unchanged(edit)
+                    else _update_current_method_kwarg(
+                        tool, key, _float_pair_from_text(edit.text())
+                    )
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
+
+
+def _method_arg_value(
+    operation: FigureOperationState,
+    spec: MethodSpec,
+    index: int,
+    default: typing.Any,
+) -> typing.Any:
+    args = _method_args(operation, spec)
+    return args[index] if index < len(args) else default
+
+
+def _method_float_pair_args(
+    operation: FigureOperationState, spec: MethodSpec
+) -> tuple[float, float] | None:
+    args = _method_args(operation, spec)
+    if len(args) < 2:
+        return None
+    return float(args[0]), float(args[1])
+
+
+def _method_kwarg_value(
+    operation: FigureOperationState, key: str, default: typing.Any
+) -> typing.Any:
+    return operation.method_kwargs.get(key, default)
 
 
 def _control_arg_index(control: MethodControlSpec) -> int:
@@ -2468,48 +2642,52 @@ def _update_current_method_args(
 def _update_current_method_arg(
     tool: FigureComposerTool, index: int, value: typing.Any
 ) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    _row, operation = current
-    args = list(_method_args(operation, _method_spec(operation)))
-    while len(args) <= index:
-        args.append(None)
-    args[index] = value
-    tool._update_current_operation(method_args=tuple(args))
+    def update_arg(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        args = list(_method_args(operation, _method_spec(operation)))
+        while len(args) <= index:
+            args.append(None)
+        args[index] = value
+        return operation.model_copy(update={"method_args": tuple(args)})
+
+    tool._update_operations(update_arg)
 
 
 def _update_current_method_string_tuple_arg(
     tool: FigureComposerTool, index: int, text: str
 ) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    _row, operation = current
-    args = list(_method_args(operation, _method_spec(operation)))
     values = _string_tuple_from_text(text)
-    if values:
-        while len(args) <= index:
-            args.append(())
-        args[index] = values
-    elif len(args) > index:
-        args = args[:index]
-    tool._update_current_operation(method_args=tuple(args))
+
+    def update_arg(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        args = list(_method_args(operation, _method_spec(operation)))
+        if values:
+            while len(args) <= index:
+                args.append(())
+            args[index] = values
+        elif len(args) > index:
+            args = args[:index]
+        return operation.model_copy(update={"method_args": tuple(args)})
+
+    tool._update_operations(update_arg)
 
 
 def _update_current_method_kwarg(
     tool: FigureComposerTool, key: str, value: typing.Any
 ) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    _row, operation = current
-    kwargs = dict(operation.method_kwargs)
-    if value is None:
-        kwargs.pop(key, None)
-    else:
-        kwargs[key] = value
-    tool._update_current_operation(method_kwargs=kwargs)
+    def update_kwarg(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        kwargs = dict(operation.method_kwargs)
+        if value is None:
+            kwargs.pop(key, None)
+        else:
+            kwargs[key] = value
+        return operation.model_copy(update={"method_kwargs": kwargs})
+
+    tool._update_operations(update_kwarg)
 
 
 def _call_policy_from_label(text: str) -> MethodCallPolicy:
@@ -2522,27 +2700,35 @@ def _call_policy_from_label(text: str) -> MethodCallPolicy:
 def _update_current_method_call_policy(
     tool: FigureComposerTool, policy: MethodCallPolicy
 ) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    _row, operation = current
-    spec = _method_spec(operation)
-    tool._update_current_operation(
-        method_call_policy=None if policy == spec.call_policy else policy.value
-    )
+    def update_policy(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        spec = _method_spec(operation)
+        return operation.model_copy(
+            update={
+                "method_call_policy": None
+                if policy == spec.call_policy
+                else policy.value
+            }
+        )
+
+    tool._update_operations(update_policy)
 
 
 def _update_current_method_text_values(tool: FigureComposerTool, text: str) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    _index, operation = current
-    spec = _method_spec(operation)
-    tool._update_current_operation(
-        text_values=_text_tuple_from_text(
-            text, preserve_empty=spec.preserves_empty_text
+    def update_text_values(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        spec = _method_spec(operation)
+        return operation.model_copy(
+            update={
+                "text_values": _text_tuple_from_text(
+                    text, preserve_empty=spec.preserves_empty_text
+                )
+            }
         )
-    )
+
+    tool._update_operations(update_text_values)
 
 
 def _method_args(

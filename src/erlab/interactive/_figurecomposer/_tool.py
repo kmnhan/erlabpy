@@ -63,6 +63,8 @@ if typing.TYPE_CHECKING:
 
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
+_MIXED_VALUES_TEXT = "(multiple values)"
+_MIXED_VALUE = object()
 
 
 class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
@@ -85,6 +87,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rendering = False
         self._operation_editor_update_pending = False
         self._retired_editor_drain_pending = False
+        self._operation_multi_select_event = False
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
@@ -384,8 +387,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         self.operation_list = QtWidgets.QListWidget(recipe_page)
         self.operation_list.setObjectName("figureComposerOperationList")
+        operation_list_viewport = self.operation_list.viewport()
+        if operation_list_viewport is not None:
+            operation_list_viewport.installEventFilter(self)
         self.operation_list.currentRowChanged.connect(self._operation_selection_changed)
+        self.operation_list.itemSelectionChanged.connect(
+            self._operation_selection_changed
+        )
         self.operation_list.itemChanged.connect(self._operation_item_changed)
+        self.operation_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.operation_list.setMaximumHeight(130)
         self.operation_list.setVerticalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -802,6 +814,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current = self._current_operation()
         if current is not None:
             current_id = current[1].operation_id
+        selected_ids = self._selected_operation_ids()
+        if not selected_ids and current_id is not None:
+            selected_ids = {current_id}
         self.operation_list.blockSignals(True)
         try:
             self.operation_list.clear()
@@ -820,15 +835,44 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 if self._operation_has_invalid_axes(operation):
                     item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
                 self.operation_list.addItem(item)
+                if operation.operation_id in selected_ids:
+                    item.setSelected(True)
                 if operation.operation_id == current_id:
                     self.operation_list.setCurrentItem(item)
         finally:
             self.operation_list.blockSignals(False)
 
-    def _set_current_operation_row_silent(self, index: int) -> None:
+    def _set_current_operation_row_silent(
+        self, index: int, *, preserve_selection: bool = True
+    ) -> None:
+        selected_ids = self._selected_operation_ids() if preserve_selection else set()
         was_blocked = self.operation_list.blockSignals(True)
         try:
             self.operation_list.setCurrentRow(index)
+            if preserve_selection and selected_ids:
+                self._set_selected_operation_ids_silent(selected_ids)
+        finally:
+            self.operation_list.blockSignals(was_blocked)
+
+    def _operation_id_for_item(self, item: QtWidgets.QListWidgetItem) -> str | None:
+        operation_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        return operation_id if isinstance(operation_id, str) else None
+
+    def _selected_operation_ids(self) -> set[str]:
+        return {
+            operation_id
+            for item in self.operation_list.selectedItems()
+            if (operation_id := self._operation_id_for_item(item)) is not None
+        }
+
+    def _set_selected_operation_ids_silent(self, operation_ids: set[str]) -> None:
+        was_blocked = self.operation_list.blockSignals(True)
+        try:
+            for row in range(self.operation_list.count()):
+                item = self.operation_list.item(row)
+                if item is None:
+                    continue
+                item.setSelected(self._operation_id_for_item(item) in operation_ids)
         finally:
             self.operation_list.blockSignals(was_blocked)
 
@@ -885,6 +929,185 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return None
         return row, self._recipe.operations[row]
 
+    def _selected_operation_indices(self) -> tuple[int, ...]:
+        selected_ids = self._selected_operation_ids()
+        if not selected_ids:
+            current = self._current_operation()
+            return () if current is None else (current[0],)
+        return tuple(
+            index
+            for index, operation in enumerate(self._recipe.operations)
+            if operation.operation_id in selected_ids
+        )
+
+    @staticmethod
+    def _operation_editor_schema_key(
+        operation: FigureOperationState,
+    ) -> tuple[object, ...]:
+        if operation.kind.value == "method":
+            return (operation.kind, operation.method_family, operation.method_name)
+        return (operation.kind,)
+
+    def _selected_operations_are_compatible(self) -> bool:
+        indices = self._selected_operation_indices()
+        if len(indices) <= 1:
+            return True
+        keys = {
+            self._operation_editor_schema_key(self._recipe.operations[index])
+            for index in indices
+        }
+        return len(keys) == 1
+
+    def _editable_operation_indices(self) -> tuple[int, ...]:
+        indices = self._selected_operation_indices()
+        if len(indices) <= 1:
+            return indices
+        return indices if self._selected_operations_are_compatible() else ()
+
+    def _editable_operations(self) -> tuple[tuple[int, FigureOperationState], ...]:
+        return tuple(
+            (index, self._recipe.operations[index])
+            for index in self._editable_operation_indices()
+        )
+
+    def _batch_value(
+        self,
+        operation: FigureOperationState,
+        getter: Callable[[FigureOperationState], typing.Any],
+    ) -> typing.Any:
+        editable = self._editable_operations()
+        if len(editable) <= 1:
+            return getter(operation)
+        values = [getter(target) for _index, target in editable]
+        first = values[0]
+        if all(value == first for value in values[1:]):
+            return first
+        return _MIXED_VALUE
+
+    def _batch_is_mixed(
+        self,
+        operation: FigureOperationState,
+        getter: Callable[[FigureOperationState], typing.Any],
+    ) -> bool:
+        return self._batch_value(operation, getter) is _MIXED_VALUE
+
+    def _batch_text(
+        self,
+        operation: FigureOperationState,
+        getter: Callable[[FigureOperationState], typing.Any],
+        formatter: Callable[[typing.Any], str],
+    ) -> tuple[str, bool]:
+        value = self._batch_value(operation, getter)
+        if value is _MIXED_VALUE:
+            return "", True
+        return formatter(value), False
+
+    def _batch_combo_text(
+        self,
+        operation: FigureOperationState,
+        getter: Callable[[FigureOperationState], typing.Any],
+        formatter: Callable[[typing.Any], str] = str,
+    ) -> str | None:
+        value = self._batch_value(operation, getter)
+        if value is _MIXED_VALUE:
+            return None
+        return formatter(value)
+
+    def _batch_options_match(
+        self,
+        operation: FigureOperationState,
+        options_getter: Callable[[FigureOperationState], Sequence[str]],
+    ) -> bool:
+        editable = self._editable_operations()
+        if len(editable) <= 1:
+            return True
+        expected = tuple(options_getter(operation))
+        return all(
+            tuple(options_getter(target)) == expected for _index, target in editable
+        )
+
+    @staticmethod
+    def _line_edit_batch_unchanged(edit: QtWidgets.QLineEdit) -> bool:
+        return bool(edit.property("batch_mixed")) and not edit.isModified()
+
+    @staticmethod
+    def _apply_mixed_line_edit(edit: QtWidgets.QLineEdit, mixed: bool) -> None:
+        if mixed:
+            edit.setPlaceholderText(_MIXED_VALUES_TEXT)
+            edit.setProperty("batch_mixed", True)
+            edit.setModified(False)
+        else:
+            edit.setProperty("batch_mixed", False)
+
+    @staticmethod
+    def _plain_text_batch_unchanged(edit: QtWidgets.QPlainTextEdit) -> bool:
+        document = edit.document()
+        return (
+            bool(edit.property("batch_mixed"))
+            and document is not None
+            and not document.isModified()
+        )
+
+    @staticmethod
+    def _apply_mixed_plain_text_edit(
+        edit: QtWidgets.QPlainTextEdit, mixed: bool
+    ) -> None:
+        if mixed:
+            edit.setPlaceholderText(_MIXED_VALUES_TEXT)
+            edit.setProperty("batch_mixed", True)
+            document = edit.document()
+            if document is not None:
+                document.setModified(False)
+        else:
+            edit.setProperty("batch_mixed", False)
+
+    @staticmethod
+    def _set_combo_mixed_placeholder(combo: QtWidgets.QComboBox) -> None:
+        combo.insertItem(0, _MIXED_VALUES_TEXT)
+        item = typing.cast("typing.Any", combo.model()).item(0)
+        if item is not None:
+            item.setEnabled(False)
+        combo.setCurrentIndex(0)
+
+    @staticmethod
+    def _mixed_combo_text(text: str) -> bool:
+        return text == _MIXED_VALUES_TEXT
+
+    def _update_operations(
+        self,
+        updater: Callable[[int, FigureOperationState], FigureOperationState],
+        *,
+        render: bool = True,
+        rebuild_editor: bool = False,
+        defer_editor_rebuild: bool = False,
+        sync_axes: bool = True,
+    ) -> None:
+        editable = self._editable_operations()
+        if not editable:
+            return
+        current = self._current_operation()
+        operations = list(self._recipe.operations)
+        for index, operation in editable:
+            operations[index] = updater(index, operation)
+        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._refresh_operation_list()
+        if current is not None:
+            self._set_current_operation_row_silent(current[0])
+        current_operation = self._current_operation()
+        if sync_axes:
+            self._sync_axes_selector()
+        self._update_step_action_buttons()
+        self._refresh_step_section_button_texts()
+        self._update_source_status(current_operation[1] if current_operation else None)
+        if rebuild_editor:
+            if defer_editor_rebuild:
+                self._queue_operation_editor_update()
+            else:
+                self._update_operation_editor_safely()
+        if render:
+            _rendering._render_preview(self)
+            self.sigInfoChanged.emit()
+
     def _replace_operation(
         self,
         index: int,
@@ -915,34 +1138,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.sigInfoChanged.emit()
 
     def _update_current_operation(self, **updates: typing.Any) -> None:
-        current = self._current_operation()
-        if current is None:
-            return
-        index, operation = current
-        self._replace_operation(index, operation.model_copy(update=updates))
+        self._update_operations(
+            lambda _index, operation: operation.model_copy(update=updates)
+        )
 
     def _update_current_operation_rebuild(self, **updates: typing.Any) -> None:
-        current = self._current_operation()
-        if current is None:
-            return
-        index, operation = current
-        self._replace_operation(
-            index,
-            operation.model_copy(update=updates),
+        self._update_operations(
+            lambda _index, operation: operation.model_copy(update=updates),
             rebuild_editor=True,
             defer_editor_rebuild=True,
         )
 
     def _update_current_operation_in_place(self, **updates: typing.Any) -> None:
-        current = self._current_operation()
-        if current is None:
-            return
-        index, operation = current
-        operations = list(self._recipe.operations)
-        operations[index] = operation.model_copy(update=updates)
-        self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
-        self._refresh_operation_list()
-        self._set_current_operation_row_silent(index)
+        self._update_operations(
+            lambda _index, operation: operation.model_copy(update=updates),
+            render=False,
+        )
         self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
         erlab.interactive.utils.single_shot(
@@ -1086,10 +1297,55 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
 
+    @QtCore.Slot()
     @QtCore.Slot(int)
-    def _operation_selection_changed(self, _row: int) -> None:
+    def _operation_selection_changed(self, _row: int | None = None) -> None:
+        if _row is not None and not self._operation_multi_select_event:
+            item = self.operation_list.item(_row)
+            if item is not None:
+                operation_id = self._operation_id_for_item(item)
+                if operation_id is not None:
+                    self._set_selected_operation_ids_silent({operation_id})
         self._sync_axes_selector()
         self._update_operation_editor()
+
+    def eventFilter(
+        self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> bool:
+        if (
+            watched is self.operation_list.viewport()
+            and event is not None
+            and event.type()
+            in {
+                QtCore.QEvent.Type.MouseButtonPress,
+                QtCore.QEvent.Type.MouseButtonDblClick,
+                QtCore.QEvent.Type.KeyPress,
+            }
+        ):
+            input_event = typing.cast("QtGui.QInputEvent", event)
+            self._operation_multi_select_event = (
+                self._operation_modifiers_enable_multi_selection(
+                    input_event.modifiers()
+                )
+            )
+            erlab.interactive.utils.single_shot(
+                self, 0, self._clear_operation_multi_select_event
+            )
+        return super().eventFilter(watched, event)
+
+    def _clear_operation_multi_select_event(self) -> None:
+        self._operation_multi_select_event = False
+
+    @staticmethod
+    def _operation_modifiers_enable_multi_selection(
+        modifiers: QtCore.Qt.KeyboardModifier,
+    ) -> bool:
+        multi_modifiers = (
+            QtCore.Qt.KeyboardModifier.ShiftModifier
+            | QtCore.Qt.KeyboardModifier.ControlModifier
+            | QtCore.Qt.KeyboardModifier.MetaModifier
+        )
+        return bool(modifiers & multi_modifiers)
 
     @QtCore.Slot(QtWidgets.QListWidgetItem)
     def _operation_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
@@ -1470,6 +1726,29 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_source_section()
         current = self._current_operation()
         self._update_step_action_buttons()
+        selected_indices = self._selected_operation_indices()
+        if len(selected_indices) > 1 and not self._selected_operations_are_compatible():
+            page, layout = self._new_step_form_page(
+                "figureComposerIncompatibleBatchPage"
+            )
+            label = QtWidgets.QLabel(
+                "Select steps with the same editor type to batch edit them.",
+                page,
+            )
+            label.setWordWrap(True)
+            label.setEnabled(False)
+            layout.addRow(QtWidgets.QLabel("Batch edit", page), label)
+            self._set_step_sections(
+                (
+                    StepSection(
+                        "batch",
+                        "Batch",
+                        page,
+                        "The selected steps do not share one editor schema.",
+                    ),
+                )
+            )
+            return
         if current is None:
             page, layout = self._new_step_form_page("figureComposerNoStepPage")
             layout.addRow(QtWidgets.QLabel("Select a recipe step to edit.", page))
@@ -1563,12 +1842,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         changed: Callable[[str], None],
         *,
         parent: QtWidgets.QWidget | None = None,
+        mixed: bool = False,
+        enabled: bool = True,
     ) -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox(parent or self.operation_editor)
         combo.addItems(list(values))
-        if current is not None:
+        if mixed:
+            self._set_combo_mixed_placeholder(combo)
+        elif current is not None:
             self._set_combo_value(combo, current)
-        combo.currentTextChanged.connect(changed)
+        combo.setEnabled(enabled)
+        combo.currentTextChanged.connect(
+            lambda text: None if self._mixed_combo_text(text) else changed(text)
+        )
         return combo
 
     def _optional_name_combo(
@@ -1579,20 +1865,33 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         changed: Callable[[str | None], None],
         *,
         parent: QtWidgets.QWidget | None = None,
+        mixed: bool = False,
+        enabled: bool = True,
     ) -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox(parent or self.operation_editor)
+        if mixed:
+            combo.addItem(_MIXED_VALUES_TEXT, _MIXED_VALUE)
         combo.addItem(none_label, None)
         for value in values:
             combo.addItem(value, value)
-        if current is not None and current not in values:
+        if current is not None and current not in values and not mixed:
             combo.addItem(current, current)
-        for index in range(combo.count()):
-            if combo.itemData(index) == current:
-                combo.setCurrentIndex(index)
-                break
+        if mixed:
+            item = typing.cast("typing.Any", combo.model()).item(0)
+            if item is not None:
+                item.setEnabled(False)
+            combo.setCurrentIndex(0)
+        else:
+            for index in range(combo.count()):
+                if combo.itemData(index) == current:
+                    combo.setCurrentIndex(index)
+                    break
+        combo.setEnabled(enabled)
         combo.currentIndexChanged.connect(
-            lambda _index, combo=combo: changed(
-                typing.cast("str | None", combo.currentData())
+            lambda _index, combo=combo: (
+                None
+                if combo.currentData() is _MIXED_VALUE
+                else changed(typing.cast("str | None", combo.currentData()))
             )
         )
         return combo
