@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 import typing
 
 from qtpy import QtCore, QtWidgets
 
 from erlab.interactive._figurecomposer import _rendering
+from erlab.interactive._figurecomposer._gridspec import (
+    _gridspec_all_axes_ids,
+    _gridspec_axis_code_tuple,
+    _gridspec_valid_axes_ids,
+)
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
@@ -57,7 +63,8 @@ def _build_custom_code_editor(
         tool.operation_editor_layout,
         "Code",
         code_edit,
-        "Python code executed with fig, axs, plt, eplt, and source variables.",
+        "Python code executed with fig, axs, ax, plt, eplt, np, xr, and source "
+        "variables.",
     )
     return [("code", "Code", page)]
 
@@ -109,12 +116,71 @@ def _section_summary(
     return ""
 
 
-def _code_lines(
+def _code_lines(tool: FigureComposerTool, operation: FigureOperationState) -> list[str]:
+    code = operation.code.strip()
+    if not operation.trusted or not code:
+        return []
+    names = _custom_code_names(code)
+    lines: list[str] = []
+    if "axs" in names:
+        lines.extend(_custom_axes_alias_lines(tool))
+    if "ax" in names:
+        lines.append(f"ax = {_custom_first_axis_code(tool)}")
+    lines.extend(code.splitlines())
+    return lines
+
+
+def _required_imports(
     _tool: FigureComposerTool, operation: FigureOperationState
-) -> list[str]:
-    if operation.trusted and operation.code.strip():
-        return operation.code.strip().splitlines()
-    return []
+) -> tuple[str, ...]:
+    code = operation.code.strip()
+    if not operation.trusted or not code:
+        return ()
+    names = _custom_code_names(code)
+    imports: list[str] = []
+    if "np" in names:
+        imports.append("import numpy as np")
+    if "xr" in names:
+        imports.append("import xarray as xr")
+    if "eplt" in names:
+        imports.append("import erlab.plotting as eplt")
+    return tuple(imports)
+
+
+def _custom_code_names(code: str) -> frozenset[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return frozenset()
+    return frozenset(
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    )
+
+
+def _custom_axes_alias_lines(tool: FigureComposerTool) -> list[str]:
+    setup = tool._recipe.setup
+    if setup.layout_mode != "gridspec":
+        return []
+    axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+    axes_code = _gridspec_axis_code_tuple(setup, axes_ids)
+    lines = ["axs = {"]
+    lines.extend(
+        f"    {axis_id!r}: {axis_code},"
+        for axis_id, axis_code in zip(axes_ids, axes_code, strict=True)
+    )
+    lines.append("}")
+    return lines
+
+
+def _custom_first_axis_code(tool: FigureComposerTool) -> str:
+    setup = tool._recipe.setup
+    if setup.layout_mode != "gridspec":
+        return "axs[0, 0]"
+    axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+    axes_code = _gridspec_axis_code_tuple(setup, axes_ids[:1])
+    return axes_code[0] if axes_code else "None"
 
 
 def _loaded_operation(operation: FigureOperationState) -> FigureOperationState:
@@ -143,5 +209,6 @@ SPEC = OperationSpec(
     section_summary=_section_summary,
     render=_render_custom,
     code_lines=_code_lines,
+    required_imports=_required_imports,
     loaded_operation=_loaded_operation,
 )

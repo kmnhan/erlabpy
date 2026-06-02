@@ -114,6 +114,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_multi_select_event = False
         self._operation_list_viewport: QtWidgets.QWidget | None = None
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
+        self._operation_render_errors: dict[str, str] = {}
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
@@ -1203,9 +1204,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         try:
             self.operation_list.clear()
             for operation in self._recipe.operations:
-                item = QtWidgets.QListWidgetItem(
-                    self._operation_display_text(operation)
-                )
+                render_error = self._operation_render_errors.get(operation.operation_id)
+                text = self._operation_display_text(operation)
+                if render_error is not None:
+                    text = f"{text} (render error)"
+                item = QtWidgets.QListWidgetItem(text)
                 item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(
                     QtCore.Qt.CheckState.Checked
@@ -1213,8 +1216,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     else QtCore.Qt.CheckState.Unchecked
                 )
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, operation.operation_id)
-                item.setToolTip(self._operation_tooltip(operation))
-                if self._operation_has_invalid_axes(operation):
+                tooltip = self._operation_tooltip(operation)
+                if render_error is not None:
+                    tooltip = f"{tooltip}\n\nRender error: {render_error}"
+                item.setToolTip(tooltip)
+                if (
+                    self._operation_has_invalid_axes(operation)
+                    or render_error is not None
+                ):
                     item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
                 self.operation_list.addItem(item)
                 if operation.operation_id in selected_ids:
@@ -1263,6 +1272,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _operation_tooltip(self, operation: FigureOperationState) -> str:
         return _registry.spec_for(operation.kind).tooltip(self, operation)
+
+    def _set_operation_render_errors(self, errors: Mapping[str, str]) -> None:
+        render_errors = dict(errors)
+        if render_errors == self._operation_render_errors:
+            return
+        self._operation_render_errors = render_errors
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
+        current = self._current_operation()
+        self._update_source_status(current[1] if current is not None else None)
 
     def _axes_target_text(self, selection: FigureAxesSelectionState) -> str:
         if selection.expression:
@@ -2495,6 +2514,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _update_source_status(self, operation: FigureOperationState | None) -> None:
         if operation is None:
             self.source_status_label.setText("Select a step to choose data sources.")
+            return
+        if (
+            render_error := self._operation_render_errors.get(operation.operation_id)
+        ) is not None:
+            self.source_status_label.setText(f"Render error: {render_error}")
             return
         selected_sources = self._selected_sources_for_operation(operation)
         missing = [

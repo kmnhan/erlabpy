@@ -220,6 +220,7 @@ def _render_into_figure(
 ) -> None:
     from erlab.interactive._figurecomposer._operations import _registry
 
+    render_errors: dict[str, str] = {}
     with _figure_style_context():
         axs = _make_axes(tool, figure, sync_visible=sync_visible)
         for operation in tool._recipe.operations:
@@ -228,8 +229,18 @@ def _render_into_figure(
             spec = _registry.spec_for(operation.kind)
             if spec.has_invalid_target(tool, operation):
                 continue
-            with contextlib.suppress(Exception):
+            try:
                 spec.render(tool, operation, figure, axs)
+            except Exception as exc:
+                render_errors[operation.operation_id] = _render_error_text(exc)
+    tool._set_operation_render_errors(render_errors)
+
+
+def _render_error_text(error: Exception) -> str:
+    detail = str(error)
+    if detail:
+        return f"{type(error).__name__}: {detail}"
+    return type(error).__name__
 
 
 def _render_preview(

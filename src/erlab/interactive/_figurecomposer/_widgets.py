@@ -162,7 +162,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             )
         self._suppress_resize_signal = True
         self.resize(target_size)
-        QtCore.QTimer.singleShot(0, self._allow_resize_signal)
+        erlab.interactive.utils.single_shot(self, 0, self._allow_resize_signal)
 
     @QtCore.Slot()
     def _allow_resize_signal(self) -> None:
@@ -192,7 +192,9 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
         if self._suppress_resize_signal or self._resize_signal_pending:
             return
         self._resize_signal_pending = True
-        QtCore.QTimer.singleShot(0, self._emit_canvas_size_changed)
+        erlab.interactive.utils.single_shot(
+            self, 0, self._emit_canvas_size_changed, self.canvas
+        )
 
     @QtCore.Slot()
     def _emit_canvas_size_changed(self) -> None:

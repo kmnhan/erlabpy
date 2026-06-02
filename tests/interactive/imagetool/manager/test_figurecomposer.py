@@ -4,6 +4,7 @@ import warnings
 from collections.abc import Callable
 
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 import matplotlib.scale as mscale
 import numpy as np
 import pytest
@@ -55,6 +56,7 @@ def restore_interactive_options():
         yield
     finally:
         options.model = old_options
+        plt.close("all")
 
 
 def _set_figure_stylesheets(stylesheets: list[str]) -> None:
@@ -112,6 +114,29 @@ def test_axes_selector_size_hint_tracks_grid(qtbot):
     assert one_by_four_hint.height() < two_by_four_hint.height() < 70
 
 
+def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) -> None:
+    calls: list[tuple[QtCore.QObject, int, str, tuple[QtCore.QObject, ...]]] = []
+
+    def record_single_shot(
+        receiver: QtCore.QObject,
+        msec: int,
+        callback: Callable[[], None],
+        *guards: QtCore.QObject,
+    ) -> None:
+        calls.append((receiver, msec, callback.__name__, guards))
+
+    monkeypatch.setattr(erlab.interactive.utils, "single_shot", record_single_shot)
+    window = figurecomposer_widgets._FigureComposerDisplayWindow(FigureSubplotsState())
+    qtbot.addWidget(window)
+
+    window.resize_to_setup(FigureSubplotsState())
+    window._suppress_resize_signal = False
+    window.resizeEvent(None)
+
+    assert (window, 0, "_allow_resize_signal", ()) in calls
+    assert (window, 0, "_emit_canvas_size_changed", (window.canvas,)) in calls
+
+
 def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
@@ -155,6 +180,139 @@ def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> N
     loaded = erlab.interactive.utils.ToolWindow.from_dataset(custom_tool.to_dataset())
     qtbot.addWidget(loaded)
     assert loaded.tool_status.operations[0].trusted is False
+
+
+def test_figure_composer_custom_code_codegen_namespace(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="custom",
+                    code=(
+                        "ax.set_title(str(np.array([1])[0]))\n"
+                        "fig.__dict__['_eplt_name'] = eplt.__name__"
+                    ),
+                    trusted=True,
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert "import numpy as np" in code
+    assert "import erlab.plotting as eplt" in code
+    assert "ax = axs[0, 0]" in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].axes[0].get_title() == "1"
+    assert namespace["fig"].__dict__["_eplt_name"] == "erlab.plotting"
+
+
+def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        grid_id="root",
+                        nrows=1,
+                        ncols=1,
+                        axes=(
+                            FigureGridSpecAxesState(
+                                axes_id="main-axis",
+                                label="main",
+                                span=FigureGridSpecSpanState(
+                                    row_start=0,
+                                    row_stop=1,
+                                    col_start=0,
+                                    col_stop=1,
+                                ),
+                            ),
+                        ),
+                    )
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.custom(
+                    label="custom",
+                    code=(
+                        "ax.set_title('main')\naxs['main-axis'].set_xlabel('energy')"
+                    ),
+                    trusted=True,
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert "axs = {" in code
+    assert "'main-axis': main" in code
+    assert "ax = main" in code
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].axes[0].get_title() == "main"
+    assert namespace["fig"].axes[0].get_xlabel() == "energy"
+
+
+def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    operation = FigureOperationState.custom(
+        label="custom",
+        code="raise RuntimeError('boom')",
+        trusted=True,
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert "(render error)" in item.text()
+    assert "RuntimeError: boom" in item.toolTip()
+    assert "Render error: RuntimeError: boom" in tool.source_status_label.text()
+
+    tool._replace_operation(
+        0,
+        operation.model_copy(update={"code": "ax.set_title('ok')"}),
+    )
+
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert "(render error)" not in item.text()
+    assert "RuntimeError: boom" not in item.toolTip()
+    assert "Render error" not in tool.source_status_label.text()
 
 
 def test_figure_composer_defaults_follow_stylesheet_rcparams(
@@ -1692,7 +1850,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
                     label="profile",
                     source="profile",
                     axes=FigureAxesSelectionState(axes=((0, 0),)),
-                ),
+                ).model_copy(update={"line_x": "kx", "xlim": (0.25, 0.75)}),
                 FigureOperationState.method(
                     family=FigureMethodFamily.ERLAB,
                     name="clean_labels",
@@ -1777,6 +1935,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     namespace = {"data": data, "profile": profile}
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert namespace["axs"].shape == (1, 2)
+    assert namespace["axs"][0, 0].get_xlim() == pytest.approx((0.25, 0.75))
 
 
 def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
@@ -3172,6 +3331,89 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
         ] + profile_operation.line_scales[index] * (profile / profile.max(skipna=True))
         np.testing.assert_allclose(line.get_xdata(), kx)
         np.testing.assert_allclose(line.get_ydata(), expected.values)
+
+
+def test_figure_composer_one_profile_per_axis_codegen_broadcasts_profiles(
+    qtbot,
+) -> None:
+    cut_values = np.array([0.0, 1.0, 2.0])
+    kx = np.array([-1.0, 0.0, 1.0])
+    data = xr.DataArray(
+        np.arange(cut_values.size * kx.size, dtype=float).reshape(
+            cut_values.size, kx.size
+        ),
+        dims=("cut", "kx"),
+        coords={"cut": cut_values, "kx": kx},
+        name="data",
+    )
+
+    many_profiles_operation = FigureOperationState.line(
+        label="profiles",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "line_placement": "one_per_axis",
+            "line_x": "kx",
+            "line_iter_dim": "cut",
+            "line_offset_source": "index",
+            "xlim": (-0.5, 0.5),
+        }
+    )
+    many_profiles_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(many_profiles_operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(many_profiles_tool)
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(many_profiles_tool.generated_code(), namespace)  # noqa: S102
+    lines = namespace["fig"].axes[0].lines
+    assert len(lines) == 3
+    assert namespace["fig"].axes[0].get_xlim() == pytest.approx((-0.5, 0.5))
+    for index, line in enumerate(lines):
+        np.testing.assert_allclose(line.get_xdata(), kx)
+        np.testing.assert_allclose(
+            line.get_ydata(), data.isel(cut=index).values + index
+        )
+
+    single_profile_operation = FigureOperationState.line(
+        label="profile",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1), (0, 2))),
+    ).model_copy(
+        update={
+            "line_placement": "one_per_axis",
+            "line_x": "kx",
+            "line_selection": {"cut": 1.0},
+            "line_offset_source": "index",
+            "xlim": (-0.5, 0.5),
+        }
+    )
+    single_profile_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=3),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(single_profile_operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(single_profile_tool)
+
+    namespace = {"data": data}
+    exec(single_profile_tool.generated_code(), namespace)  # noqa: S102
+    profile = data.qsel(cut=1.0).squeeze(drop=True)
+    for index, axis in enumerate(namespace["axs"].flat):
+        assert len(axis.lines) == 1
+        assert axis.get_xlim() == pytest.approx((-0.5, 0.5))
+        np.testing.assert_allclose(axis.lines[0].get_xdata(), kx)
+        np.testing.assert_allclose(axis.lines[0].get_ydata(), profile.values + index)
 
 
 def test_figure_composer_line_action_seeds_from_selected_slice_step(
