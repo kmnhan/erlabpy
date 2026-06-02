@@ -373,11 +373,11 @@ def test_plot_slices_with_crop_false_and_xlim_ylim():
     plt.close(fig)
 
 
-def test_plot_slices_with_1d_line_and_cmap_color():
+def test_plot_slices_with_1d_line_ignores_cmap_color():
     x = np.linspace(0, 1, 12)
     arr = xr.DataArray(np.cos(2 * np.pi * x), coords=[x], dims=["x"], name="cos")
-    fig, axes = plot_slices(arr, cmap="red")
-    assert axes[0, 0].lines[0].get_color() == "red"
+    fig, axes = plot_slices(arr, cmap="viridis")
+    assert axes[0, 0].lines[0].get_color() != "viridis"
     plt.close(fig)
 
 

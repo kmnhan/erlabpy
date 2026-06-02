@@ -1049,10 +1049,6 @@ def plot_slices(
                         panel_line_kwargs.setdefault(canonical, value)
                     line_kwargs.update(panel_line_kwargs)
 
-                # Legacy compatibility: old 1D plot_slices calls used cmap as a line
-                # color.
-                if cmap is not None and "color" not in line_kwargs:
-                    line_kwargs["color"] = cmap
                 line_gradient_kw = dict(gradient_kw)
                 if auto_gradient_color and "color" in line_kwargs:
                     line_gradient_kw["color"] = line_kwargs["color"]

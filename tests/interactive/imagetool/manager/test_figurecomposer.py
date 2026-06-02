@@ -5726,8 +5726,8 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
                     slice_values=(0.0, 1.0),
                 ).model_copy(
                     update={
-                        "cmap": "C1",
                         "line_kw": {
+                            "color": "C1",
                             "linestyle": "--",
                             "linewidth": 1.5,
                             "marker": "o",
@@ -5843,6 +5843,126 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     assert line.get_markerfacecolor() == "yellow"
     assert line.get_markeredgecolor() == "black"
     assert line.get_alpha() == 0.75
+
+
+def test_figure_composer_plot_slices_line_panels_ignore_image_cmap(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0, 2.0], "kx": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="line_slices",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"cmap": "magma"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
+    line_color_edit = colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
+    )
+    assert line_color_edit is not None
+    assert line_color_edit.text() == ""
+    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        tool, tool.tool_status.operations[0]
+    )
+    assert "cmap" not in kwargs
+    assert "line_kw" not in kwargs
+
+
+def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("eV", "kx", "ky"),
+        coords={
+            "eV": [0.0, 1.0],
+            "kx": [0.0, 1.0, 2.0],
+            "ky": [0.0, 1.0, 2.0, 3.0],
+        },
+        name="data",
+    )
+    image_operation = FigureOperationState.plot_slices(
+        label="image_slices",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"cmap": "magma", "same_limits": True})
+    line_operation = FigureOperationState.plot_slices(
+        label="line_slices",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(
+        update={
+            "slice_kwargs": {"kx": 1.0},
+            "line_kw": {"color": "C1"},
+            "gradient": True,
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(image_operation, line_operation),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
+
+    assert (
+        colors_page.findChild(
+            erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
+        )
+        is None
+    )
+    assert (
+        colors_page.findChild(
+            QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
+        )
+        is None
+    )
+    assert colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo") is None
+    assert (
+        colors_page.findChild(QtWidgets.QCheckBox, "figureComposerGradientCheck")
+        is None
+    )
+    mixed_label = colors_page.findChild(
+        QtWidgets.QLabel, "figureComposerPlotSlicesMixedColorsLabel"
+    )
+    assert mixed_label is not None
+
+    tool._select_step_section("style")
+    style_page = tool.step_editor_stack.currentWidget()
+    assert style_page.findChild(QtWidgets.QComboBox, "figureComposerAxisCombo")
+    assert (
+        style_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
+        is None
+    )
+
+    tool._select_step_section("cuts")
+    cuts_page = tool.step_editor_stack.currentWidget()
+    assert cuts_page.findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
+    )
 
 
 def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:

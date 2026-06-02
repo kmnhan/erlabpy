@@ -117,6 +117,9 @@ _PLOT_SLICES_EXPLICIT_KWARGS = frozenset(
     )
 )
 _MISSING = object()
+_PLOT_SLICES_PANEL_LINE = "line"
+_PLOT_SLICES_PANEL_IMAGE = "image"
+_PLOT_SLICES_PANEL_MIXED = "mixed"
 
 
 def _operation_dim_names(
@@ -132,6 +135,31 @@ def _operation_dim_names(
     if dims:
         return tuple(dims)
     return tuple(_available_source_dims(tool._source_data, operation.sources))
+
+
+def _plot_slices_panel_kind(shape: _PlotSlicesShape) -> str:
+    if shape.plot_ndim == 1:
+        return _PLOT_SLICES_PANEL_LINE
+    return _PLOT_SLICES_PANEL_IMAGE
+
+
+def _plot_slices_batch_panel_kind(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> str:
+    operations = tuple(
+        target
+        for _index, target in tool._editable_operations()
+        if target.kind == FigureOperationKind.PLOT_SLICES
+    )
+    if not operations:
+        operations = (operation,)
+    kinds = {
+        _plot_slices_panel_kind(_plot_slices_shape(tool, target))
+        for target in operations
+    }
+    if len(kinds) == 1:
+        return kinds.pop()
+    return _PLOT_SLICES_PANEL_MIXED
 
 
 def _is_slice_kwarg_key(key: typing.Any, dims: Iterable[str]) -> bool:
@@ -281,8 +309,10 @@ def _build_plot_slices_editor(
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
     operation = _normalized_selection_operation(tool, operation)
     shape = _plot_slices_shape(tool, operation)
-    is_line_plot = shape.plot_ndim == 1
-    is_image_plot = shape.plot_ndim != 1
+    panel_kind = _plot_slices_batch_panel_kind(tool, operation)
+    is_line_plot = panel_kind == _PLOT_SLICES_PANEL_LINE
+    is_image_plot = panel_kind == _PLOT_SLICES_PANEL_IMAGE
+    is_mixed_panel_kind = panel_kind == _PLOT_SLICES_PANEL_MIXED
     cuts_page, basic_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesCutsPage"
     )
@@ -608,7 +638,7 @@ def _build_plot_slices_editor(
     if is_line_plot:
         line_color_text, line_color_mixed = tool._batch_text(
             operation,
-            lambda target: line_kw_text(target, "color", "c") or target.cmap or "",
+            lambda target: line_kw_text(target, "color", "c") or "",
             str,
         )
         line_color_edit = _ColorLineEditWidget(
@@ -885,7 +915,7 @@ def _build_plot_slices_editor(
             gradient_kwargs_edit,
             "Dict literal or keyword arguments forwarded as gradient_kw.",
         )
-    else:
+    elif is_image_plot:
         cmap_base, cmap_reversed = _cmap_base_and_reverse(operation.cmap)
         cmap_widget = QtWidgets.QWidget(colors_page)
         cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
@@ -1056,6 +1086,21 @@ def _build_plot_slices_editor(
             "Norm kwargs",
             norm_kwargs_edit,
             "Extra dict literal or keyword arguments for the norm constructor.",
+        )
+    elif is_mixed_panel_kind:
+        mixed_label = QtWidgets.QLabel(
+            "Selected plot_slices steps produce both image and line panels. "
+            "Select only image steps or only line steps to edit color controls.",
+            colors_page,
+        )
+        mixed_label.setObjectName("figureComposerPlotSlicesMixedColorsLabel")
+        mixed_label.setWordWrap(True)
+        mixed_label.setEnabled(False)
+        tool._add_form_row(
+            colors_layout,
+            "Colors",
+            mixed_label,
+            "Color controls are hidden for mixed image/line plot_slices selection.",
         )
 
     extra_text, extra_mixed = tool._batch_text(
@@ -1477,8 +1522,6 @@ def _plot_slices_kwargs(
         kwargs["cmap"] = operation.cmap
     if is_line_plot:
         line_kw = dict(operation.line_kw)
-        if operation.cmap and not any(key in line_kw for key in ("c", "color")):
-            line_kw["color"] = operation.cmap
         if line_kw:
             kwargs["line_kw"] = line_kw
         if operation.line_order is not None:
@@ -1955,9 +1998,11 @@ def _section_summary(
             ]
             return ", ".join(labels) if labels else "auto"
         case "colors":
-            shape = _plot_slices_shape(tool, operation)
-            if shape.plot_ndim == 1:
-                return line_kw_text(operation, "color", "c") or operation.cmap or "line"
+            panel_kind = _plot_slices_batch_panel_kind(tool, operation)
+            if panel_kind == _PLOT_SLICES_PANEL_MIXED:
+                return "mixed"
+            if panel_kind == _PLOT_SLICES_PANEL_LINE:
+                return line_kw_text(operation, "color", "c") or "line"
             return operation.cmap or "default"
         case "style":
             return operation.axis
