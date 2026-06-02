@@ -12,7 +12,7 @@ import xarray as xr
 from matplotlib import style as mpl_style
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._figurecomposer._code as figurecomposer_code
@@ -1625,6 +1625,44 @@ def test_figure_composer_gridspec_widget_resizes_selected_region(qtbot) -> None:
             col_stop=2,
         )
     )
+
+
+def test_figure_composer_gridspec_widget_hides_handles_after_outside_click(
+    qtbot,
+) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.layout_page)
+    tool.layout_mode_combo.setCurrentText("gridspec")
+    tool._setup_controls_changed()
+    tool.show()
+    qtbot.wait_until(lambda: tool.isVisible(), timeout=5000)
+
+    axis = tool.tool_status.setup.gridspec.root.axes[0]
+    widget = tool.gridspec_layout_widget
+    widget.resize(widget.sizeHint())
+    widget.set_selected_region(axis.axes_id)
+    assert widget.selected_region_id() == axis.axes_id
+    assert widget._region_handles_visible
+
+    outside_global_pos = tool.gridspec_status_label.mapToGlobal(QtCore.QPoint(1, 1))
+    widget._handle_application_event(
+        QtGui.QMouseEvent(
+            QtCore.QEvent.Type.MouseButtonPress,
+            QtCore.QPointF(1.0, 1.0),
+            QtCore.QPointF(outside_global_pos),
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.MouseButton.LeftButton,
+            QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+    )
+
+    assert widget.selected_region_id() == axis.axes_id
+    assert not widget._region_handles_visible
+    tool.gridspec_region_label_edit.setText("renamed")
+    tool._gridspec_region_label_changed()
+    assert tool.tool_status.setup.gridspec.root.axes[0].label == "renamed"
 
 
 def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:

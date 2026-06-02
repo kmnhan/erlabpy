@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import typing
+import weakref
 
 # Matplotlib's Qt backend should see the qtpy-selected binding first.
 # isort: off
@@ -37,6 +38,22 @@ class _GridSpecRegionInfo(typing.NamedTuple):
     span: FigureGridSpecSpanState
     label: str
     valid: bool = True
+
+
+class _GridSpecOutsideClickFilter(QtCore.QObject):
+    """Hide edit affordances when the active GridSpec view is clicked away from."""
+
+    def __init__(self, widget: QtWidgets.QWidget) -> None:
+        super().__init__(widget)
+        self._widget_ref = weakref.ref(widget)
+
+    def eventFilter(
+        self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> bool:
+        widget = self._widget_ref()
+        if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
+            typing.cast("_GridSpecViewWidget", widget)._handle_application_event(event)
+        return super().eventFilter(watched, event)
 
 
 def _step_toolbar_button(
@@ -523,6 +540,12 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         self._creation_kind: typing.Literal["axes", "grid"] = "axes"
         self._drag_creation_kind: typing.Literal["axes", "grid"] = "axes"
         self._hovered_axis_id: str | None = None
+        self._region_handles_visible = False
+        self._application: QtWidgets.QApplication | None = None
+        self._application_event_filter_installed = False
+        self._outside_click_filter = (
+            _GridSpecOutsideClickFilter(self) if mode == "edit" else None
+        )
         self.setObjectName(
             "figureComposerGridSpecLayoutWidget"
             if mode == "edit"
@@ -592,6 +615,15 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         self.updateGeometry()
         self.update()
 
+    def showEvent(self, event: QtGui.QShowEvent | None) -> None:
+        super().showEvent(event)
+        self._install_application_event_filter()
+
+    def hideEvent(self, event: QtGui.QHideEvent | None) -> None:
+        self._remove_application_event_filter()
+        self._set_region_handles_visible(False)
+        super().hideEvent(event)
+
     def set_creation_kind(self, kind: typing.Literal["axes", "grid"]) -> None:
         self._creation_kind = kind
 
@@ -599,12 +631,17 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         return self._selected_region_id
 
     def set_selected_region(self, region_id: str) -> None:
+        previous_region_id = self._selected_region_id
         if region_id and not any(
             region.region_id == region_id for region in self._regions
         ):
             self._selected_region_id = ""
         else:
             self._selected_region_id = region_id
+        if not self._selected_region_id:
+            self._region_handles_visible = False
+        elif self._selected_region_id != previous_region_id:
+            self._region_handles_visible = True
         self.update()
 
     def set_selected_axes_ids(
@@ -688,6 +725,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
             region = self._selected_region()
             if region is None:
                 return
+            self._set_region_handles_visible(True)
             self._drag_mode = "resize"
             self._drag_region_id = region.region_id
             self._resize_handle = handle
@@ -700,6 +738,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         if region is not None:
             self._reset_edit_drag()
             self._selected_region_id = region.region_id
+            self._set_region_handles_visible(True)
             self.sigRegionSelected.emit(region.region_id, region.kind)
             self.update()
             event.accept()
@@ -707,6 +746,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         cell = self._cell_at(pos)
         if cell is None:
             return
+        self._set_region_handles_visible(False)
         self._drag_mode = "create"
         self._drag_origin_cell = cell
         self._drag_current_cell = cell
@@ -815,6 +855,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         region = self._region_at(event.position().toPoint())
         if region is not None and region.kind == "grid":
             self._selected_region_id = region.region_id
+            self._set_region_handles_visible(True)
             self.sigRegionSelected.emit(region.region_id, region.kind)
             self.sigNestedGridActivated.emit(region.region_id)
             event.accept()
@@ -919,6 +960,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
                 self._mode == "edit"
                 and depth == 0
                 and child.grid_id == self._selected_region_id
+                and self._region_handles_visible
             )
             painter.setPen(QtGui.QPen(border, 1.0))
             painter.setBrush(QtGui.QBrush(nested_fill))
@@ -955,7 +997,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
             rect = self._span_rect(grid, grid_rect, axis.span)
             selected = (
                 axis.axes_id == self._selected_region_id
-                if self._mode == "edit" and depth == 0
+                if self._mode == "edit" and depth == 0 and self._region_handles_visible
                 else axis.axes_id in self._selected_axes
             )
             hovered = axis.axes_id == self._hovered_axis_id
@@ -1064,6 +1106,62 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
 
     def _axis_label(self, axes_id: str) -> str:
         return self._labels.get(axes_id, axes_id)
+
+    def _install_application_event_filter(self) -> None:
+        if (
+            self._mode != "edit"
+            or self._application_event_filter_installed
+            or self._outside_click_filter is None
+        ):
+            return
+        application = QtWidgets.QApplication.instance()
+        if isinstance(application, QtWidgets.QApplication):
+            application.installEventFilter(self._outside_click_filter)
+            self._application = application
+            self._application_event_filter_installed = True
+
+    def _remove_application_event_filter(self) -> None:
+        if not self._application_event_filter_installed:
+            return
+        application = self._application
+        event_filter = self._outside_click_filter
+        self._application = None
+        self._application_event_filter_installed = False
+        if (
+            application is not None
+            and event_filter is not None
+            and erlab.interactive.utils.qt_is_valid(application, event_filter)
+        ):
+            application.removeEventFilter(event_filter)
+
+    def _handle_application_event(self, event: QtCore.QEvent | None) -> None:
+        if (
+            self._mode != "edit"
+            or not self._region_handles_visible
+            or event is None
+            or not self.isVisible()
+        ):
+            return
+        if event.type() == QtCore.QEvent.Type.WindowDeactivate:
+            self._set_region_handles_visible(False)
+            return
+        if event.type() != QtCore.QEvent.Type.MouseButtonPress:
+            return
+        mouse_event = event if isinstance(event, QtGui.QMouseEvent) else None
+        if mouse_event is None:
+            return
+        editor_rect = QtCore.QRect(
+            self.mapToGlobal(QtCore.QPoint(0, 0)),
+            self.size(),
+        )
+        if not editor_rect.contains(mouse_event.globalPosition().toPoint()):
+            self._set_region_handles_visible(False)
+
+    def _set_region_handles_visible(self, visible: bool) -> None:
+        if self._region_handles_visible == visible:
+            return
+        self._region_handles_visible = visible
+        self.update()
 
     def _region_label(self, region_id: str) -> str:
         for region in self._regions:
