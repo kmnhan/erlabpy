@@ -695,6 +695,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         for button in tool.step_section_buttons.values()
     )
     assert tool.axes_selector.toolTip()
+    assert tool.axes_selector.focusPolicy() == QtCore.Qt.FocusPolicy.NoFocus
     annotate_kwargs_edit.setFocus()
     annotate_kwargs_edit.setText("fontsize=8, color='black'")
     annotate_kwargs_edit.editingFinished.emit()

@@ -226,7 +226,7 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         self._drag_additive = False
         self._hovered_axis: tuple[int, int] | None = None
         self.setObjectName("figureComposerAxesSelector")
-        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
         self.setMinimumHeight(118)
         self.setToolTip(
@@ -322,13 +322,6 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
                 self._axis_label(axis),
             )
 
-        if self.hasFocus():
-            focus_pen = QtGui.QPen(palette.color(QtGui.QPalette.ColorRole.Highlight))
-            focus_pen.setStyle(QtCore.Qt.PenStyle.DashLine)
-            painter.setPen(focus_pen)
-            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(self._grid_rect().adjusted(1, 1, -1, -1), 7, 7)
-
     def mousePressEvent(self, event: QtGui.QMouseEvent | None) -> None:
         if event is None or event.button() != QtCore.Qt.MouseButton.LeftButton:
             if event is not None:
@@ -337,7 +330,6 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         axis = self._axis_at(event.position().toPoint())
         if axis is None:
             return
-        self.setFocus(QtCore.Qt.FocusReason.MouseFocusReason)
         modifiers = event.modifiers()
         additive = self._has_toggle_modifier(modifiers)
         shift = bool(modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier)
