@@ -2928,6 +2928,36 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data = dict(source_data)
 
+    def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
+        if not uid_map:
+            return
+        changed = False
+        sources: list[FigureSourceState] = []
+        for source in self._recipe.sources:
+            updates: dict[str, typing.Any] = {}
+            if source.node_uid is not None and source.node_uid in uid_map:
+                updates["node_uid"] = uid_map[source.node_uid]
+            if source.provenance_spec is not None:
+                try:
+                    rebased = provenance.rebase_script_input_node_uids(
+                        source.provenance_spec, uid_map
+                    )
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    provenance_spec = rebased.model_dump(mode="json")
+                    if provenance_spec != source.provenance_spec:
+                        updates["provenance_spec"] = provenance_spec
+            if updates:
+                changed = True
+                sources.append(source.model_copy(update=updates))
+            else:
+                sources.append(source)
+        if not changed:
+            return
+        self._recipe = self._recipe.model_copy(update={"sources": tuple(sources)})
+        self.sigInfoChanged.emit()
+
     def _ensure_primary_source_data(self) -> None:
         if self._recipe.primary_source in self._source_data or not self._source_data:
             return

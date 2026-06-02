@@ -2951,6 +2951,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     - `validate_update_data` can normalize or reject incoming source data before
       `update_data` runs. Raise an exception to mark the source as unavailable.
 
+    - `rebase_source_node_uids` should update any internal source-node references
+      when a manager workspace is imported and saved node IDs are remapped.
+
     - `_cancel_background_work` can stop worker threads or other asynchronous work
       before `update_data` mutates the tool state. Override
       `BACKGROUND_TASK_TIMEOUT_MS` as needed to change the default wait timeout.
@@ -4250,6 +4253,9 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
             "Subclasses of ToolWindow must implement update_data() to support "
             "updates from ImageTool data."
         )
+
+    def rebase_source_node_uids(self, uid_map: Mapping[str, str]) -> None:
+        """Rebase internal source-node references after workspace import."""
 
     @property
     def preview_imageitem(self) -> pg.ImageItem | None:

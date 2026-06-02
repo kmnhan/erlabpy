@@ -465,9 +465,7 @@ class _LineageController:
                 continue
             if node.provenance_spec is None:
                 continue
-            if node.tool_window is not None and hasattr(
-                node.tool_window, "rebase_source_node_uids"
-            ):
+            if node.tool_window is not None:
                 node.tool_window.rebase_source_node_uids(uid_map)
             rebased = provenance.rebase_script_input_node_uids(
                 node.provenance_spec,

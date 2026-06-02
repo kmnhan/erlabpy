@@ -43,7 +43,7 @@ from erlab.interactive._figurecomposer._operations import (
 )
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
-from erlab.interactive.imagetool import itool
+from erlab.interactive.imagetool import itool, provenance
 from tests.interactive.imagetool.manager.helpers import select_tools
 
 _COLLAPSED_LAYOUT_WARNING = (
@@ -497,6 +497,47 @@ def test_figure_composer_gridspec_plot_roundtrip_restores_exact_render(
 
     restored = _assert_serialized_plot_restores_exactly(tool, qtbot, tmp_path)
     xr.testing.assert_identical(restored.source_data()["line_source"], line_map)
+
+
+def test_figure_composer_rebases_source_node_uids(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    nested_spec = provenance.ToolProvenanceSpec(
+        kind="script",
+        start_label="nested",
+        active_name="nested",
+        script_inputs=(
+            provenance.ScriptInput(
+                name="nested",
+                label="nested",
+                node_uid="old-nested",
+            ),
+        ),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(
+                    name="data",
+                    label="data",
+                    node_uid="old-source",
+                    provenance_spec=nested_spec.model_dump(mode="json"),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.rebase_source_node_uids(
+        {"old-source": "new-source", "old-nested": "new-nested"}
+    )
+
+    source = tool.tool_status.sources[0]
+    assert source.node_uid == "new-source"
+    rebased_spec = provenance.parse_tool_provenance_spec(source.provenance_spec)
+    assert rebased_spec is not None
+    assert rebased_spec.script_inputs[0].node_uid == "new-nested"
 
 
 def test_axes_selector_size_hint_tracks_grid(qtbot):
