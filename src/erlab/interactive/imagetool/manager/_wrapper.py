@@ -135,6 +135,35 @@ def _preview_from_imagetool(
     return height / width, pixmap.transformed(QtGui.QTransform().scale(1.0, -1.0))
 
 
+def _preview_image_for_node(node: object) -> tuple[float, QtGui.QPixmap]:
+    fallback = (float("NaN"), QtGui.QPixmap())
+    dynamic_node = typing.cast("typing.Any", node)
+    try:
+        preview = dynamic_node._preview_image
+    except AttributeError:
+        preview = None
+    if (
+        isinstance(preview, tuple)
+        and len(preview) == 2
+        and isinstance(preview[1], QtGui.QPixmap)
+    ):
+        with contextlib.suppress(TypeError, ValueError):
+            return float(preview[0]), preview[1]
+
+    try:
+        imagetool = dynamic_node.imagetool
+    except (AttributeError, RuntimeError, ValueError):
+        return fallback
+    try:
+        return _preview_from_imagetool(
+            typing.cast("ImageTool | None", imagetool),
+            fallback[0],
+            fallback[1],
+        )
+    except (AttributeError, RuntimeError, ValueError):
+        return fallback
+
+
 @dataclass(frozen=True)
 class _MetadataField:
     label: str

@@ -18,6 +18,7 @@ from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
     _MetadataField,
+    _preview_image_for_node,
 )
 
 if typing.TYPE_CHECKING:
@@ -317,7 +318,9 @@ class _DetailsPanelController:
                 self._manager._set_metadata_node(node)
 
                 if node.is_imagetool:
-                    self._manager.preview_widget.setPixmap(node._preview_image[1])
+                    self._manager.preview_widget.setPixmap(
+                        _preview_image_for_node(node)[1]
+                    )
                     self._manager.preview_widget.setVisible(True)
                     return
 

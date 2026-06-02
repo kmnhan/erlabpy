@@ -21,6 +21,7 @@ import erlab
 from erlab.interactive.imagetool.manager._wrapper import (
     _ImageToolWrapper,
     _ManagedWindowNode,
+    _preview_image_for_node,
 )
 
 if typing.TYPE_CHECKING:
@@ -494,7 +495,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 or self._force_hover
             )
         ):
-            self._show_popup(*tool_wrapper._preview_image, option)
+            self._show_popup(*_preview_image_for_node(tool_wrapper), option)
 
     def _paint_childtool(
         self,
@@ -629,7 +630,7 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 return
 
             if child_node.imagetool is not None:
-                self._show_popup(*child_node._preview_image, option)
+                self._show_popup(*_preview_image_for_node(child_node), option)
                 return
 
             preview_pixmap = (
