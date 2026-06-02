@@ -1785,6 +1785,36 @@ def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
     assert any(not region.valid for region in tool.gridspec_layout_widget._regions)
 
 
+def test_figure_composer_gridspec_row_shrink_ignores_invalid_regions(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.layout_page)
+    tool.layout_mode_combo.setCurrentText("gridspec")
+    tool.nrows_spin.setValue(2)
+    widget = tool.gridspec_layout_widget
+    widget.resize(widget.sizeHint())
+
+    qtbot.mousePress(
+        widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=widget.cell_rect((1, 0)).center(),
+    )
+    qtbot.mouseRelease(
+        widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=widget.cell_rect((1, 0)).center(),
+    )
+    assert len(tool.tool_status.setup.gridspec.root.axes) == 2
+    removed_span = tool.tool_status.setup.gridspec.root.axes[1].span
+
+    tool.nrows_spin.setValue(1)
+    assert any(not region.valid for region in widget._regions)
+    assert widget.span_rect(removed_span) == QtCore.QRect()
+    assert widget._region_at(widget.cell_rect((0, 0)).center()) is not None
+    qtbot.mouseMove(widget, widget.cell_rect((0, 0)).center())
+
+
 def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)

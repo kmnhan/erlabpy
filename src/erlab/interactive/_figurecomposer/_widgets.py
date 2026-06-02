@@ -1038,6 +1038,8 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         )
 
     def span_rect(self, span: FigureGridSpecSpanState) -> QtCore.QRect:
+        if not self._span_within_grid(self._display_grid, span):
+            return QtCore.QRect()
         return self._span_rect(self._display_grid, self._grid_rect(), span)
 
     def _collect_axis_rects(
@@ -1420,6 +1422,10 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
 
     def _region_at(self, pos: QtCore.QPoint) -> _GridSpecRegionInfo | None:
         for region in reversed(self._regions):
+            if not region.valid or not self._span_within_grid(
+                self._display_grid, region.span
+            ):
+                continue
             if self.span_rect(region.span).contains(pos):
                 return region
         return None
