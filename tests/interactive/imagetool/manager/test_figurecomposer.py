@@ -21,6 +21,7 @@ import erlab
 import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
+import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
@@ -183,6 +184,65 @@ def _render_figure_composer_rgba(tool: FigureComposerTool) -> np.ndarray:
         with figurecomposer_defaults._figure_draw_context():
             canvas.draw()
         return np.asarray(canvas.buffer_rgba()).copy()
+
+
+def test_figure_composer_source_blob_ignores_stale_backend_encoding() -> None:
+    data = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": [0.0, 1.0, 2.0]},
+        name="secondary",
+    )
+    data.encoding["compression"] = "unknown"
+    data.encoding["source"] = "stale-source.nc"
+    data.coords["x"].encoding["compression"] = "unknown"
+
+    blob = figurecomposer_sources._source_data_to_blob(data)
+    restored = figurecomposer_sources._source_data_from_blob(blob)
+
+    xr.testing.assert_equal(restored, data)
+    assert data.encoding["compression"] == "unknown"
+    assert data.coords["x"].encoding["compression"] == "unknown"
+
+
+def test_figure_composer_secondary_source_roundtrip_ignores_stale_backend_encoding(
+    qtbot,
+    tmp_path,
+) -> None:
+    primary = xr.DataArray(
+        np.arange(3.0),
+        dims=("x",),
+        coords={"x": [0.0, 1.0, 2.0]},
+        name="primary",
+    )
+    secondary = xr.DataArray(
+        np.arange(3.0) + 10.0,
+        dims=("x",),
+        coords={"x": [0.0, 1.0, 2.0]},
+        name="secondary",
+    )
+    secondary.encoding["compression"] = "unknown"
+    secondary.encoding["source"] = "stale-source.nc"
+    secondary.coords["x"].encoding["compression"] = "unknown"
+    recipe = FigureRecipeState(
+        sources=(
+            FigureSourceState(name="primary", label="primary"),
+            FigureSourceState(name="secondary", label="secondary"),
+        ),
+        primary_source="primary",
+    )
+    tool = FigureComposerTool(
+        primary,
+        recipe=recipe,
+        source_data={"primary": primary, "secondary": secondary},
+    )
+    qtbot.addWidget(tool)
+
+    restored = _restored_figure_composer_from_netcdf(tool, qtbot, tmp_path)
+
+    xr.testing.assert_equal(restored.source_data()["secondary"], secondary)
+    assert secondary.encoding["compression"] == "unknown"
+    assert secondary.coords["x"].encoding["compression"] == "unknown"
 
 
 def _restored_figure_composer_from_netcdf(
