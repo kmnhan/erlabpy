@@ -486,6 +486,19 @@ _LABEL_LOCATION_OPTIONS = (
     "lower center",
     "lower right",
 )
+_LEGEND_LOC_OPTIONS = (
+    "best",
+    "upper right",
+    "upper left",
+    "lower left",
+    "lower right",
+    "right",
+    "center left",
+    "center right",
+    "lower center",
+    "upper center",
+    "center",
+)
 _FONT_WEIGHT_OPTIONS = (
     "ultralight",
     "light",
@@ -502,6 +515,86 @@ _FONT_WEIGHT_OPTIONS = (
     "extra bold",
     "black",
 )
+
+
+def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
+    return (
+        _kwarg_combo(
+            "Location",
+            "loc",
+            _LEGEND_LOC_OPTIONS,
+            "best",
+            f"figureComposer{prefix}MethodLegendLocCombo",
+            "Legend location passed as loc.",
+        ),
+        _int_kwarg(
+            "Columns",
+            "ncols",
+            f"figureComposer{prefix}MethodLegendColumnsEdit",
+            "Number of legend columns passed as ncols.",
+        ),
+        _text_kwarg(
+            "Title",
+            "title",
+            f"figureComposer{prefix}MethodLegendTitleEdit",
+            "Optional legend title.",
+        ),
+        _bool_kwarg_combo(
+            "Frame",
+            "frameon",
+            f"figureComposer{prefix}MethodLegendFrameCombo",
+            "Show or hide the legend frame.",
+            default=True,
+        ),
+        _text_kwarg(
+            "Font size",
+            "fontsize",
+            f"figureComposer{prefix}MethodLegendFontSizeEdit",
+            "Legend text size.\nUse a named size or a numeric value.",
+        ),
+        _text_kwarg(
+            "Title size",
+            "title_fontsize",
+            f"figureComposer{prefix}MethodLegendTitleFontSizeEdit",
+            "Legend title text size.\nUse a named size or a numeric value.",
+        ),
+        _float_kwarg(
+            "Marker scale",
+            "markerscale",
+            f"figureComposer{prefix}MethodLegendMarkerScaleEdit",
+            "Scale factor for marker size in the legend.",
+        ),
+        _float_kwarg(
+            "Label spacing",
+            "labelspacing",
+            f"figureComposer{prefix}MethodLegendLabelSpacingEdit",
+            "Vertical spacing between legend labels.",
+        ),
+        _float_kwarg(
+            "Handle length",
+            "handlelength",
+            f"figureComposer{prefix}MethodLegendHandleLengthEdit",
+            "Length of the legend handle.",
+        ),
+        _float_kwarg(
+            "Handle text pad",
+            "handletextpad",
+            f"figureComposer{prefix}MethodLegendHandleTextPadEdit",
+            "Spacing between the handle and legend text.",
+        ),
+        _float_kwarg(
+            "Column spacing",
+            "columnspacing",
+            f"figureComposer{prefix}MethodLegendColumnSpacingEdit",
+            "Horizontal spacing between legend columns.",
+        ),
+        _literal_kwarg(
+            "Anchor",
+            "bbox_to_anchor",
+            f"figureComposer{prefix}MethodLegendAnchorEdit",
+            "Optional bbox_to_anchor value.\nUse a tuple like 1.0, 1.0.",
+        ),
+    )
 
 
 AXES_METHODS: dict[str, MethodSpec] = {
@@ -534,6 +627,15 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "Text string passed as the third ax.text argument.",
             ),
         ),
+    ),
+    "legend": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="legend",
+        label="Legend",
+        tooltip="Runs ax.legend on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        controls=_legend_controls("Axes"),
     ),
     "axvline": MethodSpec(
         family=FigureMethodFamily.AXES,
@@ -853,6 +955,15 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "Text string passed to fig.suptitle.",
             ),
         ),
+    ),
+    "legend": MethodSpec(
+        family=FigureMethodFamily.FIGURE,
+        name="legend",
+        label="Legend",
+        tooltip="Runs fig.legend for a figure-level legend.",
+        target_domain=MethodTargetDomain.FIGURE,
+        call_policy=MethodCallPolicy.BOUND_FIGURE,
+        controls=_legend_controls("Figure"),
     ),
 }
 

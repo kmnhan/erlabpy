@@ -20,6 +20,7 @@ from erlab.interactive._figurecomposer._sources import (
     _valid_source_variable,
 )
 from erlab.interactive._figurecomposer._state import (
+    FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
 )
@@ -191,19 +192,21 @@ def _build_line_editor(
         "Choose a coordinate to plot that coordinate instead.",
     )
 
-    for label, attr, value, tooltip in (
+    for label, attr, value, tooltip, object_name in (
         (
             "Legend labels",
             "line_labels",
             _format_string_tuple(operation.line_labels),
             "Optional legend labels.\n"
             "Use one value for every profile, or one value per profile.",
+            "figureComposerLineLabelsEdit",
         ),
         (
             "Color",
             "line_color",
             operation.line_color or "",
             "Shared Matplotlib color for every profile.",
+            "figureComposerLineColorEdit",
         ),
         (
             "Profile colors",
@@ -211,20 +214,27 @@ def _build_line_editor(
             _format_string_tuple(operation.line_colors),
             "Optional per-profile Matplotlib colors.\n"
             "Use comma-separated values or a Python list literal.",
+            "figureComposerLineColorsEdit",
         ),
     ):
         edit = tool._line_edit(value)
-        edit.editingFinished.connect(
-            lambda attr=attr, edit=edit: tool._update_current_operation(
-                **{
-                    attr: (
-                        _string_tuple_from_text(edit.text())
-                        if attr in {"line_labels", "line_colors"}
-                        else edit.text().strip() or None
-                    )
-                }
+        edit.setObjectName(object_name)
+        if attr == "line_labels":
+            edit.editingFinished.connect(
+                lambda edit=edit: _update_current_line_labels(tool, edit.text())
             )
-        )
+        elif attr == "line_colors":
+            edit.editingFinished.connect(
+                lambda edit=edit: tool._update_current_operation(
+                    line_colors=_string_tuple_from_text(edit.text())
+                )
+            )
+        else:
+            edit.editingFinished.connect(
+                lambda edit=edit: tool._update_current_operation(
+                    line_color=edit.text().strip() or None
+                )
+            )
         tool._add_form_row(tool.operation_editor_layout, label, edit, tooltip)
 
     selection_edit = tool._line_edit(_format_dict(operation.line_selection))
@@ -404,6 +414,54 @@ def _update_current_line_offset_source(tool: FigureComposerTool, source: str) ->
     tool._update_current_operation_rebuild(**updates)
 
 
+def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
+    current = tool._current_operation()
+    if current is None:
+        return
+    index, operation = current
+    labels = _string_tuple_from_text(text)
+    updated_operation = operation.model_copy(update={"line_labels": labels})
+    operations = list(tool._recipe.operations)
+    operations[index] = updated_operation
+    if (
+        labels
+        and not operation.line_labels
+        and not _has_later_legend_step(operations, index, updated_operation)
+    ):
+        operations.insert(
+            index + 1,
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="legend",
+                label="Legend",
+                axes=updated_operation.axes.model_copy(deep=True),
+            ),
+        )
+    tool._recipe = tool._recipe.model_copy(update={"operations": tuple(operations)})
+    tool._refresh_operation_list()
+    tool.operation_list.setCurrentRow(index)
+    tool._sync_axes_selector()
+    tool._refresh_step_section_button_texts()
+    tool._update_source_status(updated_operation)
+    _rendering._render_preview(tool)
+    tool.sigInfoChanged.emit()
+
+
+def _has_later_legend_step(
+    operations: list[FigureOperationState],
+    index: int,
+    operation: FigureOperationState,
+) -> bool:
+    axes = operation.axes.model_dump()
+    return any(
+        later.kind == FigureOperationKind.METHOD
+        and later.method_family == FigureMethodFamily.AXES
+        and later.method_name == "legend"
+        and later.axes.model_dump() == axes
+        for later in operations[index + 1 :]
+    )
+
+
 def _render_line(
     tool: FigureComposerTool, operation: FigureOperationState, axs: np.ndarray
 ) -> None:
@@ -431,8 +489,6 @@ def _render_line(
                 axis.plot(line_values.values, coordinate.values, **kwargs)
             else:
                 line_values.plot(ax=axis, x=operation.line_x, **kwargs)
-        if _line_has_legend(operation):
-            axis.legend()
 
 
 def _render_one_profile_per_axis(
@@ -457,8 +513,6 @@ def _render_one_profile_per_axis(
             axis.plot(values.values, coordinate.values, **kwargs)
         else:
             axis.plot(coordinate.values, values.values, **kwargs)
-        if _line_has_legend(operation):
-            axis.legend()
 
 
 def _line_data_items(
@@ -576,10 +630,6 @@ def _line_styles_for_profiles(
             kwargs["color"] = color
         styles.append(kwargs)
     return tuple(styles)
-
-
-def _line_has_legend(operation: FigureOperationState) -> bool:
-    return bool(operation.line_labels)
 
 
 def _line_text_values(
@@ -705,8 +755,6 @@ def _regular_line_code(
             call_args += f", {kwargs_text}"
         plot_target = "profile" if value_expr == "profile" else f"({value_expr})"
         lines.append(f"        {plot_target}.plot({call_args})")
-    if _line_has_legend(operation):
-        lines.append("    ax.legend()")
     return lines
 
 
@@ -843,8 +891,6 @@ def _one_profile_per_axis_code(
     if kwargs_text:
         call_args += f", {kwargs_text}"
     lines.append(f"    ax.plot({call_args})")
-    if _line_has_legend(operation):
-        lines.append("    ax.legend()")
     return lines
 
 

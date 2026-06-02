@@ -1420,6 +1420,119 @@ def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
     assert namespace["fig"]._supxlabel.get_text() == "Momentum"
 
 
+def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
+    profile = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="profile",
+    )
+    line_operation = FigureOperationState.line(
+        label="profile",
+        source="profile",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"line_x": "kx", "line_labels": ("profile",)})
+    axes_legend_operation = FigureOperationState.method(
+        family=FigureMethodFamily.AXES,
+        name="legend",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "method_kwargs": {
+                "loc": "upper right",
+                "ncols": 1,
+                "title": "Axis legend",
+                "frameon": False,
+                "fontsize": "small",
+                "title_fontsize": "medium",
+                "markerscale": 1.5,
+                "labelspacing": 0.2,
+                "handlelength": 1.0,
+                "handletextpad": 0.3,
+                "columnspacing": 0.5,
+                "bbox_to_anchor": (1.0, 1.0),
+            }
+        }
+    )
+    figure_legend_operation = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name="legend",
+    ).model_copy(
+        update={
+            "method_kwargs": {
+                "loc": "lower center",
+                "ncols": 1,
+                "title": "Figure legend",
+                "frameon": True,
+                "bbox_to_anchor": (0.5, 0.0),
+            }
+        }
+    )
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(
+                line_operation,
+                axes_legend_operation,
+                figure_legend_operation,
+            ),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(1)
+    tool._select_step_section("method")
+    loc_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodLegendLocCombo"
+    )
+    columns_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodLegendColumnsEdit"
+    )
+    title_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodLegendTitleEdit"
+    )
+    assert loc_combo is not None
+    assert columns_edit is not None
+    assert title_edit is not None
+    assert loc_combo.currentText() == "upper right"
+    assert columns_edit.text() == "1"
+    assert title_edit.text() == "Axis legend"
+
+    tool.operation_list.setCurrentRow(2)
+    tool._select_step_section("method")
+    assert "axes" not in tool.step_section_buttons
+    figure_loc_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerFigureMethodLegendLocCombo"
+    )
+    assert figure_loc_combo is not None
+    assert figure_loc_combo.currentText() == "lower center"
+
+    fig = tool.figure
+    figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    axis_legend = fig.axes[0].get_legend()
+    assert axis_legend is not None
+    assert axis_legend.get_title().get_text() == "Axis legend"
+    assert axis_legend.get_frame_on() is False
+    assert [text.get_text() for text in axis_legend.get_texts()] == ["profile"]
+    figure_legend = fig.legends[0]
+    assert figure_legend.get_title().get_text() == "Figure legend"
+    assert figure_legend.get_frame_on() is True
+
+    code = tool.generated_code()
+    assert 'ax.legend(loc="upper right", ncols=1' in code
+    assert 'title="Axis legend"' in code
+    assert "bbox_to_anchor=(1.0, 1.0)" in code
+    assert 'fig.legend(loc="lower center", ncols=1' in code
+    assert 'title="Figure legend"' in code
+
+    namespace: dict[str, typing.Any] = {"profile": profile}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].axes[0].get_legend() is not None
+    assert namespace["fig"].legends[0].get_title().get_text() == "Figure legend"
+
+
 def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
     data = xr.DataArray(
         np.arange(8.0).reshape(2, 2, 2),
@@ -1965,6 +2078,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
 
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    assert fig.axes[0].get_legend() is None
     for index, line in enumerate(fig.axes[0].lines):
         np.testing.assert_allclose(line.get_xdata(), profile_data["kx"].values)
         np.testing.assert_allclose(
@@ -1974,7 +2088,9 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         assert line.get_color() == ("red", "green", "blue")[index]
 
     namespace: dict[str, typing.Any] = {"profile_data": profile_data}
-    exec(tool.generated_code(), namespace)  # noqa: S102
+    code = tool.generated_code()
+    assert "ax.legend()" not in code
+    exec(code, namespace)  # noqa: S102
     for index, line in enumerate(namespace["fig"].axes[0].lines):
         np.testing.assert_allclose(line.get_xdata(), profile_data["kx"].values)
         np.testing.assert_allclose(
@@ -2161,6 +2277,55 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
     )
     line_action.trigger()
     assert unseeded_tool.tool_status.operations[-1].line_placement == "all_axes"
+
+
+def test_figure_composer_line_labels_auto_add_axes_legend_step(qtbot) -> None:
+    profile = xr.DataArray(
+        np.array([1.0, 2.0, 3.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 0.0, 1.0]},
+        name="profile",
+    )
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(
+                FigureOperationState.line(
+                    label="profile",
+                    source="profile",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("line")
+    labels_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerLineLabelsEdit"
+    )
+    assert labels_edit is not None
+
+    labels_edit.setText("profile A")
+    labels_edit.editingFinished.emit()
+
+    assert tool.operation_list.currentRow() == 0
+    assert len(tool.tool_status.operations) == 2
+    line_operation, legend_operation = tool.tool_status.operations
+    assert line_operation.line_labels == ("profile A",)
+    assert legend_operation.kind == FigureOperationKind.METHOD
+    assert legend_operation.method_family == FigureMethodFamily.AXES
+    assert legend_operation.method_name == "legend"
+    assert legend_operation.axes == line_operation.axes
+
+    labels_edit.setText("profile B")
+    labels_edit.editingFinished.emit()
+
+    assert len(tool.tool_status.operations) == 2
+    assert tool.tool_status.operations[0].line_labels == ("profile B",)
 
 
 def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
