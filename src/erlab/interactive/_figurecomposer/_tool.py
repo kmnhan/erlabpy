@@ -100,6 +100,20 @@ _PERSISTED_SOURCE_VAR_PREFIX = "_figure_composer_source_payload_"
 _PERSISTED_SOURCE_DIM_PREFIX = "_figure_composer_source_payload_bytes_"
 
 
+def _target_axes_count_text(count: int) -> str:
+    suffix = "axis" if count == 1 else "axes"
+    return f"{count} target {suffix}"
+
+
+def _removed_axes_summary_text(count: int) -> str:
+    return f"{_target_axes_count_text(count)} removed"
+
+
+def _removed_axes_status_text(count: int, layout: str) -> str:
+    verb = "was" if count == 1 else "were"
+    return f"{_target_axes_count_text(count)} {verb} removed by the {layout}."
+
+
 class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     """Editable Matplotlib figure recipe window."""
 
@@ -1202,8 +1216,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
             elif invalid_axes_ids:
                 self.target_axes_status_label.setText(
-                    "Target axes removed by the current GridSpec layout: "
-                    + ", ".join(invalid_axes_ids)
+                    _removed_axes_status_text(
+                        len(invalid_axes_ids), "current GridSpec layout"
+                    )
                 )
             else:
                 if grid_mode:
@@ -1321,7 +1336,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._recipe.setup, selection.axes_ids
             )
             if invalid_ids:
-                return "removed axes " + ", ".join(invalid_ids)
+                return _removed_axes_summary_text(len(invalid_ids))
             valid_ids = _gridspec_valid_axes_ids(self._recipe.setup, selection.axes_ids)
             if not valid_ids:
                 return "none"

@@ -1800,7 +1800,14 @@ def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> N
     tool.gridspec_layout_widget.set_selected_region(first_axes_id)
     tool._gridspec_delete_selected_region()
     assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
-    assert "removed axes" in tool._axes_target_text(tool.tool_status.operations[0].axes)
+    assert tool.tool_status.operations[0].axes.axes_ids == (first_axes_id,)
+    target_text = tool._axes_target_text(tool.tool_status.operations[0].axes)
+    assert target_text == "1 target axis removed"
+    assert first_axes_id not in target_text
+    tool._sync_axes_selector()
+    status_text = tool.target_axes_status_label.text()
+    assert status_text == "1 target axis was removed by the current GridSpec layout."
+    assert first_axes_id not in status_text
 
 
 def test_figure_composer_gridspec_delete_selects_nearby_axes(qtbot) -> None:
