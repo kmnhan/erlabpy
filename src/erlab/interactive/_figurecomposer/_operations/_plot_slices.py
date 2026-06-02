@@ -998,27 +998,101 @@ def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
     return operation.sources
 
 
+def _plot_source_check_state(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    source_name: str,
+) -> QtCore.Qt.CheckState:
+    editable = tool._editable_operations()
+    if len(editable) <= 1:
+        return (
+            QtCore.Qt.CheckState.Checked
+            if source_name in operation.sources
+            else QtCore.Qt.CheckState.Unchecked
+        )
+    selected_count = sum(source_name in target.sources for _index, target in editable)
+    if selected_count == 0:
+        return QtCore.Qt.CheckState.Unchecked
+    if selected_count == len(editable):
+        return QtCore.Qt.CheckState.Checked
+    return QtCore.Qt.CheckState.PartiallyChecked
+
+
+def _plot_source_check_changed(
+    tool: FigureComposerTool,
+    source_name: str,
+    check: QtWidgets.QCheckBox,
+) -> None:
+    if tool._updating_controls:
+        return
+    state = check.checkState()
+    if state == QtCore.Qt.CheckState.PartiallyChecked:
+        return
+    available_sources = tool._source_names()
+    checked = state == QtCore.Qt.CheckState.Checked
+
+    def update_operation(
+        _index: int, target: FigureOperationState
+    ) -> FigureOperationState:
+        source_set = set(target.sources)
+        if checked:
+            source_set.add(source_name)
+        else:
+            source_set.discard(source_name)
+        ordered_sources = tuple(
+            source for source in available_sources if source in source_set
+        )
+        missing_sources = tuple(
+            source for source in target.sources if source not in available_sources
+        )
+        return target.model_copy(update={"sources": ordered_sources + missing_sources})
+
+    tool._update_operations(
+        update_operation,
+        rebuild_editor=True,
+        defer_editor_rebuild=True,
+    )
+
+
 def _build_source_editor(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> None:
-    sources_edit = tool._line_edit(
-        ", ".join(operation.sources), parent=tool.step_source_controls
-    )
-    sources_edit.setToolTip(
-        "Comma-separated source names passed as maps to plot_slices."
-    )
-    sources_edit.editingFinished.connect(
-        lambda edit=sources_edit: tool._update_current_operation_rebuild(
-            sources=tuple(
-                name.strip() for name in edit.text().split(",") if name.strip()
+    selector = QtWidgets.QWidget(tool.step_source_controls)
+    selector.setObjectName("figureComposerPlotSlicesSourceSelector")
+    layout = QtWidgets.QGridLayout(selector)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setHorizontalSpacing(8)
+    layout.setVerticalSpacing(2)
+    source_names = tool._source_names()
+    if source_names:
+        for index, source_name in enumerate(source_names):
+            check = QtWidgets.QCheckBox(source_name, selector)
+            check.setObjectName(f"figureComposerPlotSlicesSourceCheck_{index}")
+            check.setProperty("figure_source_name", source_name)
+            check.setToolTip(
+                "Include this DataArray in the maps passed to plot_slices."
             )
-        )
-    )
+            state = _plot_source_check_state(tool, operation, source_name)
+            check.setTristate(state == QtCore.Qt.CheckState.PartiallyChecked)
+            check.setCheckState(state)
+            check.stateChanged.connect(
+                lambda _state, source_name=source_name, check=check: (
+                    _plot_source_check_changed(tool, source_name, check)
+                )
+            )
+            layout.addWidget(check, index // 2, index % 2)
+    else:
+        label = QtWidgets.QLabel("No source arrays are available.", selector)
+        label.setEnabled(False)
+        layout.addWidget(label, 0, 0)
+    layout.setColumnStretch(0, 1)
+    layout.setColumnStretch(1, 1)
+    selector.setToolTip("Select one or more DataArrays to pass as maps to plot_slices.")
     tool._add_form_row(
         tool.step_source_controls_layout,
-        "Plot data",
-        sources_edit,
-        sources_edit.toolTip(),
+        "Input maps",
+        selector,
+        selector.toolTip(),
     )
 
 

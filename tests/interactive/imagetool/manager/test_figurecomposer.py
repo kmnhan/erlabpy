@@ -96,6 +96,14 @@ def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     )
 
 
+def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckBox]:
+    return {
+        str(source_name): check
+        for check in tool.step_source_controls.findChildren(QtWidgets.QCheckBox)
+        if (source_name := check.property("figure_source_name")) is not None
+    }
+
+
 def _render_figure_composer_rgba(tool: FigureComposerTool) -> np.ndarray:
     with figurecomposer_defaults._figure_style_context():
         figure = Figure(
@@ -191,6 +199,103 @@ def _figure_composer_line_slice_source(name: str = "line_map") -> xr.DataArray:
         dims=("eV", "kx"),
         coords={"eV": eV, "kx": kx},
         name=name,
+    )
+
+
+def test_figure_composer_plot_slices_source_selector_updates_sources(qtbot) -> None:
+    first = _figure_composer_image_source("first")
+    second = _figure_composer_image_source("second")
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="first_source", label="first"),
+                FigureSourceState(name="second_source", label="second"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("first_source",),
+                    axes=FigureAxesSelectionState(),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+            ),
+            primary_source="first_source",
+        ),
+        source_data={"first_source": first, "second_source": second},
+    )
+    qtbot.addWidget(tool)
+    tool._select_step_section("sources")
+
+    selector = tool.step_source_controls.findChild(
+        QtWidgets.QWidget, "figureComposerPlotSlicesSourceSelector"
+    )
+    assert selector is not None
+    assert not tool.step_source_controls.findChildren(QtWidgets.QLineEdit)
+    checks = _plot_source_checks(tool)
+    assert set(checks) == {"first_source", "second_source"}
+    assert checks["first_source"].checkState() == QtCore.Qt.CheckState.Checked
+    assert checks["second_source"].checkState() == QtCore.Qt.CheckState.Unchecked
+
+    checks["second_source"].setCheckState(QtCore.Qt.CheckState.Checked)
+
+    assert tool.tool_status.operations[0].sources == (
+        "first_source",
+        "second_source",
+    )
+
+
+def test_figure_composer_plot_slices_source_selector_batch_toggles_sources(
+    qtbot,
+) -> None:
+    first = _figure_composer_image_source("first")
+    second = _figure_composer_image_source("second")
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="first_source", label="first"),
+                FigureSourceState(name="second_source", label="second"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="first",
+                    sources=("first_source",),
+                    axes=FigureAxesSelectionState(),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+                FigureOperationState.plot_slices(
+                    label="second",
+                    sources=("second_source",),
+                    axes=FigureAxesSelectionState(),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+            ),
+            primary_source="first_source",
+        ),
+        source_data={"first_source": first, "second_source": second},
+    )
+    qtbot.addWidget(tool)
+    _select_operation_rows(tool, (0, 1))
+    tool._select_step_section("sources")
+
+    checks = _plot_source_checks(tool)
+    assert checks["first_source"].checkState() == (
+        QtCore.Qt.CheckState.PartiallyChecked
+    )
+    assert checks["second_source"].checkState() == (
+        QtCore.Qt.CheckState.PartiallyChecked
+    )
+
+    checks["first_source"].setCheckState(QtCore.Qt.CheckState.Checked)
+
+    assert tool.tool_status.operations[0].sources == ("first_source",)
+    assert tool.tool_status.operations[1].sources == (
+        "first_source",
+        "second_source",
     )
 
 
