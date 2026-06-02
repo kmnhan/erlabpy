@@ -872,6 +872,76 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
         figurecomposer_code._axes_code(tool, empty_selection, for_plot_slices=False)
 
 
+def test_figure_composer_gridspec_to_subplots_preserves_targets(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    main_axis = FigureGridSpecAxesState(
+        axes_id="main-axis",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=2,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    child_grid = FigureGridSpecGridState(
+        grid_id="child-grid",
+        nrows=2,
+        ncols=1,
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=1,
+            col_stop=2,
+        ),
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="child-axis",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        grid_id="root",
+                        nrows=2,
+                        ncols=2,
+                        axes=(main_axis,),
+                        child_grids=(child_grid,),
+                    )
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="grid",
+                    axes=FigureAxesSelectionState(axes_ids=("main-axis", "child-axis")),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.layout_mode_combo.setCurrentText("subplots")
+    operation = tool.tool_status.operations[0]
+    assert operation.axes.axes == ((0, 0), (1, 0), (0, 1))
+    assert not tool._operation_has_invalid_axes(operation)
+    namespace: dict[str, typing.Any] = {}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert namespace["axs"].shape == (2, 2)
+
+
 def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
@@ -4350,6 +4420,78 @@ def test_manager_create_figure_uses_first_selected_colormap(
         assert operation.norm_gamma == pytest.approx(0.75)
         assert operation.vcenter == pytest.approx(0.5 * (vmin + vmax))
         assert operation.halfrange == pytest.approx(0.5 * (vmax - vmin))
+
+
+def test_manager_append_to_gridspec_figure_uses_axes_ids(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        axis_a = FigureGridSpecAxesState(
+            axes_id="axis-a",
+            label="panel",
+            span=FigureGridSpecSpanState(
+                row_start=0,
+                row_stop=1,
+                col_start=0,
+                col_stop=1,
+            ),
+        )
+        axis_b = FigureGridSpecAxesState(
+            axes_id="axis-b",
+            label="panel",
+            span=FigureGridSpecSpanState(
+                row_start=0,
+                row_stop=1,
+                col_start=1,
+                col_stop=2,
+            ),
+        )
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(
+                    layout_mode="gridspec",
+                    gridspec=FigureGridSpecLayoutState(
+                        root=FigureGridSpecGridState(
+                            grid_id="root",
+                            nrows=1,
+                            ncols=2,
+                            axes=(axis_a, axis_b),
+                        )
+                    ),
+                ),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        qtbot.addWidget(figure_tool)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        def choose_second_axis(
+            _parent: QtWidgets.QWidget,
+            _title: str,
+            _label: str,
+            items: list[str],
+            _current: int,
+            _editable: bool,
+        ) -> tuple[str, bool]:
+            return items[2], True
+
+        monkeypatch.setattr(QtWidgets.QInputDialog, "getItem", choose_second_axis)
+        operation = FigureOperationState.line(
+            label="line",
+            source="line",
+            axes=FigureAxesSelectionState(),
+        )
+
+        selection = manager._append_axes_selection(figure_uid, operation)
+        assert selection == FigureAxesSelectionState(axes_ids=("axis-b",))
 
 
 def test_manager_child_imagetool_gets_figure_context_actions(

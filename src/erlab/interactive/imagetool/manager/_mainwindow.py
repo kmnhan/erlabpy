@@ -1273,11 +1273,50 @@ class ImageToolManager(_ImageToolManagerBase):
             FigureAxesSelectionState,
             FigureOperationKind,
         )
+        from erlab.interactive._figurecomposer._gridspec import (
+            _gridspec_all_axes_ids,
+            _gridspec_axis_display_names,
+            _gridspec_valid_axes_ids,
+        )
 
         tool = self._child_node(figure_uid).tool_window
         if tool is None:
             return None
         setup = tool.tool_status.setup
+        if setup.layout_mode == "gridspec":
+            axes_ids = _gridspec_valid_axes_ids(setup, _gridspec_all_axes_ids(setup))
+            if not axes_ids:
+                return None
+            if len(axes_ids) == 1:
+                return FigureAxesSelectionState(axes_ids=axes_ids)
+            display_names = _gridspec_axis_display_names(setup, axes_ids)
+            label_counts = {
+                label: sum(item == label for item in display_names)
+                for label in display_names
+            }
+            labels = ["All axes"]
+            selections = [FigureAxesSelectionState(axes_ids=axes_ids)]
+            seen_labels = {"All axes"}
+            for axes_id, label in zip(axes_ids, display_names, strict=True):
+                display_label = label
+                if label_counts[label] > 1 or display_label in seen_labels:
+                    display_label = f"{label} ({axes_id[:8]})"
+                labels.append(display_label)
+                seen_labels.add(display_label)
+                selections.append(FigureAxesSelectionState(axes_ids=(axes_id,)))
+            current = 0 if operation.kind == FigureOperationKind.PLOT_SLICES else 1
+            selected, accepted = QtWidgets.QInputDialog.getItem(
+                self,
+                "Append to Figure",
+                "Axes",
+                labels,
+                current,
+                False,
+            )
+            if not accepted:
+                return None
+            return selections[labels.index(selected)]
+
         all_axes = self._figure_all_axes(setup.nrows, setup.ncols)
         if len(all_axes) == 1:
             return FigureAxesSelectionState(axes=all_axes)

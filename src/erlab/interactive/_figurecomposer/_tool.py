@@ -25,6 +25,7 @@ from erlab.interactive._figurecomposer._defaults import (
 )
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
+    _gridspec_axes_subplot_targets,
     _gridspec_axis_display_name,
     _gridspec_axis_display_names,
     _gridspec_grid_by_id,
@@ -1729,7 +1730,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     update={
                         "axes": operation.axes.model_copy(
                             update={
-                                "axes": operation.axes.axes or ((0, 0),),
+                                "axes": _gridspec_axes_subplot_targets(
+                                    self._recipe.setup, operation.axes.axes_ids
+                                )
+                                or operation.axes.axes
+                                or ((0, 0),),
                                 "expression": "",
                             }
                         )

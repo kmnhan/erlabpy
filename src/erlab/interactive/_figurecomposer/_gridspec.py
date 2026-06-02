@@ -75,6 +75,17 @@ def _gridspec_axis_display_names(
     return tuple(_gridspec_axis_display_name(setup, axes_id) for axes_id in axes_ids)
 
 
+def _gridspec_axes_subplot_targets(
+    setup: FigureSubplotsState, axes_ids: Iterable[str]
+) -> tuple[tuple[int, int], ...]:
+    root_targets = _gridspec_axes_root_targets(setup)
+    return tuple(
+        dict.fromkeys(
+            cell for axes_id in axes_ids for cell in root_targets.get(axes_id, ())
+        )
+    )
+
+
 def _gridspec_axis_code_names(setup: FigureSubplotsState) -> dict[str, str]:
     used: set[str] = set()
     names: dict[str, str] = {}
@@ -215,6 +226,44 @@ def _iter_valid_axes_with_grid(
     for child in grid.child_grids:
         if child.span is not None and _gridspec_region_valid(grid, child.span):
             yield from _iter_valid_axes_with_grid(child)
+
+
+def _gridspec_axes_root_targets(
+    setup: FigureSubplotsState,
+) -> dict[str, tuple[tuple[int, int], ...]]:
+    root = setup.gridspec.root
+    targets: dict[str, tuple[tuple[int, int], ...]] = {}
+
+    def span_cells(span: FigureGridSpecSpanState) -> tuple[tuple[int, int], ...]:
+        return tuple(
+            (row, col)
+            for row in range(span.row_start, span.row_stop)
+            for col in range(span.col_start, span.col_stop)
+        )
+
+    def visit(
+        grid: FigureGridSpecGridState, root_span: FigureGridSpecSpanState
+    ) -> None:
+        for axis in grid.axes:
+            if _gridspec_region_valid(grid, axis.span):
+                targets[axis.axes_id] = span_cells(
+                    axis.span if grid.grid_id == root.grid_id else root_span
+                )
+        for child in grid.child_grids:
+            if child.span is None or not _gridspec_region_valid(grid, child.span):
+                continue
+            visit(child, child.span if grid.grid_id == root.grid_id else root_span)
+
+    visit(
+        root,
+        FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=root.nrows,
+            col_start=0,
+            col_stop=root.ncols,
+        ),
+    )
+    return targets
 
 
 def _gridspec_remove_region(
