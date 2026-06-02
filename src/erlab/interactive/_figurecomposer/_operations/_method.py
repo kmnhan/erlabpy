@@ -60,6 +60,7 @@ import dataclasses
 import enum
 import typing
 
+import matplotlib.scale
 from qtpy import QtCore, QtWidgets
 
 import erlab.plotting as eplt
@@ -469,6 +470,8 @@ def _coordinate_system_control() -> MethodControlSpec:
 
 
 _AXIS_OPTIONS = ("x", "y", "z")
+_SCALE_OPTIONS = tuple(matplotlib.scale.get_scale_names())
+_DEFAULT_SCALE = "log" if "log" in _SCALE_OPTIONS else _SCALE_OPTIONS[0]
 _FLATTEN_ORDER_OPTIONS = ("C", "F", "A", "K")
 _COLORBAR_ORIENTATION_OPTIONS = ("vertical", "horizontal")
 _LINE_ORIENTATION_OPTIONS = ("h", "v")
@@ -687,6 +690,44 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "Limits",
                 "figureComposerAxesMethodLimitsEdit",
                 "Lower and upper limits as two comma-separated values.",
+            ),
+        ),
+    ),
+    "set_xscale": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="set_xscale",
+        label="Set x scale",
+        tooltip="Runs ax.set_xscale on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=(_DEFAULT_SCALE,),
+        controls=(
+            _arg_combo(
+                "Scale",
+                0,
+                _SCALE_OPTIONS,
+                _DEFAULT_SCALE,
+                "figureComposerAxesMethodXScaleCombo",
+                "Matplotlib scale name passed to ax.set_xscale.",
+            ),
+        ),
+    ),
+    "set_yscale": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="set_yscale",
+        label="Set y scale",
+        tooltip="Runs ax.set_yscale on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=(_DEFAULT_SCALE,),
+        controls=(
+            _arg_combo(
+                "Scale",
+                0,
+                _SCALE_OPTIONS,
+                _DEFAULT_SCALE,
+                "figureComposerAxesMethodYScaleCombo",
+                "Matplotlib scale name passed to ax.set_yscale.",
             ),
         ),
     ),

@@ -4,6 +4,7 @@ import warnings
 from collections.abc import Callable
 
 import matplotlib as mpl
+import matplotlib.scale as mscale
 import numpy as np
 import pytest
 import xarray as xr
@@ -1179,6 +1180,16 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
                     name="set_axis_off",
                     axes=FigureAxesSelectionState(axes=((0, 0),)),
                 ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xscale",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_yscale",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ).model_copy(update={"method_args": ("linear",)}),
             ),
             primary_source="data",
         ),
@@ -1221,6 +1232,35 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert grid_which_combo.currentText() == "major"
     assert grid_axis_combo.currentText() == "x"
 
+    scale_names = tuple(mscale.get_scale_names())
+    assert "log" in scale_names
+    tool.operation_list.setCurrentRow(6)
+    tool._select_step_section("method")
+    xscale_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodXScaleCombo"
+    )
+    assert xscale_combo is not None
+    assert (
+        tuple(xscale_combo.itemText(index) for index in range(xscale_combo.count()))
+        == scale_names
+    )
+    assert xscale_combo.currentText() == "log"
+    assert tool.tool_status.operations[6].method_args == ()
+
+    tool.operation_list.setCurrentRow(7)
+    tool._select_step_section("method")
+    yscale_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodYScaleCombo"
+    )
+    assert yscale_combo is not None
+    assert (
+        tuple(yscale_combo.itemText(index) for index in range(yscale_combo.count()))
+        == scale_names
+    )
+    y_scale = "linear" if "linear" in scale_names else scale_names[0]
+    yscale_combo.setCurrentText(y_scale)
+    assert tool.tool_status.operations[7].method_args == (y_scale,)
+
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
     assert fig.axes[0].texts[0].get_text() == "Panel"
@@ -1233,6 +1273,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
         "right",
     ]
     assert len(fig.axes[1].patches) == 1
+    assert fig.axes[0].get_xscale() == "log"
+    assert fig.axes[1].get_yscale() == y_scale
 
     code = tool.generated_code()
     assert (
@@ -1243,6 +1285,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert 'ax.set_xticks((0.0, 1.0), ("left", "right"))' in code
     assert 'ax.grid(True, which="major", axis="x")' in code
     assert "ax.set_axis_off()" in code
+    assert 'ax.set_xscale("log")' in code
+    assert f'ax.set_yscale("{y_scale}")' in code
 
     namespace: dict[str, typing.Any] = {}
     exec(code, namespace)  # noqa: S102
@@ -1253,6 +1297,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
         "left",
         "right",
     ]
+    assert axs[0, 0].get_xscale() == "log"
+    assert axs[0, 1].get_yscale() == y_scale
 
 
 def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
