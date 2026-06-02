@@ -321,6 +321,16 @@ class _DetailsPanelController:
                     self._manager.preview_widget.setVisible(True)
                     return
 
+                preview_pixmap = (
+                    None
+                    if node.tool_window is None
+                    else node.tool_window.preview_pixmap
+                )
+                if preview_pixmap is not None and not preview_pixmap.isNull():
+                    self._manager.preview_widget.setPixmap(preview_pixmap)
+                    self._manager.preview_widget.setVisible(True)
+                    return
+
                 image_item = (
                     None
                     if node.tool_window is None
@@ -403,6 +413,9 @@ class _DetailsPanelController:
             multiple_selected and len(selection_children) == 0
         )
         self._manager.batch_action.setEnabled(self._manager.batch_target_count() >= 2)
+        self._manager.create_figure_action.setEnabled(
+            bool(self._manager._selected_figure_source_targets())
+        )
         self._manager.store_action.setEnabled(
             bool(self._manager.tree_view.selected_imagetool_indices)
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 __all__ = ["_ImageToolWrapperTreeView"]
 
+import contextlib
 import functools
 import json
 import logging
@@ -631,6 +632,19 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                 self._show_popup(*child_node._preview_image, option)
                 return
 
+            preview_pixmap = (
+                child_node.tool_window.preview_pixmap
+                if child_node.tool_window is not None
+                else None
+            )
+            if preview_pixmap is not None and not preview_pixmap.isNull():
+                width = preview_pixmap.width()
+                height = preview_pixmap.height()
+                self._show_popup(
+                    height / width if width > 0 else 1.0, preview_pixmap, option
+                )
+                return
+
             image_item = (
                 child_node.tool_window.preview_imageitem
                 if child_node.tool_window is not None
@@ -997,6 +1011,20 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             return node
         return None
 
+    def _is_visible_child_uid(self, uid: str) -> bool:
+        node = self._node_from_uid(uid)
+        return node is not None and not self.manager._is_figure_node(node)
+
+    def _childtool_uids(self, parent_wrapper: _ImageToolWrapper | str) -> list[str]:
+        if isinstance(parent_wrapper, str):
+            parent_node = self._node_from_uid(parent_wrapper)
+            if parent_node is None:
+                raise KeyError(parent_wrapper)
+            child_list = parent_node._childtool_indices
+        else:
+            child_list = parent_wrapper._childtool_indices
+        return [uid for uid in child_list if self._is_visible_child_uid(uid)]
+
     def _childtool_uid(
         self,
         row_index: QtCore.QModelIndex | int,
@@ -1004,12 +1032,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
     ) -> str:
         if isinstance(row_index, QtCore.QModelIndex):
             row_index = row_index.row()
-        if isinstance(parent_wrapper, str):
-            parent_node = self._node_from_uid(parent_wrapper)
-            if parent_node is None:
-                raise KeyError(parent_wrapper)
-            return parent_node._childtool_indices[row_index]
-        return parent_wrapper._childtool_indices[row_index]
+        return self._childtool_uids(parent_wrapper)[row_index]
 
     def _childtool(
         self, row_index: QtCore.QModelIndex, parent_wrapper: _ImageToolWrapper | str
@@ -1030,10 +1053,13 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             parent_node = self.manager._tool_graph.nodes[parent_uid]
             if isinstance(parent_node, _ImageToolWrapper):
                 parent_index = self._row_index(parent_node.index)
-                row = parent_node._childtool_indices.index(index_or_uid)
+                visible_children = self._childtool_uids(parent_node)
             else:
                 parent_index = self._row_index(parent_uid)
-                row = parent_node._childtool_indices.index(index_or_uid)
+                visible_children = self._childtool_uids(parent_uid)
+            if index_or_uid not in visible_children:
+                return QtCore.QModelIndex()
+            row = visible_children.index(index_or_uid)
             return self.index(row, 0, parent_index)
         if index_or_uid not in self.manager._tool_graph.displayed_indices:
             return QtCore.QModelIndex()
@@ -1063,13 +1089,13 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             parent_node = self._node_from_uid(ptr)
             if parent_node is None:
                 return QtCore.QModelIndex()
-            child_list = parent_node._childtool_indices
+            child_list = self._childtool_uids(ptr)
         else:
-            child_list = ptr._childtool_indices
+            child_list = self._childtool_uids(ptr)
         if row >= len(child_list):
             return QtCore.QModelIndex()
 
-        child = self._childtool_uid(row, ptr)
+        child = child_list[row]
         return self.createIndex(row, column, child)
 
     @typing.overload
@@ -1111,10 +1137,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
-            return len(ptr._childtool_indices) > 0
+            return len(self._childtool_uids(ptr)) > 0
         if isinstance(ptr, str):
             node = self._node_from_uid(ptr)
-            return node is not None and len(node._childtool_indices) > 0
+            return node is not None and len(self._childtool_uids(ptr)) > 0
         return False  # Child tool has no children
 
     def rowCount(self, parent: QtCore.QModelIndex | None = None) -> int:
@@ -1130,10 +1156,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
             # Number of child tools
-            return len(ptr._childtool_indices)
+            return len(self._childtool_uids(ptr))
         if isinstance(ptr, str):
             node = self._node_from_uid(ptr)
-            return len(node._childtool_indices) if node is not None else 0
+            return len(self._childtool_uids(ptr)) if node is not None else 0
         return 0  # Child tool has no children
 
     def columnCount(self, parent: QtCore.QModelIndex | None = None) -> int:
@@ -1245,14 +1271,12 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         if not parent.isValid():
             return
         parent_ptr = parent.internalPointer()
-        if isinstance(parent_ptr, str):
-            parent_node = self._node_from_uid(parent_ptr)
-            if parent_node is None:
-                return
-            child_list = parent_node._childtool_indices
-        else:
-            child_list = parent_ptr._childtool_indices
-        row = max(len(child_list) - 1, 0)
+        if not isinstance(parent_ptr, (_ImageToolWrapper, str)):
+            return
+        visible_children = self._childtool_uids(parent_ptr)
+        if uid not in visible_children:
+            return
+        row = visible_children.index(uid)
         self.beginInsertRows(parent, row, row)
         self.endInsertRows()
 
@@ -1280,16 +1304,28 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
 
         ptr = parent.internalPointer()
         if isinstance(ptr, _ImageToolWrapper):
+            visible_children = self._childtool_uids(ptr)
+            if row >= len(visible_children):
+                return
+            uids = visible_children[row : row + count]
             self.beginRemoveRows(parent, row, row + count - 1)
-            self.manager._tool_graph.remove_child_rows(ptr.uid, row, count)
+            for uid in uids:
+                with contextlib.suppress(ValueError):
+                    ptr._childtool_indices.remove(uid)
             self.endRemoveRows()
             return
         if isinstance(ptr, str):
             node = self._node_from_uid(ptr)
             if node is None:
                 return
+            visible_children = self._childtool_uids(ptr)
+            if row >= len(visible_children):
+                return
+            uids = visible_children[row : row + count]
             self.beginRemoveRows(parent, row, row + count - 1)
-            self.manager._tool_graph.remove_child_rows(node.uid, row, count)
+            for uid in uids:
+                with contextlib.suppress(ValueError):
+                    node._childtool_indices.remove(uid)
             self.endRemoveRows()
             return
 
@@ -1538,9 +1574,7 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
                 row = parent.row() + 1
         else:
             parent_index = parent
-            original = self.manager._tool_graph.nodes[
-                parent_id
-            ]._childtool_indices.copy()
+            original = self._childtool_uids(parent_id)
 
         if not original or not source_rows:
             logger.debug("dropMimeData: empty target or source")
@@ -1574,7 +1608,20 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
             logger.debug("dropMimeData: invalid moves")
             return False
 
-        moved = self._apply_moves(parent_id, moves, parent_index, parent_index)
+        if parent_id is not None:
+            raw_children = self.manager._tool_graph.nodes[parent_id]._childtool_indices
+            if len(raw_children) != len(original):
+                modified_iter = iter(typing.cast("list[str]", modified))
+                self.manager._tool_graph.nodes[parent_id]._childtool_indices = [
+                    next(modified_iter) if self._is_visible_child_uid(uid) else uid
+                    for uid in raw_children
+                ]
+                self.layoutChanged.emit()
+                moved = True
+            else:
+                moved = self._apply_moves(parent_id, moves, parent_index, parent_index)
+        else:
+            moved = self._apply_moves(parent_id, moves, parent_index, parent_index)
         if moved:
             self.manager._mark_workspace_structure_dirty("Reordered windows")
         return moved
@@ -1631,6 +1678,7 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         self._menu.addSeparator()
         self._menu.addAction(manager.concat_action)
         self._menu.addAction(manager.batch_action)
+        self._menu.addAction(manager.create_figure_action)
         self._menu.addAction(manager.duplicate_action)
         self._menu.addAction(manager.promote_action)
         self._menu.addSeparator()
@@ -1897,7 +1945,12 @@ class _ImageToolWrapperTreeView(QtWidgets.QTreeView):
         )
         if not parent_index.isValid():
             return
-        for i, child_uid in enumerate(parent_node._childtool_indices):
+        visible_children = self._model._childtool_uids(
+            parent_node
+            if isinstance(parent_node, _ImageToolWrapper)
+            else parent_node.uid
+        )
+        for i, child_uid in enumerate(visible_children):
             if child_uid == uid:
                 self._model.remove_rows(i, 1, parent_index)
                 return

@@ -90,8 +90,12 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     console: _ImageToolManagerJupyterConsole
     concat_action: QtGui.QAction
     compact_workspace_action: QtGui.QAction
+    create_figure_action: QtGui.QAction
     duplicate_action: QtGui.QAction
+    figure_list: QtWidgets.QListWidget
+    figure_tab: QtWidgets.QWidget
     hide_action: QtGui.QAction
+    left_tabs: QtWidgets.QTabWidget
     link_action: QtGui.QAction
     main_splitter: QtWidgets.QSplitter
     metadata_derivation_list: QtWidgets.QListWidget
@@ -151,6 +155,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _recent_loader_kwargs_by_filter: dict[str, dict[str, typing.Any]]
     _recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]]
     _recent_name_filter: str | None
+    _refreshing_figure_list: bool
     _registry_heartbeat_timer: QtCore.QTimer
     _sigDataReplaced: QtCore.SignalInstance
     _sigReloadLinkers: QtCore.SignalInstance
@@ -210,6 +215,30 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         node = self._node_for_target(target)
         return node.is_imagetool
 
+    def _is_figure_node(self, node: _ImageToolWrapper | _ManagedWindowNode) -> bool:
+        return (
+            node.tool_window is not None
+            and node.tool_window.manager_collection == "figures"
+        )
+
+    def _is_figure_uid(self, uid: str) -> bool:
+        try:
+            node = self._child_node(uid)
+        except KeyError:
+            return False
+        return self._is_figure_node(node)
+
+    def _selected_figure_uids(self) -> list[str]:
+        figure_list = getattr(self, "figure_list", None)
+        if figure_list is None:
+            return []
+        output: list[str] = []
+        for item in figure_list.selectedItems():
+            uid = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            if isinstance(uid, str) and self._is_figure_uid(uid):
+                output.append(uid)
+        return output
+
     def _selected_imagetool_targets(self) -> list[int | str]:
         targets: list[int | str] = list(self.tree_view.selected_imagetool_indices)
         targets.extend(
@@ -220,11 +249,22 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         return targets
 
     def _selected_tool_uids(self) -> list[str]:
-        return [
+        selected = [
             uid
             for uid in self.tree_view.selected_childtool_uids
             if not self._is_imagetool_target(uid)
         ]
+        selected.extend(self._selected_figure_uids())
+        return selected
+
+    def _selected_figure_source_targets(self) -> list[int | str]:
+        targets: list[int | str] = list(self._selected_imagetool_targets())
+        targets.extend(
+            uid
+            for uid in self.tree_view.selected_childtool_uids
+            if not self._is_imagetool_target(uid) and not self._is_figure_uid(uid)
+        )
+        return targets
 
     def _selected_promotable_child_imagetool_uid(self) -> str | None:
         child_imagetool_uids = [

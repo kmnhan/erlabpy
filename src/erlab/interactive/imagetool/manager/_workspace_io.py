@@ -888,6 +888,18 @@ class _WorkspaceIOController:
             )
             if close:
                 self._manager.remove_imagetool(index)
+        for uid in list(self._manager._tool_graph.figure_uids):
+            node = self._manager._tool_graph.nodes.get(uid)
+            if not isinstance(node, _ManagedWindowNode):
+                continue
+            self._manager._serialize_workspace_node(
+                constructor,
+                node,
+                f"figures/{uid}",
+                include_children=False,
+            )
+            if close:
+                self._manager._remove_childtool(uid)
         tree = xr.DataTree.from_dict(constructor)
         _manager_workspace._set_legacy_workspace_schema(tree.attrs)
         return tree
@@ -1035,18 +1047,38 @@ class _WorkspaceIOController:
         return target
 
     def _load_workspace_tool_dataset(
-        self, ds: xr.Dataset, *, parent_target: int | str | None
+        self,
+        ds: xr.Dataset,
+        *,
+        parent_target: int | str | None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
     ) -> int | str:
-        if parent_target is None:
-            raise ValueError("Workspace tool node has no parent")
-        return self._manager.add_childtool(
-            erlab.interactive.utils.ToolWindow.from_dataset(ds),
-            parent_target,
-            show=_workspace_dataset_window_visible(ds, "tool"),
-            uid=ds.attrs.get("manager_node_uid"),
-            snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
-            created_time=ds.attrs.get("manager_node_added_at"),
+        tool: erlab.interactive.utils.ToolWindow = (
+            erlab.interactive.utils.ToolWindow.from_dataset(ds)
         )
+        if parent_target is None:
+            if tool.manager_collection != "figures":
+                raise ValueError("Workspace tool node has no parent")
+            target = self._manager.add_figuretool(
+                tool,
+                show=_workspace_dataset_window_visible(ds, "tool"),
+                uid=ds.attrs.get("manager_node_uid"),
+                snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
+                created_time=ds.attrs.get("manager_node_added_at"),
+            )
+        else:
+            target = self._manager.add_childtool(
+                tool,
+                parent_target,
+                show=_workspace_dataset_window_visible(ds, "tool"),
+                uid=ds.attrs.get("manager_node_uid"),
+                snapshot_token=ds.attrs.get("manager_node_snapshot_token"),
+                created_time=ds.attrs.get("manager_node_added_at"),
+            )
+        self._manager._record_workspace_loaded_tool_target(
+            ds, target, loaded_targets_by_uid
+        )
+        return target
 
     @staticmethod
     def _workspace_saved_uid_from_dataset(ds: xr.Dataset) -> str | None:
@@ -1069,6 +1101,16 @@ class _WorkspaceIOController:
         saved_uid = self._manager._workspace_saved_uid_from_dataset(ds)
         if saved_uid is not None:
             loaded_targets_by_uid[saved_uid] = target
+
+    def _record_workspace_loaded_tool_target(
+        self,
+        ds: xr.Dataset,
+        target: int | str,
+        loaded_targets_by_uid: dict[str, int | str] | None,
+    ) -> None:
+        self._manager._record_workspace_loaded_imagetool_target(
+            ds, target, loaded_targets_by_uid
+        )
 
     def _restore_workspace_link_groups(
         self,
@@ -1191,7 +1233,9 @@ class _WorkspaceIOController:
                 .load()
             )
             target = self._manager._load_workspace_tool_dataset(
-                ds, parent_target=parent_target
+                ds,
+                parent_target=parent_target,
+                loaded_targets_by_uid=loaded_targets_by_uid,
             )
         else:
             raise ValueError("Workspace node has no supported window payload")
@@ -1268,6 +1312,44 @@ class _WorkspaceIOController:
                     loaded_targets_by_uid=loaded_targets_by_uid,
                 )
 
+    def _load_workspace_figures(
+        self,
+        tree: xr.DataTree,
+        *,
+        manifest: dict[str, typing.Any] | None = None,
+        workspace_file_path: str | os.PathLike[str] | None = None,
+        loaded_targets_by_uid: dict[str, int | str] | None = None,
+    ) -> None:
+        if "figures" not in tree:
+            return
+        figures = typing.cast("xr.DataTree", tree["figures"])
+        figure_keys: list[str] = []
+        if manifest is not None:
+            nodes = manifest.get("nodes", ())
+            if isinstance(nodes, list):
+                for entry in nodes:
+                    if not isinstance(entry, dict):
+                        continue
+                    path = entry.get("path")
+                    if not isinstance(path, str) or not path.startswith("figures/"):
+                        continue
+                    figure_key = path.removeprefix("figures/")
+                    if "/" not in figure_key and figure_key not in figure_keys:
+                        figure_keys.append(figure_key)
+        figure_keys.extend(str(key) for key in figures if str(key) not in figure_keys)
+
+        for figure_key in figure_keys:
+            if figure_key not in figures:
+                continue
+            self._manager._load_workspace_node(
+                typing.cast("xr.DataTree", figures[figure_key]),
+                parent_target=None,
+                manifest=manifest,
+                workspace_file_path=workspace_file_path,
+                node_path=f"figures/{figure_key}",
+                loaded_targets_by_uid=loaded_targets_by_uid,
+            )
+
     def _from_h5py_workspace_file(
         self,
         fname: str | os.PathLike[str],
@@ -1303,8 +1385,13 @@ class _WorkspaceIOController:
             for path in entries_by_path
             if "/" not in path and path not in root_paths
         )
-        if not root_paths:
-            raise ValueError("Workspace manifest has no root ImageTool nodes")
+        figure_paths = [
+            path
+            for path in entries_by_path
+            if path.startswith("figures/") and path.count("/") == 1
+        ]
+        if not root_paths and not figure_paths:
+            raise ValueError("Workspace manifest has no loadable root nodes")
 
         loaded_targets_by_uid: dict[str, int | str] = {}
         child_paths: dict[str, list[str]] = {path: [] for path in entries_by_path}
@@ -1371,7 +1458,9 @@ class _WorkspaceIOController:
                 )
             else:
                 target = self._manager._load_workspace_tool_dataset(
-                    ds, parent_target=parent_target
+                    ds,
+                    parent_target=parent_target,
+                    loaded_targets_by_uid=loaded_targets_by_uid,
                 )
             for child_path in child_paths[path]:
                 _load_path(child_path, target)
@@ -1403,6 +1492,8 @@ class _WorkspaceIOController:
                     self._manager.remove_all_tools()
                 for root_path in root_paths:
                     _load_path(root_path)
+                for figure_path in figure_paths:
+                    _load_path(figure_path)
                 self._manager._rebase_loaded_workspace_dependency_refs(
                     loaded_targets_by_uid
                 )
@@ -1439,6 +1530,7 @@ class _WorkspaceIOController:
             self._manager._load_workspace_roots(
                 backup_tree, [str(key) for key in backup_tree]
             )
+            self._manager._load_workspace_figures(backup_tree)
             self._manager._drain_workspace_deferred_events()
         self._manager._restore_workspace_state_snapshot(snapshot)
 
@@ -1529,6 +1621,12 @@ class _WorkspaceIOController:
                         workspace_file_path=workspace_file_path,
                         loaded_targets_by_uid=loaded_targets_by_uid,
                     )
+                    self._manager._load_workspace_figures(
+                        tree,
+                        manifest=manifest,
+                        workspace_file_path=workspace_file_path,
+                        loaded_targets_by_uid=loaded_targets_by_uid,
+                    )
                     self._manager._rebase_loaded_workspace_dependency_refs(
                         loaded_targets_by_uid
                     )
@@ -1597,6 +1695,8 @@ class _WorkspaceIOController:
         node = self._manager._tool_graph.nodes[uid]
         if isinstance(node, _ImageToolWrapper):
             return str(node.index)
+        if self._manager._is_figure_node(node):
+            return f"figures/{uid}"
         if node.parent_uid is None:
             raise KeyError(f"Node {uid!r} has no parent")
         return f"{self._manager._workspace_node_path(node.parent_uid)}/childtools/{uid}"
@@ -1661,6 +1761,9 @@ class _WorkspaceIOController:
 
         for index in self._manager._workspace_root_indices():
             _append(self._manager._tool_graph.root_wrappers[index].uid)
+        for uid in self._manager._tool_graph.figure_uids:
+            if uid in self._manager._tool_graph.nodes:
+                _append(uid)
         return entries
 
     @staticmethod

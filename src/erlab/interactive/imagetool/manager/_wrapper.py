@@ -371,6 +371,8 @@ class _ManagedWindowNode(QtCore.QObject):
                 self._handle_source_data_replaced
             )
             value.slicer_area._in_manager = True
+            for plot in value.slicer_area.axes:
+                plot.ensure_manager_figure_actions()
             return
 
         tool = typing.cast("erlab.interactive.utils.ToolWindow", value)
@@ -470,7 +472,10 @@ class _ManagedWindowNode(QtCore.QObject):
     def _set_name(self, name: str, *, manual: bool) -> None:
         if self.tool_window is not None:
             self.tool_window._tool_display_name = name
-            self.manager.tree_view.refresh(self.uid)
+            if self.manager._is_figure_node(self):
+                self.manager._sync_figures_ui(select_uid=self.uid)
+            else:
+                self.manager.tree_view.refresh(self.uid)
             self.manager._mark_node_state_dirty(self.uid)
             return
         if self.imagetool is not None:

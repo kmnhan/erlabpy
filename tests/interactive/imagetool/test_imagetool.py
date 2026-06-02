@@ -618,7 +618,6 @@ def test_make_cursors_single_color_does_not_recreate_cursor(qtbot, monkeypatch) 
 
     win.close()
 
-
 def test_multicursor_restore_updates_cursor_combo(qtbot) -> None:
     win = itool(_TEST_DATA["2D"], execute=False)
     qtbot.addWidget(win)
@@ -1236,86 +1235,6 @@ def test_slicer_area_colormap_lut_matches_dense_powernorm(qtbot) -> None:
     win.close()
 
 
-def test_plot_code_multicursor_image_without_cursor_variation_nonuniform(qtbot) -> None:
-    data = _TEST_DATA["3D_nonuniform"].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    image_plot = win.slicer_area.get_axes(5)  # display_axis=(2, 1), non-display alpha
-
-    code = image_plot._plot_code_multicursor()
-    assert "selected = [" not in code
-    assert "selected = data." in code
-
-    win.close()
-
-
-@pytest.mark.parametrize("bin_value", [1, 3])
-def test_plot_code_multicursor_image_supports_nonuniform_hidden_axis(
-    qtbot, bin_value
-) -> None:
-    data = _TEST_DATA["3D_nonuniform"].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    image_plot = win.slicer_area.get_axes(5)  # display_axis=(2, 1), hidden alpha
-
-    win.slicer_area.add_cursor()
-    win.slicer_area.set_value(axis=0, value=0.1, cursor=0)
-    win.slicer_area.set_value(axis=0, value=0.8, cursor=1)
-    win.array_slicer.set_bin(0, axis=0, value=bin_value, update=False)
-    win.array_slicer.set_bin(1, axis=0, value=bin_value, update=True)
-
-    code = image_plot._plot_code_multicursor()
-    assert "selected = [" in code
-    assert "plot_slices" in code
-    assert ".isel(alpha=" in code
-    if bin_value == 1:
-        assert ".qsel.mean(" not in code
-    else:
-        assert ".qsel.mean(" in code
-        assert '.qsel.mean("alpha")' in code
-
-    win.close()
-
-
-def test_plot_code_multicursor_line_without_cursor_variation_nonuniform(qtbot) -> None:
-    data = _TEST_DATA["3D_nonuniform"].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    line_plot = win.slicer_area.get_axes(3)  # display_axis=(2,), non-display alpha/eV
-
-    win.slicer_area.add_cursor()
-    win.slicer_area.set_value(axis=0, value=0.4, cursor=0)
-    win.slicer_area.set_value(axis=0, value=0.4, cursor=1)
-    win.array_slicer.set_bin(0, axis=0, value=3, update=False)
-    win.array_slicer.set_bin(1, axis=0, value=3, update=True)
-
-    code = line_plot._plot_code_multicursor()
-    assert "for line in" not in code
-    assert ".plot(ax=ax)" in code
-
-    win.close()
-
-
-def test_plot_code_multicursor_line_nonuniform_custom_colors_and_widths(qtbot) -> None:
-    data = _TEST_DATA["3D_nonuniform"].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    line_plot = win.slicer_area.get_axes(3)  # display_axis=(2,), non-display alpha/eV
-
-    win.slicer_area.add_cursor()
-    win.slicer_area.set_value(axis=0, value=0.1, cursor=0)
-    win.slicer_area.set_value(axis=0, value=0.8, cursor=1)
-    win.array_slicer.set_bin(0, axis=0, value=3, update=False)
-    win.array_slicer.set_bin(1, axis=0, value=1, update=True)
-    win.slicer_area.cursor_colors = [QtGui.QColor("#123456"), QtGui.QColor("#654321")]
-
-    code = line_plot._plot_code_multicursor()
-    assert "for i, line in enumerate([" in code
-    assert "line_colors" in code
-
-    win.close()
-
-
 def test_selection_expr_for_cursor_multiple_average_dims_with_quotes(qtbot) -> None:
     data = xr.DataArray(
         np.arange(625).reshape((5, 5, 5, 5)),
@@ -1374,137 +1293,77 @@ def test_selection_expr_for_cursor_preserves_nonstring_qsel_dim(qtbot) -> None:
     win.close()
 
 
-@pytest.mark.parametrize("bin_value", [1, 3])
-def test_plot_code_multicursor_line_supports_nonuniform_hidden_axis(
-    qtbot, bin_value
-) -> None:
-    data = _TEST_DATA["3D_nonuniform"].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    line_plot = win.slicer_area.get_axes(3)  # display_axis=(2,), hidden alpha/eV
-
-    win.slicer_area.add_cursor()
-    win.slicer_area.set_value(axis=0, value=0.1, cursor=0)
-    win.slicer_area.set_value(axis=0, value=0.8, cursor=1)
-    win.array_slicer.set_bin(0, axis=0, value=bin_value, update=False)
-    win.array_slicer.set_bin(1, axis=0, value=bin_value, update=True)
-
-    code = line_plot._plot_code_multicursor()
-    assert "for line in [" in code
-    assert ".isel(alpha=" in code
-    assert ".qsel(" in code
-    if bin_value == 1:
-        assert ".qsel.mean(" not in code
-    else:
-        assert ".qsel.mean(" in code
-        assert '.qsel.mean("alpha")' in code
-
-    win.close()
-
-
-def test_plot_code_multicursor_image_with_non_identifier_dim_name(qtbot) -> None:
-    data = xr.DataArray(
-        np.arange(125).reshape((5, 5, 5)),
-        dims=["alpha", "eV", "k-space"],
-        coords={
-            "alpha": np.arange(5),
-            "eV": np.arange(5),
-            "k-space": np.arange(5),
-        },
-    )
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    main_image = win.slicer_area.images[0]
-
-    code = main_image._plot_code_multicursor()
-    assert 'selected = data.qsel({"k-space": 2.0})' in code
-
-    win.close()
-
-
-def test_plot_code_multicursor_image_includes_both_crop_limits(qtbot) -> None:
-    data = _TEST_DATA["2D"].copy()
-    win = itool(data, execute=False)
-    qtbot.addWidget(win)
-    main_image = win.slicer_area.images[0]
-
-    win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0], "eV": [0.0, 2.0]})
-    code = main_image._plot_code_multicursor()
-    assert "xlim=(1.0, 3.0)" in code
-    assert "ylim=(0.0, 2.0)" in code
-
-    win.close()
-
-
 def test_plot_with_matplotlib_executes_in_manager(qtbot, monkeypatch) -> None:
     data = _TEST_DATA["3D"].copy()
     win = itool(data, execute=False)
     win.slicer_area._in_manager = True
     qtbot.addWidget(win)
     main_image = win.slicer_area.images[0]
-
-    class _Console:
-        def __init__(self) -> None:
-            self.executed: list[str] = []
-
-        def initialize_kernel(self) -> None:
-            self.initialized = True
-
-        def execute(self, code: str) -> None:
-            self.executed.append(code)
-
-    console = _Console()
+    created: list[dict[str, object]] = []
 
     class _Manager:
-        def __init__(self) -> None:
-            self.console = types.SimpleNamespace(_console_widget=console)
-
-        def ensure_console_initialized(self) -> None:
-            self.initialized = True
-
-        def index_from_slicer_area(self, slicer_area):
+        def target_from_slicer_area(self, slicer_area):
             assert slicer_area is win.slicer_area
             return 0
+
+        def _node_for_target(self, target):
+            assert target == 0
+            return types.SimpleNamespace(uid="n0")
+
+        def _script_input_name_for_node(self, node):
+            assert node.uid == "n0"
+            return "data_0"
+
+        def create_figure_from_slicer_area(self, slicer_area, **kwargs):
+            assert slicer_area is win.slicer_area
+            created.append(kwargs)
+            return "figure"
 
     monkeypatch.setattr(
         erlab.interactive.imagetool.manager, "_manager_instance", _Manager()
     )
 
     main_image.plot_with_matplotlib()
-    assert console.executed
-    assert "tools[0].data" in console.executed[0]
-    assert console.executed[0].strip().endswith("fig.show()")
+    assert created
+    operation = created[0]["operation"]
+    from erlab.interactive._figurecomposer import (
+        FigureComposerTool,
+        FigureOperationKind,
+        FigureSourceState,
+    )
+
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.sources == ("data_0",)
+    assert isinstance(operation.transpose, bool)
+    assert isinstance(operation.crop, bool)
+    assert "custom_code" not in created[0]
+
+    composer = FigureComposerTool.from_sources(
+        {"data_0": data},
+        sources=(FigureSourceState(name="data_0", label="data"),),
+        operations=(operation,),
+        primary_source="data_0",
+    )
+    qtbot.addWidget(composer)
 
     win.close()
 
 
-def test_copy_matplotlib_code_uses_generated_output(qtbot, monkeypatch) -> None:
-    import matplotlib.pyplot as plt
-
-    data = _TEST_DATA["3D"].copy()
+def test_figure_composer_operation_uses_transposed_source_axis_order(qtbot) -> None:
+    data = _TEST_DATA["2D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     main_image = win.slicer_area.images[0]
 
-    win.slicer_area.add_cursor()
-    win.slicer_area.set_value(axis=2, value=1.0, cursor=0)
-    win.slicer_area.set_value(axis=2, value=3.0, cursor=1)
+    win.slicer_area.transpose_main_image()
+    win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0], "eV": [0.0, 2.0]})
 
-    copied: dict[str, str] = {}
+    operation = main_image.figure_composer_operation(source_name="data")
 
-    def _copy(arg: str) -> None:
-        copied["text"] = arg
-
-    monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", _copy)
-
-    main_image.copy_matplotlib_code()
-    namespace = _exec_generated_code(
-        copied["text"],
-        {"data": data.copy(deep=True), "plt": plt, "eplt": erlab.plotting},
-    )
-    assert "fig" in namespace
-    assert len(np.asarray(namespace["axs"]).ravel()) == 2
-    plt.close(namespace["fig"])
+    assert win.slicer_area._tool_source_parent_data().dims == ("eV", "alpha")
+    assert operation.transpose is True
+    assert operation.xlim == (0.0, 2.0)
+    assert operation.ylim == (1.0, 3.0)
 
     win.close()
 

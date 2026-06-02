@@ -447,12 +447,15 @@ def _workspace_root_keys(
                 str(item)
                 for item in raw_root_order
                 if str(item) not in root_keys
+                and str(item) != "figures"
                 and not _is_workspace_internal_group_name(item)
             )
     root_keys.extend(
         str(key)
         for key in tree
-        if str(key) not in root_keys and not _is_workspace_internal_group_name(key)
+        if str(key) not in root_keys
+        and str(key) != "figures"
+        and not _is_workspace_internal_group_name(key)
     )
     return root_keys
 

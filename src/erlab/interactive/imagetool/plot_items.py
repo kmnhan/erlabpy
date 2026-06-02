@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import collections
+import contextlib
 import logging
 import os
 import time
@@ -500,6 +502,10 @@ class ItoolPlotItem(pg.PlotItem):
         self._associated_coord_menu: QtWidgets.QMenu | None = None
         self._associated_coord_menu_separator_above: QtGui.QAction | None = None
         self._associated_coord_menu_separator_below: QtGui.QAction | None = None
+        self._plot_with_matplotlib_action: QtGui.QAction | None = None
+        self._append_to_figure_action: QtGui.QAction | None = None
+        self._new_window_separator: QtGui.QAction | None = None
+        self._new_window_action: QtGui.QAction | None = None
         for act in ["Transforms", "Downsample", "Average", "Alpha", "Points"]:
             self.setContextMenuActionVisible(act, False)
 
@@ -526,18 +532,15 @@ class ItoolPlotItem(pg.PlotItem):
         self.vb.menu.addSeparator()
 
         if self.slicer_area._in_manager:
-            plot_with_matplotlib_action = self.vb.menu.addAction("Plot with matplotlib")
-            plot_with_matplotlib_action.triggered.connect(self.plot_with_matplotlib)
+            self.ensure_manager_figure_actions()
 
-        copy_mpl_code_action = self.vb.menu.addAction("Copy matplotlib code")
-        copy_mpl_code_action.triggered.connect(self.copy_matplotlib_code)
-
-        self.vb.menu.addSeparator()
+        self._new_window_separator = self.vb.menu.addSeparator()
 
         itool_action = self.vb.menu.addAction("New Window")
         itool_action.triggered.connect(self.open_in_new_window)
         itool_action.setIcon(qtawesome.icon("mdi6.export"))
         itool_action.setIconVisibleInMenu(True)
+        self._new_window_action = itool_action
 
         # List of actions that should have '(Crop)' appended when Alt is pressed
         croppable_actions: list[QtWidgets.QAction] = [
@@ -633,6 +636,25 @@ class ItoolPlotItem(pg.PlotItem):
 
         self._menu_filter = _OptionKeyMenuFilter(self.vb.menu, croppable_actions)
         self.vb.menu.installEventFilter(self._menu_filter)
+
+    def ensure_manager_figure_actions(self) -> None:
+        if self._plot_with_matplotlib_action is not None:
+            return
+        insert_before = self._new_window_separator or self._new_window_action
+        plot_action = QtGui.QAction("Plot with matplotlib", self.vb.menu)
+        plot_action.setObjectName("itool_plot_with_matplotlib_action")
+        plot_action.triggered.connect(self.plot_with_matplotlib)
+        append_action = QtGui.QAction("Append to Figure", self.vb.menu)
+        append_action.setObjectName("itool_append_to_figure_action")
+        append_action.triggered.connect(self.append_to_matplotlib_figure)
+        if insert_before is None:
+            self.vb.menu.addAction(plot_action)
+            self.vb.menu.addAction(append_action)
+        else:
+            self.vb.menu.insertAction(insert_before, plot_action)
+            self.vb.menu.insertAction(insert_before, append_action)
+        self._plot_with_matplotlib_action = plot_action
+        self._append_to_figure_action = append_action
 
     @QtCore.Slot()
     def _update_signal_refresh_rate(self) -> None:
@@ -1665,296 +1687,439 @@ class ItoolPlotItem(pg.PlotItem):
             selected += f".qsel.mean({avg_arg})"
         return selected
 
-    def _plot_code_multicursor(self, *, placeholder_name: str | None = None) -> str:
-        """Generate matplotlib plot code for all cursors.
-
-        Parameters
-        ----------
-        placeholder_name
-            Optional data variable name to use in generated code.
-
-        Returns
-        -------
-        str
-            Executable Python code that creates a matplotlib figure.
-        """
-        if placeholder_name is not None:
-            data_name: str = placeholder_name
-        else:
-            data_name = self.slicer_area.watched_data_name or "data"
-
+    def figure_composer_operation(self, *, source_name: str):
+        """Build a Figure Composer operation from the current ImageTool plot state."""
         non_display_axes = tuple(
             sorted(set(range(self.slicer_area.data.ndim)) - set(self.display_axis))
         )
         has_nonuniform_non_display_axes = any(
             axis in self.array_slicer._nonuniform_axes for axis in non_display_axes
         )
-        result, selection_exprs, variable_dim, selected_dims = (
-            self._multicursor_selection_plan(
-                data_name=data_name,
-                non_display_axes=non_display_axes,
-                has_nonuniform_non_display_axes=has_nonuniform_non_display_axes,
+        try:
+            result, selection_exprs, variable_dim, selected_dims = (
+                self._multicursor_selection_plan(
+                    data_name=source_name,
+                    non_display_axes=non_display_axes,
+                    has_nonuniform_non_display_axes=has_nonuniform_non_display_axes,
+                )
             )
+            selection_count = None
+        except ValueError:
+            result = None
+            selection_exprs = [""]
+            variable_dim = None
+            selected_dims = {
+                self._selection_dim_name(axis) for axis in non_display_axes
+            }
+            selection_count = self.slicer_area.n_cursors
+
+        map_selections = (
+            self._figure_composer_map_selections(
+                source_name=source_name,
+                non_display_axes=non_display_axes,
+                variable_dim=variable_dim,
+                selection_count=selection_count,
+            )
+            if selection_exprs is not None
+            else ()
         )
 
-        # Determine order of plotted dimensions
-        dim_order_plot = list(self.slicer_area._data.dims)
-        for k in selected_dims:
-            if k in dim_order_plot:
-                dim_order_plot.remove(k)
-        if len(dim_order_plot) != len(self.display_axis):  # pragma: no cover
-            raise ValueError(
-                "Could not determine order of plotted dimensions for multi-cursor "
-                "plot code. This should not happen; please report a bug."
-            )
-
-        # Order so that index 0 is always the x axis (for matplotlib plots)
+        dim_order_plot = list(self.slicer_area._tool_source_parent_data().dims)
+        for key in selected_dims:
+            if key in dim_order_plot:
+                dim_order_plot.remove(key)
         dim_order_plot.reverse()
 
         if self.is_image:
-            return self._plot_code_image(
-                data_name,
-                variable_dim,
-                dim_order_plot,
+            return self._figure_composer_plot_slices_operation(
+                source_name=source_name,
+                variable_dim=variable_dim,
+                dim_order_plot=dim_order_plot,
                 qsel_kwargs=result,
                 selected_maps=selection_exprs,
+                map_selections=map_selections,
             )
 
-        return self._plot_code_line(
-            data_name,
-            variable_dim,
-            dim_order_plot[0],
+        return self._figure_composer_line_operation(
+            source_name=source_name,
+            variable_dim=variable_dim,
+            x_dim=dim_order_plot[0],
             qsel_kwargs=result,
             selected_lines=selection_exprs,
+            map_selections=map_selections,
         )
 
-    def _plot_code_line(
+    @staticmethod
+    def _figure_composer_plain_value(value: typing.Any) -> typing.Any:
+        if value is None or isinstance(value, bool | str):
+            return value
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, list):
+            return [ItoolPlotItem._figure_composer_plain_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(
+                ItoolPlotItem._figure_composer_plain_value(item) for item in value
+            )
+        if isinstance(value, dict):
+            return {
+                ItoolPlotItem._figure_composer_plain_value(key): (
+                    ItoolPlotItem._figure_composer_plain_value(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, float):
+            return value
+        with contextlib.suppress(TypeError, ValueError):
+            return float(value)
+        return value
+
+    @staticmethod
+    def _figure_composer_indexer_state(indexer: typing.Any) -> typing.Any:
+        if isinstance(indexer, slice):
+            return {
+                "kind": "slice",
+                "start": indexer.start,
+                "stop": indexer.stop,
+                "step": indexer.step,
+            }
+        return indexer
+
+    def _figure_composer_map_selections(
         self,
-        data_name: str,
-        variable_dim: Hashable | None,
-        x_dim: Hashable,
         *,
-        qsel_kwargs: dict[Hashable, float | list[float]] | None = None,
-        selected_lines: list[str] | None = None,
-    ) -> str:
-        """Generate matplotlib code for 1D multi-cursor plots.
+        source_name: str,
+        non_display_axes: tuple[int, ...],
+        variable_dim: Hashable | None,
+        selection_count: int | None = None,
+    ) -> tuple[typing.Any, ...]:
+        from erlab.interactive._figurecomposer import FigureDataSelectionState
 
-        Parameters
-        ----------
-        data_name
-            Variable name used in generated code.
-        variable_dim
-            Varying dimension key across cursors, or `None` when all cursor selections
-            are equivalent.
-        x_dim
-            Dimension plotted along the x-axis.
-        qsel_kwargs
-            Uniform-path ``qsel`` kwargs.
-        selected_lines
-            Non-uniform-path selected line expressions.
-
-        Returns
-        -------
-        str
-            Executable Python code that plots one or more lines on a matplotlib axis.
-
-        Raises
-        ------
-        ValueError
-            If neither or both selection inputs are provided.
-        """
-        TAB = "    "
-        plot_lines = ["fig, ax = plt.subplots()"]
-        iterable_expr: str | None = None
-
-        if (qsel_kwargs is None) == (selected_lines is None):  # pragma: no cover
-            raise ValueError(
-                "Exactly one of qsel_kwargs or selected_lines must be provided."
+        if selection_count is None:
+            selection_count = (
+                self.slicer_area.n_cursors if variable_dim is not None else 1
             )
+        selections: list[FigureDataSelectionState] = []
+        for cursor in range(selection_count):
+            isel_kwargs: dict[str, typing.Any] = {}
+            qsel_kwargs: dict[str, typing.Any] = {}
+            mean_dims: list[str] = []
+            binned = self.array_slicer.get_binned(cursor)
+            for axis in non_display_axes:
+                if axis in self.array_slicer._nonuniform_axes:
+                    dim_name = str(self._selection_dim_name(axis))
+                    isel_kwargs[dim_name] = self._figure_composer_indexer_state(
+                        self.array_slicer._bin_slice(cursor, axis, int_if_one=True)
+                    )
+                    if binned[axis]:
+                        mean_dims.append(dim_name)
+                    continue
 
-        if selected_lines is not None:
-            if variable_dim is None:
-                plot_lines.append(f"{selected_lines[0]}.plot(ax=ax)")
-                return "\n".join(plot_lines)
-        else:
-            qsel_kwargs_nonnull = typing.cast(
-                "dict[Hashable, float | list[float]]", qsel_kwargs
-            )
-            selected = (
-                f"{data_name}.qsel("
-                f"{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)})"
-            )
-            if variable_dim is None:
-                plot_lines.append(selected + ".plot(ax=ax)")
-                return "\n".join(plot_lines)
-            iterable_expr = (
-                selected
-                + ".transpose("
-                + f"{erlab.interactive.utils._parse_single_arg(variable_dim)}, ...)"
-            )
-            selected_lines = None
+                disp_for_axis = tuple(
+                    i for i in range(self.slicer_area.data.ndim) if i != axis
+                )
+                qsel_kwargs.update(
+                    {
+                        str(key): self._figure_composer_plain_value(value)
+                        for key, value in self.array_slicer.qsel_args(
+                            cursor, disp_for_axis
+                        ).items()
+                    }
+                )
 
-        colors: list[str] = [
-            self.slicer_area.cursor_colors[i].name()
-            for i in range(self.slicer_area.n_cursors)
-        ]
-        default_colors = erlab.interactive._options.schema.ColorOptions.model_fields[
-            "cursors"
-        ].default
-        colors_changed = any(c not in default_colors for c in colors)
-        is_normalized: bool = self.slicer_data_items[
-            self.slicer_area.current_cursor
-        ].normalize
-
-        plot_code: str = erlab.interactive.utils.generate_code(
-            xr.DataArray.plot,
-            args=[],
-            kwargs={"color": "|line_colors[i]|"} if colors_changed else {},
-            module="line" if not is_normalized else "(line / line.mean())",
-            name="plot",
-        )
-
-        set_kwargs: dict[str, typing.Any] = {}
-        if x_dim in self._crop_indexers:
-            slice_obj = self._crop_indexers[x_dim]
-            set_kwargs["xlim"] = (float(slice_obj.start), float(slice_obj.stop))
-
-        if colors_changed:
-            plot_lines.append(f"line_colors = {colors!s}")
-            if iterable_expr is not None:
-                plot_lines.append(f"for i, line in enumerate({iterable_expr}):")
-            else:
-                plot_lines.append("for i, line in enumerate([")
-        else:
-            if iterable_expr is not None:
-                plot_lines.append(f"for line in {iterable_expr}:")
-            else:
-                plot_lines.append("for line in [")
-
-        if selected_lines is not None:
-            plot_lines.extend(f"{TAB}{selected}," for selected in selected_lines)
-            plot_lines.append("]):" if colors_changed else "]:")
-
-        plot_lines.append(TAB + plot_code)
-
-        if set_kwargs:
-            import matplotlib.axes
-
-            plot_lines.append(
-                erlab.interactive.utils.generate_code(
-                    matplotlib.axes.Axes.set, args=[], kwargs=set_kwargs, module="ax"
+            selections.append(
+                FigureDataSelectionState(
+                    source=source_name,
+                    isel=isel_kwargs,
+                    qsel=qsel_kwargs,
+                    mean_dims=tuple(mean_dims),
                 )
             )
+        return tuple(selections)
 
-        return "\n".join(plot_lines)
+    @staticmethod
+    def _figure_composer_norm_updates(norm_code: str) -> dict[str, typing.Any] | None:
+        expression = norm_code.strip()
+        if expression.startswith("|") and expression.endswith("|"):
+            expression = expression[1:-1]
+        try:
+            call = ast.parse(expression, mode="eval").body
+        except SyntaxError:
+            return None
+        if not isinstance(call, ast.Call):
+            return None
+        if not isinstance(call.func, ast.Attribute):
+            return None
+        if not isinstance(call.func.value, ast.Name) or call.func.value.id != "eplt":
+            return None
+        norm_name = call.func.attr
+        allowed = {
+            "CenteredInversePowerNorm",
+            "InversePowerNorm",
+            "CenteredPowerNorm",
+        }
+        if norm_name not in allowed:
+            return None
+        args = [ast.literal_eval(arg) for arg in call.args]
+        kwargs: dict[str, typing.Any] = {}
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                return None
+            kwargs[keyword.arg] = ast.literal_eval(keyword.value)
+        from erlab.interactive._figurecomposer import _norm_updates_from_kwargs
 
-    def _plot_code_image(
+        updates = _norm_updates_from_kwargs(kwargs)
+        updates["norm_name"] = norm_name
+        if args:
+            updates["norm_gamma"] = args[0]
+        return updates
+
+    @staticmethod
+    def _figure_composer_operation_updates(
+        plot_kwargs: dict[str, typing.Any],
+    ) -> dict[str, typing.Any] | None:
+        field_names = {
+            "transpose",
+            "xlim",
+            "ylim",
+            "crop",
+            "same_limits",
+            "axis",
+            "show_all_labels",
+            "colorbar",
+            "hide_colorbar_ticks",
+            "annotate",
+            "cmap",
+            "gamma",
+            "norm_name",
+            "norm_gamma",
+            "norm_kwargs",
+            "vmin",
+            "vmax",
+            "vcenter",
+            "halfrange",
+            "order",
+            "cmap_order",
+            "norm_order",
+            "gradient",
+            "gradient_kw",
+            "subplot_kw",
+            "annotate_kw",
+            "colorbar_kw",
+        }
+        updates: dict[str, typing.Any] = {}
+        extra_kwargs: dict[str, typing.Any] = {}
+        for key, value in plot_kwargs.items():
+            if key == "norm":
+                if not isinstance(value, str):
+                    return None
+                norm_updates = ItoolPlotItem._figure_composer_norm_updates(value)
+                if norm_updates is None:
+                    return None
+                updates.update(norm_updates)
+                continue
+            plain_value = ItoolPlotItem._figure_composer_plain_value(value)
+            if (
+                isinstance(plain_value, str)
+                and plain_value.startswith("|")
+                and plain_value.endswith("|")
+            ):
+                return None
+            if key in field_names:
+                if key == "gamma":
+                    updates["norm_name"] = "PowerNorm"
+                    updates["norm_gamma"] = plain_value
+                else:
+                    updates[key] = plain_value
+            else:
+                extra_kwargs[key] = plain_value
+        updates["extra_kwargs"] = extra_kwargs
+        return updates
+
+    def _figure_composer_plot_slices_operation(
         self,
-        data_name: str,
+        *,
+        source_name: str,
         variable_dim: Hashable | None,
         dim_order_plot: list[Hashable],
-        *,
         qsel_kwargs: dict[Hashable, float | list[float]] | None = None,
         selected_maps: list[str] | None = None,
-    ) -> str:
-        """Generate matplotlib code for image/slice multi-cursor plots.
-
-        Parameters
-        ----------
-        data_name
-            Variable name used in generated code.
-        variable_dim
-            Varying dimension key across cursors, or `None` when selections are
-            equivalent.
-        dim_order_plot
-            Ordered plotted dimensions used to derive axis-orientation kwargs.
-        qsel_kwargs
-            Uniform-path ``qsel`` kwargs.
-        selected_maps
-            Non-uniform-path selected map expressions.
-
-        Returns
-        -------
-        str
-            Executable Python code that calls :func:`erlab.plotting.plot_slices`.
-
-        Raises
-        ------
-        ValueError
-            If neither or both selection inputs are provided.
-        """
-        plot_kwargs = self._plot_code_image_common_kwargs(dim_order_plot)
-
-        if (qsel_kwargs is None) == (selected_maps is None):  # pragma: no cover
-            raise ValueError(
-                "Exactly one of qsel_kwargs or selected_maps must be provided."
-            )
+        map_selections: tuple[typing.Any, ...] = (),
+    ):
+        from erlab.interactive._figurecomposer import FigureOperationState
 
         if selected_maps is not None:
-            plot_lines: list[str] = []
-            if variable_dim is None:
-                plot_lines.append(f"selected = {selected_maps[0]}")
-            else:
-                plot_lines.append("selected = [")
-                plot_lines.extend(f"    {selected}," for selected in selected_maps)
-                plot_lines.append("]")
-            plot_lines.append(
-                erlab.interactive.utils.generate_code(
-                    erlab.plotting.plot_slices,
-                    args=["|selected|"],
-                    kwargs=plot_kwargs,
-                    module="eplt",
-                    assign=("fig", "axs" if variable_dim else "ax"),
-                )
+            plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
+            updates = self._figure_composer_operation_updates(plot_kwargs)
+            if updates is None:
+                updates = {}
+            return FigureOperationState.plot_slices(
+                label="plot_slices",
+                sources=(source_name,),
+                map_selections=map_selections,
+            ).model_copy(
+                update=updates,
             )
-            return "\n".join(plot_lines)
-
-        # Setup plot keyword arguments
-        qsel_kwargs_nonnull = typing.cast(
-            "dict[Hashable, float | list[float]]", qsel_kwargs
-        )
-        if not all(
-            erlab.interactive.utils._is_kwarg_name(k) for k in qsel_kwargs_nonnull
+        if qsel_kwargs is None or not all(
+            erlab.interactive.utils._is_kwarg_name(key) for key in qsel_kwargs
         ):
-            if variable_dim is None:
-                selected_maps = [
-                    f"{data_name}.qsel("
-                    f"{erlab.interactive.utils.format_kwargs(qsel_kwargs_nonnull)})"
-                ]
+            if qsel_kwargs is None:
+                map_selections = ()
             else:
-                selected_maps = []
-                for cursor in range(self.slicer_area.n_cursors):
-                    selected_map = {
-                        key: value[cursor] if isinstance(value, list) else value
-                        for key, value in qsel_kwargs_nonnull.items()
+                selection_count = (
+                    self.slicer_area.n_cursors if variable_dim is not None else 1
+                )
+                from erlab.interactive._figurecomposer import FigureDataSelectionState
+
+                selections = []
+                for cursor in range(selection_count):
+                    qsel = {
+                        str(key): self._figure_composer_plain_value(
+                            value[cursor] if isinstance(value, list) else value
+                        )
+                        for key, value in qsel_kwargs.items()
                     }
-                    selected_maps.append(
-                        f"{data_name}.qsel("
-                        f"{erlab.interactive.utils.format_kwargs(selected_map)})"
+                    selections.append(
+                        FigureDataSelectionState(source=source_name, qsel=qsel)
                     )
-            return self._plot_code_image(
-                data_name,
-                variable_dim,
-                dim_order_plot,
-                selected_maps=selected_maps,
+                map_selections = tuple(selections)
+            return FigureOperationState.plot_slices(
+                label="plot_slices",
+                sources=(source_name,),
+                map_selections=map_selections,
             )
 
-        plot_args: list[typing.Any] = [f"|[{data_name}]|"]
-        if all(erlab.interactive.utils._is_kwarg_name(k) for k in qsel_kwargs_nonnull):
-            plot_kwargs.update({str(k): v for k, v in qsel_kwargs_nonnull.items()})
+        plot_kwargs = self._figure_composer_plot_slices_kwargs(dim_order_plot)
+        updates = self._figure_composer_operation_updates(plot_kwargs)
+        if updates is None:
+            updates = {}
 
-        return erlab.interactive.utils.generate_code(
-            erlab.plotting.plot_slices,
-            args=plot_args,
-            kwargs=plot_kwargs,
-            module="eplt",
-            assign=("fig", "axs" if variable_dim else "ax"),
+        slice_dim = str(variable_dim) if variable_dim is not None else None
+        slice_values: tuple[float, ...] = ()
+        slice_width = None
+        selection_kwargs: dict[str, typing.Any] = {}
+        for key, value in qsel_kwargs.items():
+            key_text = str(key)
+            plain_value = self._figure_composer_plain_value(value)
+            if (
+                slice_dim is not None
+                and key_text == slice_dim
+                and isinstance(plain_value, list)
+            ):
+                slice_values = tuple(float(item) for item in plain_value)
+            elif slice_dim is not None and key_text == f"{slice_dim}_width":
+                if isinstance(plain_value, list):
+                    widths = {float(item) for item in plain_value}
+                    if len(widths) == 1:
+                        slice_width = widths.pop()
+                    else:
+                        selection_kwargs[key_text] = plain_value
+                else:
+                    slice_width = float(plain_value)
+            else:
+                selection_kwargs[key_text] = plain_value
+
+        extra_kwargs = dict(updates.pop("extra_kwargs", {}))
+        extra_kwargs.update(selection_kwargs)
+        operation = FigureOperationState.plot_slices(
+            label="plot_slices",
+            sources=(source_name,),
+            slice_dim=slice_dim,
+            slice_values=slice_values,
+        )
+        return operation.model_copy(
+            update={**updates, "slice_width": slice_width, "extra_kwargs": extra_kwargs}
         )
 
-    def _plot_code_image_common_kwargs(
+    def _figure_composer_line_operation(
+        self,
+        *,
+        source_name: str,
+        variable_dim: Hashable | None,
+        x_dim: Hashable,
+        qsel_kwargs: dict[Hashable, float | list[float]] | None = None,
+        selected_lines: list[str] | None = None,
+        map_selections: tuple[typing.Any, ...] = (),
+    ):
+        from erlab.interactive._figurecomposer import (
+            FigureDataSelectionState,
+            FigureOperationState,
+        )
+
+        normalize_mode = (
+            "mean"
+            if self.slicer_data_items[self.slicer_area.current_cursor].normalize
+            else "none"
+        )
+        if selected_lines is not None:
+            return FigureOperationState.line(
+                label="line",
+                source=source_name,
+            ).model_copy(
+                update={
+                    "line_x": str(x_dim),
+                    "map_selections": map_selections,
+                    "line_normalize": normalize_mode,
+                }
+            )
+
+        if qsel_kwargs is None:
+            line_selection: dict[str, typing.Any] = {}
+            line_iter_dim = None
+        elif all(erlab.interactive.utils._is_kwarg_name(key) for key in qsel_kwargs):
+            line_selection = {
+                str(key): self._figure_composer_plain_value(value)
+                for key, value in qsel_kwargs.items()
+            }
+            line_iter_dim = str(variable_dim) if variable_dim is not None else None
+        else:
+            selection_count = (
+                self.slicer_area.n_cursors if variable_dim is not None else 1
+            )
+            selections = []
+            for cursor in range(selection_count):
+                qsel = {
+                    str(key): self._figure_composer_plain_value(
+                        value[cursor] if isinstance(value, list) else value
+                    )
+                    for key, value in qsel_kwargs.items()
+                }
+                selections.append(
+                    FigureDataSelectionState(source=source_name, qsel=qsel)
+                )
+            return FigureOperationState.line(
+                label="line",
+                source=source_name,
+            ).model_copy(
+                update={
+                    "line_x": str(x_dim),
+                    "map_selections": tuple(selections),
+                    "line_normalize": normalize_mode,
+                }
+            )
+
+        return FigureOperationState.line(
+            label="line",
+            source=source_name,
+        ).model_copy(
+            update={
+                "line_x": str(x_dim),
+                "line_selection": dict(line_selection),
+                "line_iter_dim": line_iter_dim,
+                "line_normalize": normalize_mode,
+            }
+        )
+
+    def _figure_composer_plot_slices_kwargs(
         self, dim_order_plot: list[Hashable]
     ) -> dict[str, typing.Any]:
-        """Return shared ``plot_slices`` keyword arguments for image code paths.
+        """Return ``plot_slices`` keyword arguments from the ImageTool view state.
 
         Parameters
         ----------
@@ -1964,8 +2129,7 @@ class ItoolPlotItem(pg.PlotItem):
         Returns
         -------
         dict[str, Any]
-            Keyword arguments shared by uniform and non-uniform image code-generation
-            paths.
+            Keyword arguments used to seed the Figure Composer operation.
         """
         plot_kwargs: dict[str, typing.Any] = {}
         plot_dims = list(dim_order_plot)
@@ -1980,13 +2144,20 @@ class ItoolPlotItem(pg.PlotItem):
             elif k == plot_dims[1]:  # pragma: no branch
                 plot_kwargs["ylim"] = (float(v.start), float(v.stop))
 
+        if self.getViewBox().state["aspectLocked"]:
+            plot_kwargs["axis"] = "image"
+        plot_kwargs.update(self._figure_composer_colormap_kwargs())
+
+        return plot_kwargs
+
+    def _figure_composer_colormap_kwargs(self) -> dict[str, typing.Any]:
+        """Return Figure Composer color keyword arguments from ImageTool state."""
+        plot_kwargs: dict[str, typing.Any] = {}
         colormap_props = self.slicer_area.colormap_properties.copy()
         levels: tuple[float, float] | None = None
         if colormap_props["levels_locked"]:
             plot_kwargs["same_limits"] = True
             levels = colormap_props.get("levels")
-        if self.getViewBox().state["aspectLocked"]:
-            plot_kwargs["axis"] = "image"
         plot_kwargs["cmap"] = colormap_props["cmap"]
 
         if colormap_props["reverse"] and isinstance(plot_kwargs["cmap"], str):
@@ -2798,25 +2969,38 @@ class ItoolPlotItem(pg.PlotItem):
         erlab.interactive.utils.copy_to_clipboard(code)
 
     @QtCore.Slot()
-    def copy_matplotlib_code(self) -> None:
-        """Copy matplotlib plot code for all cursors to the clipboard."""
-        erlab.interactive.utils.copy_to_clipboard(self._plot_code_multicursor())
-
-    @QtCore.Slot()
     def plot_with_matplotlib(self) -> None:
         """Show the current data using matplotlib (only works in ImageTool Manager)."""
         if self.slicer_area._in_manager:  # pragma: no branch
             manager = self.slicer_area._manager_instance
             if manager:  # pragma: no branch
-                manager.ensure_console_initialized()
-                console = manager.console._console_widget
-                console.initialize_kernel()
-                idx = manager.index_from_slicer_area(self.slicer_area)
-                code = self._plot_code_multicursor(
-                    placeholder_name=f"tools[{idx}].data"
+                target = manager.target_from_slicer_area(self.slicer_area)
+                if target is None:
+                    return
+                source_name = manager._script_input_name_for_node(
+                    manager._node_for_target(target)
                 )
-                code += "\nfig.show()"
-                console.execute(code)
+                manager.create_figure_from_slicer_area(
+                    self.slicer_area,
+                    operation=self.figure_composer_operation(source_name=source_name),
+                )
+
+    @QtCore.Slot()
+    def append_to_matplotlib_figure(self) -> None:
+        """Append the current plot state to an existing managed figure."""
+        if self.slicer_area._in_manager:  # pragma: no branch
+            manager = self.slicer_area._manager_instance
+            if manager:  # pragma: no branch
+                target = manager.target_from_slicer_area(self.slicer_area)
+                if target is None:
+                    return
+                source_name = manager._script_input_name_for_node(
+                    manager._node_for_target(target)
+                )
+                manager.append_figure_from_slicer_area(
+                    self.slicer_area,
+                    operation=self.figure_composer_operation(source_name=source_name),
+                )
 
     @property
     def display_axis(self) -> tuple[int, ...]:
