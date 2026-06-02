@@ -1437,36 +1437,184 @@ def _plot_source_check_changed(
     tool: FigureComposerTool,
     source_name: str,
     check: QtWidgets.QCheckBox,
+    row_order: tuple[str, ...],
 ) -> None:
     if tool._updating_controls:
         return
     state = check.checkState()
     if state == QtCore.Qt.CheckState.PartiallyChecked:
         return
-    available_sources = tool._source_names()
     checked = state == QtCore.Qt.CheckState.Checked
 
     def update_operation(
         _index: int, target: FigureOperationState
     ) -> FigureOperationState:
-        source_set = set(target.sources)
         if checked:
-            source_set.add(source_name)
-        else:
-            source_set.discard(source_name)
-        ordered_sources = tuple(
-            source for source in available_sources if source in source_set
+            if source_name in target.sources:
+                return target
+            source_set = {*target.sources, source_name}
+            ordered_sources = tuple(
+                source for source in row_order if source in source_set
+            )
+            missing_sources = tuple(
+                source for source in target.sources if source not in row_order
+            )
+            return target.model_copy(
+                update={"sources": (*ordered_sources, *missing_sources)}
+            )
+        next_sources = tuple(
+            source for source in target.sources if source != source_name
         )
-        missing_sources = tuple(
-            source for source in target.sources if source not in available_sources
-        )
-        return target.model_copy(update={"sources": ordered_sources + missing_sources})
+        return target.model_copy(update={"sources": next_sources})
 
     tool._update_operations(
         update_operation,
         rebuild_editor=True,
         defer_editor_rebuild=True,
     )
+
+
+def _plot_source_move(
+    tool: FigureComposerTool,
+    source_name: str,
+    offset: typing.Literal[-1, 1],
+) -> None:
+    if tool._updating_controls:
+        return
+    available_sources = set(tool._source_names())
+
+    def update_operation(
+        _index: int, target: FigureOperationState
+    ) -> FigureOperationState:
+        ordered_sources = [
+            source for source in target.sources if source in available_sources
+        ]
+        if source_name not in ordered_sources:
+            return target
+        source_index = ordered_sources.index(source_name)
+        target_index = source_index + offset
+        if target_index < 0 or target_index >= len(ordered_sources):
+            return target
+        ordered_sources[source_index], ordered_sources[target_index] = (
+            ordered_sources[target_index],
+            ordered_sources[source_index],
+        )
+        missing_sources = tuple(
+            source for source in target.sources if source not in available_sources
+        )
+        return target.model_copy(
+            update={"sources": (*ordered_sources, *missing_sources)}
+        )
+
+    tool._update_operations(
+        update_operation,
+        rebuild_editor=True,
+        defer_editor_rebuild=True,
+    )
+
+
+def _plot_source_order_matches(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> bool:
+    editable = tool._editable_operations()
+    if len(editable) <= 1:
+        return True
+    available_sources = set(tool._source_names())
+    expected = tuple(
+        source for source in operation.sources if source in available_sources
+    )
+    return all(
+        tuple(source for source in target.sources if source in available_sources)
+        == expected
+        for _index, target in editable
+    )
+
+
+def _plot_source_row_names(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[str, ...]:
+    source_names = tool._source_names()
+    selected_sources = tuple(
+        source for source in operation.sources if source in source_names
+    )
+    unselected_sources = tuple(
+        source for source in source_names if source not in selected_sources
+    )
+    return selected_sources + unselected_sources
+
+
+def _build_plot_source_row(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    selector: QtWidgets.QWidget,
+    source_name: str,
+    index: int,
+    selected_sources: tuple[str, ...],
+    row_order: tuple[str, ...],
+    order_controls_enabled: bool,
+) -> tuple[QtWidgets.QCheckBox, QtWidgets.QToolButton, QtWidgets.QToolButton]:
+    check = QtWidgets.QCheckBox(source_name, selector)
+    check.setObjectName(f"figureComposerPlotSlicesSourceCheck_{index}")
+    check.setProperty("figure_source_name", source_name)
+    check.setToolTip("Include this DataArray in the maps passed to plot_slices.")
+    state = _plot_source_check_state(tool, operation, source_name)
+    check.setTristate(state == QtCore.Qt.CheckState.PartiallyChecked)
+    check.setCheckState(state)
+    check.stateChanged.connect(
+        lambda _state, source_name=source_name, check=check, row_order=row_order: (
+            _plot_source_check_changed(tool, source_name, check, row_order)
+        )
+    )
+
+    source_selected = source_name in selected_sources
+    selected_index = selected_sources.index(source_name) if source_selected else -1
+    up_button = _plot_source_move_button(
+        selector,
+        source_name,
+        "up",
+        QtCore.Qt.ArrowType.UpArrow,
+        order_controls_enabled and selected_index > 0,
+        "Move this input earlier in the maps argument.",
+        lambda: _plot_source_move(tool, source_name, -1),
+    )
+    down_button = _plot_source_move_button(
+        selector,
+        source_name,
+        "down",
+        QtCore.Qt.ArrowType.DownArrow,
+        order_controls_enabled
+        and source_selected
+        and selected_index < len(selected_sources) - 1,
+        "Move this input later in the maps argument.",
+        lambda: _plot_source_move(tool, source_name, 1),
+    )
+    if source_selected:
+        return check, up_button, down_button
+    up_button.setVisible(False)
+    down_button.setVisible(False)
+    return check, up_button, down_button
+
+
+def _plot_source_move_button(
+    parent: QtWidgets.QWidget,
+    source_name: str,
+    direction: typing.Literal["up", "down"],
+    arrow: QtCore.Qt.ArrowType,
+    enabled: bool,
+    tooltip: str,
+    clicked: typing.Callable[[], None],
+) -> QtWidgets.QToolButton:
+    button = QtWidgets.QToolButton(parent)
+    button.setObjectName(
+        f"figureComposerPlotSlicesSourceMove_{direction}_{source_name}"
+    )
+    button.setProperty("figure_source_name", source_name)
+    button.setProperty("figure_source_move", direction)
+    button.setArrowType(arrow)
+    button.setEnabled(enabled)
+    button.setToolTip(tooltip)
+    button.clicked.connect(lambda _checked=False: clicked())
+    return button
 
 
 def _build_source_editor(
@@ -1476,36 +1624,39 @@ def _build_source_editor(
     selector.setObjectName("figureComposerPlotSlicesSourceSelector")
     layout = QtWidgets.QGridLayout(selector)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setHorizontalSpacing(8)
+    layout.setHorizontalSpacing(4)
     layout.setVerticalSpacing(2)
-    source_names = tool._source_names()
-    if source_names:
-        for index, source_name in enumerate(source_names):
-            check = QtWidgets.QCheckBox(source_name, selector)
-            check.setObjectName(f"figureComposerPlotSlicesSourceCheck_{index}")
-            check.setProperty("figure_source_name", source_name)
-            check.setToolTip(
-                "Include this DataArray in the maps passed to plot_slices."
+    row_names = _plot_source_row_names(tool, operation)
+    selected_sources = tuple(
+        source for source in operation.sources if source in tool._source_names()
+    )
+    order_controls_enabled = _plot_source_order_matches(tool, operation)
+    if row_names:
+        for index, source_name in enumerate(row_names):
+            check, up_button, down_button = _build_plot_source_row(
+                tool,
+                operation,
+                selector,
+                source_name,
+                index,
+                selected_sources,
+                row_names,
+                order_controls_enabled,
             )
-            state = _plot_source_check_state(tool, operation, source_name)
-            check.setTristate(state == QtCore.Qt.CheckState.PartiallyChecked)
-            check.setCheckState(state)
-            check.stateChanged.connect(
-                lambda _state, source_name=source_name, check=check: (
-                    _plot_source_check_changed(tool, source_name, check)
-                )
-            )
-            layout.addWidget(check, index // 2, index % 2)
+            layout.addWidget(check, index, 0)
+            layout.addWidget(up_button, index, 1)
+            layout.addWidget(down_button, index, 2)
     else:
         label = QtWidgets.QLabel("No source arrays are available.", selector)
         label.setEnabled(False)
         layout.addWidget(label, 0, 0)
     layout.setColumnStretch(0, 1)
-    layout.setColumnStretch(1, 1)
+    layout.setColumnStretch(1, 0)
+    layout.setColumnStretch(2, 0)
     selector.setToolTip("Select one or more DataArrays to pass as maps to plot_slices.")
     tool._add_form_row(
         tool.step_source_controls_layout,
-        "Input maps",
+        "Inputs",
         selector,
         selector.toolTip(),
     )

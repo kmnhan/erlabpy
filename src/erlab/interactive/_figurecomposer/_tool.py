@@ -493,6 +493,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.step_source_controls_layout = QtWidgets.QFormLayout(
             self.step_source_controls
         )
+        self.step_source_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.step_source_controls_layout.setSpacing(4)
         self.step_source_controls_layout.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )

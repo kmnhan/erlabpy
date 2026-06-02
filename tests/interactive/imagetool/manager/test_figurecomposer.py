@@ -22,6 +22,7 @@ import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
+import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -106,6 +107,20 @@ def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckB
         str(source_name): check
         for check in tool.step_source_controls.findChildren(QtWidgets.QCheckBox)
         if (source_name := check.property("figure_source_name")) is not None
+    }
+
+
+def _plot_source_move_buttons(
+    tool: FigureComposerTool,
+) -> dict[tuple[str, str], QtWidgets.QToolButton]:
+    return {
+        (
+            str(source_name),
+            str(direction),
+        ): button
+        for button in tool.step_source_controls.findChildren(QtWidgets.QToolButton)
+        if (source_name := button.property("figure_source_name")) is not None
+        and (direction := button.property("figure_source_move")) is not None
     }
 
 
@@ -207,7 +222,9 @@ def _figure_composer_line_slice_source(name: str = "line_map") -> xr.DataArray:
     )
 
 
-def test_figure_composer_plot_slices_source_selector_updates_sources(qtbot) -> None:
+def test_figure_composer_plot_slices_source_selector_updates_sources(
+    qtbot, monkeypatch
+) -> None:
     first = _figure_composer_image_source("first")
     second = _figure_composer_image_source("second")
     tool = FigureComposerTool(
@@ -249,6 +266,34 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(qtbot) -> N
         "first_source",
         "second_source",
     )
+    qtbot.waitUntil(
+        lambda: _plot_source_move_buttons(tool)[("second_source", "up")].isEnabled(),
+        timeout=1000,
+    )
+    buttons = _plot_source_move_buttons(tool)
+    assert buttons[("first_source", "up")].isEnabled() is False
+    assert buttons[("first_source", "down")].isEnabled() is True
+    assert buttons[("second_source", "up")].isEnabled() is True
+    assert buttons[("second_source", "down")].isEnabled() is False
+
+    buttons[("second_source", "up")].click()
+
+    assert tool.tool_status.operations[0].sources == (
+        "second_source",
+        "first_source",
+    )
+    captured_maps: list[tuple[str, ...]] = []
+
+    def capture_plot_slices(maps, **_kwargs):
+        captured_maps.append(tuple(data.name for data in maps))
+
+    monkeypatch.setattr(eplt, "plot_slices", capture_plot_slices)
+    namespace: dict[str, typing.Any] = {
+        "first_source": first,
+        "second_source": second,
+    }
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    assert captured_maps == [("second", "first")]
 
 
 def test_figure_composer_plot_slices_source_selector_batch_toggles_sources(
