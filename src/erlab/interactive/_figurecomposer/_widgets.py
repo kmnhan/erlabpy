@@ -40,6 +40,18 @@ class _GridSpecRegionInfo(typing.NamedTuple):
     valid: bool = True
 
 
+class _SelectorColors(typing.NamedTuple):
+    face: QtGui.QColor
+    nested_face: QtGui.QColor
+    hover_face: QtGui.QColor
+    selection_face: QtGui.QColor
+    border: QtGui.QColor
+    selection: QtGui.QColor
+    text: QtGui.QColor
+    muted_text: QtGui.QColor
+    selected_text: QtGui.QColor
+
+
 class _GridSpecOutsideClickFilter(QtCore.QObject):
     """Hide edit affordances when the active GridSpec view is clicked away from."""
 
@@ -54,6 +66,90 @@ class _GridSpecOutsideClickFilter(QtCore.QObject):
         if widget is not None and erlab.interactive.utils.qt_is_valid(widget):
             typing.cast("_GridSpecViewWidget", widget)._handle_application_event(event)
         return super().eventFilter(watched, event)
+
+
+_SELECTOR_CORNER_RADIUS = 6.0
+_SELECTOR_BORDER_WIDTH = 1.0
+_SELECTOR_SELECTED_BORDER_WIDTH = 1.6
+_SELECTOR_MUTED_STATUS_COLOR = QtGui.QColor("#59636e")
+
+
+def _blend_qcolors(
+    base: QtGui.QColor,
+    overlay: QtGui.QColor,
+    ratio: float,
+) -> QtGui.QColor:
+    ratio = min(max(ratio, 0.0), 1.0)
+    inverse = 1.0 - ratio
+    return QtGui.QColor(
+        int(base.red() * inverse + overlay.red() * ratio),
+        int(base.green() * inverse + overlay.green() * ratio),
+        int(base.blue() * inverse + overlay.blue() * ratio),
+        int(base.alpha() * inverse + overlay.alpha() * ratio),
+    )
+
+
+def _selector_colors(palette: QtGui.QPalette) -> _SelectorColors:
+    face = palette.color(QtGui.QPalette.ColorRole.Base)
+    panel = palette.color(QtGui.QPalette.ColorRole.Window)
+    alternate = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
+    border = palette.color(QtGui.QPalette.ColorRole.Mid)
+    selection = palette.color(QtGui.QPalette.ColorRole.Highlight)
+    text = palette.color(QtGui.QPalette.ColorRole.Text)
+    nested_face = _blend_qcolors(face, alternate, 0.42)
+    hover_face = _blend_qcolors(face, selection, 0.12)
+    selection_face = _blend_qcolors(face, selection, 0.18)
+    muted_text = _blend_qcolors(
+        text,
+        _SELECTOR_MUTED_STATUS_COLOR,
+        0.55 if text.lightness() > panel.lightness() else 0.72,
+    )
+    return _SelectorColors(
+        face=face,
+        nested_face=nested_face,
+        hover_face=hover_face,
+        selection_face=selection_face,
+        border=border,
+        selection=selection,
+        text=text,
+        muted_text=muted_text,
+        selected_text=selection,
+    )
+
+
+def _draw_selector_rect(
+    painter: QtGui.QPainter,
+    rect: QtCore.QRect,
+    *,
+    facecolor: QtGui.QColor,
+    edgecolor: QtGui.QColor,
+    linewidth: float = _SELECTOR_BORDER_WIDTH,
+    radius: float = _SELECTOR_CORNER_RADIUS,
+) -> None:
+    painter.save()
+    rectf = QtCore.QRectF(rect)
+    rectf.adjust(linewidth / 2, linewidth / 2, -linewidth / 2, -linewidth / 2)
+    path = QtGui.QPainterPath()
+    path.addRoundedRect(rectf, radius, radius)
+    painter.fillPath(path, QtGui.QBrush(facecolor))
+    painter.setPen(QtGui.QPen(edgecolor, linewidth))
+    painter.drawPath(path)
+    painter.restore()
+
+
+def _centered_rect(
+    container: QtCore.QRect,
+    size: QtCore.QSize,
+    margin: int,
+) -> QtCore.QRect:
+    available = container.adjusted(margin, margin, -margin, -margin)
+    if available.width() <= 0 or available.height() <= 0:
+        return QtCore.QRect()
+    width = min(size.width(), available.width())
+    height = min(size.height(), available.height())
+    rect = QtCore.QRect(0, 0, width, height)
+    rect.moveCenter(available.center())
+    return rect
 
 
 def _step_toolbar_button(
@@ -277,19 +373,10 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
 
     def sizeHint(self) -> QtCore.QSize:
         margin = 2 * self._GRID_MARGIN
-        width = (
-            margin
-            + self._ncols * self._CELL_WIDTH
-            + max(self._ncols - 1, 0) * self._CELL_GAP
-        )
-        height = (
-            margin
-            + self._nrows * self._CELL_HEIGHT
-            + max(self._nrows - 1, 0) * self._CELL_GAP
-        )
+        size = self._grid_content_size()
         return QtCore.QSize(
-            max(self._MIN_WIDTH, width),
-            max(self._MIN_HEIGHT, height),
+            max(self._MIN_WIDTH, size.width() + margin),
+            max(self._MIN_HEIGHT, size.height() + margin),
         )
 
     def minimumSizeHint(self) -> QtCore.QSize:
@@ -355,29 +442,40 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
             super().paintEvent(event)
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        palette = self.palette()
-        background = palette.color(QtGui.QPalette.ColorRole.Base)
-        border = palette.color(QtGui.QPalette.ColorRole.Mid)
-        text_color = palette.color(QtGui.QPalette.ColorRole.Text)
-        selected_fill = palette.color(QtGui.QPalette.ColorRole.Highlight)
-        selected_text = palette.color(QtGui.QPalette.ColorRole.HighlightedText)
-        hover_fill = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
+        colors = _selector_colors(self.palette())
         for axis in _all_axes_for_shape(self._nrows, self._ncols):
             rect = self.cell_rect(axis)
             selected = axis in self._selected_axes
             hovered = axis == self._hovered_axis
-            painter.setPen(QtGui.QPen(selected_fill if selected else border, 1.0))
-            painter.setBrush(
-                QtGui.QBrush(
-                    selected_fill if selected else hover_fill if hovered else background
-                )
+            face = (
+                colors.selection_face
+                if selected
+                else colors.hover_face
+                if hovered
+                else colors.face
             )
-            painter.drawRoundedRect(rect, 4, 4)
-            painter.setPen(selected_text if selected else text_color)
-            painter.drawText(
+            edge = colors.selection if selected else colors.border
+            _draw_selector_rect(
+                painter,
                 rect,
-                QtCore.Qt.AlignmentFlag.AlignCenter,
+                facecolor=face,
+                edgecolor=edge,
+                linewidth=(
+                    _SELECTOR_SELECTED_BORDER_WIDTH
+                    if selected
+                    else _SELECTOR_BORDER_WIDTH
+                ),
+            )
+            painter.setPen(colors.selected_text if selected else colors.text)
+            text = painter.fontMetrics().elidedText(
                 self._axis_label(axis),
+                QtCore.Qt.TextElideMode.ElideRight,
+                max(0, rect.width() - 6),
+            )
+            painter.drawText(
+                rect.adjusted(3, 1, -3, -1),
+                QtCore.Qt.AlignmentFlag.AlignCenter,
+                text,
             )
 
     def mousePressEvent(self, event: QtGui.QMouseEvent | None) -> None:
@@ -449,11 +547,12 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         rect = self.rect()
         if rect.isEmpty():
             rect = QtCore.QRect(QtCore.QPoint(0, 0), self.sizeHint())
-        return rect.adjusted(
-            self._GRID_MARGIN,
-            self._GRID_MARGIN,
-            -self._GRID_MARGIN,
-            -self._GRID_MARGIN,
+        return _centered_rect(rect, self._grid_content_size(), self._GRID_MARGIN)
+
+    def _grid_content_size(self) -> QtCore.QSize:
+        return QtCore.QSize(
+            self._ncols * self._CELL_WIDTH + max(self._ncols - 1, 0) * self._CELL_GAP,
+            self._nrows * self._CELL_HEIGHT + max(self._nrows - 1, 0) * self._CELL_GAP,
         )
 
     def _cell_gap(self) -> int:
@@ -506,6 +605,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
     _CELL_GAP = 3
     _GRID_MARGIN = 4
     _NESTED_INSET = 4
+    _NESTED_LABEL_HEIGHT = 16
     _MIN_WIDTH = 100
     _MIN_HEIGHT = 44
     _HANDLE_SIZE = 7
@@ -872,12 +972,8 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         rect = self.rect()
         if rect.isEmpty():
             rect = QtCore.QRect(QtCore.QPoint(0, 0), self.sizeHint())
-        return rect.adjusted(
-            self._GRID_MARGIN,
-            self._GRID_MARGIN,
-            -self._GRID_MARGIN,
-            -self._GRID_MARGIN,
-        )
+        grid = self._display_grid if self._mode == "edit" else self._root_grid
+        return _centered_rect(rect, self._grid_size_hint(grid), self._GRID_MARGIN)
 
     def _axis_rects(self) -> dict[str, QtCore.QRect]:
         return dict(self._axis_rect_items())
@@ -885,7 +981,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
     def _axis_rect_items(self) -> tuple[tuple[str, QtCore.QRect], ...]:
         items: list[tuple[str, QtCore.QRect]] = []
         grid = self._display_grid if self._mode == "edit" else self._root_grid
-        self._collect_axis_rects(grid, self._grid_rect(), items)
+        self._collect_axis_rects(grid, self._grid_rect(), items, depth=0)
         return tuple(items)
 
     def cell_rect(self, axis: tuple[int, int]) -> QtCore.QRect:
@@ -913,6 +1009,8 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         grid: FigureGridSpecGridState,
         grid_rect: QtCore.QRect,
         items: list[tuple[str, QtCore.QRect]],
+        *,
+        depth: int,
     ) -> None:
         items.extend(
             (axis.axes_id, self._span_rect(grid, grid_rect, axis.span))
@@ -922,13 +1020,11 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         for child in grid.child_grids:
             if child.span is None or not self._span_within_grid(grid, child.span):
                 continue
-            child_rect = self._span_rect(grid, grid_rect, child.span).adjusted(
-                self._NESTED_INSET,
-                self._NESTED_INSET,
-                -self._NESTED_INSET,
-                -self._NESTED_INSET,
+            child_rect = self._nested_content_rect(
+                self._span_rect(grid, grid_rect, child.span),
+                depth=depth,
             )
-            self._collect_axis_rects(child, child_rect, items)
+            self._collect_axis_rects(child, child_rect, items, depth=depth + 1)
 
     def _draw_grid(
         self,
@@ -938,19 +1034,15 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         *,
         depth: int,
     ) -> None:
-        palette = self.palette()
-        background = palette.color(QtGui.QPalette.ColorRole.Base)
-        border = palette.color(QtGui.QPalette.ColorRole.Mid)
-        nested_fill = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
-        text_color = palette.color(QtGui.QPalette.ColorRole.Text)
-        selected_fill = palette.color(QtGui.QPalette.ColorRole.Highlight)
-        selected_text = palette.color(QtGui.QPalette.ColorRole.HighlightedText)
-        hover_fill = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
+        colors = _selector_colors(self.palette())
 
-        painter.setPen(QtGui.QPen(border, 1.0))
-        painter.setBrush(QtGui.QBrush(background))
-        painter.drawRoundedRect(grid_rect.adjusted(0, 0, -1, -1), 3, 3)
-        self._draw_grid_lines(painter, grid, grid_rect, border)
+        _draw_selector_rect(
+            painter,
+            grid_rect,
+            facecolor=colors.face,
+            edgecolor=colors.border,
+        )
+        self._draw_grid_lines(painter, grid, grid_rect, colors.border)
 
         for child in grid.child_grids:
             if child.span is None or not self._span_within_grid(grid, child.span):
@@ -962,30 +1054,32 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
                 and child.grid_id == self._selected_region_id
                 and self._region_handles_visible
             )
-            painter.setPen(QtGui.QPen(border, 1.0))
-            painter.setBrush(QtGui.QBrush(nested_fill))
-            painter.drawRoundedRect(rect, 4, 4)
-            if selected_child:
-                painter.setPen(QtGui.QPen(selected_fill, 1.6))
-                painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-                painter.drawRoundedRect(rect, 4, 4)
-                self._draw_resize_handles(painter, rect, selected_fill)
-            child_rect = rect.adjusted(
-                self._NESTED_INSET,
-                self._NESTED_INSET,
-                -self._NESTED_INSET,
-                -self._NESTED_INSET,
+            _draw_selector_rect(
+                painter,
+                rect,
+                facecolor=(
+                    colors.selection_face if selected_child else colors.nested_face
+                ),
+                edgecolor=colors.selection if selected_child else colors.border,
+                linewidth=(
+                    _SELECTOR_SELECTED_BORDER_WIDTH
+                    if selected_child
+                    else _SELECTOR_BORDER_WIDTH
+                ),
             )
+            if selected_child:
+                self._draw_resize_handles(painter, rect, colors.selection)
+            child_rect = self._nested_content_rect(rect, depth=depth)
             self._draw_grid(painter, child, child_rect, depth=depth + 1)
             if self._mode == "edit" and depth == 0:
-                painter.setPen(text_color)
+                painter.setPen(colors.muted_text)
                 text = painter.fontMetrics().elidedText(
                     self._region_label(child.grid_id),
                     QtCore.Qt.TextElideMode.ElideRight,
                     max(0, rect.width() - 6),
                 )
                 painter.drawText(
-                    rect.adjusted(3, 1, -3, -1),
+                    rect.adjusted(self._HANDLE_SIZE + 3, 1, -3, -1),
                     QtCore.Qt.AlignmentFlag.AlignLeft
                     | QtCore.Qt.AlignmentFlag.AlignTop,
                     text,
@@ -1001,14 +1095,25 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
                 else axis.axes_id in self._selected_axes
             )
             hovered = axis.axes_id == self._hovered_axis_id
-            painter.setPen(QtGui.QPen(selected_fill if selected else border, 1.0))
-            painter.setBrush(
-                QtGui.QBrush(
-                    selected_fill if selected else hover_fill if hovered else background
-                )
+            face = (
+                colors.selection_face
+                if selected
+                else colors.hover_face
+                if hovered
+                else colors.face
             )
-            painter.drawRoundedRect(rect, 4, 4)
-            painter.setPen(selected_text if selected else text_color)
+            _draw_selector_rect(
+                painter,
+                rect,
+                facecolor=face,
+                edgecolor=colors.selection if selected else colors.border,
+                linewidth=(
+                    _SELECTOR_SELECTED_BORDER_WIDTH
+                    if selected
+                    else _SELECTOR_BORDER_WIDTH
+                ),
+            )
+            painter.setPen(colors.selected_text if selected else colors.text)
             text = painter.fontMetrics().elidedText(
                 self._axis_label(axis.axes_id),
                 QtCore.Qt.TextElideMode.ElideRight,
@@ -1020,7 +1125,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
                 text,
             )
             if self._mode == "edit" and depth == 0 and selected:
-                self._draw_resize_handles(painter, rect, selected_fill)
+                self._draw_resize_handles(painter, rect, colors.selection)
 
     def _draw_grid_lines(
         self,
@@ -1029,7 +1134,9 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         grid_rect: QtCore.QRect,
         color: QtGui.QColor,
     ) -> None:
-        painter.setPen(QtGui.QPen(color, 0.8))
+        line_color = QtGui.QColor(color)
+        line_color.setAlpha(120)
+        painter.setPen(QtGui.QPen(line_color, 0.8))
         x_edges = self._axis_edges(
             grid_rect.left(), grid_rect.width(), grid.ncols, grid.width_ratios
         )
@@ -1063,7 +1170,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
             round(top),
             max(1, round(right - left)),
             max(1, round(bottom - top)),
-        ).adjusted(1, 1, -1, -1)
+        )
 
     def _axis_edges(
         self, start: int, size: int, count: int, ratios: Sequence[float]
@@ -1169,13 +1276,15 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
                 return region.label
         return self._labels.get(region_id, region_id)
 
-    def _grid_size_hint(self, grid: FigureGridSpecGridState) -> QtCore.QSize:
+    def _grid_size_hint(
+        self, grid: FigureGridSpecGridState, *, depth: int = 0
+    ) -> QtCore.QSize:
         cell_width = self._CELL_WIDTH
         cell_height = self._CELL_HEIGHT
         for child in grid.child_grids:
             if child.span is None or not self._span_within_grid(grid, child.span):
                 continue
-            child_size = self._grid_size_hint(child)
+            child_size = self._grid_size_hint(child, depth=depth + 1)
             span_cols = child.span.col_stop - child.span.col_start
             span_rows = child.span.row_stop - child.span.row_start
             if span_cols:
@@ -1189,12 +1298,30 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
                 cell_height = max(
                     cell_height,
                     math.ceil(
-                        (child_size.height() + 2 * self._NESTED_INSET) / span_rows
+                        (
+                            child_size.height()
+                            + self._nested_top_inset(depth)
+                            + self._NESTED_INSET
+                        )
+                        / span_rows
                     ),
                 )
         width = grid.ncols * cell_width + max(grid.ncols - 1, 0) * self._CELL_GAP
         height = grid.nrows * cell_height + max(grid.nrows - 1, 0) * self._CELL_GAP
         return QtCore.QSize(width, height)
+
+    def _nested_content_rect(self, rect: QtCore.QRect, *, depth: int) -> QtCore.QRect:
+        return rect.adjusted(
+            self._NESTED_INSET,
+            self._nested_top_inset(depth),
+            -self._NESTED_INSET,
+            -self._NESTED_INSET,
+        )
+
+    def _nested_top_inset(self, depth: int) -> int:
+        if self._mode == "edit" and depth == 0:
+            return self._NESTED_INSET + self._NESTED_LABEL_HEIGHT
+        return self._NESTED_INSET
 
     def _cell_at(
         self, pos: QtCore.QPoint, *, clamp_to_grid: bool = False
@@ -1278,7 +1405,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         painter.setPen(QtGui.QPen(color, 1.3))
         painter.setBrush(QtGui.QBrush(handle_fill))
         for _handle, handle_rect in self._handle_rects(rect):
-            painter.drawRect(handle_rect)
+            painter.drawRoundedRect(handle_rect, 2, 2)
 
     def _draw_preview_span(
         self, painter: QtGui.QPainter, span: FigureGridSpecSpanState
@@ -1290,7 +1417,11 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         pen.setStyle(QtCore.Qt.PenStyle.DashLine)
         painter.setPen(pen)
         painter.setBrush(QtGui.QBrush(preview_fill))
-        painter.drawRoundedRect(self.span_rect(span), 5, 5)
+        painter.drawRoundedRect(
+            self.span_rect(span),
+            _SELECTOR_CORNER_RADIUS,
+            _SELECTOR_CORNER_RADIUS,
+        )
 
     def _update_hover_cursor(self, pos: QtCore.QPoint) -> None:
         handle = self._handle_at(pos)

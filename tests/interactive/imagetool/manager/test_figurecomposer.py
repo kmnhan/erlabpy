@@ -409,6 +409,19 @@ def test_axes_selector_size_hint_tracks_grid(qtbot):
     assert two_by_four_hint.width() == one_by_four_hint.width()
     assert one_by_four_hint.height() < two_by_four_hint.height() < 70
 
+    selector.resize(two_by_four_hint + QtCore.QSize(80, 40))
+    grid_rect = QtCore.QRect(
+        selector.cell_rect((0, 0)).topLeft(),
+        selector.cell_rect((1, 3)).bottomRight(),
+    )
+    available_rect = selector.rect().adjusted(
+        selector._GRID_MARGIN,
+        selector._GRID_MARGIN,
+        -selector._GRID_MARGIN,
+        -selector._GRID_MARGIN,
+    )
+    assert (grid_rect.center() - available_rect.center()).manhattanLength() <= 1
+
 
 def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) -> None:
     calls: list[tuple[QtCore.QObject, int, str, tuple[QtCore.QObject, ...]]] = []
