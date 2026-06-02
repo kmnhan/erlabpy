@@ -3515,18 +3515,51 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     adjust_tool.operation_list.setCurrentRow(0)
     adjust_tool._select_step_section("method")
     adjust_page = adjust_tool.step_editor_stack.currentWidget()
-    left_edit = adjust_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerFigureSubplotsAdjustLeftEdit"
+    left_spin = adjust_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustLeftEdit"
     )
-    top_edit = adjust_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerFigureSubplotsAdjustTopEdit"
+    top_spin = adjust_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustTopEdit"
     )
-    assert left_edit is not None
-    assert top_edit is not None
-    assert left_edit.text() == "0.2"
-    top_edit.setText("0.9")
-    top_edit.editingFinished.emit()
+    assert left_spin is not None
+    assert top_spin is not None
+    assert left_spin.value() == pytest.approx(0.2)
+    assert left_spin.minimum() == pytest.approx(0.0)
+    assert left_spin.maximum() == pytest.approx(1.0)
+    assert left_spin.decimals() == 3
+    assert left_spin.singleStep() == pytest.approx(0.005)
+    assert not left_spin.keyboardTracking()
+    top_spin.setValue(0.9)
     assert adjust_tool.tool_status.operations[0].method_kwargs["top"] == 0.9
+
+    default_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2, layout=None),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="subplots_adjust",
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(default_tool)
+    default_tool.operation_list.setCurrentRow(0)
+    default_tool._select_step_section("method")
+    default_page = default_tool.step_editor_stack.currentWidget()
+    default_left_spin = default_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustLeftEdit"
+    )
+    assert default_left_spin is not None
+    default_figure = Figure(
+        figsize=default_tool.tool_status.setup.figsize,
+        dpi=default_tool.tool_status.setup.dpi,
+        layout=default_tool.tool_status.setup.layout,
+    )
+    assert default_left_spin.value() == pytest.approx(default_figure.subplotpars.left)
 
     fig = adjust_tool.figure
     figurecomposer_rendering._render_into_figure(adjust_tool, fig, sync_visible=False)

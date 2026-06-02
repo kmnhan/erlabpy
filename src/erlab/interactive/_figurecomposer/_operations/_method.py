@@ -60,14 +60,17 @@ or inspect generated code when the call form itself is product behavior.
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
 import enum
 import typing
 
 import matplotlib.scale
 import numpy as np
+from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
 
+import erlab.interactive.utils
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
@@ -108,7 +111,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from matplotlib.axes import Axes
-    from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
@@ -150,6 +152,7 @@ class MethodControlKind(enum.StrEnum):
     BOOL_KWARG_COMBO = "bool_kwarg_combo"
     INT_KWARG = "int_kwarg"
     FLOAT_KWARG = "float_kwarg"
+    SUBPLOTS_ADJUST_KWARG = "subplots_adjust_kwarg"
     TEXT_KWARG = "text_kwarg"
     LITERAL_KWARG = "literal_kwarg"
     STRING_TUPLE_KWARG = "string_tuple_kwarg"
@@ -198,6 +201,12 @@ class MethodSpec:
         if self.allowed_call_policies:
             return self.allowed_call_policies
         return (self.call_policy,)
+
+
+_SUBPLOTS_ADJUST_SPINBOX_MINIMUM = 0.0
+_SUBPLOTS_ADJUST_SPINBOX_MAXIMUM = 1.0
+_SUBPLOTS_ADJUST_SPINBOX_DECIMALS = 3
+_SUBPLOTS_ADJUST_SPINBOX_STEP = 0.005
 
 
 def _float_arg(
@@ -415,6 +424,18 @@ def _float_kwarg(
         object_name=object_name,
         tooltip=tooltip,
         default=default,
+    )
+
+
+def _subplots_adjust_kwarg(
+    label: str, key: str, object_name: str, tooltip: str
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.SUBPLOTS_ADJUST_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
     )
 
 
@@ -1156,37 +1177,37 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
         target_domain=MethodTargetDomain.FIGURE,
         call_policy=MethodCallPolicy.BOUND_FIGURE,
         controls=(
-            _float_kwarg(
+            _subplots_adjust_kwarg(
                 "Left",
                 "left",
                 "figureComposerFigureSubplotsAdjustLeftEdit",
                 "Left edge of the subplots as a fraction of figure width.",
             ),
-            _float_kwarg(
+            _subplots_adjust_kwarg(
                 "Bottom",
                 "bottom",
                 "figureComposerFigureSubplotsAdjustBottomEdit",
                 "Bottom edge of the subplots as a fraction of figure height.",
             ),
-            _float_kwarg(
+            _subplots_adjust_kwarg(
                 "Right",
                 "right",
                 "figureComposerFigureSubplotsAdjustRightEdit",
                 "Right edge of the subplots as a fraction of figure width.",
             ),
-            _float_kwarg(
+            _subplots_adjust_kwarg(
                 "Top",
                 "top",
                 "figureComposerFigureSubplotsAdjustTopEdit",
                 "Top edge of the subplots as a fraction of figure height.",
             ),
-            _float_kwarg(
+            _subplots_adjust_kwarg(
                 "Width spacing",
                 "wspace",
                 "figureComposerFigureSubplotsAdjustWspaceEdit",
                 "Horizontal space between subplot groups.",
             ),
-            _float_kwarg(
+            _subplots_adjust_kwarg(
                 "Height spacing",
                 "hspace",
                 "figureComposerFigureSubplotsAdjustHspaceEdit",
@@ -2506,6 +2527,26 @@ def _add_method_control_row(
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.SUBPLOTS_ADJUST_KWARG:
+            key = _control_key(control)
+            mixed = tool._batch_is_mixed(
+                operation,
+                lambda target: _method_kwarg_value(
+                    target, key, _subplots_adjust_default(tool, key)
+                ),
+            )
+            spinbox = _subplots_adjust_spinbox(
+                tool,
+                operation,
+                key,
+                mixed=mixed,
+                parent=layout.parentWidget(),
+            )
+            spinbox.setObjectName(control.object_name)
+            tooltip = control.tooltip
+            if mixed:
+                tooltip += "\nSelected steps have multiple values."
+            tool._add_form_row(layout, control.label, spinbox, tooltip)
         case MethodControlKind.TEXT_KWARG:
             key = _control_key(control)
             text, mixed = tool._batch_text(
@@ -2613,6 +2654,42 @@ def _method_kwarg_value(
     operation: FigureOperationState, key: str, default: typing.Any
 ) -> typing.Any:
     return operation.method_kwargs.get(key, default)
+
+
+def _subplots_adjust_default(tool: FigureComposerTool, key: str) -> float:
+    figure_window = tool._figure_window
+    if figure_window is not None and erlab.interactive.utils.qt_is_valid(figure_window):
+        return float(getattr(figure_window.figure.subplotpars, key))
+    figure = Figure(
+        figsize=tool.tool_status.setup.figsize,
+        dpi=tool.tool_status.setup.dpi,
+        layout=tool.tool_status.setup.layout,
+    )
+    return float(getattr(figure.subplotpars, key))
+
+
+def _subplots_adjust_spinbox(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    key: str,
+    *,
+    mixed: bool,
+    parent: QtWidgets.QWidget | None,
+) -> QtWidgets.QDoubleSpinBox:
+    spinbox = QtWidgets.QDoubleSpinBox(parent)
+    spinbox.setRange(_SUBPLOTS_ADJUST_SPINBOX_MINIMUM, _SUBPLOTS_ADJUST_SPINBOX_MAXIMUM)
+    spinbox.setDecimals(_SUBPLOTS_ADJUST_SPINBOX_DECIMALS)
+    spinbox.setSingleStep(_SUBPLOTS_ADJUST_SPINBOX_STEP)
+    spinbox.setKeyboardTracking(False)
+    value = _subplots_adjust_default(tool, key)
+    if not mixed:
+        with contextlib.suppress(TypeError, ValueError):
+            value = float(_method_kwarg_value(operation, key, value))
+    spinbox.setValue(value)
+    spinbox.valueChanged.connect(
+        lambda value, key=key: _update_current_method_kwarg(tool, key, float(value))
+    )
+    return spinbox
 
 
 def _method_control_visible(
