@@ -79,6 +79,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         super().__init__()
         self._updating_controls = False
         self._rendering = False
+        self._operation_editor_update_pending = False
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
         self._figure_window: _FigureComposerDisplayWindow | None = None
@@ -818,6 +819,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         finally:
             self.operation_list.blockSignals(False)
 
+    def _set_current_operation_row_silent(self, index: int) -> None:
+        was_blocked = self.operation_list.blockSignals(True)
+        try:
+            self.operation_list.setCurrentRow(index)
+        finally:
+            self.operation_list.blockSignals(was_blocked)
+
     def _operation_display_text(self, operation: FigureOperationState) -> str:
         return _registry.spec_for(operation.kind).display_text(self, operation)
 
@@ -884,13 +892,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operations[index] = operation
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
         self._refresh_operation_list()
-        self.operation_list.setCurrentRow(index)
+        self._set_current_operation_row_silent(index)
         if sync_axes:
             self._sync_axes_selector()
+        self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
         self._update_source_status(operation)
         if rebuild_editor:
-            self._update_operation_editor()
+            self._update_operation_editor_safely()
         if render:
             _rendering._render_preview(self)
             self.sigInfoChanged.emit()
@@ -922,7 +931,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         operations[index] = operation.model_copy(update=updates)
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
         self._refresh_operation_list()
-        self.operation_list.setCurrentRow(index)
+        self._set_current_operation_row_silent(index)
+        self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
         erlab.interactive.utils.single_shot(
             self, 0, lambda: _rendering._render_preview(self)
@@ -1422,6 +1432,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sections.extend(spec.build_editor_sections(self, operation))
         self._current_step_section_key = section_key
         self._set_step_sections(sections)
+
+    def _update_operation_editor_safely(self) -> None:
+        sender = self.sender()
+        if isinstance(sender, QtWidgets.QLineEdit):
+            self._queue_operation_editor_update()
+            return
+        self._update_operation_editor()
+
+    def _queue_operation_editor_update(self) -> None:
+        if self._operation_editor_update_pending:
+            return
+        self._operation_editor_update_pending = True
+
+        def update_editor() -> None:
+            self._operation_editor_update_pending = False
+            if erlab.interactive.utils.qt_is_valid(self):
+                self._update_operation_editor()
+
+        erlab.interactive.utils.single_shot(self, 0, update_editor)
 
     def _line_edit(
         self, text: str, *, parent: QtWidgets.QWidget | None = None

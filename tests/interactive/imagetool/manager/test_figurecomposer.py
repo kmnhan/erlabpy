@@ -2279,7 +2279,9 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
     assert unseeded_tool.tool_status.operations[-1].line_placement == "all_axes"
 
 
-def test_figure_composer_line_labels_auto_add_axes_legend_step(qtbot) -> None:
+def test_figure_composer_line_labels_auto_add_axes_legend_step(
+    qtbot, monkeypatch
+) -> None:
     profile = xr.DataArray(
         np.array([1.0, 2.0, 3.0]),
         dims=("kx",),
@@ -2309,9 +2311,16 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(qtbot) -> None:
     )
     assert labels_edit is not None
 
+    rebuild_calls: list[None] = []
+    monkeypatch.setattr(
+        tool,
+        "_update_operation_editor",
+        lambda: rebuild_calls.append(None),
+    )
     labels_edit.setText("profile A")
     labels_edit.editingFinished.emit()
 
+    assert rebuild_calls == []
     assert tool.operation_list.currentRow() == 0
     assert len(tool.tool_status.operations) == 2
     line_operation, legend_operation = tool.tool_status.operations
@@ -2326,6 +2335,52 @@ def test_figure_composer_line_labels_auto_add_axes_legend_step(qtbot) -> None:
 
     assert len(tool.tool_status.operations) == 2
     assert tool.tool_status.operations[0].line_labels == ("profile B",)
+
+
+def test_figure_composer_line_edit_rebuilds_are_deferred(qtbot, monkeypatch) -> None:
+    data = xr.DataArray(
+        np.arange(8.0).reshape(2, 2, 2),
+        dims=("eV", "kx", "ky"),
+        coords={"eV": [0.0, 1.0], "kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="cuts",
+                    sources=("data",),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("cuts")
+    values_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
+    )
+    assert values_edit is not None
+
+    rebuild_calls: list[None] = []
+    monkeypatch.setattr(
+        tool,
+        "_update_operation_editor",
+        lambda: rebuild_calls.append(None),
+    )
+    values_edit.setText("0, 1")
+    values_edit.editingFinished.emit()
+
+    assert tool.tool_status.operations[0].slice_values == (0.0, 1.0)
+    assert rebuild_calls == []
+    assert tool._operation_editor_update_pending is True
+    qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
+    assert tool._operation_editor_update_pending is False
 
 
 def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
@@ -2477,6 +2532,17 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
 
     assert tool.tool_status.operations[0].halfrange == 1.0
     assert tool.tool_status.operations[0].norm_kwargs == {"custom": "extra"}
+
+    def norm_kwargs_text_updated() -> bool:
+        refreshed_edit = tool.step_editor_stack.currentWidget().findChild(
+            QtWidgets.QLineEdit, "figureComposerNormKwargsEdit"
+        )
+        return refreshed_edit is not None and refreshed_edit.text() == 'custom="extra"'
+
+    qtbot.waitUntil(
+        norm_kwargs_text_updated,
+        timeout=1000,
+    )
     colors_page = tool.step_editor_stack.currentWidget()
     norm_kwargs_edit = colors_page.findChild(
         QtWidgets.QLineEdit, "figureComposerNormKwargsEdit"

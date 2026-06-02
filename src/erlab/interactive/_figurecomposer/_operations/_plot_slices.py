@@ -132,6 +132,7 @@ def _build_plot_slices_editor(
     )
 
     values_edit = tool._line_edit(_format_tuple(operation.slice_values))
+    values_edit.setObjectName("figureComposerPlotSlicesValuesEdit")
     values_edit.editingFinished.connect(
         lambda edit=values_edit: tool._update_current_operation_rebuild(
             slice_values=_float_tuple_from_text(edit.text())
@@ -147,6 +148,7 @@ def _build_plot_slices_editor(
     width_edit = tool._line_edit(
         "" if operation.slice_width is None else f"{operation.slice_width:g}"
     )
+    width_edit.setObjectName("figureComposerPlotSlicesWidthEdit")
     width_edit.editingFinished.connect(
         lambda edit=width_edit: tool._update_current_operation_rebuild(
             slice_width=float(edit.text()) if edit.text().strip() else None
