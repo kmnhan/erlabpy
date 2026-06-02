@@ -868,9 +868,19 @@ def test_figure_composer_generated_code_imports_erlab_for_erlab_stylesheet(
 
     code = tool.generated_code()
 
-    assert "import erlab.plotting as eplt" in code
-    assert code.index("import erlab.plotting as eplt") < code.index("plt.style.use")
+    style_import = "import erlab.plotting  # registers ERLab matplotlib stylesheets"
+    assert style_import in code
+    assert code.index(style_import) < code.index("plt.style.use")
     assert "plt.style.use(['erlab-test-style'])" in code
+
+    image_tool = FigureComposerTool(
+        xr.DataArray(np.arange(4.0).reshape(2, 2), dims=("x", "y"), name="image")
+    )
+    qtbot.addWidget(image_tool)
+    image_code = image_tool.generated_code()
+
+    assert "import erlab.plotting as eplt" in image_code
+    assert style_import not in image_code
 
 
 def test_figure_composer_canvas_draw_and_print_use_style_context(

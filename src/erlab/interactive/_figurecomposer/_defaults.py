@@ -117,5 +117,5 @@ def _style_required_imports() -> tuple[str, ...]:
     if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(
         _configured_stylesheets()
     ):
-        return ("import erlab.plotting as eplt",)
+        return ("import erlab.plotting  # registers ERLab matplotlib stylesheets",)
     return ()

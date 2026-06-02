@@ -33,6 +33,11 @@ def generated_code(tool: FigureComposerTool) -> str:
             if import_line not in required_imports:
                 required_imports.append(import_line)
     for import_line in _style_required_imports():
+        if (
+            import_line.startswith("import erlab.plotting")
+            and "import erlab.plotting as eplt" in required_imports
+        ):
+            continue
         if import_line not in required_imports:
             required_imports.append(import_line)
     lines.extend(required_imports)
