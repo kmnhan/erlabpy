@@ -326,14 +326,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             recipe_page,
             "figureComposerDeleteStepButton",
             "Delete Step",
-            "Remove the selected recipe step.",
+            "Remove the selected recipe step or steps.",
         )
         self.remove_operation_button.clicked.connect(self._remove_current_operation)
         self.duplicate_operation_button = _step_toolbar_button(
             recipe_page,
             "figureComposerDuplicateStepButton",
             "Duplicate",
-            "Copy the selected step and insert it immediately after the original.",
+            "Copy the selected step or steps after the last selected step.",
         )
         self.duplicate_operation_button.clicked.connect(
             self._duplicate_current_operation
@@ -342,14 +342,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             recipe_page,
             "figureComposerMoveStepUpButton",
             "Up",
-            "Move the selected step earlier in the recipe.",
+            "Move the selected recipe step or steps earlier.",
         )
         self.move_operation_up_button.clicked.connect(self._move_current_operation_up)
         self.move_operation_down_button = _step_toolbar_button(
             recipe_page,
             "figureComposerMoveStepDownButton",
             "Down",
-            "Move the selected step later in the recipe.",
+            "Move the selected recipe step or steps later.",
         )
         self.move_operation_down_button.clicked.connect(
             self._move_current_operation_down
@@ -1164,19 +1164,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sigInfoChanged.emit()
 
     def _update_step_action_buttons(self) -> None:
-        current = self._current_operation()
-        if current is None:
+        indices = self._selected_operation_indices()
+        if not indices:
             self.remove_operation_button.setEnabled(False)
             self.duplicate_operation_button.setEnabled(False)
             self.move_operation_up_button.setEnabled(False)
             self.move_operation_down_button.setEnabled(False)
             return
-        index, _operation = current
+        index_set = set(indices)
         self.remove_operation_button.setEnabled(True)
         self.duplicate_operation_button.setEnabled(True)
-        self.move_operation_up_button.setEnabled(index > 0)
+        self.move_operation_up_button.setEnabled(
+            any(index > 0 and index - 1 not in index_set for index in indices)
+        )
         self.move_operation_down_button.setEnabled(
-            index < len(self._recipe.operations) - 1
+            any(
+                index < len(self._recipe.operations) - 1 and index + 1 not in index_set
+                for index in indices
+            )
         )
 
     @QtCore.Slot()
@@ -1446,56 +1451,99 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @QtCore.Slot()
     def _remove_current_operation(self) -> None:
-        current = self._current_operation()
-        if current is None:
+        indices = self._selected_operation_indices()
+        if not indices:
             return
-        index, _operation = current
-        operations = list(self._recipe.operations)
-        operations.pop(index)
+        index_set = set(indices)
+        operations = [
+            operation
+            for index, operation in enumerate(self._recipe.operations)
+            if index not in index_set
+        ]
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
-        self._refresh_operation_list()
+        selected_ids: set[str] = set()
+        current_id: str | None = None
         if operations:
-            self.operation_list.setCurrentRow(min(index, len(operations) - 1))
-        self._update_operation_editor()
-        _rendering._render_preview(self)
-        self.sigInfoChanged.emit()
+            current_index = min(min(indices), len(operations) - 1)
+            current_id = operations[current_index].operation_id
+            selected_ids = {current_id}
+        self._finish_operation_structure_change(selected_ids, current_id)
 
     @QtCore.Slot()
     def _duplicate_current_operation(self) -> None:
-        current = self._current_operation()
-        if current is None:
+        indices = self._selected_operation_indices()
+        if not indices:
             return
-        index, operation = current
-        duplicate = operation.model_copy(
-            update={"operation_id": uuid.uuid4().hex},
-            deep=True,
-        )
         operations = list(self._recipe.operations)
-        operations.insert(index + 1, duplicate)
+        duplicates = [
+            operations[index].model_copy(
+                update={"operation_id": uuid.uuid4().hex},
+                deep=True,
+            )
+            for index in indices
+        ]
+        insert_index = max(indices) + 1
+        operations[insert_index:insert_index] = duplicates
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
-        self._refresh_operation_list()
-        self.operation_list.setCurrentRow(index + 1)
-        self._sync_axes_selector()
-        self._update_operation_editor()
-        _rendering._render_preview(self)
-        self.sigInfoChanged.emit()
+        self._finish_operation_structure_change(
+            {operation.operation_id for operation in duplicates},
+            duplicates[0].operation_id,
+        )
 
     def _move_current_operation(self, offset: int) -> None:
-        current = self._current_operation()
-        if current is None:
-            return
-        index, _operation = current
-        new_index = index + offset
-        if new_index < 0 or new_index >= len(self._recipe.operations):
+        indices = self._selected_operation_indices()
+        if not indices:
             return
         operations = list(self._recipe.operations)
-        operations[index], operations[new_index] = (
-            operations[new_index],
-            operations[index],
+        index_set = set(indices)
+        selected_ids = {operations[index].operation_id for index in indices}
+        moved = False
+        if offset < 0:
+            for index in indices:
+                if index > 0 and index - 1 not in index_set:
+                    operations[index - 1], operations[index] = (
+                        operations[index],
+                        operations[index - 1],
+                    )
+                    index_set.remove(index)
+                    index_set.add(index - 1)
+                    moved = True
+        else:
+            for index in reversed(indices):
+                if index < len(operations) - 1 and index + 1 not in index_set:
+                    operations[index + 1], operations[index] = (
+                        operations[index],
+                        operations[index + 1],
+                    )
+                    index_set.remove(index)
+                    index_set.add(index + 1)
+                    moved = True
+        if not moved:
+            return
+        current = self._current_operation()
+        current_id = (
+            current[1].operation_id
+            if current is not None and current[1].operation_id in selected_ids
+            else next(
+                operation.operation_id
+                for operation in operations
+                if operation.operation_id in selected_ids
+            )
         )
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._finish_operation_structure_change(selected_ids, current_id)
+
+    def _finish_operation_structure_change(
+        self, selected_ids: set[str], current_id: str | None
+    ) -> None:
         self._refresh_operation_list()
-        self.operation_list.setCurrentRow(new_index)
+        if selected_ids:
+            self._set_selected_operation_ids_silent(selected_ids)
+        if current_id is not None:
+            for row, operation in enumerate(self._recipe.operations):
+                if operation.operation_id == current_id:
+                    self._set_current_operation_row_silent(row)
+                    break
         self._sync_axes_selector()
         self._update_operation_editor()
         _rendering._render_preview(self)

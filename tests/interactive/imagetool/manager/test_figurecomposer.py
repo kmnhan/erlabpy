@@ -419,6 +419,102 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     ]
 
 
+def test_figure_composer_batch_duplicates_reorders_and_removes_steps(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+
+    def custom_step(label: str) -> FigureOperationState:
+        return FigureOperationState.custom(
+            label=label,
+            code=(
+                f"fig.__dict__['_order'] = fig.__dict__.get('_order', []) + [{label!r}]"
+            ),
+            trusted=True,
+        )
+
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=tuple(custom_step(label) for label in "abcde"),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (1, 3))
+    selected_originals = [
+        tool.tool_status.operations[index].operation_id for index in (1, 3)
+    ]
+    tool.duplicate_operation_button.click()
+
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "c",
+        "d",
+        "b",
+        "d",
+        "e",
+    ]
+    assert _selected_operation_rows(tool) == (4, 5)
+    assert tool.operation_list.currentRow() == 4
+    assert [
+        tool.tool_status.operations[index].operation_id for index in (4, 5)
+    ] != selected_originals
+
+    duplicate_ids = {
+        tool.tool_status.operations[index].operation_id for index in (4, 5)
+    }
+    tool.move_operation_up_button.click()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "a",
+        "b",
+        "c",
+        "b",
+        "d",
+        "d",
+        "e",
+    ]
+    assert _selected_operation_rows(tool) == (3, 4)
+    assert {
+        tool.tool_status.operations[index].operation_id for index in (3, 4)
+    } == duplicate_ids
+
+    _select_operation_rows(tool, (0, 2, 5))
+    selected_ids = {
+        tool.tool_status.operations[index].operation_id for index in (0, 2, 5)
+    }
+    tool.move_operation_down_button.click()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "b",
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "d",
+    ]
+    assert _selected_operation_rows(tool) == (1, 3, 6)
+    assert {
+        tool.tool_status.operations[index].operation_id for index in (1, 3, 6)
+    } == selected_ids
+
+    tool.remove_operation_button.click()
+    assert [operation.label for operation in tool.tool_status.operations] == [
+        "b",
+        "b",
+        "d",
+        "e",
+    ]
+    assert _selected_operation_rows(tool) == (1,)
+    assert tool.operation_list.currentRow() == 1
+
+
 def test_figure_composer_axes_code_compacts_contiguous_selections(qtbot) -> None:
     data = xr.DataArray(np.zeros((2, 2)), dims=("x", "y"), name="data")
     tool = FigureComposerTool(
