@@ -19,7 +19,10 @@ from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
 )
-from erlab.interactive._figurecomposer._state import FigureGridSpecSpanState
+from erlab.interactive._figurecomposer._state import (
+    FigureGridSpecGridState,
+    FigureGridSpecSpanState,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -459,6 +462,384 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         rows = range(min(row0, row1), max(row0, row1) + 1)
         cols = range(min(col0, col1), max(col0, col1) + 1)
         return tuple((row, col) for row in rows for col in cols)
+
+    @staticmethod
+    def _has_toggle_modifier(modifiers: QtCore.Qt.KeyboardModifier) -> bool:
+        return bool(
+            modifiers
+            & (
+                QtCore.Qt.KeyboardModifier.ControlModifier
+                | QtCore.Qt.KeyboardModifier.MetaModifier
+            )
+        )
+
+
+class _GridSpecAxesSelectorWidget(QtWidgets.QWidget):
+    """Read-only nested GridSpec selector for target axes."""
+
+    sigSelectionChanged = QtCore.Signal(object)
+
+    _CELL_WIDTH = 46
+    _CELL_HEIGHT = 28
+    _CELL_GAP = 3
+    _GRID_MARGIN = 4
+    _NESTED_INSET = 4
+    _MIN_WIDTH = 100
+    _MIN_HEIGHT = 44
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._root_grid = FigureGridSpecGridState(grid_id="root", label="Root")
+        self._labels: dict[str, str] = {}
+        self._selected_axes: frozenset[str] = frozenset()
+        self._anchor_axis_id: str | None = None
+        self._drag_origin: QtCore.QPoint | None = None
+        self._drag_base: frozenset[str] = frozenset()
+        self._drag_additive = False
+        self._hovered_axis_id: str | None = None
+        self.setObjectName("figureComposerGridSpecAxesSelector")
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.setMouseTracking(True)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.setToolTip(
+            "Click an axis to target it.\n"
+            "Shift-click selects a contiguous display range.\n"
+            "Ctrl/Cmd-click toggles one axis; drag selects visible axes."
+        )
+
+    def sizeHint(self) -> QtCore.QSize:
+        root = self._root_grid
+        margin = 2 * self._GRID_MARGIN
+        width = (
+            margin
+            + root.ncols * self._CELL_WIDTH
+            + max(root.ncols - 1, 0) * self._CELL_GAP
+        )
+        height = (
+            margin
+            + root.nrows * self._CELL_HEIGHT
+            + max(root.nrows - 1, 0) * self._CELL_GAP
+        )
+        return QtCore.QSize(
+            max(self._MIN_WIDTH, width),
+            max(self._MIN_HEIGHT, height),
+        )
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(self._MIN_WIDTH, self._MIN_HEIGHT)
+
+    def set_layout(
+        self,
+        root_grid: FigureGridSpecGridState,
+        labels: Mapping[str, str] | None = None,
+    ) -> None:
+        self._root_grid = root_grid
+        self._labels = dict(labels or {})
+        valid_axes = set(self.axes_ids())
+        self._selected_axes = frozenset(
+            axes_id for axes_id in self._selected_axes if axes_id in valid_axes
+        )
+        if self._anchor_axis_id not in valid_axes:
+            self._anchor_axis_id = next(iter(self._selected_axes), None)
+        self.updateGeometry()
+        self.update()
+
+    def set_selected_axes_ids(
+        self, axes_ids: Sequence[str], *, emit: bool = False
+    ) -> None:
+        valid_axes = set(self.axes_ids())
+        selected = frozenset(
+            axes_id for axes_id in dict.fromkeys(axes_ids) if axes_id in valid_axes
+        )
+        if selected:
+            self._anchor_axis_id = next(iter(self._ordered_selected_ids(selected)))
+        elif self._anchor_axis_id not in valid_axes:
+            self._anchor_axis_id = None
+        if selected == self._selected_axes:
+            return
+        self._selected_axes = selected
+        self.update()
+        if emit:
+            self.sigSelectionChanged.emit(self.selected_axes_ids())
+
+    def selected_axes_ids(self) -> tuple[str, ...]:
+        return self._ordered_selected_ids(self._selected_axes)
+
+    def axes_ids(self) -> tuple[str, ...]:
+        return tuple(axes_id for axes_id, _rect in self._axis_rect_items())
+
+    def axis_rect(self, axes_id: str) -> QtCore.QRect:
+        return self._axis_rects().get(axes_id, QtCore.QRect())
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        if event is not None:
+            super().paintEvent(event)
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        self._draw_grid(painter, self._root_grid, self._grid_rect())
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        if event is None or event.button() != QtCore.Qt.MouseButton.LeftButton:
+            if event is not None:
+                super().mousePressEvent(event)
+            return
+        axis_id = self._axis_at(event.position().toPoint())
+        if axis_id is None:
+            return
+        modifiers = event.modifiers()
+        additive = self._has_toggle_modifier(modifiers)
+        shift = bool(modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier)
+        self._drag_origin = event.position().toPoint()
+        self._drag_additive = additive
+        self._drag_base = self._selected_axes if additive else frozenset()
+        if shift and self._anchor_axis_id is not None:
+            selected = set(self._range_axes_ids(self._anchor_axis_id, axis_id))
+        elif additive:
+            selected = set(self._selected_axes)
+            if axis_id in selected:
+                selected.remove(axis_id)
+            else:
+                selected.add(axis_id)
+            self._anchor_axis_id = axis_id
+        else:
+            selected = {axis_id}
+            self._anchor_axis_id = axis_id
+        self.set_selected_axes_ids(tuple(selected), emit=True)
+        event.accept()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        if event is None:
+            return
+        axis_id = self._axis_at(event.position().toPoint())
+        if axis_id != self._hovered_axis_id:
+            self._hovered_axis_id = axis_id
+            self.update()
+        if (
+            self._drag_origin is not None
+            and event.buttons() & QtCore.Qt.MouseButton.LeftButton
+        ):
+            drag_rect = QtCore.QRect(
+                self._drag_origin, event.position().toPoint()
+            ).normalized()
+            selected = set(self._axes_intersecting(drag_rect))
+            if self._drag_additive:
+                selected.update(self._drag_base)
+            if selected:
+                self.set_selected_axes_ids(tuple(selected), emit=True)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        self._drag_origin = None
+        self._drag_base = frozenset()
+        self._drag_additive = False
+        if event is not None:
+            event.accept()
+
+    def leaveEvent(self, event: QtCore.QEvent | None) -> None:
+        self._hovered_axis_id = None
+        self.update()
+        if event is not None:
+            super().leaveEvent(event)
+
+    def _grid_rect(self) -> QtCore.QRect:
+        rect = self.rect()
+        if rect.isEmpty():
+            rect = QtCore.QRect(QtCore.QPoint(0, 0), self.sizeHint())
+        return rect.adjusted(
+            self._GRID_MARGIN,
+            self._GRID_MARGIN,
+            -self._GRID_MARGIN,
+            -self._GRID_MARGIN,
+        )
+
+    def _axis_rects(self) -> dict[str, QtCore.QRect]:
+        return dict(self._axis_rect_items())
+
+    def _axis_rect_items(self) -> tuple[tuple[str, QtCore.QRect], ...]:
+        items: list[tuple[str, QtCore.QRect]] = []
+        self._collect_axis_rects(self._root_grid, self._grid_rect(), items)
+        return tuple(items)
+
+    def _collect_axis_rects(
+        self,
+        grid: FigureGridSpecGridState,
+        grid_rect: QtCore.QRect,
+        items: list[tuple[str, QtCore.QRect]],
+    ) -> None:
+        items.extend(
+            (axis.axes_id, self._span_rect(grid, grid_rect, axis.span))
+            for axis in grid.axes
+            if self._span_within_grid(grid, axis.span)
+        )
+        for child in grid.child_grids:
+            if child.span is None or not self._span_within_grid(grid, child.span):
+                continue
+            child_rect = self._span_rect(grid, grid_rect, child.span).adjusted(
+                self._NESTED_INSET,
+                self._NESTED_INSET,
+                -self._NESTED_INSET,
+                -self._NESTED_INSET,
+            )
+            self._collect_axis_rects(child, child_rect, items)
+
+    def _draw_grid(
+        self,
+        painter: QtGui.QPainter,
+        grid: FigureGridSpecGridState,
+        grid_rect: QtCore.QRect,
+    ) -> None:
+        palette = self.palette()
+        background = palette.color(QtGui.QPalette.ColorRole.Base)
+        border = palette.color(QtGui.QPalette.ColorRole.Mid)
+        nested_fill = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
+        text_color = palette.color(QtGui.QPalette.ColorRole.Text)
+        selected_fill = palette.color(QtGui.QPalette.ColorRole.Highlight)
+        selected_text = palette.color(QtGui.QPalette.ColorRole.HighlightedText)
+        hover_fill = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
+
+        painter.setPen(QtGui.QPen(border, 1.0))
+        painter.setBrush(QtGui.QBrush(background))
+        painter.drawRoundedRect(grid_rect.adjusted(0, 0, -1, -1), 3, 3)
+        self._draw_grid_lines(painter, grid, grid_rect, border)
+
+        for child in grid.child_grids:
+            if child.span is None or not self._span_within_grid(grid, child.span):
+                continue
+            rect = self._span_rect(grid, grid_rect, child.span)
+            painter.setPen(QtGui.QPen(border, 1.0))
+            painter.setBrush(QtGui.QBrush(nested_fill))
+            painter.drawRoundedRect(rect, 4, 4)
+            child_rect = rect.adjusted(
+                self._NESTED_INSET,
+                self._NESTED_INSET,
+                -self._NESTED_INSET,
+                -self._NESTED_INSET,
+            )
+            self._draw_grid(painter, child, child_rect)
+
+        for axis in grid.axes:
+            if not self._span_within_grid(grid, axis.span):
+                continue
+            rect = self._span_rect(grid, grid_rect, axis.span)
+            selected = axis.axes_id in self._selected_axes
+            hovered = axis.axes_id == self._hovered_axis_id
+            painter.setPen(QtGui.QPen(selected_fill if selected else border, 1.0))
+            painter.setBrush(
+                QtGui.QBrush(
+                    selected_fill if selected else hover_fill if hovered else background
+                )
+            )
+            painter.drawRoundedRect(rect, 4, 4)
+            painter.setPen(selected_text if selected else text_color)
+            text = painter.fontMetrics().elidedText(
+                self._axis_label(axis.axes_id),
+                QtCore.Qt.TextElideMode.ElideRight,
+                max(0, rect.width() - 6),
+            )
+            painter.drawText(
+                rect.adjusted(3, 1, -3, -1),
+                QtCore.Qt.AlignmentFlag.AlignCenter,
+                text,
+            )
+
+    def _draw_grid_lines(
+        self,
+        painter: QtGui.QPainter,
+        grid: FigureGridSpecGridState,
+        grid_rect: QtCore.QRect,
+        color: QtGui.QColor,
+    ) -> None:
+        painter.setPen(QtGui.QPen(color, 0.8))
+        x_edges = self._axis_edges(
+            grid_rect.left(), grid_rect.width(), grid.ncols, grid.width_ratios
+        )
+        y_edges = self._axis_edges(
+            grid_rect.top(), grid_rect.height(), grid.nrows, grid.height_ratios
+        )
+        for x in x_edges[1:-1]:
+            painter.drawLine(round(x), grid_rect.top(), round(x), grid_rect.bottom())
+        for y in y_edges[1:-1]:
+            painter.drawLine(grid_rect.left(), round(y), grid_rect.right(), round(y))
+
+    def _span_rect(
+        self,
+        grid: FigureGridSpecGridState,
+        grid_rect: QtCore.QRect,
+        span: FigureGridSpecSpanState,
+    ) -> QtCore.QRect:
+        x_edges = self._axis_edges(
+            grid_rect.left(), grid_rect.width(), grid.ncols, grid.width_ratios
+        )
+        y_edges = self._axis_edges(
+            grid_rect.top(), grid_rect.height(), grid.nrows, grid.height_ratios
+        )
+        gap = self._CELL_GAP
+        left = x_edges[span.col_start] + (gap / 2 if span.col_start else 0)
+        right = x_edges[span.col_stop] - (gap / 2 if span.col_stop < grid.ncols else 0)
+        top = y_edges[span.row_start] + (gap / 2 if span.row_start else 0)
+        bottom = y_edges[span.row_stop] - (gap / 2 if span.row_stop < grid.nrows else 0)
+        return QtCore.QRect(
+            round(left),
+            round(top),
+            max(1, round(right - left)),
+            max(1, round(bottom - top)),
+        ).adjusted(1, 1, -1, -1)
+
+    def _axis_edges(
+        self, start: int, size: int, count: int, ratios: Sequence[float]
+    ) -> tuple[float, ...]:
+        if count <= 0:
+            return (float(start),)
+        if len(ratios) != count or sum(ratios) <= 0:
+            ratios = tuple(1.0 for _index in range(count))
+        total = float(sum(ratios))
+        edges = [float(start)]
+        current = float(start)
+        for ratio in ratios:
+            current += size * float(ratio) / total
+            edges.append(current)
+        return tuple(edges)
+
+    def _axis_at(self, pos: QtCore.QPoint) -> str | None:
+        for axes_id, rect in reversed(self._axis_rect_items()):
+            if rect.contains(pos):
+                return axes_id
+        return None
+
+    def _axes_intersecting(self, rect: QtCore.QRect) -> tuple[str, ...]:
+        return tuple(
+            axes_id
+            for axes_id, axis_rect in self._axis_rect_items()
+            if axis_rect.intersects(rect)
+        )
+
+    def _ordered_selected_ids(self, selected: frozenset[str]) -> tuple[str, ...]:
+        return tuple(axes_id for axes_id in self.axes_ids() if axes_id in selected)
+
+    def _range_axes_ids(self, start: str, end: str) -> tuple[str, ...]:
+        axes_ids = self.axes_ids()
+        if start not in axes_ids or end not in axes_ids:
+            return (end,)
+        start_index = axes_ids.index(start)
+        end_index = axes_ids.index(end)
+        return axes_ids[min(start_index, end_index) : max(start_index, end_index) + 1]
+
+    def _axis_label(self, axes_id: str) -> str:
+        return self._labels.get(axes_id, axes_id)
+
+    @staticmethod
+    def _span_within_grid(
+        grid: FigureGridSpecGridState, span: FigureGridSpecSpanState
+    ) -> bool:
+        return (
+            0 <= span.row_start < span.row_stop <= grid.nrows
+            and 0 <= span.col_start < span.col_stop <= grid.ncols
+        )
 
     @staticmethod
     def _has_toggle_modifier(modifiers: QtCore.Qt.KeyboardModifier) -> bool:

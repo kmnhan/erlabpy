@@ -77,6 +77,7 @@ from erlab.interactive._figurecomposer._text import (
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
     _FigureComposerDisplayWindow,
+    _GridSpecAxesSelectorWidget,
     _GridSpecLayoutWidget,
     _GridSpecRegionInfo,
     _step_toolbar_button,
@@ -507,21 +508,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.axes_selector = _AxesSelectorWidget(self.target_axes_page)
         self.axes_selector.sigSelectionChanged.connect(self._axes_selection_changed)
         target_axes_layout.addWidget(self.axes_selector)
-        self.gridspec_axes_list = QtWidgets.QListWidget(self.target_axes_page)
-        self.gridspec_axes_list.setObjectName("figureComposerGridSpecAxesList")
-        self.gridspec_axes_list.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
-        )
-        self.gridspec_axes_list.setAlternatingRowColors(True)
-        self.gridspec_axes_list.setUniformItemSizes(True)
-        self.gridspec_axes_list.setToolTip(
-            "Axes created in the GridSpec layout.\n"
-            "Use Shift or Command/Ctrl to select multiple targets."
-        )
-        self.gridspec_axes_list.itemSelectionChanged.connect(
+        self.gridspec_axes_selector = _GridSpecAxesSelectorWidget(self.target_axes_page)
+        self.gridspec_axes_selector.sigSelectionChanged.connect(
             self._gridspec_axes_selection_changed
         )
-        target_axes_layout.addWidget(self.gridspec_axes_list)
+        target_axes_layout.addWidget(self.gridspec_axes_selector)
         self.target_axes_status_label = QtWidgets.QLabel(self.target_axes_page)
         self.target_axes_status_label.setObjectName("figureComposerAxesStatus")
         self.target_axes_status_label.setWordWrap(True)
@@ -1022,7 +1013,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.gridspec_layout_widget.set_grid(grid.nrows, grid.ncols, regions)
         self._refresh_gridspec_breadcrumbs()
         self._refresh_gridspec_region_controls()
-        self._refresh_gridspec_axes_list()
+        self._refresh_gridspec_axes_selector()
         self._refresh_gridspec_status(grid)
 
     def _refresh_gridspec_status(self, grid: FigureGridSpecGridState) -> None:
@@ -1121,39 +1112,23 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             else "Select an axes or nested grid region to delete it."
         )
 
-    def _refresh_gridspec_axes_list(self) -> None:
+    def _refresh_gridspec_axes_selector(self) -> None:
         selected_ids: set[str] = set()
         current = self._current_operation()
         if current is not None and _registry.spec_for(current[1].kind).uses_axes(
             current[1]
         ):
             selected_ids = set(current[1].axes.axes_ids)
-        blocker = QtCore.QSignalBlocker(self.gridspec_axes_list)
-        self.gridspec_axes_list.clear()
-        valid_axis_ids = set(
-            _gridspec_valid_axes_ids(
-                self._recipe.setup,
-                _gridspec_all_axes_ids(self._recipe.setup),
-            )
+        blocker = QtCore.QSignalBlocker(self.gridspec_axes_selector)
+        axes_ids = _gridspec_all_axes_ids(self._recipe.setup)
+        self.gridspec_axes_selector.set_layout(
+            self._recipe.setup.gridspec.root,
+            {
+                axes_id: _gridspec_axis_display_name(self._recipe.setup, axes_id)
+                for axes_id in axes_ids
+            },
         )
-        for axes_id in _gridspec_all_axes_ids(self._recipe.setup):
-            is_valid = axes_id in valid_axis_ids
-            item = QtWidgets.QListWidgetItem(
-                _gridspec_axis_display_name(self._recipe.setup, axes_id)
-                + ("" if is_valid else " (outside grid)")
-            )
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, axes_id)
-            item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, is_valid)
-            if is_valid:
-                item.setToolTip("Select this GridSpec axes as an operation target.")
-            else:
-                item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
-                item.setToolTip(
-                    "This axes is outside its current GridSpec grid. "
-                    "Increase the grid size or drop removed axes."
-                )
-            self.gridspec_axes_list.addItem(item)
-            item.setSelected(axes_id in selected_ids)
+        self.gridspec_axes_selector.set_selected_axes_ids(tuple(selected_ids))
         del blocker
 
     def _sync_axes_selector(self) -> None:
@@ -1184,9 +1159,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             grid_mode = self._recipe.setup.layout_mode == "gridspec"
             self.axes_selector.setVisible(not grid_mode)
             self.axes_expression_edit.setVisible(not grid_mode)
-            self.gridspec_axes_list.setVisible(grid_mode)
+            self.gridspec_axes_selector.setVisible(grid_mode)
             self.axes_selector.set_selected_axes(tuple(sorted(selected_axes)))
-            self._refresh_gridspec_axes_list()
+            self._refresh_gridspec_axes_selector()
             if self.axes_expression_edit.text() != expression:
                 blocker = QtCore.QSignalBlocker(self.axes_expression_edit)
                 self.axes_expression_edit.setText(expression)
@@ -1862,10 +1837,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         if not _registry.spec_for(current[1].kind).uses_axes(current[1]):
             return
-        axes_ids = tuple(
-            typing.cast("str", item.data(QtCore.Qt.ItemDataRole.UserRole))
-            for item in self.gridspec_axes_list.selectedItems()
-        )
+        axes_ids = self.gridspec_axes_selector.selected_axes_ids()
         index, operation = current
         selection = operation.axes.model_copy(
             update={"axes_ids": axes_ids, "expression": ""}
@@ -2054,10 +2026,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _selected_axes_state(self) -> FigureAxesSelectionState:
         if self._recipe.setup.layout_mode == "gridspec":
-            axes_ids = tuple(
-                typing.cast("str", item.data(QtCore.Qt.ItemDataRole.UserRole))
-                for item in self.gridspec_axes_list.selectedItems()
-            )
+            axes_ids = self.gridspec_axes_selector.selected_axes_ids()
             if not axes_ids:
                 axes_ids = _gridspec_all_axes_ids(self._recipe.setup)[:1]
             return FigureAxesSelectionState(axes_ids=axes_ids)
