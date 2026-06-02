@@ -1147,12 +1147,15 @@ def test_figure_composer_axes_code_compacts_contiguous_selections(qtbot) -> None
     assert axes_code(all_axes) == "axs"
     assert axes_sequence_code(all_axes) == "axs.flat"
     assert axes_code(((0, 0), (0, 1), (0, 2), (0, 3))) == "axs[0, :]"
+    assert axes_code(((0, 3), (0, 1), (0, 2), (0, 0))) == "axs[0, :]"
+    assert axes_code(((0, 0), (0, 1), (0, 1), (0, 2))) == "axs[0, :3]"
     assert axes_sequence_code(((0, 0), (0, 1), (0, 2), (0, 3))) == ("axs[0, :].flat")
     assert axes_code(((0, 2), (1, 2), (2, 2))) == "axs[:, 2]"
     assert axes_code(((0, 0), (0, 1), (0, 2))) == "axs[0, :3]"
     assert axes_code(((0, 1), (0, 2), (0, 3))) == "axs[0, 1:4]"
     assert axes_code(((1, 0), (2, 0))) == "axs[1:3, 0]"
     assert axes_code(((1, 1), (1, 2), (2, 1), (2, 2))) == "axs[1:3, 1:3]"
+    assert axes_code(((2, 2), (1, 1), (1, 2), (2, 1))) == "axs[1:3, 1:3]"
     assert axes_sequence_code(((1, 1), (1, 2), (2, 1), (2, 2))) == (
         "axs[1:3, 1:3].flat"
     )

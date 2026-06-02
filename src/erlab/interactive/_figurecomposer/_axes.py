@@ -27,7 +27,7 @@ def _compact_axes_code(
     nrows: int | None = None,
     ncols: int | None = None,
 ) -> str | None:
-    axes_tuple = tuple(axes)
+    axes_tuple = tuple(dict.fromkeys(axes))
     if not axes_tuple:
         return None
     if len(axes_tuple) == 1:
@@ -44,7 +44,8 @@ def _compact_axes_code(
     cols = tuple(sorted({col for _row, col in axes_tuple}))
     if not _is_contiguous(rows) or not _is_contiguous(cols):
         return None
-    if axes_tuple != tuple((row, col) for row in rows for col in cols):
+    rectangular_axes = tuple((row, col) for row in rows for col in cols)
+    if set(axes_tuple) != set(rectangular_axes):
         return None
     return (
         "axs["
