@@ -72,7 +72,6 @@ def color_kw_value_from_text(text: str) -> typing.Any:
 
 def optional_positive_spinbox(
     value: float | None,
-    changed: typing.Callable[[float | None], None],
     *,
     parent: QtWidgets.QWidget,
 ) -> QtWidgets.QDoubleSpinBox:
@@ -83,10 +82,11 @@ def optional_positive_spinbox(
     spinbox.setSpecialValueText("default")
     spinbox.setKeyboardTracking(False)
     spinbox.setValue(0.0 if value is None else float(value))
-    spinbox.valueChanged.connect(
-        lambda next_value: changed(None if next_value == 0.0 else float(next_value))
-    )
     return spinbox
+
+
+def optional_positive_spinbox_value(value: float) -> float | None:
+    return None if value == 0.0 else float(value)
 
 
 def line_kw_value(

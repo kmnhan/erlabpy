@@ -7,6 +7,7 @@ import math
 import textwrap
 import typing
 import uuid
+import weakref
 
 # Matplotlib's Qt backend should see the qtpy-selected binding first.
 # isort: off
@@ -25,6 +26,20 @@ from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
     _figure_draw_context,
     _figure_style_context,
+)
+from erlab.interactive._figurecomposer._editor_controls import (
+    MIXED_VALUE as _MIXED_VALUE,
+)
+from erlab.interactive._figurecomposer._editor_controls import (
+    MIXED_VALUES_TEXT as _MIXED_VALUES_TEXT,
+)
+from erlab.interactive._figurecomposer._editor_controls import (
+    CheckBoxControlAdapter,
+    ComboBoxControlAdapter,
+    ComboBoxDataControlAdapter,
+    LineEditControlAdapter,
+    PlainTextControlAdapter,
+    SignalValueControlAdapter,
 )
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
@@ -93,8 +108,6 @@ if typing.TYPE_CHECKING:
 
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
-_MIXED_VALUES_TEXT = "(multiple values)"
-_MIXED_VALUE = object()
 _PERSISTED_SOURCE_MAP_ATTR = "_figure_composer_source_payloads"
 _PERSISTED_SOURCE_VAR_PREFIX = "_figure_composer_source_payload_"
 _PERSISTED_SOURCE_DIM_PREFIX = "_figure_composer_source_payload_bytes_"
@@ -138,6 +151,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_list_viewport: QtWidgets.QWidget | None = None
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._operation_render_errors: dict[str, str] = {}
+        self._operation_editor_generation = 0
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
@@ -1503,46 +1517,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     @staticmethod
     def _line_edit_batch_unchanged(edit: QtWidgets.QLineEdit) -> bool:
-        return bool(edit.property("batch_mixed")) and not edit.isModified()
+        return LineEditControlAdapter(edit).unchanged_mixed()
 
     @staticmethod
     def _apply_mixed_line_edit(edit: QtWidgets.QLineEdit, mixed: bool) -> None:
-        if mixed:
-            edit.setPlaceholderText(_MIXED_VALUES_TEXT)
-            edit.setProperty("batch_mixed", True)
-            edit.setModified(False)
-        else:
-            edit.setProperty("batch_mixed", False)
+        LineEditControlAdapter(edit).set_mixed(mixed)
 
     @staticmethod
     def _plain_text_batch_unchanged(edit: QtWidgets.QPlainTextEdit) -> bool:
-        document = edit.document()
-        return (
-            bool(edit.property("batch_mixed"))
-            and document is not None
-            and not document.isModified()
-        )
+        return PlainTextControlAdapter(edit).unchanged_mixed()
 
     @staticmethod
     def _apply_mixed_plain_text_edit(
         edit: QtWidgets.QPlainTextEdit, mixed: bool
     ) -> None:
-        if mixed:
-            edit.setPlaceholderText(_MIXED_VALUES_TEXT)
-            edit.setProperty("batch_mixed", True)
-            document = edit.document()
-            if document is not None:
-                document.setModified(False)
-        else:
-            edit.setProperty("batch_mixed", False)
+        PlainTextControlAdapter(edit).set_mixed(mixed)
 
     @staticmethod
     def _set_combo_mixed_placeholder(combo: QtWidgets.QComboBox) -> None:
-        combo.insertItem(0, _MIXED_VALUES_TEXT)
-        item = typing.cast("typing.Any", combo.model()).item(0)
-        if item is not None:
-            item.setEnabled(False)
-        combo.setCurrentIndex(0)
+        ComboBoxControlAdapter(combo).set_mixed(True)
 
     @staticmethod
     def _mixed_combo_text(text: str) -> bool:
@@ -2672,6 +2665,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_source_status(operation)
 
     def _update_operation_editor(self) -> None:
+        self._operation_editor_generation += 1
         section_key = self._current_step_section_key
         self._clear_operation_editor()
         self._update_source_section()
@@ -2783,8 +2777,103 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self, text: str, *, parent: QtWidgets.QWidget | None = None
     ) -> QtWidgets.QLineEdit:
         edit = QtWidgets.QLineEdit(parent or self.operation_editor)
+        self._mark_editor_control(edit)
         edit.setText(text)
         return edit
+
+    def _mark_editor_control(self, widget: QtWidgets.QWidget) -> None:
+        widget.setProperty(
+            "figure_composer_editor_generation",
+            self._operation_editor_generation,
+        )
+
+    def _editor_control_signal_allowed(self, widget: QtWidgets.QWidget) -> bool:
+        return (
+            not self._updating_controls
+            and erlab.interactive.utils.qt_is_valid(widget)
+            and widget.property("figure_composer_editor_generation")
+            == self._operation_editor_generation
+        )
+
+    def _connect_editor_signal(
+        self,
+        widget: QtWidgets.QWidget,
+        signal: typing.Any,
+        callback: Callable[..., None],
+    ) -> None:
+        """Connect a recipe-editor signal with generation and lifetime guards."""
+        self._mark_editor_control(widget)
+        widget_ref = weakref.ref(widget)
+
+        def guarded_callback(*args: typing.Any) -> None:
+            guarded_widget = widget_ref()
+            if guarded_widget is None or not self._editor_control_signal_allowed(
+                guarded_widget
+            ):
+                return
+            callback(*args)
+
+        signal.connect(guarded_callback)
+
+    def _connect_line_edit_finished(
+        self,
+        edit: QtWidgets.QLineEdit,
+        callback: Callable[[str], None],
+    ) -> None:
+        """Connect an editable text control with mixed-value protection."""
+        LineEditControlAdapter(edit).connect_commit(
+            self._connect_editor_signal,
+            callback,
+        )
+
+    def _connect_plain_text_changed(
+        self,
+        edit: QtWidgets.QPlainTextEdit,
+        callback: Callable[[str], None],
+    ) -> None:
+        """Connect an editable plain-text control with mixed-value protection."""
+        PlainTextControlAdapter(edit).connect_commit(
+            self._connect_editor_signal,
+            callback,
+        )
+
+    def _connect_value_signal(
+        self,
+        widget: QtWidgets.QWidget,
+        signal: typing.Any,
+        value_getter: Callable[..., typing.Any],
+        callback: Callable[[typing.Any], None],
+        *,
+        unchanged_mixed: Callable[[], bool] | None = None,
+    ) -> None:
+        """Connect a custom editor widget signal through the adapter contract."""
+        SignalValueControlAdapter(
+            widget,
+            signal,
+            value_getter,
+            unchanged_mixed=unchanged_mixed,
+        ).connect_commit(self._connect_editor_signal, callback)
+
+    def _mixed_value_widget(
+        self,
+        widget: QtWidgets.QWidget,
+        *,
+        mixed: bool,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> QtWidgets.QWidget:
+        """Wrap non-placeholder controls with the standard mixed-value marker."""
+        if not mixed:
+            return widget
+        container = QtWidgets.QWidget(parent or widget.parentWidget())
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        marker = QtWidgets.QLabel(_MIXED_VALUES_TEXT, container)
+        marker.setObjectName("figureComposerMixedValueMarker")
+        marker.setEnabled(False)
+        layout.addWidget(widget, 1)
+        layout.addWidget(marker)
+        return container
 
     def _combo(
         self,
@@ -2797,14 +2886,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         enabled: bool = True,
     ) -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox(parent or self.operation_editor)
+        self._mark_editor_control(combo)
         combo.addItems(list(values))
+        adapter = ComboBoxControlAdapter(combo)
         if mixed:
-            self._set_combo_mixed_placeholder(combo)
+            adapter.set_mixed(True)
         elif current is not None:
             self._set_combo_value(combo, current)
         combo.setEnabled(enabled)
-        combo.currentTextChanged.connect(
-            lambda text: None if self._mixed_combo_text(text) else changed(text)
+        adapter.connect_commit(
+            self._connect_editor_signal,
+            changed,
         )
         return combo
 
@@ -2820,6 +2912,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         enabled: bool = True,
     ) -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox(parent or self.operation_editor)
+        self._mark_editor_control(combo)
+        adapter = ComboBoxDataControlAdapter(combo)
         if mixed:
             combo.addItem(_MIXED_VALUES_TEXT, _MIXED_VALUE)
         combo.addItem(none_label, None)
@@ -2838,12 +2932,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     combo.setCurrentIndex(index)
                     break
         combo.setEnabled(enabled)
-        combo.currentIndexChanged.connect(
-            lambda _index, combo=combo: (
-                None
-                if combo.currentData() is _MIXED_VALUE
-                else changed(typing.cast("str | None", combo.currentData()))
-            )
+        adapter.connect_commit(
+            self._connect_editor_signal,
+            lambda value: changed(typing.cast("str | None", value)),
         )
         return combo
 
@@ -2853,10 +2944,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         changed: Callable[[bool], None],
         *,
         parent: QtWidgets.QWidget | None = None,
+        mixed: bool = False,
     ) -> QtWidgets.QCheckBox:
         check = QtWidgets.QCheckBox(parent or self.operation_editor)
-        check.setChecked(checked)
-        check.toggled.connect(changed)
+        self._mark_editor_control(check)
+        adapter = CheckBoxControlAdapter(check)
+        if mixed:
+            adapter.set_mixed(True)
+            adapter.connect_commit(self._connect_editor_signal, changed)
+        else:
+            check.setChecked(checked)
+            adapter.connect_commit(self._connect_editor_signal, changed)
         return check
 
     @staticmethod

@@ -1,4 +1,25 @@
-"""Operation spec interfaces shared by Figure Composer step modules."""
+"""Operation spec interfaces shared by Figure Composer step modules.
+
+Editor controls that mutate recipe state must use
+``FigureComposerTool._connect_editor_signal`` or a tool factory such as
+``_combo``/``_check_box``. Direct signal connections can fire during widget
+population, after a section rebuild, or from a retired Qt wrapper; those signals
+must not write recipe state.
+
+Batch-editable controls must also declare a mixed-value presentation:
+
+- text widgets use an empty value with the ``(multiple values)`` placeholder and
+  skip commits until the user edits the text;
+- combo boxes use the disabled ``(multiple values)`` sentinel item and commit
+  only when the user activates a real item;
+- check boxes use Qt's partially checked state;
+- widgets without native placeholder support, such as spinboxes, sliders, and
+  picker buttons, are wrapped with ``FigureComposerTool._mixed_value_widget`` and
+  still connect through the guarded signal helper.
+
+When adding a new operation or method control, implement one of these patterns
+before connecting it to recipe updates.
+"""
 
 from __future__ import annotations
 

@@ -17,6 +17,7 @@ from erlab.interactive._figurecomposer._line_style import (
     line_kw_float,
     line_kw_text,
     optional_positive_spinbox,
+    optional_positive_spinbox_value,
     update_current_line_kw,
 )
 from erlab.interactive._figurecomposer._operations._base import (
@@ -245,12 +246,9 @@ def _build_line_editor(
     labels_edit = tool._line_edit(labels_text)
     tool._apply_mixed_line_edit(labels_edit, labels_mixed)
     labels_edit.setObjectName("figureComposerLineLabelsEdit")
-    labels_edit.editingFinished.connect(
-        lambda edit=labels_edit: (
-            None
-            if tool._line_edit_batch_unchanged(edit)
-            else _update_current_line_labels(tool, edit.text())
-        )
+    tool._connect_line_edit_finished(
+        labels_edit,
+        lambda text: _update_current_line_labels(tool, text),
     )
     tool._add_form_row(
         tool.operation_editor_layout,
@@ -271,12 +269,12 @@ def _build_line_editor(
     colors_widget.setMainEditObjectName("figureComposerLineColorsEdit")
     if colors_mixed:
         colors_widget.setMixedPlaceholder("(multiple values)")
-    colors_widget.colorsChanged.connect(
-        lambda colors, widget=colors_widget: (
-            None
-            if widget.batchUnchanged()
-            else tool._update_current_operation(line_colors=tuple(colors))
-        )
+    tool._connect_value_signal(
+        colors_widget,
+        colors_widget.colorsChanged,
+        lambda colors: tuple(colors),
+        lambda colors: tool._update_current_operation(line_colors=colors),
+        unchanged_mixed=colors_widget.batchUnchanged,
     )
     tool._add_form_row(
         tool.operation_editor_layout,
@@ -294,14 +292,11 @@ def _build_line_editor(
     selection_edit = tool._line_edit(selection_text)
     tool._apply_mixed_line_edit(selection_edit, selection_mixed)
     selection_edit.setObjectName("figureComposerLineSelectionEdit")
-    selection_edit.editingFinished.connect(
-        lambda edit=selection_edit: (
-            None
-            if tool._line_edit_batch_unchanged(edit)
-            else tool._update_current_operation(
-                line_selection=_dict_from_text(edit.text())
-            )
-        )
+    tool._connect_line_edit_finished(
+        selection_edit,
+        lambda text: tool._update_current_operation(
+            line_selection=_dict_from_text(text)
+        ),
     )
     tool._add_form_row(
         tool.operation_editor_layout,
@@ -417,14 +412,11 @@ def _build_line_editor(
     )
     scales_edit = tool._line_edit(scales_text)
     tool._apply_mixed_line_edit(scales_edit, scales_mixed)
-    scales_edit.editingFinished.connect(
-        lambda edit=scales_edit: (
-            None
-            if tool._line_edit_batch_unchanged(edit)
-            else tool._update_current_operation(
-                line_scales=_float_tuple_from_text(edit.text())
-            )
-        )
+    tool._connect_line_edit_finished(
+        scales_edit,
+        lambda text: tool._update_current_operation(
+            line_scales=_float_tuple_from_text(text)
+        ),
     )
     tool._add_form_row(
         tool.operation_editor_layout,
@@ -500,8 +492,11 @@ def _build_line_editor(
         offset_scale_spin.setKeyboardTracking(False)
         offset_scale_spin.setValue(operation.line_offset_scale)
         offset_scale_spin.setObjectName("figureComposerLineOffsetScaleEdit")
-        offset_scale_spin.valueChanged.connect(
-            lambda value: tool._update_current_operation(line_offset_scale=float(value))
+        tool._connect_value_signal(
+            offset_scale_spin,
+            offset_scale_spin.valueChanged,
+            float,
+            lambda value: tool._update_current_operation(line_offset_scale=value),
         )
         offset_scale_tooltip = "Multiplier applied to offsets from the selected source."
         if offset_scale_mixed:
@@ -520,14 +515,11 @@ def _build_line_editor(
         offsets_edit = tool._line_edit(offsets_text)
         tool._apply_mixed_line_edit(offsets_edit, offsets_mixed)
         offsets_edit.setObjectName("figureComposerLineOffsetsEdit")
-        offsets_edit.editingFinished.connect(
-            lambda edit=offsets_edit: (
-                None
-                if tool._line_edit_batch_unchanged(edit)
-                else tool._update_current_operation(
-                    line_offsets=_float_tuple_from_text(edit.text())
-                )
-            )
+        tool._connect_line_edit_finished(
+            offsets_edit,
+            lambda text: tool._update_current_operation(
+                line_offsets=_float_tuple_from_text(text)
+            ),
         )
         tool._add_form_row(
             tool.operation_editor_layout,
@@ -569,8 +561,17 @@ def _add_line_style_controls(
     )
     line_width_spin = optional_positive_spinbox(
         None if line_width_mixed else line_kw_float(operation, "linewidth", "lw"),
-        lambda value: update_current_line_kw(tool, "linewidth", value, aliases=("lw",)),
         parent=page,
+    )
+    tool._connect_editor_signal(
+        line_width_spin,
+        line_width_spin.valueChanged,
+        lambda value: update_current_line_kw(
+            tool,
+            "linewidth",
+            optional_positive_spinbox_value(value),
+            aliases=("lw",),
+        ),
     )
     line_width_spin.setObjectName("figureComposerLineWidthSpin")
     width_tooltip = "Matplotlib linewidth for the extracted profiles."
@@ -606,10 +607,17 @@ def _add_line_style_controls(
     )
     marker_size_spin = optional_positive_spinbox(
         None if marker_size_mixed else line_kw_float(operation, "markersize", "ms"),
-        lambda value: update_current_line_kw(
-            tool, "markersize", value, aliases=("ms",)
-        ),
         parent=page,
+    )
+    tool._connect_editor_signal(
+        marker_size_spin,
+        marker_size_spin.valueChanged,
+        lambda value: update_current_line_kw(
+            tool,
+            "markersize",
+            optional_positive_spinbox_value(value),
+            aliases=("ms",),
+        ),
     )
     marker_size_spin.setObjectName("figureComposerLineMarkerSizeSpin")
     marker_size_tooltip = "Matplotlib marker size for the extracted profiles."
@@ -631,17 +639,19 @@ def _add_line_style_controls(
     marker_face_edit.setLineEditObjectName("figureComposerLineMarkerFaceColorEdit")
     marker_face_edit.setColorButtonObjectName("figureComposerLineMarkerFaceColorButton")
     tool._apply_mixed_line_edit(marker_face_edit.line_edit, marker_face_mixed)
-    marker_face_edit.editingFinished.connect(
-        lambda edit=marker_face_edit: (
-            None
-            if tool._line_edit_batch_unchanged(edit.line_edit)
-            else update_current_line_kw(
-                tool,
-                "markerfacecolor",
-                color_kw_value_from_text(edit.text()),
-                aliases=("mfc",),
-            )
-        )
+    tool._connect_value_signal(
+        marker_face_edit,
+        marker_face_edit.editingFinished,
+        marker_face_edit.text,
+        lambda text: update_current_line_kw(
+            tool,
+            "markerfacecolor",
+            color_kw_value_from_text(text),
+            aliases=("mfc",),
+        ),
+        unchanged_mixed=lambda: tool._line_edit_batch_unchanged(
+            marker_face_edit.line_edit
+        ),
     )
     tool._add_form_row(
         tool.operation_editor_layout,
@@ -659,17 +669,19 @@ def _add_line_style_controls(
     marker_edge_edit.setLineEditObjectName("figureComposerLineMarkerEdgeColorEdit")
     marker_edge_edit.setColorButtonObjectName("figureComposerLineMarkerEdgeColorButton")
     tool._apply_mixed_line_edit(marker_edge_edit.line_edit, marker_edge_mixed)
-    marker_edge_edit.editingFinished.connect(
-        lambda edit=marker_edge_edit: (
-            None
-            if tool._line_edit_batch_unchanged(edit.line_edit)
-            else update_current_line_kw(
-                tool,
-                "markeredgecolor",
-                color_kw_value_from_text(edit.text()),
-                aliases=("mec",),
-            )
-        )
+    tool._connect_value_signal(
+        marker_edge_edit,
+        marker_edge_edit.editingFinished,
+        marker_edge_edit.text,
+        lambda text: update_current_line_kw(
+            tool,
+            "markeredgecolor",
+            color_kw_value_from_text(text),
+            aliases=("mec",),
+        ),
+        unchanged_mixed=lambda: tool._line_edit_batch_unchanged(
+            marker_edge_edit.line_edit
+        ),
     )
     tool._add_form_row(
         tool.operation_editor_layout,

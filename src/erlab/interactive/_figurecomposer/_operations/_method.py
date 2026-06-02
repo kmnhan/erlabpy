@@ -63,6 +63,7 @@ import ast
 import contextlib
 import dataclasses
 import enum
+import functools
 import typing
 
 import matplotlib
@@ -2257,8 +2258,10 @@ def _build_method_editor(
     docs_button.setProperty("figure_method_doc_url", doc_url or "")
     docs_button.setEnabled(doc_url is not None)
     if doc_url is not None:
-        docs_button.clicked.connect(
-            lambda _checked=False, doc_url=doc_url: _open_method_doc_url(doc_url)
+        tool._connect_editor_signal(
+            docs_button,
+            docs_button.clicked,
+            lambda _checked=False, doc_url=doc_url: _open_method_doc_url(doc_url),
         )
     method_layout.addWidget(docs_button)
     tool._add_form_row(
@@ -2313,15 +2316,9 @@ def _build_method_editor(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         text_edit.setObjectName("figureComposerMethodTextValuesEdit")
-        text_edit.textChanged.connect(
-            lambda edit=text_edit: (
-                None
-                if tool._plain_text_batch_unchanged(edit)
-                else _update_current_method_text_values(
-                    tool,
-                    edit.toPlainText(),
-                )
-            )
+        tool._connect_plain_text_changed(
+            text_edit,
+            lambda text: _update_current_method_text_values(tool, text),
         )
         tool._add_form_row(
             layout,
@@ -2353,14 +2350,11 @@ def _build_method_editor(
         kwargs_edit = tool._line_edit(kwargs_text, parent=page)
         tool._apply_mixed_line_edit(kwargs_edit, kwargs_mixed)
         kwargs_edit.setObjectName(_method_kwargs_object_name(operation.method_family))
-        kwargs_edit.editingFinished.connect(
-            lambda edit=kwargs_edit: (
-                None
-                if tool._line_edit_batch_unchanged(edit)
-                else tool._update_current_operation(
-                    method_kwargs=_dict_from_text(edit.text()),
-                )
-            )
+        tool._connect_line_edit_finished(
+            kwargs_edit,
+            lambda text: tool._update_current_operation(
+                method_kwargs=_dict_from_text(text),
+            ),
         )
         tool._add_form_row(
             layout,
@@ -2433,10 +2427,11 @@ def _add_method_control_row(
                 parent=layout.parentWidget(),
             )
             spinbox.setObjectName(control.object_name)
-            spinbox.valueChanged.connect(
-                lambda value, index=index: _update_current_method_arg(
-                    tool, index, int(value)
-                )
+            tool._connect_value_signal(
+                spinbox,
+                spinbox.valueChanged,
+                int,
+                _method_arg_update_callback(tool, index),
             )
             tool._add_form_row(
                 layout,
@@ -2456,10 +2451,11 @@ def _add_method_control_row(
                 parent=layout.parentWidget(),
             )
             spinbox.setObjectName(control.object_name)
-            spinbox.valueChanged.connect(
-                lambda value, index=index: _update_current_method_arg(
-                    tool, index, float(value)
-                )
+            tool._connect_value_signal(
+                spinbox,
+                spinbox.valueChanged,
+                float,
+                _method_arg_update_callback(tool, index),
             )
             tool._add_form_row(
                 layout,
@@ -2477,12 +2473,9 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, index=index: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_arg(tool, index, edit.text())
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _method_arg_update_callback(tool, index),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.LITERAL_ARG:
@@ -2495,14 +2488,13 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, index=index: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_arg(
-                        tool, index, _literal_value_from_text(edit.text())
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _parsed_method_arg_update_callback(
+                    tool,
+                    index,
+                    _literal_value_from_text,
+                ),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.LITERAL_SEQUENCE_ARG:
@@ -2519,14 +2511,13 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, index=index: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_arg(
-                        tool, index, _literal_sequence_from_text(edit.text())
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _parsed_method_arg_update_callback(
+                    tool,
+                    index,
+                    _literal_sequence_from_text,
+                ),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.STRING_TUPLE_ARG:
@@ -2543,14 +2534,9 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, index=index: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_string_tuple_arg(
-                        tool, index, edit.text()
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _method_string_tuple_arg_update_callback(tool, index),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_PAIR_ARGS:
@@ -2562,14 +2548,9 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_args(
-                        tool, _float_pair_from_text(edit.text()) or ()
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _method_float_pair_args_update_callback(tool),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.ASPECT_ARG:
@@ -2582,14 +2563,13 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, index=index: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_arg(
-                        tool, index, _aspect_value_from_text(edit.text())
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _parsed_method_arg_update_callback(
+                    tool,
+                    index,
+                    _aspect_value_from_text,
+                ),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.BOOL_ARG_COMBO:
@@ -2660,10 +2640,11 @@ def _add_method_control_row(
                     parent=layout.parentWidget(),
                 )
                 spinbox.setObjectName(control.object_name)
-                spinbox.valueChanged.connect(
-                    lambda value, key=key: _update_current_method_kwarg(
-                        tool, key, int(value)
-                    )
+                tool._connect_value_signal(
+                    spinbox,
+                    spinbox.valueChanged,
+                    int,
+                    _method_kwarg_update_callback(tool, key),
                 )
                 tool._add_form_row(
                     layout,
@@ -2680,14 +2661,13 @@ def _add_method_control_row(
                 edit = tool._line_edit(text, parent=layout.parentWidget())
                 tool._apply_mixed_line_edit(edit, mixed)
                 edit.setObjectName(control.object_name)
-                edit.editingFinished.connect(
-                    lambda edit=edit, key=key: (
-                        None
-                        if tool._line_edit_batch_unchanged(edit)
-                        else _update_current_method_kwarg(
-                            tool, key, _optional_int_from_text(edit.text())
-                        )
-                    )
+                tool._connect_line_edit_finished(
+                    edit,
+                    _parsed_method_kwarg_update_callback(
+                        tool,
+                        key,
+                        _optional_int_from_text,
+                    ),
                 )
                 tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_KWARG:
@@ -2703,10 +2683,11 @@ def _add_method_control_row(
                     parent=layout.parentWidget(),
                 )
                 spinbox.setObjectName(control.object_name)
-                spinbox.valueChanged.connect(
-                    lambda value, key=key: _update_current_method_kwarg(
-                        tool, key, float(value)
-                    )
+                tool._connect_value_signal(
+                    spinbox,
+                    spinbox.valueChanged,
+                    float,
+                    _method_kwarg_update_callback(tool, key),
                 )
                 tool._add_form_row(
                     layout,
@@ -2723,14 +2704,13 @@ def _add_method_control_row(
                 edit = tool._line_edit(text, parent=layout.parentWidget())
                 tool._apply_mixed_line_edit(edit, mixed)
                 edit.setObjectName(control.object_name)
-                edit.editingFinished.connect(
-                    lambda edit=edit, key=key: (
-                        None
-                        if tool._line_edit_batch_unchanged(edit)
-                        else _update_current_method_kwarg(
-                            tool, key, _optional_float_from_text(edit.text())
-                        )
-                    )
+                tool._connect_line_edit_finished(
+                    edit,
+                    _parsed_method_kwarg_update_callback(
+                        tool,
+                        key,
+                        _optional_float_from_text,
+                    ),
                 )
                 tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.SUBPLOTS_ADJUST_KWARG:
@@ -2763,12 +2743,9 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, key=key: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_kwarg(tool, key, edit.text() or None)
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _parsed_method_kwarg_update_callback(tool, key, _empty_text_as_none),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.LITERAL_KWARG:
@@ -2781,14 +2758,13 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, key=key: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_kwarg(
-                        tool, key, _optional_literal_from_text(edit.text())
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _parsed_method_kwarg_update_callback(
+                    tool,
+                    key,
+                    _optional_literal_from_text,
+                ),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.STRING_TUPLE_KWARG:
@@ -2805,14 +2781,13 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, key=key: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_kwarg(
-                        tool, key, _string_tuple_from_text(edit.text()) or None
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _parsed_method_kwarg_update_callback(
+                    tool,
+                    key,
+                    _string_tuple_from_text_or_none,
+                ),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_PAIR_KWARG:
@@ -2825,16 +2800,87 @@ def _add_method_control_row(
             edit = tool._line_edit(text, parent=layout.parentWidget())
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, key=key: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_kwarg(
-                        tool, key, _float_pair_from_text(edit.text())
-                    )
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _parsed_method_kwarg_update_callback(
+                    tool,
+                    key,
+                    _float_pair_from_text,
+                ),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
+
+
+def _method_arg_update_callback(
+    tool: FigureComposerTool, index: int
+) -> Callable[[typing.Any], None]:
+    return functools.partial(_update_current_method_arg, tool, index)
+
+
+def _parsed_method_arg_update_callback(
+    tool: FigureComposerTool,
+    index: int,
+    parser: Callable[[typing.Any], typing.Any],
+) -> Callable[[typing.Any], None]:
+    return functools.partial(_update_current_method_arg_from_value, tool, index, parser)
+
+
+def _method_kwarg_update_callback(
+    tool: FigureComposerTool, key: str
+) -> Callable[[typing.Any], None]:
+    return functools.partial(_update_current_method_kwarg, tool, key)
+
+
+def _parsed_method_kwarg_update_callback(
+    tool: FigureComposerTool,
+    key: str,
+    parser: Callable[[typing.Any], typing.Any],
+) -> Callable[[typing.Any], None]:
+    return functools.partial(_update_current_method_kwarg_from_value, tool, key, parser)
+
+
+def _method_string_tuple_arg_update_callback(
+    tool: FigureComposerTool, index: int
+) -> Callable[[str], None]:
+    return functools.partial(_update_current_method_string_tuple_arg, tool, index)
+
+
+def _method_float_pair_args_update_callback(
+    tool: FigureComposerTool,
+) -> Callable[[str], None]:
+    return functools.partial(_update_current_method_args_from_pair_text, tool)
+
+
+def _update_current_method_arg_from_value(
+    tool: FigureComposerTool,
+    index: int,
+    parser: Callable[[typing.Any], typing.Any],
+    value: typing.Any,
+) -> None:
+    _update_current_method_arg(tool, index, parser(value))
+
+
+def _update_current_method_kwarg_from_value(
+    tool: FigureComposerTool,
+    key: str,
+    parser: Callable[[typing.Any], typing.Any],
+    value: typing.Any,
+) -> None:
+    _update_current_method_kwarg(tool, key, parser(value))
+
+
+def _update_current_method_args_from_pair_text(
+    tool: FigureComposerTool, text: str
+) -> None:
+    _update_current_method_args(tool, _float_pair_from_text(text) or ())
+
+
+def _empty_text_as_none(text: str) -> str | None:
+    return text or None
+
+
+def _string_tuple_from_text_or_none(text: str) -> tuple[str, ...] | None:
+    return _string_tuple_from_text(text) or None
 
 
 def _method_arg_value(
@@ -2945,8 +2991,11 @@ def _subplots_adjust_spinbox(
         with contextlib.suppress(TypeError, ValueError):
             value = float(_method_kwarg_value(operation, key, value))
     spinbox.setValue(value)
-    spinbox.valueChanged.connect(
-        lambda value, key=key: _update_current_method_kwarg(tool, key, float(value))
+    tool._connect_value_signal(
+        spinbox,
+        spinbox.valueChanged,
+        float,
+        _method_kwarg_update_callback(tool, key),
     )
     return spinbox
 

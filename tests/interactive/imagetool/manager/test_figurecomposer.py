@@ -1,7 +1,9 @@
+import ast
 import contextlib
 import typing
 import warnings
 from collections.abc import Callable
+from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -39,10 +41,16 @@ from erlab.interactive._figurecomposer import (
     FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._operations import (
+    _custom_code as figurecomposer_custom_code,
+)
+from erlab.interactive._figurecomposer._operations import (
     _line_profile as figurecomposer_line_profile,
 )
 from erlab.interactive._figurecomposer._operations import (
     _method as figurecomposer_method,
+)
+from erlab.interactive._figurecomposer._operations import (
+    _plot_slices as figurecomposer_plot_slices,
 )
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
@@ -102,6 +110,16 @@ def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     )
 
 
+def _activate_combo_text(combo: QtWidgets.QComboBox, text: str) -> None:
+    combo.setCurrentText(text)
+    combo.activated.emit(combo.currentIndex())
+
+
+def _activate_combo_index(combo: QtWidgets.QComboBox, index: int) -> None:
+    combo.setCurrentIndex(index)
+    combo.activated.emit(index)
+
+
 def _plot_source_checks(tool: FigureComposerTool) -> dict[str, QtWidgets.QCheckBox]:
     return {
         str(source_name): check
@@ -122,6 +140,30 @@ def _plot_source_move_buttons(
         if (source_name := button.property("figure_source_name")) is not None
         and (direction := button.property("figure_source_move")) is not None
     }
+
+
+def test_figure_composer_operation_modules_use_editor_signal_contract() -> None:
+    modules = (
+        figurecomposer_custom_code,
+        figurecomposer_line_profile,
+        figurecomposer_method,
+        figurecomposer_plot_slices,
+    )
+    direct_connects: list[str] = []
+    for module in modules:
+        module_file = module.__file__
+        assert module_file is not None
+        tree = ast.parse(Path(module_file).read_text())
+        direct_connects.extend(
+            f"{Path(module_file).name}:{node.lineno}"
+            for node in ast.walk(tree)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+            )
+        )
+    assert direct_connects == []
 
 
 def _render_figure_composer_rgba(tool: FigureComposerTool) -> np.ndarray:
@@ -1138,7 +1180,7 @@ def test_figure_composer_duplicates_and_reorders_steps(qtbot) -> None:
     assert move_up_button.isEnabled() is False
     assert move_down_button.isEnabled() is True
 
-    tool.operation_list.setCurrentRow(1)
+    _select_operation_rows(tool, (1,))
     second = tool.tool_status.operations[1]
     duplicate_button.click()
     duplicate = tool.tool_status.operations[2]
@@ -2567,7 +2609,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "QtWidgets.QCheckBox",
         tool.findChild(QtWidgets.QCheckBox, "figureComposerCmapReverseCheck"),
     )
-    cmap_combo.setCurrentText("magma")
+    _activate_combo_text(cmap_combo, "magma")
     assert tool.tool_status.operations[0].cmap == "magma"
     cmap_reverse_check = typing.cast(
         "QtWidgets.QCheckBox",
@@ -2853,7 +2895,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(2)
+    _select_operation_rows(tool, (2,))
     tool._select_step_section("line")
     line_page = tool.step_editor_stack.currentWidget()
     profile_coordinate_combo = line_page.findChild(
@@ -2872,18 +2914,20 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     assert profile_values_combo.itemData(0) is None
     assert profile_coordinate_combo.findData("kx") >= 0
     assert profile_values_combo.findData("kx") >= 0
-    profile_coordinate_combo.setCurrentIndex(profile_coordinate_combo.findData("kx"))
+    _activate_combo_index(
+        profile_coordinate_combo, profile_coordinate_combo.findData("kx")
+    )
     assert tool.tool_status.operations[2].line_x == "kx"
-    profile_coordinate_combo.setCurrentIndex(0)
+    _activate_combo_index(profile_coordinate_combo, 0)
     assert tool.tool_status.operations[2].line_x is None
-    profile_values_combo.setCurrentIndex(profile_values_combo.findData("kx"))
+    _activate_combo_index(profile_values_combo, profile_values_combo.findData("kx"))
     assert tool.tool_status.operations[2].line_y == "kx"
     line_page = tool.step_editor_stack.currentWidget()
     profile_values_combo = line_page.findChild(
         QtWidgets.QComboBox, "figureComposerProfileValuesCombo"
     )
     assert profile_values_combo is not None
-    profile_values_combo.setCurrentIndex(0)
+    _activate_combo_index(profile_values_combo, 0)
     assert tool.tool_status.operations[2].line_y is None
     line_page = tool.step_editor_stack.currentWidget()
     profile_coordinate_combo = line_page.findChild(
@@ -2904,7 +2948,7 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
         widget.toolTip() for widget in line_page.findChildren(QtWidgets.QCheckBox)
     )
 
-    tool.operation_list.setCurrentRow(3)
+    _select_operation_rows(tool, (3,))
     assert tool.operation_list.item(3).text() == "clean_labels"
     assert tool.step_section_buttons["method"].text() == "clean_labels"
     tool._select_step_section("method")
@@ -3235,7 +3279,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
         == scale_names
     )
     y_scale = "linear" if "linear" in scale_names else scale_names[0]
-    yscale_combo.setCurrentText(y_scale)
+    _activate_combo_text(yscale_combo, y_scale)
     assert tool.tool_status.operations[7].method_args == (y_scale,)
 
     tool.operation_list.setCurrentRow(8)
@@ -3661,7 +3705,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     assert pad_edit.value() == pytest.approx(0.5)
     assert "hspace" not in engine_tool.generated_code()
 
-    engine_combo.setCurrentText("compressed")
+    _activate_combo_text(engine_combo, "compressed")
     qtbot.waitUntil(
         lambda: (
             engine_tool.step_editor_stack.currentWidget().findChild(
@@ -3775,7 +3819,7 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     )
     qtbot.addWidget(tool)
 
-    tool.operation_list.setCurrentRow(1)
+    _select_operation_rows(tool, (1,))
     tool._select_step_section("method")
     loc_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodLegendLocCombo"
@@ -3866,7 +3910,7 @@ def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
     assert policy_combo.currentText() == "Each selected axis"
     assert "for ax in axs.flat:" in tool.generated_code()
 
-    policy_combo.setCurrentText("Selected axes together")
+    _activate_combo_text(policy_combo, "Selected axes together")
     assert tool.tool_status.operations[1].method_call_policy == "ax_keyword"
     assert "eplt.nice_colorbar(ax=axs)" in tool.generated_code()
 
@@ -3988,33 +4032,26 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
         edit.setText(text)
         edit.editingFinished.emit()
 
+    def set_combo(page: QtWidgets.QWidget, name: str, text: str) -> None:
+        _activate_combo_text(combo_box(page, name), text)
+
     def operation(row: int) -> FigureOperationState:
         return tool.tool_status.operations[row]
 
     page = select_method(0)
-    combo_box(
-        page, "figureComposerERLabCleanLabelsRemoveInnerTicksCombo"
-    ).setCurrentText("True")
+    set_combo(page, "figureComposerERLabCleanLabelsRemoveInnerTicksCombo", "True")
     assert operation(0).method_args == (True,)
 
     page = select_method(1)
     spin_box(page, "figureComposerERLabLabelSubplotsStartEdit").setValue(3)
-    combo_box(page, "figureComposerERLabLabelSubplotsOrderCombo").setCurrentText("F")
-    combo_box(page, "figureComposerERLabLabelSubplotsLocCombo").setCurrentText(
-        "lower right"
-    )
+    set_combo(page, "figureComposerERLabLabelSubplotsOrderCombo", "F")
+    set_combo(page, "figureComposerERLabLabelSubplotsLocCombo", "lower right")
     set_line_edit(page, "figureComposerERLabLabelSubplotsOffsetEdit", "1, 2")
     set_line_edit(page, "figureComposerERLabLabelSubplotsPrefixEdit", "(")
     set_line_edit(page, "figureComposerERLabLabelSubplotsSuffixEdit", ")")
-    combo_box(page, "figureComposerERLabLabelSubplotsNumericCombo").setCurrentText(
-        "True"
-    )
-    combo_box(page, "figureComposerERLabLabelSubplotsCapitalCombo").setCurrentText(
-        "True"
-    )
-    combo_box(page, "figureComposerERLabLabelSubplotsFontWeightCombo").setCurrentText(
-        "bold"
-    )
+    set_combo(page, "figureComposerERLabLabelSubplotsNumericCombo", "True")
+    set_combo(page, "figureComposerERLabLabelSubplotsCapitalCombo", "True")
+    set_combo(page, "figureComposerERLabLabelSubplotsFontWeightCombo", "bold")
     set_line_edit(page, "figureComposerERLabLabelSubplotsFontSizeEdit", "8")
     assert operation(1).method_kwargs == {
         "startfrom": 3,
@@ -4035,7 +4072,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     spin_box(page, "figureComposerERLabLabelPropertiesSiEdit").setValue(-3)
     set_line_edit(page, "figureComposerERLabLabelPropertiesNameEdit", "Energy")
     set_line_edit(page, "figureComposerERLabLabelPropertiesUnitEdit", "eV")
-    combo_box(page, "figureComposerERLabLabelPropertiesOrderCombo").setCurrentText("F")
+    set_combo(page, "figureComposerERLabLabelPropertiesOrderCombo", "F")
     assert operation(2).method_args == ({"eV": [0, 1]},)
     assert operation(2).method_kwargs == {
         "decimals": 2,
@@ -4049,13 +4086,9 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     double_spin_box(page, "figureComposerERLabNiceColorbarWidthEdit").setValue(10.0)
     double_spin_box(page, "figureComposerERLabNiceColorbarAspectEdit").setValue(4.0)
     double_spin_box(page, "figureComposerERLabNiceColorbarPadEdit").setValue(2.0)
-    combo_box(page, "figureComposerERLabNiceColorbarMinMaxCombo").setCurrentText("True")
-    combo_box(page, "figureComposerERLabNiceColorbarOrientationCombo").setCurrentText(
-        "horizontal"
-    )
-    combo_box(page, "figureComposerERLabNiceColorbarFloatingCombo").setCurrentText(
-        "True"
-    )
+    set_combo(page, "figureComposerERLabNiceColorbarMinMaxCombo", "True")
+    set_combo(page, "figureComposerERLabNiceColorbarOrientationCombo", "horizontal")
+    set_combo(page, "figureComposerERLabNiceColorbarFloatingCombo", "True")
     set_line_edit(page, "figureComposerERLabNiceColorbarTicksEdit", "0, 0.5, 1")
     set_line_edit(
         page, "figureComposerERLabNiceColorbarTickLabelsEdit", "low, mid, high"
@@ -4073,9 +4106,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
 
     page = select_method(4)
     spin_box(page, "figureComposerERLabProportionalColorbarIndexEdit").setValue(0)
-    combo_box(
-        page, "figureComposerERLabProportionalColorbarImageOnlyCombo"
-    ).setCurrentText("True")
+    set_combo(page, "figureComposerERLabProportionalColorbarImageOnlyCombo", "True")
     set_line_edit(page, "figureComposerERLabProportionalColorbarTicksEdit", "[0, 1]")
     assert operation(4).method_kwargs == {
         "index": 0,
@@ -4084,12 +4115,12 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     }
 
     page = select_method(5)
-    combo_box(page, "figureComposerERLabSetTitlesOrderCombo").setCurrentText("F")
+    set_combo(page, "figureComposerERLabSetTitlesOrderCombo", "F")
     assert operation(5).method_kwargs == {"order": "F"}
 
     page = select_method(6)
     double_spin_box(page, "figureComposerERLabFermilineValueEdit").setValue(0.1)
-    combo_box(page, "figureComposerERLabFermilineOrientationCombo").setCurrentText("v")
+    set_combo(page, "figureComposerERLabFermilineOrientationCombo", "v")
     assert operation(6).method_kwargs == {"value": 0.1, "orientation": "v"}
 
     page = select_method(7)
@@ -4097,9 +4128,9 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     set_line_edit(page, "figureComposerERLabMarkPointsLabelsEdit", "G, M")
     set_line_edit(page, "figureComposerERLabMarkPointsYEdit", "0.25, 0.5")
     set_line_edit(page, "figureComposerERLabMarkPointsPadEdit", "1, 2")
-    combo_box(page, "figureComposerERLabMarkPointsLiteralCombo").setCurrentText("True")
-    combo_box(page, "figureComposerERLabMarkPointsRomanCombo").setCurrentText("False")
-    combo_box(page, "figureComposerERLabMarkPointsBarCombo").setCurrentText("True")
+    set_combo(page, "figureComposerERLabMarkPointsLiteralCombo", "True")
+    set_combo(page, "figureComposerERLabMarkPointsRomanCombo", "False")
+    set_combo(page, "figureComposerERLabMarkPointsBarCombo", "True")
     assert operation(7).method_args == ((0, 1), ("G", "M"))
     assert operation(7).method_kwargs == {
         "y": (0.25, 0.5),
@@ -4110,15 +4141,15 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     }
 
     page = select_method(8)
-    combo_box(page, "figureComposerERLabScaleUnitsAxisCombo").setCurrentText("y")
+    set_combo(page, "figureComposerERLabScaleUnitsAxisCombo", "y")
     spin_box(page, "figureComposerERLabScaleUnitsSiEdit").setValue(3)
-    combo_box(page, "figureComposerERLabScaleUnitsPrefixCombo").setCurrentText("False")
-    combo_box(page, "figureComposerERLabScaleUnitsPowerCombo").setCurrentText("True")
+    set_combo(page, "figureComposerERLabScaleUnitsPrefixCombo", "False")
+    set_combo(page, "figureComposerERLabScaleUnitsPowerCombo", "True")
     assert operation(8).method_args == ("y", 3)
     assert operation(8).method_kwargs == {"prefix": False, "power": True}
 
     page = select_method(9)
-    combo_box(page, "figureComposerERLabFancyLabelsRadiansCombo").setCurrentText("True")
+    set_combo(page, "figureComposerERLabFancyLabelsRadiansCombo", "True")
     assert operation(9).method_kwargs == {"radians": True}
 
     page = select_method(10)
@@ -4136,11 +4167,11 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     double_spin_box(page, "figureComposerERLabSizebarResolutionEdit").setValue(0.001)
     spin_box(page, "figureComposerERLabSizebarDecimalsEdit").setValue(1)
     set_line_edit(page, "figureComposerERLabSizebarLabelEdit", "200 um")
-    combo_box(page, "figureComposerERLabSizebarLocCombo").setCurrentText("lower left")
+    set_combo(page, "figureComposerERLabSizebarLocCombo", "lower left")
     double_spin_box(page, "figureComposerERLabSizebarPadEdit").setValue(0.2)
     double_spin_box(page, "figureComposerERLabSizebarBorderPadEdit").setValue(0.6)
     double_spin_box(page, "figureComposerERLabSizebarSepEdit").setValue(4.0)
-    combo_box(page, "figureComposerERLabSizebarFrameCombo").setCurrentText("True")
+    set_combo(page, "figureComposerERLabSizebarFrameCombo", "True")
     assert operation(11).method_kwargs == {
         "value": 2.0,
         "unit": "m",
@@ -4156,8 +4187,8 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     }
 
     page = select_method(12)
-    combo_box(page, "figureComposerERLabUnifyClimImageOnlyCombo").setCurrentText("True")
-    combo_box(page, "figureComposerERLabUnifyClimAutoscaleCombo").setCurrentText("True")
+    set_combo(page, "figureComposerERLabUnifyClimImageOnlyCombo", "True")
+    set_combo(page, "figureComposerERLabUnifyClimAutoscaleCombo", "True")
     set_line_edit(page, "figureComposerERLabUnifyClimVminEdit", "0")
     set_line_edit(page, "figureComposerERLabUnifyClimVmaxEdit", "1")
     assert operation(12).method_kwargs == {
@@ -4388,7 +4419,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
 
     operation = tool.tool_status.operations[0]
 
-    offset_source_combo.setCurrentText("manual")
+    _activate_combo_text(offset_source_combo, "manual")
     qtbot.waitUntil(
         lambda: (
             tool.step_editor_stack.currentWidget().findChild(
@@ -4422,7 +4453,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         QtWidgets.QComboBox, "figureComposerLineOffsetSourceCombo"
     )
     assert offset_source_combo is not None
-    offset_source_combo.setCurrentText("index")
+    _activate_combo_text(offset_source_combo, "index")
     qtbot.waitUntil(
         lambda: (
             tool.step_editor_stack.currentWidget().findChild(
@@ -4858,7 +4889,7 @@ def test_figure_composer_batch_line_edits_update_selected_steps(qtbot) -> None:
         QtWidgets.QComboBox, "figureComposerLineNormalizeCombo"
     )
     assert normalize_combo is not None
-    normalize_combo.setCurrentText("Each profile by mean")
+    _activate_combo_text(normalize_combo, "Each profile by mean")
 
     assert [operation.line_normalize for operation in tool.tool_status.operations] == [
         "mean",
@@ -5098,7 +5129,7 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     )
     assert dimension_combo is not None
     rebuild_calls.clear()
-    dimension_combo.setCurrentText("kx")
+    _activate_combo_text(dimension_combo, "kx")
 
     assert tool.tool_status.operations[0].slice_dim == "kx"
     assert rebuild_calls == []
@@ -5404,7 +5435,7 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
         is None
     )
 
-    norm_combo.setCurrentText("CenteredInversePowerNorm")
+    _activate_combo_text(norm_combo, "CenteredInversePowerNorm")
     assert tool.tool_status.operations[0].norm_name == "CenteredInversePowerNorm"
     qtbot.waitUntil(
         lambda: (
@@ -5425,7 +5456,7 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
 
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
-    norm_combo.setCurrentText("CenteredPowerNorm")
+    _activate_combo_text(norm_combo, "CenteredPowerNorm")
     assert tool.tool_status.operations[0].norm_name == "CenteredPowerNorm"
     qtbot.waitUntil(
         lambda: (
@@ -5485,7 +5516,7 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
     colors_page = tool.step_editor_stack.currentWidget()
     norm_combo = colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo")
     assert norm_combo is not None
-    norm_combo.setCurrentText("Normalize")
+    _activate_combo_text(norm_combo, "Normalize")
     assert tool.tool_status.operations[0].norm_name == "Normalize"
     qtbot.waitUntil(
         lambda: (
@@ -5515,6 +5546,103 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
         colors_page.findChild(QtWidgets.QLineEdit, "figureComposerVcenterNormEdit")
         is None
     )
+
+
+def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="first",
+                    sources=("data",),
+                ).model_copy(
+                    update={
+                        "cmap": "viridis",
+                        "norm_name": "CenteredPowerNorm",
+                        "halfrange": 1.0,
+                    }
+                ),
+                FigureOperationState.plot_slices(
+                    label="second",
+                    sources=("data",),
+                ).model_copy(
+                    update={
+                        "cmap": "magma_r",
+                        "norm_name": "CenteredPowerNorm",
+                        "halfrange": 2.0,
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("colors")
+    first_page = tool.step_editor_stack.currentWidget()
+    first_cmap_combo = first_page.findChild(
+        erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
+    )
+    assert first_cmap_combo is not None
+    assert first_cmap_combo.currentText() == "viridis"
+
+    tool.operation_list.setCurrentRow(1)
+    tool._select_step_section("colors")
+
+    assert tool.tool_status.operations[0].cmap == "viridis"
+    assert tool.tool_status.operations[1].cmap == "magma_r"
+
+    _select_operation_rows(tool, (0, 1))
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
+    cmap_combo = colors_page.findChild(
+        erlab.interactive.colors.ColorMapComboBox, "figureComposerCmapCombo"
+    )
+    halfrange_edit = colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
+    )
+    assert cmap_combo is not None
+    assert cmap_combo.currentText() == "(multiple values)"
+    assert halfrange_edit is not None
+    assert halfrange_edit.text() == ""
+    assert halfrange_edit.placeholderText() == "(multiple values)"
+    assert [operation.cmap for operation in tool.tool_status.operations] == [
+        "viridis",
+        "magma_r",
+    ]
+    assert [operation.halfrange for operation in tool.tool_status.operations] == [
+        1.0,
+        2.0,
+    ]
+
+    _activate_combo_text(cmap_combo, "plasma")
+
+    assert [operation.cmap for operation in tool.tool_status.operations] == [
+        "plasma",
+        "plasma_r",
+    ]
+    halfrange_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit"
+    )
+    assert halfrange_edit is not None
+    halfrange_edit.setText("3.5")
+    halfrange_edit.setModified(True)
+    halfrange_edit.editingFinished.emit()
+    assert [operation.halfrange for operation in tool.tool_status.operations] == [
+        3.5,
+        3.5,
+    ]
 
 
 def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> None:
@@ -5729,7 +5857,7 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     assert extra_kwargs_edit is not None
     assert extra_kwargs_edit.text() == "alpha=0.5, zorder=2"
 
-    tool.operation_list.setCurrentRow(1)
+    _select_operation_rows(tool, (1,))
     tool._select_step_section("colors")
     gradient_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerGradientKwEdit"

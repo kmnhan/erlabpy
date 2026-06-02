@@ -56,8 +56,9 @@ def _build_custom_code_editor(
     code_edit.setMinimumHeight(160)
     code_edit.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     code_edit.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    code_edit.textChanged.connect(
-        lambda edit=code_edit: tool._update_current_operation(code=edit.toPlainText())
+    tool._connect_plain_text_changed(
+        code_edit,
+        lambda text: tool._update_current_operation(code=text),
     )
     tool._add_form_row(
         tool.operation_editor_layout,

@@ -26,6 +26,7 @@ from erlab.interactive._figurecomposer._line_style import (
     line_kw_float,
     line_kw_text,
     optional_positive_spinbox,
+    optional_positive_spinbox_value,
     update_current_extra_line_kw,
     update_current_line_kw,
 )
@@ -76,7 +77,7 @@ from erlab.interactive._figurecomposer._text import (
 from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     import matplotlib.axes
     import xarray as xr
@@ -323,10 +324,12 @@ def _build_plot_slices_editor(
     )
 
     dims = _available_source_dims(tool._source_data, operation.sources)
+    dim_mixed = tool._batch_is_mixed(operation, lambda target: target.slice_dim)
     dim_combo = tool._combo(
         ["", *dims],
-        operation.slice_dim or "",
+        None if dim_mixed else operation.slice_dim or "",
         lambda text: tool._update_current_operation_rebuild(slice_dim=text or None),
+        mixed=dim_mixed,
     )
     dim_combo.setObjectName("figureComposerPlotSlicesDimensionCombo")
     tool._add_form_row(
@@ -336,12 +339,17 @@ def _build_plot_slices_editor(
         "Data dimension passed as the slice keyword to plot_slices.",
     )
 
-    values_edit = tool._line_edit(_format_tuple(operation.slice_values))
+    values_text, values_mixed = tool._batch_text(
+        operation, lambda target: target.slice_values, _format_tuple
+    )
+    values_edit = tool._line_edit(values_text)
+    tool._apply_mixed_line_edit(values_edit, values_mixed)
     values_edit.setObjectName("figureComposerPlotSlicesValuesEdit")
-    values_edit.editingFinished.connect(
-        lambda edit=values_edit: tool._update_current_operation_rebuild(
-            slice_values=_float_tuple_from_text(edit.text())
-        )
+    tool._connect_line_edit_finished(
+        values_edit,
+        lambda text: tool._update_current_operation_rebuild(
+            slice_values=_float_tuple_from_text(text)
+        ),
     )
     tool._add_form_row(
         basic_layout,
@@ -350,14 +358,19 @@ def _build_plot_slices_editor(
         "Comma-separated coordinate values to slice along the cut dimension.",
     )
 
-    width_edit = tool._line_edit(
-        "" if operation.slice_width is None else f"{operation.slice_width:g}"
+    width_text, width_mixed = tool._batch_text(
+        operation,
+        lambda target: target.slice_width,
+        lambda value: "" if value is None else f"{value:g}",
     )
+    width_edit = tool._line_edit(width_text)
+    tool._apply_mixed_line_edit(width_edit, width_mixed)
     width_edit.setObjectName("figureComposerPlotSlicesWidthEdit")
-    width_edit.editingFinished.connect(
-        lambda edit=width_edit: tool._update_current_operation_rebuild(
-            slice_width=float(edit.text()) if edit.text().strip() else None
-        )
+    tool._connect_line_edit_finished(
+        width_edit,
+        lambda text: tool._update_current_operation_rebuild(
+            slice_width=float(text) if text.strip() else None
+        ),
     )
     tool._add_form_row(
         basic_layout,
@@ -366,10 +379,15 @@ def _build_plot_slices_editor(
         "Optional qsel width around each cut value before plotting.",
     )
 
-    slice_kwargs_edit = tool._line_edit(_format_dict(operation.slice_kwargs))
+    slice_kwargs_text, slice_kwargs_mixed = tool._batch_text(
+        operation, lambda target: target.slice_kwargs, _format_dict
+    )
+    slice_kwargs_edit = tool._line_edit(slice_kwargs_text)
+    tool._apply_mixed_line_edit(slice_kwargs_edit, slice_kwargs_mixed)
     slice_kwargs_edit.setObjectName("figureComposerPlotSlicesSliceKwargsEdit")
-    slice_kwargs_edit.editingFinished.connect(
-        lambda edit=slice_kwargs_edit: _update_current_slice_kwargs(tool, edit.text())
+    tool._connect_line_edit_finished(
+        slice_kwargs_edit,
+        lambda text: _update_current_slice_kwargs(tool, text),
     )
     tool._add_form_row(
         basic_layout,
@@ -379,11 +397,13 @@ def _build_plot_slices_editor(
         "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
     )
 
+    order_mixed = tool._batch_is_mixed(operation, lambda target: target.order)
     order_combo = tool._combo(
         ["C", "F"],
-        operation.order,
+        None if order_mixed else operation.order,
         lambda text: tool._update_current_operation_rebuild(order=text),
         parent=cuts_page,
+        mixed=order_mixed,
     )
     order_combo.setObjectName("figureComposerOrderCombo")
     tool._add_form_row(
@@ -397,9 +417,11 @@ def _build_plot_slices_editor(
     options_widget = QtWidgets.QWidget(cuts_page)
     options_layout = QtWidgets.QHBoxLayout(options_widget)
     options_layout.setContentsMargins(0, 0, 0, 0)
+    transpose_mixed = tool._batch_is_mixed(operation, lambda target: target.transpose)
     transpose_check = tool._check_box(
         operation.transpose,
         lambda checked: tool._update_current_operation_rebuild(transpose=checked),
+        mixed=transpose_mixed,
     )
     transpose_check.setText("Transpose")
     transpose_check.setToolTip("Swap the plotted x/y orientation.")
@@ -412,18 +434,22 @@ def _build_plot_slices_editor(
         "Common plot_slices boolean options for this step.",
     )
 
-    for label, attr, text in (
-        ("xlim", "xlim", _format_plot_limit(operation.xlim)),
-        ("ylim", "ylim", _format_plot_limit(operation.ylim)),
-    ):
+    for label, attr in (("xlim", "xlim"), ("ylim", "ylim")):
+        text, mixed = tool._batch_text(
+            operation,
+            _operation_field_getter(attr),
+            _format_plot_limit,
+        )
         edit = tool._line_edit(text)
-        placeholder = _plot_slices_limit_placeholder(tool, operation, attr)
+        tool._apply_mixed_line_edit(edit, mixed)
+        placeholder = (
+            "" if mixed else _plot_slices_limit_placeholder(tool, operation, attr)
+        )
         if placeholder:
             edit.setPlaceholderText(placeholder)
-        edit.editingFinished.connect(
-            lambda attr=attr, edit=edit: tool._update_current_operation(
-                **{attr: _plot_limit_from_text(edit.text())}
-            )
+        tool._connect_line_edit_finished(
+            edit,
+            _plot_limit_update_callback(tool, attr),
         )
         tool._add_form_row(
             limits_layout,
@@ -436,10 +462,12 @@ def _build_plot_slices_editor(
     limits_options_widget = QtWidgets.QWidget(limits_page)
     limits_options_layout = QtWidgets.QHBoxLayout(limits_options_widget)
     limits_options_layout.setContentsMargins(0, 0, 0, 0)
+    crop_mixed = tool._batch_is_mixed(operation, lambda target: target.crop)
     crop_check = tool._check_box(
         operation.crop,
         lambda checked: tool._update_current_operation(crop=checked),
         parent=limits_page,
+        mixed=crop_mixed,
     )
     crop_check.setObjectName("figureComposerPlotSlicesCropCheck")
     crop_check.setText("Crop")
@@ -454,11 +482,13 @@ def _build_plot_slices_editor(
     )
 
     if is_image_plot:
+        colorbar_mixed = tool._batch_is_mixed(operation, lambda target: target.colorbar)
         colorbar_combo = tool._combo(
             ["none", "right", "rightspan", "all"],
-            operation.colorbar,
+            None if colorbar_mixed else operation.colorbar,
             lambda text: tool._update_current_operation(colorbar=text),
             parent=colors_page,
+            mixed=colorbar_mixed,
         )
         tool._add_form_row(
             colors_layout,
@@ -466,15 +496,20 @@ def _build_plot_slices_editor(
             colorbar_combo,
             "Where plot_slices should place colorbars for image panels.",
         )
+        colorbar_kwargs_text, colorbar_kwargs_mixed = tool._batch_text(
+            operation, lambda target: target.colorbar_kw, _format_dict
+        )
         colorbar_kwargs_edit = tool._line_edit(
-            _format_dict(operation.colorbar_kw),
+            colorbar_kwargs_text,
             parent=colors_page,
         )
+        tool._apply_mixed_line_edit(colorbar_kwargs_edit, colorbar_kwargs_mixed)
         colorbar_kwargs_edit.setObjectName("figureComposerColorbarKwEdit")
-        colorbar_kwargs_edit.editingFinished.connect(
-            lambda edit=colorbar_kwargs_edit: tool._update_current_operation(
-                colorbar_kw=_dict_from_text(edit.text())
-            )
+        tool._connect_line_edit_finished(
+            colorbar_kwargs_edit,
+            lambda text: tool._update_current_operation(
+                colorbar_kw=_dict_from_text(text)
+            ),
         )
         tool._add_form_row(
             colors_layout,
@@ -483,13 +518,17 @@ def _build_plot_slices_editor(
             "Dict literal or keyword arguments forwarded as colorbar_kw.",
         )
 
+        same_limits_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.same_limits
+        )
         same_limits_combo = tool._combo(
             ["False", "True", "row", "col", "all"],
-            str(operation.same_limits),
+            None if same_limits_mixed else str(operation.same_limits),
             lambda text: tool._update_current_operation(
                 same_limits=_bool_or_text(text)
             ),
             parent=style_page,
+            mixed=same_limits_mixed,
         )
         same_limits_combo.setObjectName("figureComposerSameLimitsCombo")
         tool._add_form_row(
@@ -499,11 +538,13 @@ def _build_plot_slices_editor(
             "Control plot_slices same_limits for image color scaling.",
         )
 
+    axis_mixed = tool._batch_is_mixed(operation, lambda target: target.axis)
     axis_combo = tool._combo(
         ["auto", "on", "off", "equal", "scaled", "tight", "image", "square"],
-        operation.axis,
+        None if axis_mixed else operation.axis,
         lambda text: tool._update_current_operation(axis=text),
         parent=style_page,
+        mixed=axis_mixed,
     )
     axis_combo.setObjectName("figureComposerAxisCombo")
     tool._add_form_row(
@@ -516,15 +557,21 @@ def _build_plot_slices_editor(
     label_options_widget = QtWidgets.QWidget(style_page)
     label_options_layout = QtWidgets.QHBoxLayout(label_options_widget)
     label_options_layout.setContentsMargins(0, 0, 0, 0)
+    show_labels_mixed = tool._batch_is_mixed(
+        operation, lambda target: target.show_all_labels
+    )
     show_labels_check = tool._check_box(
         operation.show_all_labels,
         lambda checked: tool._update_current_operation(show_all_labels=checked),
+        mixed=show_labels_mixed,
     )
     show_labels_check.setText("All labels")
     show_labels_check.setToolTip("Ask plot_slices to show labels on every axis.")
+    annotate_mixed = tool._batch_is_mixed(operation, lambda target: target.annotate)
     annotate_check = tool._check_box(
         operation.annotate,
         lambda checked: tool._update_current_operation(annotate=checked),
+        mixed=annotate_mixed,
     )
     annotate_check.setText("Annotate")
     annotate_check.setToolTip("Show the slice-value annotation text.")
@@ -538,15 +585,18 @@ def _build_plot_slices_editor(
         "Label and annotation visibility options for plot_slices.",
     )
 
+    annotate_kwargs_text, annotate_kwargs_mixed = tool._batch_text(
+        operation, lambda target: target.annotate_kw, _format_dict
+    )
     annotate_kwargs_edit = tool._line_edit(
-        _format_dict(operation.annotate_kw),
+        annotate_kwargs_text,
         parent=style_page,
     )
+    tool._apply_mixed_line_edit(annotate_kwargs_edit, annotate_kwargs_mixed)
     annotate_kwargs_edit.setObjectName("figureComposerAnnotateKwEdit")
-    annotate_kwargs_edit.editingFinished.connect(
-        lambda edit=annotate_kwargs_edit: tool._update_current_operation(
-            annotate_kw=_dict_from_text(edit.text())
-        )
+    tool._connect_line_edit_finished(
+        annotate_kwargs_edit,
+        lambda text: tool._update_current_operation(annotate_kw=_dict_from_text(text)),
     )
     tool._add_form_row(
         style_layout,
@@ -556,22 +606,34 @@ def _build_plot_slices_editor(
     )
 
     if is_line_plot:
+        line_color_text, line_color_mixed = tool._batch_text(
+            operation,
+            lambda target: line_kw_text(target, "color", "c") or target.cmap or "",
+            str,
+        )
         line_color_edit = _ColorLineEditWidget(
-            line_kw_text(operation, "color", "c") or operation.cmap or "",
+            line_color_text,
             parent=colors_page,
         )
         line_color_edit.setLineEditObjectName("figureComposerPlotSlicesLineColorEdit")
         line_color_edit.setColorButtonObjectName(
             "figureComposerPlotSlicesLineColorButton"
         )
-        line_color_edit.editingFinished.connect(
-            lambda edit=line_color_edit: update_current_line_kw(
+        tool._apply_mixed_line_edit(line_color_edit.line_edit, line_color_mixed)
+        tool._connect_value_signal(
+            line_color_edit,
+            line_color_edit.editingFinished,
+            line_color_edit.text,
+            lambda text: update_current_line_kw(
                 tool,
                 "color",
-                color_kw_value_from_text(edit.text()),
+                color_kw_value_from_text(text),
                 aliases=("c",),
                 clear_legacy_cmap=True,
-            )
+            ),
+            unchanged_mixed=lambda: tool._line_edit_batch_unchanged(
+                line_color_edit.line_edit
+            ),
         )
         tool._add_form_row(
             colors_layout,
@@ -580,13 +642,17 @@ def _build_plot_slices_editor(
             "Matplotlib color stored as line_kw color for 1D panels.",
         )
 
+        line_style_mixed = tool._batch_is_mixed(
+            operation, lambda target: line_kw_text(target, "linestyle", "ls")
+        )
         line_style_combo = tool._combo(
             LINE_STYLE_OPTIONS,
-            line_kw_text(operation, "linestyle", "ls"),
+            None if line_style_mixed else line_kw_text(operation, "linestyle", "ls"),
             lambda text: update_current_line_kw(
                 tool, "linestyle", text or None, aliases=("ls",)
             ),
             parent=colors_page,
+            mixed=line_style_mixed,
         )
         line_style_combo.setObjectName("figureComposerPlotSlicesLineStyleCombo")
         tool._add_form_row(
@@ -596,26 +662,45 @@ def _build_plot_slices_editor(
             "Matplotlib linestyle for 1D plot_slices panels.",
         )
 
+        line_width_mixed = tool._batch_is_mixed(
+            operation, lambda target: line_kw_text(target, "linewidth", "lw")
+        )
         line_width_spin = optional_positive_spinbox(
-            line_kw_float(operation, "linewidth", "lw"),
-            lambda value: update_current_line_kw(
-                tool, "linewidth", value, aliases=("lw",)
-            ),
+            None if line_width_mixed else line_kw_float(operation, "linewidth", "lw"),
             parent=colors_page,
         )
+        tool._connect_editor_signal(
+            line_width_spin,
+            line_width_spin.valueChanged,
+            lambda value: update_current_line_kw(
+                tool,
+                "linewidth",
+                optional_positive_spinbox_value(value),
+                aliases=("lw",),
+            ),
+        )
         line_width_spin.setObjectName("figureComposerPlotSlicesLineWidthSpin")
+        line_width_row_widget = tool._mixed_value_widget(
+            line_width_spin,
+            mixed=line_width_mixed,
+            parent=colors_page,
+        )
         tool._add_form_row(
             colors_layout,
             "Line width",
-            line_width_spin,
+            line_width_row_widget,
             "Matplotlib linewidth for 1D plot_slices panels.",
         )
 
+        marker_mixed = tool._batch_is_mixed(
+            operation, lambda target: line_kw_text(target, "marker")
+        )
         marker_combo = tool._combo(
             LINE_MARKER_OPTIONS,
-            line_kw_text(operation, "marker"),
+            None if marker_mixed else line_kw_text(operation, "marker"),
             lambda text: update_current_line_kw(tool, "marker", text or None),
             parent=colors_page,
+            mixed=marker_mixed,
         )
         marker_combo.setObjectName("figureComposerPlotSlicesMarkerCombo")
         tool._add_form_row(
@@ -625,23 +710,44 @@ def _build_plot_slices_editor(
             "Matplotlib marker style for 1D plot_slices panels.",
         )
 
+        marker_size_mixed = tool._batch_is_mixed(
+            operation, lambda target: line_kw_text(target, "markersize", "ms")
+        )
         marker_size_spin = optional_positive_spinbox(
-            line_kw_float(operation, "markersize", "ms"),
-            lambda value: update_current_line_kw(
-                tool, "markersize", value, aliases=("ms",)
-            ),
+            None if marker_size_mixed else line_kw_float(operation, "markersize", "ms"),
             parent=colors_page,
         )
+        tool._connect_editor_signal(
+            marker_size_spin,
+            marker_size_spin.valueChanged,
+            lambda value: update_current_line_kw(
+                tool,
+                "markersize",
+                optional_positive_spinbox_value(value),
+                aliases=("ms",),
+            ),
+        )
         marker_size_spin.setObjectName("figureComposerPlotSlicesMarkerSizeSpin")
+        marker_size_row_widget = tool._mixed_value_widget(
+            marker_size_spin,
+            mixed=marker_size_mixed,
+            parent=colors_page,
+        )
         tool._add_form_row(
             colors_layout,
             "Marker size",
-            marker_size_spin,
+            marker_size_row_widget,
             "Matplotlib marker size for 1D plot_slices panels.",
         )
 
+        marker_face_text, marker_face_mixed = tool._batch_text(
+            operation,
+            lambda target: line_kw_text(target, "markerfacecolor", "mfc"),
+            str,
+        )
         marker_face_edit = _ColorLineEditWidget(
-            line_kw_text(operation, "markerfacecolor", "mfc"), parent=colors_page
+            marker_face_text,
+            parent=colors_page,
         )
         marker_face_edit.setLineEditObjectName(
             "figureComposerPlotSlicesMarkerFaceColorEdit"
@@ -649,13 +755,20 @@ def _build_plot_slices_editor(
         marker_face_edit.setColorButtonObjectName(
             "figureComposerPlotSlicesMarkerFaceColorButton"
         )
-        marker_face_edit.editingFinished.connect(
-            lambda edit=marker_face_edit: update_current_line_kw(
+        tool._apply_mixed_line_edit(marker_face_edit.line_edit, marker_face_mixed)
+        tool._connect_value_signal(
+            marker_face_edit,
+            marker_face_edit.editingFinished,
+            marker_face_edit.text,
+            lambda text: update_current_line_kw(
                 tool,
                 "markerfacecolor",
-                color_kw_value_from_text(edit.text()),
+                color_kw_value_from_text(text),
                 aliases=("mfc",),
-            )
+            ),
+            unchanged_mixed=lambda: tool._line_edit_batch_unchanged(
+                marker_face_edit.line_edit
+            ),
         )
         tool._add_form_row(
             colors_layout,
@@ -664,8 +777,14 @@ def _build_plot_slices_editor(
             "Matplotlib marker face color for 1D plot_slices panels.",
         )
 
+        marker_edge_text, marker_edge_mixed = tool._batch_text(
+            operation,
+            lambda target: line_kw_text(target, "markeredgecolor", "mec"),
+            str,
+        )
         marker_edge_edit = _ColorLineEditWidget(
-            line_kw_text(operation, "markeredgecolor", "mec"), parent=colors_page
+            marker_edge_text,
+            parent=colors_page,
         )
         marker_edge_edit.setLineEditObjectName(
             "figureComposerPlotSlicesMarkerEdgeColorEdit"
@@ -673,13 +792,20 @@ def _build_plot_slices_editor(
         marker_edge_edit.setColorButtonObjectName(
             "figureComposerPlotSlicesMarkerEdgeColorButton"
         )
-        marker_edge_edit.editingFinished.connect(
-            lambda edit=marker_edge_edit: update_current_line_kw(
+        tool._apply_mixed_line_edit(marker_edge_edit.line_edit, marker_edge_mixed)
+        tool._connect_value_signal(
+            marker_edge_edit,
+            marker_edge_edit.editingFinished,
+            marker_edge_edit.text,
+            lambda text: update_current_line_kw(
                 tool,
                 "markeredgecolor",
-                color_kw_value_from_text(edit.text()),
+                color_kw_value_from_text(text),
                 aliases=("mec",),
-            )
+            ),
+            unchanged_mixed=lambda: tool._line_edit_batch_unchanged(
+                marker_edge_edit.line_edit
+            ),
         )
         tool._add_form_row(
             colors_layout,
@@ -688,13 +814,17 @@ def _build_plot_slices_editor(
             "Matplotlib marker edge color for 1D plot_slices panels.",
         )
 
+        line_order_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.line_order
+        )
         line_order_combo = tool._combo(
             ["default", "C", "F"],
-            operation.line_order or "default",
+            None if line_order_mixed else operation.line_order or "default",
             lambda text: tool._update_current_operation(
                 line_order=None if text == "default" else text
             ),
             parent=colors_page,
+            mixed=line_order_mixed,
         )
         line_order_combo.setObjectName("figureComposerPlotSlicesLineOrderCombo")
         tool._add_form_row(
@@ -704,14 +834,15 @@ def _build_plot_slices_editor(
             "Order used when line style values are provided per panel.",
         )
 
-        line_kwargs_edit = tool._line_edit(
-            _format_dict(extra_line_kw(operation)), parent=colors_page
+        line_kwargs_text, line_kwargs_mixed = tool._batch_text(
+            operation, extra_line_kw, _format_dict
         )
+        line_kwargs_edit = tool._line_edit(line_kwargs_text, parent=colors_page)
+        tool._apply_mixed_line_edit(line_kwargs_edit, line_kwargs_mixed)
         line_kwargs_edit.setObjectName("figureComposerPlotSlicesLineKwEdit")
-        line_kwargs_edit.editingFinished.connect(
-            lambda edit=line_kwargs_edit: update_current_extra_line_kw(
-                tool, _dict_from_text(edit.text())
-            )
+        tool._connect_line_edit_finished(
+            line_kwargs_edit,
+            lambda text: update_current_extra_line_kw(tool, _dict_from_text(text)),
         )
         tool._add_form_row(
             colors_layout,
@@ -720,10 +851,12 @@ def _build_plot_slices_editor(
             "Additional Matplotlib Line2D kwargs not covered by the controls above.",
         )
 
+        gradient_mixed = tool._batch_is_mixed(operation, lambda target: target.gradient)
         gradient_check = tool._check_box(
             operation.gradient,
             lambda checked: tool._update_current_operation(gradient=checked),
             parent=colors_page,
+            mixed=gradient_mixed,
         )
         gradient_check.setObjectName("figureComposerGradientCheck")
         gradient_check.setText("Fill under line")
@@ -734,14 +867,17 @@ def _build_plot_slices_editor(
             "Fill the area under each 1D line with a gradient.",
         )
 
-        gradient_kwargs_edit = tool._line_edit(
-            _format_dict(operation.gradient_kw), parent=colors_page
+        gradient_kwargs_text, gradient_kwargs_mixed = tool._batch_text(
+            operation, lambda target: target.gradient_kw, _format_dict
         )
+        gradient_kwargs_edit = tool._line_edit(gradient_kwargs_text, parent=colors_page)
+        tool._apply_mixed_line_edit(gradient_kwargs_edit, gradient_kwargs_mixed)
         gradient_kwargs_edit.setObjectName("figureComposerGradientKwEdit")
-        gradient_kwargs_edit.editingFinished.connect(
-            lambda edit=gradient_kwargs_edit: tool._update_current_operation(
-                gradient_kw=_dict_from_text(edit.text())
-            )
+        tool._connect_line_edit_finished(
+            gradient_kwargs_edit,
+            lambda text: tool._update_current_operation(
+                gradient_kw=_dict_from_text(text)
+            ),
         )
         tool._add_form_row(
             colors_layout,
@@ -755,28 +891,42 @@ def _build_plot_slices_editor(
         cmap_layout = QtWidgets.QHBoxLayout(cmap_widget)
         cmap_layout.setContentsMargins(0, 0, 0, 0)
         cmap_layout.setSpacing(4)
+        cmap_mixed = tool._batch_is_mixed(
+            operation, lambda target: _cmap_base_and_reverse(target.cmap)[0]
+        )
+        reverse_mixed = tool._batch_is_mixed(
+            operation, lambda target: _cmap_base_and_reverse(target.cmap)[1]
+        )
         cmap_combo = erlab.interactive.colors.ColorMapComboBox(cmap_widget)
+        tool._mark_editor_control(cmap_combo)
         cmap_combo.setObjectName("figureComposerCmapCombo")
         cmap_combo.setToolTip("Colormap passed to plot_slices.")
-        cmap_combo.default_cmap = cmap_base
+        cmap_combo.default_cmap = None if cmap_mixed else cmap_base
         with QtCore.QSignalBlocker(cmap_combo):
             cmap_combo.ensure_populated()
-            cmap_combo.setCurrentText(cmap_base)
-        cmap_reverse_check = QtWidgets.QCheckBox("Reverse", cmap_widget)
+            if cmap_mixed:
+                tool._set_combo_mixed_placeholder(cmap_combo)
+            else:
+                cmap_combo.setCurrentText(cmap_base)
+        cmap_reverse_check = tool._check_box(
+            cmap_reversed,
+            lambda checked: _update_current_cmap(tool, reverse=checked),
+            parent=cmap_widget,
+            mixed=reverse_mixed,
+        )
+        cmap_reverse_check.setText("Reverse")
         cmap_reverse_check.setObjectName("figureComposerCmapReverseCheck")
-        with QtCore.QSignalBlocker(cmap_reverse_check):
-            cmap_reverse_check.setChecked(cmap_reversed)
         cmap_reverse_check.setToolTip("Append _r to the selected Matplotlib colormap.")
 
-        def update_cmap_from_controls(*_args: object) -> None:
-            if tool._updating_controls:
-                return
-            _update_current_cmap(
-                tool, cmap_combo.currentText(), cmap_reverse_check.isChecked()
-            )
-
-        cmap_combo.currentTextChanged.connect(update_cmap_from_controls)
-        cmap_reverse_check.toggled.connect(update_cmap_from_controls)
+        tool._connect_editor_signal(
+            cmap_combo,
+            cmap_combo.activated,
+            lambda _index, combo=cmap_combo: (
+                None
+                if tool._mixed_combo_text(combo.currentText())
+                else _update_current_cmap(tool, base=combo.currentText())
+            ),
+        )
         cmap_combo.blockSignals(False)
         cmap_layout.addWidget(cmap_combo, 1)
         cmap_layout.addWidget(cmap_reverse_check)
@@ -789,11 +939,18 @@ def _build_plot_slices_editor(
 
         norm_combo = tool._combo(
             _norm_combo_choices(operation.norm_name),
-            _norm_combo_text(operation.norm_name),
+            tool._batch_combo_text(
+                operation,
+                lambda target: target.norm_name,
+                _norm_combo_text,
+            ),
             lambda text: _update_current_norm_name(
                 tool, _norm_name_from_combo_text(text)
             ),
             parent=colors_page,
+            mixed=tool._batch_is_mixed(
+                operation, lambda target: _norm_combo_text(target.norm_name)
+            ),
         )
         norm_combo.setObjectName("figureComposerNormCombo")
         norm_combo.setToolTip("Color normalization used for image plot_slices panels.")
@@ -801,6 +958,9 @@ def _build_plot_slices_editor(
 
         norm_fields = _norm_kwarg_fields(operation.norm_name)
         if "gamma" in norm_fields:
+            gamma_mixed = tool._batch_is_mixed(
+                operation, lambda target: _norm_gamma_value(target)
+            )
             gamma_widget = erlab.interactive.colors.ColorMapGammaWidget(
                 colors_page,
                 value=_norm_gamma_value(operation),
@@ -808,11 +968,21 @@ def _build_plot_slices_editor(
             )
             gamma_widget.setObjectName("figureComposerGammaWidget")
             gamma_widget.setToolTip("Gamma value for the selected normalization.")
-            gamma_widget.valueChanged.connect(
-                lambda value: _update_current_norm_gamma(tool, value)
+            tool._connect_editor_signal(
+                gamma_widget,
+                gamma_widget.valueChanged,
+                lambda value: _update_current_norm_gamma(tool, value),
+            )
+            gamma_row_widget = tool._mixed_value_widget(
+                gamma_widget,
+                mixed=gamma_mixed,
+                parent=colors_page,
             )
             tool._add_form_row(
-                colors_layout, "Gamma", gamma_widget, gamma_widget.toolTip()
+                colors_layout,
+                "Gamma",
+                gamma_row_widget,
+                gamma_widget.toolTip(),
             )
 
         norm_number_fields = {
@@ -832,27 +1002,36 @@ def _build_plot_slices_editor(
         for attr in ("vmin", "vmax", "vcenter", "halfrange"):
             if attr not in norm_fields:
                 continue
-            label, value, tooltip = norm_number_fields[attr]
-            edit = tool._line_edit("" if value is None else str(value))
+            label, _value, tooltip = norm_number_fields[attr]
+            text, mixed = tool._batch_text(
+                operation,
+                _operation_field_getter(attr),
+                lambda value: "" if value is None else str(value),
+            )
+            edit = tool._line_edit(text)
+            tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(f"figureComposer{attr[0].upper()}{attr[1:]}NormEdit")
-            placeholder = _norm_field_placeholder(operation, attr)
+            placeholder = "" if mixed else _norm_field_placeholder(operation, attr)
             if placeholder:
                 edit.setPlaceholderText(placeholder)
-            edit.editingFinished.connect(
-                lambda attr=attr, edit=edit: tool._update_current_operation(
-                    **{attr: _optional_number_or_text(attr, edit.text())}
-                )
+            tool._connect_line_edit_finished(
+                edit,
+                _norm_number_update_callback(tool, attr),
             )
             tool._add_form_row(colors_layout, label, edit, tooltip)
 
         if "clip" in norm_fields:
+            clip_mixed = tool._batch_is_mixed(
+                operation, lambda target: target.norm_clip
+            )
             clip_combo = tool._combo(
                 ["default", "False", "True"],
-                _norm_clip_text(operation.norm_clip),
+                None if clip_mixed else _norm_clip_text(operation.norm_clip),
                 lambda text: tool._update_current_operation(
                     norm_clip=_norm_clip_from_text(text)
                 ),
                 parent=colors_page,
+                mixed=clip_mixed,
             )
             clip_combo.setObjectName("figureComposerNormClipCombo")
             tool._add_form_row(
@@ -862,10 +1041,15 @@ def _build_plot_slices_editor(
                 "clip argument for the selected normalization object.",
             )
 
-        norm_kwargs_edit = tool._line_edit(_format_dict(operation.norm_kwargs))
+        norm_kwargs_text, norm_kwargs_mixed = tool._batch_text(
+            operation, lambda target: target.norm_kwargs, _format_dict
+        )
+        norm_kwargs_edit = tool._line_edit(norm_kwargs_text)
+        tool._apply_mixed_line_edit(norm_kwargs_edit, norm_kwargs_mixed)
         norm_kwargs_edit.setObjectName("figureComposerNormKwargsEdit")
-        norm_kwargs_edit.editingFinished.connect(
-            lambda edit=norm_kwargs_edit: _update_current_norm_kwargs(tool, edit.text())
+        tool._connect_line_edit_finished(
+            norm_kwargs_edit,
+            lambda text: _update_current_norm_kwargs(tool, text),
         )
         tool._add_form_row(
             colors_layout,
@@ -874,10 +1058,17 @@ def _build_plot_slices_editor(
             "Extra dict literal or keyword arguments for the norm constructor.",
         )
 
-    extra_edit = tool._line_edit(_format_dict(_effective_extra_kwargs(tool, operation)))
+    extra_text, extra_mixed = tool._batch_text(
+        operation,
+        lambda target: _effective_extra_kwargs(tool, target),
+        _format_dict,
+    )
+    extra_edit = tool._line_edit(extra_text)
+    tool._apply_mixed_line_edit(extra_edit, extra_mixed)
     extra_edit.setObjectName("figureComposerExtraKwEdit")
-    extra_edit.editingFinished.connect(
-        lambda edit=extra_edit: _update_current_extra_kwargs(tool, edit.text())
+    tool._connect_line_edit_finished(
+        extra_edit,
+        lambda text: _update_current_extra_kwargs(tool, text),
     )
     tool._add_form_row(
         advanced_layout,
@@ -909,6 +1100,37 @@ def _optional_number_or_text(attr: str, text: str) -> float | str | None:
     if attr in {"cmap", "norm_name"}:
         return stripped
     return float(stripped)
+
+
+def _plot_limit_update_callback(
+    tool: FigureComposerTool, attr: str
+) -> Callable[[str], None]:
+    def update(text: str) -> None:
+        tool._update_current_operation(**{attr: _plot_limit_from_text(text)})
+
+    return update
+
+
+def _norm_number_update_callback(
+    tool: FigureComposerTool, attr: str
+) -> Callable[[str], None]:
+    def update(text: str) -> None:
+        tool._update_current_operation(**{attr: _optional_number_or_text(attr, text)})
+
+    return update
+
+
+def _operation_field_value(operation: FigureOperationState, attr: str) -> typing.Any:
+    return getattr(operation, attr)
+
+
+def _operation_field_getter(
+    attr: str,
+) -> Callable[[FigureOperationState], typing.Any]:
+    def getter(operation: FigureOperationState) -> typing.Any:
+        return _operation_field_value(operation, attr)
+
+    return getter
 
 
 def _plot_slices_limit_placeholder(
@@ -980,87 +1202,117 @@ def _norm_clip_from_text(text: str) -> bool | None:
 
 
 def _update_current_norm_name(tool: FigureComposerTool, name: str) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    index, operation = current
-    updates: dict[str, typing.Any] = {"norm_name": name}
-    if operation.norm_gamma is None and operation.gamma is not None:
-        updates["norm_gamma"] = operation.gamma
-        updates["gamma"] = None
-    tool._replace_operation(
-        index,
-        operation.model_copy(update=updates),
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        updates: dict[str, typing.Any] = {"norm_name": name}
+        if operation.norm_gamma is None and operation.gamma is not None:
+            updates["norm_gamma"] = operation.gamma
+            updates["gamma"] = None
+        return operation.model_copy(update=updates)
+
+    tool._update_operations(
+        update_operation,
         rebuild_editor=True,
         defer_editor_rebuild=True,
     )
 
 
 def _update_current_norm_gamma(tool: FigureComposerTool, value: float) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    tool._update_current_operation_in_place(
-        norm_name=current[1].norm_name or _POWER_NORM_NAME,
-        norm_gamma=value,
-        gamma=None,
-    )
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        return operation.model_copy(
+            update={
+                "norm_name": operation.norm_name or _POWER_NORM_NAME,
+                "norm_gamma": value,
+                "gamma": None,
+            }
+        )
+
+    tool._update_operations(update_operation)
 
 
 def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    index, operation = current
     updates = _norm_updates_from_kwargs(_dict_from_text(text))
-    tool._replace_operation(
-        index,
-        operation.model_copy(update=updates),
+
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        return operation.model_copy(update=updates)
+
+    tool._update_operations(
+        update_operation,
         rebuild_editor=True,
         defer_editor_rebuild=True,
     )
 
 
 def _update_current_slice_kwargs(tool: FigureComposerTool, text: str) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    index, operation = current
-    updates = _selection_updates_from_kwargs(
-        tool,
-        operation,
-        _dict_from_text(text, allow_slice=True),
-        _effective_extra_kwargs(tool, operation),
-    )
-    tool._replace_operation(
-        index,
-        operation.model_copy(update=updates),
+    slice_kwargs = _dict_from_text(text, allow_slice=True)
+
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        updates = _selection_updates_from_kwargs(
+            tool,
+            operation,
+            slice_kwargs,
+            _effective_extra_kwargs(tool, operation),
+        )
+        return operation.model_copy(update=updates)
+
+    tool._update_operations(
+        update_operation,
         rebuild_editor=True,
         defer_editor_rebuild=True,
     )
 
 
 def _update_current_extra_kwargs(tool: FigureComposerTool, text: str) -> None:
-    current = tool._current_operation()
-    if current is None:
-        return
-    index, operation = current
-    updates = _selection_updates_from_kwargs(
-        tool,
-        operation,
-        _effective_slice_kwargs(tool, operation),
-        _dict_from_text(text, allow_slice=True),
-    )
-    tool._replace_operation(
-        index,
-        operation.model_copy(update=updates),
+    extra_kwargs = _dict_from_text(text, allow_slice=True)
+
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        updates = _selection_updates_from_kwargs(
+            tool,
+            operation,
+            _effective_slice_kwargs(tool, operation),
+            extra_kwargs,
+        )
+        return operation.model_copy(update=updates)
+
+    tool._update_operations(
+        update_operation,
         rebuild_editor=True,
         defer_editor_rebuild=True,
     )
 
 
-def _update_current_cmap(tool: FigureComposerTool, base: str, reverse: bool) -> None:
-    tool._update_current_operation_in_place(cmap=_cmap_with_reverse(base, reverse))
+def _update_current_cmap(
+    tool: FigureComposerTool,
+    *,
+    base: str | None = None,
+    reverse: bool | None = None,
+) -> None:
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        operation_base, operation_reverse = _cmap_base_and_reverse(operation.cmap)
+        next_base = operation_base if base is None else base
+        next_reverse = operation_reverse if reverse is None else reverse
+        return operation.model_copy(
+            update={"cmap": _cmap_with_reverse(next_base, next_reverse)}
+        )
+
+    tool._update_operations(update_operation, render=False)
+    tool._update_step_action_buttons()
+    tool._refresh_step_section_button_texts()
+    erlab.interactive.utils.single_shot(
+        tool, 0, lambda: _rendering._render_preview(tool)
+    )
+    tool.sigInfoChanged.emit()
 
 
 def _plot_slices_shape(
@@ -1560,15 +1812,18 @@ def _build_plot_source_row(
     state = _plot_source_check_state(tool, operation, source_name)
     check.setTristate(state == QtCore.Qt.CheckState.PartiallyChecked)
     check.setCheckState(state)
-    check.stateChanged.connect(
+    tool._connect_editor_signal(
+        check,
+        check.stateChanged,
         lambda _state, source_name=source_name, check=check, row_order=row_order: (
             _plot_source_check_changed(tool, source_name, check, row_order)
-        )
+        ),
     )
 
     source_selected = source_name in selected_sources
     selected_index = selected_sources.index(source_name) if source_selected else -1
     up_button = _plot_source_move_button(
+        tool,
         selector,
         source_name,
         "up",
@@ -1578,6 +1833,7 @@ def _build_plot_source_row(
         lambda: _plot_source_move(tool, source_name, -1),
     )
     down_button = _plot_source_move_button(
+        tool,
         selector,
         source_name,
         "down",
@@ -1596,6 +1852,7 @@ def _build_plot_source_row(
 
 
 def _plot_source_move_button(
+    tool: FigureComposerTool,
     parent: QtWidgets.QWidget,
     source_name: str,
     direction: typing.Literal["up", "down"],
@@ -1613,7 +1870,11 @@ def _plot_source_move_button(
     button.setArrowType(arrow)
     button.setEnabled(enabled)
     button.setToolTip(tooltip)
-    button.clicked.connect(lambda _checked=False: clicked())
+    tool._connect_editor_signal(
+        button,
+        button.clicked,
+        lambda _checked=False: clicked(),
+    )
     return button
 
 
