@@ -319,6 +319,8 @@ class FigureOperationState(pydantic.BaseModel):
     norm_order: str | None = None
     gradient: bool = False
     gradient_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    line_order: str | None = None
     subplot_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     annotate_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     colorbar_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
@@ -326,7 +328,6 @@ class FigureOperationState(pydantic.BaseModel):
 
     line_source: str | None = None
     line_labels: tuple[str, ...] = ()
-    line_color: str | None = None
     line_colors: tuple[str, ...] = ()
     line_x: str | None = None
     line_y: str | None = None

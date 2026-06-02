@@ -5,6 +5,9 @@ from __future__ import annotations
 import math
 import typing
 
+import matplotlib.axes
+import matplotlib.lines
+import matplotlib.markers
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -66,7 +69,6 @@ from erlab.interactive._figurecomposer._text import (
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
-    import matplotlib.axes
     import xarray as xr
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -90,6 +92,8 @@ _PLOT_SLICES_EXPLICIT_KWARGS = frozenset(
         "gamma",
         "vmin",
         "vmax",
+        "line_kw",
+        "line_order",
         "order",
         "cmap_order",
         "norm_order",
@@ -102,6 +106,137 @@ _PLOT_SLICES_EXPLICIT_KWARGS = frozenset(
     )
 )
 _MISSING = object()
+
+
+def _style_options(values: Iterable[typing.Any]) -> tuple[str, ...]:
+    options = [""]
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        if value not in options:
+            options.append(value)
+    return tuple(options)
+
+
+_LINE_STYLE_OPTIONS = _style_options(matplotlib.lines.lineStyles)
+_LINE_MARKER_OPTIONS = _style_options(matplotlib.markers.MarkerStyle.markers)
+_CONTROLLED_LINE_KW_KEYS = frozenset(
+    (
+        "c",
+        "color",
+        "ls",
+        "linestyle",
+        "lw",
+        "linewidth",
+        "marker",
+        "ms",
+        "markersize",
+        "mfc",
+        "markerfacecolor",
+        "mec",
+        "markeredgecolor",
+    )
+)
+
+
+def _optional_positive_spinbox(
+    value: float | None,
+    changed: typing.Callable[[float | None], None],
+    *,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QDoubleSpinBox:
+    spinbox = QtWidgets.QDoubleSpinBox(parent)
+    spinbox.setRange(0.0, 1_000_000.0)
+    spinbox.setDecimals(3)
+    spinbox.setSingleStep(0.5)
+    spinbox.setSpecialValueText("default")
+    spinbox.setKeyboardTracking(False)
+    spinbox.setValue(0.0 if value is None else float(value))
+    spinbox.valueChanged.connect(
+        lambda next_value: changed(None if next_value == 0.0 else float(next_value))
+    )
+    return spinbox
+
+
+def _line_kw_value(
+    operation: FigureOperationState, key: str, *aliases: str
+) -> typing.Any:
+    for candidate in (key, *aliases):
+        if candidate in operation.line_kw:
+            return operation.line_kw[candidate]
+    return None
+
+
+def _line_kw_text(operation: FigureOperationState, key: str, *aliases: str) -> str:
+    value = _line_kw_value(operation, key, *aliases)
+    return "" if value is None else str(value)
+
+
+def _line_kw_float(
+    operation: FigureOperationState, key: str, *aliases: str
+) -> float | None:
+    value = _line_kw_value(operation, key, *aliases)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extra_line_kw(operation: FigureOperationState) -> dict[str, typing.Any]:
+    return {
+        key: value
+        for key, value in operation.line_kw.items()
+        if key not in _CONTROLLED_LINE_KW_KEYS
+    }
+
+
+def _update_current_line_kw(
+    tool: FigureComposerTool,
+    key: str,
+    value: typing.Any,
+    *,
+    aliases: tuple[str, ...] = (),
+    clear_legacy_cmap: bool = False,
+) -> None:
+    if tool._updating_controls:
+        return
+
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        line_kw = dict(operation.line_kw)
+        for candidate in (key, *aliases):
+            line_kw.pop(candidate, None)
+        if value is not None:
+            line_kw[key] = value
+        updates: dict[str, typing.Any] = {"line_kw": line_kw}
+        if clear_legacy_cmap:
+            updates["cmap"] = None
+        return operation.model_copy(update=updates)
+
+    tool._update_operations(update_operation)
+
+
+def _update_current_extra_line_kw(
+    tool: FigureComposerTool, extra_line_kw: dict[str, typing.Any]
+) -> None:
+    if tool._updating_controls:
+        return
+
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        line_kw = {
+            key: value
+            for key, value in operation.line_kw.items()
+            if key in _CONTROLLED_LINE_KW_KEYS
+        }
+        line_kw.update(extra_line_kw)
+        return operation.model_copy(update={"line_kw": line_kw})
+
+    tool._update_operations(update_operation)
 
 
 def _operation_dim_names(
@@ -542,18 +677,155 @@ def _build_plot_slices_editor(
     )
 
     if is_line_plot:
-        line_color_edit = tool._line_edit(operation.cmap or "", parent=colors_page)
-        line_color_edit.setObjectName("figureComposerLineColorEdit")
+        line_color_edit = tool._line_edit(
+            _line_kw_text(operation, "color", "c") or operation.cmap or "",
+            parent=colors_page,
+        )
+        line_color_edit.setObjectName("figureComposerPlotSlicesLineColorEdit")
         line_color_edit.editingFinished.connect(
-            lambda edit=line_color_edit: tool._update_current_operation_in_place(
-                cmap=edit.text().strip() or None
+            lambda edit=line_color_edit: _update_current_line_kw(
+                tool,
+                "color",
+                edit.text().strip() or None,
+                aliases=("c",),
+                clear_legacy_cmap=True,
             )
         )
         tool._add_form_row(
             colors_layout,
             "Line color",
             line_color_edit,
-            "Matplotlib color passed through plot_slices cmap for 1D panels.",
+            "Matplotlib color stored as line_kw color for 1D panels.",
+        )
+
+        line_style_combo = tool._combo(
+            _LINE_STYLE_OPTIONS,
+            _line_kw_text(operation, "linestyle", "ls"),
+            lambda text: _update_current_line_kw(
+                tool, "linestyle", text or None, aliases=("ls",)
+            ),
+            parent=colors_page,
+        )
+        line_style_combo.setObjectName("figureComposerPlotSlicesLineStyleCombo")
+        tool._add_form_row(
+            colors_layout,
+            "Line style",
+            line_style_combo,
+            "Matplotlib linestyle for 1D plot_slices panels.",
+        )
+
+        line_width_spin = _optional_positive_spinbox(
+            _line_kw_float(operation, "linewidth", "lw"),
+            lambda value: _update_current_line_kw(
+                tool, "linewidth", value, aliases=("lw",)
+            ),
+            parent=colors_page,
+        )
+        line_width_spin.setObjectName("figureComposerPlotSlicesLineWidthSpin")
+        tool._add_form_row(
+            colors_layout,
+            "Line width",
+            line_width_spin,
+            "Matplotlib linewidth for 1D plot_slices panels.",
+        )
+
+        marker_combo = tool._combo(
+            _LINE_MARKER_OPTIONS,
+            _line_kw_text(operation, "marker"),
+            lambda text: _update_current_line_kw(tool, "marker", text or None),
+            parent=colors_page,
+        )
+        marker_combo.setObjectName("figureComposerPlotSlicesMarkerCombo")
+        tool._add_form_row(
+            colors_layout,
+            "Marker",
+            marker_combo,
+            "Matplotlib marker style for 1D plot_slices panels.",
+        )
+
+        marker_size_spin = _optional_positive_spinbox(
+            _line_kw_float(operation, "markersize", "ms"),
+            lambda value: _update_current_line_kw(
+                tool, "markersize", value, aliases=("ms",)
+            ),
+            parent=colors_page,
+        )
+        marker_size_spin.setObjectName("figureComposerPlotSlicesMarkerSizeSpin")
+        tool._add_form_row(
+            colors_layout,
+            "Marker size",
+            marker_size_spin,
+            "Matplotlib marker size for 1D plot_slices panels.",
+        )
+
+        marker_face_edit = tool._line_edit(
+            _line_kw_text(operation, "markerfacecolor", "mfc"), parent=colors_page
+        )
+        marker_face_edit.setObjectName("figureComposerPlotSlicesMarkerFaceColorEdit")
+        marker_face_edit.editingFinished.connect(
+            lambda edit=marker_face_edit: _update_current_line_kw(
+                tool,
+                "markerfacecolor",
+                edit.text().strip() or None,
+                aliases=("mfc",),
+            )
+        )
+        tool._add_form_row(
+            colors_layout,
+            "Marker face",
+            marker_face_edit,
+            "Matplotlib marker face color for 1D plot_slices panels.",
+        )
+
+        marker_edge_edit = tool._line_edit(
+            _line_kw_text(operation, "markeredgecolor", "mec"), parent=colors_page
+        )
+        marker_edge_edit.setObjectName("figureComposerPlotSlicesMarkerEdgeColorEdit")
+        marker_edge_edit.editingFinished.connect(
+            lambda edit=marker_edge_edit: _update_current_line_kw(
+                tool,
+                "markeredgecolor",
+                edit.text().strip() or None,
+                aliases=("mec",),
+            )
+        )
+        tool._add_form_row(
+            colors_layout,
+            "Marker edge",
+            marker_edge_edit,
+            "Matplotlib marker edge color for 1D plot_slices panels.",
+        )
+
+        line_order_combo = tool._combo(
+            ["default", "C", "F"],
+            operation.line_order or "default",
+            lambda text: tool._update_current_operation(
+                line_order=None if text == "default" else text
+            ),
+            parent=colors_page,
+        )
+        line_order_combo.setObjectName("figureComposerPlotSlicesLineOrderCombo")
+        tool._add_form_row(
+            colors_layout,
+            "Line order",
+            line_order_combo,
+            "Order used when line style values are provided per panel.",
+        )
+
+        line_kwargs_edit = tool._line_edit(
+            _format_dict(_extra_line_kw(operation)), parent=colors_page
+        )
+        line_kwargs_edit.setObjectName("figureComposerPlotSlicesLineKwEdit")
+        line_kwargs_edit.editingFinished.connect(
+            lambda edit=line_kwargs_edit: _update_current_extra_line_kw(
+                tool, _dict_from_text(edit.text())
+            )
+        )
+        tool._add_form_row(
+            colors_layout,
+            "Line kwargs",
+            line_kwargs_edit,
+            "Additional Matplotlib Line2D kwargs not covered by the controls above.",
         )
 
         gradient_check = tool._check_box(
@@ -1057,8 +1329,16 @@ def _plot_slices_kwargs(
         kwargs["hide_colorbar_ticks"] = False
     if not operation.annotate:
         kwargs["annotate"] = False
-    if operation.cmap:
+    if operation.cmap and not is_line_plot:
         kwargs["cmap"] = operation.cmap
+    if is_line_plot:
+        line_kw = dict(operation.line_kw)
+        if operation.cmap and not any(key in line_kw for key in ("c", "color")):
+            line_kw["color"] = operation.cmap
+        if line_kw:
+            kwargs["line_kw"] = line_kw
+        if operation.line_order is not None:
+            kwargs["line_order"] = operation.line_order
     if not is_line_plot:
         if _use_powernorm_plot_kwargs(operation):
             gamma = operation.norm_gamma
@@ -1195,9 +1475,7 @@ def _plot_slices_code_kwargs(
 _SECTION_TOOLTIPS = {
     "cuts": "Choose slice dimension, cut values, and extraction options.",
     "limits": "Set explicit x/y axis limits for this slice plot.",
-    "colors": (
-        "Set image color scaling or line color options for this plot_slices step."
-    ),
+    "colors": "Set image color scaling or 1D line styling for this plot_slices step.",
     "style": "Set labels, annotation, aspect, and shared color-limit options.",
     "advanced": "Pass advanced keyword arguments to plot_slices.",
 }
@@ -1375,7 +1653,9 @@ def _section_summary(
         case "colors":
             shape = _plot_slices_shape(tool, operation)
             if shape.plot_ndim == 1:
-                return operation.cmap or "line"
+                return (
+                    _line_kw_text(operation, "color", "c") or operation.cmap or "line"
+                )
             return operation.cmap or "default"
         case "style":
             return operation.axis

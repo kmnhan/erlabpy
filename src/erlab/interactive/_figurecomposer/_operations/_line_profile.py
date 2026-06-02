@@ -227,20 +227,12 @@ def _build_line_editor(
             "figureComposerLineLabelsEdit",
         ),
         (
-            "Color",
-            "line_color",
-            lambda target: target.line_color,
-            lambda value: "" if value is None else str(value),
-            "Shared Matplotlib color for every profile.",
-            "figureComposerLineColorEdit",
-        ),
-        (
-            "Profile colors",
+            "Colors",
             "line_colors",
             lambda target: target.line_colors,
             lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
-            "Optional per-profile Matplotlib colors.\n"
-            "Use comma-separated values or a Python list literal.",
+            "Optional Matplotlib colors.\n"
+            "Use one value for every profile, or one value per profile.",
             "figureComposerLineColorsEdit",
         ),
     ):
@@ -262,17 +254,7 @@ def _build_line_editor(
                     None
                     if tool._line_edit_batch_unchanged(edit)
                     else tool._update_current_operation(
-                        line_colors=_string_tuple_from_text(edit.text())
-                    )
-                )
-            )
-        else:
-            edit.editingFinished.connect(
-                lambda edit=edit: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else tool._update_current_operation(
-                        line_color=edit.text().strip() or None
+                        line_colors=_string_tuple_from_text(edit.text()),
                     )
                 )
             )
@@ -773,9 +755,7 @@ def _line_styles_for_profiles(
     operation: FigureOperationState, count: int
 ) -> tuple[dict[str, typing.Any], ...]:
     labels = _line_text_values(operation.line_labels, count, default=None)
-    colors = _line_text_values(
-        operation.line_colors, count, default=operation.line_color
-    )
+    colors = _line_text_values(operation.line_colors, count, default=None)
     styles: list[dict[str, typing.Any]] = []
     for label, color in zip(labels, colors, strict=True):
         kwargs: dict[str, typing.Any] = {}
@@ -996,17 +976,16 @@ def _line_style_code(
             loop_values.append("profile_labels")
             kwargs.append("label=label")
 
-    if operation.line_colors:
-        if len(operation.line_colors) == 1:
-            lines.append(f"profile_color = {operation.line_colors[0]!r}")
+    line_colors = operation.line_colors
+    if line_colors:
+        if len(line_colors) == 1:
+            lines.append(f"profile_color = {line_colors[0]!r}")
             kwargs.append("color=profile_color")
         else:
-            lines.append(f"profile_colors = {list(operation.line_colors)!r}")
+            lines.append(f"profile_colors = {list(line_colors)!r}")
             loop_names.append("color")
             loop_values.append("profile_colors")
             kwargs.append("color=color")
-    elif operation.line_color:
-        kwargs.append(f"color={operation.line_color!r}")
     return lines, ", ".join(kwargs)
 
 
@@ -1100,7 +1079,7 @@ def _seeded_line_operation_defaults(
             "line_placement": "one_per_axis",
             "line_values_axis": "y",
             "line_normalize": "max",
-            "line_color": "black",
+            "line_colors": ("black",),
         }
     )
     if current_operation.slice_dim and current_operation.slice_values:

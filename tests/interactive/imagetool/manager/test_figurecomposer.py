@@ -339,7 +339,7 @@ def test_figure_composer_subplots_plot_roundtrip_restores_exact_render(
         axes=FigureAxesSelectionState(axes=((1, 0), (1, 1))),
     ).model_copy(
         update={
-            "line_color": "black",
+            "line_colors": ("black",),
             "line_labels": ("restored profile",),
             "line_normalize": "max",
             "line_x": "kx",
@@ -4437,7 +4437,7 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
             "line_selection": {"cut": cut_values.tolist(), "eV": 0.0},
             "line_iter_dim": "cut",
             "line_normalize": "max",
-            "line_color": "black",
+            "line_colors": ("black",),
             "line_scales": (0.1, 0.2, 0.3),
             "line_offsets": (-0.2, 0.0, 0.2),
         }
@@ -4607,7 +4607,7 @@ def test_figure_composer_line_action_seeds_from_selected_slice_step(
     assert operation.kind == FigureOperationKind.LINE
     assert operation.line_placement == "one_per_axis"
     assert operation.line_normalize == "max"
-    assert operation.line_color == "black"
+    assert operation.line_colors == ("black",)
     assert operation.line_x == "kx"
     assert operation.line_iter_dim == "cut"
     assert operation.line_selection == {"cut": [0.0, 1.0, 2.0], "cut_width": 0.25}
@@ -4756,10 +4756,10 @@ def test_figure_composer_batch_line_mixed_values_do_not_overwrite_on_blur(
             sources=(FigureSourceState(name="profile", label="profile"),),
             operations=(
                 FigureOperationState.line(label="first", source="profile").model_copy(
-                    update={"line_color": "C0"}
+                    update={"line_colors": ("C0",)}
                 ),
                 FigureOperationState.line(label="second", source="profile").model_copy(
-                    update={"line_color": "C1"}
+                    update={"line_colors": ("C1",)}
                 ),
             ),
             primary_source="profile",
@@ -4770,23 +4770,25 @@ def test_figure_composer_batch_line_mixed_values_do_not_overwrite_on_blur(
     _select_operation_rows(tool, (0, 1))
     tool._select_step_section("line")
     line_page = tool.step_editor_stack.currentWidget()
-    color_edit = line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineColorEdit")
+    color_edit = line_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerLineColorsEdit"
+    )
     assert color_edit is not None
     assert color_edit.text() == ""
     assert color_edit.placeholderText() == "(multiple values)"
 
     color_edit.editingFinished.emit()
-    assert [operation.line_color for operation in tool.tool_status.operations] == [
-        "C0",
-        "C1",
+    assert [operation.line_colors for operation in tool.tool_status.operations] == [
+        ("C0",),
+        ("C1",),
     ]
 
     color_edit.setText("black")
     color_edit.setModified(True)
     color_edit.editingFinished.emit()
-    assert [operation.line_color for operation in tool.tool_status.operations] == [
-        "black",
-        "black",
+    assert [operation.line_colors for operation in tool.tool_status.operations] == [
+        ("black",),
+        ("black",),
     ]
 
 
@@ -5409,6 +5411,15 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
                 ).model_copy(
                     update={
                         "cmap": "C1",
+                        "line_kw": {
+                            "linestyle": "--",
+                            "linewidth": 1.5,
+                            "marker": "o",
+                            "markersize": 6.0,
+                            "markerfacecolor": "yellow",
+                            "markeredgecolor": "black",
+                            "alpha": 0.75,
+                        },
                         "colorbar": "right",
                         "colorbar_kw": {"pad": 0.01},
                         "same_limits": True,
@@ -5435,13 +5446,48 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     tool._select_step_section("colors")
     colors_page = tool.step_editor_stack.currentWidget()
     line_color_edit = colors_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerLineColorEdit"
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesLineColorEdit"
+    )
+    line_style_combo = colors_page.findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesLineStyleCombo"
+    )
+    line_width_spin = colors_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerPlotSlicesLineWidthSpin"
+    )
+    marker_combo = colors_page.findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesMarkerCombo"
+    )
+    marker_size_spin = colors_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerPlotSlicesMarkerSizeSpin"
+    )
+    marker_face_edit = colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesMarkerFaceColorEdit"
+    )
+    marker_edge_edit = colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesMarkerEdgeColorEdit"
+    )
+    line_kwargs_edit = colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesLineKwEdit"
     )
     gradient_check = colors_page.findChild(
         QtWidgets.QCheckBox, "figureComposerGradientCheck"
     )
     assert line_color_edit is not None
     assert line_color_edit.text() == "C1"
+    assert line_style_combo is not None
+    assert line_style_combo.currentText() == "--"
+    assert line_width_spin is not None
+    assert line_width_spin.value() == 1.5
+    assert marker_combo is not None
+    assert marker_combo.currentText() == "o"
+    assert marker_size_spin is not None
+    assert marker_size_spin.value() == 6.0
+    assert marker_face_edit is not None
+    assert marker_face_edit.text() == "yellow"
+    assert marker_edge_edit is not None
+    assert marker_edge_edit.text() == "black"
+    assert line_kwargs_edit is not None
+    assert line_kwargs_edit.text() == "alpha=0.75"
     assert gradient_check is not None
     assert gradient_check.isChecked()
     assert colors_page.findChild(QtWidgets.QComboBox, "figureComposerNormCombo") is None
@@ -5458,7 +5504,8 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     )
 
     code = tool.generated_code()
-    assert "cmap=" in code
+    assert "line_kw" in code
+    assert "cmap=" not in code
     assert "gradient=True" in code
     assert "colorbar" not in code
     assert "same_limits" not in code
@@ -5471,6 +5518,15 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     axs = namespace["axs"]
     assert len(axs[0, 0].lines) == 1
     assert len(axs[0, 1].lines) == 1
+    line = axs[0, 0].lines[0]
+    assert line.get_color() == "C1"
+    assert line.get_linestyle() == "--"
+    assert line.get_linewidth() == 1.5
+    assert line.get_marker() == "o"
+    assert line.get_markersize() == 6.0
+    assert line.get_markerfacecolor() == "yellow"
+    assert line.get_markeredgecolor() == "black"
+    assert line.get_alpha() == 0.75
 
 
 def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
