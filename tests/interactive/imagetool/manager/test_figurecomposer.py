@@ -2928,6 +2928,33 @@ def test_figure_composer_retired_editor_widgets_drain_after_popup(
     )
 
 
+def test_figure_composer_operation_list_event_filter_is_removed_on_close(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    viewport = tool._operation_list_viewport
+    assert viewport is not None
+    assert erlab.interactive.utils.qt_is_valid(viewport)
+
+    tool._operation_multi_select_event = True
+    erlab.interactive.utils.single_shot(
+        tool, 0, tool._clear_operation_multi_select_event
+    )
+    tool.close()
+    qtbot.wait(10)
+
+    assert tool._operation_list_viewport is None
+    assert tool._operation_multi_select_event is False
+    assert erlab.interactive.utils.qt_is_valid(viewport)
+
+
 def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),

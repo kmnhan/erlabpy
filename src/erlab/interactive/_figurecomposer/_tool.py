@@ -88,6 +88,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_editor_update_pending = False
         self._retired_editor_drain_pending = False
         self._operation_multi_select_event = False
+        self._operation_list_viewport: QtWidgets.QWidget | None = None
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
@@ -277,6 +278,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             super().hideEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent | None) -> None:
+        self._remove_operation_list_event_filter()
         self._close_figure_window()
         if event is not None:
             super().closeEvent(event)
@@ -387,9 +389,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
         self.operation_list = QtWidgets.QListWidget(recipe_page)
         self.operation_list.setObjectName("figureComposerOperationList")
-        operation_list_viewport = self.operation_list.viewport()
-        if operation_list_viewport is not None:
-            operation_list_viewport.installEventFilter(self)
+        self._operation_list_viewport = self.operation_list.viewport()
+        if self._operation_list_viewport is not None:
+            self._operation_list_viewport.installEventFilter(self)
         self.operation_list.currentRowChanged.connect(self._operation_selection_changed)
         self.operation_list.itemSelectionChanged.connect(
             self._operation_selection_changed
@@ -1312,8 +1314,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def eventFilter(
         self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
     ) -> bool:
+        operation_list_viewport = self._operation_list_viewport
         if (
-            watched is self.operation_list.viewport()
+            operation_list_viewport is not None
+            and watched is operation_list_viewport
             and event is not None
             and event.type()
             in {
@@ -1333,7 +1337,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
         return super().eventFilter(watched, event)
 
+    def _remove_operation_list_event_filter(self) -> None:
+        viewport = self._operation_list_viewport
+        self._operation_list_viewport = None
+        self._operation_multi_select_event = False
+        if viewport is not None and erlab.interactive.utils.qt_is_valid(self, viewport):
+            viewport.removeEventFilter(self)
+
     def _clear_operation_multi_select_event(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
         self._operation_multi_select_event = False
 
     @staticmethod
