@@ -848,6 +848,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             typing.cast("QtWidgets.QAbstractSpinBox", widget).editingFinished.connect(
                 self._setup_controls_changed
             )
+        self.nrows_spin.valueChanged.connect(self._setup_controls_changed)
+        self.ncols_spin.valueChanged.connect(self._setup_controls_changed)
         for widget in (self.width_mm_spin, self.height_mm_spin):
             typing.cast("QtWidgets.QAbstractSpinBox", widget).editingFinished.connect(
                 self._size_mm_controls_changed
@@ -1624,7 +1626,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
 
     @QtCore.Slot()
-    def _setup_controls_changed(self) -> None:
+    @QtCore.Slot(int)
+    @QtCore.Slot(str)
+    def _setup_controls_changed(self, _value: object | None = None) -> None:
         if self._updating_controls:
             return
         try:
@@ -1690,9 +1694,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rebuild_axes_grid()
         self._refresh_operation_list()
         self._update_operation_editor()
-        if self._invalid_operation_indices():
-            self.editor_tabs.setCurrentWidget(self.recipe_page)
-            self._select_step_section("axes")
         _rendering._render_preview(self)
         self.sigInfoChanged.emit()
 

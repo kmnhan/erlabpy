@@ -1507,7 +1507,7 @@ def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
     tool.editor_tabs.setCurrentWidget(tool.layout_page)
     tool.layout_mode_combo.setCurrentText("gridspec")
     tool.ncols_spin.setValue(2)
-    tool._setup_controls_changed()
+    assert tool.tool_status.setup.gridspec.root.ncols == 2
     widget = tool.gridspec_layout_widget
     widget.resize(widget.sizeHint())
 
@@ -1524,7 +1524,7 @@ def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
     assert len(tool.tool_status.setup.gridspec.root.axes) == 2
 
     tool.ncols_spin.setValue(1)
-    tool._setup_controls_changed()
+    assert tool.editor_tabs.currentWidget() is tool.layout_page
     invalid_item = tool.gridspec_axes_list.item(1)
     assert invalid_item is not None
     assert invalid_item.data(QtCore.Qt.ItemDataRole.UserRole + 1) is False
@@ -4811,13 +4811,15 @@ def test_figure_composer_layout_change_marks_removed_axes(qtbot, monkeypatch) ->
     )
     qtbot.addWidget(tool)
 
+    tool.editor_tabs.setCurrentWidget(tool.layout_page)
     tool.nrows_spin.setValue(1)
-    tool._setup_controls_changed()
 
+    assert tool.editor_tabs.currentWidget() is tool.layout_page
+    assert tool.tool_status.setup.nrows == 1
     assert tool.tool_status.operations[0].axes.axes == ((1, 1),)
     assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
-    assert tool.step_editor_stack.currentWidget() is tool.target_axes_page
-    assert tool._current_step_section_key == "axes"
+    assert tool._current_step_section_key == "sources"
+    tool._select_step_section("axes")
     assert tool.keep_valid_axes_button.isEnabled()
     with pytest.raises(ValueError, match="Cannot generate code"):
         tool.generated_code()
