@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import enum
 import typing
@@ -73,13 +74,23 @@ class MethodTextValuesPolicy(enum.StrEnum):
 
 
 class MethodControlKind(enum.StrEnum):
+    ARG_COMBO = "arg_combo"
+    INT_ARG = "int_arg"
     FLOAT_ARG = "float_arg"
     TEXT_ARG = "text_arg"
+    LITERAL_ARG = "literal_arg"
     LITERAL_SEQUENCE_ARG = "literal_sequence_arg"
     STRING_TUPLE_ARG = "string_tuple_arg"
     FLOAT_PAIR_ARGS = "float_pair_args"
     BOOL_ARG_COMBO = "bool_arg_combo"
     KWARG_COMBO = "kwarg_combo"
+    BOOL_KWARG_COMBO = "bool_kwarg_combo"
+    INT_KWARG = "int_kwarg"
+    FLOAT_KWARG = "float_kwarg"
+    TEXT_KWARG = "text_kwarg"
+    LITERAL_KWARG = "literal_kwarg"
+    STRING_TUPLE_KWARG = "string_tuple_kwarg"
+    FLOAT_PAIR_KWARG = "float_pair_kwarg"
     COORDINATE_SYSTEM = "coordinate_system"
 
 
@@ -135,6 +146,19 @@ def _float_arg(
     )
 
 
+def _int_arg(
+    label: str, index: int, object_name: str, tooltip: str, *, default: int = 0
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.INT_ARG,
+        label=label,
+        arg_index=index,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
+    )
+
+
 def _text_arg(
     label: str, index: int, object_name: str, tooltip: str
 ) -> MethodControlSpec:
@@ -144,6 +168,24 @@ def _text_arg(
         arg_index=index,
         object_name=object_name,
         tooltip=tooltip,
+    )
+
+
+def _literal_arg(
+    label: str,
+    index: int,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: typing.Any = None,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.LITERAL_ARG,
+        label=label,
+        arg_index=index,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
     )
 
 
@@ -181,7 +223,12 @@ def _float_pair_args(label: str, object_name: str, tooltip: str) -> MethodContro
 
 
 def _bool_arg_combo(
-    label: str, index: int, object_name: str, tooltip: str
+    label: str,
+    index: int,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: bool = True,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.BOOL_ARG_COMBO,
@@ -190,7 +237,26 @@ def _bool_arg_combo(
         object_name=object_name,
         tooltip=tooltip,
         options=("True", "False"),
-        default=True,
+        default=default,
+    )
+
+
+def _arg_combo(
+    label: str,
+    index: int,
+    options: Sequence[str],
+    default: str,
+    object_name: str,
+    tooltip: str,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.ARG_COMBO,
+        label=label,
+        arg_index=index,
+        object_name=object_name,
+        tooltip=tooltip,
+        options=tuple(options),
+        default=default,
     )
 
 
@@ -213,6 +279,130 @@ def _kwarg_combo(
     )
 
 
+def _bool_kwarg_combo(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: bool,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.BOOL_KWARG_COMBO,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        options=("True", "False"),
+        default=default,
+    )
+
+
+def _int_kwarg(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: int | None = None,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.INT_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
+    )
+
+
+def _float_kwarg(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: float | None = None,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.FLOAT_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
+    )
+
+
+def _text_kwarg(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: str | None = None,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.TEXT_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
+    )
+
+
+def _literal_kwarg(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: typing.Any = None,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.LITERAL_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
+    )
+
+
+def _string_tuple_kwarg(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.STRING_TUPLE_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+    )
+
+
+def _float_pair_kwarg(
+    label: str,
+    key: str,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: tuple[float, float] | None = None,
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.FLOAT_PAIR_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
+    )
+
+
 def _coordinate_system_control() -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.COORDINATE_SYSTEM,
@@ -222,6 +412,39 @@ def _coordinate_system_control() -> MethodControlSpec:
         options=("data", "axes"),
         default="data",
     )
+
+
+_AXIS_OPTIONS = ("x", "y", "z")
+_FLATTEN_ORDER_OPTIONS = ("C", "F", "A", "K")
+_COLORBAR_ORIENTATION_OPTIONS = ("vertical", "horizontal")
+_LINE_ORIENTATION_OPTIONS = ("h", "v")
+_LABEL_LOCATION_OPTIONS = (
+    "upper left",
+    "upper center",
+    "upper right",
+    "center left",
+    "center",
+    "center right",
+    "lower left",
+    "lower center",
+    "lower right",
+)
+_FONT_WEIGHT_OPTIONS = (
+    "ultralight",
+    "light",
+    "normal",
+    "regular",
+    "book",
+    "medium",
+    "roman",
+    "semibold",
+    "demibold",
+    "demi",
+    "bold",
+    "heavy",
+    "extra bold",
+    "black",
+)
 
 
 AXES_METHODS: dict[str, MethodSpec] = {
@@ -546,6 +769,15 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs erlab.plotting.clean_labels on the selected axes.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
+        controls=(
+            _bool_arg_combo(
+                "Remove inner ticks",
+                0,
+                "figureComposerERLabCleanLabelsRemoveInnerTicksCombo",
+                "Also remove inner tick marks, not only inner tick labels.",
+                default=False,
+            ),
+        ),
     ),
     "label_subplots": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -555,6 +787,80 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
         text_values_policy=MethodTextValuesPolicy.KWARG,
+        controls=(
+            _int_kwarg(
+                "Start from",
+                "startfrom",
+                "figureComposerERLabLabelSubplotsStartEdit",
+                "First number used for automatically generated labels.",
+                default=1,
+            ),
+            _kwarg_combo(
+                "Order",
+                "order",
+                _FLATTEN_ORDER_OPTIONS,
+                "C",
+                "figureComposerERLabLabelSubplotsOrderCombo",
+                "Flattening order used to match labels to axes.",
+            ),
+            _kwarg_combo(
+                "Location",
+                "loc",
+                _LABEL_LOCATION_OPTIONS,
+                "upper left",
+                "figureComposerERLabLabelSubplotsLocCombo",
+                "Location of the anchored subplot label.",
+            ),
+            _float_pair_kwarg(
+                "Offset",
+                "offset",
+                "figureComposerERLabLabelSubplotsOffsetEdit",
+                "Label offset in display points as dx, dy.",
+                default=(0.0, 0.0),
+            ),
+            _text_kwarg(
+                "Prefix",
+                "prefix",
+                "figureComposerERLabLabelSubplotsPrefixEdit",
+                "Text prepended to automatically generated labels.",
+                default="",
+            ),
+            _text_kwarg(
+                "Suffix",
+                "suffix",
+                "figureComposerERLabLabelSubplotsSuffixEdit",
+                "Text appended to automatically generated labels.",
+                default="",
+            ),
+            _bool_kwarg_combo(
+                "Numeric labels",
+                "numeric",
+                "figureComposerERLabLabelSubplotsNumericCombo",
+                "Use numbers instead of letters for generated labels.",
+                default=False,
+            ),
+            _bool_kwarg_combo(
+                "Capital letters",
+                "capital",
+                "figureComposerERLabLabelSubplotsCapitalCombo",
+                "Use capital letters for generated alphabetic labels.",
+                default=False,
+            ),
+            _kwarg_combo(
+                "Font weight",
+                "fontweight",
+                _FONT_WEIGHT_OPTIONS,
+                "normal",
+                "figureComposerERLabLabelSubplotsFontWeightCombo",
+                "Font weight for subplot labels.",
+            ),
+            _literal_kwarg(
+                "Font size",
+                "fontsize",
+                "figureComposerERLabLabelSubplotsFontSizeEdit",
+                "Matplotlib font size. Use 8 or quoted names such as 'large'.",
+            ),
+        ),
     ),
     "label_subplot_properties": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -563,6 +869,49 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs erlab.plotting.label_subplot_properties on the selected axes.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
+        default_args=({"value": [0]},),
+        controls=(
+            _literal_arg(
+                "Values",
+                0,
+                "figureComposerERLabLabelPropertiesValuesEdit",
+                "Dictionary of property values, such as energy=[0, 1].",
+                default={"value": [0]},
+            ),
+            _int_kwarg(
+                "Decimals",
+                "decimals",
+                "figureComposerERLabLabelPropertiesDecimalsEdit",
+                "Decimal places for formatted values. Blank leaves values unrounded.",
+            ),
+            _int_kwarg(
+                "SI exponent",
+                "si",
+                "figureComposerERLabLabelPropertiesSiEdit",
+                "Power of ten used for SI prefix formatting.",
+                default=0,
+            ),
+            _text_kwarg(
+                "Name",
+                "name",
+                "figureComposerERLabLabelPropertiesNameEdit",
+                "Override the automatic property name in generated labels.",
+            ),
+            _text_kwarg(
+                "Unit",
+                "unit",
+                "figureComposerERLabLabelPropertiesUnitEdit",
+                "Override the automatic unit in generated labels.",
+            ),
+            _kwarg_combo(
+                "Order",
+                "order",
+                _FLATTEN_ORDER_OPTIONS,
+                "C",
+                "figureComposerERLabLabelPropertiesOrderCombo",
+                "Flattening order used to match property values to axes.",
+            ),
+        ),
     ),
     "nice_colorbar": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -574,6 +923,63 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         allowed_call_policies=(
             MethodCallPolicy.EACH_AXIS_AX_KEYWORD,
             MethodCallPolicy.AX_KEYWORD,
+        ),
+        controls=(
+            _float_kwarg(
+                "Width",
+                "width",
+                "figureComposerERLabNiceColorbarWidthEdit",
+                "Colorbar width in points.",
+                default=8.0,
+            ),
+            _float_kwarg(
+                "Aspect",
+                "aspect",
+                "figureComposerERLabNiceColorbarAspectEdit",
+                "Colorbar aspect ratio.",
+                default=5.0,
+            ),
+            _float_kwarg(
+                "Pad",
+                "pad",
+                "figureComposerERLabNiceColorbarPadEdit",
+                "Padding between axes and colorbar in points.",
+                default=3.0,
+            ),
+            _bool_kwarg_combo(
+                "Min/max ticks",
+                "minmax",
+                "figureComposerERLabNiceColorbarMinMaxCombo",
+                "Label the minimum and maximum of the colorbar.",
+                default=False,
+            ),
+            _kwarg_combo(
+                "Orientation",
+                "orientation",
+                _COLORBAR_ORIENTATION_OPTIONS,
+                "vertical",
+                "figureComposerERLabNiceColorbarOrientationCombo",
+                "Colorbar orientation.",
+            ),
+            _bool_kwarg_combo(
+                "Floating inset",
+                "floating",
+                "figureComposerERLabNiceColorbarFloatingCombo",
+                "Draw the colorbar as an inset anchored to the axes.",
+                default=False,
+            ),
+            _literal_kwarg(
+                "Ticks",
+                "ticks",
+                "figureComposerERLabNiceColorbarTicksEdit",
+                "Optional colorbar tick locations.",
+            ),
+            _string_tuple_kwarg(
+                "Tick labels",
+                "ticklabels",
+                "figureComposerERLabNiceColorbarTickLabelsEdit",
+                "Optional comma-separated colorbar tick labels.",
+            ),
         ),
     ),
     "proportional_colorbar": MethodSpec(
@@ -589,6 +995,28 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
             MethodCallPolicy.EACH_AXIS_AX_KEYWORD,
             MethodCallPolicy.AX_KEYWORD,
         ),
+        controls=(
+            _int_kwarg(
+                "Mappable index",
+                "index",
+                "figureComposerERLabProportionalColorbarIndexEdit",
+                "Mappable index to use when inferring from the target axes.",
+                default=-1,
+            ),
+            _bool_kwarg_combo(
+                "Images only",
+                "image_only",
+                "figureComposerERLabProportionalColorbarImageOnlyCombo",
+                "Only consider image mappables when inferring the colorbar target.",
+                default=False,
+            ),
+            _literal_kwarg(
+                "Ticks",
+                "ticks",
+                "figureComposerERLabProportionalColorbarTicksEdit",
+                "Optional colorbar tick locations passed upstream.",
+            ),
+        ),
     ),
     "set_titles": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -599,6 +1027,16 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
         text_values_policy=MethodTextValuesPolicy.POSITIONAL,
         preserves_empty_text=True,
+        controls=(
+            _kwarg_combo(
+                "Order",
+                "order",
+                _FLATTEN_ORDER_OPTIONS,
+                "C",
+                "figureComposerERLabSetTitlesOrderCombo",
+                "Flattening order used to match titles to axes.",
+            ),
+        ),
     ),
     "set_xlabels": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -609,6 +1047,16 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
         text_values_policy=MethodTextValuesPolicy.POSITIONAL,
         preserves_empty_text=True,
+        controls=(
+            _kwarg_combo(
+                "Order",
+                "order",
+                _FLATTEN_ORDER_OPTIONS,
+                "C",
+                "figureComposerERLabSetXLabelsOrderCombo",
+                "Flattening order used to match x labels to axes.",
+            ),
+        ),
     ),
     "set_ylabels": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -619,6 +1067,16 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
         text_values_policy=MethodTextValuesPolicy.POSITIONAL,
         preserves_empty_text=True,
+        controls=(
+            _kwarg_combo(
+                "Order",
+                "order",
+                _FLATTEN_ORDER_OPTIONS,
+                "C",
+                "figureComposerERLabSetYLabelsOrderCombo",
+                "Flattening order used to match y labels to axes.",
+            ),
+        ),
     ),
     "fermiline": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -627,6 +1085,23 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs erlab.plotting.fermiline once for each selected axis.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.EACH_AXIS_AX_KEYWORD,
+        controls=(
+            _float_kwarg(
+                "Value",
+                "value",
+                "figureComposerERLabFermilineValueEdit",
+                "Coordinate where the line is drawn.",
+                default=0.0,
+            ),
+            _kwarg_combo(
+                "Orientation",
+                "orientation",
+                _LINE_ORIENTATION_OPTIONS,
+                "h",
+                "figureComposerERLabFermilineOrientationCombo",
+                "Draw a horizontal or vertical reference line.",
+            ),
+        ),
     ),
     "mark_points": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -635,6 +1110,56 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs erlab.plotting.mark_points once for each selected axis.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.EACH_AXIS_AX_KEYWORD,
+        default_args=((0.0,), ("G",)),
+        controls=(
+            _literal_sequence_arg(
+                "Points",
+                0,
+                "figureComposerERLabMarkPointsPointsEdit",
+                "Comma-separated x positions or a Python list/tuple literal.",
+            ),
+            _string_tuple_arg(
+                "Labels",
+                1,
+                "figureComposerERLabMarkPointsLabelsEdit",
+                "Comma-separated labels matching the point positions.",
+            ),
+            _literal_kwarg(
+                "Y",
+                "y",
+                "figureComposerERLabMarkPointsYEdit",
+                "Label y position, or a sequence matching the points.",
+                default=0.0,
+            ),
+            _float_pair_kwarg(
+                "Pad",
+                "pad",
+                "figureComposerERLabMarkPointsPadEdit",
+                "Text offset in points as dx, dy.",
+                default=(0.0, 1.75),
+            ),
+            _bool_kwarg_combo(
+                "Literal labels",
+                "literal",
+                "figureComposerERLabMarkPointsLiteralCombo",
+                "Use labels exactly as typed instead of parsing point-label markup.",
+                default=False,
+            ),
+            _bool_kwarg_combo(
+                "Roman text",
+                "roman",
+                "figureComposerERLabMarkPointsRomanCombo",
+                "Use roman text for parsed labels.",
+                default=True,
+            ),
+            _bool_kwarg_combo(
+                "Bar labels",
+                "bar",
+                "figureComposerERLabMarkPointsBarCombo",
+                "Draw a bar over parsed labels.",
+                default=False,
+            ),
+        ),
     ),
     "scale_units": MethodSpec(
         family=FigureMethodFamily.ERLAB,
@@ -643,6 +1168,37 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
         tooltip="Runs erlab.plotting.scale_units on the selected axes.",
         target_domain=MethodTargetDomain.AXES,
         call_policy=MethodCallPolicy.AXES_POSITIONAL,
+        default_args=("x", 0),
+        controls=(
+            _arg_combo(
+                "Axis",
+                0,
+                _AXIS_OPTIONS,
+                "x",
+                "figureComposerERLabScaleUnitsAxisCombo",
+                "Axis whose ticks and label should be rescaled.",
+            ),
+            _int_arg(
+                "SI exponent",
+                1,
+                "figureComposerERLabScaleUnitsSiEdit",
+                "Power of ten corresponding to the desired SI prefix.",
+            ),
+            _bool_kwarg_combo(
+                "Update label prefix",
+                "prefix",
+                "figureComposerERLabScaleUnitsPrefixCombo",
+                "Update the unit prefix in the axis label when possible.",
+                default=True,
+            ),
+            _bool_kwarg_combo(
+                "Use power notation",
+                "power",
+                "figureComposerERLabScaleUnitsPowerCombo",
+                "Use scientific power notation instead of an SI prefix.",
+                default=False,
+            ),
+        ),
     ),
 }
 
@@ -924,6 +1480,29 @@ def _add_method_control_row(
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
+        case MethodControlKind.ARG_COMBO:
+            index = _control_arg_index(control)
+            combo = tool._combo(
+                control.options,
+                str(args[index]) if index < len(args) else str(control.default),
+                _method_arg_callback(tool, index),
+                parent=layout.parentWidget(),
+            )
+            combo.setObjectName(control.object_name)
+            tool._add_form_row(layout, control.label, combo, control.tooltip)
+        case MethodControlKind.INT_ARG:
+            index = _control_arg_index(control)
+            value = args[index] if index < len(args) else control.default
+            edit = tool._line_edit(
+                _format_int_value(value), parent=layout.parentWidget()
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, index=index: _update_current_method_arg(
+                    tool, index, int(edit.text())
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_ARG:
             index = _control_arg_index(control)
             value = args[index] if index < len(args) else 0.0
@@ -945,6 +1524,19 @@ def _add_method_control_row(
             edit.editingFinished.connect(
                 lambda edit=edit, index=index: _update_current_method_arg(
                     tool, index, edit.text()
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.LITERAL_ARG:
+            index = _control_arg_index(control)
+            value = args[index] if index < len(args) else control.default
+            edit = tool._line_edit(
+                _format_literal_value(value), parent=layout.parentWidget()
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, index=index: _update_current_method_arg(
+                    tool, index, _literal_value_from_text(edit.text())
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
@@ -1014,6 +1606,99 @@ def _add_method_control_row(
             )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
+        case MethodControlKind.BOOL_KWARG_COMBO:
+            key = _control_key(control)
+            combo = tool._combo(
+                control.options,
+                str(bool(operation.method_kwargs.get(key, control.default))),
+                _method_bool_kwarg_callback(tool, key),
+                parent=layout.parentWidget(),
+            )
+            combo.setObjectName(control.object_name)
+            tool._add_form_row(layout, control.label, combo, control.tooltip)
+        case MethodControlKind.INT_KWARG:
+            key = _control_key(control)
+            edit = tool._line_edit(
+                _format_int_value(operation.method_kwargs.get(key, control.default)),
+                parent=layout.parentWidget(),
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, key=key: _update_current_method_kwarg(
+                    tool, key, _optional_int_from_text(edit.text())
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.FLOAT_KWARG:
+            key = _control_key(control)
+            edit = tool._line_edit(
+                _format_float_value(operation.method_kwargs.get(key, control.default)),
+                parent=layout.parentWidget(),
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, key=key: _update_current_method_kwarg(
+                    tool, key, _optional_float_from_text(edit.text())
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.TEXT_KWARG:
+            key = _control_key(control)
+            edit = tool._line_edit(
+                str(operation.method_kwargs.get(key, control.default) or ""),
+                parent=layout.parentWidget(),
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, key=key: _update_current_method_kwarg(
+                    tool, key, edit.text() or None
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.LITERAL_KWARG:
+            key = _control_key(control)
+            edit = tool._line_edit(
+                _format_literal_value(
+                    operation.method_kwargs.get(key, control.default)
+                ),
+                parent=layout.parentWidget(),
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, key=key: _update_current_method_kwarg(
+                    tool, key, _optional_literal_from_text(edit.text())
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.STRING_TUPLE_KWARG:
+            key = _control_key(control)
+            value = operation.method_kwargs.get(key, ())
+            edit = tool._line_edit(
+                _format_string_tuple(typing.cast("Sequence[str]", value))
+                if isinstance(value, (list, tuple))
+                else "",
+                parent=layout.parentWidget(),
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, key=key: _update_current_method_kwarg(
+                    tool, key, _string_tuple_from_text(edit.text()) or None
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.FLOAT_PAIR_KWARG:
+            key = _control_key(control)
+            edit = tool._line_edit(
+                _format_pair(operation.method_kwargs.get(key, control.default)),
+                parent=layout.parentWidget(),
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, key=key: _update_current_method_kwarg(
+                    tool, key, _float_pair_from_text(edit.text())
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
 
 
 def _control_arg_index(control: MethodControlSpec) -> int:
@@ -1037,11 +1722,71 @@ def _method_bool_arg_callback(
     return update
 
 
+def _method_arg_callback(tool: FigureComposerTool, index: int) -> Callable[[str], None]:
+    def update(text: str) -> None:
+        _update_current_method_arg(tool, index, text)
+
+    return update
+
+
+def _method_bool_kwarg_callback(
+    tool: FigureComposerTool, key: str
+) -> Callable[[str], None]:
+    def update(text: str) -> None:
+        _update_current_method_kwarg(tool, key, text == "True")
+
+    return update
+
+
 def _method_kwarg_callback(tool: FigureComposerTool, key: str) -> Callable[[str], None]:
     def update(text: str) -> None:
         _update_current_method_kwarg(tool, key, text)
 
     return update
+
+
+def _format_int_value(value: typing.Any) -> str:
+    return "" if value is None else str(int(value))
+
+
+def _format_float_value(value: typing.Any) -> str:
+    return "" if value is None else f"{float(value):g}"
+
+
+def _format_literal_value(value: typing.Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return _format_dict(value)
+    if isinstance(value, (list, tuple)):
+        return _format_literal_sequence(value)
+    return _code_args((value,))
+
+
+def _literal_value_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if stripped.startswith("{") or "=" in stripped:
+        return _dict_from_text(stripped)
+    return ast.literal_eval(stripped)
+
+
+def _optional_literal_from_text(text: str) -> typing.Any:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    return _literal_value_from_text(stripped)
+
+
+def _optional_float_from_text(text: str) -> float | None:
+    stripped = text.strip()
+    return None if not stripped else float(stripped)
+
+
+def _optional_int_from_text(text: str) -> int | None:
+    stripped = text.strip()
+    return None if not stripped else int(stripped)
 
 
 def _family_from_label(text: str) -> FigureMethodFamily:
@@ -1194,7 +1939,10 @@ def _update_current_method_kwarg(
         return
     _row, operation = current
     kwargs = dict(operation.method_kwargs)
-    kwargs[key] = value
+    if value is None:
+        kwargs.pop(key, None)
+    else:
+        kwargs[key] = value
     tool._update_current_operation(method_kwargs=kwargs)
 
 

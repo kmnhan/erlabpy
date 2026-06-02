@@ -1340,6 +1340,227 @@ def test_figure_composer_colorbar_method_target_policy(qtbot) -> None:
     assert "eplt.nice_colorbar(ax=axs)" in tool.generated_code()
 
 
+def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    axes = FigureAxesSelectionState(axes=((0, 0), (0, 1)))
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="clean_labels",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="label_subplots",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="label_subplot_properties",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="nice_colorbar",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="proportional_colorbar",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="set_titles",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="fermiline",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="mark_points",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="scale_units",
+                    axes=axes,
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    def select_method(row: int) -> QtWidgets.QWidget:
+        tool.operation_list.setCurrentRow(row)
+        tool._select_step_section("method")
+        page = tool.step_editor_stack.currentWidget()
+        assert page is not None
+        return page
+
+    def line_edit(page: QtWidgets.QWidget, name: str) -> QtWidgets.QLineEdit:
+        widget = page.findChild(QtWidgets.QLineEdit, name)
+        assert widget is not None
+        return widget
+
+    def combo_box(page: QtWidgets.QWidget, name: str) -> QtWidgets.QComboBox:
+        widget = page.findChild(QtWidgets.QComboBox, name)
+        assert widget is not None
+        return widget
+
+    def set_line_edit(page: QtWidgets.QWidget, name: str, text: str) -> None:
+        edit = line_edit(page, name)
+        edit.setText(text)
+        edit.editingFinished.emit()
+
+    def operation(row: int) -> FigureOperationState:
+        return tool.tool_status.operations[row]
+
+    page = select_method(0)
+    combo_box(
+        page, "figureComposerERLabCleanLabelsRemoveInnerTicksCombo"
+    ).setCurrentText("True")
+    assert operation(0).method_args == (True,)
+
+    page = select_method(1)
+    set_line_edit(page, "figureComposerERLabLabelSubplotsStartEdit", "3")
+    combo_box(page, "figureComposerERLabLabelSubplotsOrderCombo").setCurrentText("F")
+    combo_box(page, "figureComposerERLabLabelSubplotsLocCombo").setCurrentText(
+        "lower right"
+    )
+    set_line_edit(page, "figureComposerERLabLabelSubplotsOffsetEdit", "1, 2")
+    set_line_edit(page, "figureComposerERLabLabelSubplotsPrefixEdit", "(")
+    set_line_edit(page, "figureComposerERLabLabelSubplotsSuffixEdit", ")")
+    combo_box(page, "figureComposerERLabLabelSubplotsNumericCombo").setCurrentText(
+        "True"
+    )
+    combo_box(page, "figureComposerERLabLabelSubplotsCapitalCombo").setCurrentText(
+        "True"
+    )
+    combo_box(page, "figureComposerERLabLabelSubplotsFontWeightCombo").setCurrentText(
+        "bold"
+    )
+    set_line_edit(page, "figureComposerERLabLabelSubplotsFontSizeEdit", "8")
+    assert operation(1).method_kwargs == {
+        "startfrom": 3,
+        "order": "F",
+        "loc": "lower right",
+        "offset": (1.0, 2.0),
+        "prefix": "(",
+        "suffix": ")",
+        "numeric": True,
+        "capital": True,
+        "fontweight": "bold",
+        "fontsize": 8,
+    }
+
+    page = select_method(2)
+    set_line_edit(page, "figureComposerERLabLabelPropertiesValuesEdit", "eV=[0, 1]")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesDecimalsEdit", "2")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesSiEdit", "-3")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesNameEdit", "Energy")
+    set_line_edit(page, "figureComposerERLabLabelPropertiesUnitEdit", "eV")
+    combo_box(page, "figureComposerERLabLabelPropertiesOrderCombo").setCurrentText("F")
+    assert operation(2).method_args == ({"eV": [0, 1]},)
+    assert operation(2).method_kwargs == {
+        "decimals": 2,
+        "si": -3,
+        "name": "Energy",
+        "unit": "eV",
+        "order": "F",
+    }
+
+    page = select_method(3)
+    set_line_edit(page, "figureComposerERLabNiceColorbarWidthEdit", "10")
+    set_line_edit(page, "figureComposerERLabNiceColorbarAspectEdit", "4")
+    set_line_edit(page, "figureComposerERLabNiceColorbarPadEdit", "2")
+    combo_box(page, "figureComposerERLabNiceColorbarMinMaxCombo").setCurrentText("True")
+    combo_box(page, "figureComposerERLabNiceColorbarOrientationCombo").setCurrentText(
+        "horizontal"
+    )
+    combo_box(page, "figureComposerERLabNiceColorbarFloatingCombo").setCurrentText(
+        "True"
+    )
+    set_line_edit(page, "figureComposerERLabNiceColorbarTicksEdit", "0, 0.5, 1")
+    set_line_edit(
+        page, "figureComposerERLabNiceColorbarTickLabelsEdit", "low, mid, high"
+    )
+    assert operation(3).method_kwargs == {
+        "width": 10.0,
+        "aspect": 4.0,
+        "pad": 2.0,
+        "minmax": True,
+        "orientation": "horizontal",
+        "floating": True,
+        "ticks": (0, 0.5, 1),
+        "ticklabels": ("low", "mid", "high"),
+    }
+
+    page = select_method(4)
+    set_line_edit(page, "figureComposerERLabProportionalColorbarIndexEdit", "0")
+    combo_box(
+        page, "figureComposerERLabProportionalColorbarImageOnlyCombo"
+    ).setCurrentText("True")
+    set_line_edit(page, "figureComposerERLabProportionalColorbarTicksEdit", "[0, 1]")
+    assert operation(4).method_kwargs == {
+        "index": 0,
+        "image_only": True,
+        "ticks": [0, 1],
+    }
+
+    page = select_method(5)
+    combo_box(page, "figureComposerERLabSetTitlesOrderCombo").setCurrentText("F")
+    assert operation(5).method_kwargs == {"order": "F"}
+
+    page = select_method(6)
+    set_line_edit(page, "figureComposerERLabFermilineValueEdit", "0.1")
+    combo_box(page, "figureComposerERLabFermilineOrientationCombo").setCurrentText("v")
+    assert operation(6).method_kwargs == {"value": 0.1, "orientation": "v"}
+
+    page = select_method(7)
+    set_line_edit(page, "figureComposerERLabMarkPointsPointsEdit", "0, 1")
+    set_line_edit(page, "figureComposerERLabMarkPointsLabelsEdit", "G, M")
+    set_line_edit(page, "figureComposerERLabMarkPointsYEdit", "0.25, 0.5")
+    set_line_edit(page, "figureComposerERLabMarkPointsPadEdit", "1, 2")
+    combo_box(page, "figureComposerERLabMarkPointsLiteralCombo").setCurrentText("True")
+    combo_box(page, "figureComposerERLabMarkPointsRomanCombo").setCurrentText("False")
+    combo_box(page, "figureComposerERLabMarkPointsBarCombo").setCurrentText("True")
+    assert operation(7).method_args == ((0, 1), ("G", "M"))
+    assert operation(7).method_kwargs == {
+        "y": (0.25, 0.5),
+        "pad": (1.0, 2.0),
+        "literal": True,
+        "roman": False,
+        "bar": True,
+    }
+
+    page = select_method(8)
+    combo_box(page, "figureComposerERLabScaleUnitsAxisCombo").setCurrentText("y")
+    set_line_edit(page, "figureComposerERLabScaleUnitsSiEdit", "3")
+    combo_box(page, "figureComposerERLabScaleUnitsPrefixCombo").setCurrentText("False")
+    combo_box(page, "figureComposerERLabScaleUnitsPowerCombo").setCurrentText("True")
+    assert operation(8).method_args == ("y", 3)
+    assert operation(8).method_kwargs == {"prefix": False, "power": True}
+
+    code = tool.generated_code()
+    assert "ticks=(0, 0.5, 1)" in code
+    assert "ticks=[0, 1]" in code
+
+
 def test_figure_composer_line_values_axis_swaps_regular_profile(qtbot) -> None:
     profile = xr.DataArray(
         np.array([2.0, 4.0, 8.0]),
