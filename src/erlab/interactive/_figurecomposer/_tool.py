@@ -2134,10 +2134,56 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         region_id = self.gridspec_layout_widget.selected_region_id()
         if not region_id:
             return
+        selected_region_id = self._nearest_gridspec_axes_after_delete(region_id)
         setup = _gridspec_remove_region(
             self._recipe.setup, self._active_gridspec_grid_id, region_id
         )
-        self._apply_gridspec_setup(setup, selected_region_id="")
+        self._apply_gridspec_setup(setup, selected_region_id=selected_region_id)
+
+    def _nearest_gridspec_axes_after_delete(self, region_id: str) -> str:
+        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        if grid is None:
+            return ""
+        deleted_span: FigureGridSpecSpanState | None = None
+        for axis in grid.axes:
+            if axis.axes_id == region_id:
+                deleted_span = axis.span
+                break
+        if deleted_span is None:
+            for child in grid.child_grids:
+                if child.grid_id == region_id:
+                    deleted_span = child.span
+                    break
+        if deleted_span is None:
+            return ""
+
+        def span_center(span: FigureGridSpecSpanState) -> tuple[float, float]:
+            return (
+                (span.row_start + span.row_stop - 1) / 2.0,
+                (span.col_start + span.col_stop - 1) / 2.0,
+            )
+
+        deleted_center = span_center(deleted_span)
+        candidates = [axis for axis in grid.axes if axis.axes_id != region_id]
+        if not candidates:
+            return ""
+
+        def sort_key(
+            axis: FigureGridSpecAxesState,
+        ) -> tuple[float, int, int, int, int]:
+            center = span_center(axis.span)
+            distance = abs(center[0] - deleted_center[0]) + abs(
+                center[1] - deleted_center[1]
+            )
+            return (
+                distance,
+                axis.span.row_start,
+                axis.span.col_start,
+                axis.span.row_stop,
+                axis.span.col_stop,
+            )
+
+        return min(candidates, key=sort_key).axes_id
 
     @QtCore.Slot()
     def _gridspec_region_label_changed(self) -> None:

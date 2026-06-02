@@ -1770,6 +1770,64 @@ def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> N
     assert "removed axes" in tool._axes_target_text(tool.tool_status.operations[0].axes)
 
 
+def test_figure_composer_gridspec_delete_selects_nearby_axes(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    left_axis = FigureGridSpecAxesState(
+        axes_id="left-axis",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    middle_axis = FigureGridSpecAxesState(
+        axes_id="middle-axis",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=1,
+            col_stop=2,
+        ),
+    )
+    far_axis = FigureGridSpecAxesState(
+        axes_id="far-axis",
+        span=FigureGridSpecSpanState(
+            row_start=1,
+            row_stop=2,
+            col_start=2,
+            col_stop=3,
+        ),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        grid_id="root",
+                        nrows=2,
+                        ncols=3,
+                        axes=(left_axis, middle_axis, far_axis),
+                    )
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.gridspec_layout_widget.set_selected_region(middle_axis.axes_id)
+    tool._gridspec_delete_selected_region()
+
+    axes_ids = tuple(axis.axes_id for axis in tool.tool_status.setup.gridspec.root.axes)
+    assert axes_ids == (left_axis.axes_id, far_axis.axes_id)
+    assert tool.gridspec_layout_widget.selected_region_id() == left_axis.axes_id
+    assert tool.gridspec_delete_region_button.isEnabled()
+
+
 def test_figure_composer_plot_slices_operation_uses_separate_window(
     qtbot, monkeypatch, recwarn
 ) -> None:
