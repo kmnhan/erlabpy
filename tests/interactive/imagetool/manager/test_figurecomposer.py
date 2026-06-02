@@ -1460,6 +1460,46 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
     assert tool._active_gridspec_grid_id == "root"
 
 
+def test_figure_composer_gridspec_widget_resizes_selected_region(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.layout_page)
+    tool.layout_mode_combo.setCurrentText("gridspec")
+    tool.nrows_spin.setValue(2)
+    tool.ncols_spin.setValue(3)
+    tool._setup_controls_changed()
+
+    original_span = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=2,
+        col_start=0,
+        col_stop=3,
+    )
+    axis = tool.tool_status.setup.gridspec.root.axes[0]
+    tool._gridspec_region_changed(axis.axes_id, original_span)
+    axis = tool.tool_status.setup.gridspec.root.axes[0]
+    widget = tool.gridspec_layout_widget
+    widget.resize(widget.sizeHint())
+    widget.set_selected_region(axis.axes_id)
+
+    handle_pos = widget.span_rect(original_span).bottomRight() - QtCore.QPoint(2, 2)
+    end_pos = widget.cell_rect((0, 1)).center()
+    qtbot.mousePress(widget, QtCore.Qt.MouseButton.LeftButton, pos=handle_pos)
+    qtbot.mouseMove(widget, end_pos)
+    qtbot.mouseRelease(widget, QtCore.Qt.MouseButton.LeftButton, pos=end_pos)
+
+    assert len(tool.tool_status.setup.gridspec.root.axes) == 1
+    assert tool.tool_status.setup.gridspec.root.axes[0].span == (
+        FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=0,
+            col_stop=2,
+        )
+    )
+
+
 def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)

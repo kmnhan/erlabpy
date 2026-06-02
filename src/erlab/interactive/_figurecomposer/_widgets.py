@@ -19,14 +19,12 @@ from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
 )
+from erlab.interactive._figurecomposer._state import FigureGridSpecSpanState
 
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from erlab.interactive._figurecomposer._state import (
-        FigureGridSpecSpanState,
-        FigureSubplotsState,
-    )
+    from erlab.interactive._figurecomposer._state import FigureSubplotsState
 
 
 class _GridSpecRegionInfo(typing.NamedTuple):
@@ -487,6 +485,8 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
     _GRID_MARGIN = 4
     _MIN_WIDTH = 100
     _MIN_HEIGHT = 48
+    _HANDLE_SIZE = 7
+    _HANDLE_HIT_SIZE = 13
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -494,10 +494,14 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
         self._ncols = 1
         self._regions: tuple[_GridSpecRegionInfo, ...] = ()
         self._selected_region_id = ""
+        self._drag_mode: typing.Literal["none", "create", "resize"] = "none"
         self._drag_origin: tuple[int, int] | None = None
         self._drag_current: tuple[int, int] | None = None
         self._drag_region_id = ""
         self._drag_moved = False
+        self._resize_handle: typing.Literal["nw", "ne", "sw", "se"] | None = None
+        self._resize_original_span: FigureGridSpecSpanState | None = None
+        self._resize_preview_span: FigureGridSpecSpanState | None = None
         self._creation_kind: typing.Literal["axes", "grid"] = "axes"
         self._drag_creation_kind: typing.Literal["axes", "grid"] = "axes"
         self.setObjectName("figureComposerGridSpecLayoutWidget")
@@ -508,7 +512,9 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
         self.setToolTip(
-            "Drag over grid cells to create an axes or nested GridSpec region."
+            "Drag empty cells to create a region.\n"
+            "Select a region, then drag a corner handle to resize it.\n"
+            "Double-click a nested grid region to edit that grid."
         )
 
     def sizeHint(self) -> QtCore.QSize:
@@ -577,11 +583,14 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
         invalid_pen = QtGui.QColor(170, 40, 40)
         invalid_fill = QtGui.QColor(170, 40, 40, 45)
 
-        painter.setPen(QtGui.QPen(cell_border, 1.0))
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QBrush(cell_fill))
         for row in range(self._nrows):
             for col in range(self._ncols):
-                painter.drawRoundedRect(self.cell_rect((row, col)), 3, 3)
+                painter.drawRect(self.cell_rect((row, col)))
+        painter.setPen(QtGui.QPen(cell_border, 1.0))
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(self._grid_rect().adjusted(0, 0, -1, -1), 3, 3)
 
         for region in self._regions:
             rect = self.span_rect(region.span)
@@ -620,9 +629,12 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
                 QtCore.Qt.AlignmentFlag.AlignCenter,
                 text,
             )
+            if is_selected and is_valid:
+                self._draw_resize_handles(painter, rect, selected)
 
-        if self._drag_origin is not None and self._drag_current is not None:
-            span = self._span_from_cells(self._drag_origin, self._drag_current)
+        preview_span = self._active_preview_span()
+        if preview_span is not None:
+            span = preview_span
             rect = self.span_rect(span)
             preview_color = selected
             preview_fill = QtGui.QColor(preview_color)
@@ -638,24 +650,58 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
             if event is not None:
                 super().mousePressEvent(event)
             return
-        cell = self._cell_at(event.position().toPoint())
-        if cell is None:
+        pos = event.position().toPoint()
+        handle = self._handle_at(pos)
+        if handle is not None:
+            region = self._selected_region()
+            if region is None:
+                return
+            self._drag_mode = "resize"
+            self._drag_region_id = region.region_id
+            self._resize_handle = handle
+            self._resize_original_span = region.span
+            self._resize_preview_span = region.span
+            self._drag_moved = False
+            event.accept()
             return
-        region = self._region_at(event.position().toPoint())
-        self._drag_origin = cell
-        self._drag_current = cell
-        self._drag_moved = False
-        self._drag_region_id = region.region_id if region is not None else ""
-        self._drag_creation_kind = self._creation_kind
+        region = self._region_at(pos)
         if region is not None:
+            self._reset_drag()
             self._selected_region_id = region.region_id
             self.sigRegionSelected.emit(region.region_id, region.kind)
             self.update()
+            event.accept()
+            return
+        cell = self._cell_at(pos)
+        if cell is None:
+            return
+        self._drag_mode = "create"
+        self._drag_origin = cell
+        self._drag_current = cell
+        self._drag_moved = False
+        self._drag_region_id = ""
+        self._drag_creation_kind = self._creation_kind
         event.accept()
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent | None) -> None:
         if (
             event is not None
+            and self._drag_mode == "resize"
+            and event.buttons() & QtCore.Qt.MouseButton.LeftButton
+        ):
+            current = self._cell_at(event.position().toPoint(), clamp_to_grid=True)
+            if current is not None and self._resize_original_span is not None:
+                span = self._span_from_resize(
+                    self._resize_original_span, self._resize_handle, current
+                )
+                self._resize_preview_span = span
+                self._drag_moved = span != self._resize_original_span
+                self.update()
+            event.accept()
+            return
+        if (
+            event is not None
+            and self._drag_mode == "create"
             and self._drag_origin is not None
             and event.buttons() & QtCore.Qt.MouseButton.LeftButton
         ):
@@ -666,37 +712,39 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
             event.accept()
             return
         if event is not None:
+            self._update_hover_cursor(event.position().toPoint())
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
-        if event is None or self._drag_origin is None:
+        if event is None or self._drag_mode == "none":
             return
+        mode = self._drag_mode
         end_cell = self._cell_at(event.position().toPoint(), clamp_to_grid=True)
         origin = self._drag_origin
         region_id = self._drag_region_id
         moved = self._drag_moved
-        self._drag_origin = None
-        self._drag_current = None
-        self._drag_region_id = ""
-        self._drag_moved = False
+        span = self._resize_preview_span
         creation_kind = self._drag_creation_kind
-        self._drag_creation_kind = self._creation_kind
+        self._reset_drag()
         self.update()
-        if end_cell is None:
-            return
-        span = self._span_from_cells(origin, end_cell)
-        if region_id:
-            if moved:
+        if mode == "resize":
+            if moved and region_id and span is not None:
                 self.sigRegionChanged.emit(region_id, span)
-        else:
+            event.accept()
+            return
+        if end_cell is not None and origin is not None:
+            span = self._span_from_cells(origin, end_cell)
             self.sigRegionCreated.emit(span, creation_kind)
         event.accept()
 
     def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent | None) -> None:
         if event is None:
             return
+        self._reset_drag()
         region = self._region_at(event.position().toPoint())
         if region is not None and region.kind == "grid":
+            self._selected_region_id = region.region_id
+            self.sigRegionSelected.emit(region.region_id, region.kind)
             self.sigNestedGridActivated.emit(region.region_id)
             event.accept()
             return
@@ -769,12 +817,93 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
                 return region
         return None
 
+    def _selected_region(self) -> _GridSpecRegionInfo | None:
+        for region in self._regions:
+            if region.region_id == self._selected_region_id:
+                return region
+        return None
+
+    def _handle_at(
+        self, pos: QtCore.QPoint
+    ) -> typing.Literal["nw", "ne", "sw", "se"] | None:
+        region = self._selected_region()
+        if (
+            region is None
+            or not region.valid
+            or not self._span_within_grid(region.span)
+        ):
+            return None
+        for handle, rect in self._handle_rects(self.span_rect(region.span), hit=True):
+            if rect.contains(pos):
+                return handle
+        return None
+
+    def _handle_rects(
+        self, rect: QtCore.QRect, *, hit: bool = False
+    ) -> tuple[tuple[typing.Literal["nw", "ne", "sw", "se"], QtCore.QRect], ...]:
+        size = self._HANDLE_HIT_SIZE if hit else self._HANDLE_SIZE
+        half = size // 2
+
+        def handle_rect(point: QtCore.QPoint) -> QtCore.QRect:
+            return QtCore.QRect(
+                point.x() - half,
+                point.y() - half,
+                size,
+                size,
+            )
+
+        return (
+            ("nw", handle_rect(rect.topLeft())),
+            ("ne", handle_rect(rect.topRight())),
+            ("sw", handle_rect(rect.bottomLeft())),
+            ("se", handle_rect(rect.bottomRight())),
+        )
+
+    def _draw_resize_handles(
+        self,
+        painter: QtGui.QPainter,
+        rect: QtCore.QRect,
+        color: QtGui.QColor,
+    ) -> None:
+        handle_fill = self.palette().color(QtGui.QPalette.ColorRole.Base)
+        painter.setPen(QtGui.QPen(color, 1.3))
+        painter.setBrush(QtGui.QBrush(handle_fill))
+        for _handle, handle_rect in self._handle_rects(rect):
+            painter.drawRect(handle_rect)
+
+    def _update_hover_cursor(self, pos: QtCore.QPoint) -> None:
+        handle = self._handle_at(pos)
+        if handle in {"nw", "se"}:
+            self.setCursor(QtCore.Qt.CursorShape.SizeFDiagCursor)
+        elif handle in {"ne", "sw"}:
+            self.setCursor(QtCore.Qt.CursorShape.SizeBDiagCursor)
+        else:
+            self.unsetCursor()
+
+    def _active_preview_span(self) -> FigureGridSpecSpanState | None:
+        if self._drag_mode == "resize":
+            return self._resize_preview_span
+        if self._drag_mode == "create" and self._drag_origin is not None:
+            current = self._drag_current
+            if current is not None:
+                return self._span_from_cells(self._drag_origin, current)
+        return None
+
+    def _reset_drag(self) -> None:
+        self._drag_mode = "none"
+        self._drag_origin = None
+        self._drag_current = None
+        self._drag_region_id = ""
+        self._drag_moved = False
+        self._resize_handle = None
+        self._resize_original_span = None
+        self._resize_preview_span = None
+        self._drag_creation_kind = self._creation_kind
+
     @staticmethod
     def _span_from_cells(
         start: tuple[int, int], end: tuple[int, int]
     ) -> FigureGridSpecSpanState:
-        from erlab.interactive._figurecomposer._state import FigureGridSpecSpanState
-
         row0, col0 = start
         row1, col1 = end
         return FigureGridSpecSpanState(
@@ -782,6 +911,34 @@ class _GridSpecLayoutWidget(QtWidgets.QWidget):
             row_stop=max(row0, row1) + 1,
             col_start=min(col0, col1),
             col_stop=max(col0, col1) + 1,
+        )
+
+    def _span_from_resize(
+        self,
+        original: FigureGridSpecSpanState,
+        handle: typing.Literal["nw", "ne", "sw", "se"] | None,
+        cell: tuple[int, int],
+    ) -> FigureGridSpecSpanState:
+        row, col = cell
+        row_start = original.row_start
+        row_stop = original.row_stop
+        col_start = original.col_start
+        col_stop = original.col_stop
+        if handle is None:
+            return original
+        if "n" in handle:
+            row_start = min(max(row, 0), row_stop - 1)
+        elif "s" in handle:
+            row_stop = max(min(row + 1, self._nrows), row_start + 1)
+        if "w" in handle:
+            col_start = min(max(col, 0), col_stop - 1)
+        elif "e" in handle:
+            col_stop = max(min(col + 1, self._ncols), col_start + 1)
+        return FigureGridSpecSpanState(
+            row_start=row_start,
+            row_stop=row_stop,
+            col_start=col_start,
+            col_stop=col_stop,
         )
 
     def _span_within_grid(self, span: FigureGridSpecSpanState) -> bool:
