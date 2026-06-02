@@ -6241,7 +6241,7 @@ def test_manager_auto_names_figures_numerically(
         assert manager._child_node(unnamed_uid).display_text == "Figure 6"
 
 
-def test_manager_create_figure_uses_first_selected_colormap(
+def test_manager_create_figure_uses_first_selected_main_image_state(
     qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
@@ -6249,22 +6249,22 @@ def test_manager_create_figure_uses_first_selected_colormap(
 ) -> None:
     with manager_context() as manager:
         first = xr.DataArray(
-            np.arange(8.0).reshape(2, 2, 2) - 4.0,
+            np.arange(20.0).reshape(2, 2, 5) - 4.0,
             dims=("eV", "kx", "ky"),
             coords={
                 "eV": [0.0, 1.0],
                 "kx": [0.0, 1.0],
-                "ky": [0.0, 1.0],
+                "ky": [-2.0, -1.0, 0.0, 1.0, 2.0],
             },
             name="first",
         )
         second = xr.DataArray(
-            np.arange(8.0).reshape(2, 2, 2),
+            np.arange(20.0).reshape(2, 2, 5),
             dims=("eV", "kx", "ky"),
             coords={
                 "eV": [0.0, 1.0],
                 "kx": [0.0, 1.0],
-                "ky": [0.0, 1.0],
+                "ky": [-2.0, -1.0, 0.0, 1.0, 2.0],
             },
             name="second",
         )
@@ -6272,7 +6272,10 @@ def test_manager_create_figure_uses_first_selected_colormap(
         itool(second, manager=True)
         qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
 
-        manager.get_imagetool(0).slicer_area.set_colormap(
+        first_tool = manager.get_imagetool(0)
+        first_tool.slicer_area.set_value(axis=2, value=1.0, cursor=0)
+        first_tool.slicer_area.set_bin(axis=2, value=3, cursor=0)
+        first_tool.slicer_area.set_colormap(
             "magma",
             gamma=0.75,
             reverse=True,
@@ -6282,7 +6285,10 @@ def test_manager_create_figure_uses_first_selected_colormap(
             levels=(-2.0, 4.0),
         )
         manager.get_imagetool(1).slicer_area.set_colormap("viridis", gamma=0.25)
-        vmin, vmax = manager.get_imagetool(0).slicer_area.colormap_properties["levels"]
+        vmin, vmax = first_tool.slicer_area.colormap_properties["levels"]
+        expected = first_tool.slicer_area.images[0].figure_composer_operation(
+            source_name="data_0"
+        )
 
         figure_uid = manager.create_figure_from_targets((0, 1), show=False)
         assert figure_uid is not None
@@ -6291,6 +6297,15 @@ def test_manager_create_figure_uses_first_selected_colormap(
         )
         operation = figure_tool.tool_status.operations[0]
         assert operation.sources == ("data_0", "data_1")
+        assert operation.slice_dim == expected.slice_dim
+        assert operation.slice_values == expected.slice_values
+        assert operation.slice_width == expected.slice_width
+        assert operation.slice_kwargs == expected.slice_kwargs
+        assert operation.transpose == expected.transpose
+        assert operation.xlim == expected.xlim
+        assert operation.ylim == expected.ylim
+        assert operation.crop == expected.crop
+        assert operation.axis == expected.axis
         assert operation.cmap == "magma_r"
         assert operation.same_limits is True
         assert operation.norm_name == "CenteredInversePowerNorm"

@@ -1284,7 +1284,6 @@ class ImageToolManager(_ImageToolManagerBase):
         source_data: Mapping[str, xr.DataArray],
         *,
         setup: typing.Any,
-        plot_slices_updates: Mapping[str, typing.Any] | None = None,
     ) -> tuple[typing.Any, ...]:
         from erlab.interactive._figurecomposer import (
             FigureAxesSelectionState,
@@ -1316,8 +1315,6 @@ class ImageToolManager(_ImageToolManagerBase):
                 slice_dim=slice_dim,
                 slice_values=slice_values,
             )
-            if plot_slices_updates:
-                operation = operation.model_copy(update=dict(plot_slices_updates))
             return (operation,)
 
         operations = []
@@ -1332,21 +1329,33 @@ class ImageToolManager(_ImageToolManagerBase):
             )
         return tuple(operations)
 
-    def _figure_colormap_updates_from_target(
-        self, target: int | str
-    ) -> dict[str, typing.Any]:
+    def _figure_plot_slices_operation_from_target(
+        self, target: int | str, source_names: tuple[str, ...]
+    ) -> typing.Any | None:
+        from erlab.interactive._figurecomposer import FigureOperationKind
+
+        if not source_names:
+            return None
         node = self._node_for_target(target)
         tool = node.imagetool
         if tool is None:
-            return {}
+            return None
         if not tool.slicer_area.axes:
-            return {}
+            return None
         plot = typing.cast("typing.Any", tool.slicer_area.axes[0])
         if not plot.is_image:
-            return {}
-        color_kwargs = plot._figure_composer_colormap_kwargs()
-        updates = plot._figure_composer_operation_updates(color_kwargs)
-        return {} if updates is None else updates
+            return None
+        operation = plot.figure_composer_operation(source_name=source_names[0])
+        if operation.kind != FigureOperationKind.PLOT_SLICES:
+            return None
+        updates: dict[str, typing.Any] = {"sources": source_names}
+        if operation.map_selections:
+            updates["map_selections"] = tuple(
+                selection.model_copy(update={"source": source_name})
+                for source_name in source_names
+                for selection in operation.map_selections
+            )
+        return operation.model_copy(update=updates)
 
     def _figure_setup_for_operation(
         self, operation: typing.Any | None, source_data: Mapping[str, xr.DataArray]
@@ -1408,7 +1417,20 @@ class ImageToolManager(_ImageToolManagerBase):
             sources.append(source)
 
         primary_source = sources[0].name
-        setup = self._figure_setup_for_operation(operation, source_data)
+        source_names = tuple(source.name for source in sources)
+        auto_operation = None
+        if (
+            operation is None
+            and custom_code is None
+            and all(data.squeeze(drop=True).ndim > 1 for data in source_data.values())
+        ):
+            auto_operation = self._figure_plot_slices_operation_from_target(
+                resolved_targets[0], source_names
+            )
+        setup = self._figure_setup_for_operation(
+            None if custom_code is not None else operation or auto_operation,
+            source_data,
+        )
         operations: tuple[FigureOperationState, ...]
         if operation is not None:
             if (
@@ -1431,19 +1453,24 @@ class ImageToolManager(_ImageToolManagerBase):
                     trusted=True,
                 ),
             )
+        elif auto_operation is not None:
+            if not auto_operation.axes.expression:
+                auto_operation = auto_operation.model_copy(
+                    update={
+                        "axes": FigureAxesSelectionState(
+                            axes=self._figure_all_axes(setup.nrows, setup.ncols)
+                        )
+                    }
+                )
+            operations = (auto_operation,)
         else:
             operations = typing.cast(
                 "tuple[FigureOperationState, ...]",
                 self._make_figure_operations_for_sources(
                     source_data,
                     setup=setup,
-                    plot_slices_updates=self._figure_colormap_updates_from_target(
-                        resolved_targets[0]
-                    ),
                 ),
             )
-        if custom_code is not None:
-            setup = self._figure_setup_for_operation(None, source_data)
 
         tool = FigureComposerTool.from_sources(
             source_data,
