@@ -290,6 +290,7 @@ class FigureOperationState(pydantic.BaseModel):
     slice_dim: str | None = None
     slice_values: tuple[float, ...] = ()
     slice_width: float | None = None
+    slice_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     transpose: bool = False
     xlim: FigureLimit | None = None
     ylim: FigureLimit | None = None

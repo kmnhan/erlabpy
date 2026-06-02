@@ -4804,6 +4804,118 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     assert tool._operation_editor_update_pending is False
 
 
+def test_figure_composer_plot_slices_qsel_kwargs_display_in_cuts(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("data",),
+    ).model_copy(
+        update={
+            "extra_kwargs": {
+                "eV": 0.0,
+                "eV_width": 0.1,
+                "beta": slice(-0.5, 0.5),
+                "zorder": 2,
+            },
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("cuts")
+    cuts_page = tool.step_editor_stack.currentWidget()
+    dimension_combo = cuts_page.findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
+    )
+    values_edit = cuts_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesValuesEdit"
+    )
+    width_edit = cuts_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesWidthEdit"
+    )
+    slice_kwargs_edit = cuts_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
+    )
+    assert dimension_combo is not None
+    assert dimension_combo.currentText() == "eV"
+    assert values_edit is not None
+    assert values_edit.text() == "0"
+    assert width_edit is not None
+    assert width_edit.text() == "0.1"
+    assert slice_kwargs_edit is not None
+    assert slice_kwargs_edit.text() == "beta=slice(-0.5, 0.5)"
+
+    tool._select_step_section("advanced")
+    extra_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerExtraKwEdit"
+    )
+    assert extra_kwargs_edit is not None
+    assert extra_kwargs_edit.text() == "zorder=2"
+    code = tool.generated_code()
+    assert "eV=[0.0]" in code
+    assert "eV_width=0.1" in code
+    assert "beta=slice(-0.5, 0.5)" in code
+
+
+def test_figure_composer_plot_slices_advanced_qsel_kwargs_move_to_cuts(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="image",
+                    sources=("data",),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("advanced")
+    extra_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerExtraKwEdit"
+    )
+    assert extra_kwargs_edit is not None
+    extra_kwargs_edit.setText("eV=0.5, eV_width=0.25, beta=slice(-0.5, 0.5), zorder=2")
+    extra_kwargs_edit.editingFinished.emit()
+
+    operation = tool.tool_status.operations[0]
+    assert operation.slice_dim == "eV"
+    assert operation.slice_values == (0.5,)
+    assert operation.slice_width == pytest.approx(0.25)
+    assert operation.extra_kwargs == {"zorder": 2}
+    beta_slice = operation.slice_kwargs["beta"]
+    assert isinstance(beta_slice, slice)
+    assert beta_slice.start == pytest.approx(-0.5)
+    assert beta_slice.stop == pytest.approx(0.5)
+    assert beta_slice.step is None
+
+    qtbot.waitUntil(
+        lambda: not tool._operation_editor_update_pending,
+        timeout=1000,
+    )
+    tool._select_step_section("cuts")
+    slice_kwargs_edit = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesSliceKwargsEdit"
+    )
+    assert slice_kwargs_edit is not None
+    assert slice_kwargs_edit.text() == "beta=slice(-0.5, 0.5)"
+
+
 def test_figure_composer_retired_editor_widgets_drain_after_popup(
     qtbot, monkeypatch
 ) -> None:

@@ -72,9 +72,199 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
+_PLOT_SLICES_EXPLICIT_KWARGS = frozenset(
+    (
+        "figsize",
+        "transpose",
+        "xlim",
+        "ylim",
+        "crop",
+        "same_limits",
+        "axis",
+        "show_all_labels",
+        "colorbar",
+        "hide_colorbar_ticks",
+        "annotate",
+        "cmap",
+        "norm",
+        "gamma",
+        "vmin",
+        "vmax",
+        "order",
+        "cmap_order",
+        "norm_order",
+        "gradient",
+        "gradient_kw",
+        "subplot_kw",
+        "annotate_kw",
+        "colorbar_kw",
+        "axes",
+    )
+)
+_MISSING = object()
+
+
+def _operation_dim_names(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[str, ...]:
+    maps = _operation_maps(tool, operation)
+    dims: list[str] = []
+    for data in maps:
+        for dim in data.dims:
+            dim_text = str(dim)
+            if dim_text not in dims:
+                dims.append(dim_text)
+    if dims:
+        return tuple(dims)
+    return tuple(_available_source_dims(tool._source_data, operation.sources))
+
+
+def _is_slice_kwarg_key(key: typing.Any, dims: Iterable[str]) -> bool:
+    if not isinstance(key, str):
+        return False
+    dim_names = set(dims)
+    if key in dim_names and key not in _PLOT_SLICES_EXPLICIT_KWARGS:
+        return True
+    return key.endswith("_width") and key[: -len("_width")] in dim_names
+
+
+def _split_slice_kwargs(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    kwargs: dict[typing.Any, typing.Any],
+) -> tuple[dict[str, typing.Any], dict[typing.Any, typing.Any]]:
+    dims = _operation_dim_names(tool, operation)
+    slice_kwargs: dict[str, typing.Any] = {}
+    extra_kwargs: dict[typing.Any, typing.Any] = {}
+    for key, value in kwargs.items():
+        if _is_slice_kwarg_key(key, dims):
+            slice_kwargs[str(key)] = value
+        else:
+            extra_kwargs[key] = value
+    return slice_kwargs, extra_kwargs
+
+
+def _selection_values(value: typing.Any) -> tuple[float, ...] | None:
+    if isinstance(value, str | bytes | slice):
+        return None
+    if isinstance(value, np.ndarray):
+        raw_values = value.ravel().tolist()
+    elif isinstance(value, list | tuple):
+        raw_values = value
+    else:
+        raw_values = (value,)
+    try:
+        return tuple(float(item) for item in raw_values)
+    except (TypeError, ValueError):
+        return None
+
+
+def _selection_width(value: typing.Any) -> float | None:
+    values = _selection_values(value)
+    if not values:
+        return None
+    unique_values = set(values)
+    if len(unique_values) != 1:
+        return None
+    return unique_values.pop()
+
+
+def _pop_promotable_width(
+    slice_kwargs: dict[str, typing.Any], dim: str
+) -> float | None:
+    width_key = f"{dim}_width"
+    value = slice_kwargs.get(width_key, _MISSING)
+    if value is _MISSING:
+        return None
+    width = _selection_width(value)
+    if width is None:
+        return None
+    slice_kwargs.pop(width_key)
+    return width
+
+
+def _selection_updates_from_kwargs(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    slice_kwargs: dict[typing.Any, typing.Any],
+    extra_kwargs: dict[typing.Any, typing.Any],
+) -> dict[str, typing.Any]:
+    parsed_slice_kwargs, slice_extra_kwargs = _split_slice_kwargs(
+        tool, operation, slice_kwargs
+    )
+    extra_slice_kwargs, parsed_extra_kwargs = _split_slice_kwargs(
+        tool, operation, extra_kwargs
+    )
+    next_slice_kwargs = {**parsed_slice_kwargs, **extra_slice_kwargs}
+    next_extra_kwargs = {**slice_extra_kwargs, **parsed_extra_kwargs}
+    next_slice_dim = operation.slice_dim
+    next_slice_values = operation.slice_values
+    next_slice_width = operation.slice_width
+
+    if next_slice_dim is not None:
+        value = next_slice_kwargs.get(next_slice_dim, _MISSING)
+        values = None if value is _MISSING else _selection_values(value)
+        if values:
+            next_slice_values = values
+            next_slice_kwargs.pop(next_slice_dim)
+        width = _pop_promotable_width(next_slice_kwargs, next_slice_dim)
+        if width is not None:
+            next_slice_width = width
+    else:
+        dims = set(_operation_dim_names(tool, operation))
+        candidates = [
+            (key, values)
+            for key, value in next_slice_kwargs.items()
+            if key in dims and (values := _selection_values(value))
+        ]
+        if len(candidates) == 1:
+            next_slice_dim, next_slice_values = candidates[0]
+            next_slice_kwargs.pop(next_slice_dim)
+            next_slice_width = _pop_promotable_width(next_slice_kwargs, next_slice_dim)
+
+    return {
+        "slice_dim": next_slice_dim,
+        "slice_values": next_slice_values,
+        "slice_width": next_slice_width,
+        "slice_kwargs": next_slice_kwargs,
+        "extra_kwargs": next_extra_kwargs,
+    }
+
+
+def _effective_slice_kwargs(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, typing.Any]:
+    slice_kwargs, _extra_kwargs = _split_slice_kwargs(
+        tool, operation, operation.extra_kwargs
+    )
+    return {**slice_kwargs, **operation.slice_kwargs}
+
+
+def _effective_extra_kwargs(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[typing.Any, typing.Any]:
+    _slice_kwargs, extra_kwargs = _split_slice_kwargs(
+        tool, operation, operation.extra_kwargs
+    )
+    return extra_kwargs
+
+
+def _normalized_selection_operation(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> FigureOperationState:
+    updates = _selection_updates_from_kwargs(
+        tool,
+        operation,
+        _effective_slice_kwargs(tool, operation),
+        _effective_extra_kwargs(tool, operation),
+    )
+    return operation.model_copy(update=updates)
+
+
 def _build_plot_slices_editor(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[tuple[str, str, QtWidgets.QWidget]]:
+    operation = _normalized_selection_operation(tool, operation)
     shape = _plot_slices_shape(tool, operation)
     is_line_plot = shape.plot_ndim == 1
     is_image_plot = shape.plot_ndim != 1
@@ -160,6 +350,19 @@ def _build_plot_slices_editor(
         "Integration width",
         width_edit,
         "Optional qsel width around each cut value before plotting.",
+    )
+
+    slice_kwargs_edit = tool._line_edit(_format_dict(operation.slice_kwargs))
+    slice_kwargs_edit.setObjectName("figureComposerPlotSlicesSliceKwargsEdit")
+    slice_kwargs_edit.editingFinished.connect(
+        lambda edit=slice_kwargs_edit: _update_current_slice_kwargs(tool, edit.text())
+    )
+    tool._add_form_row(
+        basic_layout,
+        "Additional slice kwargs",
+        slice_kwargs_edit,
+        "Additional plot_slices selection kwargs passed to qsel.\n"
+        "Use dimension keys such as kx=slice(-1, 1) or beta=0.",
     )
 
     order_combo = tool._combo(
@@ -507,12 +710,10 @@ def _build_plot_slices_editor(
             "Extra dict literal or keyword arguments for the norm constructor.",
         )
 
-    extra_edit = tool._line_edit(_format_dict(operation.extra_kwargs))
+    extra_edit = tool._line_edit(_format_dict(_effective_extra_kwargs(tool, operation)))
     extra_edit.setObjectName("figureComposerExtraKwEdit")
     extra_edit.editingFinished.connect(
-        lambda edit=extra_edit: tool._update_current_operation_rebuild(
-            extra_kwargs=_dict_from_text(edit.text())
-        )
+        lambda edit=extra_edit: _update_current_extra_kwargs(tool, edit.text())
     )
     tool._add_form_row(
         advanced_layout,
@@ -656,6 +857,44 @@ def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
     )
 
 
+def _update_current_slice_kwargs(tool: FigureComposerTool, text: str) -> None:
+    current = tool._current_operation()
+    if current is None:
+        return
+    index, operation = current
+    updates = _selection_updates_from_kwargs(
+        tool,
+        operation,
+        _dict_from_text(text, allow_slice=True),
+        _effective_extra_kwargs(tool, operation),
+    )
+    tool._replace_operation(
+        index,
+        operation.model_copy(update=updates),
+        rebuild_editor=True,
+        defer_editor_rebuild=True,
+    )
+
+
+def _update_current_extra_kwargs(tool: FigureComposerTool, text: str) -> None:
+    current = tool._current_operation()
+    if current is None:
+        return
+    index, operation = current
+    updates = _selection_updates_from_kwargs(
+        tool,
+        operation,
+        _effective_slice_kwargs(tool, operation),
+        _dict_from_text(text, allow_slice=True),
+    )
+    tool._replace_operation(
+        index,
+        operation.model_copy(update=updates),
+        rebuild_editor=True,
+        defer_editor_rebuild=True,
+    )
+
+
 def _update_current_cmap(tool: FigureComposerTool, base: str, reverse: bool) -> None:
     tool._update_current_operation_in_place(cmap=_cmap_with_reverse(base, reverse))
 
@@ -663,6 +902,7 @@ def _update_current_cmap(tool: FigureComposerTool, base: str, reverse: bool) -> 
 def _plot_slices_shape(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> _PlotSlicesShape:
+    operation = _normalized_selection_operation(tool, operation)
     maps = _operation_maps(tool, operation)
     if not maps:
         return _PlotSlicesShape(
@@ -726,7 +966,7 @@ def _plot_slices_shape(
         selection_parts.append("No cut dimension selected")
 
     advanced_selections: list[str] = []
-    for key, value in operation.extra_kwargs.items():
+    for key, value in operation.slice_kwargs.items():
         if key.endswith("_width") or key not in dims:
             continue
         count = _selection_value_count(value)
@@ -788,9 +1028,11 @@ def _plot_slices_shape(
 def _plot_slices_kwargs(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> dict[str, typing.Any]:
+    operation = _normalized_selection_operation(tool, operation)
     kwargs: dict[str, typing.Any] = {}
     shape = _plot_slices_shape(tool, operation)
     is_line_plot = shape.plot_ndim == 1
+    kwargs.update(dict(operation.slice_kwargs))
     if operation.slice_dim and operation.slice_values:
         kwargs[operation.slice_dim] = list(operation.slice_values)
         if operation.slice_width is not None:
@@ -848,13 +1090,14 @@ def _plot_slices_kwargs(
         kwargs["annotate_kw"] = dict(operation.annotate_kw)
     if not is_line_plot and operation.colorbar_kw:
         kwargs["colorbar_kw"] = dict(operation.colorbar_kw)
-    kwargs.update(dict(operation.extra_kwargs))
+    kwargs.update(dict(_effective_extra_kwargs(tool, operation)))
     return kwargs
 
 
 def _render_plot_slices(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
+    operation = _normalized_selection_operation(tool, operation)
     maps = _operation_maps(tool, operation)
     if not maps:
         return
@@ -907,6 +1150,7 @@ def _operation_maps(
 def _plot_slices_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> str | None:
+    operation = _normalized_selection_operation(tool, operation)
     if operation.map_selections:
         maps_code = "selected_maps"
     else:
@@ -970,6 +1214,7 @@ def _create_plot_slices_operation(tool: FigureComposerTool) -> FigureOperationSt
 
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
+    operation = _normalized_selection_operation(tool, operation)
     prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
     source_text = ", ".join(operation.sources) or "missing source"
     shape = _plot_slices_shape(tool, operation)
@@ -1108,6 +1353,7 @@ def _editor_sections(
 def _section_summary(
     tool: FigureComposerTool, key: str, operation: FigureOperationState
 ) -> str:
+    operation = _normalized_selection_operation(tool, operation)
     match key:
         case "sources":
             return ", ".join(operation.sources) or "none"
@@ -1116,6 +1362,8 @@ def _section_summary(
         case "cuts":
             if operation.slice_dim and operation.slice_values:
                 return f"{operation.slice_dim}, {len(operation.slice_values)}"
+            if operation.slice_kwargs:
+                return "additional"
             return "none"
         case "limits":
             labels = [
@@ -1132,7 +1380,7 @@ def _section_summary(
         case "style":
             return operation.axis
         case "advanced":
-            return "set" if operation.extra_kwargs else "optional"
+            return "set" if _effective_extra_kwargs(tool, operation) else "optional"
     return ""
 
 

@@ -87,24 +87,50 @@ def _text_tuple_from_text(
     return tuple(part.strip() for part in text.splitlines() if part.strip())
 
 
-def _dict_from_text(text: str) -> dict[str, typing.Any]:
+def _literal_from_ast(node: ast.AST, *, allow_slice: bool = False) -> typing.Any:
+    if (
+        allow_slice
+        and isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "slice"
+        and not node.keywords
+        and len(node.args) <= 3
+    ):
+        return slice(
+            *(_literal_from_ast(arg, allow_slice=allow_slice) for arg in node.args)
+        )
+    return ast.literal_eval(node)
+
+
+def _dict_from_text(text: str, *, allow_slice: bool = False) -> dict[str, typing.Any]:
     stripped = text.strip()
     if not stripped:
         return {}
-    if not stripped.startswith("{"):
-        expression = ast.parse(f"_kwargs({stripped})", mode="eval").body
-        if not isinstance(expression, ast.Call) or expression.args:
+    expression = ast.parse(
+        f"_kwargs({stripped})" if not stripped.startswith("{") else stripped,
+        mode="eval",
+    ).body
+    if isinstance(expression, ast.Call):
+        if expression.args:
             raise TypeError("Expected a dictionary literal or keyword arguments")
         kwargs: dict[str, typing.Any] = {}
         for keyword in expression.keywords:
             if keyword.arg is None:
                 raise TypeError("Expected explicit keyword arguments")
-            kwargs[keyword.arg] = ast.literal_eval(keyword.value)
+            kwargs[keyword.arg] = _literal_from_ast(
+                keyword.value, allow_slice=allow_slice
+            )
         return kwargs
-    value = ast.literal_eval(stripped)
-    if not isinstance(value, dict):
-        raise TypeError("Expected a dictionary literal")
-    return typing.cast("dict[str, typing.Any]", value)
+    if not isinstance(expression, ast.Dict):
+        raise TypeError("Expected a dictionary literal or keyword arguments")
+    dict_kwargs: dict[typing.Any, typing.Any] = {}
+    for key_node, value_node in zip(expression.keys, expression.values, strict=True):
+        if key_node is None:
+            raise TypeError("Expected explicit dictionary keys")
+        dict_kwargs[_literal_from_ast(key_node, allow_slice=allow_slice)] = (
+            _literal_from_ast(value_node, allow_slice=allow_slice)
+        )
+    return dict_kwargs
 
 
 def _format_pair(value: tuple[float, float] | None) -> str:

@@ -1900,6 +1900,7 @@ class ItoolPlotItem(pg.PlotItem):
             "norm_name",
             "norm_gamma",
             "norm_kwargs",
+            "slice_kwargs",
             "vmin",
             "vmax",
             "vcenter",
@@ -2003,7 +2004,7 @@ class ItoolPlotItem(pg.PlotItem):
         slice_dim = str(variable_dim) if variable_dim is not None else None
         slice_values: tuple[float, ...] = ()
         slice_width = None
-        selection_kwargs: dict[str, typing.Any] = {}
+        slice_kwargs: dict[str, typing.Any] = {}
         for key, value in qsel_kwargs.items():
             key_text = str(key)
             plain_value = self._figure_composer_plain_value(value)
@@ -2019,14 +2020,41 @@ class ItoolPlotItem(pg.PlotItem):
                     if len(widths) == 1:
                         slice_width = widths.pop()
                     else:
-                        selection_kwargs[key_text] = plain_value
+                        slice_kwargs[key_text] = plain_value
                 else:
                     slice_width = float(plain_value)
             else:
-                selection_kwargs[key_text] = plain_value
+                slice_kwargs[key_text] = plain_value
+
+        if slice_dim is None:
+            candidates: list[tuple[str, tuple[float, ...]]] = []
+            for key, value in slice_kwargs.items():
+                if key.endswith("_width"):
+                    continue
+                value_list = value if isinstance(value, list) else [value]
+                try:
+                    candidates.append((key, tuple(float(item) for item in value_list)))
+                except (TypeError, ValueError):
+                    continue
+            if len(candidates) == 1:
+                slice_dim, slice_values = candidates[0]
+                slice_kwargs.pop(slice_dim)
+                width_key = f"{slice_dim}_width"
+                width_value = slice_kwargs.get(width_key)
+                if width_value is not None:
+                    width_list = (
+                        width_value if isinstance(width_value, list) else [width_value]
+                    )
+                    try:
+                        widths = {float(item) for item in width_list}
+                    except (TypeError, ValueError):
+                        pass
+                    else:
+                        if len(widths) == 1:
+                            slice_width = widths.pop()
+                            slice_kwargs.pop(width_key)
 
         extra_kwargs = dict(updates.pop("extra_kwargs", {}))
-        extra_kwargs.update(selection_kwargs)
         operation = FigureOperationState.plot_slices(
             label="plot_slices",
             sources=(source_name,),
@@ -2034,7 +2062,12 @@ class ItoolPlotItem(pg.PlotItem):
             slice_values=slice_values,
         )
         return operation.model_copy(
-            update={**updates, "slice_width": slice_width, "extra_kwargs": extra_kwargs}
+            update={
+                **updates,
+                "slice_width": slice_width,
+                "slice_kwargs": slice_kwargs,
+                "extra_kwargs": extra_kwargs,
+            }
         )
 
     def _figure_composer_line_operation(

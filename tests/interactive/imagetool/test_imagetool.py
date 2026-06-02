@@ -1233,6 +1233,25 @@ def test_figure_composer_multicursor_image_seeds_norm_settings(qtbot) -> None:
     win.close()
 
 
+def test_figure_composer_single_cursor_image_seeds_cut_and_width(qtbot) -> None:
+    data = _TEST_DATA["3D"].copy()
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    main_image = win.slicer_area.images[0]
+
+    win.slicer_area.array_slicer.set_bin(0, 2, 3)
+
+    operation = main_image.figure_composer_operation(source_name="data")
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.slice_dim == "beta"
+    assert operation.slice_values == (2.0,)
+    assert operation.slice_width == pytest.approx(3.0)
+    assert operation.slice_kwargs == {}
+    assert operation.extra_kwargs == {}
+
+    win.close()
+
+
 def test_slicer_area_colormap_lut_matches_dense_powernorm(qtbot) -> None:
     kwargs = {
         "cmap": "magma",
