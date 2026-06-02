@@ -7,6 +7,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.scale as mscale
 import numpy as np
+import pyqtgraph as pg
 import pytest
 import xarray as xr
 from matplotlib import style as mpl_style
@@ -4232,6 +4233,14 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
             "line_iter_dim": "cut",
             "line_labels": ("a", "b", "c"),
             "line_colors": ("red", "green", "blue"),
+            "line_kw": {
+                "linestyle": "--",
+                "linewidth": 1.5,
+                "marker": "o",
+                "markersize": 6.0,
+                "markerfacecolor": "yellow",
+                "markeredgecolor": "black",
+            },
             "line_offset_source": "associated",
             "line_offset_coord": "temperature",
             "line_offset_scale": 0.01,
@@ -4271,6 +4280,68 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetsEdit")
         is None
     )
+    line_style_combo = line_page.findChild(
+        QtWidgets.QComboBox, "figureComposerLineStyleCombo"
+    )
+    line_width_spin = line_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerLineWidthSpin"
+    )
+    marker_combo = line_page.findChild(
+        QtWidgets.QComboBox, "figureComposerLineMarkerCombo"
+    )
+    marker_size_spin = line_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerLineMarkerSizeSpin"
+    )
+    marker_face_edit = line_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerLineMarkerFaceColorEdit"
+    )
+    marker_edge_edit = line_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerLineMarkerEdgeColorEdit"
+    )
+    marker_face_button = line_page.findChild(
+        pg.ColorButton, "figureComposerLineMarkerFaceColorButton"
+    )
+    assert line_style_combo is not None
+    assert line_style_combo.currentText() == "--"
+    assert line_width_spin is not None
+    assert line_width_spin.value() == 1.5
+    assert marker_combo is not None
+    assert marker_combo.currentText() == "o"
+    assert marker_size_spin is not None
+    assert marker_size_spin.value() == 6.0
+    assert marker_face_edit is not None
+    assert marker_face_edit.text() == "yellow"
+    assert marker_face_button is not None
+    assert not marker_face_button.colorDialog.testOption(
+        QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog
+    )
+    assert marker_edge_edit is not None
+    assert marker_edge_edit.text() == "black"
+
+    color_text_edit = line_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerLineColorsEdit"
+    )
+    first_color_edit = line_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerLineColorItemEdit_0"
+    )
+    assert color_text_edit is not None
+    assert color_text_edit.text() == "red, green, blue"
+    assert first_color_edit is not None
+    first_color_edit.setText("tab:blue")
+    first_color_edit.setModified(True)
+    first_color_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].line_colors == (
+        "tab:blue",
+        "green",
+        "blue",
+    )
+    assert color_text_edit.text() == "tab:blue, green, blue"
+    color_text_edit.setText("C0, C1, C2")
+    color_text_edit.setModified(True)
+    color_text_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].line_colors == ("C0", "C1", "C2")
+
+    operation = tool.tool_status.operations[0]
 
     offset_source_combo.setCurrentText("manual")
     qtbot.waitUntil(
@@ -4366,7 +4437,13 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
             line.get_ydata(), profile_data.isel(cut=index).values + 0.1 * (index + 1)
         )
         assert line.get_label() == ("a", "b", "c")[index]
-        assert line.get_color() == ("red", "green", "blue")[index]
+        assert line.get_color() == ("C0", "C1", "C2")[index]
+        assert line.get_linestyle() == "--"
+        assert line.get_linewidth() == 1.5
+        assert line.get_marker() == "o"
+        assert line.get_markersize() == 6.0
+        assert line.get_markerfacecolor() == "yellow"
+        assert line.get_markeredgecolor() == "black"
 
     namespace: dict[str, typing.Any] = {"profile_data": profile_data}
     code = tool.generated_code()
@@ -4378,7 +4455,13 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
             line.get_ydata(), profile_data.isel(cut=index).values + 0.1 * (index + 1)
         )
         assert line.get_label() == ("a", "b", "c")[index]
-        assert line.get_color() == ("red", "green", "blue")[index]
+        assert line.get_color() == ("C0", "C1", "C2")[index]
+        assert line.get_linestyle() == "--"
+        assert line.get_linewidth() == 1.5
+        assert line.get_marker() == "o"
+        assert line.get_markersize() == 6.0
+        assert line.get_markerfacecolor() == "yellow"
+        assert line.get_markeredgecolor() == "black"
 
     shared_label_operation = operation.model_copy(
         update={"line_labels": ("shared",), "line_colors": ()}

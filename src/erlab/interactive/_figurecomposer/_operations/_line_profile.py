@@ -10,6 +10,15 @@ from qtpy import QtWidgets
 
 from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
+from erlab.interactive._figurecomposer._line_style import (
+    LINE_MARKER_OPTIONS,
+    LINE_STYLE_OPTIONS,
+    color_kw_value_from_text,
+    line_kw_float,
+    line_kw_text,
+    optional_positive_spinbox,
+    update_current_line_kw,
+)
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
@@ -34,6 +43,10 @@ from erlab.interactive._figurecomposer._text import (
     _format_tuple,
     _string_tuple_from_text,
 )
+from erlab.interactive._figurecomposer._widgets import (
+    _ColorLineEditWidget,
+    _ColorListEditorWidget,
+)
 
 if typing.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -47,6 +60,14 @@ if typing.TYPE_CHECKING:
 _PROFILE_NORMALIZE_CODE = {
     "max": "profiles = [profile / profile.max(skipna=True) for profile in profiles]",
     "mean": "profiles = [profile / profile.mean(skipna=True) for profile in profiles]",
+}
+_LINE_PROFILE_STYLE_KEY_ALIASES = {
+    "c": "color",
+    "ls": "linestyle",
+    "lw": "linewidth",
+    "ms": "markersize",
+    "mfc": "markerfacecolor",
+    "mec": "markeredgecolor",
 }
 
 
@@ -216,49 +237,56 @@ def _build_line_editor(
         ),
     )
 
-    for label, attr, getter, formatter, tooltip, object_name in (
-        (
-            "Legend labels",
-            "line_labels",
-            lambda target: target.line_labels,
-            lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
-            "Optional legend labels.\n"
-            "Use one value for every profile, or one value per profile.",
-            "figureComposerLineLabelsEdit",
-        ),
-        (
-            "Colors",
-            "line_colors",
-            lambda target: target.line_colors,
-            lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
-            "Optional Matplotlib colors.\n"
-            "Use one value for every profile, or one value per profile.",
-            "figureComposerLineColorsEdit",
-        ),
-    ):
-        text, mixed = tool._batch_text(operation, getter, formatter)
-        edit = tool._line_edit(text)
-        tool._apply_mixed_line_edit(edit, mixed)
-        edit.setObjectName(object_name)
-        if attr == "line_labels":
-            edit.editingFinished.connect(
-                lambda edit=edit: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_line_labels(tool, edit.text())
-                )
-            )
-        elif attr == "line_colors":
-            edit.editingFinished.connect(
-                lambda edit=edit: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else tool._update_current_operation(
-                        line_colors=_string_tuple_from_text(edit.text()),
-                    )
-                )
-            )
-        tool._add_form_row(tool.operation_editor_layout, label, edit, tooltip)
+    labels_text, labels_mixed = tool._batch_text(
+        operation,
+        lambda target: target.line_labels,
+        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
+    )
+    labels_edit = tool._line_edit(labels_text)
+    tool._apply_mixed_line_edit(labels_edit, labels_mixed)
+    labels_edit.setObjectName("figureComposerLineLabelsEdit")
+    labels_edit.editingFinished.connect(
+        lambda edit=labels_edit: (
+            None
+            if tool._line_edit_batch_unchanged(edit)
+            else _update_current_line_labels(tool, edit.text())
+        )
+    )
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Legend labels",
+        labels_edit,
+        "Optional legend labels.\n"
+        "Use one value for every profile, or one value per profile.",
+    )
+
+    colors_text, colors_mixed = tool._batch_text(
+        operation,
+        lambda target: target.line_colors,
+        lambda value: _format_string_tuple(typing.cast("tuple[str, ...]", value)),
+    )
+    colors_widget = _ColorListEditorWidget(
+        _string_tuple_from_text(colors_text), parent=page
+    )
+    colors_widget.setMainEditObjectName("figureComposerLineColorsEdit")
+    if colors_mixed:
+        colors_widget.setMixedPlaceholder("(multiple values)")
+    colors_widget.colorsChanged.connect(
+        lambda colors, widget=colors_widget: (
+            None
+            if widget.batchUnchanged()
+            else tool._update_current_operation(line_colors=tuple(colors))
+        )
+    )
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Colors",
+        colors_widget,
+        "Optional Matplotlib colors.\n"
+        "Use one value for every profile, or one value per profile.",
+    )
+
+    _add_line_style_controls(tool, operation, page)
 
     selection_text, selection_mixed = tool._batch_text(
         operation, lambda target: target.line_selection, _format_dict
@@ -511,6 +539,146 @@ def _build_line_editor(
     return [("line", "Line", page)]
 
 
+def _add_line_style_controls(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    page: QtWidgets.QWidget,
+) -> None:
+    line_style_mixed = tool._batch_is_mixed(
+        operation, lambda target: line_kw_text(target, "linestyle", "ls")
+    )
+    line_style_combo = tool._combo(
+        LINE_STYLE_OPTIONS,
+        None if line_style_mixed else line_kw_text(operation, "linestyle", "ls"),
+        lambda text: update_current_line_kw(
+            tool, "linestyle", text or None, aliases=("ls",)
+        ),
+        parent=page,
+        mixed=line_style_mixed,
+    )
+    line_style_combo.setObjectName("figureComposerLineStyleCombo")
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Line style",
+        line_style_combo,
+        "Matplotlib linestyle for the extracted profiles.",
+    )
+
+    line_width_mixed = tool._batch_is_mixed(
+        operation, lambda target: line_kw_text(target, "linewidth", "lw")
+    )
+    line_width_spin = optional_positive_spinbox(
+        None if line_width_mixed else line_kw_float(operation, "linewidth", "lw"),
+        lambda value: update_current_line_kw(tool, "linewidth", value, aliases=("lw",)),
+        parent=page,
+    )
+    line_width_spin.setObjectName("figureComposerLineWidthSpin")
+    width_tooltip = "Matplotlib linewidth for the extracted profiles."
+    if line_width_mixed:
+        width_tooltip += "\nSelected steps have multiple values."
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Line width",
+        line_width_spin,
+        width_tooltip,
+    )
+
+    marker_mixed = tool._batch_is_mixed(
+        operation, lambda target: line_kw_text(target, "marker")
+    )
+    marker_combo = tool._combo(
+        LINE_MARKER_OPTIONS,
+        None if marker_mixed else line_kw_text(operation, "marker"),
+        lambda text: update_current_line_kw(tool, "marker", text or None),
+        parent=page,
+        mixed=marker_mixed,
+    )
+    marker_combo.setObjectName("figureComposerLineMarkerCombo")
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Marker",
+        marker_combo,
+        "Matplotlib marker style for the extracted profiles.",
+    )
+
+    marker_size_mixed = tool._batch_is_mixed(
+        operation, lambda target: line_kw_text(target, "markersize", "ms")
+    )
+    marker_size_spin = optional_positive_spinbox(
+        None if marker_size_mixed else line_kw_float(operation, "markersize", "ms"),
+        lambda value: update_current_line_kw(
+            tool, "markersize", value, aliases=("ms",)
+        ),
+        parent=page,
+    )
+    marker_size_spin.setObjectName("figureComposerLineMarkerSizeSpin")
+    marker_size_tooltip = "Matplotlib marker size for the extracted profiles."
+    if marker_size_mixed:
+        marker_size_tooltip += "\nSelected steps have multiple values."
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Marker size",
+        marker_size_spin,
+        marker_size_tooltip,
+    )
+
+    marker_face_text, marker_face_mixed = tool._batch_text(
+        operation,
+        lambda target: line_kw_text(target, "markerfacecolor", "mfc"),
+        str,
+    )
+    marker_face_edit = _ColorLineEditWidget(marker_face_text, parent=page)
+    marker_face_edit.setLineEditObjectName("figureComposerLineMarkerFaceColorEdit")
+    marker_face_edit.setColorButtonObjectName("figureComposerLineMarkerFaceColorButton")
+    tool._apply_mixed_line_edit(marker_face_edit.line_edit, marker_face_mixed)
+    marker_face_edit.editingFinished.connect(
+        lambda edit=marker_face_edit: (
+            None
+            if tool._line_edit_batch_unchanged(edit.line_edit)
+            else update_current_line_kw(
+                tool,
+                "markerfacecolor",
+                color_kw_value_from_text(edit.text()),
+                aliases=("mfc",),
+            )
+        )
+    )
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Marker face",
+        marker_face_edit,
+        "Matplotlib marker face color for the extracted profiles.",
+    )
+
+    marker_edge_text, marker_edge_mixed = tool._batch_text(
+        operation,
+        lambda target: line_kw_text(target, "markeredgecolor", "mec"),
+        str,
+    )
+    marker_edge_edit = _ColorLineEditWidget(marker_edge_text, parent=page)
+    marker_edge_edit.setLineEditObjectName("figureComposerLineMarkerEdgeColorEdit")
+    marker_edge_edit.setColorButtonObjectName("figureComposerLineMarkerEdgeColorButton")
+    tool._apply_mixed_line_edit(marker_edge_edit.line_edit, marker_edge_mixed)
+    marker_edge_edit.editingFinished.connect(
+        lambda edit=marker_edge_edit: (
+            None
+            if tool._line_edit_batch_unchanged(edit.line_edit)
+            else update_current_line_kw(
+                tool,
+                "markeredgecolor",
+                color_kw_value_from_text(edit.text()),
+                aliases=("mec",),
+            )
+        )
+    )
+    tool._add_form_row(
+        tool.operation_editor_layout,
+        "Marker edge",
+        marker_edge_edit,
+        "Matplotlib marker edge color for the extracted profiles.",
+    )
+
+
 def _update_current_line_offset_source(tool: FigureComposerTool, source: str) -> None:
     updates: dict[str, typing.Any] = {"line_offset_source": source}
     if source == "manual":
@@ -756,15 +924,28 @@ def _line_styles_for_profiles(
 ) -> tuple[dict[str, typing.Any], ...]:
     labels = _line_text_values(operation.line_labels, count, default=None)
     colors = _line_text_values(operation.line_colors, count, default=None)
+    style_kwargs = _line_profile_style_kwargs(operation)
     styles: list[dict[str, typing.Any]] = []
     for label, color in zip(labels, colors, strict=True):
-        kwargs: dict[str, typing.Any] = {}
+        kwargs = dict(style_kwargs)
         if label:
             kwargs["label"] = label
         if color:
             kwargs["color"] = color
         styles.append(kwargs)
     return tuple(styles)
+
+
+def _line_profile_style_kwargs(
+    operation: FigureOperationState,
+) -> dict[str, typing.Any]:
+    kwargs: dict[str, typing.Any] = {}
+    for key, value in operation.line_kw.items():
+        canonical = _LINE_PROFILE_STYLE_KEY_ALIASES.get(key, key)
+        if canonical == "color":
+            continue
+        kwargs[canonical] = value
+    return kwargs
 
 
 def _line_text_values(
@@ -965,7 +1146,7 @@ def _line_style_code(
     loop_values: list[str],
 ) -> tuple[list[str], str]:
     lines: list[str] = []
-    kwargs: list[str] = []
+    kwargs = [_code_kwargs(_line_profile_style_kwargs(operation))]
     if operation.line_labels:
         if len(operation.line_labels) == 1:
             lines.append(f"profile_label = {operation.line_labels[0]!r}")
@@ -986,7 +1167,7 @@ def _line_style_code(
             loop_names.append("color")
             loop_values.append("profile_colors")
             kwargs.append("color=color")
-    return lines, ", ".join(kwargs)
+    return lines, ", ".join(item for item in kwargs if item)
 
 
 def _one_profile_per_axis_code(

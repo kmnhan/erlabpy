@@ -5,9 +5,6 @@ from __future__ import annotations
 import math
 import typing
 
-import matplotlib.axes
-import matplotlib.lines
-import matplotlib.markers
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -20,6 +17,17 @@ from erlab.interactive._figurecomposer._code import _axes_code, _selection_code
 from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
+)
+from erlab.interactive._figurecomposer._line_style import (
+    LINE_MARKER_OPTIONS,
+    LINE_STYLE_OPTIONS,
+    color_kw_value_from_text,
+    extra_line_kw,
+    line_kw_float,
+    line_kw_text,
+    optional_positive_spinbox,
+    update_current_extra_line_kw,
+    update_current_line_kw,
 )
 from erlab.interactive._figurecomposer._norms import (
     _MATPLOTLIB_NORM_NAMES,
@@ -65,10 +73,12 @@ from erlab.interactive._figurecomposer._text import (
     _RawCode,
     _selection_value_count,
 )
+from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    import matplotlib.axes
     import xarray as xr
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -106,137 +116,6 @@ _PLOT_SLICES_EXPLICIT_KWARGS = frozenset(
     )
 )
 _MISSING = object()
-
-
-def _style_options(values: Iterable[typing.Any]) -> tuple[str, ...]:
-    options = [""]
-    for value in values:
-        if not isinstance(value, str):
-            continue
-        if value not in options:
-            options.append(value)
-    return tuple(options)
-
-
-_LINE_STYLE_OPTIONS = _style_options(matplotlib.lines.lineStyles)
-_LINE_MARKER_OPTIONS = _style_options(matplotlib.markers.MarkerStyle.markers)
-_CONTROLLED_LINE_KW_KEYS = frozenset(
-    (
-        "c",
-        "color",
-        "ls",
-        "linestyle",
-        "lw",
-        "linewidth",
-        "marker",
-        "ms",
-        "markersize",
-        "mfc",
-        "markerfacecolor",
-        "mec",
-        "markeredgecolor",
-    )
-)
-
-
-def _optional_positive_spinbox(
-    value: float | None,
-    changed: typing.Callable[[float | None], None],
-    *,
-    parent: QtWidgets.QWidget,
-) -> QtWidgets.QDoubleSpinBox:
-    spinbox = QtWidgets.QDoubleSpinBox(parent)
-    spinbox.setRange(0.0, 1_000_000.0)
-    spinbox.setDecimals(3)
-    spinbox.setSingleStep(0.5)
-    spinbox.setSpecialValueText("default")
-    spinbox.setKeyboardTracking(False)
-    spinbox.setValue(0.0 if value is None else float(value))
-    spinbox.valueChanged.connect(
-        lambda next_value: changed(None if next_value == 0.0 else float(next_value))
-    )
-    return spinbox
-
-
-def _line_kw_value(
-    operation: FigureOperationState, key: str, *aliases: str
-) -> typing.Any:
-    for candidate in (key, *aliases):
-        if candidate in operation.line_kw:
-            return operation.line_kw[candidate]
-    return None
-
-
-def _line_kw_text(operation: FigureOperationState, key: str, *aliases: str) -> str:
-    value = _line_kw_value(operation, key, *aliases)
-    return "" if value is None else str(value)
-
-
-def _line_kw_float(
-    operation: FigureOperationState, key: str, *aliases: str
-) -> float | None:
-    value = _line_kw_value(operation, key, *aliases)
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _extra_line_kw(operation: FigureOperationState) -> dict[str, typing.Any]:
-    return {
-        key: value
-        for key, value in operation.line_kw.items()
-        if key not in _CONTROLLED_LINE_KW_KEYS
-    }
-
-
-def _update_current_line_kw(
-    tool: FigureComposerTool,
-    key: str,
-    value: typing.Any,
-    *,
-    aliases: tuple[str, ...] = (),
-    clear_legacy_cmap: bool = False,
-) -> None:
-    if tool._updating_controls:
-        return
-
-    def update_operation(
-        _operation_index: int, operation: FigureOperationState
-    ) -> FigureOperationState:
-        line_kw = dict(operation.line_kw)
-        for candidate in (key, *aliases):
-            line_kw.pop(candidate, None)
-        if value is not None:
-            line_kw[key] = value
-        updates: dict[str, typing.Any] = {"line_kw": line_kw}
-        if clear_legacy_cmap:
-            updates["cmap"] = None
-        return operation.model_copy(update=updates)
-
-    tool._update_operations(update_operation)
-
-
-def _update_current_extra_line_kw(
-    tool: FigureComposerTool, extra_line_kw: dict[str, typing.Any]
-) -> None:
-    if tool._updating_controls:
-        return
-
-    def update_operation(
-        _operation_index: int, operation: FigureOperationState
-    ) -> FigureOperationState:
-        line_kw = {
-            key: value
-            for key, value in operation.line_kw.items()
-            if key in _CONTROLLED_LINE_KW_KEYS
-        }
-        line_kw.update(extra_line_kw)
-        return operation.model_copy(update={"line_kw": line_kw})
-
-    tool._update_operations(update_operation)
 
 
 def _operation_dim_names(
@@ -677,16 +556,19 @@ def _build_plot_slices_editor(
     )
 
     if is_line_plot:
-        line_color_edit = tool._line_edit(
-            _line_kw_text(operation, "color", "c") or operation.cmap or "",
+        line_color_edit = _ColorLineEditWidget(
+            line_kw_text(operation, "color", "c") or operation.cmap or "",
             parent=colors_page,
         )
-        line_color_edit.setObjectName("figureComposerPlotSlicesLineColorEdit")
+        line_color_edit.setLineEditObjectName("figureComposerPlotSlicesLineColorEdit")
+        line_color_edit.setColorButtonObjectName(
+            "figureComposerPlotSlicesLineColorButton"
+        )
         line_color_edit.editingFinished.connect(
-            lambda edit=line_color_edit: _update_current_line_kw(
+            lambda edit=line_color_edit: update_current_line_kw(
                 tool,
                 "color",
-                edit.text().strip() or None,
+                color_kw_value_from_text(edit.text()),
                 aliases=("c",),
                 clear_legacy_cmap=True,
             )
@@ -699,9 +581,9 @@ def _build_plot_slices_editor(
         )
 
         line_style_combo = tool._combo(
-            _LINE_STYLE_OPTIONS,
-            _line_kw_text(operation, "linestyle", "ls"),
-            lambda text: _update_current_line_kw(
+            LINE_STYLE_OPTIONS,
+            line_kw_text(operation, "linestyle", "ls"),
+            lambda text: update_current_line_kw(
                 tool, "linestyle", text or None, aliases=("ls",)
             ),
             parent=colors_page,
@@ -714,9 +596,9 @@ def _build_plot_slices_editor(
             "Matplotlib linestyle for 1D plot_slices panels.",
         )
 
-        line_width_spin = _optional_positive_spinbox(
-            _line_kw_float(operation, "linewidth", "lw"),
-            lambda value: _update_current_line_kw(
+        line_width_spin = optional_positive_spinbox(
+            line_kw_float(operation, "linewidth", "lw"),
+            lambda value: update_current_line_kw(
                 tool, "linewidth", value, aliases=("lw",)
             ),
             parent=colors_page,
@@ -730,9 +612,9 @@ def _build_plot_slices_editor(
         )
 
         marker_combo = tool._combo(
-            _LINE_MARKER_OPTIONS,
-            _line_kw_text(operation, "marker"),
-            lambda text: _update_current_line_kw(tool, "marker", text or None),
+            LINE_MARKER_OPTIONS,
+            line_kw_text(operation, "marker"),
+            lambda text: update_current_line_kw(tool, "marker", text or None),
             parent=colors_page,
         )
         marker_combo.setObjectName("figureComposerPlotSlicesMarkerCombo")
@@ -743,9 +625,9 @@ def _build_plot_slices_editor(
             "Matplotlib marker style for 1D plot_slices panels.",
         )
 
-        marker_size_spin = _optional_positive_spinbox(
-            _line_kw_float(operation, "markersize", "ms"),
-            lambda value: _update_current_line_kw(
+        marker_size_spin = optional_positive_spinbox(
+            line_kw_float(operation, "markersize", "ms"),
+            lambda value: update_current_line_kw(
                 tool, "markersize", value, aliases=("ms",)
             ),
             parent=colors_page,
@@ -758,15 +640,20 @@ def _build_plot_slices_editor(
             "Matplotlib marker size for 1D plot_slices panels.",
         )
 
-        marker_face_edit = tool._line_edit(
-            _line_kw_text(operation, "markerfacecolor", "mfc"), parent=colors_page
+        marker_face_edit = _ColorLineEditWidget(
+            line_kw_text(operation, "markerfacecolor", "mfc"), parent=colors_page
         )
-        marker_face_edit.setObjectName("figureComposerPlotSlicesMarkerFaceColorEdit")
+        marker_face_edit.setLineEditObjectName(
+            "figureComposerPlotSlicesMarkerFaceColorEdit"
+        )
+        marker_face_edit.setColorButtonObjectName(
+            "figureComposerPlotSlicesMarkerFaceColorButton"
+        )
         marker_face_edit.editingFinished.connect(
-            lambda edit=marker_face_edit: _update_current_line_kw(
+            lambda edit=marker_face_edit: update_current_line_kw(
                 tool,
                 "markerfacecolor",
-                edit.text().strip() or None,
+                color_kw_value_from_text(edit.text()),
                 aliases=("mfc",),
             )
         )
@@ -777,15 +664,20 @@ def _build_plot_slices_editor(
             "Matplotlib marker face color for 1D plot_slices panels.",
         )
 
-        marker_edge_edit = tool._line_edit(
-            _line_kw_text(operation, "markeredgecolor", "mec"), parent=colors_page
+        marker_edge_edit = _ColorLineEditWidget(
+            line_kw_text(operation, "markeredgecolor", "mec"), parent=colors_page
         )
-        marker_edge_edit.setObjectName("figureComposerPlotSlicesMarkerEdgeColorEdit")
+        marker_edge_edit.setLineEditObjectName(
+            "figureComposerPlotSlicesMarkerEdgeColorEdit"
+        )
+        marker_edge_edit.setColorButtonObjectName(
+            "figureComposerPlotSlicesMarkerEdgeColorButton"
+        )
         marker_edge_edit.editingFinished.connect(
-            lambda edit=marker_edge_edit: _update_current_line_kw(
+            lambda edit=marker_edge_edit: update_current_line_kw(
                 tool,
                 "markeredgecolor",
-                edit.text().strip() or None,
+                color_kw_value_from_text(edit.text()),
                 aliases=("mec",),
             )
         )
@@ -813,11 +705,11 @@ def _build_plot_slices_editor(
         )
 
         line_kwargs_edit = tool._line_edit(
-            _format_dict(_extra_line_kw(operation)), parent=colors_page
+            _format_dict(extra_line_kw(operation)), parent=colors_page
         )
         line_kwargs_edit.setObjectName("figureComposerPlotSlicesLineKwEdit")
         line_kwargs_edit.editingFinished.connect(
-            lambda edit=line_kwargs_edit: _update_current_extra_line_kw(
+            lambda edit=line_kwargs_edit: update_current_extra_line_kw(
                 tool, _dict_from_text(edit.text())
             )
         )
@@ -1653,9 +1545,7 @@ def _section_summary(
         case "colors":
             shape = _plot_slices_shape(tool, operation)
             if shape.plot_ndim == 1:
-                return (
-                    _line_kw_text(operation, "color", "c") or operation.cmap or "line"
-                )
+                return line_kw_text(operation, "color", "c") or operation.cmap or "line"
             return operation.cmap or "default"
         case "style":
             return operation.axis
