@@ -89,6 +89,25 @@ def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     )
 
 
+def test_axes_selector_size_hint_tracks_grid(qtbot):
+    selector = figurecomposer_widgets._AxesSelectorWidget()
+    qtbot.addWidget(selector)
+
+    selector.set_grid(1, 4)
+    one_by_four_hint = selector.sizeHint()
+    assert one_by_four_hint.width() < 220
+    assert one_by_four_hint.height() <= 40
+    assert (
+        selector.sizePolicy().horizontalPolicy() == QtWidgets.QSizePolicy.Policy.Maximum
+    )
+    assert selector.sizePolicy().verticalPolicy() == QtWidgets.QSizePolicy.Policy.Fixed
+
+    selector.set_grid(2, 4)
+    two_by_four_hint = selector.sizeHint()
+    assert two_by_four_hint.width() == one_by_four_hint.width()
+    assert one_by_four_hint.height() < two_by_four_hint.height() < 70
+
+
 def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),

@@ -213,6 +213,12 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
     """Grid selector for target axes in the current figure layout."""
 
     sigSelectionChanged = QtCore.Signal(object)
+    _CELL_WIDTH = 46
+    _CELL_HEIGHT = 26
+    _CELL_GAP = 3
+    _GRID_MARGIN = 4
+    _MIN_WIDTH = 68
+    _MIN_HEIGHT = 34
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -228,14 +234,34 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
         self.setObjectName("figureComposerAxesSelector")
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
-        self.setMinimumHeight(118)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         self.setToolTip(
             "Click an axis to target it. Shift-click selects a range; "
             "Ctrl/Cmd-click toggles one axis; drag selects a rectangular range."
         )
 
     def sizeHint(self) -> QtCore.QSize:
-        return QtCore.QSize(280, 150)
+        margin = 2 * self._GRID_MARGIN
+        width = (
+            margin
+            + self._ncols * self._CELL_WIDTH
+            + max(self._ncols - 1, 0) * self._CELL_GAP
+        )
+        height = (
+            margin
+            + self._nrows * self._CELL_HEIGHT
+            + max(self._nrows - 1, 0) * self._CELL_GAP
+        )
+        return QtCore.QSize(
+            max(self._MIN_WIDTH, width),
+            max(self._MIN_HEIGHT, height),
+        )
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(self._MIN_WIDTH, self._MIN_HEIGHT)
 
     def set_grid(
         self,
@@ -308,13 +334,13 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
             rect = self.cell_rect(axis)
             selected = axis in self._selected_axes
             hovered = axis == self._hovered_axis
-            painter.setPen(QtGui.QPen(selected_fill if selected else border, 1.4))
+            painter.setPen(QtGui.QPen(selected_fill if selected else border, 1.0))
             painter.setBrush(
                 QtGui.QBrush(
                     selected_fill if selected else hover_fill if hovered else background
                 )
             )
-            painter.drawRoundedRect(rect, 6, 6)
+            painter.drawRoundedRect(rect, 4, 4)
             painter.setPen(selected_text if selected else text_color)
             painter.drawText(
                 rect,
@@ -388,21 +414,25 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
             super().leaveEvent(event)
 
     def _grid_rect(self) -> QtCore.QRect:
-        margin = 8
         rect = self.rect()
         if rect.isEmpty():
             rect = QtCore.QRect(QtCore.QPoint(0, 0), self.sizeHint())
-        return rect.adjusted(margin, margin, -margin, -margin)
+        return rect.adjusted(
+            self._GRID_MARGIN,
+            self._GRID_MARGIN,
+            -self._GRID_MARGIN,
+            -self._GRID_MARGIN,
+        )
 
     def _cell_gap(self) -> int:
-        return 5
+        return self._CELL_GAP
 
     def _axis_in_grid(self, axis: tuple[int, int]) -> bool:
         row, col = axis
         return 0 <= row < self._nrows and 0 <= col < self._ncols
 
     def _axis_label(self, axis: tuple[int, int]) -> str:
-        return self._cell_labels.get(axis, f"axs[{axis[0]}, {axis[1]}]")
+        return self._cell_labels.get(axis, f"{axis[0]}, {axis[1]}")
 
     def _axis_at(self, pos: QtCore.QPoint) -> tuple[int, int] | None:
         for axis in _all_axes_for_shape(self._nrows, self._ncols):
