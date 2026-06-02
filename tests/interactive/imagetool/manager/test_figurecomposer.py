@@ -1520,6 +1520,19 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     assert tool._axes_selection_has_invalid_target(empty_selection)
     with pytest.raises(ValueError, match="No axes are selected"):
         figurecomposer_code._axes_code(tool, empty_selection, for_plot_slices=False)
+    invalid_selection = FigureAxesSelectionState(
+        axes_ids=("left-axis", "removed-internal-axis")
+    )
+    with pytest.raises(
+        ValueError, match="1 selected GridSpec axis outside the current layout"
+    ) as excinfo:
+        figurecomposer_code._axes_code(tool, invalid_selection, for_plot_slices=False)
+    assert "removed-internal-axis" not in str(excinfo.value)
+    with pytest.raises(
+        ValueError, match="1 selected GridSpec axis outside the current layout"
+    ) as excinfo:
+        figurecomposer_code._axes_sequence_code(tool, invalid_selection)
+    assert "removed-internal-axis" not in str(excinfo.value)
 
 
 def test_figure_composer_gridspec_axes_selector_inlines_nested_grids(qtbot) -> None:

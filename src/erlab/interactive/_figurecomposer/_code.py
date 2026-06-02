@@ -33,6 +33,12 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
+def _invalid_gridspec_axes_error(invalid_axes: tuple[str, ...]) -> str:
+    count = len(invalid_axes)
+    suffix = "axis" if count == 1 else "axes"
+    return f"{count} selected GridSpec {suffix} outside the current layout"
+
+
 def _axes_code(
     tool: FigureComposerTool,
     selection: FigureAxesSelectionState,
@@ -46,10 +52,7 @@ def _axes_code(
     if setup.layout_mode == "gridspec":
         invalid_axes = _gridspec_invalid_axes_ids(setup, selection.axes_ids)
         if invalid_axes:
-            raise ValueError(
-                "Selected axes are outside the current GridSpec layout: "
-                + ", ".join(invalid_axes)
-            )
+            raise ValueError(_invalid_gridspec_axes_error(invalid_axes))
         axes_ids = _gridspec_valid_axes_ids(setup, selection.axes_ids)
         if not axes_ids:
             raise ValueError("No axes are selected")
@@ -88,10 +91,7 @@ def _axes_sequence_code(
     if setup.layout_mode == "gridspec":
         invalid_axes = _gridspec_invalid_axes_ids(setup, selection.axes_ids)
         if invalid_axes:
-            raise ValueError(
-                "Selected axes are outside the current GridSpec layout: "
-                + ", ".join(invalid_axes)
-            )
+            raise ValueError(_invalid_gridspec_axes_error(invalid_axes))
         axes_ids = _gridspec_valid_axes_ids(setup, selection.axes_ids)
         if not axes_ids:
             raise ValueError("No axes are selected")
