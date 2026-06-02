@@ -756,13 +756,7 @@ def _has_invalid_target(
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
-    spec = _method_spec(operation)
-    family = _FAMILY_LABELS[operation.method_family]
-    if operation.method_family == FigureMethodFamily.AXES:
-        return f"{prefix}{family}: ax.{spec.name}"
-    if operation.method_family == FigureMethodFamily.FIGURE:
-        return f"{prefix}{family}: fig.{spec.name}"
-    return f"{prefix}{family}: {spec.name}"
+    return f"{prefix}{_method_display(operation)}"
 
 
 def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
@@ -776,12 +770,7 @@ def _section_summary(
     if key == "axes":
         return _target_text(tool, operation)
     if key == "method":
-        spec = _method_spec(operation)
-        if operation.method_family == FigureMethodFamily.AXES:
-            return f"ax.{spec.name}"
-        if operation.method_family == FigureMethodFamily.FIGURE:
-            return f"fig.{spec.name}"
-        return spec.name
+        return ""
     return ""
 
 
@@ -906,7 +895,7 @@ def _build_method_editor(
     return (
         StepSection(
             "method",
-            _FAMILY_LABELS[operation.method_family],
+            _method_display(operation),
             page,
             "Configure the curated function or method call for this step.",
         ),
@@ -1087,6 +1076,15 @@ def _method_kwargs_object_name(family: FigureMethodFamily) -> str:
             return "figureComposerFigureMethodKwEdit"
         case FigureMethodFamily.ERLAB:
             return "figureComposerERLabMethodKwEdit"
+
+
+def _method_display(operation: FigureOperationState) -> str:
+    spec = _method_spec(operation)
+    if operation.method_family == FigureMethodFamily.AXES:
+        return f"ax.{spec.name}"
+    if operation.method_family == FigureMethodFamily.FIGURE:
+        return f"fig.{spec.name}"
+    return spec.name
 
 
 def _callable_display(spec: MethodSpec) -> str:

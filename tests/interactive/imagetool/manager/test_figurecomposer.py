@@ -1086,8 +1086,8 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     )
 
     tool.operation_list.setCurrentRow(3)
-    assert tool.operation_list.item(3).text().startswith("ERLab Method:")
-    assert tool.step_section_buttons["method"].text().startswith("ERLab Method:")
+    assert tool.operation_list.item(3).text() == "clean_labels"
+    assert tool.step_section_buttons["method"].text() == "clean_labels"
     tool._select_step_section("method")
     erlab_method_page = tool.step_editor_stack.currentWidget()
     assert all(
@@ -1201,7 +1201,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert coord_combo.currentText() == "axes"
     assert text_edit.text() == "Panel"
     assert kwargs_edit.text() == 'ha="left", va="top"'
-    assert tool.step_section_buttons["method"].text().startswith("Axes Method:")
+    assert tool.step_section_buttons["method"].text() == "ax.text"
 
     tool.operation_list.setCurrentRow(4)
     tool._select_step_section("method")
@@ -1280,7 +1280,8 @@ def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
 
     tool.operation_list.setCurrentRow(0)
     assert "axes" not in tool.step_section_buttons
-    assert tool.step_section_buttons["method"].text().startswith("Figure Method:")
+    assert tool.operation_list.item(0).text() == "fig.supxlabel"
+    assert tool.step_section_buttons["method"].text() == "fig.supxlabel"
 
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
