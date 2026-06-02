@@ -1615,16 +1615,28 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert tool.findChild(QtWidgets.QWidget, "figureComposerShareControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerRatioControls") is not None
     assert tool.gridspec_editor_widget.isHidden()
+    gridspec_container = tool.findChild(
+        QtWidgets.QWidget, "figureComposerGridSpecEditorContainer"
+    )
+    assert gridspec_container is tool.gridspec_editor_container
+    assert tool.findChild(QtWidgets.QFrame, "figureComposerGridSpecEditorTopLine")
+    assert tool.findChild(QtWidgets.QFrame, "figureComposerGridSpecEditorBottomLine")
+    assert layout_grid.getItemPosition(layout_grid.indexOf(gridspec_container)) == (
+        2,
+        0,
+        1,
+        5,
+    )
     layout_label = tool.findChild(QtWidgets.QLabel, "figureComposerLayoutControls")
     assert layout_label is not None
     assert layout_grid.getItemPosition(layout_grid.indexOf(layout_label)) == (
-        4,
+        5,
         0,
         1,
         2,
     )
     assert layout_grid.getItemPosition(layout_grid.indexOf(tool.layout_combo)) == (
-        4,
+        5,
         2,
         1,
         3,

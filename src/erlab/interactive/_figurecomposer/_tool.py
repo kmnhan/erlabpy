@@ -659,68 +659,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.ncols_spin,
             "Number of columns in the subplot grid or active GridSpec grid.",
         )
-        add_grid_pair_row(
-            2,
-            "Size (in)",
-            "figureComposerSizeControls",
-            "Figure size in inches. The plot window follows this size.",
-            "Width",
-            self.width_spin,
-            "Figure width in inches. The plot window follows this size.",
-            "Height",
-            self.height_spin,
-            "Figure height in inches. The plot window follows this size.",
-        )
-        add_grid_pair_row(
-            3,
-            "Size (mm)",
-            "figureComposerSizeMmControls",
-            "Figure size in millimeters, synced with the inch controls.",
-            "Width",
-            self.width_mm_spin,
-            "Figure width in millimeters. Converted to inches for Matplotlib.",
-            "Height",
-            self.height_mm_spin,
-            "Figure height in millimeters. Converted to inches for Matplotlib.",
-        )
-        layout_row_label = QtWidgets.QLabel("Layout engine", layout_page)
-        layout_row_label.setObjectName("figureComposerLayoutControls")
-        layout_row_label.setToolTip("Matplotlib layout engine passed to plt.subplots.")
-        layout_row_label.setBuddy(self.layout_combo)
-        layout_row_label.setAlignment(
-            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
-        )
-        self.layout_combo.setToolTip(
-            "Matplotlib layout engine passed to plt.subplots.",
-        )
-        setup_layout.addWidget(layout_row_label, 4, 0, 1, 2)
-        setup_layout.addWidget(self.layout_combo, 4, 2, 1, 3)
-        add_grid_pair_row(
-            5,
-            "Share axes",
-            "figureComposerShareControls",
-            "Matplotlib shared-axis settings passed to plt.subplots.",
-            "x",
-            self.sharex_combo,
-            "Matplotlib sharex setting passed to plt.subplots.",
-            "y",
-            self.sharey_combo,
-            "Matplotlib sharey setting passed to plt.subplots.",
-        )
-        add_grid_pair_row(
-            6,
-            "Ratios",
-            "figureComposerRatioControls",
-            "Optional width and height ratios for subplots or active GridSpec grid.",
-            "Widths",
-            self.width_ratios_edit,
-            "Optional width ratios, one positive number per column.",
-            "Heights",
-            self.height_ratios_edit,
-            "Optional height ratios, one positive number per row.",
-        )
 
-        self.gridspec_editor_widget = QtWidgets.QWidget(layout_page)
+        self.gridspec_editor_container = QtWidgets.QWidget(layout_page)
+        self.gridspec_editor_container.setObjectName(
+            "figureComposerGridSpecEditorContainer"
+        )
+        gridspec_container_layout = QtWidgets.QVBoxLayout(
+            self.gridspec_editor_container
+        )
+        gridspec_container_layout.setContentsMargins(0, 2, 0, 2)
+        gridspec_container_layout.setSpacing(4)
+        self.gridspec_editor_top_line = QtWidgets.QFrame(self.gridspec_editor_container)
+        self.gridspec_editor_top_line.setObjectName(
+            "figureComposerGridSpecEditorTopLine"
+        )
+        self.gridspec_editor_top_line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        self.gridspec_editor_top_line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        gridspec_container_layout.addWidget(self.gridspec_editor_top_line)
+
+        self.gridspec_editor_widget = QtWidgets.QWidget(self.gridspec_editor_container)
         self.gridspec_editor_widget.setObjectName("figureComposerGridSpecEditor")
         gridspec_editor_layout = QtWidgets.QVBoxLayout(self.gridspec_editor_widget)
         gridspec_editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -825,7 +782,78 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.gridspec_status_label.setObjectName("figureComposerGridSpecStatus")
         self.gridspec_status_label.setWordWrap(True)
         gridspec_editor_layout.addWidget(self.gridspec_status_label)
-        setup_layout.addWidget(self.gridspec_editor_widget, 7, 0, 1, 5)
+        gridspec_container_layout.addWidget(self.gridspec_editor_widget)
+        self.gridspec_editor_bottom_line = QtWidgets.QFrame(
+            self.gridspec_editor_container
+        )
+        self.gridspec_editor_bottom_line.setObjectName(
+            "figureComposerGridSpecEditorBottomLine"
+        )
+        self.gridspec_editor_bottom_line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        self.gridspec_editor_bottom_line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        gridspec_container_layout.addWidget(self.gridspec_editor_bottom_line)
+        setup_layout.addWidget(self.gridspec_editor_container, 2, 0, 1, 5)
+
+        add_grid_pair_row(
+            3,
+            "Size (in)",
+            "figureComposerSizeControls",
+            "Figure size in inches. The plot window follows this size.",
+            "Width",
+            self.width_spin,
+            "Figure width in inches. The plot window follows this size.",
+            "Height",
+            self.height_spin,
+            "Figure height in inches. The plot window follows this size.",
+        )
+        add_grid_pair_row(
+            4,
+            "Size (mm)",
+            "figureComposerSizeMmControls",
+            "Figure size in millimeters, synced with the inch controls.",
+            "Width",
+            self.width_mm_spin,
+            "Figure width in millimeters. Converted to inches for Matplotlib.",
+            "Height",
+            self.height_mm_spin,
+            "Figure height in millimeters. Converted to inches for Matplotlib.",
+        )
+        layout_row_label = QtWidgets.QLabel("Layout engine", layout_page)
+        layout_row_label.setObjectName("figureComposerLayoutControls")
+        layout_row_label.setToolTip("Matplotlib layout engine passed to plt.subplots.")
+        layout_row_label.setBuddy(self.layout_combo)
+        layout_row_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        self.layout_combo.setToolTip(
+            "Matplotlib layout engine passed to plt.subplots.",
+        )
+        setup_layout.addWidget(layout_row_label, 5, 0, 1, 2)
+        setup_layout.addWidget(self.layout_combo, 5, 2, 1, 3)
+        add_grid_pair_row(
+            6,
+            "Share axes",
+            "figureComposerShareControls",
+            "Matplotlib shared-axis settings passed to plt.subplots.",
+            "x",
+            self.sharex_combo,
+            "Matplotlib sharex setting passed to plt.subplots.",
+            "y",
+            self.sharey_combo,
+            "Matplotlib sharey setting passed to plt.subplots.",
+        )
+        add_grid_pair_row(
+            7,
+            "Ratios",
+            "figureComposerRatioControls",
+            "Optional width and height ratios for subplots or active GridSpec grid.",
+            "Widths",
+            self.width_ratios_edit,
+            "Optional width ratios, one positive number per column.",
+            "Heights",
+            self.height_ratios_edit,
+            "Optional height ratios, one positive number per row.",
+        )
         setup_layout.setRowStretch(8, 1)
 
         layout_index = self.editor_tabs.addTab(layout_page, "Layout")
@@ -913,7 +941,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.ncols_spin.setValue(setup.ncols)
             self.width_ratios_edit.setText(_format_tuple(setup.width_ratios))
             self.height_ratios_edit.setText(_format_tuple(setup.height_ratios))
-        self.gridspec_editor_widget.setVisible(setup.layout_mode == "gridspec")
+        show_gridspec_editor = setup.layout_mode == "gridspec"
+        self.gridspec_editor_container.setVisible(show_gridspec_editor)
+        self.gridspec_editor_widget.setVisible(show_gridspec_editor)
         self.sharex_combo.setEnabled(setup.layout_mode == "subplots")
         self.sharey_combo.setEnabled(setup.layout_mode == "subplots")
 
