@@ -42,6 +42,7 @@ class _GridSpecRegionInfo(typing.NamedTuple):
 
 class _SelectorColors(typing.NamedTuple):
     face: QtGui.QColor
+    panel: QtGui.QColor
     nested_face: QtGui.QColor
     hover_face: QtGui.QColor
     selection_face: QtGui.QColor
@@ -106,6 +107,7 @@ def _selector_colors(palette: QtGui.QPalette) -> _SelectorColors:
     )
     return _SelectorColors(
         face=face,
+        panel=panel,
         nested_face=nested_face,
         hover_face=hover_face,
         selection_face=selection_face,
@@ -1073,7 +1075,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
         _draw_selector_rect(
             painter,
             grid_rect,
-            facecolor=colors.face,
+            facecolor=colors.panel,
             edgecolor=colors.border,
             draw_edge=False,
         )
