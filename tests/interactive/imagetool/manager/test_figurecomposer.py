@@ -1762,6 +1762,159 @@ def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
     assert namespace["fig"]._supxlabel.get_text() == "Momentum"
 
 
+def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    adjust_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2, layout=None),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="subplots_adjust",
+                    kwargs={
+                        "left": 0.2,
+                        "bottom": 0.15,
+                        "right": 0.8,
+                        "top": 0.85,
+                        "wspace": 0.4,
+                        "hspace": 0.3,
+                    },
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(adjust_tool)
+
+    adjust_tool.operation_list.setCurrentRow(0)
+    adjust_tool._select_step_section("method")
+    adjust_page = adjust_tool.step_editor_stack.currentWidget()
+    left_edit = adjust_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerFigureSubplotsAdjustLeftEdit"
+    )
+    top_edit = adjust_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerFigureSubplotsAdjustTopEdit"
+    )
+    assert left_edit is not None
+    assert top_edit is not None
+    assert left_edit.text() == "0.2"
+    top_edit.setText("0.9")
+    top_edit.editingFinished.emit()
+    assert adjust_tool.tool_status.operations[0].method_kwargs["top"] == 0.9
+
+    fig = adjust_tool.figure
+    figurecomposer_rendering._render_into_figure(adjust_tool, fig, sync_visible=False)
+    assert fig.subplotpars.left == pytest.approx(0.2)
+    assert fig.subplotpars.bottom == pytest.approx(0.15)
+    assert fig.subplotpars.right == pytest.approx(0.8)
+    assert fig.subplotpars.top == pytest.approx(0.9)
+    assert fig.subplotpars.wspace == pytest.approx(0.4)
+    assert fig.subplotpars.hspace == pytest.approx(0.3)
+
+    code = adjust_tool.generated_code()
+    assert (
+        "fig.subplots_adjust(left=0.2, bottom=0.15, right=0.8, "
+        "top=0.9, wspace=0.4, hspace=0.3)"
+    ) in code
+    namespace = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].subplotpars.top == pytest.approx(0.9)
+
+    engine_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="set_layout_engine",
+                    args=("tight",),
+                    kwargs={"pad": 0.5, "hspace": 0.2},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(engine_tool)
+
+    engine_tool.operation_list.setCurrentRow(0)
+    engine_tool._select_step_section("method")
+    engine_page = engine_tool.step_editor_stack.currentWidget()
+    engine_combo = engine_page.findChild(
+        QtWidgets.QComboBox, "figureComposerFigureLayoutEngineCombo"
+    )
+    pad_edit = engine_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerFigureLayoutEnginePadEdit"
+    )
+    hspace_edit = engine_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineHspaceEdit"
+    )
+    assert engine_combo is not None
+    assert pad_edit is not None
+    assert hspace_edit is None
+    assert engine_combo.currentText() == "tight"
+    assert pad_edit.text() == "0.5"
+    assert "hspace" not in engine_tool.generated_code()
+
+    engine_combo.setCurrentText("compressed")
+    qtbot.waitUntil(
+        lambda: (
+            engine_tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineHspaceEdit"
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+    operation = engine_tool.tool_status.operations[0]
+    assert operation.method_args == ("compressed",)
+    assert operation.method_kwargs == {"hspace": 0.2}
+
+    engine_page = engine_tool.step_editor_stack.currentWidget()
+    assert (
+        engine_page.findChild(
+            QtWidgets.QLineEdit, "figureComposerFigureLayoutEnginePadEdit"
+        )
+        is None
+    )
+    hspace_edit = engine_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineHspaceEdit"
+    )
+    rect_edit = engine_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineRectEdit"
+    )
+    assert hspace_edit is not None
+    assert rect_edit is not None
+    assert hspace_edit.text() == "0.2"
+    rect_edit.setText("0, 0, 0.9, 1")
+    rect_edit.editingFinished.emit()
+    assert engine_tool.tool_status.operations[0].method_kwargs == {
+        "hspace": 0.2,
+        "rect": (0, 0, 0.9, 1),
+    }
+
+    fig = engine_tool.figure
+    figurecomposer_rendering._render_into_figure(engine_tool, fig, sync_visible=False)
+    assert fig.get_layout_engine().__class__.__name__ == "ConstrainedLayoutEngine"
+
+    code = engine_tool.generated_code()
+    assert (
+        'fig.set_layout_engine("compressed", hspace=0.2, rect=(0, 0, 0.9, 1))'
+    ) in code
+    namespace = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["fig"].get_layout_engine().__class__.__name__ == (
+        "ConstrainedLayoutEngine"
+    )
+
+
 def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     profile = xr.DataArray(
         np.array([1.0, 2.0, 3.0]),

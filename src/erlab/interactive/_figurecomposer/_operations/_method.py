@@ -494,6 +494,13 @@ _DEFAULT_SCALE = "log" if "log" in _SCALE_OPTIONS else _SCALE_OPTIONS[0]
 _FLATTEN_ORDER_OPTIONS = ("C", "F", "A", "K")
 _COLORBAR_ORIENTATION_OPTIONS = ("vertical", "horizontal")
 _LINE_ORIENTATION_OPTIONS = ("h", "v")
+_LAYOUT_ENGINE_OPTIONS = ("none", "tight", "constrained", "compressed")
+_LAYOUT_ENGINE_KWARGS = {
+    "tight": frozenset(("pad", "h_pad", "w_pad", "rect")),
+    "constrained": frozenset(("h_pad", "w_pad", "hspace", "wspace", "rect")),
+    "compressed": frozenset(("h_pad", "w_pad", "hspace", "wspace", "rect")),
+    "none": frozenset[str](),
+}
 _LABEL_LOCATION_OPTIONS = (
     "upper left",
     "upper center",
@@ -1132,6 +1139,107 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
         target_domain=MethodTargetDomain.FIGURE,
         call_policy=MethodCallPolicy.BOUND_FIGURE,
         controls=_legend_controls("Figure"),
+    ),
+    "subplots_adjust": MethodSpec(
+        family=FigureMethodFamily.FIGURE,
+        name="subplots_adjust",
+        label="Adjust subplots",
+        tooltip="Runs fig.subplots_adjust on the whole figure.",
+        target_domain=MethodTargetDomain.FIGURE,
+        call_policy=MethodCallPolicy.BOUND_FIGURE,
+        controls=(
+            _float_kwarg(
+                "Left",
+                "left",
+                "figureComposerFigureSubplotsAdjustLeftEdit",
+                "Left edge of the subplots as a fraction of figure width.",
+            ),
+            _float_kwarg(
+                "Bottom",
+                "bottom",
+                "figureComposerFigureSubplotsAdjustBottomEdit",
+                "Bottom edge of the subplots as a fraction of figure height.",
+            ),
+            _float_kwarg(
+                "Right",
+                "right",
+                "figureComposerFigureSubplotsAdjustRightEdit",
+                "Right edge of the subplots as a fraction of figure width.",
+            ),
+            _float_kwarg(
+                "Top",
+                "top",
+                "figureComposerFigureSubplotsAdjustTopEdit",
+                "Top edge of the subplots as a fraction of figure height.",
+            ),
+            _float_kwarg(
+                "Width spacing",
+                "wspace",
+                "figureComposerFigureSubplotsAdjustWspaceEdit",
+                "Horizontal space between subplot groups.",
+            ),
+            _float_kwarg(
+                "Height spacing",
+                "hspace",
+                "figureComposerFigureSubplotsAdjustHspaceEdit",
+                "Vertical space between subplot groups.",
+            ),
+        ),
+    ),
+    "set_layout_engine": MethodSpec(
+        family=FigureMethodFamily.FIGURE,
+        name="set_layout_engine",
+        label="Set layout engine",
+        tooltip="Runs fig.set_layout_engine on the whole figure.",
+        target_domain=MethodTargetDomain.FIGURE,
+        call_policy=MethodCallPolicy.BOUND_FIGURE,
+        default_args=("none",),
+        controls=(
+            _arg_combo(
+                "Engine",
+                0,
+                _LAYOUT_ENGINE_OPTIONS,
+                "none",
+                "figureComposerFigureLayoutEngineCombo",
+                "Matplotlib layout engine name.",
+            ),
+            _float_kwarg(
+                "Pad",
+                "pad",
+                "figureComposerFigureLayoutEnginePadEdit",
+                "Padding for the tight layout engine.",
+            ),
+            _float_kwarg(
+                "Height pad",
+                "h_pad",
+                "figureComposerFigureLayoutEngineHpadEdit",
+                "Height padding for tight, constrained, or compressed layout.",
+            ),
+            _float_kwarg(
+                "Width pad",
+                "w_pad",
+                "figureComposerFigureLayoutEngineWpadEdit",
+                "Width padding for tight, constrained, or compressed layout.",
+            ),
+            _float_kwarg(
+                "Height spacing",
+                "hspace",
+                "figureComposerFigureLayoutEngineHspaceEdit",
+                "Height spacing for constrained or compressed layout.",
+            ),
+            _float_kwarg(
+                "Width spacing",
+                "wspace",
+                "figureComposerFigureLayoutEngineWspaceEdit",
+                "Width spacing for constrained or compressed layout.",
+            ),
+            _literal_kwarg(
+                "Rect",
+                "rect",
+                "figureComposerFigureLayoutEngineRectEdit",
+                "Layout rectangle as left, bottom, width, height.",
+            ),
+        ),
     ),
 }
 
@@ -1960,7 +2068,8 @@ def _build_method_editor(
         )
 
     for control in spec.controls:
-        _add_method_control_row(tool, layout, operation, spec, control)
+        if _method_control_visible(operation, spec, control):
+            _add_method_control_row(tool, layout, operation, spec, control)
 
     if not spec.controls and spec.text_values_policy == MethodTextValuesPolicy.NONE:
         label = QtWidgets.QLabel(f"{_callable_display(spec)} takes no values.", page)
@@ -2043,7 +2152,7 @@ def _add_method_control_row(
                 None
                 if mixed
                 else str(_method_arg_value(operation, spec, index, control.default)),
-                _method_arg_callback(tool, index),
+                _method_arg_callback(tool, index, spec),
                 parent=layout.parentWidget(),
                 mixed=mixed,
             )
@@ -2414,6 +2523,41 @@ def _method_kwarg_value(
     return operation.method_kwargs.get(key, default)
 
 
+def _method_control_visible(
+    operation: FigureOperationState, spec: MethodSpec, control: MethodControlSpec
+) -> bool:
+    if not _is_layout_engine_method(spec) or control.key is None:
+        return True
+    return control.key in _layout_engine_kwarg_keys(
+        _layout_engine_name(operation, spec)
+    )
+
+
+def _is_layout_engine_method(spec: MethodSpec) -> bool:
+    return spec.family == FigureMethodFamily.FIGURE and spec.name == "set_layout_engine"
+
+
+def _layout_engine_name(operation: FigureOperationState, spec: MethodSpec) -> str:
+    args = _method_args(operation, spec)
+    if not args:
+        return "none"
+    layout = args[0]
+    return layout if isinstance(layout, str) else "none"
+
+
+def _layout_engine_kwarg_keys(layout: str) -> frozenset[str]:
+    return _LAYOUT_ENGINE_KWARGS.get(layout, frozenset[str]())
+
+
+def _filter_layout_engine_kwargs(
+    args: Sequence[typing.Any], kwargs: dict[str, typing.Any]
+) -> dict[str, typing.Any]:
+    if not args or not isinstance(args[0], str):
+        return kwargs
+    allowed_keys = _layout_engine_kwarg_keys(args[0])
+    return {key: value for key, value in kwargs.items() if key in allowed_keys}
+
+
 def _control_arg_index(control: MethodControlSpec) -> int:
     if control.arg_index is None:
         raise ValueError(f"{control.label} has no argument index")
@@ -2435,8 +2579,13 @@ def _method_bool_arg_callback(
     return update
 
 
-def _method_arg_callback(tool: FigureComposerTool, index: int) -> Callable[[str], None]:
+def _method_arg_callback(
+    tool: FigureComposerTool, index: int, spec: MethodSpec
+) -> Callable[[str], None]:
     def update(text: str) -> None:
+        if _is_layout_engine_method(spec):
+            _update_current_layout_engine(tool, index, text)
+            return
         _update_current_method_arg(tool, index, text)
 
     return update
@@ -2456,6 +2605,34 @@ def _method_kwarg_callback(tool: FigureComposerTool, key: str) -> Callable[[str]
         _update_current_method_kwarg(tool, key, text)
 
     return update
+
+
+def _update_current_layout_engine(
+    tool: FigureComposerTool, index: int, text: str
+) -> None:
+    allowed_keys = _layout_engine_kwarg_keys(text)
+
+    def update_engine(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        args = list(_method_args(operation, _method_spec(operation)))
+        while len(args) <= index:
+            args.append(None)
+        args[index] = text
+        kwargs = {
+            key: value
+            for key, value in operation.method_kwargs.items()
+            if key in allowed_keys
+        }
+        return operation.model_copy(
+            update={"method_args": tuple(args), "method_kwargs": kwargs}
+        )
+
+    tool._update_operations(
+        update_engine,
+        rebuild_editor=True,
+        defer_editor_rebuild=True,
+    )
 
 
 def _format_int_value(value: typing.Any) -> str:
@@ -2769,6 +2946,8 @@ def _render_args_kwargs(
         and operation.method_coordinate_system == "axes"
     ):
         kwargs["transform"] = axis.transAxes
+    if _is_layout_engine_method(spec):
+        kwargs = _filter_layout_engine_kwargs(args, kwargs)
     return tuple(args), kwargs
 
 
@@ -2795,6 +2974,8 @@ def _code_args_kwargs(
         and operation.method_coordinate_system == "axes"
     ):
         kwargs["transform"] = _RawCode(axis_transform)
+    if _is_layout_engine_method(spec):
+        kwargs = _filter_layout_engine_kwargs(args, kwargs)
     return tuple(args), kwargs
 
 
