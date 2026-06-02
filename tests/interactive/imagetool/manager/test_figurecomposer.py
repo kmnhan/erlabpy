@@ -1408,6 +1408,9 @@ def test_figure_composer_gridspec_axes_selector_inlines_nested_grids(qtbot) -> N
     selector = tool.gridspec_axes_selector
     selector.resize(selector.sizeHint())
 
+    root_min_width = 2 * selector._GRID_MARGIN + 2 * selector._CELL_WIDTH
+    root_min_width += selector._CELL_GAP
+    assert selector.sizeHint().width() > root_min_width
     assert selector.axes_ids() == ("main-axis", "child-top", "child-bottom")
     main_rect = selector.axis_rect("main-axis")
     top_rect = selector.axis_rect("child-top")
@@ -1534,6 +1537,9 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
         pos=widget.cell_rect((0, 1)).center(),
     )
     child_grid = tool.tool_status.setup.gridspec.root.child_grids[0]
+    assert child_grid.label == ""
+    assert tool.gridspec_region_label_edit.isHidden()
+    assert tool.gridspec_region_name_label.isHidden()
     assert child_grid.span == FigureGridSpecSpanState(
         row_start=0,
         row_stop=1,
@@ -1547,6 +1553,10 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
         pos=widget.span_rect(child_grid.span).center(),
     )
     assert tool._active_gridspec_grid_id == child_grid.grid_id
+    assert [button.text() for button in tool._gridspec_breadcrumb_buttons] == [
+        "Root",
+        "Grid 1",
+    ]
 
     tool.gridspec_region_kind_combo.setCurrentIndex(
         tool.gridspec_region_kind_combo.findData("axes")
@@ -1565,8 +1575,16 @@ def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
     )
     active_grid = tool.tool_status.setup.gridspec.root.child_grids[0]
     assert len(active_grid.axes) == 1
+    assert not tool.gridspec_region_label_edit.isHidden()
+    assert not tool.gridspec_region_name_label.isHidden()
     tool._gridspec_open_parent_grid()
     assert tool._active_gridspec_grid_id == "root"
+    widget.resize(widget.sizeHint())
+    child_axis_id = active_grid.axes[0].axes_id
+    assert child_axis_id in widget.axes_ids()
+    assert (
+        widget.axis_rect(child_axis_id).center().x() > widget.cell_rect((0, 0)).right()
+    )
 
 
 def test_figure_composer_gridspec_widget_resizes_selected_region(qtbot) -> None:

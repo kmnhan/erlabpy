@@ -75,6 +75,17 @@ def _gridspec_axis_display_names(
     return tuple(_gridspec_axis_display_name(setup, axes_id) for axes_id in axes_ids)
 
 
+def _gridspec_grid_display_name(setup: FigureSubplotsState, grid_id: str) -> str:
+    return _gridspec_grid_display_names(setup).get(grid_id, grid_id)
+
+
+def _gridspec_grid_display_names(setup: FigureSubplotsState) -> dict[str, str]:
+    names = {setup.gridspec.root.grid_id: "Root"}
+    for index, grid in enumerate(_iter_child_grids(setup.gridspec.root), start=1):
+        names[grid.grid_id] = f"Grid {index}"
+    return names
+
+
 def _gridspec_axes_subplot_targets(
     setup: FigureSubplotsState, axes_ids: Iterable[str]
 ) -> tuple[tuple[int, int], ...]:
@@ -305,12 +316,13 @@ def _gridspec_region_label(
     setup: FigureSubplotsState, grid: FigureGridSpecGridState, region_id: str
 ) -> str:
     code_names = _gridspec_axis_code_names(setup)
+    grid_names = _gridspec_grid_display_names(setup)
     for axis in grid.axes:
         if axis.axes_id == region_id:
             return axis.label.strip() or code_names.get(axis.axes_id, axis.axes_id)
     for child in grid.child_grids:
         if child.grid_id == region_id:
-            return child.label.strip() or "Grid"
+            return grid_names.get(child.grid_id, child.grid_id)
     return region_id
 
 
@@ -336,6 +348,14 @@ def _iter_axes(grid: FigureGridSpecGridState) -> Iterator[FigureGridSpecAxesStat
     yield from grid.axes
     for child in grid.child_grids:
         yield from _iter_axes(child)
+
+
+def _iter_child_grids(
+    grid: FigureGridSpecGridState,
+) -> Iterator[FigureGridSpecGridState]:
+    for child in grid.child_grids:
+        yield child
+        yield from _iter_child_grids(child)
 
 
 def _find_grid(

@@ -32,6 +32,8 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_axis_display_name,
     _gridspec_axis_display_names,
     _gridspec_grid_by_id,
+    _gridspec_grid_display_name,
+    _gridspec_grid_display_names,
     _gridspec_grid_path,
     _gridspec_has_invalid_regions,
     _gridspec_invalid_axes_ids,
@@ -77,9 +79,8 @@ from erlab.interactive._figurecomposer._text import (
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
     _FigureComposerDisplayWindow,
-    _GridSpecAxesSelectorWidget,
-    _GridSpecLayoutWidget,
     _GridSpecRegionInfo,
+    _GridSpecViewWidget,
     _step_toolbar_button,
 )
 from erlab.interactive.imagetool import provenance
@@ -508,7 +509,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.axes_selector = _AxesSelectorWidget(self.target_axes_page)
         self.axes_selector.sigSelectionChanged.connect(self._axes_selection_changed)
         target_axes_layout.addWidget(self.axes_selector)
-        self.gridspec_axes_selector = _GridSpecAxesSelectorWidget(self.target_axes_page)
+        self.gridspec_axes_selector = _GridSpecViewWidget(
+            self.target_axes_page, mode="select"
+        )
         self.gridspec_axes_selector.sigSelectionChanged.connect(
             self._gridspec_axes_selection_changed
         )
@@ -710,7 +713,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         gridspec_action_layout.addStretch(1)
         gridspec_editor_layout.addLayout(gridspec_action_layout)
 
-        self.gridspec_layout_widget = _GridSpecLayoutWidget(self.gridspec_editor_widget)
+        self.gridspec_layout_widget = _GridSpecViewWidget(
+            self.gridspec_editor_widget, mode="edit"
+        )
         self.gridspec_layout_widget.set_creation_kind("axes")
         self.gridspec_layout_widget.sigRegionCreated.connect(
             self._gridspec_region_created
@@ -761,9 +766,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.gridspec_delete_region_button.clicked.connect(
             self._gridspec_delete_selected_region
         )
-        name_label = QtWidgets.QLabel("Name", self.gridspec_editor_widget)
-        name_label.setBuddy(self.gridspec_region_label_edit)
-        gridspec_region_layout.addWidget(name_label)
+        self.gridspec_region_name_label = QtWidgets.QLabel(
+            "Axes name", self.gridspec_editor_widget
+        )
+        self.gridspec_region_name_label.setBuddy(self.gridspec_region_label_edit)
+        gridspec_region_layout.addWidget(self.gridspec_region_name_label)
         gridspec_region_layout.addWidget(self.gridspec_region_label_edit, 1)
         gridspec_region_layout.addWidget(self.gridspec_open_grid_button)
         gridspec_region_layout.addWidget(self.gridspec_delete_region_button)
@@ -989,6 +996,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if grid is None:
             self._active_gridspec_grid_id = setup.gridspec.root.grid_id
             grid = setup.gridspec.root
+        grid_names = _gridspec_grid_display_names(setup)
         regions = [
             _GridSpecRegionInfo(
                 axis.axes_id,
@@ -1004,13 +1012,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 child.grid_id,
                 "grid",
                 child.span,
-                child.label.strip() or "Grid",
+                grid_names.get(child.grid_id, child.grid_id),
                 _gridspec_region_valid(grid, child.span),
             )
             for child in grid.child_grids
             if child.span is not None
         )
-        self.gridspec_layout_widget.set_grid(grid.nrows, grid.ncols, regions)
+        self.gridspec_layout_widget.set_edit_grid(
+            grid,
+            regions,
+            {
+                axes_id: _gridspec_axis_display_name(setup, axes_id)
+                for axes_id in _gridspec_all_axes_ids(setup)
+            },
+        )
         self._refresh_gridspec_breadcrumbs()
         self._refresh_gridspec_region_controls()
         self._refresh_gridspec_axes_selector()
@@ -1062,7 +1077,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 separator = QtWidgets.QLabel(">", self.gridspec_breadcrumb_widget)
                 self.gridspec_breadcrumb_layout.addWidget(separator)
             button = QtWidgets.QToolButton(self.gridspec_breadcrumb_widget)
-            button.setText(grid.label.strip() or ("Root" if index == 0 else "Grid"))
+            button.setText(
+                _gridspec_grid_display_name(self._recipe.setup, grid.grid_id)
+            )
             button.setToolTip("Open this GridSpec grid.")
             button.clicked.connect(
                 lambda _checked=False, grid_id=grid.grid_id: self._gridspec_open_grid(
@@ -1088,17 +1105,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if not kind:
                 for child in grid.child_grids:
                     if child.grid_id == region_id:
-                        label = child.label
                         kind = "grid"
                         break
         blocker = QtCore.QSignalBlocker(self.gridspec_region_label_edit)
         self.gridspec_region_label_edit.setText(label)
         del blocker
         has_region = bool(kind)
-        self.gridspec_region_label_edit.setPlaceholderText(
-            "Optional axes name" if kind != "grid" else "Optional grid name"
-        )
-        self.gridspec_region_label_edit.setEnabled(has_region)
+        self.gridspec_region_label_edit.setPlaceholderText("Optional axes name")
+        self.gridspec_region_name_label.setVisible(kind != "grid")
+        self.gridspec_region_label_edit.setVisible(kind != "grid")
+        self.gridspec_region_label_edit.setEnabled(kind == "axes")
         self.gridspec_delete_region_button.setEnabled(has_region)
         self.gridspec_open_grid_button.setEnabled(kind == "grid")
         self.gridspec_open_grid_button.setToolTip(
@@ -2130,8 +2146,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         label = self.gridspec_region_label_edit.text().strip()
         setup = _gridspec_update_axis_label(self._recipe.setup, region_id, label)
-        if setup == self._recipe.setup:
-            setup = self._update_gridspec_grid_label(region_id, label)
         self._apply_gridspec_setup(setup, selected_region_id=region_id)
 
     def _add_gridspec_region(
@@ -2161,7 +2175,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
 
         else:
-            region = FigureGridSpecGridState(span=span, label="Grid")
+            region = FigureGridSpecGridState(span=span)
             selected_region_id = region.grid_id
 
             def update_grid(
@@ -2175,14 +2189,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._recipe.setup, self._active_gridspec_grid_id, update_grid
         )
         self._apply_gridspec_setup(setup, selected_region_id=selected_region_id)
-
-    def _update_gridspec_grid_label(
-        self, grid_id: str, label: str
-    ) -> FigureSubplotsState:
-        def update_grid(grid: FigureGridSpecGridState) -> FigureGridSpecGridState:
-            return grid.model_copy(update={"label": label})
-
-        return _gridspec_replace_grid(self._recipe.setup, grid_id, update_grid)
 
     def _apply_gridspec_setup(
         self, setup: FigureSubplotsState, *, selected_region_id: str
