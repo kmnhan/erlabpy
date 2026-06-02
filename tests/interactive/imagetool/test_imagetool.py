@@ -32,6 +32,7 @@ from erlab.interactive.imagetool._viewer_dialogs import (
     _CursorColorCoordDialog,
 )
 from erlab.interactive.imagetool.controls import (
+    ItoolBinningControls,
     ItoolColormapControls,
     ItoolCrosshairControls,
 )
@@ -60,11 +61,13 @@ from erlab.interactive.imagetool.dialogs import (
     ThinDialog,
 )
 from erlab.interactive.imagetool.plot_items import _PolyROIEditDialog
+from erlab.interactive.imagetool.slicer import ArraySlicerState
 from erlab.interactive.imagetool.viewer import ImageSlicerArea
 from erlab.interactive.imagetool.viewer_state import (
     _parse_input,
     _SelectDataArraysDialog,
 )
+from erlab.io.dataloader import LoaderBase
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +616,520 @@ def test_make_cursors_single_color_does_not_recreate_cursor(qtbot, monkeypatch) 
     assert win.slicer_area.n_cursors == 1
     assert win.slicer_area.cursor_colors[0].name() == color
 
+    win.close()
+
+
+def test_multicursor_restore_updates_cursor_combo(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"], execute=False)
+    qtbot.addWidget(win)
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+    win.slicer_area.set_bin(0, 3)
+    win.slicer_area.set_bin(1, 5)
+
+    restored = ImageTool.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+    cursor_ctrl = restored.docks[0].widget().layout().itemAt(0).widget()
+    bin_ctrl = restored.docks[2].widget().layout().itemAt(0).widget()
+    assert isinstance(cursor_ctrl, ItoolCrosshairControls)
+    assert isinstance(bin_ctrl, ItoolBinningControls)
+
+    assert restored.slicer_area.n_cursors == 3
+    assert cursor_ctrl.cb_cursors.count() == restored.slicer_area.n_cursors
+    assert cursor_ctrl.cb_cursors.currentIndex() == restored.slicer_area.current_cursor
+    assert [spin.value() for spin in bin_ctrl.spins] == [3, 5]
+
+    restored.close()
+    win.close()
+
+
+def test_cursor_combo_update_colors_resyncs_stale_count(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"], execute=False)
+    qtbot.addWidget(win)
+    cursor_ctrl = win.docks[0].widget().layout().itemAt(0).widget()
+    assert isinstance(cursor_ctrl, ItoolCrosshairControls)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+    with QtCore.QSignalBlocker(cursor_ctrl.cb_cursors):
+        cursor_ctrl.cb_cursors.clear()
+        cursor_ctrl.cb_cursors.addItem("stale")
+
+    cursor_ctrl.update_colors()
+    assert cursor_ctrl.cb_cursors.count() == 3
+    assert cursor_ctrl.cb_cursors.currentIndex() == win.slicer_area.current_cursor
+    assert cursor_ctrl.cb_cursors.isEnabled()
+    assert cursor_ctrl.btn_rem.isEnabled()
+
+    win.slicer_area.state = {
+        **win.slicer_area.state,
+        "cursor_colors": ["#cccccc"],
+        "current_cursor": 0,
+        "slice": {
+            **win.slicer_area.array_slicer.state,
+            "bins": [[1, 1]],
+            "indices": [[2, 2]],
+            "values": [[2, 2]],
+        },
+    }
+    with QtCore.QSignalBlocker(cursor_ctrl.cb_cursors):
+        cursor_ctrl.cb_cursors.addItem("stale")
+
+    cursor_ctrl.update_colors()
+    assert cursor_ctrl.cb_cursors.count() == 1
+    assert cursor_ctrl.cb_cursors.currentIndex() == 0
+    assert not cursor_ctrl.cb_cursors.isEnabled()
+    assert not cursor_ctrl.btn_rem.isEnabled()
+
+    cursor_ctrl.addCursor()
+    assert cursor_ctrl.cb_cursors.count() == 2
+    assert cursor_ctrl.cb_cursors.isEnabled()
+    assert cursor_ctrl.btn_rem.isEnabled()
+
+    cursor_ctrl.remCursor()
+    assert cursor_ctrl.cb_cursors.count() == 1
+    assert not cursor_ctrl.cb_cursors.isEnabled()
+    assert not cursor_ctrl.btn_rem.isEnabled()
+
+    win.close()
+
+
+def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) -> None:
+    file_path = tmp_path / "scan.h5"
+    data = xr.DataArray(
+        np.arange(25, dtype=np.float32).reshape((5, 5)),
+        dims=["alpha", "eV"],
+        coords={
+            "alpha": np.arange(5, dtype=float),
+            "eV": np.arange(5, dtype=float),
+            "temperature": ("alpha", np.linspace(10.0, 50.0, 5)),
+        },
+        name="scan",
+    )
+    data.to_netcdf(file_path, engine="h5netcdf")
+
+    operation = provenance.NormalizeOperation(dims=("alpha",), mode="min")
+    expected_display = operation.apply(data, parent_data=data)
+    provenance_spec = provenance.full_data()
+    win = ImageTool(
+        data,
+        file_path=file_path,
+        load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+    )
+    qtbot.addWidget(win)
+    win.setWindowTitle("saved scan")
+    win.set_provenance_spec(provenance_spec)
+
+    area = win.slicer_area
+    area.add_cursor()
+    area.add_cursor()
+    area.set_current_cursor(2)
+    area.set_index(0, 4, cursor=2)
+    area.set_index(1, 3, cursor=2)
+    area.set_bin(0, 3, cursor=2)
+    area.set_bin(1, 5, cursor=2)
+    area.array_slicer.snap_to_data = True
+    area.array_slicer.twin_coord_names = {"temperature"}
+    area.array_slicer._cursor_color_params = (
+        ("alpha",),
+        "temperature",
+        "viridis",
+        True,
+        0.0,
+        1.0,
+    )
+    area._refresh_cursor_colors(tuple(range(area.n_cursors)), None)
+    area.set_manual_limits({"alpha": [1.0, 4.0], "eV": [0.0, 3.0]})
+    area.set_axis_inverted("alpha", True)
+    area.set_colormap(
+        "viridis",
+        gamma=1.7,
+        reverse=True,
+        high_contrast=True,
+        zero_centered=True,
+        levels_locked=True,
+    )
+    area.main_image.set_guidelines(3)
+    area.main_image._guidelines_items[0].setAngle(60.0)
+    area.main_image.add_roi()
+    area.apply_filter_operation(operation)
+
+    ds = win.to_dataset()
+    saved_state = json.loads(ds.attrs["itool_state"])
+    assert set(ds.attrs) == {
+        "itool_state",
+        "itool_title",
+        "itool_name",
+        "itool_window_state",
+        "erlab_version",
+        "itool_provenance_spec",
+    }
+    assert ds.attrs["itool_title"] == "saved scan"
+    assert ds.attrs["itool_name"] == "scan"
+    assert ds.attrs["erlab_version"] == erlab.__version__
+    assert json.loads(ds.attrs["itool_window_state"]).keys() >= {
+        "geometry",
+        "rect",
+        "visible",
+    }
+    assert json.loads(ds.attrs["itool_provenance_spec"]) == (
+        provenance_spec.model_dump(mode="json")
+    )
+    assert set(saved_state) == {
+        "color",
+        "slice",
+        "current_cursor",
+        "manual_limits",
+        "axis_inversions",
+        "splitter_sizes",
+        "file_path",
+        "load_func",
+        "cursor_colors",
+        "controls_visible",
+        "plotitem_states",
+        "filter_operation",
+    }
+    assert set(saved_state["color"]) == {
+        "cmap",
+        "gamma",
+        "reverse",
+        "high_contrast",
+        "zero_centered",
+        "levels_locked",
+        "levels",
+    }
+    assert set(saved_state["slice"]) == {
+        "dims",
+        "bins",
+        "indices",
+        "values",
+        "snap_to_data",
+        "twin_coord_names",
+        "cursor_color_params",
+    }
+
+    saved_color = saved_state["color"]
+    assert saved_color["cmap"] == "viridis"
+    assert saved_color["gamma"] == 1.7
+    assert saved_color["reverse"] is True
+    assert saved_color["high_contrast"] is True
+    assert saved_color["zero_centered"] is True
+    assert saved_color["levels_locked"] is True
+    assert all(isinstance(level, float) for level in saved_color["levels"])
+    assert saved_state["slice"] == {
+        "dims": ["alpha", "eV"],
+        "bins": [[1, 1], [1, 1], [3, 5]],
+        "indices": [[2, 2], [2, 2], [4, 3]],
+        "values": [[2.0, 2.0], [2.0, 2.0], [4.0, 3.0]],
+        "snap_to_data": True,
+        "twin_coord_names": ["temperature"],
+        "cursor_color_params": [
+            ["alpha"],
+            "temperature",
+            "viridis",
+            True,
+            0.0,
+            1.0,
+        ],
+    }
+    assert saved_state["current_cursor"] == 2
+    assert saved_state["manual_limits"] == {"alpha": [1.0, 4.0], "eV": [0.0, 3.0]}
+    assert saved_state["axis_inversions"] == {"alpha": True}
+    assert saved_state["splitter_sizes"] == area.splitter_sizes
+    assert saved_state["file_path"] == str(file_path)
+    assert saved_state["load_func"][0].endswith(":load_dataarray")
+    assert saved_state["load_func"][1:] == [{"engine": "h5netcdf"}, 0]
+    assert len(saved_state["cursor_colors"]) == 3
+    assert len(set(saved_state["cursor_colors"])) > 1
+    assert saved_state["controls_visible"] is True
+    assert saved_state["filter_operation"] == operation.model_dump(mode="json")
+    assert len(saved_state["plotitem_states"]) == len(area.axes)
+    for plotitem_state in saved_state["plotitem_states"]:
+        assert plotitem_state.keys() >= {
+            "vb_aspect_locked",
+            "vb_autorange",
+            "roi_states",
+        }
+    assert saved_state["plotitem_states"][0]["guideline_state"] == {
+        "count": 3,
+        "angle": -30.0,
+        "offset": [4.0, 3.0],
+        "follow_cursor": True,
+    }
+    assert saved_state["plotitem_states"][0]["roi_states"]
+
+    restored = ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+    restored_area = restored.slicer_area
+    cursor_ctrl = restored.docks[0].widget().layout().itemAt(0).widget()
+    color_ctrl = restored.docks[1].widget().layout().itemAt(0).widget()
+    bin_ctrl = restored.docks[2].widget().layout().itemAt(0).widget()
+    assert isinstance(cursor_ctrl, ItoolCrosshairControls)
+    assert isinstance(color_ctrl, ItoolColormapControls)
+    assert isinstance(bin_ctrl, ItoolBinningControls)
+    color_ctrl.cb_colormap.load_all()
+
+    assert restored.windowTitle() == "saved scan"
+    assert restored.provenance_spec is not None
+    assert restored.provenance_spec.model_dump(mode="json") == (
+        provenance_spec.model_dump(mode="json")
+    )
+    xarray.testing.assert_identical(restored_area._data, data)
+    xarray.testing.assert_identical(restored_area.data, expected_display)
+    assert restored_area.n_cursors == 3
+    assert restored_area.current_cursor == 2
+    assert [color.name() for color in restored_area.cursor_colors] == (
+        saved_state["cursor_colors"]
+    )
+    assert cursor_ctrl.cb_cursors.count() == 3
+    assert cursor_ctrl.cb_cursors.currentIndex() == 2
+    assert [spin.value() for spin in bin_ctrl.spins] == [3, 5]
+    restored_slice = restored_area.array_slicer.state
+    assert restored_slice["dims"] == ("alpha", "eV")
+    assert restored_slice["bins"] == [[1, 1], [1, 1], [3, 5]]
+    assert restored_slice["indices"] == [[2, 2], [2, 2], [4, 3]]
+    assert restored_slice["values"] == [[2.0, 2.0], [2.0, 2.0], [4.0, 3.0]]
+    assert restored_slice["snap_to_data"] is True
+    assert restored_slice["twin_coord_names"] == ("temperature",)
+    assert restored_slice["cursor_color_params"] == (
+        ("alpha",),
+        "temperature",
+        "viridis",
+        True,
+        0.0,
+        1.0,
+    )
+    assert restored_area.manual_limits == {"alpha": [1.0, 4.0], "eV": [0.0, 3.0]}
+    _assert_manual_limits_view_ranges(restored_area, restored_area.manual_limits)
+    assert restored_area.axis_inversions == {"alpha": True}
+    _assert_dimension_inverted(restored_area, "alpha", True)
+    assert restored_area.colormap_properties["cmap"] == "viridis"
+    assert restored_area.colormap_properties["gamma"] == pytest.approx(1.7)
+    assert restored_area.colormap_properties["reverse"] is True
+    assert restored_area.colormap_properties["high_contrast"] is True
+    assert restored_area.colormap_properties["zero_centered"] is True
+    assert restored_area.levels_locked
+    assert restored_area.levels == pytest.approx(saved_state["color"]["levels"])
+    assert color_ctrl.cb_colormap.currentText() == "viridis"
+    assert color_ctrl.gamma_widget.value() == pytest.approx(1.7)
+    assert restored_area.reverse_act.isChecked()
+    assert restored_area.high_contrast_act.isChecked()
+    assert restored_area.zero_centered_act.isChecked()
+    assert restored_area.lock_levels_act.isChecked()
+    assert not restored_area._colorbar.isHidden()
+    assert restored_area.controls_visible is True
+    restored_splitter_sizes = restored_area.splitter_sizes
+    assert len(restored_splitter_sizes) == len(saved_state["splitter_sizes"])
+    assert [len(sizes) for sizes in restored_splitter_sizes] == [
+        len(sizes) for sizes in saved_state["splitter_sizes"]
+    ]
+    assert restored_area._file_path == file_path
+    assert restored_area._load_func is not None
+    loader, kwargs, selection = restored_area._load_func
+    assert loader is xr.load_dataarray
+    assert kwargs == {"engine": "h5netcdf"}
+    assert selection == 0
+    assert restored_area.reloadable
+    assert restored_area.state["filter_operation"] == operation.model_dump(mode="json")
+    _assert_guideline_state(
+        restored_area.main_image,
+        count=3,
+        angle=-30.0,
+        offset=(4.0, 3.0),
+    )
+    assert len(restored_area.main_image._roi_list) == 1
+    saved_roi_points = [
+        tuple(point)
+        for point in saved_state["plotitem_states"][0]["roi_states"][0]["points"]
+    ]
+    restored_roi_points = [
+        tuple(point)
+        for point in restored_area.main_image._serializable_state["roi_states"][0][
+            "points"
+        ]
+    ]
+    assert restored_roi_points == saved_roi_points
+
+    restored.close()
+    win.close()
+
+
+def test_itool_state_schema_guard() -> None:
+    assert set(imagetool_viewer_state.ImageSlicerState.__annotations__) == {
+        "color",
+        "slice",
+        "current_cursor",
+        "manual_limits",
+        "axis_inversions",
+        "filter_operation",
+        "cursor_colors",
+        "controls_visible",
+        "file_path",
+        "load_func",
+        "splitter_sizes",
+        "plotitem_states",
+    }
+    assert set(imagetool_viewer_state.ColorMapState.__annotations__) == {
+        "cmap",
+        "gamma",
+        "reverse",
+        "high_contrast",
+        "zero_centered",
+        "levels_locked",
+        "levels",
+    }
+    assert set(ArraySlicerState.__annotations__) == {
+        "dims",
+        "bins",
+        "indices",
+        "values",
+        "snap_to_data",
+        "twin_coord_names",
+        "cursor_color_params",
+    }
+    assert set(imagetool_viewer_state.PlotItemState.__annotations__) == {
+        "vb_aspect_locked",
+        "vb_x_inverted",
+        "vb_y_inverted",
+        "vb_autorange",
+        "roi_states",
+        "guideline_state",
+    }
+
+
+def test_itool_plotitem_viewbox_metadata_roundtrip(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+    )
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+    viewbox = win.slicer_area.main_image.getViewBox()
+    viewbox.setAspectLocked(True, ratio=1.5)
+    viewbox.enableAutoRange(x=False, y=False)
+
+    ds = win.to_dataset()
+    saved_state = json.loads(ds.attrs["itool_state"])
+    assert saved_state["plotitem_states"][0]["vb_aspect_locked"] == 1.5
+    assert saved_state["plotitem_states"][0]["vb_autorange"] == [False, False]
+
+    restored = ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+    restored_state = restored.slicer_area.main_image._serializable_state
+    assert restored_state["vb_aspect_locked"] == 1.5
+    assert restored_state["vb_autorange"] == (False, False)
+
+    restored.close()
+    win.close()
+
+
+def test_itool_state_loader_string_selection_roundtrip_and_reload(
+    qtbot,
+    monkeypatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    loader_name = "_metadata_test_loader"
+
+    class _MetadataTestLoader(LoaderBase):
+        name = loader_name
+        description = "Metadata test loader"
+
+        def load(self, identifier, **kwargs):
+            return xr.load_dataset(identifier, **kwargs)
+
+    file_path = tmp_path / "scan.h5"
+    data = xr.DataArray(
+        np.arange(25, dtype=float).reshape((5, 5)),
+        dims=["x", "y"],
+        coords={"x": np.arange(5, dtype=float), "y": np.arange(5, dtype=float)},
+        name="signal",
+    )
+    data.to_dataset().to_netcdf(file_path, engine="h5netcdf")
+    selection = provenance.FileDataSelection(
+        kind="dataset_variable",
+        value="signal",
+    )
+    monkeypatch.setitem(erlab.io.loaders._loaders, loader_name, _MetadataTestLoader())
+    monkeypatch.setitem(erlab.io.loaders._alias_mapping, loader_name, loader_name)
+
+    win = ImageTool(
+        data,
+        file_path=file_path,
+        load_func=(loader_name, {"engine": "h5netcdf"}, selection),
+    )
+    qtbot.addWidget(win)
+    ds = win.to_dataset()
+    saved_state = json.loads(ds.attrs["itool_state"])
+    assert saved_state["load_func"] == [
+        loader_name,
+        {"engine": "h5netcdf"},
+        {"kind": "dataset_variable", "value": "signal"},
+    ]
+
+    restored = ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+    assert restored.slicer_area._load_func == (
+        loader_name,
+        {"engine": "h5netcdf"},
+        {"kind": "dataset_variable", "value": "signal"},
+    )
+    assert restored.slicer_area.reloadable
+
+    updated = (data + 100.0).rename("signal")
+    updated.to_dataset().to_netcdf(file_path, engine="h5netcdf")
+    with qtbot.wait_signal(restored.slicer_area.sigDataChanged):
+        restored.slicer_area.reload()
+    xarray.testing.assert_identical(restored.slicer_area.data, updated)
+
+    restored.close()
+    win.close()
+
+
+def test_itool_state_optional_metadata_fields_restore_defaults(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"], execute=False)
+    qtbot.addWidget(win)
+    ds = win.to_dataset()
+    state = json.loads(ds.attrs["itool_state"])
+    for key in (
+        "axis_inversions",
+        "controls_visible",
+        "splitter_sizes",
+        "file_path",
+        "load_func",
+        "plotitem_states",
+        "filter_operation",
+    ):
+        state.pop(key, None)
+    ds.attrs["itool_state"] = json.dumps(state)
+
+    restored = ImageTool.from_dataset(ds)
+    qtbot.addWidget(restored)
+    assert restored.slicer_area.controls_visible is True
+    assert restored.slicer_area.axis_inversions == {}
+    assert restored.slicer_area._file_path is None
+    assert restored.slicer_area._load_func is None
+    assert restored.slicer_area.n_cursors == 1
+    assert restored.slicer_area.current_cursor == 0
+    assert restored.slicer_area.state["plotitem_states"]
+
+    restored.close()
+    win.close()
+
+
+def test_locked_levels_state_uses_json_scalars(qtbot) -> None:
+    data = _TEST_DATA["2D"].astype(np.float32)
+    win = itool(data, execute=False)
+    qtbot.addWidget(win)
+
+    win.slicer_area.lock_levels(True)
+    restored = ImageTool.from_dataset(win.to_dataset())
+    qtbot.addWidget(restored)
+
+    assert restored.slicer_area.levels_locked
+    assert restored.slicer_area.levels == pytest.approx(win.slicer_area.levels)
+
+    restored.close()
     win.close()
 
 

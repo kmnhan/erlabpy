@@ -515,7 +515,8 @@ class ImageSlicerArea(QtWidgets.QWidget):
 
         prop["levels_locked"] = self.levels_locked  # history handled by lock_levels()
         if prop["levels_locked"]:
-            prop["levels"] = copy.deepcopy(self.levels)
+            levels = self.levels
+            prop["levels"] = (float(levels[0]), float(levels[1]))
         return typing.cast("ColorMapState", prop)
 
     @property
@@ -581,12 +582,15 @@ class ImageSlicerArea(QtWidgets.QWidget):
         logger.debug("Restored plotitem states")
 
         self.make_cursors(state["cursor_colors"], update=False)
+        self.sigCursorCountChanged.emit(self.n_cursors)
+        self.sigCursorColorsChanged.emit()
         logger.debug("Restored cursor number and colors")
 
         self.set_current_cursor(state["current_cursor"], update=False)
         logger.debug("Restored current cursor")
 
         self.array_slicer.state = state["slice"]
+        self.sigBinChanged.emit(self.current_cursor, tuple(range(self.data.ndim)))
         for ax in self.axes:
             if ax.is_image:
                 ax.sync_guidelines_to_active_cursor()
@@ -626,7 +630,7 @@ class ImageSlicerArea(QtWidgets.QWidget):
                 except Exception:
                     self._load_func = None
             elif fn in erlab.io.loaders:
-                self._load_func = load_func
+                self._load_func = (fn, *load_func[1:])
             else:
                 self._load_func = None
 

@@ -752,7 +752,9 @@ class ArraySlicer(QtCore.QObject):
         cursor_color_params = state.get("cursor_color_params", None)
         if cursor_color_params is not None:
             coord_dims, coord_name, cmap, reverse, vmin, vmax = cursor_color_params
-            if not isinstance(coord_dims, tuple):
+            if isinstance(coord_dims, list):
+                coord_dims = tuple(coord_dims)
+            elif not isinstance(coord_dims, tuple):
                 coord_dims = (coord_dims,)
             self._cursor_color_params = (
                 coord_dims,
