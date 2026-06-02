@@ -2982,6 +2982,7 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     """
 
     tool_name: str = "tool"
+    manager_collection: str = "tools"
     BACKGROUND_TASK_TIMEOUT_MS: typing.ClassVar[int] = 5000
     COPY_PROVENANCE: typing.ClassVar[ToolScriptProvenanceDefinition | None] = None
     IMAGE_TOOL_OUTPUTS: typing.ClassVar[
@@ -4253,6 +4254,11 @@ class ToolWindow(QtWidgets.QMainWindow, typing.Generic[M], metaclass=_ToolWindow
     @property
     def preview_imageitem(self) -> pg.ImageItem | None:
         """Get the ImageItem to be used for preview in the ImageTool manager."""
+        return None
+
+    @property
+    def preview_pixmap(self) -> QtGui.QPixmap | None:
+        """Get a rendered preview pixmap for the ImageTool manager."""
         return None
 
     @property
