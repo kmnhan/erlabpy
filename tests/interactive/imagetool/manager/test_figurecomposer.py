@@ -2567,6 +2567,24 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert "_manager" not in code
 
 
+def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+
+    buttons = tuple(tool.step_section_buttons.values())
+    assert len(buttons) > 1
+    assert all(
+        button.focusPolicy() == QtCore.Qt.FocusPolicy.StrongFocus for button in buttons
+    )
+    for index, button in enumerate(buttons[:-1]):
+        assert button.nextInFocusChain() is buttons[index + 1]
+
+    tool._select_step_section(tool.step_section_keys[-1])
+    buttons = tuple(tool.step_section_buttons.values())
+    for index, button in enumerate(buttons[:-1]):
+        assert button.nextInFocusChain() is buttons[index + 1]
+
+
 def test_figure_composer_layout_ratios_update_subplots_kwargs(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),

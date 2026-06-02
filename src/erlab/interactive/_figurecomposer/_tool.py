@@ -2539,6 +2539,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             button = QtWidgets.QToolButton(self.step_navigator)
             button.setText(self._section_button_text(section.key, section.title))
             button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
+            button.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
             button.setSizePolicy(
                 QtWidgets.QSizePolicy.Policy.Expanding,
                 QtWidgets.QSizePolicy.Policy.Fixed,
@@ -2574,6 +2575,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             font = button.font()
             font.setBold(button_key == key)
             button.setFont(font)
+        self._refresh_step_tab_order()
 
     def _refresh_step_section_button_texts(self) -> None:
         for key, button in self.step_section_buttons.items():
@@ -2592,6 +2594,42 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _section_summary(self, key: str, operation: FigureOperationState) -> str:
         return _registry.spec_for(operation.kind).section_summary(self, key, operation)
+
+    @staticmethod
+    def _accepts_tab_focus(widget: QtWidgets.QWidget) -> bool:
+        return bool(widget.focusPolicy() & QtCore.Qt.FocusPolicy.TabFocus)
+
+    def _first_editor_tab_stop(self) -> QtWidgets.QWidget | None:
+        current_page = self.step_editor_stack.currentWidget()
+        if current_page is None:
+            return None
+        for widget in (current_page, *current_page.findChildren(QtWidgets.QWidget)):
+            if (
+                erlab.interactive.utils.qt_is_valid(widget)
+                and widget.isEnabled()
+                and self._accepts_tab_focus(widget)
+            ):
+                return widget
+        return None
+
+    def _refresh_step_tab_order(self) -> None:
+        buttons = list(self.step_section_buttons.values())
+        if not buttons:
+            return
+        preceding_widgets = (
+            self.add_step_button,
+            self.duplicate_operation_button,
+            self.move_operation_up_button,
+            self.move_operation_down_button,
+            self.remove_operation_button,
+            self.operation_list,
+        )
+        tab_chain = [*preceding_widgets, *buttons]
+        next_widget = self._first_editor_tab_stop()
+        if next_widget is not None:
+            tab_chain.append(next_widget)
+        for index, widget in enumerate(tab_chain[:-1]):
+            QtWidgets.QWidget.setTabOrder(widget, tab_chain[index + 1])
 
     def _selected_sources_for_operation(
         self, operation: FigureOperationState
