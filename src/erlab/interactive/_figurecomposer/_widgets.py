@@ -23,7 +23,18 @@ from erlab.interactive._figurecomposer._defaults import (
 if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from erlab.interactive._figurecomposer._state import FigureSubplotsState
+    from erlab.interactive._figurecomposer._state import (
+        FigureGridSpecSpanState,
+        FigureSubplotsState,
+    )
+
+
+class _GridSpecRegionInfo(typing.NamedTuple):
+    region_id: str
+    kind: typing.Literal["axes", "grid"]
+    span: FigureGridSpecSpanState
+    label: str
+    valid: bool = True
 
 
 def _step_toolbar_button(
@@ -457,4 +468,322 @@ class _AxesSelectorWidget(QtWidgets.QWidget):
                 QtCore.Qt.KeyboardModifier.ControlModifier
                 | QtCore.Qt.KeyboardModifier.MetaModifier
             )
+        )
+
+
+class _GridSpecLayoutWidget(QtWidgets.QWidget):
+    """GridSpec region editor for the active Figure Composer grid."""
+
+    sigRegionCreated = QtCore.Signal(object, str)
+    sigRegionChanged = QtCore.Signal(str, object)
+    sigRegionSelected = QtCore.Signal(str, str)
+    sigNestedGridActivated = QtCore.Signal(str)
+
+    _CELL_WIDTH = 36
+    _CELL_HEIGHT = 24
+    _CELL_GAP = 3
+    _GRID_MARGIN = 4
+    _MIN_WIDTH = 100
+    _MIN_HEIGHT = 48
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._nrows = 1
+        self._ncols = 1
+        self._regions: tuple[_GridSpecRegionInfo, ...] = ()
+        self._selected_region_id = ""
+        self._drag_origin: tuple[int, int] | None = None
+        self._drag_current: tuple[int, int] | None = None
+        self._drag_region_id = ""
+        self._drag_moved = False
+        self._creation_kind: typing.Literal["axes", "grid"] = "axes"
+        self._drag_creation_kind: typing.Literal["axes", "grid"] = "axes"
+        self.setObjectName("figureComposerGridSpecLayoutWidget")
+        self.setMouseTracking(True)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.setToolTip(
+            "Drag over grid cells to create an axes or nested GridSpec region."
+        )
+
+    def sizeHint(self) -> QtCore.QSize:
+        margin = 2 * self._GRID_MARGIN
+        width = (
+            margin
+            + self._ncols * self._CELL_WIDTH
+            + max(self._ncols - 1, 0) * self._CELL_GAP
+        )
+        height = (
+            margin
+            + self._nrows * self._CELL_HEIGHT
+            + max(self._nrows - 1, 0) * self._CELL_GAP
+        )
+        return QtCore.QSize(
+            max(self._MIN_WIDTH, width),
+            max(self._MIN_HEIGHT, height),
+        )
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return QtCore.QSize(self._MIN_WIDTH, self._MIN_HEIGHT)
+
+    def set_grid(
+        self,
+        nrows: int,
+        ncols: int,
+        regions: Sequence[_GridSpecRegionInfo],
+    ) -> None:
+        self._nrows = max(1, nrows)
+        self._ncols = max(1, ncols)
+        self._regions = tuple(regions)
+        if self._selected_region_id and not any(
+            region.region_id == self._selected_region_id for region in self._regions
+        ):
+            self._selected_region_id = ""
+        self.updateGeometry()
+        self.update()
+
+    def set_creation_kind(self, kind: typing.Literal["axes", "grid"]) -> None:
+        self._creation_kind = kind
+
+    def selected_region_id(self) -> str:
+        return self._selected_region_id
+
+    def set_selected_region(self, region_id: str) -> None:
+        if region_id and not any(
+            region.region_id == region_id for region in self._regions
+        ):
+            self._selected_region_id = ""
+        else:
+            self._selected_region_id = region_id
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent | None) -> None:
+        if event is not None:
+            super().paintEvent(event)
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        palette = self.palette()
+        cell_border = palette.color(QtGui.QPalette.ColorRole.Mid)
+        cell_fill = palette.color(QtGui.QPalette.ColorRole.Base)
+        axes_fill = palette.color(QtGui.QPalette.ColorRole.Highlight).lighter(170)
+        grid_fill = palette.color(QtGui.QPalette.ColorRole.AlternateBase)
+        selected = palette.color(QtGui.QPalette.ColorRole.Highlight)
+        text_color = palette.color(QtGui.QPalette.ColorRole.Text)
+        invalid_pen = QtGui.QColor(170, 40, 40)
+        invalid_fill = QtGui.QColor(170, 40, 40, 45)
+
+        painter.setPen(QtGui.QPen(cell_border, 1.0))
+        painter.setBrush(QtGui.QBrush(cell_fill))
+        for row in range(self._nrows):
+            for col in range(self._ncols):
+                painter.drawRoundedRect(self.cell_rect((row, col)), 3, 3)
+
+        for region in self._regions:
+            rect = self.span_rect(region.span)
+            is_selected = region.region_id == self._selected_region_id
+            is_valid = region.valid and self._span_within_grid(region.span)
+            pen_color = (
+                selected
+                if is_selected
+                else invalid_pen
+                if not is_valid
+                else cell_border
+            )
+            painter.setPen(
+                QtGui.QPen(
+                    pen_color,
+                    1.6 if is_selected else 1.2 if not is_valid else 1.0,
+                )
+            )
+            if is_valid:
+                brush = axes_fill if region.kind == "axes" else grid_fill
+            else:
+                brush = invalid_fill
+            painter.setBrush(QtGui.QBrush(brush))
+            painter.drawRoundedRect(rect, 5, 5)
+            painter.setPen(invalid_pen if not is_valid else text_color)
+            text = region.label or ("Axes" if region.kind == "axes" else "Grid")
+            if not is_valid:
+                text = f"{text} (outside)"
+            text = painter.fontMetrics().elidedText(
+                text,
+                QtCore.Qt.TextElideMode.ElideRight,
+                max(0, rect.width() - 6),
+            )
+            painter.drawText(
+                rect.adjusted(3, 1, -3, -1),
+                QtCore.Qt.AlignmentFlag.AlignCenter,
+                text,
+            )
+
+        if self._drag_origin is not None and self._drag_current is not None:
+            span = self._span_from_cells(self._drag_origin, self._drag_current)
+            rect = self.span_rect(span)
+            preview_color = selected
+            preview_fill = QtGui.QColor(preview_color)
+            preview_fill.setAlpha(35)
+            pen = QtGui.QPen(preview_color, 1.4)
+            pen.setStyle(QtCore.Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(QtGui.QBrush(preview_fill))
+            painter.drawRoundedRect(rect, 5, 5)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        if event is None or event.button() != QtCore.Qt.MouseButton.LeftButton:
+            if event is not None:
+                super().mousePressEvent(event)
+            return
+        cell = self._cell_at(event.position().toPoint())
+        if cell is None:
+            return
+        region = self._region_at(event.position().toPoint())
+        self._drag_origin = cell
+        self._drag_current = cell
+        self._drag_moved = False
+        self._drag_region_id = region.region_id if region is not None else ""
+        self._drag_creation_kind = self._creation_kind
+        if region is not None:
+            self._selected_region_id = region.region_id
+            self.sigRegionSelected.emit(region.region_id, region.kind)
+            self.update()
+        event.accept()
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        if (
+            event is not None
+            and self._drag_origin is not None
+            and event.buttons() & QtCore.Qt.MouseButton.LeftButton
+        ):
+            current = self._cell_at(event.position().toPoint(), clamp_to_grid=True)
+            self._drag_current = current
+            self._drag_moved = current is not None and current != self._drag_origin
+            self.update()
+            event.accept()
+            return
+        if event is not None:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        if event is None or self._drag_origin is None:
+            return
+        end_cell = self._cell_at(event.position().toPoint(), clamp_to_grid=True)
+        origin = self._drag_origin
+        region_id = self._drag_region_id
+        moved = self._drag_moved
+        self._drag_origin = None
+        self._drag_current = None
+        self._drag_region_id = ""
+        self._drag_moved = False
+        creation_kind = self._drag_creation_kind
+        self._drag_creation_kind = self._creation_kind
+        self.update()
+        if end_cell is None:
+            return
+        span = self._span_from_cells(origin, end_cell)
+        if region_id:
+            if moved:
+                self.sigRegionChanged.emit(region_id, span)
+        else:
+            self.sigRegionCreated.emit(span, creation_kind)
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent | None) -> None:
+        if event is None:
+            return
+        region = self._region_at(event.position().toPoint())
+        if region is not None and region.kind == "grid":
+            self.sigNestedGridActivated.emit(region.region_id)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def cell_rect(self, axis: tuple[int, int]) -> QtCore.QRect:
+        row, col = axis
+        grid_rect = self._grid_rect()
+        gap = self._CELL_GAP
+        cell_width = (grid_rect.width() - gap * max(self._ncols - 1, 0)) / self._ncols
+        cell_height = (grid_rect.height() - gap * max(self._nrows - 1, 0)) / self._nrows
+        return QtCore.QRect(
+            round(grid_rect.left() + col * (cell_width + gap)),
+            round(grid_rect.top() + row * (cell_height + gap)),
+            round(cell_width),
+            round(cell_height),
+        )
+
+    def span_rect(self, span: FigureGridSpecSpanState) -> QtCore.QRect:
+        row_start = min(max(span.row_start, 0), self._nrows - 1)
+        row_stop = min(max(span.row_stop, row_start + 1), self._nrows)
+        col_start = min(max(span.col_start, 0), self._ncols - 1)
+        col_stop = min(max(span.col_stop, col_start + 1), self._ncols)
+        start = self.cell_rect((row_start, col_start))
+        end = self.cell_rect((row_stop - 1, col_stop - 1))
+        return QtCore.QRect(start.topLeft(), end.bottomRight()).adjusted(1, 1, -1, -1)
+
+    def _grid_rect(self) -> QtCore.QRect:
+        rect = self.rect()
+        if rect.isEmpty():
+            rect = QtCore.QRect(QtCore.QPoint(0, 0), self.sizeHint())
+        return rect.adjusted(
+            self._GRID_MARGIN,
+            self._GRID_MARGIN,
+            -self._GRID_MARGIN,
+            -self._GRID_MARGIN,
+        )
+
+    def _cell_at(
+        self, pos: QtCore.QPoint, *, clamp_to_grid: bool = False
+    ) -> tuple[int, int] | None:
+        if clamp_to_grid:
+            grid_rect = self._grid_rect()
+            if grid_rect.isEmpty():
+                return None
+            x = min(max(pos.x(), grid_rect.left()), grid_rect.right())
+            y = min(max(pos.y(), grid_rect.top()), grid_rect.bottom())
+            gap = self._CELL_GAP
+            cell_width = (
+                grid_rect.width() - gap * max(self._ncols - 1, 0)
+            ) / self._ncols
+            cell_height = (
+                grid_rect.height() - gap * max(self._nrows - 1, 0)
+            ) / self._nrows
+            col = int((x - grid_rect.left()) / (cell_width + gap))
+            row = int((y - grid_rect.top()) / (cell_height + gap))
+            return (
+                min(max(row, 0), self._nrows - 1),
+                min(max(col, 0), self._ncols - 1),
+            )
+        for row in range(self._nrows):
+            for col in range(self._ncols):
+                if self.cell_rect((row, col)).contains(pos):
+                    return row, col
+        return None
+
+    def _region_at(self, pos: QtCore.QPoint) -> _GridSpecRegionInfo | None:
+        for region in reversed(self._regions):
+            if self.span_rect(region.span).contains(pos):
+                return region
+        return None
+
+    @staticmethod
+    def _span_from_cells(
+        start: tuple[int, int], end: tuple[int, int]
+    ) -> FigureGridSpecSpanState:
+        from erlab.interactive._figurecomposer._state import FigureGridSpecSpanState
+
+        row0, col0 = start
+        row1, col1 = end
+        return FigureGridSpecSpanState(
+            row_start=min(row0, row1),
+            row_stop=max(row0, row1) + 1,
+            col_start=min(col0, col1),
+            col_stop=max(col0, col1) + 1,
+        )
+
+    def _span_within_grid(self, span: FigureGridSpecSpanState) -> bool:
+        return (
+            0 <= span.row_start < span.row_stop <= self._nrows
+            and 0 <= span.col_start < span.col_stop <= self._ncols
         )

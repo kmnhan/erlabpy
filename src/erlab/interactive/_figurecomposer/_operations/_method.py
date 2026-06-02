@@ -98,7 +98,6 @@ from erlab.interactive._figurecomposer._text import (
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    import numpy as np
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
@@ -1937,10 +1936,8 @@ def _target_text(tool: FigureComposerTool, operation: FigureOperationState) -> s
 def _has_invalid_target(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> bool:
-    return (
-        _uses_axes(operation)
-        and bool(operation.axes.invalid_axes(tool._recipe.setup))
-        and not operation.axes.expression
+    return _uses_axes(operation) and tool._axes_selection_has_invalid_target(
+        operation.axes
     )
 
 
@@ -2987,7 +2984,7 @@ def _render_method(
     tool: FigureComposerTool,
     operation: FigureOperationState,
     figure: Figure,
-    axs: np.ndarray,
+    axs: typing.Any,
 ) -> None:
     spec = _method_spec(operation)
     call_policy = _effective_call_policy(operation, spec)

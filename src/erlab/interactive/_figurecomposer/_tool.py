@@ -23,6 +23,24 @@ from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
     _figure_style_context,
 )
+from erlab.interactive._figurecomposer._gridspec import (
+    _gridspec_all_axes_ids,
+    _gridspec_axis_display_name,
+    _gridspec_axis_display_names,
+    _gridspec_grid_by_id,
+    _gridspec_grid_path,
+    _gridspec_has_invalid_regions,
+    _gridspec_invalid_axes_ids,
+    _gridspec_region_label,
+    _gridspec_region_overlaps,
+    _gridspec_region_valid,
+    _gridspec_remove_region,
+    _gridspec_replace_grid,
+    _gridspec_setup_from_subplots,
+    _gridspec_update_axis_label,
+    _gridspec_valid_axes_ids,
+    _subplots_setup_from_gridspec,
+)
 from erlab.interactive._figurecomposer._operations import _registry
 from erlab.interactive._figurecomposer._operations._base import (
     COMMON_AXES_SECTION_TOOLTIP,
@@ -37,6 +55,9 @@ from erlab.interactive._figurecomposer._sources import (
 )
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecSpanState,
     FigureOperationState,
     FigureRecipeState,
     FigureSourceState,
@@ -50,6 +71,8 @@ from erlab.interactive._figurecomposer._text import (
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
     _FigureComposerDisplayWindow,
+    _GridSpecLayoutWidget,
+    _GridSpecRegionInfo,
     _step_toolbar_button,
 )
 from erlab.interactive.imagetool import provenance
@@ -92,6 +115,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
+        self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
+        self._gridspec_breadcrumb_buttons: list[QtWidgets.QToolButton] = []
         self._figure_window: _FigureComposerDisplayWindow | None = None
 
         if source_data is not None:
@@ -473,6 +498,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.axes_selector = _AxesSelectorWidget(self.target_axes_page)
         self.axes_selector.sigSelectionChanged.connect(self._axes_selection_changed)
         target_axes_layout.addWidget(self.axes_selector)
+        self.gridspec_axes_list = QtWidgets.QListWidget(self.target_axes_page)
+        self.gridspec_axes_list.setObjectName("figureComposerGridSpecAxesList")
+        self.gridspec_axes_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.gridspec_axes_list.setAlternatingRowColors(True)
+        self.gridspec_axes_list.setUniformItemSizes(True)
+        self.gridspec_axes_list.setToolTip(
+            "Axes created in the GridSpec layout.\n"
+            "Use Shift or Command/Ctrl to select multiple targets."
+        )
+        self.gridspec_axes_list.itemSelectionChanged.connect(
+            self._gridspec_axes_selection_changed
+        )
+        target_axes_layout.addWidget(self.gridspec_axes_list)
         self.target_axes_status_label = QtWidgets.QLabel(self.target_axes_page)
         self.target_axes_status_label.setObjectName("figureComposerAxesStatus")
         self.target_axes_status_label.setWordWrap(True)
@@ -550,6 +590,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.width_ratios_edit.setObjectName("figureComposerWidthRatiosEdit")
         self.height_ratios_edit = QtWidgets.QLineEdit(layout_page)
         self.height_ratios_edit.setObjectName("figureComposerHeightRatiosEdit")
+        self.layout_mode_combo = QtWidgets.QComboBox(layout_page)
+        self.layout_mode_combo.setObjectName("figureComposerLayoutModeCombo")
+        self.layout_mode_combo.addItems(["subplots", "gridspec"])
+        self.layout_mode_combo.setToolTip(
+            "Choose regular plt.subplots layout or custom GridSpec regions."
+        )
 
         def add_grid_pair_row(
             row: int,
@@ -582,20 +628,30 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 setup_layout.addWidget(label, row, column)
                 setup_layout.addWidget(widget, row, column + 1)
 
-        add_grid_pair_row(
-            0,
-            "Grid",
-            "figureComposerGridControls",
-            "Subplot grid created by plt.subplots.",
-            "Rows",
-            self.nrows_spin,
-            "Number of subplot rows created by plt.subplots.",
-            "Columns",
-            self.ncols_spin,
-            "Number of subplot columns created by plt.subplots.",
+        mode_label = QtWidgets.QLabel("Layout mode", layout_page)
+        mode_label.setObjectName("figureComposerLayoutModeControls")
+        mode_label.setBuddy(self.layout_mode_combo)
+        mode_label.setToolTip(self.layout_mode_combo.toolTip())
+        mode_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
         )
+        setup_layout.addWidget(mode_label, 0, 0, 1, 2)
+        setup_layout.addWidget(self.layout_mode_combo, 0, 2, 1, 3)
+
         add_grid_pair_row(
             1,
+            "Grid",
+            "figureComposerGridControls",
+            "Subplot grid or active GridSpec grid.",
+            "Rows",
+            self.nrows_spin,
+            "Number of rows in the subplot grid or active GridSpec grid.",
+            "Columns",
+            self.ncols_spin,
+            "Number of columns in the subplot grid or active GridSpec grid.",
+        )
+        add_grid_pair_row(
+            2,
             "Size (in)",
             "figureComposerSizeControls",
             "Figure size in inches. The plot window follows this size.",
@@ -607,7 +663,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Figure height in inches. The plot window follows this size.",
         )
         add_grid_pair_row(
-            2,
+            3,
             "Size (mm)",
             "figureComposerSizeMmControls",
             "Figure size in millimeters, synced with the inch controls.",
@@ -628,10 +684,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.layout_combo.setToolTip(
             "Matplotlib layout engine passed to plt.subplots.",
         )
-        setup_layout.addWidget(layout_row_label, 3, 0, 1, 2)
-        setup_layout.addWidget(self.layout_combo, 3, 2, 1, 3)
+        setup_layout.addWidget(layout_row_label, 4, 0, 1, 2)
+        setup_layout.addWidget(self.layout_combo, 4, 2, 1, 3)
         add_grid_pair_row(
-            4,
+            5,
             "Share axes",
             "figureComposerShareControls",
             "Matplotlib shared-axis settings passed to plt.subplots.",
@@ -643,18 +699,125 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "Matplotlib sharey setting passed to plt.subplots.",
         )
         add_grid_pair_row(
-            5,
+            6,
             "Ratios",
             "figureComposerRatioControls",
-            "Optional subplot width and height ratios passed to plt.subplots.",
+            "Optional width and height ratios for subplots or active GridSpec grid.",
             "Widths",
             self.width_ratios_edit,
-            "Optional width_ratios values, one positive number per column.",
+            "Optional width ratios, one positive number per column.",
             "Heights",
             self.height_ratios_edit,
-            "Optional height_ratios values, one positive number per row.",
+            "Optional height ratios, one positive number per row.",
         )
-        setup_layout.setRowStretch(6, 1)
+
+        self.gridspec_editor_widget = QtWidgets.QWidget(layout_page)
+        self.gridspec_editor_widget.setObjectName("figureComposerGridSpecEditor")
+        gridspec_editor_layout = QtWidgets.QVBoxLayout(self.gridspec_editor_widget)
+        gridspec_editor_layout.setContentsMargins(0, 0, 0, 0)
+        gridspec_editor_layout.setSpacing(4)
+        self.gridspec_breadcrumb_widget = QtWidgets.QWidget(self.gridspec_editor_widget)
+        self.gridspec_breadcrumb_layout = QtWidgets.QHBoxLayout(
+            self.gridspec_breadcrumb_widget
+        )
+        self.gridspec_breadcrumb_layout.setContentsMargins(0, 0, 0, 0)
+        self.gridspec_breadcrumb_layout.setSpacing(2)
+        gridspec_editor_layout.addWidget(self.gridspec_breadcrumb_widget)
+
+        gridspec_action_layout = QtWidgets.QHBoxLayout()
+        self.gridspec_region_kind_combo = QtWidgets.QComboBox(
+            self.gridspec_editor_widget
+        )
+        self.gridspec_region_kind_combo.setObjectName(
+            "figureComposerGridSpecRegionKindCombo"
+        )
+        self.gridspec_region_kind_combo.addItem("Axes", "axes")
+        self.gridspec_region_kind_combo.addItem("Nested Grid", "grid")
+        self.gridspec_region_kind_combo.setToolTip(
+            "Kind of region created by the next drag gesture."
+        )
+        self.gridspec_parent_grid_button = _step_toolbar_button(
+            self.gridspec_editor_widget,
+            "figureComposerGridSpecParentButton",
+            "Parent",
+            "Return to the parent GridSpec grid.",
+        )
+        self.gridspec_parent_grid_button.clicked.connect(
+            self._gridspec_open_parent_grid
+        )
+        draw_label = QtWidgets.QLabel("Draw", self.gridspec_editor_widget)
+        draw_label.setBuddy(self.gridspec_region_kind_combo)
+        gridspec_action_layout.addWidget(draw_label)
+        gridspec_action_layout.addWidget(self.gridspec_region_kind_combo)
+        gridspec_action_layout.addWidget(self.gridspec_parent_grid_button)
+        gridspec_action_layout.addStretch(1)
+        gridspec_editor_layout.addLayout(gridspec_action_layout)
+
+        self.gridspec_layout_widget = _GridSpecLayoutWidget(self.gridspec_editor_widget)
+        self.gridspec_layout_widget.set_creation_kind("axes")
+        self.gridspec_layout_widget.sigRegionCreated.connect(
+            self._gridspec_region_created
+        )
+        self.gridspec_layout_widget.sigRegionChanged.connect(
+            self._gridspec_region_changed
+        )
+        self.gridspec_layout_widget.sigRegionSelected.connect(
+            self._gridspec_region_selected
+        )
+        self.gridspec_layout_widget.sigNestedGridActivated.connect(
+            self._gridspec_open_grid
+        )
+        self.gridspec_region_kind_combo.currentIndexChanged.connect(
+            self._gridspec_region_kind_changed
+        )
+        gridspec_editor_layout.addWidget(self.gridspec_layout_widget)
+
+        gridspec_region_layout = QtWidgets.QHBoxLayout()
+        self.gridspec_region_label_edit = QtWidgets.QLineEdit(
+            self.gridspec_editor_widget
+        )
+        self.gridspec_region_label_edit.setObjectName(
+            "figureComposerGridSpecRegionLabelEdit"
+        )
+        self.gridspec_region_label_edit.setPlaceholderText("Optional axes name")
+        self.gridspec_region_label_edit.setToolTip(
+            "Optional label used in the GUI and generated axis variable name."
+        )
+        self.gridspec_region_label_edit.editingFinished.connect(
+            self._gridspec_region_label_changed
+        )
+        self.gridspec_open_grid_button = _step_toolbar_button(
+            self.gridspec_editor_widget,
+            "figureComposerGridSpecOpenButton",
+            "Open",
+            "Edit the selected nested grid.",
+        )
+        self.gridspec_open_grid_button.clicked.connect(
+            self._gridspec_open_selected_grid
+        )
+        self.gridspec_delete_region_button = _step_toolbar_button(
+            self.gridspec_editor_widget,
+            "figureComposerGridSpecDeleteButton",
+            "Delete",
+            "Delete the selected axes or nested grid region.",
+        )
+        self.gridspec_delete_region_button.clicked.connect(
+            self._gridspec_delete_selected_region
+        )
+        name_label = QtWidgets.QLabel("Name", self.gridspec_editor_widget)
+        name_label.setBuddy(self.gridspec_region_label_edit)
+        gridspec_region_layout.addWidget(name_label)
+        gridspec_region_layout.addWidget(self.gridspec_region_label_edit, 1)
+        gridspec_region_layout.addWidget(self.gridspec_open_grid_button)
+        gridspec_region_layout.addWidget(self.gridspec_delete_region_button)
+        gridspec_editor_layout.addLayout(gridspec_region_layout)
+
+        self.gridspec_status_label = QtWidgets.QLabel(self.gridspec_editor_widget)
+        self.gridspec_status_label.setObjectName("figureComposerGridSpecStatus")
+        self.gridspec_status_label.setWordWrap(True)
+        gridspec_editor_layout.addWidget(self.gridspec_status_label)
+        setup_layout.addWidget(self.gridspec_editor_widget, 7, 0, 1, 5)
+        setup_layout.setRowStretch(8, 1)
 
         layout_index = self.editor_tabs.addTab(layout_page, "Layout")
         self.editor_tabs.setTabToolTip(
@@ -682,6 +845,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
         for widget in (self.width_ratios_edit, self.height_ratios_edit):
             widget.editingFinished.connect(self._setup_controls_changed)
+        self.layout_mode_combo.currentTextChanged.connect(self._layout_mode_changed)
         self.layout_combo.currentTextChanged.connect(self._setup_controls_changed)
         self.sharex_combo.currentTextChanged.connect(self._setup_controls_changed)
         self.sharey_combo.currentTextChanged.connect(self._setup_controls_changed)
@@ -693,16 +857,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._updating_controls = True
         try:
             setup = self._recipe.setup
-            self.nrows_spin.setValue(setup.nrows)
-            self.ncols_spin.setValue(setup.ncols)
+            self._set_combo_value(self.layout_mode_combo, setup.layout_mode)
+            self._sync_active_grid_controls(setup)
             self.width_spin.setValue(setup.figsize[0])
             self.height_spin.setValue(setup.figsize[1])
             self._sync_size_mm_controls(setup.figsize)
             self._set_combo_value(self.layout_combo, setup.layout or "none")
             self._set_combo_value(self.sharex_combo, str(setup.sharex))
             self._set_combo_value(self.sharey_combo, str(setup.sharey))
-            self.width_ratios_edit.setText(_format_tuple(setup.width_ratios))
-            self.height_ratios_edit.setText(_format_tuple(setup.height_ratios))
             self._refresh_source_list()
             self._rebuild_axes_grid()
             self._refresh_operation_list()
@@ -724,6 +886,25 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _sync_size_mm_controls(self, figsize: tuple[float, float]) -> None:
         self.width_mm_spin.setValue(figsize[0] * _MM_PER_INCH)
         self.height_mm_spin.setValue(figsize[1] * _MM_PER_INCH)
+
+    def _sync_active_grid_controls(self, setup: FigureSubplotsState) -> None:
+        if setup.layout_mode == "gridspec":
+            active_grid = _gridspec_grid_by_id(setup, self._active_gridspec_grid_id)
+            if active_grid is None:
+                self._active_gridspec_grid_id = setup.gridspec.root.grid_id
+                active_grid = setup.gridspec.root
+            self.nrows_spin.setValue(active_grid.nrows)
+            self.ncols_spin.setValue(active_grid.ncols)
+            self.width_ratios_edit.setText(_format_tuple(active_grid.width_ratios))
+            self.height_ratios_edit.setText(_format_tuple(active_grid.height_ratios))
+        else:
+            self.nrows_spin.setValue(setup.nrows)
+            self.ncols_spin.setValue(setup.ncols)
+            self.width_ratios_edit.setText(_format_tuple(setup.width_ratios))
+            self.height_ratios_edit.setText(_format_tuple(setup.height_ratios))
+        self.gridspec_editor_widget.setVisible(setup.layout_mode == "gridspec")
+        self.sharex_combo.setEnabled(setup.layout_mode == "subplots")
+        self.sharey_combo.setEnabled(setup.layout_mode == "subplots")
 
     @staticmethod
     def _ratio_tuple_from_text(text: str) -> tuple[float, ...]:
@@ -763,29 +944,215 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._recipe.setup.nrows,
             self._recipe.setup.ncols,
         )
+        self._refresh_gridspec_editor()
         self._sync_axes_selector()
+
+    def _refresh_gridspec_editor(self) -> None:
+        setup = self._recipe.setup
+        if setup.layout_mode != "gridspec":
+            self.gridspec_editor_widget.setVisible(False)
+            return
+        self.gridspec_editor_widget.setVisible(True)
+        grid = _gridspec_grid_by_id(setup, self._active_gridspec_grid_id)
+        if grid is None:
+            self._active_gridspec_grid_id = setup.gridspec.root.grid_id
+            grid = setup.gridspec.root
+        regions = [
+            _GridSpecRegionInfo(
+                axis.axes_id,
+                "axes",
+                axis.span,
+                axis.label.strip() or _gridspec_axis_display_name(setup, axis.axes_id),
+                _gridspec_region_valid(grid, axis.span),
+            )
+            for axis in grid.axes
+        ]
+        regions.extend(
+            _GridSpecRegionInfo(
+                child.grid_id,
+                "grid",
+                child.span,
+                child.label.strip() or "Grid",
+                _gridspec_region_valid(grid, child.span),
+            )
+            for child in grid.child_grids
+            if child.span is not None
+        )
+        self.gridspec_layout_widget.set_grid(grid.nrows, grid.ncols, regions)
+        self._refresh_gridspec_breadcrumbs()
+        self._refresh_gridspec_region_controls()
+        self._refresh_gridspec_axes_list()
+        self._refresh_gridspec_status(grid)
+
+    def _refresh_gridspec_status(self, grid: FigureGridSpecGridState) -> None:
+        invalid_regions = [
+            _gridspec_region_label(self._recipe.setup, grid, axis.axes_id)
+            for axis in grid.axes
+            if not _gridspec_region_valid(grid, axis.span)
+        ]
+        invalid_regions.extend(
+            _gridspec_region_label(self._recipe.setup, grid, child.grid_id)
+            for child in grid.child_grids
+            if child.span is None or not _gridspec_region_valid(grid, child.span)
+        )
+        if invalid_regions:
+            self.gridspec_status_label.setText(
+                "Some regions are outside the active grid: "
+                + ", ".join(invalid_regions)
+                + ". Increase rows/columns or delete and redraw them."
+            )
+            return
+        if _gridspec_has_invalid_regions(self._recipe.setup.gridspec.root):
+            self.gridspec_status_label.setText(
+                "A nested grid contains regions outside its bounds."
+            )
+            return
+        kind = self.gridspec_region_kind_combo.currentText()
+        self.gridspec_status_label.setText(
+            f"Drag cells to create {kind.lower()} regions. "
+            "Double-click a nested grid to edit it."
+        )
+
+    def _refresh_gridspec_breadcrumbs(self) -> None:
+        for button in self._gridspec_breadcrumb_buttons:
+            button.deleteLater()
+        self._gridspec_breadcrumb_buttons.clear()
+        while self.gridspec_breadcrumb_layout.count():
+            item = self.gridspec_breadcrumb_layout.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        path = _gridspec_grid_path(self._recipe.setup, self._active_gridspec_grid_id)
+        for index, grid in enumerate(path):
+            if index:
+                separator = QtWidgets.QLabel(">", self.gridspec_breadcrumb_widget)
+                self.gridspec_breadcrumb_layout.addWidget(separator)
+            button = QtWidgets.QToolButton(self.gridspec_breadcrumb_widget)
+            button.setText(grid.label.strip() or ("Root" if index == 0 else "Grid"))
+            button.setToolTip("Open this GridSpec grid.")
+            button.clicked.connect(
+                lambda _checked=False, grid_id=grid.grid_id: self._gridspec_open_grid(
+                    grid_id
+                )
+            )
+            self._gridspec_breadcrumb_buttons.append(button)
+            self.gridspec_breadcrumb_layout.addWidget(button)
+        self.gridspec_breadcrumb_layout.addStretch(1)
+        self.gridspec_parent_grid_button.setEnabled(len(path) > 1)
+
+    def _refresh_gridspec_region_controls(self) -> None:
+        region_id = self.gridspec_layout_widget.selected_region_id()
+        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        label = ""
+        kind = ""
+        if grid is not None and region_id:
+            for axis in grid.axes:
+                if axis.axes_id == region_id:
+                    label = axis.label
+                    kind = "axes"
+                    break
+            if not kind:
+                for child in grid.child_grids:
+                    if child.grid_id == region_id:
+                        label = child.label
+                        kind = "grid"
+                        break
+        blocker = QtCore.QSignalBlocker(self.gridspec_region_label_edit)
+        self.gridspec_region_label_edit.setText(label)
+        del blocker
+        has_region = bool(kind)
+        self.gridspec_region_label_edit.setPlaceholderText(
+            "Optional axes name" if kind != "grid" else "Optional grid name"
+        )
+        self.gridspec_region_label_edit.setEnabled(has_region)
+        self.gridspec_delete_region_button.setEnabled(has_region)
+        self.gridspec_open_grid_button.setEnabled(kind == "grid")
+        self.gridspec_open_grid_button.setToolTip(
+            "Edit the selected nested grid."
+            if kind == "grid"
+            else "Select a nested grid region to edit it."
+        )
+        self.gridspec_delete_region_button.setToolTip(
+            "Delete the selected axes or nested grid region."
+            if has_region
+            else "Select an axes or nested grid region to delete it."
+        )
+
+    def _refresh_gridspec_axes_list(self) -> None:
+        selected_ids: set[str] = set()
+        current = self._current_operation()
+        if current is not None and _registry.spec_for(current[1].kind).uses_axes(
+            current[1]
+        ):
+            selected_ids = set(current[1].axes.axes_ids)
+        blocker = QtCore.QSignalBlocker(self.gridspec_axes_list)
+        self.gridspec_axes_list.clear()
+        valid_axis_ids = set(
+            _gridspec_valid_axes_ids(
+                self._recipe.setup,
+                _gridspec_all_axes_ids(self._recipe.setup),
+            )
+        )
+        for axes_id in _gridspec_all_axes_ids(self._recipe.setup):
+            is_valid = axes_id in valid_axis_ids
+            item = QtWidgets.QListWidgetItem(
+                _gridspec_axis_display_name(self._recipe.setup, axes_id)
+                + ("" if is_valid else " (outside grid)")
+            )
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, axes_id)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, is_valid)
+            if is_valid:
+                item.setToolTip("Select this GridSpec axes as an operation target.")
+            else:
+                item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
+                item.setToolTip(
+                    "This axes is outside its current GridSpec grid. "
+                    "Increase the grid size or drop removed axes."
+                )
+            self.gridspec_axes_list.addItem(item)
+            item.setSelected(axes_id in selected_ids)
+        del blocker
 
     def _sync_axes_selector(self) -> None:
         current = self._current_operation()
         selected_axes = set()
+        selected_axes_ids: tuple[str, ...] = ()
         expression = ""
         invalid_axes: tuple[tuple[int, int], ...] = ()
+        invalid_axes_ids: tuple[str, ...] = ()
         if current is not None:
             _, operation = current
             spec = _registry.spec_for(operation.kind)
             if spec.uses_axes(operation):
-                selected_axes = set(operation.axes.valid_axes(self._recipe.setup))
-                invalid_axes = operation.axes.invalid_axes(self._recipe.setup)
+                if self._recipe.setup.layout_mode == "gridspec":
+                    selected_axes_ids = _gridspec_valid_axes_ids(
+                        self._recipe.setup, operation.axes.axes_ids
+                    )
+                    invalid_axes_ids = _gridspec_invalid_axes_ids(
+                        self._recipe.setup, operation.axes.axes_ids
+                    )
+                else:
+                    selected_axes = set(operation.axes.valid_axes(self._recipe.setup))
+                    invalid_axes = operation.axes.invalid_axes(self._recipe.setup)
                 expression = operation.axes.expression
 
         self._updating_controls = True
         try:
+            grid_mode = self._recipe.setup.layout_mode == "gridspec"
+            self.axes_selector.setVisible(not grid_mode)
+            self.axes_expression_edit.setVisible(not grid_mode)
+            self.gridspec_axes_list.setVisible(grid_mode)
             self.axes_selector.set_selected_axes(tuple(sorted(selected_axes)))
+            self._refresh_gridspec_axes_list()
             if self.axes_expression_edit.text() != expression:
                 blocker = QtCore.QSignalBlocker(self.axes_expression_edit)
                 self.axes_expression_edit.setText(expression)
                 del blocker
-            self.keep_valid_axes_button.setEnabled(bool(invalid_axes))
+            self.keep_valid_axes_button.setEnabled(
+                bool(invalid_axes_ids) if grid_mode else bool(invalid_axes)
+            )
             if current is None:
                 self.target_axes_status_label.setText("Select a step to choose axes.")
             elif not _registry.spec_for(current[1].kind).uses_axes(current[1]):
@@ -801,12 +1168,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     "Target axes removed by the current layout: "
                     f"{_format_axes_tuple(invalid_axes)}"
                 )
-            else:
-                axes_text = _format_axes_tuple(
-                    tuple(sorted(selected_axes)),
-                    nrows=self._recipe.setup.nrows,
-                    ncols=self._recipe.setup.ncols,
+            elif invalid_axes_ids:
+                self.target_axes_status_label.setText(
+                    "Target axes removed by the current GridSpec layout: "
+                    + ", ".join(invalid_axes_ids)
                 )
+            else:
+                if grid_mode:
+                    axes_text = ", ".join(
+                        _gridspec_axis_display_names(
+                            self._recipe.setup, selected_axes_ids
+                        )
+                    )
+                else:
+                    axes_text = _format_axes_tuple(
+                        tuple(sorted(selected_axes)),
+                        nrows=self._recipe.setup.nrows,
+                        ncols=self._recipe.setup.ncols,
+                    )
                 self.target_axes_status_label.setText(f"Targets: {axes_text}")
         finally:
             self._updating_controls = False
@@ -887,6 +1266,18 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _axes_target_text(self, selection: FigureAxesSelectionState) -> str:
         if selection.expression:
             return selection.expression
+        if self._recipe.setup.layout_mode == "gridspec":
+            invalid_ids = _gridspec_invalid_axes_ids(
+                self._recipe.setup, selection.axes_ids
+            )
+            if invalid_ids:
+                return "removed axes " + ", ".join(invalid_ids)
+            valid_ids = _gridspec_valid_axes_ids(self._recipe.setup, selection.axes_ids)
+            if not valid_ids:
+                return "none"
+            return ", ".join(
+                _gridspec_axis_display_names(self._recipe.setup, valid_ids)
+            )
         invalid_axes = selection.invalid_axes(self._recipe.setup)
         if invalid_axes:
             return f"removed axes {_format_axes_tuple(invalid_axes)}"
@@ -901,6 +1292,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _operation_has_invalid_axes(self, operation: FigureOperationState) -> bool:
         return _registry.spec_for(operation.kind).has_invalid_target(self, operation)
+
+    def _axes_selection_has_invalid_target(
+        self, selection: FigureAxesSelectionState
+    ) -> bool:
+        if selection.expression:
+            return False
+        if self._recipe.setup.layout_mode == "gridspec":
+            if not _gridspec_valid_axes_ids(self._recipe.setup, selection.axes_ids):
+                return True
+            return bool(
+                _gridspec_invalid_axes_ids(self._recipe.setup, selection.axes_ids)
+            )
+        return bool(selection.invalid_axes(self._recipe.setup)) or not bool(
+            selection.valid_axes(self._recipe.setup)
+        )
 
     def _invalid_operation_indices(self) -> tuple[int, ...]:
         return tuple(
@@ -1189,19 +1595,46 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._updating_controls:
             return
         try:
-            setup = FigureSubplotsState(
-                nrows=self.nrows_spin.value(),
-                ncols=self.ncols_spin.value(),
-                figsize=(self.width_spin.value(), self.height_spin.value()),
-                dpi=self._recipe.setup.dpi,
-                layout=self._layout_combo_value(),
-                sharex=self._combo_bool_or_text(self.sharex_combo),
-                sharey=self._combo_bool_or_text(self.sharey_combo),
-                width_ratios=self._ratio_tuple_from_text(self.width_ratios_edit.text()),
-                height_ratios=self._ratio_tuple_from_text(
-                    self.height_ratios_edit.text()
-                ),
-            )
+            width_ratios = self._ratio_tuple_from_text(self.width_ratios_edit.text())
+            height_ratios = self._ratio_tuple_from_text(self.height_ratios_edit.text())
+            if self._recipe.setup.layout_mode == "gridspec":
+                setup = self._recipe.setup.model_copy(
+                    update={
+                        "figsize": (self.width_spin.value(), self.height_spin.value()),
+                        "dpi": self._recipe.setup.dpi,
+                        "layout": self._layout_combo_value(),
+                    }
+                )
+
+                def update_grid(
+                    grid: FigureGridSpecGridState,
+                ) -> FigureGridSpecGridState:
+                    return grid.model_copy(
+                        update={
+                            "nrows": self.nrows_spin.value(),
+                            "ncols": self.ncols_spin.value(),
+                            "width_ratios": width_ratios,
+                            "height_ratios": height_ratios,
+                        }
+                    )
+
+                setup = _gridspec_replace_grid(
+                    setup, self._active_gridspec_grid_id, update_grid
+                )
+            else:
+                setup = FigureSubplotsState(
+                    layout_mode="subplots",
+                    nrows=self.nrows_spin.value(),
+                    ncols=self.ncols_spin.value(),
+                    figsize=(self.width_spin.value(), self.height_spin.value()),
+                    dpi=self._recipe.setup.dpi,
+                    layout=self._layout_combo_value(),
+                    sharex=self._combo_bool_or_text(self.sharex_combo),
+                    sharey=self._combo_bool_or_text(self.sharey_combo),
+                    width_ratios=width_ratios,
+                    height_ratios=height_ratios,
+                    gridspec=self._recipe.setup.gridspec,
+                )
         except ValueError:
             return
         if setup == self._recipe.setup:
@@ -1210,6 +1643,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._updating_controls = True
         try:
             self._sync_size_mm_controls(setup.figsize)
+            self._sync_active_grid_controls(setup)
         finally:
             self._updating_controls = False
         if (
@@ -1252,6 +1686,73 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             text,
         )
 
+    @QtCore.Slot()
+    def _layout_mode_changed(self) -> None:
+        if self._updating_controls:
+            return
+        mode = self.layout_mode_combo.currentText()
+        if mode == self._recipe.setup.layout_mode:
+            return
+        if mode == "gridspec":
+            setup = _gridspec_setup_from_subplots(self._recipe.setup)
+            axes_ids = _gridspec_all_axes_ids(setup)
+            axis_id_by_tuple = {
+                (row, col): axes_ids[row * setup.ncols + col]
+                for row in range(setup.nrows)
+                for col in range(setup.ncols)
+                if row * setup.ncols + col < len(axes_ids)
+            }
+            operations = tuple(
+                operation.model_copy(
+                    update={
+                        "axes": operation.axes.model_copy(
+                            update={
+                                "axes_ids": tuple(
+                                    axis_id_by_tuple[axis]
+                                    for axis in operation.axes.axes
+                                    if axis in axis_id_by_tuple
+                                ),
+                                "expression": "",
+                            }
+                        )
+                    }
+                )
+                if _registry.spec_for(operation.kind).uses_axes(operation)
+                else operation
+                for operation in self._recipe.operations
+            )
+            self._active_gridspec_grid_id = setup.gridspec.root.grid_id
+        else:
+            setup = _subplots_setup_from_gridspec(self._recipe.setup)
+            operations = tuple(
+                operation.model_copy(
+                    update={
+                        "axes": operation.axes.model_copy(
+                            update={
+                                "axes": operation.axes.axes or ((0, 0),),
+                                "expression": "",
+                            }
+                        )
+                    }
+                )
+                if _registry.spec_for(operation.kind).uses_axes(operation)
+                else operation
+                for operation in self._recipe.operations
+            )
+        self._recipe = self._recipe.model_copy(
+            update={"setup": setup, "operations": operations}
+        )
+        self._updating_controls = True
+        try:
+            self._sync_active_grid_controls(setup)
+        finally:
+            self._updating_controls = False
+        self._rebuild_axes_grid()
+        self._refresh_operation_list()
+        self._update_operation_editor()
+        _rendering._render_preview(self)
+        self.sigInfoChanged.emit()
+
     @staticmethod
     def _combo_bool_or_text(
         combo: QtWidgets.QComboBox,
@@ -1283,6 +1784,42 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             sync_axes=False,
         )
         erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
+
+    @QtCore.Slot()
+    def _gridspec_axes_selection_changed(self) -> None:
+        if self._updating_controls:
+            return
+        current = self._current_operation()
+        if current is None:
+            return
+        if not _registry.spec_for(current[1].kind).uses_axes(current[1]):
+            return
+        axes_ids = tuple(
+            typing.cast("str", item.data(QtCore.Qt.ItemDataRole.UserRole))
+            for item in self.gridspec_axes_list.selectedItems()
+        )
+        index, operation = current
+        selection = operation.axes.model_copy(
+            update={"axes_ids": axes_ids, "expression": ""}
+        )
+        self._replace_operation(
+            index,
+            operation.model_copy(update={"axes": selection}),
+            sync_axes=False,
+        )
+        erlab.interactive.utils.single_shot(self, 0, self._sync_axes_selector)
+
+    @QtCore.Slot()
+    @QtCore.Slot(int)
+    def _gridspec_region_kind_changed(self, _index: int | None = None) -> None:
+        kind = typing.cast(
+            'typing.Literal["axes", "grid"]',
+            self.gridspec_region_kind_combo.currentData(),
+        )
+        self.gridspec_layout_widget.set_creation_kind(kind)
+        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        if grid is not None:
+            self._refresh_gridspec_status(grid)
 
     @QtCore.Slot()
     def _axes_expression_changed(self) -> None:
@@ -1398,6 +1935,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         index, operation = current
         if not _registry.spec_for(operation.kind).uses_axes(operation):
             return
+        if self._recipe.setup.layout_mode == "gridspec":
+            selection = operation.axes.model_copy(
+                update={
+                    "axes_ids": _gridspec_all_axes_ids(self._recipe.setup),
+                    "expression": "",
+                }
+            )
+            self._replace_operation(
+                index, operation.model_copy(update={"axes": selection})
+            )
+            return
         selection = operation.axes.model_copy(
             update={"axes": _all_axes(self._recipe.setup), "expression": ""}
         )
@@ -1410,6 +1958,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         index, operation = current
         if not _registry.spec_for(operation.kind).uses_axes(operation):
+            return
+        if self._recipe.setup.layout_mode == "gridspec":
+            axes_ids = _gridspec_valid_axes_ids(
+                self._recipe.setup, operation.axes.axes_ids
+            )
+            if not axes_ids:
+                axes_ids = _gridspec_all_axes_ids(self._recipe.setup)[:1]
+            selection = operation.axes.model_copy(
+                update={"axes_ids": axes_ids, "expression": ""}
+            )
+            self._replace_operation(
+                index, operation.model_copy(update={"axes": selection})
+            )
             return
         axes = operation.axes.valid_axes(self._recipe.setup)
         if not axes:
@@ -1424,6 +1985,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return tuple(self._source_data)
 
     def _selected_axes_state(self) -> FigureAxesSelectionState:
+        if self._recipe.setup.layout_mode == "gridspec":
+            axes_ids = tuple(
+                typing.cast("str", item.data(QtCore.Qt.ItemDataRole.UserRole))
+                for item in self.gridspec_axes_list.selectedItems()
+            )
+            if not axes_ids:
+                axes_ids = _gridspec_all_axes_ids(self._recipe.setup)[:1]
+            return FigureAxesSelectionState(axes_ids=axes_ids)
         axes = self.axes_selector.selected_axes()
         if not axes:
             axes = ((0, 0),)
@@ -1431,6 +2000,171 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             axes=axes,
             expression=self.axes_expression_edit.text().strip(),
         )
+
+    @QtCore.Slot(object, str)
+    def _gridspec_region_created(self, span_obj: object, kind_text: str) -> None:
+        kind = typing.cast(
+            'typing.Literal["axes", "grid"]',
+            kind_text,
+        )
+        self._add_gridspec_region(
+            typing.cast("FigureGridSpecSpanState", span_obj), kind
+        )
+
+    @QtCore.Slot(str, object)
+    def _gridspec_region_changed(self, region_id: str, span_obj: object) -> None:
+        span = typing.cast("FigureGridSpecSpanState", span_obj)
+        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        if grid is None or not _gridspec_region_valid(grid, span):
+            self.gridspec_status_label.setText("Region is outside the active grid.")
+            return
+        if _gridspec_region_overlaps(
+            grid,
+            span,
+            ignore_axes_id=region_id,
+            ignore_grid_id=region_id,
+        ):
+            self.gridspec_status_label.setText("Regions cannot overlap.")
+            return
+
+        def update_grid(grid_state: FigureGridSpecGridState) -> FigureGridSpecGridState:
+            axes = tuple(
+                axis.model_copy(update={"span": span})
+                if axis.axes_id == region_id
+                else axis
+                for axis in grid_state.axes
+            )
+            children = tuple(
+                child.model_copy(update={"span": span})
+                if child.grid_id == region_id
+                else child
+                for child in grid_state.child_grids
+            )
+            return grid_state.model_copy(update={"axes": axes, "child_grids": children})
+
+        setup = _gridspec_replace_grid(
+            self._recipe.setup, self._active_gridspec_grid_id, update_grid
+        )
+        self._apply_gridspec_setup(setup, selected_region_id=region_id)
+
+    @QtCore.Slot(str, str)
+    def _gridspec_region_selected(self, region_id: str, _kind: str) -> None:
+        self.gridspec_layout_widget.set_selected_region(region_id)
+        self._refresh_gridspec_region_controls()
+
+    @QtCore.Slot(str)
+    def _gridspec_open_grid(self, grid_id: str) -> None:
+        if _gridspec_grid_by_id(self._recipe.setup, grid_id) is None:
+            return
+        self._active_gridspec_grid_id = grid_id
+        self._updating_controls = True
+        try:
+            self._sync_active_grid_controls(self._recipe.setup)
+        finally:
+            self._updating_controls = False
+        self._refresh_gridspec_editor()
+
+    @QtCore.Slot()
+    def _gridspec_open_selected_grid(self) -> None:
+        region_id = self.gridspec_layout_widget.selected_region_id()
+        if region_id:
+            self._gridspec_open_grid(region_id)
+
+    @QtCore.Slot()
+    def _gridspec_open_parent_grid(self) -> None:
+        path = _gridspec_grid_path(self._recipe.setup, self._active_gridspec_grid_id)
+        if len(path) > 1:
+            self._gridspec_open_grid(path[-2].grid_id)
+
+    @QtCore.Slot()
+    def _gridspec_delete_selected_region(self) -> None:
+        region_id = self.gridspec_layout_widget.selected_region_id()
+        if not region_id:
+            return
+        setup = _gridspec_remove_region(
+            self._recipe.setup, self._active_gridspec_grid_id, region_id
+        )
+        self._apply_gridspec_setup(setup, selected_region_id="")
+
+    @QtCore.Slot()
+    def _gridspec_region_label_changed(self) -> None:
+        region_id = self.gridspec_layout_widget.selected_region_id()
+        if not region_id:
+            return
+        label = self.gridspec_region_label_edit.text().strip()
+        setup = _gridspec_update_axis_label(self._recipe.setup, region_id, label)
+        if setup == self._recipe.setup:
+            setup = self._update_gridspec_grid_label(region_id, label)
+        self._apply_gridspec_setup(setup, selected_region_id=region_id)
+
+    def _add_gridspec_region(
+        self,
+        span: FigureGridSpecSpanState,
+        kind: typing.Literal["axes", "grid"],
+    ) -> None:
+        grid = _gridspec_grid_by_id(self._recipe.setup, self._active_gridspec_grid_id)
+        if grid is None:
+            return
+        if not _gridspec_region_valid(grid, span):
+            self.gridspec_status_label.setText("Region is outside the active grid.")
+            return
+        if _gridspec_region_overlaps(grid, span):
+            self.gridspec_status_label.setText("Regions cannot overlap.")
+            return
+
+        if kind == "axes":
+            region = FigureGridSpecAxesState(span=span)
+            selected_region_id = region.axes_id
+
+            def update_grid(
+                grid_state: FigureGridSpecGridState,
+            ) -> FigureGridSpecGridState:
+                return grid_state.model_copy(
+                    update={"axes": (*grid_state.axes, region)}
+                )
+
+        else:
+            region = FigureGridSpecGridState(span=span, label="Grid")
+            selected_region_id = region.grid_id
+
+            def update_grid(
+                grid_state: FigureGridSpecGridState,
+            ) -> FigureGridSpecGridState:
+                return grid_state.model_copy(
+                    update={"child_grids": (*grid_state.child_grids, region)}
+                )
+
+        setup = _gridspec_replace_grid(
+            self._recipe.setup, self._active_gridspec_grid_id, update_grid
+        )
+        self._apply_gridspec_setup(setup, selected_region_id=selected_region_id)
+
+    def _update_gridspec_grid_label(
+        self, grid_id: str, label: str
+    ) -> FigureSubplotsState:
+        def update_grid(grid: FigureGridSpecGridState) -> FigureGridSpecGridState:
+            return grid.model_copy(update={"label": label})
+
+        return _gridspec_replace_grid(self._recipe.setup, grid_id, update_grid)
+
+    def _apply_gridspec_setup(
+        self, setup: FigureSubplotsState, *, selected_region_id: str
+    ) -> None:
+        self._recipe = self._recipe.model_copy(update={"setup": setup})
+        self._updating_controls = True
+        try:
+            self._sync_active_grid_controls(setup)
+        finally:
+            self._updating_controls = False
+        self._refresh_gridspec_editor()
+        self.gridspec_layout_widget.set_selected_region(selected_region_id)
+        self._refresh_gridspec_region_controls()
+        self._sync_axes_selector()
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
+        self._update_operation_editor()
+        _rendering._render_preview(self)
+        self.sigInfoChanged.emit()
 
     @QtCore.Slot()
     def _show_add_step_menu(self) -> None:

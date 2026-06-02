@@ -548,7 +548,8 @@ def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
     }
     operations = list(tool._recipe.operations)
     newly_labeled_groups: dict[
-        tuple[tuple[tuple[int, int], ...], str], tuple[int, FigureOperationState]
+        tuple[tuple[tuple[int, int], ...], tuple[str, ...], str],
+        tuple[int, FigureOperationState],
     ] = {}
     for index, operation in enumerate(tuple(operations)):
         if operation.operation_id not in selected_ids:
@@ -587,8 +588,8 @@ def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
 
 def _line_axes_key(
     operation: FigureOperationState,
-) -> tuple[tuple[tuple[int, int], ...], str]:
-    return operation.axes.axes, operation.axes.expression
+) -> tuple[tuple[tuple[int, int], ...], tuple[str, ...], str]:
+    return operation.axes.axes, operation.axes.axes_ids, operation.axes.expression
 
 
 def _has_later_legend_step(
@@ -607,7 +608,7 @@ def _has_later_legend_step(
 
 
 def _render_line(
-    tool: FigureComposerTool, operation: FigureOperationState, axs: np.ndarray
+    tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
     line_items = _line_data_items(tool, operation)
     if not line_items:
@@ -1116,10 +1117,7 @@ def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
 def _has_invalid_target(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> bool:
-    return (
-        bool(operation.axes.invalid_axes(tool._recipe.setup))
-        and not operation.axes.expression
-    )
+    return tool._axes_selection_has_invalid_target(operation.axes)
 
 
 def _source_names(operation: FigureOperationState) -> tuple[str, ...]:

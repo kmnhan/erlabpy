@@ -737,12 +737,15 @@ def _plot_slices_shape(
 
     plot_dims = tuple(dim for dim in dims if dim not in selected_dims)
     panel_count = len(maps) * slice_count
-    selected_axes = operation.axes.valid_axes(tool._recipe.setup)
     if operation.axes.expression:
         axes_text = f"Targets: {operation.axes.expression}"
     else:
+        if tool._recipe.setup.layout_mode == "gridspec":
+            target_count = len(operation.axes.axes_ids)
+        else:
+            target_count = len(operation.axes.valid_axes(tool._recipe.setup))
         axes_text = (
-            f"Targets: {len(selected_axes)} selected for {panel_count} panel"
+            f"Targets: {target_count} selected for {panel_count} panel"
             f"{'s' if panel_count != 1 else ''}"
         )
 
@@ -843,7 +846,7 @@ def _plot_slices_kwargs(
 
 
 def _render_plot_slices(
-    tool: FigureComposerTool, operation: FigureOperationState, axs: np.ndarray
+    tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
     maps = _operation_maps(tool, operation)
     if not maps:
@@ -981,10 +984,7 @@ def _tooltip(tool: FigureComposerTool, operation: FigureOperationState) -> str:
 def _has_invalid_target(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> bool:
-    return (
-        bool(operation.axes.invalid_axes(tool._recipe.setup))
-        and not operation.axes.expression
-    )
+    return tool._axes_selection_has_invalid_target(operation.axes)
 
 
 def _source_names(operation: FigureOperationState) -> tuple[str, ...]:

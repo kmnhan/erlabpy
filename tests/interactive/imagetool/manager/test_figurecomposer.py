@@ -10,7 +10,7 @@ import pytest
 import xarray as xr
 from matplotlib import style as mpl_style
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.interactive._figurecomposer._code as figurecomposer_code
@@ -22,6 +22,10 @@ from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
     FigureExportState,
+    FigureGridSpecAxesState,
+    FigureGridSpecGridState,
+    FigureGridSpecLayoutState,
+    FigureGridSpecSpanState,
     FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
@@ -589,6 +593,58 @@ def test_figure_composer_axes_code_compacts_contiguous_selections(qtbot) -> None
     )
 
 
+def test_figure_composer_subplots_codegen_regression(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                nrows=2,
+                ncols=2,
+                layout="compressed",
+                width_ratios=(2.0, 1.0),
+                height_ratios=(1.0, 3.0),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="grid",
+                    axes=FigureAxesSelectionState(
+                        axes=((0, 0), (0, 1), (1, 0), (1, 1))
+                    ),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._select_step_section("axes")
+    assert not tool.axes_selector.isHidden()
+    assert tool.gridspec_axes_list.isHidden()
+    assert not tool.axes_expression_edit.isHidden()
+
+    code = tool.generated_code()
+    assert "fig, axs = plt.subplots(" in code
+    assert "squeeze=False" in code
+    assert 'layout="compressed"' in code
+    assert "width_ratios=(2.0, 1.0)" in code
+    assert "height_ratios=(1.0, 3.0)" in code
+    assert "fig.add_gridspec" not in code
+    assert "subgridspec" not in code
+    assert "layout_mode" not in code
+    assert "gridspec=" not in code
+    assert "for ax in axs.flat:" in code
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["axs"].shape == (2, 2)
+    empty_selection = FigureAxesSelectionState(axes=())
+    assert tool._axes_selection_has_invalid_target(empty_selection)
+    with pytest.raises(ValueError, match="No axes are selected"):
+        figurecomposer_code._axes_code(tool, empty_selection, for_plot_slices=False)
+
+
 def test_figure_composer_axes_status_uses_compact_labels(qtbot) -> None:
     data = xr.DataArray(np.zeros((2, 2)), dims=("x", "y"), name="data")
     tool = FigureComposerTool(
@@ -620,6 +676,316 @@ def test_figure_composer_axes_status_uses_compact_labels(qtbot) -> None:
 
     tool._target_current_operation_all_axes()
     assert tool.target_axes_status_label.text() == "Targets: axs"
+
+
+def test_figure_composer_gridspec_codegen_executes(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    main_axis = FigureGridSpecAxesState(
+        axes_id="main-axis",
+        label="main",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=2,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    child_grid = FigureGridSpecGridState(
+        grid_id="child-grid",
+        label="Cuts",
+        nrows=2,
+        ncols=1,
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=1,
+            col_stop=2,
+        ),
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="cut-0",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="cut-1",
+                span=FigureGridSpecSpanState(
+                    row_start=1,
+                    row_stop=2,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+        ),
+    )
+    setup = FigureSubplotsState(
+        layout_mode="gridspec",
+        layout=None,
+        gridspec=FigureGridSpecLayoutState(
+            root=FigureGridSpecGridState(
+                grid_id="root",
+                label="Root",
+                nrows=2,
+                ncols=2,
+                axes=(main_axis,),
+                child_grids=(child_grid,),
+            )
+        ),
+    )
+    recipe = FigureRecipeState(
+        setup=setup,
+        sources=(FigureSourceState(name="data", label="data"),),
+        operations=(
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="grid",
+                axes=FigureAxesSelectionState(axes_ids=("main-axis", "cut-0")),
+            ),
+        ),
+        primary_source="data",
+    )
+    tool = FigureComposerTool(data, recipe=recipe)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+    assert "fig = plt.figure" in code
+    assert "fig.add_gridspec" in code
+    assert ".subgridspec" in code
+    assert "main = fig.add_subplot" in code
+    assert "for ax in (main, ax1):" in code
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    assert len(namespace["fig"].axes) == 3
+
+
+def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    left_axis = FigureGridSpecAxesState(
+        axes_id="left-axis",
+        label="left panel",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    right_axis = FigureGridSpecAxesState(
+        axes_id="right-axis",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=1,
+            col_stop=2,
+        ),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        grid_id="root",
+                        label="Root",
+                        nrows=1,
+                        ncols=2,
+                        axes=(left_axis, right_axis),
+                    )
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="grid",
+                    axes=FigureAxesSelectionState(axes_ids=("left-axis",)),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._select_step_section("axes")
+    assert tool.axes_selector.isHidden()
+    assert not tool.gridspec_axes_list.isHidden()
+    assert tool.axes_expression_edit.isHidden()
+    assert tool.target_axes_status_label.text() == "Targets: left panel"
+    assert (
+        figurecomposer_code._axes_code(
+            tool,
+            FigureAxesSelectionState(axes_ids=("left-axis",)),
+            for_plot_slices=False,
+        )
+        == "left_panel"
+    )
+    assert (
+        figurecomposer_code._axes_code(
+            tool,
+            FigureAxesSelectionState(axes_ids=("left-axis",)),
+            for_plot_slices=True,
+        )
+        == "[left_panel]"
+    )
+    assert (
+        figurecomposer_code._axes_sequence_code(
+            tool, FigureAxesSelectionState(axes_ids=("left-axis", "right-axis"))
+        )
+        == "(left_panel, ax1)"
+    )
+
+    tool.gridspec_axes_list.item(1).setSelected(True)
+    tool._gridspec_axes_selection_changed()
+    assert tool.tool_status.operations[0].axes.axes_ids == (
+        "left-axis",
+        "right-axis",
+    )
+    tool.gridspec_axes_list.clearSelection()
+    tool._gridspec_axes_selection_changed()
+    assert tool.tool_status.operations[0].axes.axes_ids == ()
+    assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+    with pytest.raises(ValueError, match="Cannot generate code"):
+        tool.generated_code()
+
+    tool._target_current_operation_all_axes()
+    assert tool.tool_status.operations[0].axes.axes_ids == (
+        "left-axis",
+        "right-axis",
+    )
+    code = tool.generated_code()
+    assert "fig = plt.figure" in code
+    assert "fig, axs = plt.subplots" not in code
+    assert "left_panel = fig.add_subplot(gs0[0, 0])" in code
+    assert "ax1 = fig.add_subplot(gs0[0, 1])" in code
+    assert "for ax in (left_panel, ax1):" in code
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    assert len(namespace["fig"].axes) == 2
+    empty_selection = FigureAxesSelectionState(axes_ids=())
+    assert tool._axes_selection_has_invalid_target(empty_selection)
+    with pytest.raises(ValueError, match="No axes are selected"):
+        figurecomposer_code._axes_code(tool, empty_selection, for_plot_slices=False)
+
+
+def test_figure_composer_gridspec_widget_creates_nested_regions(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.layout_page)
+    tool.layout_mode_combo.setCurrentText("gridspec")
+    tool.nrows_spin.setValue(2)
+    tool.ncols_spin.setValue(2)
+    tool._setup_controls_changed()
+    widget = tool.gridspec_layout_widget
+    widget.resize(widget.sizeHint())
+
+    tool.gridspec_region_kind_combo.setCurrentIndex(
+        tool.gridspec_region_kind_combo.findData("grid")
+    )
+    qtbot.mousePress(
+        widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=widget.cell_rect((0, 1)).center(),
+    )
+    tool.gridspec_region_kind_combo.setCurrentIndex(
+        tool.gridspec_region_kind_combo.findData("axes")
+    )
+    qtbot.mouseRelease(
+        widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=widget.cell_rect((0, 1)).center(),
+    )
+    child_grid = tool.tool_status.setup.gridspec.root.child_grids[0]
+    assert child_grid.span == FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=1,
+        col_stop=2,
+    )
+
+    qtbot.mouseDClick(
+        widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=widget.span_rect(child_grid.span).center(),
+    )
+    assert tool._active_gridspec_grid_id == child_grid.grid_id
+
+    tool.gridspec_region_kind_combo.setCurrentIndex(
+        tool.gridspec_region_kind_combo.findData("axes")
+    )
+    child_widget = tool.gridspec_layout_widget
+    child_widget.resize(child_widget.sizeHint())
+    qtbot.mousePress(
+        child_widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=child_widget.cell_rect((0, 0)).center(),
+    )
+    qtbot.mouseRelease(
+        child_widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=child_widget.cell_rect((0, 0)).center(),
+    )
+    active_grid = tool.tool_status.setup.gridspec.root.child_grids[0]
+    assert len(active_grid.axes) == 1
+    tool._gridspec_open_parent_grid()
+    assert tool._active_gridspec_grid_id == "root"
+
+
+def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.editor_tabs.setCurrentWidget(tool.layout_page)
+    tool.layout_mode_combo.setCurrentText("gridspec")
+    tool.ncols_spin.setValue(2)
+    tool._setup_controls_changed()
+    widget = tool.gridspec_layout_widget
+    widget.resize(widget.sizeHint())
+
+    qtbot.mousePress(
+        widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=widget.cell_rect((0, 1)).center(),
+    )
+    qtbot.mouseRelease(
+        widget,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=widget.cell_rect((0, 1)).center(),
+    )
+    assert len(tool.tool_status.setup.gridspec.root.axes) == 2
+
+    tool.ncols_spin.setValue(1)
+    tool._setup_controls_changed()
+    invalid_item = tool.gridspec_axes_list.item(1)
+    assert invalid_item is not None
+    assert invalid_item.data(QtCore.Qt.ItemDataRole.UserRole + 1) is False
+    assert invalid_item.foreground().color() == QtGui.QColor("darkRed")
+    assert any(not region.valid for region in tool.gridspec_layout_widget._regions)
+
+
+def test_figure_composer_gridspec_axes_targets_survive_region_delete(qtbot) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+    tool.layout_mode_combo.setCurrentText("gridspec")
+    first_axes_id = tool.tool_status.setup.gridspec.root.axes[0].axes_id
+    tool._select_step_section("axes")
+    tool._sync_axes_selector()
+    assert not tool.gridspec_axes_list.isHidden()
+    first_item = tool.gridspec_axes_list.item(0)
+    first_item.setSelected(True)
+    tool._gridspec_axes_selection_changed()
+    assert tool.tool_status.operations[0].axes.axes_ids == (first_axes_id,)
+
+    tool.gridspec_layout_widget.set_selected_region(first_axes_id)
+    tool._gridspec_delete_selected_region()
+    assert tool._operation_has_invalid_axes(tool.tool_status.operations[0])
+    assert "removed axes" in tool._axes_target_text(tool.tool_status.operations[0].axes)
 
 
 def test_figure_composer_plot_slices_operation_uses_separate_window(
@@ -673,23 +1039,28 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert editor_tabs.currentWidget() is tool.recipe_page
     assert isinstance(tool.layout_page.layout(), QtWidgets.QGridLayout)
     layout_grid = typing.cast("QtWidgets.QGridLayout", tool.layout_page.layout())
-    assert layout_grid.rowCount() == 7
+    assert layout_grid.rowCount() == 9
     assert layout_grid.columnCount() == 5
+    assert (
+        tool.findChild(QtWidgets.QWidget, "figureComposerLayoutModeControls")
+        is not None
+    )
     assert tool.findChild(QtWidgets.QWidget, "figureComposerGridControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeMmControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerShareControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerRatioControls") is not None
+    assert tool.gridspec_editor_widget.isHidden()
     layout_label = tool.findChild(QtWidgets.QLabel, "figureComposerLayoutControls")
     assert layout_label is not None
     assert layout_grid.getItemPosition(layout_grid.indexOf(layout_label)) == (
-        3,
+        4,
         0,
         1,
         2,
     )
     assert layout_grid.getItemPosition(layout_grid.indexOf(tool.layout_combo)) == (
-        3,
+        4,
         2,
         1,
         3,

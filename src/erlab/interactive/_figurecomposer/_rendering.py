@@ -14,12 +14,19 @@ import erlab
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer._axes import _axes_expression_value
 from erlab.interactive._figurecomposer._defaults import _figure_style_context
+from erlab.interactive._figurecomposer._gridspec import (
+    _gridspec_region_valid,
+    _gridspec_valid_axes_ids,
+)
 from erlab.interactive._figurecomposer._sources import _valid_source_variable
 
 if typing.TYPE_CHECKING:
     from matplotlib.figure import Figure
 
-    from erlab.interactive._figurecomposer._state import FigureAxesSelectionState
+    from erlab.interactive._figurecomposer._state import (
+        FigureAxesSelectionState,
+        FigureGridSpecGridState,
+    )
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
@@ -50,7 +57,7 @@ def _make_axes(
     figure: Figure | None = None,
     *,
     sync_visible: bool = True,
-) -> np.ndarray:
+) -> np.ndarray | dict[str, matplotlib.axes.Axes]:
     if (
         sync_visible
         and tool._figure_window is not None
@@ -74,25 +81,81 @@ def _make_axes(
         )
     with contextlib.suppress(ValueError, NotImplementedError):
         figure.set_layout_engine(setup.layout)
+    if setup.layout_mode == "gridspec":
+        return _make_gridspec_axes(tool, figure)
     return np.asarray(
         figure.subplots(
             setup.nrows,
             setup.ncols,
             sharex=setup.sharex,
             sharey=setup.sharey,
+            width_ratios=setup.width_ratios
+            if len(setup.width_ratios) == setup.ncols
+            else None,
+            height_ratios=setup.height_ratios
+            if len(setup.height_ratios) == setup.nrows
+            else None,
             squeeze=False,
         ),
         dtype=object,
     )
 
 
+def _make_gridspec_axes(
+    tool: FigureComposerTool, figure: Figure
+) -> dict[str, matplotlib.axes.Axes]:
+    setup = tool._recipe.setup
+    axes_by_id: dict[str, matplotlib.axes.Axes] = {}
+
+    def gridspec_kwargs(grid: FigureGridSpecGridState) -> dict[str, typing.Any]:
+        kwargs: dict[str, typing.Any] = {
+            "nrows": grid.nrows,
+            "ncols": grid.ncols,
+        }
+        if grid.width_ratios and len(grid.width_ratios) == grid.ncols:
+            kwargs["width_ratios"] = grid.width_ratios
+        if grid.height_ratios and len(grid.height_ratios) == grid.nrows:
+            kwargs["height_ratios"] = grid.height_ratios
+        if grid.wspace is not None:
+            kwargs["wspace"] = grid.wspace
+        if grid.hspace is not None:
+            kwargs["hspace"] = grid.hspace
+        return kwargs
+
+    def build_grid(grid: FigureGridSpecGridState, spec: typing.Any) -> None:
+        for axis_state in grid.axes:
+            if _gridspec_region_valid(grid, axis_state.span):
+                axes_by_id[axis_state.axes_id] = figure.add_subplot(
+                    spec[
+                        axis_state.span.row_start : axis_state.span.row_stop,
+                        axis_state.span.col_start : axis_state.span.col_stop,
+                    ]
+                )
+        for child in grid.child_grids:
+            if child.span is None or not _gridspec_region_valid(grid, child.span):
+                continue
+            child_spec = spec[
+                child.span.row_start : child.span.row_stop,
+                child.span.col_start : child.span.col_stop,
+            ].subgridspec(**gridspec_kwargs(child))
+            build_grid(child, child_spec)
+
+    root = setup.gridspec.root
+    root_spec = figure.add_gridspec(**gridspec_kwargs(root))
+    build_grid(root, root_spec)
+    return axes_by_id
+
+
 def _source_namespace(
-    tool: FigureComposerTool, fig: Figure, axs: np.ndarray
+    tool: FigureComposerTool,
+    fig: Figure,
+    axs: np.ndarray | dict[str, matplotlib.axes.Axes],
 ) -> dict[str, typing.Any]:
+    first_axis = next(iter(axs.values()), None) if isinstance(axs, dict) else axs[0, 0]
     namespace: dict[str, typing.Any] = {
         "fig": fig,
         "axs": axs,
-        "ax": axs[0, 0],
+        "ax": first_axis,
         "np": np,
         "xr": xr,
         "eplt": eplt,
@@ -105,12 +168,30 @@ def _source_namespace(
 def _axes_from_selection(
     tool: FigureComposerTool,
     selection: FigureAxesSelectionState,
-    axs: np.ndarray,
+    axs: np.ndarray | dict[str, matplotlib.axes.Axes],
     *,
     for_plot_slices: bool,
 ) -> object:
     if selection.expression:
+        if isinstance(axs, dict):
+            raise ValueError("Advanced axes expressions are only supported by subplots")
         return _axes_expression_value(selection.expression, axs)
+
+    if isinstance(axs, dict):
+        valid_ids = _gridspec_valid_axes_ids(tool._recipe.setup, selection.axes_ids)
+        invalid_ids = tuple(
+            axis_id for axis_id in selection.axes_ids if axis_id not in valid_ids
+        )
+        if invalid_ids:
+            raise ValueError("Selected axes are outside the current GridSpec layout")
+        selected = [axs[axis_id] for axis_id in valid_ids if axis_id in axs]
+        if not selected:
+            raise ValueError("No axes are selected for this operation")
+        if for_plot_slices:
+            return np.asarray(selected, dtype=object)
+        if len(selected) == 1:
+            return selected[0]
+        return np.asarray(selected, dtype=object)
 
     if selection.invalid_axes(tool._recipe.setup):
         raise ValueError("Selected axes are outside the current figure layout")
@@ -125,6 +206,8 @@ def _axes_from_selection(
 
 
 def _iter_axes(axis_obj: object) -> tuple[matplotlib.axes.Axes, ...]:
+    if isinstance(axis_obj, dict):
+        return tuple(axis_obj.values())
     if isinstance(axis_obj, np.ndarray):
         return tuple(axis_obj.flat)
     if isinstance(axis_obj, (list, tuple)):

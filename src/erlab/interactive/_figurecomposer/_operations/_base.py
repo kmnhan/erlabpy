@@ -8,7 +8,6 @@ import typing
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-    import numpy as np
     from matplotlib.figure import Figure
     from qtpy import QtWidgets
 
@@ -52,7 +51,7 @@ class OperationSpec:
     ]
     section_summary: Callable[[FigureComposerTool, str, FigureOperationState], str]
     render: Callable[
-        [FigureComposerTool, FigureOperationState, Figure, np.ndarray], None
+        [FigureComposerTool, FigureOperationState, Figure, typing.Any], None
     ]
     code_lines: Callable[[FigureComposerTool, FigureOperationState], list[str]]
     required_imports: Callable[

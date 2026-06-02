@@ -618,6 +618,7 @@ def test_make_cursors_single_color_does_not_recreate_cursor(qtbot, monkeypatch) 
 
     win.close()
 
+
 def test_multicursor_restore_updates_cursor_combo(qtbot) -> None:
     win = itool(_TEST_DATA["2D"], execute=False)
     qtbot.addWidget(win)

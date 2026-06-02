@@ -22,6 +22,77 @@ if typing.TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 
+class FigureGridSpecSpanState(pydantic.BaseModel):
+    """Rectangular span inside one GridSpec grid."""
+
+    row_start: int
+    row_stop: int
+    col_start: int
+    col_stop: int
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.model_validator(mode="after")
+    def _validate_span(self) -> FigureGridSpecSpanState:
+        if self.row_start < 0 or self.col_start < 0:
+            raise ValueError("GridSpec spans cannot start before zero")
+        if self.row_stop <= self.row_start or self.col_stop <= self.col_start:
+            raise ValueError("GridSpec spans must cover at least one cell")
+        return self
+
+
+class FigureGridSpecAxesState(pydantic.BaseModel):
+    """One leaf axes created from a GridSpec span."""
+
+    axes_id: str = pydantic.Field(default_factory=lambda: uuid.uuid4().hex)
+    label: str = ""
+    span: FigureGridSpecSpanState
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
+class FigureGridSpecGridState(pydantic.BaseModel):
+    """One GridSpec grid, optionally nested inside another grid span."""
+
+    grid_id: str = pydantic.Field(default_factory=lambda: uuid.uuid4().hex)
+    label: str = ""
+    nrows: int = 1
+    ncols: int = 1
+    span: FigureGridSpecSpanState | None = None
+    width_ratios: tuple[float, ...] = ()
+    height_ratios: tuple[float, ...] = ()
+    wspace: float | None = None
+    hspace: float | None = None
+    axes: tuple[FigureGridSpecAxesState, ...] = ()
+    child_grids: tuple[FigureGridSpecGridState, ...] = ()
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    @pydantic.field_validator("nrows", "ncols")
+    @classmethod
+    def _validate_grid_size(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("GridSpec grids must have at least one row and column")
+        return value
+
+    @pydantic.field_validator("width_ratios", "height_ratios")
+    @classmethod
+    def _validate_ratios(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if any(item <= 0.0 for item in value):
+            raise ValueError("GridSpec ratios must be positive")
+        return value
+
+
+class FigureGridSpecLayoutState(pydantic.BaseModel):
+    """Persistent nested GridSpec layout."""
+
+    root: FigureGridSpecGridState = pydantic.Field(
+        default_factory=lambda: FigureGridSpecGridState(grid_id="root", label="Root")
+    )
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
 class FigureSourceState(pydantic.BaseModel):
     """A named data source used by a figure recipe."""
 
@@ -60,6 +131,7 @@ class FigureSourceState(pydantic.BaseModel):
 class FigureSubplotsState(pydantic.BaseModel):
     """Persistent ``plt.subplots`` setup for a figure recipe."""
 
+    layout_mode: typing.Literal["subplots", "gridspec"] = "subplots"
     nrows: int = 1
     ncols: int = 1
     figsize: tuple[float, float] = pydantic.Field(default_factory=_default_figsize)
@@ -71,6 +143,9 @@ class FigureSubplotsState(pydantic.BaseModel):
     sharey: bool | typing.Literal["none", "all", "row", "col"] = "row"
     width_ratios: tuple[float, ...] = ()
     height_ratios: tuple[float, ...] = ()
+    gridspec: FigureGridSpecLayoutState = pydantic.Field(
+        default_factory=FigureGridSpecLayoutState
+    )
 
     model_config = pydantic.ConfigDict(extra="forbid")
 
@@ -107,6 +182,7 @@ class FigureAxesSelectionState(pydantic.BaseModel):
     """Stable 2D ``axs[row, col]`` target selection."""
 
     axes: tuple[tuple[int, int], ...] = ((0, 0),)
+    axes_ids: tuple[str, ...] = ()
     expression: str = ""
 
     model_config = pydantic.ConfigDict(extra="forbid")

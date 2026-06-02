@@ -23,7 +23,6 @@ from erlab.interactive._figurecomposer._state import (
 )
 
 if typing.TYPE_CHECKING:
-    import numpy as np
     from matplotlib.figure import Figure
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
@@ -67,7 +66,7 @@ def _render_custom(
     tool: FigureComposerTool,
     operation: FigureOperationState,
     fig: Figure,
-    axs: np.ndarray,
+    axs: typing.Any,
 ) -> None:
     if not operation.trusted or not operation.code.strip():
         return
