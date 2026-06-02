@@ -1,6 +1,6 @@
 from qtpy import QtGui, QtWidgets
 
-import erlab.interactive._options.parameters as option_parameters
+import erlab.interactive._stylesheets
 from erlab.interactive._options.parameters import (
     _STYLESHEET_AVAILABLE_ROLE,
     ColorListParameter,
@@ -70,8 +70,13 @@ def test_colorlistparameter_save_state() -> None:
 
 def test_stylesheetlistwidget_preserves_unavailable_styles(qtbot, monkeypatch):
     monkeypatch.setattr(
-        "erlab.interactive._options.parameters.mpl_style.available",
+        "erlab.interactive._stylesheets.mpl_style.available",
         ["classic", "ggplot"],
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: None,
     )
     widget = StylesheetListWidget(stylesheets=["classic", "missing-style"])
     qtbot.addWidget(widget)
@@ -83,7 +88,7 @@ def test_stylesheetlistwidget_preserves_unavailable_styles(qtbot, monkeypatch):
 
 def test_stylesheetlistwidget_add_remove_and_reorder(qtbot, monkeypatch):
     monkeypatch.setattr(
-        "erlab.interactive._options.parameters.mpl_style.available",
+        "erlab.interactive._stylesheets.mpl_style.available",
         ["classic", "ggplot", "bmh"],
     )
     widget = StylesheetListWidget(stylesheets=["classic"])
@@ -104,12 +109,12 @@ def test_stylesheetlistwidget_add_remove_and_reorder(qtbot, monkeypatch):
 def test_stylesheetlistwidget_loads_erlab_styles_on_popup(qtbot, monkeypatch):
     calls: list[None] = []
     monkeypatch.setattr(
-        "erlab.interactive._options.parameters.mpl_style.available",
+        "erlab.interactive._stylesheets.mpl_style.available",
         ["classic"],
     )
     monkeypatch.setattr(
-        option_parameters,
-        "_load_erlab_plotting_stylesheets",
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
         lambda: calls.append(None),
     )
     widget = StylesheetListWidget(stylesheets=[])
@@ -119,6 +124,23 @@ def test_stylesheetlistwidget_loads_erlab_styles_on_popup(qtbot, monkeypatch):
     widget.add_combo.hidePopup()
 
     assert calls == [None]
+
+
+def test_stylesheetlistwidget_rechecks_saved_styles_after_erlab_import(
+    qtbot, monkeypatch
+):
+    available = ["classic"]
+    monkeypatch.setattr("erlab.interactive._stylesheets.mpl_style.available", available)
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: available.append("nature"),
+    )
+
+    widget = StylesheetListWidget(stylesheets=["nature"])
+    qtbot.addWidget(widget)
+
+    assert widget.list_widget.item(0).data(_STYLESHEET_AVAILABLE_ROLE) is True
 
 
 def test_stylesheetlistparameter_value_roundtrip() -> None:

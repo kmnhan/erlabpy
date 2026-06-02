@@ -17,6 +17,7 @@ import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
+import erlab.interactive._stylesheets
 from erlab.interactive._figurecomposer import (
     FigureAxesSelectionState,
     FigureComposerTool,
@@ -166,6 +167,34 @@ def test_figure_composer_generated_code_uses_available_stylesheets(
     with mpl.rc_context():
         exec(code, namespace)  # noqa: S102
     namespace["plt"].close(namespace["fig"])
+
+
+def test_figure_composer_rechecks_configured_stylesheets_after_erlab_import(
+    qtbot,
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    available: list[str] = []
+    monkeypatch.setattr("erlab.interactive._stylesheets.mpl_style.available", available)
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        lambda: available.append("classic"),
+    )
+    _set_figure_stylesheets(["classic"])
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+
+    assert "plt.style.use(['classic'])" in code
+    assert "Skipped unavailable stylesheets" not in code
 
 
 def test_figure_composer_canvas_draw_and_print_use_style_context(

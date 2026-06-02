@@ -4,14 +4,12 @@ This module defines custom parameter types for use in the options dialog of the
 ImageTool. It includes list-style parameters and a custom colormap parameter.
 """
 
-import importlib
-
 import pyqtgraph as pg
 import pyqtgraph.parametertree
-from matplotlib import style as mpl_style
 from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
+import erlab.interactive._stylesheets
 
 _STYLESHEET_AVAILABLE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
 _STYLESHEET_NAME_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2
@@ -32,14 +30,6 @@ def _stylesheet_names(value) -> list[str]:
             seen.add(name)
             names.append(name)
     return names
-
-
-def _available_stylesheets() -> list[str]:
-    return sorted(mpl_style.available)
-
-
-def _load_erlab_plotting_stylesheets() -> None:
-    importlib.import_module("erlab.plotting")
 
 
 class _StylesheetComboBox(QtWidgets.QComboBox):
@@ -279,7 +269,9 @@ class StylesheetListWidget(QtWidgets.QWidget):
         self.sigStylesheetsChanged.emit(self.stylesheets)
 
     def _refresh_list(self) -> None:
-        available = set(_available_stylesheets())
+        available = erlab.interactive._stylesheets.available_stylesheets(
+            self.stylesheets
+        )
         self.list_widget.clear()
         for name in self.stylesheets:
             is_available = name in available
@@ -299,7 +291,11 @@ class StylesheetListWidget(QtWidgets.QWidget):
     def _refresh_add_combo(self) -> None:
         current = self.add_combo.currentText()
         selected = set(self.stylesheets)
-        choices = [name for name in _available_stylesheets() if name not in selected]
+        choices = [
+            name
+            for name in erlab.interactive._stylesheets.sorted_available_stylesheets()
+            if name not in selected
+        ]
         self.add_combo.blockSignals(True)
         try:
             self.add_combo.clear()
@@ -313,7 +309,7 @@ class StylesheetListWidget(QtWidgets.QWidget):
     @QtCore.Slot()
     def _load_available_stylesheets(self) -> None:
         current = self.add_combo.currentText()
-        _load_erlab_plotting_stylesheets()
+        erlab.interactive._stylesheets.load_erlab_plotting_stylesheets()
         self._refresh_list()
         self._refresh_add_combo()
         if current:

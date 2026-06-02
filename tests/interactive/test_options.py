@@ -2,6 +2,7 @@ import pytest
 from qtpy import QtWidgets
 
 from erlab.interactive._options import OptionDialog, options
+from erlab.interactive._options.core import OptionManager
 from erlab.interactive._options.schema import AppOptions
 
 
@@ -135,3 +136,19 @@ def test_options_get_set():
     assert options.model.figure.stylesheets == ["classic", "missing-style"]
 
     options.restore()  # Reset settings after test
+
+
+def test_option_manager_uses_configured_settings_path(monkeypatch, tmp_path):
+    settings_path = tmp_path / "interactive-options.ini"
+    monkeypatch.setenv("ERLAB_INTERACTIVE_OPTIONS_PATH", str(settings_path))
+
+    isolated_options = OptionManager()
+    isolated_options["figure/stylesheets"] = ["classic", "missing-style"]
+
+    assert isolated_options["figure/stylesheets"] == ["classic", "missing-style"]
+    assert settings_path.exists()
+
+    other_settings_path = tmp_path / "other-options.ini"
+    monkeypatch.setenv("ERLAB_INTERACTIVE_OPTIONS_PATH", str(other_settings_path))
+
+    assert OptionManager()["figure/stylesheets"] == AppOptions().figure.stylesheets

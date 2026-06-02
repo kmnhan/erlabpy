@@ -6,12 +6,15 @@ accessed as `options`. The settings are stored in a QSettings object, allowing f
 persistent storage across application runs.
 """
 
+import os
 import threading
 import typing
 
 from qtpy import QtCore
 
 from erlab.interactive._options.schema import AppOptions
+
+_SETTINGS_PATH_ENV_VAR = "ERLAB_INTERACTIVE_OPTIONS_PATH"
 
 
 def _qsettings_to_dict(
@@ -117,6 +120,12 @@ class OptionManager:
     @property
     def qsettings(self) -> QtCore.QSettings:
         """Get the QSettings object."""
+        settings_path = os.environ.get(_SETTINGS_PATH_ENV_VAR)
+        if settings_path:
+            return QtCore.QSettings(
+                settings_path,
+                QtCore.QSettings.Format.IniFormat,
+            )
         return QtCore.QSettings(
             QtCore.QSettings.Format.IniFormat,
             QtCore.QSettings.Scope.UserScope,

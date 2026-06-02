@@ -9,6 +9,8 @@ import warnings
 import matplotlib as mpl
 from matplotlib import style as mpl_style
 
+import erlab.interactive._stylesheets
+
 if typing.TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -26,18 +28,16 @@ def _configured_stylesheets() -> tuple[str, ...]:
     return ()
 
 
-def _available_stylesheets() -> frozenset[str]:
-    return frozenset(mpl_style.available)
-
-
 def _available_configured_stylesheets() -> tuple[str, ...]:
-    available = _available_stylesheets()
-    return tuple(name for name in _configured_stylesheets() if name in available)
+    configured = _configured_stylesheets()
+    available = erlab.interactive._stylesheets.available_stylesheets(configured)
+    return tuple(name for name in configured if name in available)
 
 
 def _unavailable_configured_stylesheets() -> tuple[str, ...]:
-    available = _available_stylesheets()
-    return tuple(name for name in _configured_stylesheets() if name not in available)
+    configured = _configured_stylesheets()
+    available = erlab.interactive._stylesheets.available_stylesheets(configured)
+    return tuple(name for name in configured if name not in available)
 
 
 @contextlib.contextmanager
