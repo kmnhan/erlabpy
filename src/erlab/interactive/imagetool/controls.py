@@ -435,6 +435,8 @@ class ItoolCrosshairControls(ItoolControlsBase):
     @QtCore.Slot()
     def update_colors(self) -> None:
         """Update the colors of the controls based on the current cursor."""
+        if self.cb_cursors.count() != self.n_cursors:
+            self._sync_cursor_combo(self.n_cursors)
         for i in range(self.n_cursors):
             self.cb_cursors.setItemIcon(i, self.slicer_area._cursor_icon(i))
             self.cb_cursors.setItemText(i, self.slicer_area._cursor_name(i))
@@ -665,10 +667,20 @@ class ItoolCrosshairControls(ItoolControlsBase):
     @QtCore.Slot(int)
     def update_cursor_count(self, count: int) -> None:
         if count != self.cb_cursors.count():
-            if count > self.cb_cursors.count():
-                self.addCursor()
-            else:
-                self.remCursor()
+            self._sync_cursor_combo(count)
+
+    def _sync_cursor_combo(self, count: int) -> None:
+        with QtCore.QSignalBlocker(self.cb_cursors):
+            self.cb_cursors.clear()
+            for i in range(count):
+                self.cb_cursors.addItem(
+                    self.slicer_area._cursor_icon(i), self.slicer_area._cursor_name(i)
+                )
+            self.cb_cursors.setCurrentIndex(self.current_cursor)
+
+        enabled = count > 1
+        self.cb_cursors.setEnabled(enabled)
+        self.btn_rem.setEnabled(enabled)
 
     def addCursor(self) -> None:
         self.cb_cursors.setDisabled(False)
