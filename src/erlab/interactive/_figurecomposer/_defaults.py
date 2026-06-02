@@ -111,3 +111,11 @@ def _style_code_lines() -> list[str]:
             + ", ".join(repr(name) for name in unavailable)
         )
     return lines
+
+
+def _style_required_imports() -> tuple[str, ...]:
+    if erlab.interactive._stylesheets.stylesheets_require_erlab_plotting(
+        _configured_stylesheets()
+    ):
+        return ("import erlab.plotting as eplt",)
+    return ()

@@ -823,6 +823,56 @@ def test_figure_composer_rechecks_configured_stylesheets_after_erlab_import(
     assert "Skipped unavailable stylesheets" not in code
 
 
+def test_figure_composer_generated_code_imports_erlab_for_erlab_stylesheet(
+    qtbot,
+    monkeypatch,
+    restore_interactive_options,
+) -> None:
+    loaded = False
+
+    def stylesheet_names() -> frozenset[str]:
+        names = {"classic"}
+        if loaded:
+            names.add("erlab-test-style")
+        return frozenset(names)
+
+    def load_stylesheets() -> None:
+        nonlocal loaded
+        loaded = True
+
+    @contextlib.contextmanager
+    def style_context(_stylesheets):
+        yield
+
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "_stylesheet_name_set",
+        stylesheet_names,
+    )
+    monkeypatch.setattr(
+        erlab.interactive._stylesheets,
+        "load_erlab_plotting_stylesheets",
+        load_stylesheets,
+    )
+    erlab.interactive._stylesheets._ERLAB_REGISTERED_STYLESHEETS.clear()
+    monkeypatch.setattr(figurecomposer_defaults.mpl_style, "context", style_context)
+    _set_figure_stylesheets(["erlab-test-style"])
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+
+    assert "import erlab.plotting as eplt" in code
+    assert code.index("import erlab.plotting as eplt") < code.index("plt.style.use")
+    assert "plt.style.use(['erlab-test-style'])" in code
+
+
 def test_figure_composer_canvas_draw_and_print_use_style_context(
     monkeypatch, recwarn
 ) -> None:

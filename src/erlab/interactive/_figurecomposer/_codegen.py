@@ -5,7 +5,10 @@ from __future__ import annotations
 import typing
 
 from erlab.interactive._figurecomposer._code import _setup_code
-from erlab.interactive._figurecomposer._defaults import _style_code_lines
+from erlab.interactive._figurecomposer._defaults import (
+    _style_code_lines,
+    _style_required_imports,
+)
 from erlab.interactive._figurecomposer._operations import _registry
 
 if typing.TYPE_CHECKING:
@@ -29,6 +32,9 @@ def generated_code(tool: FigureComposerTool) -> str:
         ):
             if import_line not in required_imports:
                 required_imports.append(import_line)
+    for import_line in _style_required_imports():
+        if import_line not in required_imports:
+            required_imports.append(import_line)
     lines.extend(required_imports)
     style_lines = _style_code_lines()
     if style_lines:
