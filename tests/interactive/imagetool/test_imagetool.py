@@ -24,6 +24,7 @@ import erlab.interactive.imagetool._itool as itool_mod
 import erlab.interactive.imagetool._mainwindow as imagetool_mainwindow
 import erlab.interactive.imagetool.dialogs as imagetool_dialogs
 import erlab.interactive.imagetool.viewer_state as imagetool_viewer_state
+from erlab.interactive._figurecomposer import FigureOperationKind
 from erlab.interactive.derivative import DerivativeTool, dtool
 from erlab.interactive.fermiedge import GoldTool, ResolutionTool
 from erlab.interactive.imagetool import ImageTool, itool, provenance
@@ -1133,7 +1134,9 @@ def test_locked_levels_state_uses_json_scalars(qtbot) -> None:
     win.close()
 
 
-def test_plot_code_multicursor_line_includes_limits_and_colors(qtbot) -> None:
+def test_figure_composer_multicursor_line_seeds_normalization_and_colors(
+    qtbot,
+) -> None:
     data = _TEST_DATA["2D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -1146,16 +1149,19 @@ def test_plot_code_multicursor_line_includes_limits_and_colors(qtbot) -> None:
     line_plot.set_normalize(True)
     win.slicer_area.set_manual_limits({"alpha": [1.0, 3.0]})
 
-    code = line_plot._plot_code_multicursor()
-    assert "line_colors" in code
-    assert "line / line.mean()" in code
-    assert "xlim=(1.0, 3.0)" in code
-    assert "beta" not in code
+    operation = line_plot.figure_composer_operation(source_name="data")
+    assert operation.kind == FigureOperationKind.LINE
+    assert operation.line_x == "alpha"
+    assert operation.line_selection == {"eV": [1.0, 3.0]}
+    assert operation.line_iter_dim == "eV"
+    assert operation.line_normalize == "mean"
+    assert operation.line_colors == ("#123456", "#654321")
+    assert operation.xlim == (1.0, 3.0)
 
     win.close()
 
 
-def test_plot_code_multicursor_line_uniform_default_colors(qtbot) -> None:
+def test_figure_composer_multicursor_line_skips_default_colors(qtbot) -> None:
     data = _TEST_DATA["2D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -1165,29 +1171,33 @@ def test_plot_code_multicursor_line_uniform_default_colors(qtbot) -> None:
     win.slicer_area.set_value(axis=1, value=1.0, cursor=0)
     win.slicer_area.set_value(axis=1, value=3.0, cursor=1)
 
-    code = line_plot._plot_code_multicursor()
-    assert "for line in " in code
-    assert 'transpose("eV", ...)' in code
-    assert "enumerate(" not in code
+    operation = line_plot.figure_composer_operation(source_name="data")
+    assert operation.kind == FigureOperationKind.LINE
+    assert operation.line_x == "alpha"
+    assert operation.line_selection == {"eV": [1.0, 3.0]}
+    assert operation.line_iter_dim == "eV"
+    assert operation.line_normalize == "none"
+    assert operation.line_colors == ()
 
     win.close()
 
 
-def test_plot_code_multicursor_line_without_variation(qtbot) -> None:
+def test_figure_composer_line_without_multicursor_variation(qtbot) -> None:
     data = _TEST_DATA["2D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
     line_plot = win.slicer_area.get_axes(1)
 
-    code = line_plot._plot_code_multicursor()
-    assert code.startswith("fig, ax = plt.subplots()")
-    assert ".plot(ax=ax)" in code
-    assert "for" not in code
+    operation = line_plot.figure_composer_operation(source_name="data")
+    assert operation.kind == FigureOperationKind.LINE
+    assert operation.line_x == "alpha"
+    assert operation.line_selection == {"eV": 2.0}
+    assert operation.line_iter_dim is None
 
     win.close()
 
 
-def test_plot_code_multicursor_image_includes_norm_settings(qtbot) -> None:
+def test_figure_composer_multicursor_image_seeds_norm_settings(qtbot) -> None:
     data = _TEST_DATA["3D"].copy()
     win = itool(data, execute=False)
     qtbot.addWidget(win)
@@ -1207,12 +1217,18 @@ def test_plot_code_multicursor_image_includes_norm_settings(qtbot) -> None:
     win.slicer_area.lock_levels(True)
     main_image.getViewBox().setAspectLocked(True)
 
-    code = main_image._plot_code_multicursor()
-    assert "transpose=True" in code
-    assert "same_limits=True" in code
-    assert 'axis="image"' in code
-    assert 'cmap="magma_r"' in code
-    assert "CenteredInversePowerNorm" in code
+    operation = main_image.figure_composer_operation(source_name="data")
+    assert operation.kind == FigureOperationKind.PLOT_SLICES
+    assert operation.transpose is True
+    assert operation.same_limits is True
+    assert operation.axis == "image"
+    assert operation.cmap == "magma_r"
+    assert operation.norm_name == "CenteredInversePowerNorm"
+    assert operation.norm_gamma == pytest.approx(1.5)
+    assert operation.vcenter == pytest.approx(62.0)
+    assert operation.halfrange == pytest.approx(62.0)
+    assert operation.slice_dim == "beta"
+    assert operation.slice_values == (1.0, 2.0)
 
     win.close()
 

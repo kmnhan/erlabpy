@@ -634,6 +634,7 @@ def _render_line(
                 axis.plot(line_values.values, coordinate.values, **kwargs)
             else:
                 line_values.plot(ax=axis, x=operation.line_x, **kwargs)
+        _apply_line_axes_limits(axis, operation)
 
 
 def _render_one_profile_per_axis(
@@ -658,6 +659,16 @@ def _render_one_profile_per_axis(
             axis.plot(values.values, coordinate.values, **kwargs)
         else:
             axis.plot(coordinate.values, values.values, **kwargs)
+        _apply_line_axes_limits(axis, operation)
+
+
+def _apply_line_axes_limits(
+    axis: matplotlib.axes.Axes, operation: FigureOperationState
+) -> None:
+    if operation.xlim is not None:
+        axis.set_xlim(operation.xlim)
+    if operation.ylim is not None:
+        axis.set_ylim(operation.ylim)
 
 
 def _line_data_items(
@@ -900,6 +911,8 @@ def _regular_line_code(
             call_args += f", {kwargs_text}"
         plot_target = "profile" if value_expr == "profile" else f"({value_expr})"
         lines.append(f"        {plot_target}.plot({call_args})")
+    if axes_limits_code := _line_axes_limits_code(operation):
+        lines.append(f"    {axes_limits_code}")
     return lines
 
 
@@ -1002,11 +1015,15 @@ def _one_profile_per_axis_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     lines: list[str] = []
-    axes_code = _axes_sequence_code(tool, operation.axes)
     if operation.line_normalize != "none":
         lines.append(_PROFILE_NORMALIZE_CODE[operation.line_normalize])
+    lines.append(f"target_axes = list({_axes_sequence_code(tool, operation.axes)})")
+    lines.append("if len(target_axes) == 1 and len(profiles) > 1:")
+    lines.append("    target_axes = target_axes * len(profiles)")
+    lines.append("elif len(profiles) == 1 and len(target_axes) > 1:")
+    lines.append("    profiles = profiles * len(target_axes)")
     loop_names = ["ax", "profile"]
-    loop_values = [axes_code, "profiles"]
+    loop_values = ["target_axes", "profiles"]
     lines.extend(
         _line_value_code(
             operation,
@@ -1036,7 +1053,20 @@ def _one_profile_per_axis_code(
     if kwargs_text:
         call_args += f", {kwargs_text}"
     lines.append(f"    ax.plot({call_args})")
+    if axes_limits_code := _line_axes_limits_code(operation):
+        lines.append(f"    {axes_limits_code}")
     return lines
+
+
+def _line_axes_limits_code(operation: FigureOperationState) -> str:
+    kwargs: list[str] = []
+    if operation.xlim is not None:
+        kwargs.append(f"xlim={operation.xlim!r}")
+    if operation.ylim is not None:
+        kwargs.append(f"ylim={operation.ylim!r}")
+    if not kwargs:
+        return ""
+    return "ax.set(" + ", ".join(kwargs) + ")"
 
 
 def _line_coordinate_code(operation: FigureOperationState) -> str:

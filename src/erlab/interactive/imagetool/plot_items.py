@@ -2057,6 +2057,11 @@ class ItoolPlotItem(pg.PlotItem):
             if self.slicer_data_items[self.slicer_area.current_cursor].normalize
             else "none"
         )
+        style_updates = {
+            "line_normalize": normalize_mode,
+            **self._figure_composer_line_style_updates(),
+            **self._figure_composer_line_limit_updates(x_dim),
+        }
         if selected_lines is not None:
             return FigureOperationState.line(
                 label="line",
@@ -2065,7 +2070,7 @@ class ItoolPlotItem(pg.PlotItem):
                 update={
                     "line_x": str(x_dim),
                     "map_selections": map_selections,
-                    "line_normalize": normalize_mode,
+                    **style_updates,
                 }
             )
 
@@ -2100,7 +2105,7 @@ class ItoolPlotItem(pg.PlotItem):
                 update={
                     "line_x": str(x_dim),
                     "map_selections": tuple(selections),
-                    "line_normalize": normalize_mode,
+                    **style_updates,
                 }
             )
 
@@ -2112,9 +2117,29 @@ class ItoolPlotItem(pg.PlotItem):
                 "line_x": str(x_dim),
                 "line_selection": dict(line_selection),
                 "line_iter_dim": line_iter_dim,
-                "line_normalize": normalize_mode,
+                **style_updates,
             }
         )
+
+    def _figure_composer_line_style_updates(self) -> dict[str, typing.Any]:
+        colors = tuple(
+            self.slicer_area.cursor_colors[index].name()
+            for index in range(self.slicer_area.n_cursors)
+        )
+        default_colors = erlab.interactive._options.schema.ColorOptions.model_fields[
+            "cursors"
+        ].default
+        if any(color not in default_colors for color in colors):
+            return {"line_colors": colors}
+        return {}
+
+    def _figure_composer_line_limit_updates(
+        self, x_dim: Hashable
+    ) -> dict[str, typing.Any]:
+        if x_dim not in self._crop_indexers:
+            return {}
+        slice_obj = self._crop_indexers[x_dim]
+        return {"xlim": (float(slice_obj.start), float(slice_obj.stop))}
 
     def _figure_composer_plot_slices_kwargs(
         self, dim_order_plot: list[Hashable]
