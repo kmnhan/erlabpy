@@ -69,6 +69,8 @@ class FigureSubplotsState(pydantic.BaseModel):
     )
     sharex: bool | typing.Literal["none", "all", "row", "col"] = "col"
     sharey: bool | typing.Literal["none", "all", "row", "col"] = "row"
+    width_ratios: tuple[float, ...] = ()
+    height_ratios: tuple[float, ...] = ()
 
     model_config = pydantic.ConfigDict(extra="forbid")
 
@@ -91,6 +93,13 @@ class FigureSubplotsState(pydantic.BaseModel):
     def _validate_dpi(cls, value: float) -> float:
         if value < 1:
             raise ValueError("dpi must be positive")
+        return value
+
+    @pydantic.field_validator("width_ratios", "height_ratios")
+    @classmethod
+    def _validate_ratios(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if any(item <= 0.0 for item in value):
+            raise ValueError("subplot ratios must be positive")
         return value
 
 

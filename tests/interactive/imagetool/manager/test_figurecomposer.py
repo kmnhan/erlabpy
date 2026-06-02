@@ -136,6 +136,8 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
     assert setup.layout == expected_layout
     assert setup.sharex == "col"
     assert setup.sharey == "row"
+    assert setup.width_ratios == ()
+    assert setup.height_ratios == ()
     assert export.dpi == expected_export_dpi
     assert export.transparent is expected_transparent
     assert export.bbox_inches == expected_bbox
@@ -505,12 +507,13 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert editor_tabs.currentWidget() is tool.recipe_page
     assert isinstance(tool.layout_page.layout(), QtWidgets.QGridLayout)
     layout_grid = typing.cast("QtWidgets.QGridLayout", tool.layout_page.layout())
-    assert layout_grid.rowCount() == 6
+    assert layout_grid.rowCount() == 7
     assert layout_grid.columnCount() == 5
     assert tool.findChild(QtWidgets.QWidget, "figureComposerGridControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerSizeMmControls") is not None
     assert tool.findChild(QtWidgets.QWidget, "figureComposerShareControls") is not None
+    assert tool.findChild(QtWidgets.QWidget, "figureComposerRatioControls") is not None
     layout_label = tool.findChild(QtWidgets.QLabel, "figureComposerLayoutControls")
     assert layout_label is not None
     assert layout_grid.getItemPosition(layout_grid.indexOf(layout_label)) == (
@@ -632,6 +635,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
             tool.layout_combo,
             tool.sharex_combo,
             tool.sharey_combo,
+            tool.width_ratios_edit,
+            tool.height_ratios_edit,
             tool.operation_list,
             tool.source_list,
             tool.use_all_axes_button,
@@ -980,6 +985,51 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert "colorbar_kw" in code
     assert "tools[" not in code
     assert "_manager" not in code
+
+
+def test_figure_composer_layout_ratios_update_subplots_kwargs(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                nrows=2,
+                ncols=3,
+                width_ratios=(1.0, 2.0, 3.0),
+                height_ratios=(2.0, 1.0),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert tool.width_ratios_edit.text() == "1, 2, 3"
+    assert tool.height_ratios_edit.text() == "2, 1"
+
+    tool.width_ratios_edit.setText("3, 2, 1")
+    tool.height_ratios_edit.setText("4, 1")
+    tool._setup_controls_changed()
+
+    assert tool.tool_status.setup.width_ratios == (3.0, 2.0, 1.0)
+    assert tool.tool_status.setup.height_ratios == (4.0, 1.0)
+    setup_kwargs = figurecomposer_rendering._setup_kwargs(tool)
+    assert setup_kwargs["width_ratios"] == (3.0, 2.0, 1.0)
+    assert setup_kwargs["height_ratios"] == (4.0, 1.0)
+
+    code = tool.generated_code()
+    assert "width_ratios" in code
+    assert "height_ratios" in code
+    assert "gridspec_kw" not in code
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["axs"].shape == (2, 3)
 
 
 def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:

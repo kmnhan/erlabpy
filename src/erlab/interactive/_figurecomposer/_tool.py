@@ -42,7 +42,11 @@ from erlab.interactive._figurecomposer._state import (
     FigureSourceState,
     FigureSubplotsState,
 )
-from erlab.interactive._figurecomposer._text import _format_axes_tuple
+from erlab.interactive._figurecomposer._text import (
+    _format_axes_tuple,
+    _format_tuple,
+    _literal_sequence_from_text,
+)
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
     _FigureComposerDisplayWindow,
@@ -521,6 +525,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.sharex_combo.addItems(["False", "True", "row", "col", "all"])
         self.sharey_combo = QtWidgets.QComboBox(layout_page)
         self.sharey_combo.addItems(["False", "True", "row", "col", "all"])
+        self.width_ratios_edit = QtWidgets.QLineEdit(layout_page)
+        self.width_ratios_edit.setObjectName("figureComposerWidthRatiosEdit")
+        self.height_ratios_edit = QtWidgets.QLineEdit(layout_page)
+        self.height_ratios_edit.setObjectName("figureComposerHeightRatiosEdit")
 
         def add_grid_pair_row(
             row: int,
@@ -613,7 +621,19 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.sharey_combo,
             "Matplotlib sharey setting passed to plt.subplots.",
         )
-        setup_layout.setRowStretch(5, 1)
+        add_grid_pair_row(
+            5,
+            "Ratios",
+            "figureComposerRatioControls",
+            "Optional subplot width and height ratios passed to plt.subplots.",
+            "Widths",
+            self.width_ratios_edit,
+            "Optional width_ratios values, one positive number per column.",
+            "Heights",
+            self.height_ratios_edit,
+            "Optional height_ratios values, one positive number per row.",
+        )
+        setup_layout.setRowStretch(6, 1)
 
         layout_index = self.editor_tabs.addTab(layout_page, "Layout")
         self.editor_tabs.setTabToolTip(
@@ -639,6 +659,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             typing.cast("QtWidgets.QAbstractSpinBox", widget).editingFinished.connect(
                 self._size_mm_controls_changed
             )
+        for widget in (self.width_ratios_edit, self.height_ratios_edit):
+            widget.editingFinished.connect(self._setup_controls_changed)
         self.layout_combo.currentTextChanged.connect(self._setup_controls_changed)
         self.sharex_combo.currentTextChanged.connect(self._setup_controls_changed)
         self.sharey_combo.currentTextChanged.connect(self._setup_controls_changed)
@@ -658,6 +680,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._set_combo_value(self.layout_combo, setup.layout or "none")
             self._set_combo_value(self.sharex_combo, str(setup.sharex))
             self._set_combo_value(self.sharey_combo, str(setup.sharey))
+            self.width_ratios_edit.setText(_format_tuple(setup.width_ratios))
+            self.height_ratios_edit.setText(_format_tuple(setup.height_ratios))
             self._refresh_source_list()
             self._rebuild_axes_grid()
             self._refresh_operation_list()
@@ -679,6 +703,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _sync_size_mm_controls(self, figsize: tuple[float, float]) -> None:
         self.width_mm_spin.setValue(figsize[0] * _MM_PER_INCH)
         self.height_mm_spin.setValue(figsize[1] * _MM_PER_INCH)
+
+    @staticmethod
+    def _ratio_tuple_from_text(text: str) -> tuple[float, ...]:
+        values = tuple(float(value) for value in _literal_sequence_from_text(text))
+        if any(value <= 0.0 for value in values):
+            raise ValueError("subplot ratios must be positive")
+        return values
 
     def _refresh_source_list(self) -> None:
         self.source_list.clear()
@@ -918,15 +949,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _setup_controls_changed(self) -> None:
         if self._updating_controls:
             return
-        setup = FigureSubplotsState(
-            nrows=self.nrows_spin.value(),
-            ncols=self.ncols_spin.value(),
-            figsize=(self.width_spin.value(), self.height_spin.value()),
-            dpi=self._recipe.setup.dpi,
-            layout=self._layout_combo_value(),
-            sharex=self._combo_bool_or_text(self.sharex_combo),
-            sharey=self._combo_bool_or_text(self.sharey_combo),
-        )
+        try:
+            setup = FigureSubplotsState(
+                nrows=self.nrows_spin.value(),
+                ncols=self.ncols_spin.value(),
+                figsize=(self.width_spin.value(), self.height_spin.value()),
+                dpi=self._recipe.setup.dpi,
+                layout=self._layout_combo_value(),
+                sharex=self._combo_bool_or_text(self.sharex_combo),
+                sharey=self._combo_bool_or_text(self.sharey_combo),
+                width_ratios=self._ratio_tuple_from_text(self.width_ratios_edit.text()),
+                height_ratios=self._ratio_tuple_from_text(
+                    self.height_ratios_edit.text()
+                ),
+            )
+        except ValueError:
+            return
         if setup == self._recipe.setup:
             return
         self._recipe = self._recipe.model_copy(update={"setup": setup})

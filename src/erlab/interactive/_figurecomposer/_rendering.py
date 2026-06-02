@@ -38,6 +38,10 @@ def _setup_kwargs(tool: FigureComposerTool) -> dict[str, typing.Any]:
         kwargs["sharex"] = setup.sharex
     if setup.sharey is not False:
         kwargs["sharey"] = setup.sharey
+    if setup.width_ratios and len(setup.width_ratios) == setup.ncols:
+        kwargs["width_ratios"] = setup.width_ratios
+    if setup.height_ratios and len(setup.height_ratios) == setup.nrows:
+        kwargs["height_ratios"] = setup.height_ratios
     return kwargs
 
 
