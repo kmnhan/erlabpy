@@ -136,6 +136,7 @@ class MethodControlKind(enum.StrEnum):
     LITERAL_SEQUENCE_ARG = "literal_sequence_arg"
     STRING_TUPLE_ARG = "string_tuple_arg"
     FLOAT_PAIR_ARGS = "float_pair_args"
+    ASPECT_ARG = "aspect_arg"
     BOOL_ARG_COMBO = "bool_arg_combo"
     KWARG_COMBO = "kwarg_combo"
     BOOL_KWARG_COMBO = "bool_kwarg_combo"
@@ -274,6 +275,24 @@ def _float_pair_args(label: str, object_name: str, tooltip: str) -> MethodContro
         label=label,
         object_name=object_name,
         tooltip=tooltip,
+    )
+
+
+def _aspect_arg(
+    label: str,
+    index: int,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: str | float = "equal",
+) -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.ASPECT_ARG,
+        label=label,
+        arg_index=index,
+        object_name=object_name,
+        tooltip=tooltip,
+        default=default,
     )
 
 
@@ -795,6 +814,99 @@ AXES_METHODS: dict[str, MethodSpec] = {
             ),
         ),
     ),
+    "set_title": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="set_title",
+        label="Set title",
+        tooltip="Runs ax.set_title on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=("Title",),
+        controls=(
+            _text_arg(
+                "Title",
+                0,
+                "figureComposerAxesMethodTitleEdit",
+                "Title text passed to ax.set_title.",
+            ),
+            _kwarg_combo(
+                "Location",
+                "loc",
+                ("center", "left", "right"),
+                "center",
+                "figureComposerAxesMethodTitleLocCombo",
+                "Horizontal title location.",
+            ),
+            _float_kwarg(
+                "Padding",
+                "pad",
+                "figureComposerAxesMethodTitlePadEdit",
+                "Optional title padding in points.",
+            ),
+        ),
+    ),
+    "set_xlabel": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="set_xlabel",
+        label="Set x label",
+        tooltip="Runs ax.set_xlabel on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=("x",),
+        controls=(
+            _text_arg(
+                "Label",
+                0,
+                "figureComposerAxesMethodXLabelEdit",
+                "x-axis label text passed to ax.set_xlabel.",
+            ),
+            _kwarg_combo(
+                "Location",
+                "loc",
+                ("center", "left", "right"),
+                "center",
+                "figureComposerAxesMethodXLabelLocCombo",
+                "x-axis label location.",
+            ),
+            _float_kwarg(
+                "Label pad",
+                "labelpad",
+                "figureComposerAxesMethodXLabelPadEdit",
+                "Optional x-axis label padding in points.",
+            ),
+        ),
+    ),
+    "set_ylabel": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="set_ylabel",
+        label="Set y label",
+        tooltip="Runs ax.set_ylabel on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=("y",),
+        controls=(
+            _text_arg(
+                "Label",
+                0,
+                "figureComposerAxesMethodYLabelEdit",
+                "y-axis label text passed to ax.set_ylabel.",
+            ),
+            _kwarg_combo(
+                "Location",
+                "loc",
+                ("center", "bottom", "top"),
+                "center",
+                "figureComposerAxesMethodYLabelLocCombo",
+                "y-axis label location.",
+            ),
+            _float_kwarg(
+                "Label pad",
+                "labelpad",
+                "figureComposerAxesMethodYLabelPadEdit",
+                "Optional y-axis label padding in points.",
+            ),
+        ),
+    ),
     "set_xscale": MethodSpec(
         family=FigureMethodFamily.AXES,
         name="set_xscale",
@@ -830,6 +942,62 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 _DEFAULT_SCALE,
                 "figureComposerAxesMethodYScaleCombo",
                 "Matplotlib scale name passed to ax.set_yscale.",
+            ),
+        ),
+    ),
+    "margins": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="margins",
+        label="Margins",
+        tooltip="Runs ax.margins on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_kwargs={"x": 0.05, "y": 0.05, "tight": True},
+        controls=(
+            _float_kwarg(
+                "x",
+                "x",
+                "figureComposerAxesMethodXMarginEdit",
+                "x-axis margin fraction passed to ax.margins.",
+                default=0.05,
+            ),
+            _float_kwarg(
+                "y",
+                "y",
+                "figureComposerAxesMethodYMarginEdit",
+                "y-axis margin fraction passed to ax.margins.",
+                default=0.05,
+            ),
+            _bool_kwarg_combo(
+                "Tight",
+                "tight",
+                "figureComposerAxesMethodMarginsTightCombo",
+                "Pass tight=True or False to ax.margins.",
+                default=True,
+            ),
+        ),
+    ),
+    "set_aspect": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="set_aspect",
+        label="Set aspect",
+        tooltip="Runs ax.set_aspect on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=("equal",),
+        controls=(
+            _aspect_arg(
+                "Aspect",
+                0,
+                "figureComposerAxesMethodAspectEdit",
+                "Aspect passed to ax.set_aspect: auto, equal, or a number.",
+            ),
+            _bool_kwarg_combo(
+                "Share",
+                "share",
+                "figureComposerAxesMethodAspectShareCombo",
+                "Apply the aspect setting to shared axes.",
+                default=False,
             ),
         ),
     ),
@@ -1944,6 +2112,19 @@ def _add_method_control_row(
                 )
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.ASPECT_ARG:
+            index = _control_arg_index(control)
+            value = args[index] if index < len(args) else control.default
+            edit = tool._line_edit(
+                _format_aspect_value(value), parent=layout.parentWidget()
+            )
+            edit.setObjectName(control.object_name)
+            edit.editingFinished.connect(
+                lambda edit=edit, index=index: _update_current_method_arg(
+                    tool, index, _aspect_value_from_text(edit.text())
+                )
+            )
+            tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.BOOL_ARG_COMBO:
             index = _control_arg_index(control)
             combo = tool._combo(
@@ -2121,6 +2302,16 @@ def _format_literal_value(value: typing.Any) -> str:
     return _code_args((value,))
 
 
+def _format_aspect_value(value: typing.Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int | float):
+        return f"{float(value):g}"
+    return _code_args((value,))
+
+
 def _literal_value_from_text(text: str) -> typing.Any:
     stripped = text.strip()
     if not stripped:
@@ -2128,6 +2319,23 @@ def _literal_value_from_text(text: str) -> typing.Any:
     if stripped.startswith("{") or "=" in stripped:
         return _dict_from_text(stripped)
     return ast.literal_eval(stripped)
+
+
+def _aspect_value_from_text(text: str) -> str | float | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if stripped in {"auto", "equal"}:
+        return stripped
+    try:
+        value = ast.literal_eval(stripped)
+    except (SyntaxError, ValueError):
+        return stripped
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, int | float):
+        return stripped
+    return float(value)
 
 
 def _optional_literal_from_text(text: str) -> typing.Any:

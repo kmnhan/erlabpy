@@ -1282,6 +1282,55 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
                     name="set_yscale",
                     axes=FigureAxesSelectionState(axes=((0, 1),)),
                 ).model_copy(update={"method_args": ("linear",)}),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_title",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_args": ("Left title",),
+                        "method_kwargs": {"loc": "left", "pad": 2.0},
+                    }
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlabel",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_args": ("Momentum",),
+                        "method_kwargs": {"loc": "right", "labelpad": 3.0},
+                    }
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_ylabel",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ).model_copy(
+                    update={
+                        "method_args": ("Energy",),
+                        "method_kwargs": {"loc": "top", "labelpad": 4.0},
+                    }
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="margins",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_kwargs": {"x": 0.1, "y": 0.2, "tight": False},
+                    }
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_aspect",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ).model_copy(
+                    update={
+                        "method_args": (2.0,),
+                        "method_kwargs": {"share": True},
+                    }
+                ),
             ),
             primary_source="data",
         ),
@@ -1353,6 +1402,58 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     yscale_combo.setCurrentText(y_scale)
     assert tool.tool_status.operations[7].method_args == (y_scale,)
 
+    tool.operation_list.setCurrentRow(8)
+    tool._select_step_section("method")
+    title_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTitleEdit"
+    )
+    title_loc_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodTitleLocCombo"
+    )
+    title_pad_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodTitlePadEdit"
+    )
+    assert title_edit is not None
+    assert title_loc_combo is not None
+    assert title_pad_edit is not None
+    assert title_edit.text() == "Left title"
+    assert title_loc_combo.currentText() == "left"
+    assert title_pad_edit.text() == "2"
+
+    tool.operation_list.setCurrentRow(11)
+    tool._select_step_section("method")
+    x_margin_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodXMarginEdit"
+    )
+    y_margin_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodYMarginEdit"
+    )
+    tight_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodMarginsTightCombo"
+    )
+    assert x_margin_edit is not None
+    assert y_margin_edit is not None
+    assert tight_combo is not None
+    assert x_margin_edit.text() == "0.1"
+    assert y_margin_edit.text() == "0.2"
+    assert tight_combo.currentText() == "False"
+
+    tool.operation_list.setCurrentRow(12)
+    tool._select_step_section("method")
+    aspect_edit = tool.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodAspectEdit"
+    )
+    aspect_share_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodAspectShareCombo"
+    )
+    assert aspect_edit is not None
+    assert aspect_share_combo is not None
+    assert aspect_edit.text() == "2"
+    assert aspect_share_combo.currentText() == "True"
+    aspect_edit.setText("2.5")
+    aspect_edit.editingFinished.emit()
+    assert tool.tool_status.operations[12].method_args == (2.5,)
+
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
     assert fig.axes[0].texts[0].get_text() == "Panel"
@@ -1367,6 +1468,11 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert len(fig.axes[1].patches) == 1
     assert fig.axes[0].get_xscale() == "log"
     assert fig.axes[1].get_yscale() == y_scale
+    assert fig.axes[0].get_title(loc="left") == "Left title"
+    assert fig.axes[0].get_xlabel() == "Momentum"
+    assert fig.axes[1].get_ylabel() == "Energy"
+    assert fig.axes[0].margins() == (0.1, 0.2)
+    assert fig.axes[1].get_aspect() == 2.5
 
     code = tool.generated_code()
     assert (
@@ -1379,6 +1485,11 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert "ax.set_axis_off()" in code
     assert 'ax.set_xscale("log")' in code
     assert f'ax.set_yscale("{y_scale}")' in code
+    assert 'ax.set_title("Left title", loc="left", pad=2.0)' in code
+    assert 'ax.set_xlabel("Momentum", loc="right", labelpad=3.0)' in code
+    assert 'ax.set_ylabel("Energy", loc="top", labelpad=4.0)' in code
+    assert "ax.margins(x=0.1, y=0.2, tight=False)" in code
+    assert "ax.set_aspect(2.5, share=True)" in code
 
     namespace: dict[str, typing.Any] = {}
     exec(code, namespace)  # noqa: S102
@@ -1391,6 +1502,11 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     ]
     assert axs[0, 0].get_xscale() == "log"
     assert axs[0, 1].get_yscale() == y_scale
+    assert axs[0, 0].get_title(loc="left") == "Left title"
+    assert axs[0, 0].get_xlabel() == "Momentum"
+    assert axs[0, 1].get_ylabel() == "Energy"
+    assert axs[0, 0].margins() == (0.1, 0.2)
+    assert axs[0, 1].get_aspect() == 2.5
 
 
 def test_figure_composer_figure_method_has_no_axes_target(qtbot) -> None:
