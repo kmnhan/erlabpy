@@ -38,6 +38,9 @@ from erlab.interactive._figurecomposer import (
 from erlab.interactive._figurecomposer._operations import (
     _line_profile as figurecomposer_line_profile,
 )
+from erlab.interactive._figurecomposer._operations import (
+    _method as figurecomposer_method,
+)
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
 from erlab.interactive.imagetool import itool
@@ -2735,6 +2738,115 @@ def test_figure_composer_pipeline_codegen_executes(qtbot) -> None:
     exec(tool.generated_code(), namespace)  # noqa: S102
     assert namespace["axs"].shape == (1, 2)
     assert namespace["axs"][0, 0].get_xlim() == pytest.approx((0.25, 0.75))
+
+
+def test_figure_composer_method_doc_url_uses_family_templates() -> None:
+    assert figurecomposer_method._method_doc_url(
+        figurecomposer_method.AXES_METHODS["text"]
+    ) == ("https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.text.html")
+    assert figurecomposer_method._method_doc_url(
+        figurecomposer_method.FIGURE_METHODS["supxlabel"]
+    ) == (
+        "https://matplotlib.org/stable/api/_as_gen/"
+        "matplotlib.figure.Figure.supxlabel.html"
+    )
+    assert figurecomposer_method._method_doc_url(
+        figurecomposer_method.ERLAB_METHODS["clean_labels"]
+    ) == (
+        "https://erlabpy.readthedocs.io/en/stable/generated/"
+        "erlab.plotting.clean_labels.html"
+    )
+    spec = figurecomposer_method.MethodSpec(
+        family=FigureMethodFamily.ERLAB,
+        name="call_name",
+        label="call_name",
+        tooltip="test",
+        target_domain=figurecomposer_method.MethodTargetDomain.FIGURE,
+        call_policy=figurecomposer_method.MethodCallPolicy.PLAIN_CALL,
+        doc_name="documented_name",
+    )
+    assert figurecomposer_method._method_doc_url(spec) == (
+        "https://erlabpy.readthedocs.io/en/stable/generated/"
+        "erlab.plotting.documented_name.html"
+    )
+
+
+def test_figure_composer_method_docs_button_opens_current_url(
+    qtbot, monkeypatch
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="text",
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="supxlabel",
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="clean_labels",
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    opened_urls: list[str] = []
+
+    def record_url(url: QtCore.QUrl) -> bool:
+        opened_urls.append(url.toString())
+        return True
+
+    monkeypatch.setattr(QtGui.QDesktopServices, "openUrl", record_url)
+
+    for row, expected in (
+        (
+            0,
+            "https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.text.html",
+        ),
+        (
+            1,
+            "https://matplotlib.org/stable/api/_as_gen/"
+            "matplotlib.figure.Figure.supxlabel.html",
+        ),
+        (
+            2,
+            "https://erlabpy.readthedocs.io/en/stable/generated/"
+            "erlab.plotting.clean_labels.html",
+        ),
+    ):
+        tool.operation_list.setCurrentRow(row)
+        tool._select_step_section("method")
+        button = tool.step_editor_stack.currentWidget().findChild(
+            QtWidgets.QToolButton, "figureComposerMethodDocsButton"
+        )
+        assert button is not None
+        assert button.isEnabled()
+        assert button.property("figure_method_doc_url") == expected
+        button.click()
+
+    assert opened_urls == [
+        "https://matplotlib.org/stable/api/_as_gen/matplotlib.axes.Axes.text.html",
+        (
+            "https://matplotlib.org/stable/api/_as_gen/"
+            "matplotlib.figure.Figure.supxlabel.html"
+        ),
+        (
+            "https://erlabpy.readthedocs.io/en/stable/generated/"
+            "erlab.plotting.clean_labels.html"
+        ),
+    ]
 
 
 def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:

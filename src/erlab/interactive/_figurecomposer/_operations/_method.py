@@ -48,6 +48,10 @@ How to add a method
    ``text_values_policy``. ``POSITIONAL`` appends the labels as a positional
    argument; ``KWARG`` stores them under ``text_values_kwarg``.
 
+7. Documentation links are derived from the method family and callable name. Set
+   ``doc_name`` only when the documented name differs, and ``doc_url`` only for
+   exceptional URLs that do not follow the family template.
+
 Tests should exercise the public recipe behavior: select the method step, edit the
 stable object-named widgets, assert ``method_args`` or ``method_kwargs``, and execute
 or inspect generated code when the call form itself is product behavior.
@@ -61,7 +65,7 @@ import enum
 import typing
 
 import matplotlib.scale
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.plotting as eplt
 from erlab.interactive._figurecomposer import _rendering
@@ -177,6 +181,8 @@ class MethodSpec:
     text_values_kwarg: str = "values"
     preserves_empty_text: bool = False
     callable_name: str | None = None
+    doc_name: str | None = None
+    doc_url: str | None = None
 
     @property
     def call_name(self) -> str:
@@ -1854,6 +1860,8 @@ _FAMILY_TOOLTIPS = {
     FigureMethodFamily.FIGURE: "Add a direct Matplotlib fig.* figure-level step.",
     FigureMethodFamily.ERLAB: "Add an erlab.plotting helper step after plotting.",
 }
+_MATPLOTLIB_DOC_BASE = "https://matplotlib.org/stable/api/_as_gen"
+_ERLAB_PLOTTING_DOC_BASE = "https://erlabpy.readthedocs.io/en/stable/generated"
 
 _CALL_POLICY_LABELS = {
     MethodCallPolicy.EACH_AXIS_AX_KEYWORD: "Each selected axis",
@@ -1986,19 +1994,39 @@ def _build_method_editor(
         ),
     )
 
+    method_widget = QtWidgets.QWidget(page)
+    method_layout = QtWidgets.QHBoxLayout(method_widget)
+    method_layout.setContentsMargins(0, 0, 0, 0)
+    method_layout.setSpacing(6)
     method_combo = tool._combo(
         [method.label for method in _method_specs(operation.method_family).values()],
         spec.label,
         lambda text: _update_current_method_name(
             tool, _method_name_from_label(operation.method_family, text)
         ),
-        parent=page,
+        parent=method_widget,
     )
     method_combo.setObjectName(_method_combo_object_name(operation.method_family))
+    method_combo.setToolTip("Function or method called by this recipe step.")
+    method_layout.addWidget(method_combo, 1)
+    docs_button = QtWidgets.QToolButton(method_widget)
+    docs_button.setObjectName("figureComposerMethodDocsButton")
+    docs_button.setText("Docs")
+    docs_button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
+    docs_button.setAutoRaise(True)
+    docs_button.setToolTip("Open API documentation for this method.")
+    doc_url = _method_doc_url(spec)
+    docs_button.setProperty("figure_method_doc_url", doc_url or "")
+    docs_button.setEnabled(doc_url is not None)
+    if doc_url is not None:
+        docs_button.clicked.connect(
+            lambda _checked=False, doc_url=doc_url: _open_method_doc_url(doc_url)
+        )
+    method_layout.addWidget(docs_button)
     tool._add_form_row(
         layout,
         "Method",
-        method_combo,
+        method_widget,
         "Function or method called by this recipe step.",
     )
 
@@ -2760,6 +2788,24 @@ def _callable_display(spec: MethodSpec) -> str:
             | MethodCallPolicy.PLAIN_CALL
         ):
             return f"erlab.plotting.{spec.call_name}"
+
+
+def _method_doc_url(spec: MethodSpec) -> str | None:
+    if spec.doc_url is not None:
+        return spec.doc_url
+    doc_name = spec.doc_name or spec.call_name
+    match spec.family:
+        case FigureMethodFamily.AXES:
+            return f"{_MATPLOTLIB_DOC_BASE}/matplotlib.axes.Axes.{doc_name}.html"
+        case FigureMethodFamily.FIGURE:
+            return f"{_MATPLOTLIB_DOC_BASE}/matplotlib.figure.Figure.{doc_name}.html"
+        case FigureMethodFamily.ERLAB:
+            return f"{_ERLAB_PLOTTING_DOC_BASE}/erlab.plotting.{doc_name}.html"
+    return None
+
+
+def _open_method_doc_url(url: str) -> None:
+    QtGui.QDesktopServices.openUrl(QtCore.QUrl(url))
 
 
 def _update_current_method_family(
