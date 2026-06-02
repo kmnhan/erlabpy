@@ -1399,6 +1399,26 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
                     name="scale_units",
                     axes=axes,
                 ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="fancy_labels",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="integer_ticks",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="sizebar",
+                    axes=axes,
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.ERLAB,
+                    name="unify_clim",
+                    axes=axes,
+                ),
             ),
             primary_source="data",
         ),
@@ -1556,9 +1576,67 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     assert operation(8).method_args == ("y", 3)
     assert operation(8).method_kwargs == {"prefix": False, "power": True}
 
+    page = select_method(9)
+    combo_box(page, "figureComposerERLabFancyLabelsRadiansCombo").setCurrentText("True")
+    assert operation(9).method_kwargs == {"radians": True}
+
+    page = select_method(10)
+    assert (
+        page.findChild(QtWidgets.QLineEdit, "figureComposerERLabMethodKwEdit") is None
+    )
+
+    page = select_method(11)
+    assert operation(11).method_kwargs == {}
+    assert line_edit(page, "figureComposerERLabSizebarValueEdit").text() == "1"
+    assert line_edit(page, "figureComposerERLabSizebarUnitEdit").text() == "m"
+    set_line_edit(page, "figureComposerERLabSizebarValueEdit", "2")
+    set_line_edit(page, "figureComposerERLabSizebarUnitEdit", "m")
+    set_line_edit(page, "figureComposerERLabSizebarSiEdit", "-6")
+    set_line_edit(page, "figureComposerERLabSizebarResolutionEdit", "0.001")
+    set_line_edit(page, "figureComposerERLabSizebarDecimalsEdit", "1")
+    set_line_edit(page, "figureComposerERLabSizebarLabelEdit", "200 um")
+    combo_box(page, "figureComposerERLabSizebarLocCombo").setCurrentText("lower left")
+    set_line_edit(page, "figureComposerERLabSizebarPadEdit", "0.2")
+    set_line_edit(page, "figureComposerERLabSizebarBorderPadEdit", "0.6")
+    set_line_edit(page, "figureComposerERLabSizebarSepEdit", "4")
+    combo_box(page, "figureComposerERLabSizebarFrameCombo").setCurrentText("True")
+    assert operation(11).method_kwargs == {
+        "value": 2.0,
+        "unit": "m",
+        "si": -6,
+        "resolution": 0.001,
+        "decimals": 1,
+        "label": "200 um",
+        "loc": "lower left",
+        "pad": 0.2,
+        "borderpad": 0.6,
+        "sep": 4.0,
+        "frameon": True,
+    }
+
+    page = select_method(12)
+    combo_box(page, "figureComposerERLabUnifyClimImageOnlyCombo").setCurrentText("True")
+    combo_box(page, "figureComposerERLabUnifyClimAutoscaleCombo").setCurrentText("True")
+    set_line_edit(page, "figureComposerERLabUnifyClimVminEdit", "0")
+    set_line_edit(page, "figureComposerERLabUnifyClimVmaxEdit", "1")
+    assert operation(12).method_kwargs == {
+        "image_only": True,
+        "autoscale": True,
+        "vmin": 0.0,
+        "vmax": 1.0,
+    }
+
     code = tool.generated_code()
     assert "ticks=(0, 0.5, 1)" in code
     assert "ticks=[0, 1]" in code
+    assert "eplt.fancy_labels(axs, radians=True)" in code
+    assert "eplt.integer_ticks(axs)" in code
+    assert "eplt.sizebar(" in code
+    assert "value=2.0" in code
+    assert 'unit="m"' in code
+    assert "eplt.unify_clim(" in code
+    assert "image_only=True" in code
+    assert "autoscale=True" in code
 
 
 def test_figure_composer_line_values_axis_swaps_regular_profile(qtbot) -> None:

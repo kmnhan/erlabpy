@@ -1,4 +1,57 @@
-"""Generic curated function/method call operation for Figure Composer."""
+"""Generic curated function/method call operation for Figure Composer.
+
+This module owns the "method" recipe step: direct Matplotlib ``ax.*`` calls,
+direct Matplotlib ``fig.*`` calls, and curated ``erlab.plotting`` helpers. New
+method support should usually be added by editing the spec tables in this file,
+not by adding operation-specific branches elsewhere in Figure Composer.
+
+How to add a method
+-------------------
+1. Pick the family table:
+
+   - ``AXES_METHODS`` for bound Matplotlib calls such as ``ax.text(...)``.
+   - ``FIGURE_METHODS`` for bound Matplotlib calls such as ``fig.supxlabel(...)``.
+   - ``ERLAB_METHODS`` for functions available from ``erlab.plotting``.
+
+2. Choose the target domain:
+
+   - ``AXES`` shows the axes selector and invalidates when selected axes disappear.
+   - ``FIGURE`` hides the axes selector and targets the whole Matplotlib figure.
+   - ``NONE`` is for future no-target helpers.
+
+3. Choose the call policy. The policy determines both render behavior and generated
+   code, so avoid duplicating this logic in UI code.
+
+   - ``BOUND_EACH_AXIS``: ``for ax in axes: ax.method(...)``.
+   - ``AXES_POSITIONAL``: ``eplt.helper(axes, ...)``.
+   - ``AX_KEYWORD``: ``eplt.helper(..., ax=axes)``.
+   - ``EACH_AXIS_AX_KEYWORD``: ``for ax in axes: eplt.helper(..., ax=ax)``.
+   - ``BOUND_FIGURE``: ``fig.method(...)``.
+   - ``FIG_KEYWORD``: ``eplt.helper(..., fig=fig)``.
+   - ``PLAIN_CALL``: ``eplt.helper(...)``.
+
+4. Add controls with the small builder helpers. ``*_arg`` controls write to
+   ``method_args`` and ``*_kwarg`` controls write to ``method_kwargs``. Use keyword
+   controls whenever a helper also receives ``ax`` or ``fig`` as an injected keyword;
+   otherwise positional arguments can shift into the injected target parameter.
+
+5. Set defaults deliberately:
+
+   - ``default_args`` are fallback positional arguments used when a recipe has no
+     stored ``method_args``.
+   - ``default_kwargs`` are fallback keyword arguments used only while rendering and
+     generating code. They should not be copied into saved recipe state unless the
+     user edits the corresponding control.
+   - Control ``default`` values are only the initial widget text/value.
+
+6. If the method accepts a list of labels through the shared text editor, set
+   ``text_values_policy``. ``POSITIONAL`` appends the labels as a positional
+   argument; ``KWARG`` stores them under ``text_values_kwarg``.
+
+Tests should exercise the public recipe behavior: select the method step, edit the
+stable object-named widgets, assert ``method_args`` or ``method_kwargs``, and execute
+or inspect generated code when the call form itself is product behavior.
+"""
 
 from __future__ import annotations
 
@@ -116,6 +169,7 @@ class MethodSpec:
     call_policy: MethodCallPolicy
     allowed_call_policies: tuple[MethodCallPolicy, ...] = ()
     default_args: tuple[typing.Any, ...] = ()
+    default_kwargs: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
     controls: tuple[MethodControlSpec, ...] = ()
     allow_extra_kwargs: bool = True
     text_values_policy: MethodTextValuesPolicy = MethodTextValuesPolicy.NONE
@@ -779,6 +833,33 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
             ),
         ),
     ),
+    "fancy_labels": MethodSpec(
+        family=FigureMethodFamily.ERLAB,
+        name="fancy_labels",
+        label="fancy_labels",
+        tooltip="Runs erlab.plotting.fancy_labels on the selected axes.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.AXES_POSITIONAL,
+        allow_extra_kwargs=False,
+        controls=(
+            _bool_kwarg_combo(
+                "Radians",
+                "radians",
+                "figureComposerERLabFancyLabelsRadiansCombo",
+                "Use radians instead of degrees for angular axis units.",
+                default=False,
+            ),
+        ),
+    ),
+    "integer_ticks": MethodSpec(
+        family=FigureMethodFamily.ERLAB,
+        name="integer_ticks",
+        label="integer_ticks",
+        tooltip="Runs erlab.plotting.integer_ticks on the selected axes.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.AXES_POSITIONAL,
+        allow_extra_kwargs=False,
+    ),
     "label_subplots": MethodSpec(
         family=FigureMethodFamily.ERLAB,
         name="label_subplots",
@@ -1018,6 +1099,43 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
             ),
         ),
     ),
+    "unify_clim": MethodSpec(
+        family=FigureMethodFamily.ERLAB,
+        name="unify_clim",
+        label="unify_clim",
+        tooltip="Runs erlab.plotting.unify_clim on the selected axes.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.AXES_POSITIONAL,
+        allow_extra_kwargs=False,
+        controls=(
+            _bool_kwarg_combo(
+                "Images only",
+                "image_only",
+                "figureComposerERLabUnifyClimImageOnlyCombo",
+                "Only consider image mappables when reading and applying limits.",
+                default=False,
+            ),
+            _bool_kwarg_combo(
+                "Autoscale data",
+                "autoscale",
+                "figureComposerERLabUnifyClimAutoscaleCombo",
+                "Autoscale each mappable before determining shared color limits.",
+                default=False,
+            ),
+            _float_kwarg(
+                "Minimum",
+                "vmin",
+                "figureComposerERLabUnifyClimVminEdit",
+                "Explicit lower color limit. Blank infers it from selected axes.",
+            ),
+            _float_kwarg(
+                "Maximum",
+                "vmax",
+                "figureComposerERLabUnifyClimVmaxEdit",
+                "Explicit upper color limit. Blank infers it from selected axes.",
+            ),
+        ),
+    ),
     "set_titles": MethodSpec(
         family=FigureMethodFamily.ERLAB,
         name="set_titles",
@@ -1157,6 +1275,94 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "bar",
                 "figureComposerERLabMarkPointsBarCombo",
                 "Draw a bar over parsed labels.",
+                default=False,
+            ),
+        ),
+    ),
+    "sizebar": MethodSpec(
+        family=FigureMethodFamily.ERLAB,
+        name="sizebar",
+        label="sizebar",
+        tooltip="Runs erlab.plotting.sizebar once for each selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.EACH_AXIS_AX_KEYWORD,
+        default_kwargs={"value": 1.0, "unit": "m"},
+        controls=(
+            _float_kwarg(
+                "Value",
+                "value",
+                "figureComposerERLabSizebarValueEdit",
+                "Physical length represented by the size bar.",
+                default=1.0,
+            ),
+            _text_kwarg(
+                "Unit",
+                "unit",
+                "figureComposerERLabSizebarUnitEdit",
+                "Base SI unit used for the size bar label.",
+                default="m",
+            ),
+            _int_kwarg(
+                "SI exponent",
+                "si",
+                "figureComposerERLabSizebarSiEdit",
+                "Power of ten used to choose the displayed SI prefix.",
+                default=0,
+            ),
+            _float_kwarg(
+                "Resolution",
+                "resolution",
+                "figureComposerERLabSizebarResolutionEdit",
+                "Scale of the current axes coordinates in base units.",
+                default=1.0,
+            ),
+            _int_kwarg(
+                "Decimals",
+                "decimals",
+                "figureComposerERLabSizebarDecimalsEdit",
+                "Decimal places displayed in the generated label.",
+                default=0,
+            ),
+            _text_kwarg(
+                "Label",
+                "label",
+                "figureComposerERLabSizebarLabelEdit",
+                "Override the automatically generated size bar label.",
+            ),
+            _kwarg_combo(
+                "Location",
+                "loc",
+                _LABEL_LOCATION_OPTIONS,
+                "lower right",
+                "figureComposerERLabSizebarLocCombo",
+                "Location of the anchored size bar.",
+            ),
+            _float_kwarg(
+                "Pad",
+                "pad",
+                "figureComposerERLabSizebarPadEdit",
+                "Padding around the label and bar in font-size units.",
+                default=0.1,
+            ),
+            _float_kwarg(
+                "Border pad",
+                "borderpad",
+                "figureComposerERLabSizebarBorderPadEdit",
+                "Padding between the size bar and its anchor box.",
+                default=0.5,
+            ),
+            _float_kwarg(
+                "Separation",
+                "sep",
+                "figureComposerERLabSizebarSepEdit",
+                "Separation between the bar and label in points.",
+                default=3.0,
+            ),
+            _bool_kwarg_combo(
+                "Frame",
+                "frameon",
+                "figureComposerERLabSizebarFrameCombo",
+                "Draw a frame around the size bar.",
                 default=False,
             ),
         ),
@@ -2001,7 +2207,8 @@ def _render_args_kwargs(
     axis: Axes | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
     args = list(_method_args(operation, spec))
-    kwargs = dict(operation.method_kwargs)
+    kwargs = dict(spec.default_kwargs)
+    kwargs.update(operation.method_kwargs)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
         args.append(_label_values(operation))
     elif (
@@ -2026,7 +2233,8 @@ def _code_args_kwargs(
     axis_transform: str | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
     args = list(_method_args(operation, spec))
-    kwargs = dict(operation.method_kwargs)
+    kwargs = dict(spec.default_kwargs)
+    kwargs.update(operation.method_kwargs)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
         args.append(_label_values(operation))
     elif (
