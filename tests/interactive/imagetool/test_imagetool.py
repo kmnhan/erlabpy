@@ -643,6 +643,57 @@ def test_multicursor_restore_updates_cursor_combo(qtbot) -> None:
     win.close()
 
 
+def test_cursor_combo_update_colors_resyncs_stale_count(qtbot) -> None:
+    win = itool(_TEST_DATA["2D"], execute=False)
+    qtbot.addWidget(win)
+    cursor_ctrl = win.docks[0].widget().layout().itemAt(0).widget()
+    assert isinstance(cursor_ctrl, ItoolCrosshairControls)
+
+    win.slicer_area.add_cursor()
+    win.slicer_area.add_cursor()
+    with QtCore.QSignalBlocker(cursor_ctrl.cb_cursors):
+        cursor_ctrl.cb_cursors.clear()
+        cursor_ctrl.cb_cursors.addItem("stale")
+
+    cursor_ctrl.update_colors()
+    assert cursor_ctrl.cb_cursors.count() == 3
+    assert cursor_ctrl.cb_cursors.currentIndex() == win.slicer_area.current_cursor
+    assert cursor_ctrl.cb_cursors.isEnabled()
+    assert cursor_ctrl.btn_rem.isEnabled()
+
+    win.slicer_area.state = {
+        **win.slicer_area.state,
+        "cursor_colors": ["#cccccc"],
+        "current_cursor": 0,
+        "slice": {
+            **win.slicer_area.array_slicer.state,
+            "bins": [[1, 1]],
+            "indices": [[2, 2]],
+            "values": [[2, 2]],
+        },
+    }
+    with QtCore.QSignalBlocker(cursor_ctrl.cb_cursors):
+        cursor_ctrl.cb_cursors.addItem("stale")
+
+    cursor_ctrl.update_colors()
+    assert cursor_ctrl.cb_cursors.count() == 1
+    assert cursor_ctrl.cb_cursors.currentIndex() == 0
+    assert not cursor_ctrl.cb_cursors.isEnabled()
+    assert not cursor_ctrl.btn_rem.isEnabled()
+
+    cursor_ctrl.addCursor()
+    assert cursor_ctrl.cb_cursors.count() == 2
+    assert cursor_ctrl.cb_cursors.isEnabled()
+    assert cursor_ctrl.btn_rem.isEnabled()
+
+    cursor_ctrl.remCursor()
+    assert cursor_ctrl.cb_cursors.count() == 1
+    assert not cursor_ctrl.cb_cursors.isEnabled()
+    assert not cursor_ctrl.btn_rem.isEnabled()
+
+    win.close()
+
+
 def test_itool_dataset_metadata_fields_roundtrip(qtbot, tmp_path: pathlib.Path) -> None:
     file_path = tmp_path / "scan.h5"
     data = xr.DataArray(
