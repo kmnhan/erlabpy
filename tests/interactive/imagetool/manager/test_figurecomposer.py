@@ -764,6 +764,12 @@ def test_figure_composer_defaults_follow_stylesheet_rcparams(
     assert export.bbox_inches == expected_bbox
 
 
+@pytest.mark.parametrize("dpi", [0, -1])
+def test_figure_composer_export_dpi_must_be_positive(dpi: int) -> None:
+    with pytest.raises(ValueError, match="export dpi must be positive"):
+        FigureExportState(dpi=dpi)
+
+
 def test_figure_composer_generated_code_uses_available_stylesheets(
     qtbot,
     restore_interactive_options,

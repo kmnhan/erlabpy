@@ -232,7 +232,10 @@ class FigureExportState(pydantic.BaseModel):
     ) -> float | typing.Literal["figure"]:
         if value == "figure":
             return "figure"
-        return float(value)
+        dpi = float(value)
+        if dpi <= 0:
+            raise ValueError("export dpi must be positive")
+        return dpi
 
 
 class FigureOperationKind(enum.StrEnum):
