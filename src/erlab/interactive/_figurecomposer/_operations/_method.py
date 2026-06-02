@@ -65,6 +65,7 @@ import dataclasses
 import enum
 import typing
 
+import matplotlib
 import matplotlib.scale
 import numpy as np
 from matplotlib.figure import Figure
@@ -170,6 +171,10 @@ class MethodControlSpec:
     key: str | None = None
     options: tuple[str, ...] = ()
     default: typing.Any = None
+    minimum: int | float | None = None
+    maximum: int | float | None = None
+    decimals: int | None = None
+    step: int | float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -207,10 +212,24 @@ _SUBPLOTS_ADJUST_SPINBOX_MINIMUM = 0.0
 _SUBPLOTS_ADJUST_SPINBOX_MAXIMUM = 1.0
 _SUBPLOTS_ADJUST_SPINBOX_DECIMALS = 3
 _SUBPLOTS_ADJUST_SPINBOX_STEP = 0.005
+_INT_SPINBOX_MINIMUM = -1_000_000
+_INT_SPINBOX_MAXIMUM = 1_000_000
+_FLOAT_SPINBOX_MINIMUM = -1_000_000_000.0
+_FLOAT_SPINBOX_MAXIMUM = 1_000_000_000.0
+_FLOAT_SPINBOX_DECIMALS = 6
+_FLOAT_SPINBOX_STEP = 0.1
 
 
 def _float_arg(
-    label: str, index: int, object_name: str, tooltip: str
+    label: str,
+    index: int,
+    object_name: str,
+    tooltip: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    decimals: int | None = None,
+    step: float | None = None,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.FLOAT_ARG,
@@ -218,11 +237,23 @@ def _float_arg(
         arg_index=index,
         object_name=object_name,
         tooltip=tooltip,
+        minimum=minimum,
+        maximum=maximum,
+        decimals=decimals,
+        step=step,
     )
 
 
 def _int_arg(
-    label: str, index: int, object_name: str, tooltip: str, *, default: int = 0
+    label: str,
+    index: int,
+    object_name: str,
+    tooltip: str,
+    *,
+    default: int = 0,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    step: int | None = None,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.INT_ARG,
@@ -231,6 +262,9 @@ def _int_arg(
         object_name=object_name,
         tooltip=tooltip,
         default=default,
+        minimum=minimum,
+        maximum=maximum,
+        step=step,
     )
 
 
@@ -398,6 +432,9 @@ def _int_kwarg(
     tooltip: str,
     *,
     default: int | None = None,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    step: int | None = None,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.INT_KWARG,
@@ -406,6 +443,9 @@ def _int_kwarg(
         object_name=object_name,
         tooltip=tooltip,
         default=default,
+        minimum=minimum,
+        maximum=maximum,
+        step=step,
     )
 
 
@@ -416,6 +456,10 @@ def _float_kwarg(
     tooltip: str,
     *,
     default: float | None = None,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    decimals: int | None = None,
+    step: float | None = None,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.FLOAT_KWARG,
@@ -424,6 +468,10 @@ def _float_kwarg(
         object_name=object_name,
         tooltip=tooltip,
         default=default,
+        minimum=minimum,
+        maximum=maximum,
+        decimals=decimals,
+        step=step,
     )
 
 
@@ -589,6 +637,9 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "ncols",
             f"figureComposer{prefix}MethodLegendColumnsEdit",
             "Number of legend columns passed as ncols.",
+            default=1,
+            minimum=1,
+            maximum=999,
         ),
         _text_kwarg(
             "Title",
@@ -620,30 +671,50 @@ def _legend_controls(prefix: str) -> tuple[MethodControlSpec, ...]:
             "markerscale",
             f"figureComposer{prefix}MethodLegendMarkerScaleEdit",
             "Scale factor for marker size in the legend.",
+            default=float(matplotlib.rcParams["legend.markerscale"]),
+            minimum=0.0,
+            maximum=100.0,
+            step=0.1,
         ),
         _float_kwarg(
             "Label spacing",
             "labelspacing",
             f"figureComposer{prefix}MethodLegendLabelSpacingEdit",
             "Vertical spacing between legend labels.",
+            default=float(matplotlib.rcParams["legend.labelspacing"]),
+            minimum=0.0,
+            maximum=100.0,
+            step=0.1,
         ),
         _float_kwarg(
             "Handle length",
             "handlelength",
             f"figureComposer{prefix}MethodLegendHandleLengthEdit",
             "Length of the legend handle.",
+            default=float(matplotlib.rcParams["legend.handlelength"]),
+            minimum=0.0,
+            maximum=100.0,
+            step=0.1,
         ),
         _float_kwarg(
             "Handle text pad",
             "handletextpad",
             f"figureComposer{prefix}MethodLegendHandleTextPadEdit",
             "Spacing between the handle and legend text.",
+            default=float(matplotlib.rcParams["legend.handletextpad"]),
+            minimum=0.0,
+            maximum=100.0,
+            step=0.1,
         ),
         _float_kwarg(
             "Column spacing",
             "columnspacing",
             f"figureComposer{prefix}MethodLegendColumnSpacingEdit",
             "Horizontal spacing between legend columns.",
+            default=float(matplotlib.rcParams["legend.columnspacing"]),
+            minimum=0.0,
+            maximum=100.0,
+            step=0.1,
         ),
         _literal_kwarg(
             "Anchor",
@@ -878,6 +949,10 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "pad",
                 "figureComposerAxesMethodTitlePadEdit",
                 "Optional title padding in points.",
+                default=float(matplotlib.rcParams["axes.titlepad"]),
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.5,
             ),
         ),
     ),
@@ -909,6 +984,10 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "labelpad",
                 "figureComposerAxesMethodXLabelPadEdit",
                 "Optional x-axis label padding in points.",
+                default=float(matplotlib.rcParams["axes.labelpad"]),
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.5,
             ),
         ),
     ),
@@ -940,6 +1019,10 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "labelpad",
                 "figureComposerAxesMethodYLabelPadEdit",
                 "Optional y-axis label padding in points.",
+                default=float(matplotlib.rcParams["axes.labelpad"]),
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.5,
             ),
         ),
     ),
@@ -996,6 +1079,10 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodXMarginEdit",
                 "x-axis margin fraction passed to ax.margins.",
                 default=0.05,
+                minimum=-0.49,
+                maximum=10.0,
+                decimals=4,
+                step=0.01,
             ),
             _float_kwarg(
                 "y",
@@ -1003,6 +1090,10 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodYMarginEdit",
                 "y-axis margin fraction passed to ax.margins.",
                 default=0.05,
+                minimum=-0.49,
+                maximum=10.0,
+                decimals=4,
+                step=0.01,
             ),
             _bool_kwarg_combo(
                 "Tight",
@@ -1237,30 +1328,55 @@ FIGURE_METHODS: dict[str, MethodSpec] = {
                 "pad",
                 "figureComposerFigureLayoutEnginePadEdit",
                 "Padding for the tight layout engine.",
+                default=1.08,
+                minimum=0.0,
+                maximum=100.0,
+                decimals=4,
+                step=0.01,
             ),
             _float_kwarg(
                 "Height pad",
                 "h_pad",
                 "figureComposerFigureLayoutEngineHpadEdit",
                 "Height padding for tight, constrained, or compressed layout.",
+                default=0.04167,
+                minimum=0.0,
+                maximum=100.0,
+                decimals=5,
+                step=0.01,
             ),
             _float_kwarg(
                 "Width pad",
                 "w_pad",
                 "figureComposerFigureLayoutEngineWpadEdit",
                 "Width padding for tight, constrained, or compressed layout.",
+                default=0.04167,
+                minimum=0.0,
+                maximum=100.0,
+                decimals=5,
+                step=0.01,
             ),
             _float_kwarg(
                 "Height spacing",
                 "hspace",
                 "figureComposerFigureLayoutEngineHspaceEdit",
                 "Height spacing for constrained or compressed layout.",
+                default=0.02,
+                minimum=0.0,
+                maximum=100.0,
+                decimals=5,
+                step=0.01,
             ),
             _float_kwarg(
                 "Width spacing",
                 "wspace",
                 "figureComposerFigureLayoutEngineWspaceEdit",
                 "Width spacing for constrained or compressed layout.",
+                default=0.02,
+                minimum=0.0,
+                maximum=100.0,
+                decimals=5,
+                step=0.01,
             ),
             _literal_kwarg(
                 "Rect",
@@ -1332,6 +1448,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabLabelSubplotsStartEdit",
                 "First number used for automatically generated labels.",
                 default=1,
+                minimum=0,
+                maximum=9999,
             ),
             _kwarg_combo(
                 "Order",
@@ -1428,6 +1546,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabLabelPropertiesSiEdit",
                 "Power of ten used for SI prefix formatting.",
                 default=0,
+                minimum=-24,
+                maximum=24,
             ),
             _text_kwarg(
                 "Name",
@@ -1469,6 +1589,9 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabNiceColorbarWidthEdit",
                 "Colorbar width in points.",
                 default=8.0,
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.5,
             ),
             _float_kwarg(
                 "Aspect",
@@ -1476,6 +1599,9 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabNiceColorbarAspectEdit",
                 "Colorbar aspect ratio.",
                 default=5.0,
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.5,
             ),
             _float_kwarg(
                 "Pad",
@@ -1483,6 +1609,9 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabNiceColorbarPadEdit",
                 "Padding between axes and colorbar in points.",
                 default=3.0,
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.5,
             ),
             _bool_kwarg_combo(
                 "Min/max ticks",
@@ -1540,6 +1669,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabProportionalColorbarIndexEdit",
                 "Mappable index to use when inferring from the target axes.",
                 default=-1,
+                minimum=-1,
+                maximum=999,
             ),
             _bool_kwarg_combo(
                 "Images only",
@@ -1751,6 +1882,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabSizebarValueEdit",
                 "Physical length represented by the size bar.",
                 default=1.0,
+                minimum=0.0,
+                maximum=1_000_000_000.0,
             ),
             _text_kwarg(
                 "Unit",
@@ -1765,6 +1898,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabSizebarSiEdit",
                 "Power of ten used to choose the displayed SI prefix.",
                 default=0,
+                minimum=-24,
+                maximum=24,
             ),
             _float_kwarg(
                 "Resolution",
@@ -1772,6 +1907,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabSizebarResolutionEdit",
                 "Scale of the current axes coordinates in base units.",
                 default=1.0,
+                minimum=0.0,
+                maximum=1_000_000_000.0,
             ),
             _int_kwarg(
                 "Decimals",
@@ -1779,6 +1916,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabSizebarDecimalsEdit",
                 "Decimal places displayed in the generated label.",
                 default=0,
+                minimum=0,
+                maximum=12,
             ),
             _text_kwarg(
                 "Label",
@@ -1800,6 +1939,9 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabSizebarPadEdit",
                 "Padding around the label and bar in font-size units.",
                 default=0.1,
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.1,
             ),
             _float_kwarg(
                 "Border pad",
@@ -1807,6 +1949,9 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabSizebarBorderPadEdit",
                 "Padding between the size bar and its anchor box.",
                 default=0.5,
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.1,
             ),
             _float_kwarg(
                 "Separation",
@@ -1814,6 +1959,9 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 "figureComposerERLabSizebarSepEdit",
                 "Separation between the bar and label in points.",
                 default=3.0,
+                minimum=0.0,
+                maximum=1000.0,
+                step=0.5,
             ),
             _bool_kwarg_combo(
                 "Frame",
@@ -1846,6 +1994,8 @@ ERLAB_METHODS: dict[str, MethodSpec] = {
                 1,
                 "figureComposerERLabScaleUnitsSiEdit",
                 "Power of ten corresponding to the desired SI prefix.",
+                minimum=-24,
+                maximum=24,
             ),
             _bool_kwarg_combo(
                 "Update label prefix",
@@ -2273,40 +2423,50 @@ def _add_method_control_row(
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.INT_ARG:
             index = _control_arg_index(control)
-            text, mixed = tool._batch_text(
+            mixed = tool._batch_is_mixed(
                 operation,
                 lambda target: _method_arg_value(target, spec, index, control.default),
-                _format_int_value,
             )
-            edit = tool._line_edit(text, parent=layout.parentWidget())
-            tool._apply_mixed_line_edit(edit, mixed)
-            edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, index=index: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_arg(tool, index, int(edit.text()))
+            spinbox = _int_spinbox(
+                _method_arg_value(operation, spec, index, control.default),
+                control,
+                parent=layout.parentWidget(),
+            )
+            spinbox.setObjectName(control.object_name)
+            spinbox.valueChanged.connect(
+                lambda value, index=index: _update_current_method_arg(
+                    tool, index, int(value)
                 )
             )
-            tool._add_form_row(layout, control.label, edit, control.tooltip)
+            tool._add_form_row(
+                layout,
+                control.label,
+                spinbox,
+                _numeric_control_tooltip(control, mixed),
+            )
         case MethodControlKind.FLOAT_ARG:
             index = _control_arg_index(control)
-            text, mixed = tool._batch_text(
+            mixed = tool._batch_is_mixed(
                 operation,
                 lambda target: _method_arg_value(target, spec, index, 0.0),
-                lambda value: f"{float(value):g}",
             )
-            edit = tool._line_edit(text, parent=layout.parentWidget())
-            tool._apply_mixed_line_edit(edit, mixed)
-            edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, index=index: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_arg(tool, index, float(edit.text()))
+            spinbox = _float_spinbox(
+                _method_arg_value(operation, spec, index, 0.0),
+                control,
+                parent=layout.parentWidget(),
+            )
+            spinbox.setObjectName(control.object_name)
+            spinbox.valueChanged.connect(
+                lambda value, index=index: _update_current_method_arg(
+                    tool, index, float(value)
                 )
             )
-            tool._add_form_row(layout, control.label, edit, control.tooltip)
+            tool._add_form_row(
+                layout,
+                control.label,
+                spinbox,
+                _numeric_control_tooltip(control, mixed),
+            )
         case MethodControlKind.TEXT_ARG:
             index = _control_arg_index(control)
             text, mixed = tool._batch_text(
@@ -2489,44 +2649,90 @@ def _add_method_control_row(
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.INT_KWARG:
             key = _control_key(control)
-            text, mixed = tool._batch_text(
-                operation,
-                lambda target: _method_kwarg_value(target, key, control.default),
-                _format_int_value,
-            )
-            edit = tool._line_edit(text, parent=layout.parentWidget())
-            tool._apply_mixed_line_edit(edit, mixed)
-            edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, key=key: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_kwarg(
-                        tool, key, _optional_int_from_text(edit.text())
+            if _control_uses_numeric_spinbox(control):
+                mixed = tool._batch_is_mixed(
+                    operation,
+                    lambda target: _method_kwarg_value(target, key, control.default),
+                )
+                spinbox = _int_spinbox(
+                    _method_kwarg_value(operation, key, control.default),
+                    control,
+                    parent=layout.parentWidget(),
+                )
+                spinbox.setObjectName(control.object_name)
+                spinbox.valueChanged.connect(
+                    lambda value, key=key: _update_current_method_kwarg(
+                        tool, key, int(value)
                     )
                 )
-            )
-            tool._add_form_row(layout, control.label, edit, control.tooltip)
+                tool._add_form_row(
+                    layout,
+                    control.label,
+                    spinbox,
+                    _numeric_control_tooltip(control, mixed),
+                )
+            else:
+                text, mixed = tool._batch_text(
+                    operation,
+                    lambda target: _method_kwarg_value(target, key, control.default),
+                    _format_int_value,
+                )
+                edit = tool._line_edit(text, parent=layout.parentWidget())
+                tool._apply_mixed_line_edit(edit, mixed)
+                edit.setObjectName(control.object_name)
+                edit.editingFinished.connect(
+                    lambda edit=edit, key=key: (
+                        None
+                        if tool._line_edit_batch_unchanged(edit)
+                        else _update_current_method_kwarg(
+                            tool, key, _optional_int_from_text(edit.text())
+                        )
+                    )
+                )
+                tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.FLOAT_KWARG:
             key = _control_key(control)
-            text, mixed = tool._batch_text(
-                operation,
-                lambda target: _method_kwarg_value(target, key, control.default),
-                _format_float_value,
-            )
-            edit = tool._line_edit(text, parent=layout.parentWidget())
-            tool._apply_mixed_line_edit(edit, mixed)
-            edit.setObjectName(control.object_name)
-            edit.editingFinished.connect(
-                lambda edit=edit, key=key: (
-                    None
-                    if tool._line_edit_batch_unchanged(edit)
-                    else _update_current_method_kwarg(
-                        tool, key, _optional_float_from_text(edit.text())
+            if _control_uses_numeric_spinbox(control):
+                mixed = tool._batch_is_mixed(
+                    operation,
+                    lambda target: _method_kwarg_value(target, key, control.default),
+                )
+                spinbox = _float_spinbox(
+                    _method_kwarg_value(operation, key, control.default),
+                    control,
+                    parent=layout.parentWidget(),
+                )
+                spinbox.setObjectName(control.object_name)
+                spinbox.valueChanged.connect(
+                    lambda value, key=key: _update_current_method_kwarg(
+                        tool, key, float(value)
                     )
                 )
-            )
-            tool._add_form_row(layout, control.label, edit, control.tooltip)
+                tool._add_form_row(
+                    layout,
+                    control.label,
+                    spinbox,
+                    _numeric_control_tooltip(control, mixed),
+                )
+            else:
+                text, mixed = tool._batch_text(
+                    operation,
+                    lambda target: _method_kwarg_value(target, key, control.default),
+                    _format_float_value,
+                )
+                edit = tool._line_edit(text, parent=layout.parentWidget())
+                tool._apply_mixed_line_edit(edit, mixed)
+                edit.setObjectName(control.object_name)
+                edit.editingFinished.connect(
+                    lambda edit=edit, key=key: (
+                        None
+                        if tool._line_edit_batch_unchanged(edit)
+                        else _update_current_method_kwarg(
+                            tool, key, _optional_float_from_text(edit.text())
+                        )
+                    )
+                )
+                tool._add_form_row(layout, control.label, edit, control.tooltip)
         case MethodControlKind.SUBPLOTS_ADJUST_KWARG:
             key = _control_key(control)
             mixed = tool._batch_is_mixed(
@@ -2666,6 +2872,59 @@ def _subplots_adjust_default(tool: FigureComposerTool, key: str) -> float:
         layout=tool.tool_status.setup.layout,
     )
     return float(getattr(figure.subplotpars, key))
+
+
+def _control_uses_numeric_spinbox(control: MethodControlSpec) -> bool:
+    return control.default is not None
+
+
+def _numeric_control_tooltip(control: MethodControlSpec, mixed: bool) -> str:
+    if not mixed:
+        return control.tooltip
+    return f"{control.tooltip}\nSelected steps have multiple values."
+
+
+def _int_spinbox(
+    value: typing.Any,
+    control: MethodControlSpec,
+    *,
+    parent: QtWidgets.QWidget | None,
+) -> QtWidgets.QSpinBox:
+    spinbox = QtWidgets.QSpinBox(parent)
+    spinbox.setRange(
+        _INT_SPINBOX_MINIMUM if control.minimum is None else int(control.minimum),
+        _INT_SPINBOX_MAXIMUM if control.maximum is None else int(control.maximum),
+    )
+    spinbox.setSingleStep(1 if control.step is None else int(control.step))
+    spinbox.setKeyboardTracking(False)
+    if value is None:
+        value = 0 if control.default is None else control.default
+    spinbox.setValue(int(value))
+    return spinbox
+
+
+def _float_spinbox(
+    value: typing.Any,
+    control: MethodControlSpec,
+    *,
+    parent: QtWidgets.QWidget | None,
+) -> QtWidgets.QDoubleSpinBox:
+    spinbox = QtWidgets.QDoubleSpinBox(parent)
+    spinbox.setDecimals(
+        _FLOAT_SPINBOX_DECIMALS if control.decimals is None else control.decimals
+    )
+    spinbox.setRange(
+        _FLOAT_SPINBOX_MINIMUM if control.minimum is None else float(control.minimum),
+        _FLOAT_SPINBOX_MAXIMUM if control.maximum is None else float(control.maximum),
+    )
+    spinbox.setSingleStep(
+        _FLOAT_SPINBOX_STEP if control.step is None else float(control.step)
+    )
+    spinbox.setKeyboardTracking(False)
+    if value is None:
+        value = 0.0 if control.default is None else control.default
+    spinbox.setValue(float(value))
+    return spinbox
 
 
 def _subplots_adjust_spinbox(

@@ -3201,22 +3201,22 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
         QtWidgets.QComboBox, "figureComposerAxesMethodTitleLocCombo"
     )
     title_pad_edit = tool.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodTitlePadEdit"
+        QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodTitlePadEdit"
     )
     assert title_edit is not None
     assert title_loc_combo is not None
     assert title_pad_edit is not None
     assert title_edit.text() == "Left title"
     assert title_loc_combo.currentText() == "left"
-    assert title_pad_edit.text() == "2"
+    assert title_pad_edit.value() == 2.0
 
     tool.operation_list.setCurrentRow(11)
     tool._select_step_section("method")
     x_margin_edit = tool.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodXMarginEdit"
+        QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodXMarginEdit"
     )
     y_margin_edit = tool.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodYMarginEdit"
+        QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodYMarginEdit"
     )
     tight_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerAxesMethodMarginsTightCombo"
@@ -3224,8 +3224,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert x_margin_edit is not None
     assert y_margin_edit is not None
     assert tight_combo is not None
-    assert x_margin_edit.text() == "0.1"
-    assert y_margin_edit.text() == "0.2"
+    assert x_margin_edit.value() == pytest.approx(0.1)
+    assert y_margin_edit.value() == pytest.approx(0.2)
     assert tight_combo.currentText() == "False"
 
     tool.operation_list.setCurrentRow(12)
@@ -3603,23 +3603,23 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
         QtWidgets.QComboBox, "figureComposerFigureLayoutEngineCombo"
     )
     pad_edit = engine_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerFigureLayoutEnginePadEdit"
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureLayoutEnginePadEdit"
     )
     hspace_edit = engine_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineHspaceEdit"
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureLayoutEngineHspaceEdit"
     )
     assert engine_combo is not None
     assert pad_edit is not None
     assert hspace_edit is None
     assert engine_combo.currentText() == "tight"
-    assert pad_edit.text() == "0.5"
+    assert pad_edit.value() == pytest.approx(0.5)
     assert "hspace" not in engine_tool.generated_code()
 
     engine_combo.setCurrentText("compressed")
     qtbot.waitUntil(
         lambda: (
             engine_tool.step_editor_stack.currentWidget().findChild(
-                QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineHspaceEdit"
+                QtWidgets.QDoubleSpinBox, "figureComposerFigureLayoutEngineHspaceEdit"
             )
             is not None
         ),
@@ -3632,19 +3632,19 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     engine_page = engine_tool.step_editor_stack.currentWidget()
     assert (
         engine_page.findChild(
-            QtWidgets.QLineEdit, "figureComposerFigureLayoutEnginePadEdit"
+            QtWidgets.QDoubleSpinBox, "figureComposerFigureLayoutEnginePadEdit"
         )
         is None
     )
     hspace_edit = engine_page.findChild(
-        QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineHspaceEdit"
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureLayoutEngineHspaceEdit"
     )
     rect_edit = engine_page.findChild(
         QtWidgets.QLineEdit, "figureComposerFigureLayoutEngineRectEdit"
     )
     assert hspace_edit is not None
     assert rect_edit is not None
-    assert hspace_edit.text() == "0.2"
+    assert hspace_edit.value() == pytest.approx(0.2)
     rect_edit.setText("0, 0, 0.9, 1")
     rect_edit.editingFinished.emit()
     assert engine_tool.tool_status.operations[0].method_kwargs == {
@@ -3735,7 +3735,7 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
         QtWidgets.QComboBox, "figureComposerAxesMethodLegendLocCombo"
     )
     columns_edit = tool.findChild(
-        QtWidgets.QLineEdit, "figureComposerAxesMethodLegendColumnsEdit"
+        QtWidgets.QSpinBox, "figureComposerAxesMethodLegendColumnsEdit"
     )
     title_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerAxesMethodLegendTitleEdit"
@@ -3744,7 +3744,7 @@ def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     assert columns_edit is not None
     assert title_edit is not None
     assert loc_combo.currentText() == "upper right"
-    assert columns_edit.text() == "1"
+    assert columns_edit.value() == 1
     assert title_edit.text() == "Axis legend"
 
     tool.operation_list.setCurrentRow(2)
@@ -3927,6 +3927,16 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
         assert widget is not None
         return widget
 
+    def spin_box(page: QtWidgets.QWidget, name: str) -> QtWidgets.QSpinBox:
+        widget = page.findChild(QtWidgets.QSpinBox, name)
+        assert widget is not None
+        return widget
+
+    def double_spin_box(page: QtWidgets.QWidget, name: str) -> QtWidgets.QDoubleSpinBox:
+        widget = page.findChild(QtWidgets.QDoubleSpinBox, name)
+        assert widget is not None
+        return widget
+
     def set_line_edit(page: QtWidgets.QWidget, name: str, text: str) -> None:
         edit = line_edit(page, name)
         edit.setText(text)
@@ -3942,7 +3952,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     assert operation(0).method_args == (True,)
 
     page = select_method(1)
-    set_line_edit(page, "figureComposerERLabLabelSubplotsStartEdit", "3")
+    spin_box(page, "figureComposerERLabLabelSubplotsStartEdit").setValue(3)
     combo_box(page, "figureComposerERLabLabelSubplotsOrderCombo").setCurrentText("F")
     combo_box(page, "figureComposerERLabLabelSubplotsLocCombo").setCurrentText(
         "lower right"
@@ -3976,7 +3986,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     page = select_method(2)
     set_line_edit(page, "figureComposerERLabLabelPropertiesValuesEdit", "eV=[0, 1]")
     set_line_edit(page, "figureComposerERLabLabelPropertiesDecimalsEdit", "2")
-    set_line_edit(page, "figureComposerERLabLabelPropertiesSiEdit", "-3")
+    spin_box(page, "figureComposerERLabLabelPropertiesSiEdit").setValue(-3)
     set_line_edit(page, "figureComposerERLabLabelPropertiesNameEdit", "Energy")
     set_line_edit(page, "figureComposerERLabLabelPropertiesUnitEdit", "eV")
     combo_box(page, "figureComposerERLabLabelPropertiesOrderCombo").setCurrentText("F")
@@ -3990,9 +4000,9 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     }
 
     page = select_method(3)
-    set_line_edit(page, "figureComposerERLabNiceColorbarWidthEdit", "10")
-    set_line_edit(page, "figureComposerERLabNiceColorbarAspectEdit", "4")
-    set_line_edit(page, "figureComposerERLabNiceColorbarPadEdit", "2")
+    double_spin_box(page, "figureComposerERLabNiceColorbarWidthEdit").setValue(10.0)
+    double_spin_box(page, "figureComposerERLabNiceColorbarAspectEdit").setValue(4.0)
+    double_spin_box(page, "figureComposerERLabNiceColorbarPadEdit").setValue(2.0)
     combo_box(page, "figureComposerERLabNiceColorbarMinMaxCombo").setCurrentText("True")
     combo_box(page, "figureComposerERLabNiceColorbarOrientationCombo").setCurrentText(
         "horizontal"
@@ -4016,7 +4026,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     }
 
     page = select_method(4)
-    set_line_edit(page, "figureComposerERLabProportionalColorbarIndexEdit", "0")
+    spin_box(page, "figureComposerERLabProportionalColorbarIndexEdit").setValue(0)
     combo_box(
         page, "figureComposerERLabProportionalColorbarImageOnlyCombo"
     ).setCurrentText("True")
@@ -4032,7 +4042,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
     assert operation(5).method_kwargs == {"order": "F"}
 
     page = select_method(6)
-    set_line_edit(page, "figureComposerERLabFermilineValueEdit", "0.1")
+    double_spin_box(page, "figureComposerERLabFermilineValueEdit").setValue(0.1)
     combo_box(page, "figureComposerERLabFermilineOrientationCombo").setCurrentText("v")
     assert operation(6).method_kwargs == {"value": 0.1, "orientation": "v"}
 
@@ -4055,7 +4065,7 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
 
     page = select_method(8)
     combo_box(page, "figureComposerERLabScaleUnitsAxisCombo").setCurrentText("y")
-    set_line_edit(page, "figureComposerERLabScaleUnitsSiEdit", "3")
+    spin_box(page, "figureComposerERLabScaleUnitsSiEdit").setValue(3)
     combo_box(page, "figureComposerERLabScaleUnitsPrefixCombo").setCurrentText("False")
     combo_box(page, "figureComposerERLabScaleUnitsPowerCombo").setCurrentText("True")
     assert operation(8).method_args == ("y", 3)
@@ -4072,18 +4082,18 @@ def test_figure_composer_erlab_method_controls_update_recipe(qtbot) -> None:
 
     page = select_method(11)
     assert operation(11).method_kwargs == {}
-    assert line_edit(page, "figureComposerERLabSizebarValueEdit").text() == "1"
+    assert double_spin_box(page, "figureComposerERLabSizebarValueEdit").value() == 1.0
     assert line_edit(page, "figureComposerERLabSizebarUnitEdit").text() == "m"
-    set_line_edit(page, "figureComposerERLabSizebarValueEdit", "2")
+    double_spin_box(page, "figureComposerERLabSizebarValueEdit").setValue(2.0)
     set_line_edit(page, "figureComposerERLabSizebarUnitEdit", "m")
-    set_line_edit(page, "figureComposerERLabSizebarSiEdit", "-6")
-    set_line_edit(page, "figureComposerERLabSizebarResolutionEdit", "0.001")
-    set_line_edit(page, "figureComposerERLabSizebarDecimalsEdit", "1")
+    spin_box(page, "figureComposerERLabSizebarSiEdit").setValue(-6)
+    double_spin_box(page, "figureComposerERLabSizebarResolutionEdit").setValue(0.001)
+    spin_box(page, "figureComposerERLabSizebarDecimalsEdit").setValue(1)
     set_line_edit(page, "figureComposerERLabSizebarLabelEdit", "200 um")
     combo_box(page, "figureComposerERLabSizebarLocCombo").setCurrentText("lower left")
-    set_line_edit(page, "figureComposerERLabSizebarPadEdit", "0.2")
-    set_line_edit(page, "figureComposerERLabSizebarBorderPadEdit", "0.6")
-    set_line_edit(page, "figureComposerERLabSizebarSepEdit", "4")
+    double_spin_box(page, "figureComposerERLabSizebarPadEdit").setValue(0.2)
+    double_spin_box(page, "figureComposerERLabSizebarBorderPadEdit").setValue(0.6)
+    double_spin_box(page, "figureComposerERLabSizebarSepEdit").setValue(4.0)
     combo_box(page, "figureComposerERLabSizebarFrameCombo").setCurrentText("True")
     assert operation(11).method_kwargs == {
         "value": 2.0,
@@ -4252,7 +4262,9 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         is not None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetScaleEdit")
+        line_page.findChild(
+            QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
+        )
         is not None
     )
     assert (
@@ -4280,7 +4292,9 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         is None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetScaleEdit")
+        line_page.findChild(
+            QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
+        )
         is None
     )
     assert (
@@ -4296,7 +4310,7 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     qtbot.waitUntil(
         lambda: (
             tool.step_editor_stack.currentWidget().findChild(
-                QtWidgets.QLineEdit, "figureComposerLineOffsetScaleEdit"
+                QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
             )
             is not None
         ),
@@ -4311,7 +4325,9 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         is None
     )
     assert (
-        line_page.findChild(QtWidgets.QLineEdit, "figureComposerLineOffsetScaleEdit")
+        line_page.findChild(
+            QtWidgets.QDoubleSpinBox, "figureComposerLineOffsetScaleEdit"
+        )
         is not None
     )
     assert (

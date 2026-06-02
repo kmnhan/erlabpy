@@ -6,6 +6,7 @@ import math
 import typing
 
 import numpy as np
+from qtpy import QtWidgets
 
 from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
@@ -39,7 +40,6 @@ if typing.TYPE_CHECKING:
 
     import matplotlib.axes
     import xarray as xr
-    from qtpy import QtWidgets
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
@@ -480,28 +480,27 @@ def _build_line_editor(
         )
 
     if operation.line_offset_source != "manual":
-        offset_scale_text, offset_scale_mixed = tool._batch_text(
-            operation,
-            lambda target: target.line_offset_scale,
-            lambda value: f"{float(value):g}",
+        offset_scale_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.line_offset_scale
         )
-        offset_scale_edit = tool._line_edit(offset_scale_text)
-        tool._apply_mixed_line_edit(offset_scale_edit, offset_scale_mixed)
-        offset_scale_edit.setObjectName("figureComposerLineOffsetScaleEdit")
-        offset_scale_edit.editingFinished.connect(
-            lambda edit=offset_scale_edit: (
-                None
-                if tool._line_edit_batch_unchanged(edit)
-                else tool._update_current_operation(
-                    line_offset_scale=float(edit.text()) if edit.text().strip() else 1.0
-                )
-            )
+        offset_scale_spin = QtWidgets.QDoubleSpinBox(page)
+        offset_scale_spin.setRange(-1_000_000_000.0, 1_000_000_000.0)
+        offset_scale_spin.setDecimals(6)
+        offset_scale_spin.setSingleStep(0.1)
+        offset_scale_spin.setKeyboardTracking(False)
+        offset_scale_spin.setValue(operation.line_offset_scale)
+        offset_scale_spin.setObjectName("figureComposerLineOffsetScaleEdit")
+        offset_scale_spin.valueChanged.connect(
+            lambda value: tool._update_current_operation(line_offset_scale=float(value))
         )
+        offset_scale_tooltip = "Multiplier applied to offsets from the selected source."
+        if offset_scale_mixed:
+            offset_scale_tooltip += "\nSelected steps have multiple values."
         tool._add_form_row(
             tool.operation_editor_layout,
             "Offset scale",
-            offset_scale_edit,
-            "Multiplier applied to offsets from the selected source.",
+            offset_scale_spin,
+            offset_scale_tooltip,
         )
 
     if operation.line_offset_source == "manual":
