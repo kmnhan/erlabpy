@@ -125,15 +125,18 @@ def _draw_selector_rect(
     edgecolor: QtGui.QColor,
     linewidth: float = _SELECTOR_BORDER_WIDTH,
     radius: float = _SELECTOR_CORNER_RADIUS,
+    draw_edge: bool = True,
 ) -> None:
     painter.save()
     rectf = QtCore.QRectF(rect)
-    rectf.adjust(linewidth / 2, linewidth / 2, -linewidth / 2, -linewidth / 2)
+    edge_width = linewidth if draw_edge else 0.0
+    rectf.adjust(edge_width / 2, edge_width / 2, -edge_width / 2, -edge_width / 2)
     path = QtGui.QPainterPath()
     path.addRoundedRect(rectf, radius, radius)
     painter.fillPath(path, QtGui.QBrush(facecolor))
-    painter.setPen(QtGui.QPen(edgecolor, linewidth))
-    painter.drawPath(path)
+    if draw_edge:
+        painter.setPen(QtGui.QPen(edgecolor, linewidth))
+        painter.drawPath(path)
     painter.restore()
 
 
@@ -1072,8 +1075,9 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
             grid_rect,
             facecolor=colors.face,
             edgecolor=colors.border,
+            draw_edge=False,
         )
-        self._draw_grid_lines(painter, grid, grid_rect, colors.border)
+        self._draw_empty_cells(painter, grid, grid_rect, colors)
 
         for child in grid.child_grids:
             if child.span is None or not self._span_within_grid(grid, child.span):
@@ -1158,26 +1162,55 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
             if self._mode == "edit" and depth == 0 and selected:
                 self._draw_resize_handles(painter, rect, colors.selection)
 
-    def _draw_grid_lines(
+    def _draw_empty_cells(
         self,
         painter: QtGui.QPainter,
         grid: FigureGridSpecGridState,
         grid_rect: QtCore.QRect,
-        color: QtGui.QColor,
+        colors: _SelectorColors,
     ) -> None:
-        line_color = QtGui.QColor(color)
-        line_color.setAlpha(120)
-        painter.setPen(QtGui.QPen(line_color, 0.8))
-        x_edges = self._axis_edges(
-            grid_rect.left(), grid_rect.width(), grid.ncols, grid.width_ratios
-        )
-        y_edges = self._axis_edges(
-            grid_rect.top(), grid_rect.height(), grid.nrows, grid.height_ratios
-        )
-        for x in x_edges[1:-1]:
-            painter.drawLine(round(x), grid_rect.top(), round(x), grid_rect.bottom())
-        for y in y_edges[1:-1]:
-            painter.drawLine(grid_rect.left(), round(y), grid_rect.right(), round(y))
+        occupied_cells = self._occupied_grid_cells(grid)
+        empty_edge = QtGui.QColor(colors.border)
+        empty_edge.setAlpha(96)
+        for row in range(grid.nrows):
+            for col in range(grid.ncols):
+                if (row, col) in occupied_cells:
+                    continue
+                _draw_selector_rect(
+                    painter,
+                    self._span_rect(
+                        grid,
+                        grid_rect,
+                        FigureGridSpecSpanState(
+                            row_start=row,
+                            row_stop=row + 1,
+                            col_start=col,
+                            col_stop=col + 1,
+                        ),
+                    ),
+                    facecolor=colors.face,
+                    edgecolor=empty_edge,
+                    linewidth=0.8,
+                )
+
+    def _occupied_grid_cells(
+        self, grid: FigureGridSpecGridState
+    ) -> set[tuple[int, int]]:
+        occupied: set[tuple[int, int]] = set()
+
+        def add_cells(span: FigureGridSpecSpanState) -> None:
+            if not self._span_within_grid(grid, span):
+                return
+            for row in range(span.row_start, span.row_stop):
+                for col in range(span.col_start, span.col_stop):
+                    occupied.add((row, col))
+
+        for child in grid.child_grids:
+            if child.span is not None:
+                add_cells(child.span)
+        for axis in grid.axes:
+            add_cells(axis.span)
+        return occupied
 
     def _span_rect(
         self,

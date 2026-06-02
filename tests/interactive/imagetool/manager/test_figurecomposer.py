@@ -1722,6 +1722,39 @@ def test_figure_composer_gridspec_widget_hides_handles_after_outside_click(
     assert tool.tool_status.setup.gridspec.root.axes[0].label == "renamed"
 
 
+def test_figure_composer_gridspec_occupied_cells_cover_spans(qtbot) -> None:
+    widget = figurecomposer_widgets._GridSpecViewWidget(mode="edit")
+    qtbot.addWidget(widget)
+    axes = (
+        FigureGridSpecAxesState(
+            axes_id="top-left",
+            span=FigureGridSpecSpanState(
+                row_start=0,
+                row_stop=1,
+                col_start=0,
+                col_stop=1,
+            ),
+        ),
+        FigureGridSpecAxesState(
+            axes_id="bottom-span",
+            span=FigureGridSpecSpanState(
+                row_start=1,
+                row_stop=2,
+                col_start=1,
+                col_stop=3,
+            ),
+        ),
+    )
+    grid = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=2,
+        ncols=3,
+        axes=axes,
+    )
+
+    assert widget._occupied_grid_cells(grid) == {(0, 0), (1, 1), (1, 2)}
+
+
 def test_figure_composer_gridspec_shrink_marks_invalid_regions(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     tool = FigureComposerTool(data)
