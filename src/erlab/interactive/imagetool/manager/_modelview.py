@@ -1274,7 +1274,10 @@ class _ImageToolWrapperItemModel(QtCore.QAbstractItemModel):
         parent_ptr = parent.internalPointer()
         if not isinstance(parent_ptr, (_ImageToolWrapper, str)):
             return
-        visible_children = self._childtool_uids(parent_ptr)
+        try:
+            visible_children = self._childtool_uids(parent_ptr)
+        except KeyError:
+            return
         if uid not in visible_children:
             return
         row = visible_children.index(uid)

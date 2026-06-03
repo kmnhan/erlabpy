@@ -2165,6 +2165,11 @@ def test_imagetool_wrapper_item_model_child_edge_branches(qtbot, monkeypatch) ->
         def _child_node(self, uid: str) -> _ManagedWindowNode:
             return typing.cast("_ManagedWindowNode", self._tool_graph.nodes[uid])
 
+        def _is_figure_node(
+            self, _node: _ImageToolWrapper | _ManagedWindowNode
+        ) -> bool:
+            return False
+
         def rename_imagetool(self, index: int, value: object) -> None:
             self.renamed.append((index, value))
 

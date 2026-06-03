@@ -3151,15 +3151,21 @@ def test_manager_load_workspace_dataset_ignores_invalid_saved_metadata(
 
 
 def test_manager_load_workspace_tool_dataset_rejects_root_tool(
+    qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+    tool = _AddedTimeChildTool(data)
+    qtbot.addWidget(tool)
+    ds = tool.to_dataset()
+
     with (
         manager_context() as manager,
         pytest.raises(ValueError, match="Workspace tool node has no parent"),
     ):
-        manager._load_workspace_tool_dataset(xr.Dataset(), parent_target=None)
+        manager._load_workspace_tool_dataset(ds, parent_target=None)
 
 
 def test_manager_from_h5py_workspace_manifest_validation(
@@ -3189,7 +3195,7 @@ def test_manager_from_h5py_workspace_manifest_validation(
                 replace=False,
                 mark_dirty=False,
             )
-        with pytest.raises(ValueError, match="no root ImageTool nodes"):
+        with pytest.raises(ValueError, match="no loadable root nodes"):
             manager._from_h5py_workspace_file(
                 fname,
                 {
