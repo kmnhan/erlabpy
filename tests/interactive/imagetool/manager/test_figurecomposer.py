@@ -37,6 +37,7 @@ from erlab.interactive._figurecomposer import (
     FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
@@ -5962,6 +5963,214 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
     cuts_page = tool.step_editor_stack.currentWidget()
     assert cuts_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
+    )
+
+
+def test_figure_composer_plot_slices_image_panel_styles_codegen_executes(
+    qtbot,
+) -> None:
+    import matplotlib.colors as mcolors
+
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("eV", "kx", "ky"),
+        coords={"eV": [0.0, 1.0, 2.0], "kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="image_panels",
+        sources=("data",),
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        slice_dim="eV",
+        slice_values=(0.0, 1.0),
+    ).model_copy(
+        update={
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    cmap="viridis",
+                    norm_name="Normalize",
+                    vmin=0.0,
+                    vmax=5.0,
+                ),
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=1,
+                    cmap="magma_r",
+                    norm_name="CenteredPowerNorm",
+                    norm_gamma=0.5,
+                    halfrange=1.0,
+                ),
+            ),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        tool, tool.tool_status.operations[0]
+    )
+    assert kwargs["cmap"] == [["viridis", "magma_r"]]
+    assert isinstance(kwargs["norm"][0][0], mcolors.Normalize)
+    assert isinstance(kwargs["norm"][0][1], eplt.CenteredPowerNorm)
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    axs = namespace["axs"]
+    assert axs[0, 0].images[0].cmap.name == "viridis"
+    assert axs[0, 1].images[0].cmap.name == "magma_r"
+    assert isinstance(axs[0, 0].images[0].norm, mcolors.Normalize)
+    assert isinstance(axs[0, 1].images[0].norm, eplt.CenteredPowerNorm)
+    assert axs[0, 1].images[0].norm.gamma == 0.5
+    assert axs[0, 1].images[0].norm.halfrange == 1.0
+
+
+def test_figure_composer_plot_slices_line_panel_styles_codegen_executes(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0, 2.0], "kx": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="line_panels",
+        sources=("data",),
+        axes=FigureAxesSelectionState(axes=((0, 0), (1, 0))),
+        slice_dim="eV",
+        slice_values=(0.0, 1.0),
+    ).model_copy(
+        update={
+            "order": "F",
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    line_kw={"color": "red", "linestyle": "--"},
+                ),
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=1,
+                    line_kw={"color": "blue", "marker": "o", "linewidth": 2.0},
+                ),
+            ),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=2, ncols=1),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+
+    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        tool, tool.tool_status.operations[0]
+    )
+    assert kwargs["line_kw"] == [
+        [{"color": "red", "linestyle": "--"}],
+        [{"color": "blue", "marker": "o", "linewidth": 2.0}],
+    ]
+    assert kwargs["line_order"] == "F"
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(tool.generated_code(), namespace)  # noqa: S102
+    first_line = namespace["axs"][0, 0].lines[0]
+    second_line = namespace["axs"][1, 0].lines[0]
+    assert first_line.get_color() == "red"
+    assert first_line.get_linestyle() == "--"
+    assert second_line.get_color() == "blue"
+    assert second_line.get_marker() == "o"
+    assert second_line.get_linewidth() == 2.0
+
+
+def test_figure_composer_plot_slices_line_panel_style_editor_updates_recipe(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(3, 2),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0, 2.0], "kx": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="line_panels",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+                    slice_dim="eV",
+                    slice_values=(0.0, 1.0),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool._select_step_section("colors")
+
+    colors_page = tool.step_editor_stack.currentWidget()
+    panel_check = colors_page.findChild(
+        QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
+    )
+    assert panel_check is not None
+    panel_check.setChecked(True)
+    qtbot.waitUntil(
+        lambda: (
+            tool.step_editor_stack.currentWidget().findChild(
+                QtWidgets.QWidget, "figureComposerPlotSlicesPanelLineStyleEditor"
+            )
+            is not None
+        ),
+        timeout=1000,
+    )
+    colors_page = tool.step_editor_stack.currentWidget()
+    panel_list = colors_page.findChild(
+        QtWidgets.QListWidget, "figureComposerPlotSlicesPanelLineStyleList"
+    )
+    color_edit = colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPanelLineColorEdit"
+    )
+    style_combo = colors_page.findChild(
+        QtWidgets.QComboBox, "figureComposerPanelLineStyleCombo"
+    )
+    assert panel_list is not None
+    assert color_edit is not None
+    assert style_combo is not None
+    panel_list.setCurrentRow(1)
+    color_edit.setText("tab:blue")
+    color_edit.setModified(True)
+    color_edit.editingFinished.emit()
+    _activate_combo_text(style_combo, "--")
+
+    styles = tool.tool_status.operations[0].panel_styles
+    assert styles == (
+        FigurePlotSlicesPanelStyleState(
+            map_index=0,
+            slice_index=1,
+            line_kw={"color": "tab:blue", "linestyle": "--"},
+        ),
     )
 
 

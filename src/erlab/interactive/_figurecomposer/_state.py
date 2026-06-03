@@ -277,6 +277,25 @@ class FigureDataSelectionState(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(extra="forbid")
 
 
+class FigurePlotSlicesPanelStyleState(pydantic.BaseModel):
+    """Optional style override for one logical plot_slices panel."""
+
+    map_index: int
+    slice_index: int
+    cmap: str | None = None
+    norm_name: str | None = None
+    norm_gamma: float | None = None
+    norm_clip: bool | None = None
+    norm_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+    vmin: float | None = None
+    vmax: float | None = None
+    vcenter: float | None = None
+    halfrange: float | None = None
+    line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+
 class FigureOperationState(pydantic.BaseModel):
     """One ordered plotting operation in a figure recipe."""
 
@@ -317,10 +336,11 @@ class FigureOperationState(pydantic.BaseModel):
     order: str = "C"
     cmap_order: str = "C"
     norm_order: str | None = None
+    panel_styles_enabled: bool = False
+    panel_styles: tuple[FigurePlotSlicesPanelStyleState, ...] = ()
     gradient: bool = False
     gradient_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     line_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
-    line_order: str | None = None
     subplot_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     annotate_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     colorbar_kw: dict[str, typing.Any] = pydantic.Field(default_factory=dict)

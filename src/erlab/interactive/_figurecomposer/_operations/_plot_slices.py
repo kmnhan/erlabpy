@@ -19,6 +19,7 @@ from erlab.interactive._figurecomposer._defaults import (
     _figure_style_context,
 )
 from erlab.interactive._figurecomposer._line_style import (
+    CONTROLLED_LINE_KW_KEYS,
     LINE_MARKER_OPTIONS,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
@@ -32,6 +33,7 @@ from erlab.interactive._figurecomposer._line_style import (
 )
 from erlab.interactive._figurecomposer._norms import (
     _MATPLOTLIB_NORM_NAMES,
+    _NORM_CHOICES,
     _ZERO_VCENTER_NORMS,
     _cmap_base_and_reverse,
     _cmap_with_reverse,
@@ -59,6 +61,7 @@ from erlab.interactive._figurecomposer._state import (
     _POWER_NORM_NAME,
     FigureOperationKind,
     FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
     _PlotSlicesShape,
 )
 from erlab.interactive._figurecomposer._text import (
@@ -122,6 +125,12 @@ _PLOT_SLICES_PANEL_IMAGE = "image"
 _PLOT_SLICES_PANEL_MIXED = "mixed"
 
 
+class _PlotSlicesPanelKey(typing.NamedTuple):
+    map_index: int
+    slice_index: int
+    label: str
+
+
 def _operation_dim_names(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
@@ -160,6 +169,1213 @@ def _plot_slices_batch_panel_kind(
     if len(kinds) == 1:
         return kinds.pop()
     return _PLOT_SLICES_PANEL_MIXED
+
+
+def _plot_slices_slice_count(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> int:
+    operation = _normalized_selection_operation(tool, operation)
+    dims = _operation_dim_names(tool, operation)
+    selected_dims: set[str] = set()
+    slice_count = 1
+    if operation.slice_dim and operation.slice_values:
+        selected_dims.add(operation.slice_dim)
+        slice_count = len(operation.slice_values)
+    for key, value in operation.slice_kwargs.items():
+        if key.endswith("_width") or key not in dims:
+            continue
+        count = _selection_value_count(value)
+        if count is None:
+            selected_dims.add(key)
+        else:
+            selected_dims.add(key)
+            slice_count = max(slice_count, count)
+    return max(slice_count, 1)
+
+
+def _plot_slices_panel_keys(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> tuple[_PlotSlicesPanelKey, ...]:
+    operation = _normalized_selection_operation(tool, operation)
+    maps = _operation_maps(tool, operation)
+    map_count = len(maps) or max(len(operation.sources), 1)
+    slice_count = _plot_slices_slice_count(tool, operation)
+    source_names = (
+        tuple(selection.source for selection in operation.map_selections)
+        if operation.map_selections
+        else operation.sources
+    )
+    map_labels = tuple(
+        source_names[index] if index < len(source_names) else f"map {index + 1}"
+        for index in range(map_count)
+    )
+    slice_labels = _plot_slices_slice_labels(operation, slice_count)
+
+    keys: list[_PlotSlicesPanelKey] = []
+    if operation.order == "F":
+        indices = (
+            (map_index, slice_index)
+            for slice_index in range(slice_count)
+            for map_index in range(map_count)
+        )
+    else:
+        indices = (
+            (map_index, slice_index)
+            for map_index in range(map_count)
+            for slice_index in range(slice_count)
+        )
+    for map_index, slice_index in indices:
+        label = f"{map_labels[map_index]}"
+        if slice_count > 1 or operation.slice_dim or operation.slice_kwargs:
+            label += f", {slice_labels[slice_index]}"
+        keys.append(_PlotSlicesPanelKey(map_index, slice_index, label))
+    return tuple(keys)
+
+
+def _plot_slices_slice_labels(
+    operation: FigureOperationState, slice_count: int
+) -> tuple[str, ...]:
+    if operation.slice_dim and operation.slice_values:
+        return tuple(
+            f"{operation.slice_dim}={value:g}"
+            for value in operation.slice_values[:slice_count]
+        )
+    for key, value in operation.slice_kwargs.items():
+        if key.endswith("_width"):
+            continue
+        count = _selection_value_count(value)
+        if count is None:
+            continue
+        return tuple(f"{key}[{index}]" for index in range(slice_count))
+    return tuple(f"slice {index + 1}" for index in range(slice_count))
+
+
+def _panel_style_key(style: FigurePlotSlicesPanelStyleState) -> tuple[int, int]:
+    return (style.map_index, style.slice_index)
+
+
+def _panel_style_map(
+    operation: FigureOperationState,
+) -> dict[tuple[int, int], FigurePlotSlicesPanelStyleState]:
+    return {_panel_style_key(style): style for style in operation.panel_styles}
+
+
+def _panel_style_map_for_keys(
+    operation: FigureOperationState,
+    keys: tuple[_PlotSlicesPanelKey, ...],
+) -> dict[tuple[int, int], FigurePlotSlicesPanelStyleState]:
+    valid_keys = {(key.map_index, key.slice_index) for key in keys}
+    return {
+        key: style
+        for key, style in _panel_style_map(operation).items()
+        if key in valid_keys
+    }
+
+
+def _panel_style_for(
+    operation: FigureOperationState, key: _PlotSlicesPanelKey
+) -> FigurePlotSlicesPanelStyleState:
+    return _panel_style_map(operation).get(
+        (key.map_index, key.slice_index),
+        FigurePlotSlicesPanelStyleState(
+            map_index=key.map_index,
+            slice_index=key.slice_index,
+        ),
+    )
+
+
+def _panel_style_has_cmap_override(style: FigurePlotSlicesPanelStyleState) -> bool:
+    return style.cmap is not None
+
+
+def _panel_style_has_norm_override(style: FigurePlotSlicesPanelStyleState) -> bool:
+    return (
+        style.norm_name is not None
+        or style.norm_gamma is not None
+        or style.norm_clip is not None
+        or bool(style.norm_kwargs)
+        or style.vmin is not None
+        or style.vmax is not None
+        or style.vcenter is not None
+        or style.halfrange is not None
+    )
+
+
+def _panel_style_has_line_override(style: FigurePlotSlicesPanelStyleState) -> bool:
+    return bool(style.line_kw)
+
+
+def _panel_style_has_overrides(style: FigurePlotSlicesPanelStyleState) -> bool:
+    return (
+        _panel_style_has_cmap_override(style)
+        or _panel_style_has_norm_override(style)
+        or _panel_style_has_line_override(style)
+    )
+
+
+def _effective_panel_cmap(
+    operation: FigureOperationState, style: FigurePlotSlicesPanelStyleState
+) -> str:
+    if style.cmap is not None:
+        return style.cmap
+    return operation.cmap or erlab.interactive.options.model.colors.cmap.name
+
+
+def _operation_with_panel_norm_style(
+    operation: FigureOperationState,
+    style: FigurePlotSlicesPanelStyleState,
+) -> FigureOperationState:
+    if not _panel_style_has_norm_override(style):
+        return operation
+    updates: dict[str, typing.Any] = {}
+    for attr in (
+        "norm_name",
+        "norm_gamma",
+        "norm_clip",
+        "norm_kwargs",
+        "vmin",
+        "vmax",
+        "vcenter",
+        "halfrange",
+    ):
+        value = getattr(style, attr)
+        if value is not None and value != {}:
+            updates[attr] = value
+    if "norm_name" not in updates:
+        updates["norm_name"] = operation.norm_name or _POWER_NORM_NAME
+    return operation.model_copy(update=updates)
+
+
+def _style_sequence_shape(
+    keys: tuple[_PlotSlicesPanelKey, ...],
+) -> tuple[int, int]:
+    map_count = max((key.map_index for key in keys), default=0) + 1
+    slice_count = max((key.slice_index for key in keys), default=0) + 1
+    return map_count, slice_count
+
+
+def _nested_panel_values(
+    keys: tuple[_PlotSlicesPanelKey, ...],
+    order: str,
+    value_getter: Callable[[_PlotSlicesPanelKey], typing.Any],
+) -> list[list[typing.Any]]:
+    map_count, slice_count = _style_sequence_shape(keys)
+    if order == "F":
+        return [
+            [
+                value_getter(_PlotSlicesPanelKey(map_index, slice_index, ""))
+                for map_index in range(map_count)
+            ]
+            for slice_index in range(slice_count)
+        ]
+    return [
+        [
+            value_getter(_PlotSlicesPanelKey(map_index, slice_index, ""))
+            for slice_index in range(slice_count)
+        ]
+        for map_index in range(map_count)
+    ]
+
+
+def _panel_cmap_argument(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> str | list[list[str]] | None:
+    if not operation.panel_styles_enabled or not operation.panel_styles:
+        return operation.cmap
+    keys = _plot_slices_panel_keys(tool, operation)
+    styles = _panel_style_map_for_keys(operation, keys)
+    if not any(_panel_style_has_cmap_override(style) for style in styles.values()):
+        return operation.cmap
+
+    def value_getter(key: _PlotSlicesPanelKey) -> str:
+        style = styles.get(
+            (key.map_index, key.slice_index),
+            FigurePlotSlicesPanelStyleState(
+                map_index=key.map_index,
+                slice_index=key.slice_index,
+            ),
+        )
+        return _effective_panel_cmap(operation, style)
+
+    values = [value_getter(key) for key in keys]
+    first = values[0] if values else operation.cmap
+    if first is not None and all(value == first for value in values[1:]):
+        return first
+    return _nested_panel_values(keys, operation.cmap_order, value_getter)
+
+
+def _panel_norm_argument(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> list[list[object]] | object | None:
+    if not operation.panel_styles_enabled or not operation.panel_styles:
+        return None
+    keys = _plot_slices_panel_keys(tool, operation)
+    styles = _panel_style_map_for_keys(operation, keys)
+    if not any(_panel_style_has_norm_override(style) for style in styles.values()):
+        return None
+    order = operation.norm_order or operation.cmap_order
+
+    def value_getter(key: _PlotSlicesPanelKey) -> object:
+        style = styles.get(
+            (key.map_index, key.slice_index),
+            FigurePlotSlicesPanelStyleState(
+                map_index=key.map_index,
+                slice_index=key.slice_index,
+            ),
+        )
+        return _norm_object(_operation_with_panel_norm_style(operation, style))
+
+    if len(keys) == 1:
+        return value_getter(keys[0])
+    return _nested_panel_values(keys, order, value_getter)
+
+
+def _panel_line_kw_argument(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, typing.Any] | list[list[dict[str, typing.Any]]]:
+    if not operation.panel_styles_enabled or not operation.panel_styles:
+        return dict(operation.line_kw)
+    keys = _plot_slices_panel_keys(tool, operation)
+    styles = _panel_style_map_for_keys(operation, keys)
+    if not any(_panel_style_has_line_override(style) for style in styles.values()):
+        return dict(operation.line_kw)
+
+    def value_getter(key: _PlotSlicesPanelKey) -> dict[str, typing.Any]:
+        style = styles.get(
+            (key.map_index, key.slice_index),
+            FigurePlotSlicesPanelStyleState(
+                map_index=key.map_index,
+                slice_index=key.slice_index,
+            ),
+        )
+        return {**operation.line_kw, **style.line_kw}
+
+    values = [value_getter(key) for key in keys]
+    first = values[0] if values else dict(operation.line_kw)
+    if all(value == first for value in values[1:]):
+        return first
+    return _nested_panel_values(keys, operation.order, value_getter)
+
+
+def _has_panel_line_kw_overrides(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> bool:
+    if not operation.panel_styles_enabled:
+        return False
+    keys = _plot_slices_panel_keys(tool, operation)
+    styles = _panel_style_map_for_keys(operation, keys)
+    return any(_panel_style_has_line_override(style) for style in styles.values())
+
+
+def _panel_norm_code(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> str | None:
+    if not operation.panel_styles_enabled or not operation.panel_styles:
+        return None
+    keys = _plot_slices_panel_keys(tool, operation)
+    styles = _panel_style_map_for_keys(operation, keys)
+    if not any(_panel_style_has_norm_override(style) for style in styles.values()):
+        return None
+    order = operation.norm_order or operation.cmap_order
+
+    def value_getter(key: _PlotSlicesPanelKey) -> _RawCode:
+        style = styles.get(
+            (key.map_index, key.slice_index),
+            FigurePlotSlicesPanelStyleState(
+                map_index=key.map_index,
+                slice_index=key.slice_index,
+            ),
+        )
+        return _RawCode(_norm_code(_operation_with_panel_norm_style(operation, style)))
+
+    if len(keys) == 1:
+        return str(value_getter(keys[0]))
+    return repr(_nested_panel_values(keys, order, value_getter))
+
+
+def _panel_norm_uses_matplotlib_colors(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> bool:
+    if not operation.panel_styles_enabled or not operation.panel_styles:
+        return False
+    keys = _plot_slices_panel_keys(tool, operation)
+    styles = _panel_style_map_for_keys(operation, keys)
+    if not any(_panel_style_has_norm_override(style) for style in styles.values()):
+        return False
+    for key in keys:
+        style = styles.get(
+            (key.map_index, key.slice_index),
+            FigurePlotSlicesPanelStyleState(
+                map_index=key.map_index,
+                slice_index=key.slice_index,
+            ),
+        )
+        effective_operation = _operation_with_panel_norm_style(operation, style)
+        if (
+            _effective_norm_name(effective_operation.norm_name)
+            in _MATPLOTLIB_NORM_NAMES
+        ):
+            return True
+    return False
+
+
+class _PanelStyleEditorWidget(QtWidgets.QWidget):
+    """Editor for optional per-panel image style overrides."""
+
+    sigPanelStylesChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        operation: FigureOperationState,
+        panel_keys: tuple[_PlotSlicesPanelKey, ...],
+        connect_signal: Callable[
+            [QtWidgets.QWidget, typing.Any, Callable[..., None]], None
+        ],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._operation = operation
+        self._panel_keys = panel_keys
+        self._styles = _panel_style_map(operation)
+        self._updating = False
+
+        self.panel_list = QtWidgets.QListWidget(self)
+        self.panel_list.setObjectName("figureComposerPlotSlicesPanelStyleList")
+        self.panel_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.panel_list.setMaximumHeight(96)
+        self.panel_list.setToolTip("Select one or more panels to override.")
+        for key in panel_keys:
+            item = QtWidgets.QListWidgetItem(self._panel_row_text(key))
+            item.setData(
+                QtCore.Qt.ItemDataRole.UserRole,
+                (key.map_index, key.slice_index),
+            )
+            self.panel_list.addItem(item)
+        if self.panel_list.count():
+            self.panel_list.setCurrentRow(0)
+
+        self.cmap_override_check = QtWidgets.QCheckBox("Override colormap", self)
+        self.cmap_override_check.setObjectName("figureComposerPanelCmapOverrideCheck")
+        self.cmap_override_check.setTristate(True)
+        self.cmap_override_check.setToolTip(
+            "Store a colormap override for the selected panels."
+        )
+        self.cmap_combo = erlab.interactive.colors.ColorMapComboBox(self)
+        self.cmap_combo.setObjectName("figureComposerPanelCmapCombo")
+        self.cmap_combo.setToolTip("Per-panel colormap override.")
+        self.cmap_combo.ensure_populated()
+        self.cmap_reverse_check = QtWidgets.QCheckBox("Reverse", self)
+        self.cmap_reverse_check.setObjectName("figureComposerPanelCmapReverseCheck")
+        self.cmap_reverse_check.setTristate(True)
+        self.cmap_reverse_check.setToolTip("Append _r to the per-panel colormap.")
+
+        self.norm_override_check = QtWidgets.QCheckBox("Override norm", self)
+        self.norm_override_check.setObjectName("figureComposerPanelNormOverrideCheck")
+        self.norm_override_check.setTristate(True)
+        self.norm_override_check.setToolTip(
+            "Store normalization overrides for the selected panels."
+        )
+        self.norm_combo = QtWidgets.QComboBox(self)
+        self.norm_combo.setObjectName("figureComposerPanelNormCombo")
+        self.norm_combo.addItems(list(_NORM_CHOICES))
+        self.norm_combo.setToolTip("Per-panel normalization class.")
+
+        self.gamma_edit = self._number_edit("figureComposerPanelGammaEdit")
+        self.vmin_edit = self._number_edit("figureComposerPanelVminEdit")
+        self.vmax_edit = self._number_edit("figureComposerPanelVmaxEdit")
+        self.vcenter_edit = self._number_edit("figureComposerPanelVcenterEdit")
+        self.halfrange_edit = self._number_edit("figureComposerPanelHalfrangeEdit")
+        self.clip_combo = QtWidgets.QComboBox(self)
+        self.clip_combo.setObjectName("figureComposerPanelClipCombo")
+        self.clip_combo.addItems(["inherit", "False", "True"])
+        self.clip_combo.setToolTip("Per-panel norm clip argument.")
+        self.norm_kwargs_edit = QtWidgets.QLineEdit(self)
+        self.norm_kwargs_edit.setObjectName("figureComposerPanelNormKwargsEdit")
+        self.norm_kwargs_edit.setToolTip(
+            "Extra keyword arguments for selected panel norm constructors."
+        )
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self.panel_list)
+
+        cmap_row = QtWidgets.QHBoxLayout()
+        cmap_row.setContentsMargins(0, 0, 0, 0)
+        cmap_row.addWidget(self.cmap_override_check)
+        cmap_row.addWidget(self.cmap_combo, 1)
+        cmap_row.addWidget(self.cmap_reverse_check)
+        layout.addLayout(cmap_row)
+
+        norm_row = QtWidgets.QHBoxLayout()
+        norm_row.setContentsMargins(0, 0, 0, 0)
+        norm_row.addWidget(self.norm_override_check)
+        norm_row.addWidget(self.norm_combo, 1)
+        layout.addLayout(norm_row)
+
+        numbers = QtWidgets.QGridLayout()
+        numbers.setContentsMargins(0, 0, 0, 0)
+        numbers.setHorizontalSpacing(6)
+        numbers.setVerticalSpacing(4)
+        for row, (label, widget) in enumerate(
+            (
+                ("Gamma", self.gamma_edit),
+                ("vmin", self.vmin_edit),
+                ("vmax", self.vmax_edit),
+                ("vcenter", self.vcenter_edit),
+                ("halfrange", self.halfrange_edit),
+                ("Clip", self.clip_combo),
+                ("Norm kwargs", self.norm_kwargs_edit),
+            )
+        ):
+            numbers.addWidget(QtWidgets.QLabel(label, self), row, 0)
+            numbers.addWidget(widget, row, 1)
+        layout.addLayout(numbers)
+
+        connect_signal(self, self.panel_list.itemSelectionChanged, self._sync_controls)
+        connect_signal(
+            self, self.cmap_override_check.stateChanged, self._cmap_override_changed
+        )
+        connect_signal(self, self.cmap_combo.activated, self._cmap_changed)
+        connect_signal(
+            self, self.cmap_reverse_check.stateChanged, self._cmap_reverse_changed
+        )
+        connect_signal(
+            self, self.norm_override_check.stateChanged, self._norm_override_changed
+        )
+        connect_signal(self, self.norm_combo.activated, self._norm_changed)
+        for attr, edit in (
+            ("norm_gamma", self.gamma_edit),
+            ("vmin", self.vmin_edit),
+            ("vmax", self.vmax_edit),
+            ("vcenter", self.vcenter_edit),
+            ("halfrange", self.halfrange_edit),
+        ):
+            connect_signal(
+                self,
+                edit.editingFinished,
+                lambda attr=attr, edit=edit: self._number_changed(attr, edit),
+            )
+        connect_signal(self, self.clip_combo.activated, self._clip_changed)
+        connect_signal(
+            self, self.norm_kwargs_edit.editingFinished, self._norm_kwargs_changed
+        )
+        self._sync_controls()
+
+    def styles(self) -> tuple[FigurePlotSlicesPanelStyleState, ...]:
+        valid_keys = {(key.map_index, key.slice_index) for key in self._panel_keys}
+        return tuple(
+            self._styles[key]
+            for key in sorted(self._styles)
+            if key in valid_keys and _panel_style_has_overrides(self._styles[key])
+        )
+
+    @staticmethod
+    def _number_edit(object_name: str) -> QtWidgets.QLineEdit:
+        edit = QtWidgets.QLineEdit()
+        edit.setObjectName(object_name)
+        edit.setToolTip("Leave blank to inherit the global value.")
+        return edit
+
+    def _panel_row_text(self, key: _PlotSlicesPanelKey) -> str:
+        style = _panel_style_for(self._operation, key)
+        parts = [key.label]
+        if _panel_style_has_cmap_override(style):
+            parts.append(_effective_panel_cmap(self._operation, style))
+        if _panel_style_has_norm_override(style):
+            norm_operation = _operation_with_panel_norm_style(self._operation, style)
+            parts.append(_effective_norm_name(norm_operation.norm_name))
+        return " | ".join(parts)
+
+    def _selected_keys(self) -> tuple[_PlotSlicesPanelKey, ...]:
+        by_index = {(key.map_index, key.slice_index): key for key in self._panel_keys}
+        keys: list[_PlotSlicesPanelKey] = []
+        for item in self.panel_list.selectedItems():
+            raw_key = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            if raw_key in by_index:
+                keys.append(by_index[raw_key])
+        if keys:
+            return tuple(keys)
+        if self._panel_keys:
+            return (self._panel_keys[0],)
+        return ()
+
+    def _selected_styles(self) -> tuple[FigurePlotSlicesPanelStyleState, ...]:
+        return tuple(
+            _panel_style_for(self._operation, key) for key in self._selected_keys()
+        )
+
+    @staticmethod
+    def _common_value(values: tuple[typing.Any, ...]) -> typing.Any:
+        if not values:
+            return None
+        first = values[0]
+        if all(value == first for value in values[1:]):
+            return first
+        return _MISSING
+
+    def _sync_controls(self) -> None:
+        if self._updating:
+            return
+        self._updating = True
+        try:
+            styles = self._selected_styles()
+            cmap_override = self._common_value(
+                tuple(_panel_style_has_cmap_override(style) for style in styles)
+            )
+            self._set_check_state(self.cmap_override_check, cmap_override)
+            cmap_enabled = cmap_override is True
+            self.cmap_combo.setEnabled(cmap_enabled)
+            self.cmap_reverse_check.setEnabled(cmap_enabled)
+            self._set_cmap_value(styles)
+
+            norm_override = self._common_value(
+                tuple(_panel_style_has_norm_override(style) for style in styles)
+            )
+            self._set_check_state(self.norm_override_check, norm_override)
+            norm_enabled = norm_override is True
+            self.norm_combo.setEnabled(norm_enabled)
+            norm_name = self._set_norm_value(styles)
+            self._sync_norm_fields(styles, norm_enabled, norm_name)
+        finally:
+            self._updating = False
+
+    @staticmethod
+    def _set_check_state(check: QtWidgets.QCheckBox, value: object) -> None:
+        with QtCore.QSignalBlocker(check):
+            if value is _MISSING:
+                check.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+            else:
+                check.setCheckState(
+                    QtCore.Qt.CheckState.Checked
+                    if value is True
+                    else QtCore.Qt.CheckState.Unchecked
+                )
+
+    def _set_cmap_value(
+        self, styles: tuple[FigurePlotSlicesPanelStyleState, ...]
+    ) -> None:
+        values = tuple(
+            _cmap_base_and_reverse(style.cmap)[0]
+            if style.cmap is not None
+            else _effective_panel_cmap(self._operation, style)
+            for style in styles
+        )
+        reversed_values = tuple(
+            _cmap_base_and_reverse(style.cmap)[1] if style.cmap is not None else False
+            for style in styles
+        )
+        value = self._common_value(values)
+        reversed_value = self._common_value(reversed_values)
+        with QtCore.QSignalBlocker(self.cmap_combo):
+            if value is _MISSING:
+                self._set_combo_mixed(self.cmap_combo)
+            else:
+                self._remove_combo_mixed(self.cmap_combo)
+                self.cmap_combo.setCurrentText(str(value))
+        self._set_check_state(self.cmap_reverse_check, reversed_value)
+
+    def _set_norm_value(
+        self, styles: tuple[FigurePlotSlicesPanelStyleState, ...]
+    ) -> str | None:
+        values = tuple(
+            _effective_norm_name(
+                _operation_with_panel_norm_style(self._operation, style).norm_name
+            )
+            for style in styles
+        )
+        value = self._common_value(values)
+        with QtCore.QSignalBlocker(self.norm_combo):
+            if value is _MISSING:
+                self._set_combo_mixed(self.norm_combo)
+                return None
+            self._remove_combo_mixed(self.norm_combo)
+            self.norm_combo.setCurrentText(str(value))
+            return str(value)
+
+    def _sync_norm_fields(
+        self,
+        styles: tuple[FigurePlotSlicesPanelStyleState, ...],
+        enabled: bool,
+        norm_name: str | None,
+    ) -> None:
+        norm_fields = set(_norm_kwarg_fields(norm_name)) if norm_name else set()
+        for attr, edit in (
+            ("norm_gamma", self.gamma_edit),
+            ("vmin", self.vmin_edit),
+            ("vmax", self.vmax_edit),
+            ("vcenter", self.vcenter_edit),
+            ("halfrange", self.halfrange_edit),
+        ):
+            field_name = "gamma" if attr == "norm_gamma" else attr
+            field_enabled = enabled and field_name in norm_fields
+            edit.setEnabled(field_enabled)
+            values = tuple(getattr(style, attr) for style in styles)
+            value = self._common_value(values)
+            with QtCore.QSignalBlocker(edit):
+                edit.setText("" if value in (None, _MISSING) else f"{value:g}")
+                edit.setPlaceholderText(
+                    "(multiple values)" if value is _MISSING else "inherit"
+                )
+                edit.setModified(False)
+        self.clip_combo.setEnabled(enabled and "clip" in norm_fields)
+        clip_values = tuple(style.norm_clip for style in styles)
+        clip_value = self._common_value(clip_values)
+        with QtCore.QSignalBlocker(self.clip_combo):
+            if clip_value is _MISSING:
+                self._set_combo_mixed(self.clip_combo)
+            else:
+                self._remove_combo_mixed(self.clip_combo)
+                self.clip_combo.setCurrentText(
+                    "inherit" if clip_value is None else str(clip_value)
+                )
+        self.norm_kwargs_edit.setEnabled(enabled)
+        kwargs_values = tuple(style.norm_kwargs for style in styles)
+        kwargs_value = self._common_value(kwargs_values)
+        with QtCore.QSignalBlocker(self.norm_kwargs_edit):
+            self.norm_kwargs_edit.setText(
+                "" if kwargs_value in (None, _MISSING) else _format_dict(kwargs_value)
+            )
+            self.norm_kwargs_edit.setPlaceholderText(
+                "(multiple values)" if kwargs_value is _MISSING else "optional"
+            )
+            self.norm_kwargs_edit.setModified(False)
+
+    @staticmethod
+    def _set_combo_mixed(combo: QtWidgets.QComboBox) -> None:
+        if combo.findData(_MISSING) < 0:
+            combo.insertItem(0, "(multiple values)", _MISSING)
+            item = typing.cast("typing.Any", combo.model()).item(0)
+            if item is not None:
+                item.setEnabled(False)
+        combo.setCurrentIndex(0)
+
+    @staticmethod
+    def _remove_combo_mixed(combo: QtWidgets.QComboBox) -> None:
+        index = combo.findData(_MISSING)
+        if index >= 0:
+            combo.removeItem(index)
+
+    def _cmap_override_changed(self, state: int) -> None:
+        check_state = QtCore.Qt.CheckState(state)
+        if self._updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
+            return
+        if check_state == QtCore.Qt.CheckState.Checked:
+            cmap = (
+                self._operation.cmap or erlab.interactive.options.model.colors.cmap.name
+            )
+            self._update_selected_styles({"cmap": cmap})
+        else:
+            self._update_selected_styles({"cmap": None})
+
+    def _cmap_changed(self, _index: int) -> None:
+        if self._updating or self.cmap_combo.currentData() is _MISSING:
+            return
+        base = self.cmap_combo.currentText()
+        reverse = self.cmap_reverse_check.checkState() == QtCore.Qt.CheckState.Checked
+        self._update_selected_styles({"cmap": _cmap_with_reverse(base, reverse)})
+
+    def _cmap_reverse_changed(self, state: int) -> None:
+        check_state = QtCore.Qt.CheckState(state)
+        if self._updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
+            return
+        base = self.cmap_combo.currentText()
+        if self.cmap_combo.currentData() is _MISSING:
+            base = (
+                self._operation.cmap or erlab.interactive.options.model.colors.cmap.name
+            )
+        reverse = check_state == QtCore.Qt.CheckState.Checked
+        self._update_selected_styles({"cmap": _cmap_with_reverse(base, reverse)})
+
+    def _norm_override_changed(self, state: int) -> None:
+        check_state = QtCore.Qt.CheckState(state)
+        if self._updating or check_state == QtCore.Qt.CheckState.PartiallyChecked:
+            return
+        if check_state == QtCore.Qt.CheckState.Checked:
+            self._update_selected_styles(
+                {"norm_name": self._operation.norm_name or _POWER_NORM_NAME}
+            )
+        else:
+            self._update_selected_styles(
+                {
+                    "norm_name": None,
+                    "norm_gamma": None,
+                    "norm_clip": None,
+                    "norm_kwargs": {},
+                    "vmin": None,
+                    "vmax": None,
+                    "vcenter": None,
+                    "halfrange": None,
+                }
+            )
+
+    def _norm_changed(self, _index: int) -> None:
+        if self._updating or self.norm_combo.currentData() is _MISSING:
+            return
+        self._update_selected_styles({"norm_name": self.norm_combo.currentText()})
+
+    def _number_changed(self, attr: str, edit: QtWidgets.QLineEdit) -> None:
+        if self._updating or (
+            edit.placeholderText() == "(multiple values)" and not edit.isModified()
+        ):
+            return
+        text = edit.text().strip()
+        self._update_selected_styles({attr: float(text) if text else None})
+
+    def _clip_changed(self, _index: int) -> None:
+        if self._updating or self.clip_combo.currentData() is _MISSING:
+            return
+        text = self.clip_combo.currentText()
+        self._update_selected_styles({"norm_clip": _norm_clip_from_text(text)})
+
+    def _norm_kwargs_changed(self) -> None:
+        if self._updating or (
+            self.norm_kwargs_edit.placeholderText() == "(multiple values)"
+            and not self.norm_kwargs_edit.isModified()
+        ):
+            return
+        self._update_selected_styles(
+            {"norm_kwargs": _dict_from_text(self.norm_kwargs_edit.text())}
+        )
+
+    def _update_selected_styles(self, updates: dict[str, typing.Any]) -> None:
+        for key in self._selected_keys():
+            style_key = (key.map_index, key.slice_index)
+            style = self._styles.get(
+                style_key,
+                FigurePlotSlicesPanelStyleState(
+                    map_index=key.map_index,
+                    slice_index=key.slice_index,
+                ),
+            )
+            next_style = style.model_copy(update=updates)
+            if _panel_style_has_overrides(next_style):
+                self._styles[style_key] = next_style
+            else:
+                self._styles.pop(style_key, None)
+        self.sigPanelStylesChanged.emit(self.styles())
+        self._sync_rows()
+        self._sync_controls()
+
+    def _sync_rows(self) -> None:
+        for row, key in enumerate(self._panel_keys):
+            item = self.panel_list.item(row)
+            if item is not None:
+                item.setText(self._panel_row_text(key))
+
+
+class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
+    """Editor for optional per-panel 1D line style overrides."""
+
+    sigPanelStylesChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        operation: FigureOperationState,
+        panel_keys: tuple[_PlotSlicesPanelKey, ...],
+        connect_signal: Callable[
+            [QtWidgets.QWidget, typing.Any, Callable[..., None]], None
+        ],
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._operation = operation
+        self._panel_keys = panel_keys
+        self._styles = _panel_style_map(operation)
+        self._updating = False
+
+        self.panel_list = QtWidgets.QListWidget(self)
+        self.panel_list.setObjectName("figureComposerPlotSlicesPanelLineStyleList")
+        self.panel_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+        )
+        self.panel_list.setMaximumHeight(96)
+        for key in panel_keys:
+            item = QtWidgets.QListWidgetItem(self._panel_row_text(key))
+            item.setData(
+                QtCore.Qt.ItemDataRole.UserRole,
+                (key.map_index, key.slice_index),
+            )
+            self.panel_list.addItem(item)
+        if self.panel_list.count():
+            self.panel_list.setCurrentRow(0)
+
+        self.color_edit = _ColorLineEditWidget(parent=self)
+        self.color_edit.setLineEditObjectName("figureComposerPanelLineColorEdit")
+        self.color_edit.setColorButtonObjectName("figureComposerPanelLineColorButton")
+        self.style_combo = QtWidgets.QComboBox(self)
+        self.style_combo.setObjectName("figureComposerPanelLineStyleCombo")
+        self.style_combo.addItems(list(LINE_STYLE_OPTIONS))
+        self.width_edit = self._line_edit("figureComposerPanelLineWidthEdit")
+        self.marker_combo = QtWidgets.QComboBox(self)
+        self.marker_combo.setObjectName("figureComposerPanelLineMarkerCombo")
+        self.marker_combo.addItems(list(LINE_MARKER_OPTIONS))
+        self.marker_size_edit = self._line_edit("figureComposerPanelLineMarkerSizeEdit")
+        self.marker_face_edit = _ColorLineEditWidget(parent=self)
+        self.marker_face_edit.setLineEditObjectName(
+            "figureComposerPanelLineMarkerFaceEdit"
+        )
+        self.marker_face_edit.setColorButtonObjectName(
+            "figureComposerPanelLineMarkerFaceButton"
+        )
+        self.marker_edge_edit = _ColorLineEditWidget(parent=self)
+        self.marker_edge_edit.setLineEditObjectName(
+            "figureComposerPanelLineMarkerEdgeEdit"
+        )
+        self.marker_edge_edit.setColorButtonObjectName(
+            "figureComposerPanelLineMarkerEdgeButton"
+        )
+        self.line_kwargs_edit = self._line_edit("figureComposerPanelLineKwEdit")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self.panel_list)
+        form = QtWidgets.QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        form.addRow("Color", self.color_edit)
+        form.addRow("Line style", self.style_combo)
+        form.addRow("Line width", self.width_edit)
+        form.addRow("Marker", self.marker_combo)
+        form.addRow("Marker size", self.marker_size_edit)
+        form.addRow("Marker face", self.marker_face_edit)
+        form.addRow("Marker edge", self.marker_edge_edit)
+        form.addRow("Line kwargs", self.line_kwargs_edit)
+        layout.addLayout(form)
+
+        connect_signal(self, self.panel_list.itemSelectionChanged, self._sync_controls)
+        connect_signal(
+            self,
+            self.color_edit.editingFinished,
+            lambda: self._line_kw_changed(
+                "color",
+                color_kw_value_from_text(self.color_edit.text()),
+                aliases=("c",),
+            ),
+        )
+        connect_signal(
+            self,
+            self.style_combo.activated,
+            lambda _index: self._line_kw_changed(
+                "linestyle",
+                self.style_combo.currentText() or None,
+                aliases=("ls",),
+            ),
+        )
+        connect_signal(
+            self,
+            self.width_edit.editingFinished,
+            lambda: self._line_kw_changed(
+                "linewidth",
+                self._optional_float(self.width_edit.text()),
+                aliases=("lw",),
+            ),
+        )
+        connect_signal(
+            self,
+            self.marker_combo.activated,
+            lambda _index: self._line_kw_changed(
+                "marker", self.marker_combo.currentText() or None
+            ),
+        )
+        connect_signal(
+            self,
+            self.marker_size_edit.editingFinished,
+            lambda: self._line_kw_changed(
+                "markersize",
+                self._optional_float(self.marker_size_edit.text()),
+                aliases=("ms",),
+            ),
+        )
+        connect_signal(
+            self,
+            self.marker_face_edit.editingFinished,
+            lambda: self._line_kw_changed(
+                "markerfacecolor",
+                color_kw_value_from_text(self.marker_face_edit.text()),
+                aliases=("mfc",),
+            ),
+        )
+        connect_signal(
+            self,
+            self.marker_edge_edit.editingFinished,
+            lambda: self._line_kw_changed(
+                "markeredgecolor",
+                color_kw_value_from_text(self.marker_edge_edit.text()),
+                aliases=("mec",),
+            ),
+        )
+        connect_signal(
+            self, self.line_kwargs_edit.editingFinished, self._extra_line_kw_changed
+        )
+        self._sync_controls()
+
+    def styles(self) -> tuple[FigurePlotSlicesPanelStyleState, ...]:
+        valid_keys = {(key.map_index, key.slice_index) for key in self._panel_keys}
+        return tuple(
+            self._styles[key]
+            for key in sorted(self._styles)
+            if key in valid_keys and _panel_style_has_overrides(self._styles[key])
+        )
+
+    @staticmethod
+    def _line_edit(object_name: str) -> QtWidgets.QLineEdit:
+        edit = QtWidgets.QLineEdit()
+        edit.setObjectName(object_name)
+        edit.setPlaceholderText("inherit")
+        return edit
+
+    @staticmethod
+    def _optional_float(text: str) -> float | None:
+        stripped = text.strip()
+        return None if not stripped else float(stripped)
+
+    def _panel_row_text(self, key: _PlotSlicesPanelKey) -> str:
+        style = _panel_style_for(self._operation, key)
+        color = line_kw_text(
+            self._operation.model_copy(update={"line_kw": style.line_kw}),
+            "color",
+            "c",
+        )
+        return key.label if not color else f"{key.label} | {color}"
+
+    def _selected_keys(self) -> tuple[_PlotSlicesPanelKey, ...]:
+        by_index = {(key.map_index, key.slice_index): key for key in self._panel_keys}
+        keys: list[_PlotSlicesPanelKey] = []
+        for item in self.panel_list.selectedItems():
+            raw_key = item.data(QtCore.Qt.ItemDataRole.UserRole)
+            if raw_key in by_index:
+                keys.append(by_index[raw_key])
+        if keys:
+            return tuple(keys)
+        if self._panel_keys:
+            return (self._panel_keys[0],)
+        return ()
+
+    def _selected_styles(self) -> tuple[FigurePlotSlicesPanelStyleState, ...]:
+        return tuple(
+            _panel_style_for(self._operation, key) for key in self._selected_keys()
+        )
+
+    @staticmethod
+    def _common_value(values: tuple[typing.Any, ...]) -> typing.Any:
+        if not values:
+            return None
+        first = values[0]
+        if all(value == first for value in values[1:]):
+            return first
+        return _MISSING
+
+    def _line_value(self, style: FigurePlotSlicesPanelStyleState, *keys: str) -> str:
+        operation = self._operation.model_copy(update={"line_kw": style.line_kw})
+        return line_kw_text(operation, *keys)
+
+    def _sync_controls(self) -> None:
+        if self._updating:
+            return
+        self._updating = True
+        try:
+            styles = self._selected_styles()
+            self._set_color_widget(
+                self.color_edit,
+                self._common_value(
+                    tuple(self._line_value(style, "color", "c") for style in styles)
+                ),
+            )
+            self._set_combo(
+                self.style_combo,
+                self._common_value(
+                    tuple(
+                        self._line_value(style, "linestyle", "ls") for style in styles
+                    )
+                ),
+            )
+            self._set_line_edit(
+                self.width_edit,
+                self._common_value(
+                    tuple(
+                        self._line_value(style, "linewidth", "lw") for style in styles
+                    )
+                ),
+            )
+            self._set_combo(
+                self.marker_combo,
+                self._common_value(
+                    tuple(self._line_value(style, "marker") for style in styles)
+                ),
+            )
+            self._set_line_edit(
+                self.marker_size_edit,
+                self._common_value(
+                    tuple(
+                        self._line_value(style, "markersize", "ms") for style in styles
+                    )
+                ),
+            )
+            self._set_color_widget(
+                self.marker_face_edit,
+                self._common_value(
+                    tuple(
+                        self._line_value(style, "markerfacecolor", "mfc")
+                        for style in styles
+                    )
+                ),
+            )
+            self._set_color_widget(
+                self.marker_edge_edit,
+                self._common_value(
+                    tuple(
+                        self._line_value(style, "markeredgecolor", "mec")
+                        for style in styles
+                    )
+                ),
+            )
+            self._set_line_edit(
+                self.line_kwargs_edit,
+                self._common_value(
+                    tuple(
+                        _format_dict(self._extra_line_kw(style.line_kw))
+                        for style in styles
+                    )
+                ),
+            )
+        finally:
+            self._updating = False
+
+    @staticmethod
+    def _set_line_edit(edit: QtWidgets.QLineEdit, value: typing.Any) -> None:
+        with QtCore.QSignalBlocker(edit):
+            edit.setText("" if value in (None, _MISSING) else str(value))
+            edit.setPlaceholderText(
+                "(multiple values)" if value is _MISSING else "inherit"
+            )
+            edit.setModified(False)
+
+    def _set_color_widget(
+        self, widget: _ColorLineEditWidget, value: typing.Any
+    ) -> None:
+        self._set_line_edit(widget.line_edit, value)
+        widget.setText("" if value in (None, _MISSING) else str(value))
+
+    @staticmethod
+    def _set_combo(combo: QtWidgets.QComboBox, value: typing.Any) -> None:
+        with QtCore.QSignalBlocker(combo):
+            if value is _MISSING:
+                _PanelStyleEditorWidget._set_combo_mixed(combo)
+            else:
+                _PanelStyleEditorWidget._remove_combo_mixed(combo)
+                combo.setCurrentText("" if value is None else str(value))
+
+    @classmethod
+    def _extra_line_kw(cls, line_kw: dict[str, typing.Any]) -> dict[str, typing.Any]:
+        return {
+            key: value
+            for key, value in line_kw.items()
+            if key not in CONTROLLED_LINE_KW_KEYS
+        }
+
+    def _line_kw_changed(
+        self,
+        key: str,
+        value: typing.Any,
+        *,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
+        if self._updating:
+            return
+        self._update_selected_line_kw({key: value}, clear_keys=(key, *aliases))
+
+    def _extra_line_kw_changed(self) -> None:
+        if self._updating or (
+            self.line_kwargs_edit.placeholderText() == "(multiple values)"
+            and not self.line_kwargs_edit.isModified()
+        ):
+            return
+        extra_kwargs = _dict_from_text(self.line_kwargs_edit.text())
+        for key in CONTROLLED_LINE_KW_KEYS:
+            extra_kwargs.pop(key, None)
+        self._update_selected_extra_line_kw(extra_kwargs)
+
+    def _update_selected_line_kw(
+        self,
+        updates: dict[str, typing.Any],
+        *,
+        clear_keys: tuple[str, ...],
+    ) -> None:
+        for panel_key in self._selected_keys():
+            style_key = (panel_key.map_index, panel_key.slice_index)
+            style = self._styles.get(
+                style_key,
+                FigurePlotSlicesPanelStyleState(
+                    map_index=panel_key.map_index,
+                    slice_index=panel_key.slice_index,
+                ),
+            )
+            line_kw = dict(style.line_kw)
+            for clear_key in clear_keys:
+                line_kw.pop(clear_key, None)
+            line_kw.update(
+                {
+                    key: value
+                    for key, value in updates.items()
+                    if value not in (None, "")
+                }
+            )
+            self._replace_style(
+                style_key,
+                style.model_copy(update={"line_kw": line_kw}),
+            )
+        self._emit_styles_changed()
+
+    def _update_selected_extra_line_kw(
+        self, extra_kwargs: dict[str, typing.Any]
+    ) -> None:
+        for panel_key in self._selected_keys():
+            style_key = (panel_key.map_index, panel_key.slice_index)
+            style = self._styles.get(
+                style_key,
+                FigurePlotSlicesPanelStyleState(
+                    map_index=panel_key.map_index,
+                    slice_index=panel_key.slice_index,
+                ),
+            )
+            line_kw = {
+                key: value
+                for key, value in style.line_kw.items()
+                if key in CONTROLLED_LINE_KW_KEYS
+            }
+            line_kw.update(extra_kwargs)
+            self._replace_style(
+                style_key,
+                style.model_copy(update={"line_kw": line_kw}),
+            )
+        self._emit_styles_changed()
+
+    def _replace_style(
+        self,
+        style_key: tuple[int, int],
+        style: FigurePlotSlicesPanelStyleState,
+    ) -> None:
+        if _panel_style_has_overrides(style):
+            self._styles[style_key] = style
+        else:
+            self._styles.pop(style_key, None)
+
+    def _emit_styles_changed(self) -> None:
+        self.sigPanelStylesChanged.emit(self.styles())
+        self._sync_rows()
+        self._sync_controls()
+
+    def _sync_rows(self) -> None:
+        for row, key in enumerate(self._panel_keys):
+            item = self.panel_list.item(row)
+            if item is not None:
+                item.setText(self._panel_row_text(key))
 
 
 def _is_slice_kwarg_key(key: typing.Any, dims: Iterable[str]) -> bool:
@@ -844,26 +2060,6 @@ def _build_plot_slices_editor(
             "Matplotlib marker edge color for 1D plot_slices panels.",
         )
 
-        line_order_mixed = tool._batch_is_mixed(
-            operation, lambda target: target.line_order
-        )
-        line_order_combo = tool._combo(
-            ["default", "C", "F"],
-            None if line_order_mixed else operation.line_order or "default",
-            lambda text: tool._update_current_operation(
-                line_order=None if text == "default" else text
-            ),
-            parent=colors_page,
-            mixed=line_order_mixed,
-        )
-        line_order_combo.setObjectName("figureComposerPlotSlicesLineOrderCombo")
-        tool._add_form_row(
-            colors_layout,
-            "Line order",
-            line_order_combo,
-            "Order used when line style values are provided per panel.",
-        )
-
         line_kwargs_text, line_kwargs_mixed = tool._batch_text(
             operation, extra_line_kw, _format_dict
         )
@@ -915,6 +2111,45 @@ def _build_plot_slices_editor(
             gradient_kwargs_edit,
             "Dict literal or keyword arguments forwarded as gradient_kw.",
         )
+
+        panel_styles_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.panel_styles_enabled
+        )
+        panel_styles_check = tool._check_box(
+            operation.panel_styles_enabled,
+            lambda checked: _update_current_panel_styles_enabled(tool, checked),
+            parent=colors_page,
+            mixed=panel_styles_mixed,
+        )
+        panel_styles_check.setObjectName("figureComposerPlotSlicesPanelStylesCheck")
+        panel_styles_check.setText("Use panel-specific line styles")
+        tool._add_form_row(
+            colors_layout,
+            "Per-panel",
+            panel_styles_check,
+            "Override line color, style, marker, or kwargs for individual panels.",
+        )
+        if operation.panel_styles_enabled:
+            panel_editor = _PanelLineStyleEditorWidget(
+                operation,
+                _plot_slices_panel_keys(tool, operation),
+                tool._connect_editor_signal,
+                colors_page,
+            )
+            panel_editor.setObjectName("figureComposerPlotSlicesPanelLineStyleEditor")
+            tool._mark_editor_control(panel_editor)
+            tool._connect_value_signal(
+                panel_editor,
+                panel_editor.sigPanelStylesChanged,
+                lambda styles: styles,
+                lambda styles: _update_current_panel_styles(tool, styles),
+            )
+            tool._add_form_row(
+                colors_layout,
+                "Panel styles",
+                panel_editor,
+                "Select panels and set optional line-style overrides.",
+            )
     elif is_image_plot:
         cmap_base, cmap_reversed = _cmap_base_and_reverse(operation.cmap)
         cmap_widget = QtWidgets.QWidget(colors_page)
@@ -1087,6 +2322,45 @@ def _build_plot_slices_editor(
             norm_kwargs_edit,
             "Extra dict literal or keyword arguments for the norm constructor.",
         )
+
+        panel_styles_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.panel_styles_enabled
+        )
+        panel_styles_check = tool._check_box(
+            operation.panel_styles_enabled,
+            lambda checked: _update_current_panel_styles_enabled(tool, checked),
+            parent=colors_page,
+            mixed=panel_styles_mixed,
+        )
+        panel_styles_check.setObjectName("figureComposerPlotSlicesPanelStylesCheck")
+        panel_styles_check.setText("Use panel-specific styles")
+        tool._add_form_row(
+            colors_layout,
+            "Per-panel",
+            panel_styles_check,
+            "Override colormaps and normalization for individual image panels.",
+        )
+        if operation.panel_styles_enabled:
+            panel_editor = _PanelStyleEditorWidget(
+                operation,
+                _plot_slices_panel_keys(tool, operation),
+                tool._connect_editor_signal,
+                colors_page,
+            )
+            panel_editor.setObjectName("figureComposerPlotSlicesPanelStyleEditor")
+            tool._mark_editor_control(panel_editor)
+            tool._connect_value_signal(
+                panel_editor,
+                panel_editor.sigPanelStylesChanged,
+                lambda styles: styles,
+                lambda styles: _update_current_panel_styles(tool, styles),
+            )
+            tool._add_form_row(
+                colors_layout,
+                "Panel styles",
+                panel_editor,
+                "Select panels and set optional colormap or norm overrides.",
+            )
     elif is_mixed_panel_kind:
         mixed_label = QtWidgets.QLabel(
             "Selected plot_slices steps produce both image and line panels. "
@@ -1360,6 +2634,41 @@ def _update_current_cmap(
     tool.sigInfoChanged.emit()
 
 
+def _update_current_panel_styles_enabled(
+    tool: FigureComposerTool, enabled: bool
+) -> None:
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        updates: dict[str, typing.Any] = {"panel_styles_enabled": enabled}
+        if not enabled:
+            updates["panel_styles"] = ()
+        return operation.model_copy(update=updates)
+
+    tool._update_operations(
+        update_operation,
+        rebuild_editor=True,
+        defer_editor_rebuild=True,
+    )
+
+
+def _update_current_panel_styles(
+    tool: FigureComposerTool,
+    styles: tuple[FigurePlotSlicesPanelStyleState, ...],
+) -> None:
+    def update_operation(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        return operation.model_copy(
+            update={
+                "panel_styles_enabled": True,
+                "panel_styles": tuple(styles),
+            }
+        )
+
+    tool._update_operations(update_operation)
+
+
 def _plot_slices_shape(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> _PlotSlicesShape:
@@ -1518,16 +2827,24 @@ def _plot_slices_kwargs(
         kwargs["hide_colorbar_ticks"] = False
     if not operation.annotate:
         kwargs["annotate"] = False
-    if operation.cmap and not is_line_plot:
-        kwargs["cmap"] = operation.cmap
+    if not is_line_plot:
+        cmap = _panel_cmap_argument(tool, operation)
+        if cmap is not None:
+            kwargs["cmap"] = cmap
     if is_line_plot:
-        line_kw = dict(operation.line_kw)
+        line_kw = _panel_line_kw_argument(tool, operation)
         if line_kw:
             kwargs["line_kw"] = line_kw
-        if operation.line_order is not None:
-            kwargs["line_order"] = operation.line_order
+        if (
+            _has_panel_line_kw_overrides(tool, operation)
+            and operation.order != operation.cmap_order
+        ):
+            kwargs["line_order"] = operation.order
     if not is_line_plot:
-        if _use_powernorm_plot_kwargs(operation):
+        panel_norm = _panel_norm_argument(tool, operation)
+        if panel_norm is not None:
+            kwargs["norm"] = panel_norm
+        elif _use_powernorm_plot_kwargs(operation):
             gamma = operation.norm_gamma
             if gamma is None:
                 gamma = operation.gamma
@@ -1654,7 +2971,10 @@ def _plot_slices_code_kwargs(
 ) -> dict[str, typing.Any]:
     kwargs = _plot_slices_kwargs(tool, operation)
     is_line_plot = _plot_slices_shape(tool, operation).plot_ndim == 1
-    if not is_line_plot and not _use_powernorm_plot_kwargs(operation):
+    panel_norm_code = None if is_line_plot else _panel_norm_code(tool, operation)
+    if panel_norm_code is not None:
+        kwargs["norm"] = _RawCode(panel_norm_code)
+    elif not is_line_plot and not _use_powernorm_plot_kwargs(operation):
         kwargs["norm"] = _RawCode(_norm_code(operation))
     return kwargs
 
@@ -2003,6 +3323,8 @@ def _section_summary(
                 return "mixed"
             if panel_kind == _PLOT_SLICES_PANEL_LINE:
                 return line_kw_text(operation, "color", "c") or "line"
+            if operation.panel_styles_enabled and operation.panel_styles:
+                return "per-panel"
             return operation.cmap or "default"
         case "style":
             return operation.axis
@@ -2018,8 +3340,13 @@ def _required_imports(
     if (
         operation.enabled
         and _plot_slices_shape(tool, operation).plot_ndim != 1
-        and not _use_powernorm_plot_kwargs(operation)
-        and _effective_norm_name(operation.norm_name) in _MATPLOTLIB_NORM_NAMES
+        and (
+            _panel_norm_uses_matplotlib_colors(tool, operation)
+            or (
+                not _use_powernorm_plot_kwargs(operation)
+                and _effective_norm_name(operation.norm_name) in _MATPLOTLIB_NORM_NAMES
+            )
+        )
     ):
         imports.append("import matplotlib.colors as mcolors")
     return tuple(imports)
