@@ -451,6 +451,11 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         selected_step_action_layout.addStretch(1)
         recipe_layout.addLayout(selected_step_action_layout)
 
+        self.recipe_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self.recipe_splitter.setObjectName("figureComposerRecipeSplitter")
+        self.recipe_splitter.setChildrenCollapsible(False)
+        recipe_layout.addWidget(self.recipe_splitter, 1)
+
         self.operation_list = QtWidgets.QListWidget(recipe_page)
         self.operation_list.setObjectName("figureComposerOperationList")
         self._operation_list_viewport = self.operation_list.viewport()
@@ -464,7 +469,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        self.operation_list.setMaximumHeight(130)
+        self.operation_list.setMinimumHeight(72)
         self.operation_list.setVerticalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -474,14 +479,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.operation_list.setToolTip(
             "Checked steps run from top to bottom to build the figure."
         )
-        recipe_layout.addWidget(self.operation_list)
+        self.recipe_splitter.addWidget(self.operation_list)
 
         self.step_inspector = QtWidgets.QWidget(recipe_page)
         self.step_inspector.setObjectName("figureComposerStepInspector")
         step_inspector_layout = QtWidgets.QHBoxLayout(self.step_inspector)
         step_inspector_layout.setContentsMargins(0, 0, 0, 0)
         step_inspector_layout.setSpacing(6)
-        recipe_layout.addWidget(self.step_inspector, 1)
+        self.recipe_splitter.addWidget(self.step_inspector)
+        self.recipe_splitter.setStretchFactor(0, 0)
+        self.recipe_splitter.setStretchFactor(1, 1)
+        self.recipe_splitter.setSizes((130, 420))
 
         self.step_navigator = QtWidgets.QWidget(self.step_inspector)
         self.step_navigator.setObjectName("figureComposerStepNavigator")

@@ -2321,7 +2321,9 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
 
     assert tool.findChildren(FigureCanvasQTAgg) == []
     assert tool.findChildren(NavigationToolbar2QT) == []
-    assert tool.findChildren(QtWidgets.QSplitter) == []
+    assert tool.findChildren(QtWidgets.QSplitter) == [tool.recipe_splitter]
+    assert tool.recipe_splitter.widget(0) is tool.operation_list
+    assert tool.recipe_splitter.widget(1) is tool.step_inspector
     editor_tabs = tool.findChild(QtWidgets.QTabWidget, "figureComposerEditorTabs")
     assert editor_tabs is tool.editor_tabs
     assert [
