@@ -1314,7 +1314,7 @@ class ImageToolManager(_ImageToolManagerBase):
                 axes=all_axes,
                 slice_dim=slice_dim,
                 slice_values=slice_values,
-            )
+            ).model_copy(update={"order": "F"} if len(source_names) > 1 else {})
             return (operation,)
 
         operations = []
@@ -1349,6 +1349,8 @@ class ImageToolManager(_ImageToolManagerBase):
         if operation.kind != FigureOperationKind.PLOT_SLICES:
             return None
         updates: dict[str, typing.Any] = {"sources": source_names}
+        if len(source_names) > 1:
+            updates["order"] = "F"
         if operation.map_selections:
             updates["map_selections"] = tuple(
                 selection.model_copy(update={"source": source_name})
@@ -1356,6 +1358,19 @@ class ImageToolManager(_ImageToolManagerBase):
                 for selection in operation.map_selections
             )
         return operation.model_copy(update=updates)
+
+    @staticmethod
+    def _figure_plot_slices_grid_shape(operation: typing.Any) -> tuple[int, int]:
+        map_count = (
+            len(operation.map_selections)
+            if operation.map_selections
+            else len(operation.sources)
+        )
+        map_count = max(map_count, 1)
+        slice_count = max(len(operation.slice_values), 1)
+        if operation.order == "F":
+            return slice_count, map_count
+        return map_count, slice_count
 
     def _figure_setup_for_operation(
         self, operation: typing.Any | None, source_data: Mapping[str, xr.DataArray]
@@ -1366,15 +1381,8 @@ class ImageToolManager(_ImageToolManagerBase):
         )
 
         if operation is not None and operation.kind == FigureOperationKind.PLOT_SLICES:
-            if operation.map_selections:
-                return FigureSubplotsState(
-                    nrows=max(len(operation.map_selections), 1),
-                    ncols=max(len(operation.slice_values), 1),
-                )
-            return FigureSubplotsState(
-                nrows=max(len(operation.sources), 1),
-                ncols=max(len(operation.slice_values), 1),
-            )
+            nrows, ncols = self._figure_plot_slices_grid_shape(operation)
+            return FigureSubplotsState(nrows=nrows, ncols=ncols)
 
         squeezed = [data.squeeze(drop=True) for data in source_data.values()]
         if squeezed and all(data.ndim > 1 for data in squeezed):

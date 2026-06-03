@@ -6626,6 +6626,9 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
         )
         operation = figure_tool.tool_status.operations[0]
         assert operation.sources == ("data_0", "data_1")
+        assert operation.order == "F"
+        assert figure_tool.tool_status.setup.nrows == 1
+        assert figure_tool.tool_status.setup.ncols == 2
         assert operation.slice_dim == expected.slice_dim
         assert operation.slice_values == expected.slice_values
         assert operation.slice_width == expected.slice_width
@@ -6641,6 +6644,28 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
         assert operation.norm_gamma == pytest.approx(0.75)
         assert operation.vcenter == pytest.approx(0.5 * (vmin + vmax))
         assert operation.halfrange == pytest.approx(0.5 * (vmax - vmin))
+
+
+def test_manager_plot_slices_setup_honors_order_for_horizontal_seeding() -> None:
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data",),
+        slice_dim="eV",
+        slice_values=(0.0, 1.0, 2.0),
+    )
+    assert manager_mainwindow.ImageToolManager._figure_plot_slices_grid_shape(
+        operation
+    ) == (1, 3)
+
+    multi_source_operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data_0", "data_1", "data_2"),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"order": "F"})
+    assert manager_mainwindow.ImageToolManager._figure_plot_slices_grid_shape(
+        multi_source_operation
+    ) == (1, 3)
 
 
 def test_manager_append_to_gridspec_figure_uses_axes_ids(
