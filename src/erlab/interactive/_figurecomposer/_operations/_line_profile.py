@@ -390,12 +390,6 @@ def _add_line_style_controls(
         mixed=line_style_mixed,
     )
     line_style_combo.setObjectName("figureComposerLineStyleCombo")
-    tool._add_form_row(
-        tool.operation_editor_layout,
-        "Line style",
-        line_style_combo,
-        "Matplotlib linestyle for the extracted profiles.",
-    )
 
     line_width_mixed = tool._batch_is_mixed(
         operation, lambda target: line_kw_text(target, "linewidth", "lw")
@@ -415,14 +409,25 @@ def _add_line_style_controls(
         ),
     )
     line_width_spin.setObjectName("figureComposerLineWidthSpin")
-    width_tooltip = "Matplotlib linewidth for the extracted profiles."
-    if line_width_mixed:
-        width_tooltip += "\nSelected steps have multiple values."
-    tool._add_form_row(
+    line_width_row_widget = tool._mixed_value_widget(
+        line_width_spin, mixed=line_width_mixed, parent=page
+    )
+    tool._add_compound_form_row(
         tool.operation_editor_layout,
-        "Line width",
-        line_width_spin,
-        width_tooltip,
+        "Line",
+        (
+            (
+                "Style",
+                line_style_combo,
+                "Matplotlib linestyle for the extracted profiles.",
+            ),
+            (
+                "Width",
+                line_width_row_widget,
+                "Matplotlib linewidth for the extracted profiles.",
+            ),
+        ),
+        "Line style controls for the extracted profiles.",
     )
 
     marker_mixed = tool._batch_is_mixed(
@@ -436,12 +441,6 @@ def _add_line_style_controls(
         mixed=marker_mixed,
     )
     marker_combo.setObjectName("figureComposerLineMarkerCombo")
-    tool._add_form_row(
-        tool.operation_editor_layout,
-        "Marker",
-        marker_combo,
-        "Matplotlib marker style for the extracted profiles.",
-    )
 
     marker_size_mixed = tool._batch_is_mixed(
         operation, lambda target: line_kw_text(target, "markersize", "ms")
@@ -461,14 +460,25 @@ def _add_line_style_controls(
         ),
     )
     marker_size_spin.setObjectName("figureComposerLineMarkerSizeSpin")
-    marker_size_tooltip = "Matplotlib marker size for the extracted profiles."
-    if marker_size_mixed:
-        marker_size_tooltip += "\nSelected steps have multiple values."
-    tool._add_form_row(
+    marker_size_row_widget = tool._mixed_value_widget(
+        marker_size_spin, mixed=marker_size_mixed, parent=page
+    )
+    tool._add_compound_form_row(
         tool.operation_editor_layout,
-        "Marker size",
-        marker_size_spin,
-        marker_size_tooltip,
+        "Marker",
+        (
+            (
+                "Style",
+                marker_combo,
+                "Matplotlib marker style for the extracted profiles.",
+            ),
+            (
+                "Size",
+                marker_size_row_widget,
+                "Matplotlib marker size for the extracted profiles.",
+            ),
+        ),
+        "Marker style controls for the extracted profiles.",
     )
 
     marker_face_text, marker_face_mixed = tool._batch_text(
@@ -494,13 +504,6 @@ def _add_line_style_controls(
             marker_face_edit.line_edit
         ),
     )
-    tool._add_form_row(
-        tool.operation_editor_layout,
-        "Marker face",
-        marker_face_edit,
-        "Matplotlib marker face color for the extracted profiles.",
-    )
-
     marker_edge_text, marker_edge_mixed = tool._batch_text(
         operation,
         lambda target: line_kw_text(target, "markeredgecolor", "mec"),
@@ -524,11 +527,22 @@ def _add_line_style_controls(
             marker_edge_edit.line_edit
         ),
     )
-    tool._add_form_row(
+    tool._add_compound_form_row(
         tool.operation_editor_layout,
-        "Marker edge",
-        marker_edge_edit,
-        "Matplotlib marker edge color for the extracted profiles.",
+        "Marker colors",
+        (
+            (
+                "Face",
+                marker_face_edit,
+                "Matplotlib marker face color for the extracted profiles.",
+            ),
+            (
+                "Edge",
+                marker_edge_edit,
+                "Matplotlib marker edge color for the extracted profiles.",
+            ),
+        ),
+        "Marker face and edge colors for the extracted profiles.",
     )
 
 

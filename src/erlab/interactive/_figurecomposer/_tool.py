@@ -3078,21 +3078,50 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return check
 
     @staticmethod
+    def _wrapped_tooltip(tooltip: str) -> str:
+        if "\n" in tooltip:
+            return tooltip
+        return "\n".join(textwrap.wrap(tooltip, width=58, break_long_words=False))
+
+    @staticmethod
     def _add_form_row(
         layout: QtWidgets.QFormLayout,
         label: str,
         widget: QtWidgets.QWidget,
         tooltip: str,
     ) -> None:
-        if "\n" not in tooltip:
-            tooltip = "\n".join(
-                textwrap.wrap(tooltip, width=58, break_long_words=False)
-            )
+        tooltip = FigureComposerTool._wrapped_tooltip(tooltip)
         widget.setToolTip(tooltip)
         layout.addRow(label, widget)
         label_widget = layout.labelForField(widget)
         if label_widget is not None:
             label_widget.setToolTip(tooltip)
+
+    @staticmethod
+    def _add_compound_form_row(
+        layout: QtWidgets.QFormLayout,
+        label: str,
+        controls: Sequence[tuple[str, QtWidgets.QWidget, str]],
+        tooltip: str,
+    ) -> QtWidgets.QWidget:
+        row_widget = QtWidgets.QWidget(layout.parentWidget())
+        row_layout = QtWidgets.QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        for control_label, widget, control_tooltip in controls:
+            control_tooltip = FigureComposerTool._wrapped_tooltip(control_tooltip)
+            label_widget = QtWidgets.QLabel(control_label, row_widget)
+            label_widget.setBuddy(widget)
+            label_widget.setToolTip(control_tooltip)
+            widget.setToolTip(control_tooltip)
+            row_layout.addWidget(label_widget)
+            row_layout.addWidget(widget, 1)
+        row_tooltip = FigureComposerTool._wrapped_tooltip(tooltip)
+        row_widget.setToolTip(row_tooltip)
+        layout.addRow(label, row_widget)
+        label_widget = layout.labelForField(row_widget)
+        if label_widget is not None:
+            label_widget.setToolTip(row_tooltip)
+        return row_widget
 
     def generated_code(self) -> str:
         return erlab.interactive._figurecomposer._codegen.generated_code(self)

@@ -1787,7 +1787,8 @@ def _build_plot_slices_editor(
         "Common plot_slices boolean options for this step.",
     )
 
-    for label, attr in (("xlim", "xlim"), ("ylim", "ylim")):
+    limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
+    for label, attr in (("x", "xlim"), ("y", "ylim")):
         text, mixed = tool._batch_text(
             operation,
             _operation_field_getter(attr),
@@ -1804,13 +1805,20 @@ def _build_plot_slices_editor(
             edit,
             _plot_limit_update_callback(tool, attr),
         )
-        tool._add_form_row(
-            limits_layout,
-            label,
-            edit,
-            f"Optional {label}: one number for symmetric limits, "
-            "or two comma-separated numbers for lower and upper limits.",
+        limit_controls.append(
+            (
+                label,
+                edit,
+                f"Optional {attr}: one number for symmetric limits, "
+                "or two comma-separated numbers for lower and upper limits.",
+            )
         )
+    tool._add_compound_form_row(
+        limits_layout,
+        "Limits",
+        limit_controls,
+        "Optional x/y plot limits for this step.",
+    )
 
     limits_options_widget = QtWidgets.QWidget(limits_page)
     limits_options_layout = QtWidgets.QHBoxLayout(limits_options_widget)
@@ -2008,13 +2016,6 @@ def _build_plot_slices_editor(
             mixed=line_style_mixed,
         )
         line_style_combo.setObjectName("figureComposerPlotSlicesLineStyleCombo")
-        tool._add_form_row(
-            colors_layout,
-            "Line style",
-            line_style_combo,
-            "Matplotlib linestyle for 1D plot_slices panels.",
-        )
-
         line_width_mixed = tool._batch_is_mixed(
             operation, lambda target: line_kw_text(target, "linewidth", "lw")
         )
@@ -2038,11 +2039,22 @@ def _build_plot_slices_editor(
             mixed=line_width_mixed,
             parent=colors_page,
         )
-        tool._add_form_row(
+        tool._add_compound_form_row(
             colors_layout,
-            "Line width",
-            line_width_row_widget,
-            "Matplotlib linewidth for 1D plot_slices panels.",
+            "Line",
+            (
+                (
+                    "Style",
+                    line_style_combo,
+                    "Matplotlib linestyle for 1D plot_slices panels.",
+                ),
+                (
+                    "Width",
+                    line_width_row_widget,
+                    "Matplotlib linewidth for 1D plot_slices panels.",
+                ),
+            ),
+            "Line style controls for 1D plot_slices panels.",
         )
 
         marker_mixed = tool._batch_is_mixed(
@@ -2056,13 +2068,6 @@ def _build_plot_slices_editor(
             mixed=marker_mixed,
         )
         marker_combo.setObjectName("figureComposerPlotSlicesMarkerCombo")
-        tool._add_form_row(
-            colors_layout,
-            "Marker",
-            marker_combo,
-            "Matplotlib marker style for 1D plot_slices panels.",
-        )
-
         marker_size_mixed = tool._batch_is_mixed(
             operation, lambda target: line_kw_text(target, "markersize", "ms")
         )
@@ -2086,11 +2091,22 @@ def _build_plot_slices_editor(
             mixed=marker_size_mixed,
             parent=colors_page,
         )
-        tool._add_form_row(
+        tool._add_compound_form_row(
             colors_layout,
-            "Marker size",
-            marker_size_row_widget,
-            "Matplotlib marker size for 1D plot_slices panels.",
+            "Marker",
+            (
+                (
+                    "Style",
+                    marker_combo,
+                    "Matplotlib marker style for 1D plot_slices panels.",
+                ),
+                (
+                    "Size",
+                    marker_size_row_widget,
+                    "Matplotlib marker size for 1D plot_slices panels.",
+                ),
+            ),
+            "Marker style controls for 1D plot_slices panels.",
         )
 
         marker_face_text, marker_face_mixed = tool._batch_text(
@@ -2123,12 +2139,6 @@ def _build_plot_slices_editor(
                 marker_face_edit.line_edit
             ),
         )
-        tool._add_form_row(
-            colors_layout,
-            "Marker face",
-            marker_face_edit,
-            "Matplotlib marker face color for 1D plot_slices panels.",
-        )
 
         marker_edge_text, marker_edge_mixed = tool._batch_text(
             operation,
@@ -2160,11 +2170,22 @@ def _build_plot_slices_editor(
                 marker_edge_edit.line_edit
             ),
         )
-        tool._add_form_row(
+        tool._add_compound_form_row(
             colors_layout,
-            "Marker edge",
-            marker_edge_edit,
-            "Matplotlib marker edge color for 1D plot_slices panels.",
+            "Marker colors",
+            (
+                (
+                    "Face",
+                    marker_face_edit,
+                    "Matplotlib marker face color for 1D plot_slices panels.",
+                ),
+                (
+                    "Edge",
+                    marker_edge_edit,
+                    "Matplotlib marker edge color for 1D plot_slices panels.",
+                ),
+            ),
+            "Marker face and edge colors for 1D plot_slices panels.",
         )
 
         line_kwargs_text, line_kwargs_mixed = tool._batch_text(
@@ -2395,6 +2416,7 @@ def _build_plot_slices_editor(
                 "Symmetric half-range for centered ERLab normalization classes.",
             ),
         }
+        norm_number_widgets: dict[str, tuple[str, QtWidgets.QWidget, str]] = {}
         for attr in ("vmin", "vmax", "vcenter", "halfrange"):
             if attr not in norm_fields:
                 continue
@@ -2414,6 +2436,29 @@ def _build_plot_slices_editor(
                 edit,
                 _norm_number_update_callback(tool, attr),
             )
+            norm_number_widgets[attr] = (label, edit, tooltip)
+
+        if "vmin" in norm_number_widgets and "vmax" in norm_number_widgets:
+            tool._add_compound_form_row(
+                colors_layout,
+                "Color limits",
+                (
+                    norm_number_widgets.pop("vmin"),
+                    norm_number_widgets.pop("vmax"),
+                ),
+                "Lower and upper color-normalization bounds.",
+            )
+        if "vcenter" in norm_number_widgets and "halfrange" in norm_number_widgets:
+            tool._add_compound_form_row(
+                colors_layout,
+                "Center/range",
+                (
+                    norm_number_widgets.pop("vcenter"),
+                    norm_number_widgets.pop("halfrange"),
+                ),
+                "Center and half-range for centered color normalization.",
+            )
+        for label, edit, tooltip in norm_number_widgets.values():
             tool._add_form_row(colors_layout, label, edit, tooltip)
 
         if "clip" in norm_fields:
