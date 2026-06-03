@@ -11529,9 +11529,14 @@ def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
         assert operation.sources == ("data_0", "data_1")
         assert operation.order == "F"
         assert operation.axes.axes == ((0, 0), (0, 1))
-        assert operation.cmap == "magma"
+        assert operation.cmap is None
         assert operation.panel_styles_enabled
         assert operation.panel_styles == (
+            FigurePlotSlicesPanelStyleState(
+                map_index=0,
+                slice_index=0,
+                cmap="magma",
+            ),
             FigurePlotSlicesPanelStyleState(
                 map_index=1,
                 slice_index=0,
