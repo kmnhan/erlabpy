@@ -129,7 +129,7 @@ def update_current_line_kw(
     value: typing.Any,
     *,
     aliases: tuple[str, ...] = (),
-    clear_legacy_cmap: bool = False,
+    clear_stale_cmap: bool = False,
 ) -> None:
     if tool._updating_controls:
         return
@@ -143,7 +143,7 @@ def update_current_line_kw(
         if value is not None:
             line_kw[key] = value
         updates: dict[str, typing.Any] = {"line_kw": line_kw}
-        if clear_legacy_cmap:
+        if clear_stale_cmap:
             updates["cmap"] = None
         return operation.model_copy(update=updates)
 

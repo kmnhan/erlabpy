@@ -709,7 +709,7 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
 
     tool._updating_controls = True
     figurecomposer_line_style.update_current_line_kw(
-        tool, "color", "red", clear_legacy_cmap=True
+        tool, "color", "red", clear_stale_cmap=True
     )
     tool._updating_controls = False
     assert tool.tool_status.operations[0].cmap == "magma"
@@ -719,7 +719,7 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
         "color",
         "red",
         aliases=("c",),
-        clear_legacy_cmap=True,
+        clear_stale_cmap=True,
     )
     updated = tool.tool_status.operations[0]
     assert updated.line_kw["color"] == "red"

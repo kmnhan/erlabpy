@@ -1990,7 +1990,7 @@ def _build_plot_slices_editor(
                 "color",
                 color_kw_value_from_text(text),
                 aliases=("c",),
-                clear_legacy_cmap=True,
+                clear_stale_cmap=True,
             ),
             unchanged_mixed=lambda: tool._line_edit_batch_unchanged(
                 line_color_edit.line_edit
