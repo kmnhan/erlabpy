@@ -21,6 +21,7 @@ import xarray as xr
 
 import erlab
 import erlab.interactive._figurecomposer._codegen
+import erlab.interactive._figurecomposer._toolbar_dialogs
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
@@ -164,6 +165,8 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
         self._gridspec_breadcrumb_buttons: list[QtWidgets.QToolButton] = []
         self._figure_window: _FigureComposerDisplayWindow | None = None
+        self._subplot_adjust_dialog: QtWidgets.QDialog | None = None
+        self._axes_customize_dialog: QtWidgets.QDialog | None = None
 
         if source_data is not None:
             self.set_source_data(source_data)
@@ -238,7 +241,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if self._figure_window is None or not erlab.interactive.utils.qt_is_valid(
             self._figure_window
         ):
-            self._figure_window = _FigureComposerDisplayWindow(self._recipe.setup)
+            self._figure_window = _FigureComposerDisplayWindow(
+                self._recipe.setup,
+                export_callback=lambda: self.export_figure(),
+                subplot_adjust_callback=lambda: self._show_subplot_adjust_dialog(),
+                axes_customize_callback=lambda: self._show_axes_customize_dialog(),
+            )
             self._figure_window.sigCanvasSizeChanged.connect(
                 self._figure_window_canvas_size_changed
             )
@@ -321,6 +329,16 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.sigInfoChanged.emit()
         return True
 
+    def _show_subplot_adjust_dialog(self) -> None:
+        erlab.interactive._figurecomposer._toolbar_dialogs.show_subplot_adjust_dialog(
+            self
+        )
+
+    def _show_axes_customize_dialog(self) -> None:
+        erlab.interactive._figurecomposer._toolbar_dialogs.show_axes_customize_dialog(
+            self
+        )
+
     def _hide_figure_window(self) -> None:
         if self._figure_window is not None and erlab.interactive.utils.qt_is_valid(
             self._figure_window
@@ -328,6 +346,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._figure_window.hide()
 
     def _close_figure_window(self) -> None:
+        erlab.interactive._figurecomposer._toolbar_dialogs.close_toolbar_dialogs(self)
         if self._figure_window is None or not erlab.interactive.utils.qt_is_valid(
             self._figure_window
         ):

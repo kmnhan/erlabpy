@@ -31,7 +31,7 @@ from erlab.interactive._figurecomposer._state import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from erlab.interactive._figurecomposer._state import FigureSubplotsState
 
@@ -502,12 +502,97 @@ class _StyledFigureCanvas(FigureCanvas):
             return super().print_figure(*args, **kwargs)
 
 
+_TOOLBAR_ICON_NAMES = {
+    "home": "mdi6.home",
+    "back": "mdi6.arrow-left",
+    "forward": "mdi6.arrow-right",
+    "move": "mdi6.arrow-all",
+    "zoom_to_rect": "mdi6.magnify-plus",
+    "subplots": "mdi6.view-grid-outline",
+    "qt4_editor_options": "mdi6.tune",
+    "filesave": "mdi6.export",
+}
+
+
+def _noop_toolbar_callback() -> None:
+    return
+
+
+class _FigureComposerNavigationToolbar(NavigationToolbar):
+    """Navigation toolbar that routes composer actions through recipe edits."""
+
+    def __init__(
+        self,
+        canvas: FigureCanvas,
+        parent: QtWidgets.QWidget,
+        *,
+        export_callback: Callable[[], None],
+        subplot_adjust_callback: Callable[[], None],
+        axes_customize_callback: Callable[[], None],
+    ) -> None:
+        self._export_callback = export_callback
+        self._subplot_adjust_callback = subplot_adjust_callback
+        self._axes_customize_callback = axes_customize_callback
+        super().__init__(canvas, parent)
+        self.setObjectName("figureComposerNavigationToolbar")
+        for action_id, action in self._actions.items():
+            action.setObjectName(f"figureComposerToolbar_{action_id}")
+        tooltips = {
+            "save_figure": "Export the composer figure using recipe export settings.",
+            "configure_subplots": (
+                "Add or edit recipe steps for subplot spacing and layout engine."
+            ),
+            "edit_parameters": "Add or edit recipe steps for selected axes.",
+        }
+        for action_id, tooltip in tooltips.items():
+            if action := self._actions.get(action_id):
+                action.setToolTip(tooltip)
+
+    def _icon(self, name: str) -> QtGui.QIcon:
+        icon_key = name.removesuffix(".png").removesuffix("_large")
+        icon_name = _TOOLBAR_ICON_NAMES.get(icon_key)
+        if icon_name is None:
+            return super()._icon(name)
+        color = self.palette().color(QtGui.QPalette.ColorRole.ButtonText)
+        return erlab.interactive.utils.qtawesome.icon(icon_name, color=color)
+
+    def configure_subplots(self) -> None:
+        self._subplot_adjust_callback()
+
+    def edit_parameters(self) -> None:
+        self._axes_customize_callback()
+
+    def save_figure(self, *args: object) -> None:
+        self._export_callback()
+
+    def changeEvent(self, event: QtCore.QEvent | None) -> None:
+        if event is not None and event.type() == QtCore.QEvent.Type.PaletteChange:
+            erlab.interactive.utils.qtawesome.reset_cache()
+            for callback_name, action in self._actions.items():
+                icon_name = {
+                    "zoom": "zoom_to_rect",
+                    "pan": "move",
+                    "configure_subplots": "subplots",
+                    "edit_parameters": "qt4_editor_options",
+                    "save_figure": "filesave",
+                }.get(callback_name, callback_name)
+                action.setIcon(self._icon(icon_name))
+        super().changeEvent(event)
+
+
 class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
     """Top-level Matplotlib display owned by a figure composer."""
 
     sigCanvasSizeChanged = QtCore.Signal(float, float)
 
-    def __init__(self, setup: FigureSubplotsState) -> None:
+    def __init__(
+        self,
+        setup: FigureSubplotsState,
+        *,
+        export_callback: Callable[[], None] = _noop_toolbar_callback,
+        subplot_adjust_callback: Callable[[], None] = _noop_toolbar_callback,
+        axes_customize_callback: Callable[[], None] = _noop_toolbar_callback,
+    ) -> None:
         super().__init__(None)
         self._closing_from_owner = False
         self._suppress_resize_signal = False
@@ -521,7 +606,13 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
                 layout=setup.layout,
             )
         self.canvas = _StyledFigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar = _FigureComposerNavigationToolbar(
+            self.canvas,
+            self,
+            export_callback=export_callback,
+            subplot_adjust_callback=subplot_adjust_callback,
+            axes_customize_callback=axes_customize_callback,
+        )
 
         root = QtWidgets.QWidget(self)
         layout = QtWidgets.QVBoxLayout(root)

@@ -121,6 +121,20 @@ def _selected_operation_rows(tool: FigureComposerTool) -> tuple[int, ...]:
     )
 
 
+def _method_operations(
+    tool: FigureComposerTool,
+    family: FigureMethodFamily,
+    name: str,
+) -> tuple[FigureOperationState, ...]:
+    return tuple(
+        operation
+        for operation in tool.tool_status.operations
+        if operation.kind == FigureOperationKind.METHOD
+        and operation.method_family == family
+        and operation.method_name == name
+    )
+
+
 def _activate_combo_text(combo: QtWidgets.QComboBox, text: str) -> None:
     combo.setCurrentText(text)
     combo.activated.emit(combo.currentIndex())
@@ -5346,6 +5360,243 @@ def test_figure_composer_step_section_buttons_are_tab_focusable(qtbot) -> None:
         assert button.nextInFocusChain() is buttons[index + 1]
 
 
+def test_figure_composer_toolbar_uses_composer_actions(qtbot, monkeypatch) -> None:
+    tool = FigureComposerTool(_figure_composer_image_source("data"))
+    qtbot.addWidget(tool)
+    toolbar = tool.figure_window.toolbar
+
+    assert toolbar.objectName() == "figureComposerNavigationToolbar"
+    for action_id in (
+        "home",
+        "back",
+        "forward",
+        "pan",
+        "zoom",
+        "configure_subplots",
+        "edit_parameters",
+        "save_figure",
+    ):
+        action = toolbar._actions[action_id]
+        assert action.objectName() == f"figureComposerToolbar_{action_id}"
+        assert not action.icon().isNull()
+
+    calls: list[str] = []
+    monkeypatch.setattr(tool, "export_figure", lambda: calls.append("export"))
+    monkeypatch.setattr(
+        tool, "_show_subplot_adjust_dialog", lambda: calls.append("subplots")
+    )
+    monkeypatch.setattr(
+        tool, "_show_axes_customize_dialog", lambda: calls.append("axes")
+    )
+
+    toolbar._actions["save_figure"].trigger()
+    toolbar._actions["configure_subplots"].trigger()
+    toolbar._actions["edit_parameters"].trigger()
+
+    assert calls == ["export", "subplots", "axes"]
+
+
+def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(layout=None),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._show_subplot_adjust_dialog()
+    dialog = tool._subplot_adjust_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    engine_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarLayoutEngineCombo"
+    )
+    top_spin = dialog.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerToolbarSubplotAdjust_top"
+    )
+    assert engine_combo is not None
+    assert top_spin is not None
+    assert engine_combo.currentText() == "none"
+    assert top_spin.isEnabled()
+
+    top_spin.setValue(0.91)
+
+    adjust_ops = _method_operations(tool, FigureMethodFamily.FIGURE, "subplots_adjust")
+    assert len(adjust_ops) == 1
+    assert adjust_ops[0].enabled
+    assert adjust_ops[0].method_kwargs["top"] == pytest.approx(0.91)
+
+    _activate_combo_text(engine_combo, "compressed")
+
+    engine_ops = _method_operations(
+        tool, FigureMethodFamily.FIGURE, "set_layout_engine"
+    )
+    adjust_ops = _method_operations(tool, FigureMethodFamily.FIGURE, "subplots_adjust")
+    assert len(engine_ops) == 1
+    assert engine_ops[0].method_args == ("compressed",)
+    assert len(adjust_ops) == 1
+    assert not adjust_ops[0].enabled
+    assert not top_spin.isEnabled()
+
+    _activate_combo_text(engine_combo, "none")
+
+    engine_ops = _method_operations(
+        tool, FigureMethodFamily.FIGURE, "set_layout_engine"
+    )
+    adjust_ops = _method_operations(tool, FigureMethodFamily.FIGURE, "subplots_adjust")
+    assert engine_ops[0].method_args == ("none",)
+    assert adjust_ops[0].enabled
+    assert top_spin.isEnabled()
+
+
+def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    title_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesTitleEdit"
+    )
+    xlim_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesXLimEdit"
+    )
+    aspect_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesAspectEdit"
+    )
+    xscale_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarAxesXScaleCombo"
+    )
+    grid_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
+    )
+    style_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarAxesStyleStepCombo"
+    )
+    style_button = dialog.findChild(
+        QtWidgets.QPushButton, "figureComposerToolbarAxesStyleStepButton"
+    )
+    assert title_edit is not None
+    assert xlim_edit is not None
+    assert aspect_edit is not None
+    assert xscale_combo is not None
+    assert grid_check is not None
+    assert style_combo is not None
+    assert style_button is not None
+    assert style_combo.count() == 1
+
+    title_edit.setText("Peak")
+    title_edit.setModified(True)
+    title_edit.editingFinished.emit()
+    title_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_title")
+    assert len(title_ops) == 1
+    assert title_ops[0].axes.axes == ((0, 0),)
+    assert title_ops[0].method_args == ("Peak",)
+
+    xlim_edit.setText("-0.5, 0.5")
+    xlim_edit.setModified(True)
+    xlim_edit.editingFinished.emit()
+    xlim_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_xlim")
+    assert len(xlim_ops) == 1
+    assert xlim_ops[0].method_args == (-0.5, 0.5)
+
+    aspect_edit.setText("equal")
+    aspect_edit.setModified(True)
+    aspect_edit.editingFinished.emit()
+    aspect_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_aspect")
+    assert len(aspect_ops) == 1
+    assert aspect_ops[0].method_args == ("equal",)
+
+    _activate_combo_text(xscale_combo, "linear")
+    xscale_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_xscale")
+    assert len(xscale_ops) == 1
+    assert xscale_ops[0].method_args == ("linear",)
+
+    grid_check.setChecked(True)
+    grid_ops = _method_operations(tool, FigureMethodFamily.AXES, "grid")
+    assert len(grid_ops) == 1
+    assert grid_ops[0].method_args == (True,)
+    assert grid_ops[0].method_kwargs == {"which": "major", "axis": "both"}
+
+    style_button.click()
+    assert tool.operation_list.currentRow() == 0
+
+
+def test_figure_composer_toolbar_axes_dialog_uses_gridspec_selector(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        nrows=1,
+                        ncols=1,
+                        axes=(
+                            FigureGridSpecAxesState(
+                                axes_id="main",
+                                span=FigureGridSpecSpanState(
+                                    row_start=0,
+                                    row_stop=1,
+                                    col_start=0,
+                                    col_stop=1,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    selector = dialog.findChild(figurecomposer_widgets._GridSpecViewWidget)
+    title_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesTitleEdit"
+    )
+    assert selector is not None
+    assert selector.selected_axes_ids() == ("main",)
+    assert title_edit is not None
+
+    title_edit.setText("GridSpec title")
+    title_edit.setModified(True)
+    title_edit.editingFinished.emit()
+
+    title_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_title")
+    assert len(title_ops) == 1
+    assert title_ops[0].axes.axes_ids == ("main",)
+    assert title_ops[0].method_args == ("GridSpec title",)
+
+
 def test_figure_composer_layout_ratios_update_subplots_kwargs(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
@@ -9862,7 +10113,6 @@ def test_manager_figure_action_appends_to_selected_subplots_axes(
                 primary_source="line",
             ),
         )
-        qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
         select_tools(manager, [0])
 
@@ -9943,7 +10193,6 @@ def test_manager_figure_action_appends_to_selected_gridspec_axes(
                 primary_source="line",
             ),
         )
-        qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
         select_tools(manager, [0])
 
@@ -10018,7 +10267,6 @@ def test_manager_auto_names_figures_numerically(
         assert manager._child_node(fourth_uid).display_text == "Figure 4"
 
         preserved_tool = FigureComposerTool(data)
-        qtbot.addWidget(preserved_tool)
         preserved_tool._tool_display_name = "ImageTool plot"
         preserved_uid = manager.add_figuretool(preserved_tool, show=False)
         assert manager._child_node(preserved_uid).display_text == "ImageTool plot"
@@ -10034,7 +10282,6 @@ def test_manager_auto_names_figures_numerically(
         assert manager._child_node(fifth_uid).display_text == "Figure 5"
 
         unnamed_tool = FigureComposerTool(data)
-        qtbot.addWidget(unnamed_tool)
         unnamed_uid = manager.add_figuretool(unnamed_tool, show=False)
         assert manager._child_node(unnamed_uid).display_text == "Figure 6"
 
@@ -10198,7 +10445,6 @@ def test_manager_append_to_gridspec_figure_uses_axes_ids(
                 primary_source="line",
             ),
         )
-        qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
         operation = FigureOperationState.line(
             label="line",
@@ -10240,7 +10486,6 @@ def test_manager_append_to_subplots_figure_uses_axes_selector(
                 primary_source="line",
             ),
         )
-        qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
         operation = FigureOperationState.plot_slices(
             label="plot_slices",
@@ -10281,7 +10526,6 @@ def test_manager_figure_target_dialog_defaults_to_new_figure(
                 primary_source="line",
             ),
         )
-        qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
 
         dialog = manager_mainwindow._AppendFigureTargetDialog(
@@ -10619,7 +10863,6 @@ def test_manager_append_operation_uses_axes_dialog_selection(
                 primary_source="line",
             ),
         )
-        qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
 
         class FakeAppendDialog:
@@ -10688,7 +10931,6 @@ def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
                 primary_source="seed",
             ),
         )
-        qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
         select_tools(manager, [0, 1])
 
