@@ -1540,7 +1540,7 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
     assert all("alpha" not in style.line_kw for style in emitted[-1])
 
 
-def test_figure_composer_color_widgets_parse_and_sync(qtbot) -> None:
+def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> None:
     opaque = QtGui.QColor(1, 2, 3)
     translucent = QtGui.QColor(1, 2, 3, 4)
     assert figurecomposer_widgets._qcolor_to_mpl_color_text(opaque) == "#010203"
@@ -1557,6 +1557,10 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot) -> None:
     assert figurecomposer_widgets._top_level_comma_parts(
         "red, (0, 1, 0), 'blue, still blue', [0, 0, 1]"
     ) == ("red", "(0, 1, 0)", "'blue, still blue'", "[0, 0, 1]")
+    assert figurecomposer_widgets._top_level_comma_parts(r"'red\', blue', green") == (
+        r"'red\', blue'",
+        "green",
+    )
     assert figurecomposer_widgets._color_tuple_from_text("") == ()
     assert figurecomposer_widgets._color_tuple_from_text("['red', 'blue']") == (
         "red",
@@ -1578,6 +1582,9 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot) -> None:
     color_edit._syncing = True
     color_edit._button_color_changed()
     color_edit._syncing = False
+    with monkeypatch.context() as context:
+        context.setattr(color_edit.color_button, "color", lambda **_kwargs: object())
+        color_edit._button_color_changed()
     color_edit.color_button.setColor(translucent)
     color_edit._button_color_changed()
     assert color_edit.text() == "#01020304"
@@ -1645,10 +1652,30 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
         pos=selector.cell_rect((0, 1)).center(),
     )
     assert (0, 1) not in selected[-1]
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        pos=selector.cell_rect((0, 0)).center(),
+    )
+    assert (0, 0) in selected[-1]
+    before_outside_click = selected[-1]
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=QtCore.QPoint(-10, -10),
+    )
+    assert selected[-1] == before_outside_click
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.RightButton,
+        pos=selector.cell_rect((0, 0)).center(),
+    )
 
     qtbot.mousePress(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
+        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
         pos=selector.cell_rect((0, 0)).center(),
     )
     qtbot.mouseMove(selector, selector.cell_rect((1, 1)).center())
@@ -1657,7 +1684,7 @@ def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
         QtCore.Qt.MouseButton.LeftButton,
         pos=selector.cell_rect((1, 1)).center(),
     )
-    assert selected[-1] == ((0, 0), (0, 1), (1, 0), (1, 1))
+    assert selected[-1] == ((0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2))
     selector.mousePressEvent(None)
     selector.mouseMoveEvent(None)
     selector.leaveEvent(None)
@@ -1722,9 +1749,22 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     assert not selector.axis_rect("main-axis").isNull()
     assert selector.axis_rect("missing").isNull()
     assert selector._range_axes_ids("missing", "child-axis") == ("child-axis",)
+    assert selector._axis_edges(0, 100, 2, ()) == (0.0, 50.0, 100.0)
 
     selected: list[tuple[str, ...]] = []
     selector.sigSelectionChanged.connect(selected.append)
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=QtCore.QPoint(-10, -10),
+    )
+    assert selected == []
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.RightButton,
+        pos=selector.axis_rect("main-axis").center(),
+    )
+    assert selected == []
     qtbot.mouseClick(
         selector,
         QtCore.Qt.MouseButton.LeftButton,
@@ -1745,6 +1785,19 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
         pos=selector.axis_rect("main-axis").center(),
     )
     assert selected[-1] == ("child-axis",)
+    qtbot.mousePress(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        pos=selector.axis_rect("main-axis").center(),
+    )
+    qtbot.mouseMove(selector, selector.axis_rect("child-axis").center())
+    qtbot.mouseRelease(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector.axis_rect("child-axis").center(),
+    )
+    assert selected[-1] == ("main-axis", "child-axis")
     selector.mouseMoveEvent(None)
     selector.leaveEvent(None)
 
@@ -1767,6 +1820,9 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     editor.show()
     editor.set_selected_region("main-axis")
     assert editor.selected_region_id() == "main-axis"
+    editor.set_selected_region("missing")
+    assert editor.selected_region_id() == ""
+    editor.set_selected_region("main-axis")
     assert editor._region_label("unknown") == "unknown"
     assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=True) is not None
     assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=False) is None
@@ -1777,7 +1833,31 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
         200.0 / 3.0,
         100.0,
     )
+    assert (
+        editor.span_rect(
+            FigureGridSpecSpanState(row_start=2, row_stop=3, col_start=0, col_stop=1)
+        )
+        == QtCore.QRect()
+    )
+    assert editor.cell_rect((5, 5)) == QtCore.QRect()
     assert editor._handle_at(QtCore.QPoint(-100, -100)) is None
+    editor._set_region_handles_visible(True)
+    axis_rect = editor.span_rect(main_span)
+    for handle, handle_rect in editor._handle_rects(axis_rect, hit=True):
+        assert editor._handle_at(handle_rect.center()) == handle
+    editor._update_hover_cursor(
+        editor._handle_rects(axis_rect, hit=True)[0][1].center()
+    )
+    assert editor.cursor().shape() == QtCore.Qt.CursorShape.SizeFDiagCursor
+    editor._update_hover_cursor(
+        editor._handle_rects(axis_rect, hit=True)[1][1].center()
+    )
+    assert editor.cursor().shape() == QtCore.Qt.CursorShape.SizeBDiagCursor
+    editor._set_region_handles_visible(False)
+    editor._update_hover_cursor(axis_rect.center())
+    assert editor.cursor().shape() == QtCore.Qt.CursorShape.SizeAllCursor
+    editor._update_hover_cursor(QtCore.QPoint(-100, -100))
+    assert editor.cursor().shape() == QtCore.Qt.CursorShape.ArrowCursor
     assert editor._active_preview_span() is None
     editor._drag_mode = "create"
     editor._drag_origin_cell = (0, 0)
@@ -1789,9 +1869,39 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
         col_stop=2,
     )
     editor._reset_edit_drag()
+    editor._drag_mode = "move"
+    editor._resize_preview_span = main_span
+    assert editor._active_preview_span() == main_span
+    editor._reset_edit_drag()
+    assert editor._span_from_resize(main_span, None, (1, 1)) == main_span
+    assert editor._span_from_resize(main_span, "se", (1, 2)) == FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=2,
+        col_start=0,
+        col_stop=3,
+    )
+    assert editor._span_from_resize(
+        child_span, "nw", (1, 0)
+    ) == FigureGridSpecSpanState(
+        row_start=1,
+        row_stop=2,
+        col_start=0,
+        col_stop=3,
+    )
+    assert editor._span_from_move(
+        main_span,
+        origin=(0, 0),
+        current=(2, 2),
+    ) == FigureGridSpecSpanState(row_start=1, row_stop=2, col_start=2, col_stop=3)
 
     created: list[FigureGridSpecSpanState] = []
     editor.sigRegionCreated.connect(lambda span, _kind: created.append(span))
+    qtbot.mousePress(
+        editor,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=QtCore.QPoint(-10, -10),
+    )
+    assert created == []
     qtbot.mousePress(
         editor,
         QtCore.Qt.MouseButton.LeftButton,
@@ -1809,17 +1919,27 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
         col_start=0,
         col_stop=1,
     )
+    editor._edit_mouse_release(None)
 
     activated: list[str] = []
     editor.sigNestedGridActivated.connect(activated.append)
+    selector.mouseDoubleClickEvent(None)
     qtbot.mouseDClick(
         editor,
         QtCore.Qt.MouseButton.LeftButton,
         pos=editor.span_rect(child_span).center(),
     )
     assert activated == ["child-grid"]
+    pixmap = QtGui.QPixmap(editor.size())
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    editor.render(pixmap)
     editor._handle_application_event(QtCore.QEvent(QtCore.QEvent.Type.WindowDeactivate))
     assert not editor._region_handles_visible
+    editor._set_region_handles_visible(True)
+    editor._handle_application_event(QtCore.QEvent(QtCore.QEvent.Type.MouseMove))
+    assert editor._region_handles_visible
+    editor._handle_application_event(QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress))
+    assert editor._region_handles_visible
 
 
 def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
@@ -2211,6 +2331,257 @@ def test_figure_display_window_uses_safe_resize_callbacks(qtbot, monkeypatch) ->
 
     assert (window, 0, "_allow_resize_signal", ()) in calls
     assert (window, 0, "_emit_canvas_size_changed", (window.canvas,)) in calls
+
+
+def test_figure_display_window_close_and_canvas_size_contracts(qtbot) -> None:
+    window = figurecomposer_widgets._FigureComposerDisplayWindow(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0)
+    )
+    qtbot.addWidget(window)
+
+    emitted_sizes: list[tuple[float, float]] = []
+    window.sigCanvasSizeChanged.connect(
+        lambda width, height: emitted_sizes.append((width, height))
+    )
+    typing.cast("typing.Any", window.figure)._original_dpi = 100.0
+    window.canvas.resize(250, 125)
+    window._emit_canvas_size_changed()
+    assert emitted_sizes[-1] == (2.5, 1.25)
+
+    window._suppress_resize_signal = True
+    window._emit_canvas_size_changed()
+    assert emitted_sizes == [(2.5, 1.25)]
+    window._suppress_resize_signal = False
+    typing.cast("typing.Any", window.figure)._original_dpi = 0.0
+    window._emit_canvas_size_changed()
+    assert emitted_sizes == [(2.5, 1.25)]
+
+    assert not window._is_close_shortcut_event(None)
+    close_key = QtGui.QKeyEvent(
+        QtCore.QEvent.Type.KeyPress,
+        QtCore.Qt.Key.Key_W,
+        QtCore.Qt.KeyboardModifier.MetaModifier,
+    )
+    assert window._is_close_shortcut_event(close_key)
+
+    window.show_for_setup(
+        FigureSubplotsState(figsize=(1.0, 1.0), dpi=100.0),
+        "detached figure",
+        activate=False,
+    )
+    assert window.eventFilter(window.canvas, close_key)
+    assert not window.isVisible()
+
+    window.show()
+    close_event = QtGui.QCloseEvent()
+    window.closeEvent(close_event)
+    assert not close_event.isAccepted()
+    assert not window.isVisible()
+
+    owner_close_event = QtGui.QCloseEvent()
+    window._closing_from_owner = True
+    window.closeEvent(owner_close_event)
+    assert owner_close_event.isAccepted()
+
+
+def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "erlab.interactive._figurecomposer._tool._render_preview",
+        lambda *_args, **_kwargs: None,
+    )
+    data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
+
+    with pytest.raises(ValueError, match="At least one source"):
+        FigureComposerTool.from_sources({}, sources=())
+
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="known", label="duplicate"),
+                FigureSourceState(name="missing", label="duplicate"),
+            ),
+            operations=(),
+            primary_source="known",
+        ),
+        source_data={"known": data, "extra": data},
+    )
+    qtbot.addWidget(tool)
+
+    assert tool._source_names() == ("known", "missing")
+    assert tool._source_display_names(("known", "missing"))
+    assert tool._source_tooltip("known")
+    tool._refresh_source_list()
+    source_names = {
+        tool.source_list.item(row).data(QtCore.Qt.ItemDataRole.UserRole)
+        for row in range(tool.source_list.count())
+    }
+    assert source_names == {"known", "extra", "missing"}
+
+    assert not tool._set_recipe_figsize_from_canvas(
+        *tool.tool_status.setup.figsize,
+        draw=False,
+        emit_info=False,
+    )
+    tool._updating_controls = True
+    try:
+        tool._figure_window_canvas_size_changed(8.0, 6.0)
+    finally:
+        tool._updating_controls = False
+    assert tool.tool_status.setup.figsize != (8.0, 6.0)
+    typing.cast("typing.Any", tool.figure)._original_dpi = 0.0
+    assert not tool._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
+    tool._hide_figure_window()
+    tool._close_figure_window()
+    tool._close_figure_window()
+
+    assert not tool.remove_operation_button.isEnabled()
+    tool._target_current_operation_all_axes()
+    tool._target_current_operation_valid_axes()
+    tool._remove_current_operation()
+    tool._duplicate_current_operation()
+    tool._move_current_operation(-1)
+
+    custom_operation = FigureOperationState.custom(
+        label="custom",
+        code="pass",
+        trusted=True,
+    )
+    tool.add_operation(custom_operation)
+    tool._target_current_operation_all_axes()
+    tool._target_current_operation_valid_axes()
+    assert tool.tool_status.operations[0].axes.axes == ()
+    item = tool.operation_list.item(0)
+    assert item is not None
+    item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert not tool.tool_status.operations[0].enabled
+    tool.operation_list.clearSelection()
+    tool.operation_list.setCurrentRow(-1)
+    tool._update_step_action_buttons()
+    assert not tool.remove_operation_button.isEnabled()
+
+    tool.axes_selector.set_selected_axes((), emit=False)
+    assert tool._selected_axes_state().axes == ((0, 0),)
+    old_setup = tool.tool_status.setup
+    tool.width_ratios_edit.setText("0")
+    tool._setup_controls_changed()
+    assert tool.tool_status.setup == old_setup
+    tool._updating_controls = True
+    try:
+        tool._size_mm_controls_changed()
+    finally:
+        tool._updating_controls = False
+
+    span_00 = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=0,
+        col_stop=1,
+    )
+    span_01 = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=1,
+        col_stop=2,
+    )
+    outside_span = FigureGridSpecSpanState(
+        row_start=1,
+        row_stop=2,
+        col_start=0,
+        col_stop=1,
+    )
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        label="Root",
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(axes_id="ax0", span=span_00),
+            FigureGridSpecAxesState(axes_id="ax1", span=span_01),
+            FigureGridSpecAxesState(axes_id="outside", span=outside_span),
+        ),
+    )
+    grid_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=root),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes_ids=("missing",)),
+                ),
+            ),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(grid_tool)
+
+    grid_tool._active_gridspec_grid_id = "missing"
+    grid_tool._sync_active_grid_controls(grid_tool.tool_status.setup)
+    assert grid_tool._active_gridspec_grid_id == "root"
+    grid_tool._active_gridspec_grid_id = "missing"
+    grid_tool._refresh_gridspec_editor()
+    assert grid_tool._active_gridspec_grid_id == "root"
+    grid_tool._refresh_gridspec_status(root)
+    assert grid_tool.gridspec_status_label.text()
+    grid_tool._gridspec_open_grid("missing")
+    assert grid_tool._active_gridspec_grid_id == "root"
+    grid_tool.gridspec_layout_widget.set_selected_region("")
+    grid_tool._gridspec_open_selected_grid()
+    grid_tool._gridspec_open_parent_grid()
+
+    grid_tool._gridspec_region_changed("ax0", outside_span)
+    grid_tool._gridspec_region_changed("ax0", span_01)
+    grid_tool._add_gridspec_region(outside_span, "axes")
+    grid_tool._add_gridspec_region(span_00, "axes")
+    grid_tool._add_gridspec_region(span_01, "grid")
+
+    grid_tool.gridspec_axes_selector.set_selected_axes_ids((), emit=False)
+    assert grid_tool._selected_axes_state().axes_ids == ("ax0",)
+    grid_tool._target_current_operation_valid_axes()
+    assert grid_tool.tool_status.operations[0].axes.axes_ids == ("ax0",)
+    grid_tool._target_current_operation_all_axes()
+    assert set(grid_tool.tool_status.operations[0].axes.axes_ids) == {
+        "ax0",
+        "ax1",
+        "outside",
+    }
+    grid_tool._active_gridspec_grid_id = "missing"
+    assert grid_tool._nearest_gridspec_axes_after_delete("ax0") == ""
+    grid_tool._active_gridspec_grid_id = "root"
+    assert grid_tool._nearest_gridspec_axes_after_delete("missing") == ""
+
+    child_with_invalid_axis = FigureGridSpecGridState(
+        grid_id="child",
+        label="child",
+        nrows=1,
+        ncols=1,
+        span=span_00,
+        axes=(FigureGridSpecAxesState(axes_id="child-outside", span=outside_span),),
+    )
+    nested_root = FigureGridSpecGridState(
+        grid_id="root",
+        label="Root",
+        nrows=1,
+        ncols=1,
+        child_grids=(child_with_invalid_axis,),
+    )
+    grid_tool._recipe = grid_tool.tool_status.model_copy(
+        update={
+            "setup": FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=nested_root),
+            )
+        }
+    )
+    grid_tool._refresh_gridspec_status(nested_root)
+    assert grid_tool.gridspec_status_label.text()
 
 
 def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> None:
