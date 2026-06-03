@@ -5428,7 +5428,7 @@ def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
-            setup=FigureSubplotsState(layout=None),
+            setup=FigureSubplotsState(layout="none"),
             sources=(FigureSourceState(name="data", label="data"),),
             primary_source="data",
         ),
@@ -5462,8 +5462,8 @@ def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
         tool, FigureMethodFamily.FIGURE, "set_layout_engine"
     )
     adjust_ops = _method_operations(tool, FigureMethodFamily.FIGURE, "subplots_adjust")
-    assert len(engine_ops) == 1
-    assert engine_ops[0].method_args == ("compressed",)
+    assert engine_ops == ()
+    assert tool.tool_status.setup.layout == "compressed"
     assert len(adjust_ops) == 1
     assert not adjust_ops[0].enabled
     assert not top_spin.isEnabled()
@@ -5474,7 +5474,8 @@ def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
         tool, FigureMethodFamily.FIGURE, "set_layout_engine"
     )
     adjust_ops = _method_operations(tool, FigureMethodFamily.FIGURE, "subplots_adjust")
-    assert engine_ops[0].method_args == ("none",)
+    assert engine_ops == ()
+    assert tool.tool_status.setup.layout == "none"
     assert adjust_ops[0].enabled
     assert top_spin.isEnabled()
 
@@ -6845,7 +6846,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     adjust_tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
-            setup=FigureSubplotsState(ncols=2, layout=None),
+            setup=FigureSubplotsState(ncols=2, layout="none"),
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.method(
@@ -6889,7 +6890,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     default_tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
-            setup=FigureSubplotsState(ncols=2, layout=None),
+            setup=FigureSubplotsState(ncols=2, layout="none"),
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.method(
@@ -7021,7 +7022,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     )
 
 
-def test_figure_composer_layout_engine_none_allows_subplots_adjust(qtbot) -> None:
+def test_figure_composer_layout_engine_none_is_post_creation_method(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0).reshape(2, 2),
         dims=("kx", "ky"),
@@ -7031,7 +7032,7 @@ def test_figure_composer_layout_engine_none_allows_subplots_adjust(qtbot) -> Non
     tool = FigureComposerTool(
         data,
         recipe=FigureRecipeState(
-            setup=FigureSubplotsState(ncols=2, layout="compressed"),
+            setup=FigureSubplotsState(ncols=2, layout="none"),
             sources=(FigureSourceState(name="data", label="data"),),
             operations=(
                 FigureOperationState.method(
@@ -7061,7 +7062,8 @@ def test_figure_composer_layout_engine_none_allows_subplots_adjust(qtbot) -> Non
     assert fig.subplotpars.left == pytest.approx(0.25)
 
     code = tool.generated_code()
-    assert "fig.set_layout_engine(None)" in code
+    assert 'layout="none"' in code
+    assert 'fig.set_layout_engine("none")' in code
     namespace = {"data": data}
     with warnings.catch_warnings(record=True) as generated_caught:
         warnings.simplefilter("always")

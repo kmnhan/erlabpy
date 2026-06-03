@@ -63,7 +63,7 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
-_LAYOUT_ENGINE_OPTIONS = ("none", "tight", "constrained", "compressed")
+_LAYOUT_ENGINE_OPTIONS = ("default", "none", "tight", "constrained", "compressed")
 _STYLE_TARGET_PLOT_SLICES = "plot_slices"
 _STYLE_TARGET_LINE = "line"
 
@@ -94,7 +94,7 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
     engine_combo.addItems(_LAYOUT_ENGINE_OPTIONS)
     engine_combo.setCurrentText(_layout_engine_text(tool))
     engine_combo.setToolTip(
-        "Recipe step for fig.set_layout_engine.\n"
+        "Figure layout engine from the Layout tab.\n"
         "Use none when manually adjusting subplot borders and spacing."
     )
     engine_row.addWidget(engine_label)
@@ -162,14 +162,8 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
     def update_engine(text: str) -> None:
         if tool._updating_controls:
             return
-        _upsert_method_operation(
-            tool,
-            FigureMethodFamily.FIGURE,
-            "set_layout_engine",
-            label="Set layout engine",
-            args=(text,),
-        )
         if text == "none":
+            _set_setup_layout_engine(tool, text)
             update_adjust_enabled()
             update_adjust_operation()
         else:
@@ -180,6 +174,7 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
                 axes=None,
                 enabled=False,
             )
+            _set_setup_layout_engine(tool, text)
             update_adjust_enabled()
 
     def engine_activated(_index: int) -> None:
@@ -1224,17 +1219,13 @@ def _first_axis(
 
 
 def _layout_engine_text(tool: FigureComposerTool) -> str:
-    for operation in reversed(tool._recipe.operations):
-        if (
-            operation.enabled
-            and operation.kind == FigureOperationKind.METHOD
-            and operation.method_family == FigureMethodFamily.FIGURE
-            and operation.method_name == "set_layout_engine"
-            and operation.method_args
-            and isinstance(operation.method_args[0], str)
-        ):
-            return operation.method_args[0]
-    return tool._recipe.setup.layout or "none"
+    return tool._recipe.setup.layout or "default"
+
+
+def _set_setup_layout_engine(tool: FigureComposerTool, text: str) -> None:
+    with QtCore.QSignalBlocker(tool.layout_combo):
+        tool.layout_combo.setCurrentText(text)
+    tool._setup_controls_changed()
 
 
 def _float_pair_text(values: Sequence[float]) -> str:

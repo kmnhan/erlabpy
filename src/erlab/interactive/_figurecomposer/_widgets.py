@@ -603,7 +603,7 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             self.figure = Figure(
                 figsize=setup.figsize,
                 dpi=setup.dpi,
-                layout=setup.layout,
+                layout=typing.cast("typing.Any", setup.layout),
             )
         self.canvas = _StyledFigureCanvas(self.figure)
         self.toolbar = _FigureComposerNavigationToolbar(

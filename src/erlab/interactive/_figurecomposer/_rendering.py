@@ -52,6 +52,35 @@ def _setup_kwargs(tool: FigureComposerTool) -> dict[str, typing.Any]:
     return kwargs
 
 
+def _setup_layout_value(
+    tool: FigureComposerTool,
+) -> typing.Literal["constrained", "compressed", "tight", "none"] | None:
+    return tool._recipe.setup.layout
+
+
+def _set_creation_layout_engine(
+    figure: Figure,
+    layout: typing.Literal["constrained", "compressed", "tight", "none"] | None,
+) -> None:
+    if layout is None:
+        figure.set_layout_engine(None)
+        return
+    if layout == "none":
+        # Reused Figure instances can already have a layout engine. Matplotlib's
+        # set_layout_engine("none") keeps a placeholder engine in that case,
+        # while Figure(..., layout="none") starts with no engine. Match the
+        # creation-time semantics used by generated code.
+        with mpl.rc_context(
+            {
+                "figure.autolayout": False,
+                "figure.constrained_layout.use": False,
+            }
+        ):
+            figure.set_layout_engine(None)
+        return
+    figure.set_layout_engine(layout)
+
+
 def _make_axes(
     tool: FigureComposerTool,
     figure: Figure | None = None,
@@ -80,7 +109,7 @@ def _make_axes(
             forward=False,
         )
     with contextlib.suppress(ValueError, NotImplementedError):
-        figure.set_layout_engine(setup.layout)
+        _set_creation_layout_engine(figure, _setup_layout_value(tool))
     if setup.layout_mode == "gridspec":
         return _make_gridspec_axes(tool, figure)
     return np.asarray(

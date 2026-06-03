@@ -2592,7 +2592,7 @@ def _plot_slices_limit_placeholder(
         figure = Figure(
             figsize=tool._recipe.setup.figsize,
             dpi=tool._recipe.setup.dpi,
-            layout=tool._recipe.setup.layout,
+            layout=typing.cast("typing.Any", tool._recipe.setup.layout),
         )
         canvas = FigureCanvasAgg(figure)
         try:

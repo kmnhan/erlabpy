@@ -577,12 +577,13 @@ _DEFAULT_SCALE = "log" if "log" in _SCALE_OPTIONS else _SCALE_OPTIONS[0]
 _FLATTEN_ORDER_OPTIONS = ("C", "F", "A", "K")
 _COLORBAR_ORIENTATION_OPTIONS = ("vertical", "horizontal")
 _LINE_ORIENTATION_OPTIONS = ("h", "v")
-_LAYOUT_ENGINE_OPTIONS = ("none", "tight", "constrained", "compressed")
+_LAYOUT_ENGINE_OPTIONS = ("default", "none", "tight", "constrained", "compressed")
 _LAYOUT_ENGINE_KWARGS = {
     "tight": frozenset(("pad", "h_pad", "w_pad", "rect")),
     "constrained": frozenset(("h_pad", "w_pad", "hspace", "wspace", "rect")),
     "compressed": frozenset(("h_pad", "w_pad", "hspace", "wspace", "rect")),
     "none": frozenset[str](),
+    "default": frozenset[str](),
 }
 _LABEL_LOCATION_OPTIONS = (
     "upper left",
@@ -2403,15 +2404,23 @@ def _add_method_control_row(
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.ARG_COMBO:
             index = _control_arg_index(control)
+            value_getter: Callable[[FigureOperationState], typing.Any]
+            if _is_layout_engine_method(spec):
+
+                def value_getter(target: FigureOperationState) -> typing.Any:
+                    return _layout_engine_name(target, spec)
+            else:
+
+                def value_getter(target: FigureOperationState) -> typing.Any:
+                    return _method_arg_value(target, spec, index, control.default)
+
             mixed = tool._batch_is_mixed(
                 operation,
-                lambda target: _method_arg_value(target, spec, index, control.default),
+                value_getter,
             )
             combo = tool._combo(
                 control.options,
-                None
-                if mixed
-                else str(_method_arg_value(operation, spec, index, control.default)),
+                None if mixed else str(value_getter(operation)),
                 _method_arg_callback(tool, index, spec),
                 parent=layout.parentWidget(),
                 mixed=mixed,
@@ -2918,7 +2927,7 @@ def _subplots_adjust_default(tool: FigureComposerTool, key: str) -> float:
     figure = Figure(
         figsize=tool.tool_status.setup.figsize,
         dpi=tool.tool_status.setup.dpi,
-        layout=tool.tool_status.setup.layout,
+        layout=typing.cast("typing.Any", tool.tool_status.setup.layout),
     )
     return float(getattr(figure.subplotpars, key))
 
@@ -3020,9 +3029,9 @@ def _is_layout_engine_method(spec: MethodSpec) -> bool:
 def _layout_engine_name(operation: FigureOperationState, spec: MethodSpec) -> str:
     args = _method_args(operation, spec)
     if not args:
-        return "none"
+        return "default"
     layout = args[0]
-    return layout if isinstance(layout, str) else "none"
+    return layout if isinstance(layout, str) else "default"
 
 
 def _layout_engine_kwarg_keys(layout: str) -> frozenset[str]:
@@ -3036,12 +3045,6 @@ def _filter_layout_engine_kwargs(
         return kwargs
     allowed_keys = _layout_engine_kwarg_keys(args[0])
     return {key: value for key, value in kwargs.items() if key in allowed_keys}
-
-
-def _layout_engine_api_args(args: Sequence[typing.Any]) -> tuple[typing.Any, ...]:
-    if args and args[0] == "none":
-        return (None, *args[1:])
-    return tuple(args)
 
 
 def _control_arg_index(control: MethodControlSpec) -> int:
@@ -3104,7 +3107,7 @@ def _update_current_layout_engine(
         args = list(_method_args(operation, _method_spec(operation)))
         while len(args) <= index:
             args.append(None)
-        args[index] = text
+        args[index] = None if text == "default" else text
         kwargs = {
             key: value
             for key, value in operation.method_kwargs.items()
@@ -3463,7 +3466,6 @@ def _render_args_kwargs(
         kwargs["transform"] = axis.transAxes
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
-        args = list(_layout_engine_api_args(args))
     return tuple(args), kwargs
 
 
@@ -3493,7 +3495,6 @@ def _code_args_kwargs(
         kwargs["transform"] = _RawCode(axis_transform)
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
-        args = list(_layout_engine_api_args(args))
     return tuple(args), kwargs
 
 

@@ -17,7 +17,10 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_span_code,
     _gridspec_valid_axes_ids,
 )
-from erlab.interactive._figurecomposer._rendering import _setup_kwargs
+from erlab.interactive._figurecomposer._rendering import (
+    _setup_kwargs,
+    _setup_layout_value,
+)
 from erlab.interactive._figurecomposer._sources import (
     _decode_indexers,
     _valid_source_variable,
@@ -146,8 +149,8 @@ def _gridspec_setup_code_lines(tool: FigureComposerTool) -> list[str]:
         "figsize": setup.figsize,
         "dpi": setup.dpi,
     }
-    if setup.layout is not None:
-        kwargs["layout"] = setup.layout
+    if (layout := _setup_layout_value(tool)) is not None:
+        kwargs["layout"] = layout
     lines = [f"fig = plt.figure({_code_kwargs(kwargs)})"]
     code_names = _gridspec_axis_code_names(setup)
 

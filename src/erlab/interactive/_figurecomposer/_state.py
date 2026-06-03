@@ -136,7 +136,7 @@ class FigureSubplotsState(pydantic.BaseModel):
     ncols: int = 1
     figsize: tuple[float, float] = pydantic.Field(default_factory=_default_figsize)
     dpi: float = pydantic.Field(default_factory=_default_figure_dpi)
-    layout: typing.Literal["constrained", "compressed", "tight"] | None = (
+    layout: typing.Literal["constrained", "compressed", "tight", "none"] | None = (
         pydantic.Field(default_factory=_default_layout)
     )
     sharex: bool | typing.Literal["none", "all", "row", "col"] = "col"

@@ -648,7 +648,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.height_mm_spin.setDecimals(2)
         self.height_mm_spin.setSingleStep(1.0)
         self.layout_combo = QtWidgets.QComboBox(layout_page)
-        self.layout_combo.addItems(["constrained", "compressed", "tight", "none"])
+        self.layout_combo.addItems(
+            ["default", "constrained", "compressed", "tight", "none"]
+        )
         self.sharex_combo = QtWidgets.QComboBox(layout_page)
         self.sharex_combo.addItems(["False", "True", "row", "col", "all"])
         self.sharey_combo = QtWidgets.QComboBox(layout_page)
@@ -882,13 +884,17 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         layout_row_label = QtWidgets.QLabel("Layout engine", layout_page)
         layout_row_label.setObjectName("figureComposerLayoutControls")
-        layout_row_label.setToolTip("Matplotlib layout engine passed to plt.subplots.")
+        layout_row_label.setToolTip(
+            "Creation-time Matplotlib layout engine.\n"
+            "Default omits the layout argument; none passes layout='none'."
+        )
         layout_row_label.setBuddy(self.layout_combo)
         layout_row_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
         )
         self.layout_combo.setToolTip(
-            "Matplotlib layout engine passed to plt.subplots.",
+            "Creation-time Matplotlib layout engine.\n"
+            "Default omits the layout argument; none passes layout='none'.",
         )
         setup_layout.addWidget(layout_row_label, 5, 0, 1, 2)
         setup_layout.addWidget(self.layout_combo, 5, 2, 1, 3)
@@ -963,7 +969,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.width_spin.setValue(setup.figsize[0])
             self.height_spin.setValue(setup.figsize[1])
             self._sync_size_mm_controls(setup.figsize)
-            self._set_combo_value(self.layout_combo, setup.layout or "none")
+            self._set_combo_value(self.layout_combo, setup.layout or "default")
             self._set_combo_value(self.sharex_combo, str(setup.sharex))
             self._set_combo_value(self.sharey_combo, str(setup.sharey))
             self._refresh_source_list()
@@ -1787,12 +1793,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
 
     def _layout_combo_value(
         self,
-    ) -> typing.Literal["constrained", "compressed", "tight"] | None:
+    ) -> typing.Literal["constrained", "compressed", "tight", "none"] | None:
         text = self.layout_combo.currentText()
-        if text == "none":
+        if text == "default":
             return None
         return typing.cast(
-            'typing.Literal["constrained", "compressed", "tight"]',
+            'typing.Literal["constrained", "compressed", "tight", "none"]',
             text,
         )
 
@@ -3243,7 +3249,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             figure = Figure(
                 figsize=self._recipe.setup.figsize,
                 dpi=self._recipe.setup.dpi,
-                layout=self._recipe.setup.layout,
+                layout=typing.cast("typing.Any", self._recipe.setup.layout),
             )
             canvas = FigureCanvasAgg(figure)
             try:
