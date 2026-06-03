@@ -6509,6 +6509,196 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         assert not manager.left_tabs.isTabVisible(1)
 
 
+def test_manager_figure_action_new_target_creates_second_figure(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        itool(
+            xr.DataArray(
+                np.arange(4.0).reshape(2, 2),
+                dims=("x", "y"),
+                name="map",
+            ),
+            manager=True,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        first_uid = manager.create_figure_from_targets((0,), show=False)
+        assert first_uid is not None
+        select_tools(manager, [0])
+
+        class FakeFigureDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+            ) -> None:
+                assert figure_uids == (first_uid,)
+                assert allow_new_figure is True
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def is_new_figure(self) -> bool:
+                return True
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeFigureDialog
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert len(manager._tool_graph.figure_uids) == 2
+        assert first_uid in manager._tool_graph.figure_uids
+
+
+def test_manager_figure_action_appends_to_selected_subplots_axes(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(4.0),
+            dims=("x",),
+            coords={"x": np.arange(4.0)},
+            name="line",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=2),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        qtbot.addWidget(figure_tool)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+        select_tools(manager, [0])
+
+        class FakeFigureDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+            ) -> None:
+                assert figure_uids == (figure_uid,)
+                assert allow_new_figure is True
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def is_new_figure(self) -> bool:
+                return False
+
+            def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
+                return figure_uid, FigureAxesSelectionState(axes=((0, 1),))
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeFigureDialog
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert len(manager._tool_graph.figure_uids) == 1
+        assert len(figure_tool.tool_status.operations) == 1
+        assert figure_tool.tool_status.operations[0].axes.axes == ((0, 1),)
+
+
+def test_manager_figure_action_appends_to_selected_gridspec_axes(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(
+            np.arange(4.0),
+            dims=("x",),
+            coords={"x": np.arange(4.0)},
+            name="line",
+        )
+        itool(data, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(
+                    layout_mode="gridspec",
+                    gridspec=FigureGridSpecLayoutState(
+                        root=FigureGridSpecGridState(
+                            grid_id="root",
+                            nrows=1,
+                            ncols=1,
+                            axes=(
+                                FigureGridSpecAxesState(
+                                    axes_id="axis-a",
+                                    span=FigureGridSpecSpanState(
+                                        row_start=0,
+                                        row_stop=1,
+                                        col_start=0,
+                                        col_stop=1,
+                                    ),
+                                ),
+                            ),
+                        )
+                    ),
+                ),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        qtbot.addWidget(figure_tool)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+        select_tools(manager, [0])
+
+        class FakeFigureDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+            ) -> None:
+                assert figure_uids == (figure_uid,)
+                assert allow_new_figure is True
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def is_new_figure(self) -> bool:
+                return False
+
+            def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
+                return figure_uid, FigureAxesSelectionState(axes_ids=("axis-a",))
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeFigureDialog
+        )
+
+        manager.create_figure_action.trigger()
+
+        assert len(figure_tool.tool_status.operations) == 1
+        assert figure_tool.tool_status.operations[0].axes.axes_ids == ("axis-a",)
+
+
 def test_manager_auto_names_figures_numerically(
     qtbot,
     manager_context: Callable[
@@ -6795,6 +6985,42 @@ def test_manager_append_to_subplots_figure_uses_axes_selector(
         )
 
 
+def test_manager_figure_target_dialog_defaults_to_new_figure(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        figure_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=2),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        qtbot.addWidget(figure_tool)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        dialog = manager_mainwindow._AppendFigureTargetDialog(
+            manager,
+            (figure_uid,),
+            None,
+            allow_new_figure=True,
+        )
+        qtbot.addWidget(dialog)
+
+        assert dialog.is_new_figure()
+        assert dialog.selector_stack.isHidden()
+        assert dialog.selected_target() is None
+        button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        assert button is not None
+        assert button.isEnabled()
+
+
 def test_manager_child_imagetool_gets_figure_context_actions(
     qtbot,
     manager_context: Callable[
@@ -7007,7 +7233,7 @@ def test_manager_append_operation_uses_axes_dialog_selection(
         assert figure_tool.tool_status.operations[-1].axes.axes == ((0, 1),)
 
 
-def test_manager_append_multi_source_plot_slices_preserves_panel_colormaps(
+def test_manager_figure_action_multi_source_append_preserves_panel_colormaps(
     qtbot,
     monkeypatch,
     manager_context: Callable[
@@ -7045,19 +7271,25 @@ def test_manager_append_multi_source_plot_slices_preserves_panel_colormaps(
         )
         qtbot.addWidget(figure_tool)
         figure_uid = manager.add_figuretool(figure_tool, show=False)
+        select_tools(manager, [0, 1])
 
         class FakeAppendDialog:
             def __init__(
                 self,
                 _manager: erlab.interactive.imagetool.manager.ImageToolManager,
                 figure_uids: tuple[str, ...],
-                operation: FigureOperationState,
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
             ) -> None:
                 assert figure_uids == (figure_uid,)
-                assert operation.kind == FigureOperationKind.PLOT_SLICES
+                assert allow_new_figure is True
 
             def exec(self) -> QtWidgets.QDialog.DialogCode:
                 return QtWidgets.QDialog.DialogCode.Accepted
+
+            def is_new_figure(self) -> bool:
+                return False
 
             def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
                 return figure_uid, FigureAxesSelectionState(axes=((0, 0), (0, 1)))
@@ -7066,13 +7298,8 @@ def test_manager_append_multi_source_plot_slices_preserves_panel_colormaps(
             manager_mainwindow, "_AppendFigureTargetDialog", FakeAppendDialog
         )
 
-        appended = manager.append_figure_from_targets(
-            (0, 1),
-            figure_uid=figure_uid,
-            show=False,
-        )
+        manager.create_figure_action.trigger()
 
-        assert appended is True
         operation = figure_tool.tool_status.operations[-1]
         assert operation.kind == FigureOperationKind.PLOT_SLICES
         assert operation.sources == ("data_0", "data_1")

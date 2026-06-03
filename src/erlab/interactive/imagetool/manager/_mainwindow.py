@@ -79,6 +79,8 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_NEW_FIGURE_TARGET = "__new_figure__"
+
 
 class _AppendFigureTargetDialog(QtWidgets.QDialog):
     """Prompt for a Figure Composer target figure and axes selection."""
@@ -88,6 +90,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         manager: ImageToolManager,
         figure_uids: tuple[str, ...],
         operation: typing.Any | None,
+        *,
+        allow_new_figure: bool = False,
     ) -> None:
         from erlab.interactive._figurecomposer._widgets import (
             _AxesSelectorWidget,
@@ -99,7 +103,7 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         self._figure_uids = figure_uids
         self._operation = operation
         self.setObjectName("managerAppendFigureTargetDialog")
-        self.setWindowTitle("Append to Figure")
+        self.setWindowTitle("Figure" if allow_new_figure else "Append to Figure")
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -113,10 +117,12 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
 
         self.figure_combo = QtWidgets.QComboBox(self)
         self.figure_combo.setObjectName("managerAppendFigureCombo")
+        if allow_new_figure:
+            self.figure_combo.addItem("New Figure", _NEW_FIGURE_TARGET)
         for uid in figure_uids:
             self.figure_combo.addItem(manager._child_node(uid).display_text, uid)
-        self.figure_combo.setVisible(len(figure_uids) > 1)
-        if len(figure_uids) > 1:
+        self.figure_combo.setVisible(self.figure_combo.count() > 1)
+        if self.figure_combo.count() > 1:
             form.addRow("Figure", self.figure_combo)
         else:
             form.addRow(
@@ -177,9 +183,14 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
             return uid
         return self._figure_uids[0]
 
+    def is_new_figure(self) -> bool:
+        return self.figure_combo.currentData() == _NEW_FIGURE_TARGET
+
     def axes_selection(self) -> typing.Any | None:
         from erlab.interactive._figurecomposer import FigureAxesSelectionState
 
+        if self.is_new_figure():
+            return None
         tool = self._figure_tool()
         if tool is None:
             return None
@@ -195,6 +206,8 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
         return FigureAxesSelectionState(axes=axes)
 
     def selected_target(self) -> tuple[str, typing.Any] | None:
+        if self.is_new_figure():
+            return None
         selection = self.axes_selection()
         if selection is None:
             return None
@@ -202,6 +215,16 @@ class _AppendFigureTargetDialog(QtWidgets.QDialog):
 
     @QtCore.Slot()
     def _figure_changed(self) -> None:
+        if self.is_new_figure():
+            self.selector_stack.setVisible(False)
+            self.all_axes_button.setVisible(False)
+            self.clear_axes_button.setVisible(False)
+            self._ok_button().setEnabled(True)
+            self.status_label.setText("A new figure will be created.")
+            return
+        self.selector_stack.setVisible(True)
+        self.all_axes_button.setVisible(True)
+        self.clear_axes_button.setVisible(True)
         tool = self._figure_tool()
         if tool is None:
             self._ok_button().setEnabled(False)
@@ -626,10 +649,11 @@ class ImageToolManager(_ImageToolManagerBase):
         self.batch_action.triggered.connect(self.show_batch_operations)
         self.batch_action.setToolTip("Apply an operation to multiple ImageTools")
 
-        self.create_figure_action = QtWidgets.QAction("Create Figure", self)
+        self.create_figure_action = QtWidgets.QAction("Figure", self)
+        self.create_figure_action.setObjectName("manager_figure_action")
         self.create_figure_action.triggered.connect(self.create_figure_from_selection)
         self.create_figure_action.setToolTip(
-            "Create an editable Matplotlib figure from the selected data"
+            "Create or append an editable Matplotlib figure from the selected data"
         )
         self.create_figure_action.setIcon(QtGui.QIcon.fromTheme("insert-image"))
 
@@ -1513,7 +1537,34 @@ class ImageToolManager(_ImageToolManagerBase):
 
     @QtCore.Slot()
     def create_figure_from_selection(self) -> None:
-        self.create_figure_from_targets(self._selected_figure_source_targets())
+        targets = self._selected_figure_source_targets()
+        if not targets:
+            return
+        figure_uids = tuple(self._figure_uids())
+        if not figure_uids:
+            self.create_figure_from_targets(targets)
+            return
+
+        dialog = _AppendFigureTargetDialog(
+            self,
+            figure_uids,
+            None,
+            allow_new_figure=True,
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        if dialog.is_new_figure():
+            self.create_figure_from_targets(targets)
+            return
+        target = dialog.selected_target()
+        if target is None:
+            return
+        figure_uid, axes_selection = target
+        self.append_figure_from_targets(
+            targets,
+            figure_uid=figure_uid,
+            axes_selection=axes_selection,
+        )
 
     def create_figure_from_slicer_area(
         self,
@@ -1584,6 +1635,7 @@ class ImageToolManager(_ImageToolManagerBase):
         targets: Iterable[int | str],
         *,
         figure_uid: str | None = None,
+        axes_selection: typing.Any | None = None,
         operation: typing.Any | None = None,
         show: bool = True,
     ) -> bool:
@@ -1616,12 +1668,17 @@ class ImageToolManager(_ImageToolManagerBase):
             )
         prompt_operation = operation or auto_operation
 
-        prompt = self._prompt_append_figure_target(
-            prompt_operation, figure_uid=figure_uid
-        )
-        if prompt is None:
-            return False
-        resolved_figure_uid, axes_selection = prompt
+        if axes_selection is None:
+            prompt = self._prompt_append_figure_target(
+                prompt_operation, figure_uid=figure_uid
+            )
+            if prompt is None:
+                return False
+            resolved_figure_uid, axes_selection = prompt
+        else:
+            if figure_uid is None or not self._is_figure_uid(figure_uid):
+                return False
+            resolved_figure_uid = figure_uid
 
         node = self._child_node(resolved_figure_uid)
         tool = node.tool_window
