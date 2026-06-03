@@ -6900,6 +6900,59 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     )
 
 
+def test_figure_composer_layout_engine_none_allows_subplots_adjust(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2, layout="compressed"),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="set_layout_engine",
+                    args=("none",),
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="subplots_adjust",
+                    kwargs={"left": 0.25},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    fig = tool.figure
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    assert not any(
+        "incompatible with subplots_adjust" in str(item.message) for item in caught
+    )
+    assert fig.get_layout_engine() is None
+    assert fig.subplotpars.left == pytest.approx(0.25)
+
+    code = tool.generated_code()
+    assert "fig.set_layout_engine(None)" in code
+    namespace = {"data": data}
+    with warnings.catch_warnings(record=True) as generated_caught:
+        warnings.simplefilter("always")
+        exec(code, namespace)  # noqa: S102
+    assert not any(
+        "incompatible with subplots_adjust" in str(item.message)
+        for item in generated_caught
+    )
+    assert namespace["fig"].get_layout_engine() is None
+    assert namespace["fig"].subplotpars.left == pytest.approx(0.25)
+
+
 def test_figure_composer_legend_methods_render_and_codegen(qtbot) -> None:
     profile = xr.DataArray(
         np.array([1.0, 2.0, 3.0]),

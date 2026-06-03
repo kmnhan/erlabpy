@@ -3038,6 +3038,12 @@ def _filter_layout_engine_kwargs(
     return {key: value for key, value in kwargs.items() if key in allowed_keys}
 
 
+def _layout_engine_api_args(args: Sequence[typing.Any]) -> tuple[typing.Any, ...]:
+    if args and args[0] == "none":
+        return (None, *args[1:])
+    return tuple(args)
+
+
 def _control_arg_index(control: MethodControlSpec) -> int:
     if control.arg_index is None:
         raise ValueError(f"{control.label} has no argument index")
@@ -3457,6 +3463,7 @@ def _render_args_kwargs(
         kwargs["transform"] = axis.transAxes
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
+        args = list(_layout_engine_api_args(args))
     return tuple(args), kwargs
 
 
@@ -3486,6 +3493,7 @@ def _code_args_kwargs(
         kwargs["transform"] = _RawCode(axis_transform)
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
+        args = list(_layout_engine_api_args(args))
     return tuple(args), kwargs
 
 
