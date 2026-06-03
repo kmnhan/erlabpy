@@ -66,8 +66,6 @@ if typing.TYPE_CHECKING:
 _LAYOUT_ENGINE_OPTIONS = ("default", "none", "tight", "constrained", "compressed")
 _STYLE_TARGET_PLOT_SLICES = "plot_slices"
 _STYLE_TARGET_LINE = "line"
-_DIALOG_MARGIN = 6
-_DIALOG_SPACING = 6
 
 
 class _StyleTarget(typing.NamedTuple):
@@ -210,13 +208,6 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     dialog.setWindowTitle("Customize Axes")
     dialog.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
     root_layout = QtWidgets.QVBoxLayout(dialog)
-    root_layout.setContentsMargins(
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-    )
-    root_layout.setSpacing(_DIALOG_SPACING)
 
     selector = _selector_widget(tool, dialog)
     root_layout.addWidget(selector)
@@ -227,14 +218,6 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
 
     axes_page = QtWidgets.QWidget(tab_widget)
     form_layout = QtWidgets.QGridLayout(axes_page)
-    form_layout.setContentsMargins(
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-    )
-    form_layout.setHorizontalSpacing(8)
-    form_layout.setVerticalSpacing(_DIALOG_SPACING)
     form_layout.setColumnStretch(1, 1)
     form_layout.setColumnStretch(3, 1)
     tab_widget.addTab(axes_page, "Axes")
@@ -794,20 +777,12 @@ def _style_tab_page(
 ) -> tuple[QtWidgets.QWidget, QtWidgets.QComboBox, QtWidgets.QVBoxLayout]:
     page = QtWidgets.QWidget(parent)
     layout = QtWidgets.QVBoxLayout(page)
-    layout.setContentsMargins(
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-        _DIALOG_MARGIN,
-    )
-    layout.setSpacing(_DIALOG_SPACING)
     combo = QtWidgets.QComboBox(page)
     combo.setObjectName(combo_object_name)
     combo.setToolTip("Choose the plotted item to customize.")
     layout.addWidget(combo)
     editor_layout = QtWidgets.QVBoxLayout()
     editor_layout.setContentsMargins(0, 0, 0, 0)
-    editor_layout.setSpacing(6)
     layout.addLayout(editor_layout)
     layout.addStretch(1)
     return page, combo, editor_layout
