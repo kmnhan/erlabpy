@@ -551,8 +551,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.source_status_label.setObjectName("figureComposerSourceStatus")
         self.source_status_label.setWordWrap(True)
         sources_layout.addWidget(self.source_status_label)
-        self.source_list = QtWidgets.QListWidget(self.step_sources_page)
+        self.source_list = QtWidgets.QTreeWidget(self.step_sources_page)
         self.source_list.setObjectName("figureComposerSourceList")
+        self.source_list.setColumnCount(2)
+        self.source_list.setHeaderLabels(("Source", "Shape"))
+        self.source_list.setRootIsDecorated(False)
+        self.source_list.setIndentation(0)
+        self.source_list.setUniformRowHeights(True)
+        self.source_list.setAlternatingRowColors(True)
         self.source_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.NoSelection
         )
@@ -563,6 +569,15 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.source_list.setToolTip("Data available to the selected step.")
+        source_header = self.source_list.header()
+        if source_header is not None:
+            source_header.setStretchLastSection(False)
+            source_header.setSectionResizeMode(
+                0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+            )
+            source_header.setSectionResizeMode(
+                1, QtWidgets.QHeaderView.ResizeMode.Stretch
+            )
         sources_layout.addWidget(self.source_list, 1)
 
         self.target_axes_page = QtWidgets.QWidget(self.step_editor_stack)
@@ -1036,13 +1051,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     and (source.label.strip() or name) in duplicate_labels
                 ),
             )
-            dims = " x ".join(f"{dim}:{data.sizes[dim]}" for dim in data.dims)
-            item = QtWidgets.QListWidgetItem(f"{display}  ({dims})")
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, name)
-            item.setToolTip(_source_display_tooltip(source, name))
-            if source is None:
-                item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
-            self.source_list.addItem(item)
+            self._add_source_list_row(
+                display,
+                name,
+                _source_display_tooltip(source, name),
+                data=data,
+                missing=source is None,
+            )
 
         missing = [
             source
@@ -1055,11 +1070,58 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 source.name,
                 disambiguate=(source.label.strip() or source.name) in duplicate_labels,
             )
-            item = QtWidgets.QListWidgetItem(f"{display}  (missing)")
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, source.name)
-            item.setToolTip(_source_display_tooltip(source, source.name))
-            item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
-            self.source_list.addItem(item)
+            self._add_source_list_row(
+                display,
+                source.name,
+                _source_display_tooltip(source, source.name),
+                missing=True,
+            )
+        self.source_list.resizeColumnToContents(0)
+
+    def _add_source_list_row(
+        self,
+        display: str,
+        name: str,
+        tooltip: str,
+        *,
+        data: xr.DataArray | None = None,
+        missing: bool = False,
+    ) -> None:
+        item = QtWidgets.QTreeWidgetItem([display, "missing" if data is None else ""])
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, name)
+        item.setFlags(QtCore.Qt.ItemFlag.ItemIsEnabled)
+        for column in range(self.source_list.columnCount()):
+            item.setToolTip(column, tooltip)
+        if missing:
+            item.setForeground(0, QtGui.QBrush(QtGui.QColor("darkRed")))
+            item.setForeground(1, QtGui.QBrush(QtGui.QColor("darkRed")))
+        self.source_list.addTopLevelItem(item)
+        if data is None:
+            return
+
+        shape_label = QtWidgets.QLabel(
+            erlab.interactive.utils._apply_qt_accent_color(
+                erlab.utils.formatting.format_darr_shape_html(
+                    data.rename(None),
+                    show_size=False,
+                )
+            ),
+            self.source_list,
+        )
+        shape_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        shape_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.NoTextInteraction
+        )
+        shape_label.setContentsMargins(4, 0, 4, 0)
+        shape_label.setToolTip(repr(data))
+        if missing:
+            palette = shape_label.palette()
+            palette.setColor(
+                QtGui.QPalette.ColorRole.WindowText, QtGui.QColor("darkRed")
+            )
+            shape_label.setPalette(palette)
+        item.setSizeHint(1, shape_label.sizeHint())
+        self.source_list.setItemWidget(item, 1, shape_label)
 
     def _rebuild_axes_grid(self) -> None:
         self.axes_selector.set_grid(

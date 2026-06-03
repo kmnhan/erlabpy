@@ -447,9 +447,9 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
     )
     qtbot.addWidget(tool)
 
-    first_item = tool.source_list.item(0)
+    first_item = tool.source_list.topLevelItem(0)
     assert first_item is not None
-    assert first_item.data(QtCore.Qt.ItemDataRole.UserRole) == "data_0"
+    assert first_item.data(0, QtCore.Qt.ItemDataRole.UserRole) == "data_0"
 
     tool._select_step_section("sources")
     checks = _plot_source_checks(tool)
@@ -457,6 +457,32 @@ def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None
 
     assert tool.tool_status.operations[0].sources == ("data_0",)
     assert "data_0" in tool.generated_code()
+
+
+def test_figure_composer_source_ui_uses_shared_shape_formatter(
+    qtbot, monkeypatch
+) -> None:
+    data = _figure_composer_image_source("data")
+    calls: list[tuple[tuple[str, ...], bool, str | None]] = []
+
+    def _format_shape(darr: xr.DataArray, show_size: bool = False) -> str:
+        calls.append((tuple(str(dim) for dim in darr.dims), show_size, darr.name))
+        return "<p>formatted shape</p>"
+
+    monkeypatch.setattr(
+        erlab.utils.formatting,
+        "format_darr_shape_html",
+        _format_shape,
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    first_item = tool.source_list.topLevelItem(0)
+    assert first_item is not None
+    shape_widget = tool.source_list.itemWidget(first_item, 1)
+    assert isinstance(shape_widget, QtWidgets.QLabel)
+    assert shape_widget.text() == "<p>formatted shape</p>"
+    assert calls == [(tuple(str(dim) for dim in data.dims), False, None)]
 
 
 def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
@@ -2821,8 +2847,8 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     assert tool._source_tooltip("known")
     tool._refresh_source_list()
     source_names = {
-        tool.source_list.item(row).data(QtCore.Qt.ItemDataRole.UserRole)
-        for row in range(tool.source_list.count())
+        tool.source_list.topLevelItem(row).data(0, QtCore.Qt.ItemDataRole.UserRole)
+        for row in range(tool.source_list.topLevelItemCount())
     }
     assert source_names == {"known", "extra", "missing"}
 
