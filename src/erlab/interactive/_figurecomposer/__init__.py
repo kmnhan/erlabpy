@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
     FigureDataSelectionState,
@@ -37,5 +36,4 @@ __all__ = [
     "FigureRecipeState",
     "FigureSourceState",
     "FigureSubplotsState",
-    "_norm_updates_from_kwargs",
 ]

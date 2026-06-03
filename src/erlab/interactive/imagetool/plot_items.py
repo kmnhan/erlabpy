@@ -1872,7 +1872,7 @@ class ItoolPlotItem(pg.PlotItem):
             if keyword.arg is None:
                 return None
             kwargs[keyword.arg] = ast.literal_eval(keyword.value)
-        from erlab.interactive._figurecomposer import _norm_updates_from_kwargs
+        from erlab.interactive._figurecomposer._norms import _norm_updates_from_kwargs
 
         updates = _norm_updates_from_kwargs(kwargs)
         updates["norm_name"] = norm_name
