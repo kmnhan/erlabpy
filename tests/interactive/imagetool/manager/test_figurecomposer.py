@@ -1252,6 +1252,373 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     ) == {"linewidth": 1.5}
 
 
+def test_figure_composer_plot_slices_edge_helper_contracts(
+    qtbot,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "erlab.interactive._figurecomposer._operations._plot_slices._render_preview",
+        lambda *_args, **_kwargs: None,
+    )
+    image = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("eV", "kx", "ky"),
+        coords={"eV": [0.0, 1.0], "kx": [-1.0, 0.0, 1.0], "ky": range(4)},
+        name="image",
+    )
+    line = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0], "kx": [-1.0, 0.0, 1.0]},
+        name="line",
+    )
+    other = xr.DataArray(
+        np.arange(8.0).reshape(2, 4),
+        dims=("eV", "phi"),
+        coords={"eV": [0.0, 1.0], "phi": range(4)},
+        name="other",
+    )
+    line_operation = FigureOperationState.plot_slices(
+        label="line",
+        sources=("line",),
+        slice_dim="eV",
+        slice_values=(0.0, 1.0),
+    ).model_copy(
+        update={
+            "line_kw": {"linewidth": 1.5},
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    line_kw={"color": "red"},
+                ),
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=1,
+                    line_kw={"color": "blue"},
+                ),
+            ),
+            "order": "F",
+            "gradient": True,
+            "gradient_kw": {"alpha": 0.2},
+            "line_normalize": "mean",
+        }
+    )
+    image_operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("image",),
+        slice_dim="eV",
+        slice_values=(0.0, 1.0),
+        axes=FigureAxesSelectionState(expression="axs[0, :]"),
+    ).model_copy(
+        update={
+            "transpose": True,
+            "xlim": (-1.0, 1.0),
+            "ylim": 0.5,
+            "crop": False,
+            "same_limits": True,
+            "axis": "x",
+            "show_all_labels": True,
+            "colorbar": "right",
+            "hide_colorbar_ticks": False,
+            "annotate": False,
+            "cmap": "magma",
+            "norm_name": "PowerNorm",
+            "norm_gamma": 0.5,
+            "vmin": 0.0,
+            "vmax": 10.0,
+            "order": "F",
+            "cmap_order": "F",
+            "norm_order": "F",
+            "subplot_kw": {"sharex": True},
+            "annotate_kw": {"fontsize": 8},
+            "colorbar_kw": {"ticks": [0.0, 1.0]},
+            "extra_kwargs": {"alpha": 0.9},
+        }
+    )
+    tool = FigureComposerTool(
+        image,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="image", label="image"),
+                FigureSourceState(name="line", label="line"),
+                FigureSourceState(name="other", label="other"),
+            ),
+            operations=(line_operation, image_operation),
+            primary_source="image",
+        ),
+        source_data={"image": image, "line": line, "other": other},
+    )
+    qtbot.addWidget(tool)
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            tool,
+            "_editable_operations",
+            lambda: ((0, line_operation), (1, image_operation)),
+        )
+        assert (
+            figurecomposer_plot_slices._plot_slices_batch_panel_kind(
+                tool, line_operation
+            )
+            == "mixed"
+        )
+    with monkeypatch.context() as context:
+        context.setattr(tool, "_editable_operations", lambda: ())
+        assert (
+            figurecomposer_plot_slices._plot_slices_batch_panel_kind(
+                tool, line_operation
+            )
+            == "line"
+        )
+
+    keys = figurecomposer_plot_slices._plot_slices_panel_keys(tool, line_operation)
+    assert [(key.map_index, key.slice_index) for key in keys] == [(0, 0), (0, 1)]
+    assert figurecomposer_plot_slices._plot_slices_slice_labels(
+        line_operation.model_copy(update={"slice_values": ()}),
+        2,
+    ) == ("slice 1", "slice 2")
+    slice_kwarg_operation = line_operation.model_copy(
+        update={
+            "slice_dim": None,
+            "slice_values": (),
+            "slice_kwargs": {"eV": [0.0, 1.0], "eV_width": 0.2},
+        }
+    )
+    assert (
+        figurecomposer_plot_slices._plot_slices_slice_count(tool, slice_kwarg_operation)
+        == 2
+    )
+    shape = figurecomposer_plot_slices._plot_slices_shape(tool, slice_kwarg_operation)
+    assert shape.valid
+    assert shape.panel_count == 2
+    range_shape = figurecomposer_plot_slices._plot_slices_shape(
+        tool,
+        line_operation.model_copy(
+            update={
+                "slice_dim": None,
+                "slice_values": (),
+                "slice_kwargs": {"kx": slice(-1.0, 1.0), "eV": 0.0},
+            }
+        ),
+    )
+    assert range_shape.valid
+
+    missing_shape = figurecomposer_plot_slices._plot_slices_shape(
+        tool,
+        FigureOperationState.plot_slices(label="missing", sources=("missing",)),
+    )
+    assert not missing_shape.valid
+    mismatched_shape = figurecomposer_plot_slices._plot_slices_shape(
+        tool,
+        FigureOperationState.plot_slices(label="mixed", sources=("line", "other")),
+    )
+    assert not mismatched_shape.valid
+    invalid_cut_shape = figurecomposer_plot_slices._plot_slices_shape(
+        tool,
+        line_operation.model_copy(update={"slice_dim": "missing", "slice_values": ()}),
+    )
+    assert invalid_cut_shape.valid
+    incomplete_cut_shape = figurecomposer_plot_slices._plot_slices_shape(
+        tool,
+        line_operation.model_copy(update={"slice_values": ()}),
+    )
+    assert incomplete_cut_shape.valid
+
+    image_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(tool, image_operation)
+    assert image_kwargs["transpose"] is True
+    assert image_kwargs["xlim"] == (-1.0, 1.0)
+    assert image_kwargs["ylim"] == 0.5
+    assert image_kwargs["crop"] is False
+    assert image_kwargs["same_limits"] is True
+    assert image_kwargs["axis"] == "x"
+    assert image_kwargs["show_all_labels"] is True
+    assert image_kwargs["colorbar"] == "right"
+    assert image_kwargs["hide_colorbar_ticks"] is False
+    assert image_kwargs["annotate"] is False
+    assert image_kwargs["cmap"] == "magma"
+    assert image_kwargs["gamma"] == 0.5
+    assert image_kwargs["vmin"] == 0.0
+    assert image_kwargs["vmax"] == 10.0
+    assert image_kwargs["order"] == "F"
+    assert image_kwargs["cmap_order"] == "F"
+    assert image_kwargs["norm_order"] == "F"
+    assert image_kwargs["subplot_kw"] == {"sharex": True}
+    assert image_kwargs["annotate_kw"] == {"fontsize": 8}
+    assert image_kwargs["colorbar_kw"] == {"ticks": [0.0, 1.0]}
+    assert image_kwargs["alpha"] == 0.9
+
+    explicit_norm_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        tool,
+        image_operation.model_copy(
+            update={"norm_name": "Normalize", "norm_gamma": None}
+        ),
+    )
+    assert "norm" in explicit_norm_kwargs
+    panel_norm_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        tool,
+        image_operation.model_copy(
+            update={
+                "panel_styles_enabled": True,
+                "panel_styles": (
+                    FigurePlotSlicesPanelStyleState(
+                        map_index=0,
+                        slice_index=0,
+                        norm_name="Normalize",
+                    ),
+                ),
+            }
+        ),
+    )
+    assert "norm" in panel_norm_kwargs
+
+    line_kwargs = figurecomposer_plot_slices._plot_slices_kwargs(tool, line_operation)
+    assert line_kwargs["line_kw"] == [
+        [{"linewidth": 1.5, "color": "red"}],
+        [{"linewidth": 1.5, "color": "blue"}],
+    ]
+    assert line_kwargs["line_order"] == "F"
+    assert line_kwargs["gradient"] is True
+    assert line_kwargs["gradient_kw"] == {"alpha": 0.2}
+    transformed_kwargs = figurecomposer_plot_slices._plot_slices_transformed_kwargs(
+        tool,
+        line_operation,
+    )
+    assert "eV_width" not in transformed_kwargs
+    assert transformed_kwargs["eV"] == [0.0, 1.0]
+
+    flat_axes = np.empty(4, dtype=object)
+    reshaped_axes = figurecomposer_plot_slices._plot_slices_axes(
+        line_operation.model_copy(update={"sources": ("line", "other")}),
+        (line, other),
+        flat_axes,
+    )
+    assert isinstance(reshaped_axes, np.ndarray)
+    assert reshaped_axes.shape == (2, 2)
+    mismatched_axes = np.empty(3, dtype=object)
+    assert (
+        figurecomposer_plot_slices._plot_slices_axes(
+            line_operation,
+            (line,),
+            mismatched_axes,
+        )
+        is mismatched_axes
+    )
+    assert (
+        figurecomposer_plot_slices._plot_slices_axes(line_operation, (line,), object())
+        is not flat_axes
+    )
+
+    selection_operation = FigureOperationState.plot_slices(
+        label="selection",
+        sources=("image",),
+        map_selections=(
+            FigureDataSelectionState(source="image", isel={"eV": 0}),
+            FigureDataSelectionState(source="image", qsel={"eV": 1.0}),
+        ),
+    )
+    assert (
+        len(figurecomposer_plot_slices._operation_maps(tool, selection_operation)) == 2
+    )
+    selection_lines = figurecomposer_plot_slices._plot_slices_code_lines(
+        tool,
+        selection_operation,
+    )
+    assert selection_lines[0] == "selected_maps = ["
+    assert any("eplt.plot_slices" in line for line in selection_lines)
+    assert (
+        figurecomposer_plot_slices._plot_slices_code_lines(
+            tool,
+            FigureOperationState.plot_slices(label="empty", sources=()),
+        )
+        == []
+    )
+
+    transform_lines = figurecomposer_plot_slices._plot_slices_transformed_code_lines(
+        tool,
+        line_operation,
+    )
+    assert transform_lines[0] == "profiles = ["
+    assert any("eplt.plot_slices" in line for line in transform_lines)
+    no_slice_map_lines, no_slice_maps_code = (
+        figurecomposer_plot_slices._plot_slices_transformed_maps_code(
+            line_operation.model_copy(update={"slice_dim": None, "slice_values": ()}),
+            keys[:1],
+        )
+    )
+    assert no_slice_map_lines == []
+    assert no_slice_maps_code == "profiles[0]"
+
+    assert figurecomposer_plot_slices._bool_or_text("True") is True
+    assert figurecomposer_plot_slices._bool_or_text("False") is False
+    assert figurecomposer_plot_slices._bool_or_text("row") == "row"
+    assert figurecomposer_plot_slices._optional_number_or_text("vmin", "") is None
+    assert (
+        figurecomposer_plot_slices._optional_number_or_text("cmap", "magma") == "magma"
+    )
+    assert figurecomposer_plot_slices._optional_number_or_text("vmax", "1.5") == 1.5
+    assert (
+        figurecomposer_plot_slices._norm_field_placeholder(
+            image_operation.model_copy(update={"norm_name": "CenteredPowerNorm"}),
+            "vcenter",
+        )
+        == "0"
+    )
+    assert (
+        figurecomposer_plot_slices._norm_field_placeholder(
+            image_operation.model_copy(update={"vcenter": 1.0}),
+            "vcenter",
+        )
+        == ""
+    )
+    assert (
+        figurecomposer_plot_slices._norm_gamma_value(
+            image_operation.model_copy(update={"norm_gamma": None, "gamma": None})
+        )
+        == 1.0
+    )
+    assert figurecomposer_plot_slices._norm_clip_text(None) == "default"
+    assert figurecomposer_plot_slices._norm_clip_from_text("True") is True
+    assert figurecomposer_plot_slices._norm_clip_from_text("False") is False
+    assert figurecomposer_plot_slices._norm_clip_from_text("default") is None
+
+    tool.operation_list.setCurrentRow(1)
+    figurecomposer_plot_slices._update_current_norm_name(tool, "CenteredPowerNorm")
+    assert tool.tool_status.operations[1].norm_name == "CenteredPowerNorm"
+    figurecomposer_plot_slices._update_current_norm_gamma(tool, 0.75)
+    assert tool.tool_status.operations[1].norm_gamma == 0.75
+    figurecomposer_plot_slices._update_current_norm_kwargs(
+        tool,
+        "halfrange=2.0, clip=True, custom=1",
+    )
+    assert tool.tool_status.operations[1].halfrange == 2.0
+    assert tool.tool_status.operations[1].norm_clip is True
+    assert tool.tool_status.operations[1].norm_kwargs == {"custom": 1}
+    figurecomposer_plot_slices._update_current_slice_kwargs(
+        tool,
+        "eV=[0, 1], eV_width=0.2",
+    )
+    assert tool.tool_status.operations[1].slice_dim == "eV"
+    assert tool.tool_status.operations[1].slice_width == 0.2
+    figurecomposer_plot_slices._update_current_extra_kwargs(
+        tool,
+        "kx=0.0, alpha=0.5",
+    )
+    assert tool.tool_status.operations[1].slice_kwargs["kx"] == 0.0
+    assert tool.tool_status.operations[1].extra_kwargs == {"alpha": 0.5}
+    figurecomposer_plot_slices._update_current_cmap(tool, base="viridis", reverse=True)
+    assert tool.tool_status.operations[1].cmap == "viridis_r"
+    figurecomposer_plot_slices._update_current_panel_styles_enabled(tool, False)
+    assert not tool.tool_status.operations[1].panel_styles_enabled
+    figurecomposer_plot_slices._update_current_panel_styles(
+        tool,
+        (FigurePlotSlicesPanelStyleState(map_index=0, slice_index=0, cmap="plasma"),),
+    )
+    assert tool.tool_status.operations[1].panel_styles_enabled
+    assert tool.tool_status.operations[1].panel_styles[0].cmap == "plasma"
+
+
 def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     qtbot,
     monkeypatch,
@@ -5261,6 +5628,322 @@ def test_figure_composer_method_docs_button_opens_current_url(
             "erlab.plotting.clean_labels.html"
         ),
     ]
+
+
+def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2, layout=None),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_xlim",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="set_layout_engine",
+                    args=("compressed",),
+                    kwargs={"hspace": 0.2, "pad": 0.1},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    fallback_spec = figurecomposer_method._method_spec(
+        FigureOperationState.method(family=FigureMethodFamily.AXES, name="missing")
+    )
+    assert fallback_spec is next(iter(figurecomposer_method.AXES_METHODS.values()))
+    assert (
+        figurecomposer_method._method_label(
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="missing",
+            )
+        )
+        == fallback_spec.label
+    )
+
+    colorbar_operation = FigureOperationState.method(
+        family=FigureMethodFamily.ERLAB,
+        name="nice_colorbar",
+    )
+    colorbar_spec = figurecomposer_method._method_spec(colorbar_operation)
+    assert (
+        figurecomposer_method._effective_call_policy(
+            colorbar_operation.model_copy(update={"method_call_policy": "bad-policy"}),
+            colorbar_spec,
+        )
+        == colorbar_spec.call_policy
+    )
+    assert (
+        figurecomposer_method._effective_call_policy(
+            colorbar_operation.model_copy(
+                update={
+                    "method_call_policy": (
+                        figurecomposer_method.MethodCallPolicy.PLAIN_CALL.value
+                    )
+                }
+            ),
+            colorbar_spec,
+        )
+        == colorbar_spec.call_policy
+    )
+
+    assert figurecomposer_method._live_layout_axes(tool).shape == (1, 2)
+    assert (
+        figurecomposer_method._first_live_axis(
+            tool,
+            FigureAxesSelectionState(expression="axs[3, 3]"),
+        )
+        is None
+    )
+    assert (
+        figurecomposer_method._method_float_pair_args(
+            tool,
+            FigureOperationState.method(
+                family=FigureMethodFamily.AXES,
+                name="set_xlim",
+                axes=FigureAxesSelectionState(expression="axs[3, 3]"),
+            ),
+            figurecomposer_method.AXES_METHODS["set_xlim"],
+        )
+        is None
+    )
+
+    grid_axis = FigureGridSpecAxesState(
+        axes_id="axis-a",
+        span=FigureGridSpecSpanState(
+            row_start=0,
+            row_stop=1,
+            col_start=0,
+            col_stop=1,
+        ),
+    )
+    grid_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(
+                    root=FigureGridSpecGridState(
+                        grid_id="root",
+                        nrows=1,
+                        ncols=1,
+                        axes=(grid_axis,),
+                    )
+                ),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(grid_tool)
+    grid_axes = figurecomposer_method._live_layout_axes(grid_tool)
+    assert isinstance(grid_axes, dict)
+    assert set(grid_axes) == {"axis-a"}
+    assert (
+        figurecomposer_method._first_live_axis(
+            grid_tool,
+            FigureAxesSelectionState(axes=(), axes_ids=()),
+        )
+        is grid_axes["axis-a"]
+    )
+    grid_tool.figure.clear()
+    assert figurecomposer_method._live_layout_axes(grid_tool) is None
+    assert (
+        figurecomposer_method._limit_method_default_args(
+            grid_tool,
+            figurecomposer_method.AXES_METHODS["set_xlim"],
+            FigureAxesSelectionState(axes=(), axes_ids=("axis-a",)),
+        )
+        == ()
+    )
+
+    int_control = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.INT_ARG,
+        label="Count",
+        tooltip="count tooltip",
+        object_name="count",
+        default=None,
+        step=2,
+    )
+    int_spin = figurecomposer_method._int_spinbox(None, int_control, parent=tool)
+    assert int_spin.value() == 0
+    assert int_spin.singleStep() == 2
+    float_control = figurecomposer_method.MethodControlSpec(
+        kind=figurecomposer_method.MethodControlKind.FLOAT_ARG,
+        label="Value",
+        tooltip="value tooltip",
+        object_name="value",
+        default=None,
+        decimals=2,
+        step=0.25,
+    )
+    float_spin = figurecomposer_method._float_spinbox(None, float_control, parent=tool)
+    assert float_spin.value() == pytest.approx(0.0)
+    assert float_spin.decimals() == 2
+    assert float_spin.singleStep() == pytest.approx(0.25)
+    assert "multiple values" in figurecomposer_method._numeric_control_tooltip(
+        float_control,
+        mixed=True,
+    )
+
+    default_from_window = figurecomposer_method._subplots_adjust_default(tool, "left")
+    assert default_from_window == pytest.approx(
+        tool.figure_window.figure.subplotpars.left
+    )
+    spin_operation = FigureOperationState.method(
+        family=FigureMethodFamily.FIGURE,
+        name="subplots_adjust",
+        kwargs={"left": "bad"},
+    )
+    adjust_spin = figurecomposer_method._subplots_adjust_spinbox(
+        tool,
+        spin_operation,
+        "left",
+        mixed=False,
+        parent=tool,
+    )
+    assert adjust_spin.value() == pytest.approx(default_from_window)
+
+    layout_spec = figurecomposer_method.FIGURE_METHODS["set_layout_engine"]
+    assert (
+        figurecomposer_method._layout_engine_name(
+            FigureOperationState.method(
+                family=FigureMethodFamily.FIGURE,
+                name="set_layout_engine",
+            ),
+            layout_spec,
+        )
+        == "none"
+    )
+    assert figurecomposer_method._filter_layout_engine_kwargs(
+        (),
+        {"pad": 0.1},
+    ) == {"pad": 0.1}
+    assert figurecomposer_method._filter_layout_engine_kwargs(
+        ("tight",),
+        {"pad": 0.1, "hspace": 0.2},
+    ) == {"pad": 0.1}
+
+    with pytest.raises(ValueError, match="argument index"):
+        figurecomposer_method._control_arg_index(
+            figurecomposer_method.MethodControlSpec(
+                kind=figurecomposer_method.MethodControlKind.TEXT_ARG,
+                label="Missing",
+                tooltip="missing",
+                object_name="missing",
+            )
+        )
+    with pytest.raises(ValueError, match="keyword name"):
+        figurecomposer_method._control_key(
+            figurecomposer_method.MethodControlSpec(
+                kind=figurecomposer_method.MethodControlKind.TEXT_KWARG,
+                label="Missing",
+                tooltip="missing",
+                object_name="missing",
+            )
+        )
+
+    assert figurecomposer_method._empty_text_as_none("") is None
+    assert figurecomposer_method._empty_text_as_none("title") == "title"
+    assert figurecomposer_method._string_tuple_from_text_or_none("") is None
+    assert figurecomposer_method._string_tuple_from_text_or_none("a, b") == ("a", "b")
+    assert figurecomposer_method._format_int_value(None) == ""
+    assert figurecomposer_method._format_int_value(2.0) == "2"
+    assert figurecomposer_method._format_float_value(None) == ""
+    assert figurecomposer_method._format_float_value(1.25) == "1.25"
+    assert figurecomposer_method._format_literal_value(None) == ""
+    assert figurecomposer_method._format_literal_value({"alpha": 0.5}) == "alpha=0.5"
+    assert figurecomposer_method._format_literal_value((1, 2)) == "1, 2"
+    assert figurecomposer_method._format_aspect_value(None) == ""
+    assert figurecomposer_method._format_aspect_value("equal") == "equal"
+    assert figurecomposer_method._format_aspect_value(2) == "2"
+    assert figurecomposer_method._literal_value_from_text("alpha=0.5") == {"alpha": 0.5}
+    assert figurecomposer_method._literal_value_from_text("[1, 2]") == [1, 2]
+    assert figurecomposer_method._aspect_value_from_text("") is None
+    assert figurecomposer_method._aspect_value_from_text("equal") == "equal"
+    assert figurecomposer_method._aspect_value_from_text("2") == 2.0
+    assert figurecomposer_method._aspect_value_from_text("[1, 2]") == "[1, 2]"
+    assert figurecomposer_method._optional_literal_from_text("") is None
+    assert figurecomposer_method._optional_literal_from_text("alpha=0.5") == {
+        "alpha": 0.5
+    }
+    assert figurecomposer_method._optional_float_from_text("") is None
+    assert figurecomposer_method._optional_float_from_text("1.5") == 1.5
+    assert figurecomposer_method._optional_int_from_text("") is None
+    assert figurecomposer_method._optional_int_from_text("3") == 3
+
+    assert figurecomposer_method._family_from_label("bad") == FigureMethodFamily.ERLAB
+    assert figurecomposer_method._method_name_from_label(
+        FigureMethodFamily.AXES,
+        "bad",
+    ) == next(iter(figurecomposer_method.AXES_METHODS))
+    assert (
+        figurecomposer_method._method_combo_object_name(FigureMethodFamily.FIGURE)
+        == "figureComposerFigureMethodCombo"
+    )
+    assert (
+        figurecomposer_method._method_kwargs_object_name(FigureMethodFamily.ERLAB)
+        == "figureComposerERLabMethodKwEdit"
+    )
+    assert (
+        figurecomposer_method._method_display(
+            FigureOperationState.method(
+                family=FigureMethodFamily.FIGURE,
+                name="supxlabel",
+            )
+        )
+        == "fig.supxlabel"
+    )
+    assert (
+        figurecomposer_method._callable_display(
+            figurecomposer_method.FIGURE_METHODS["supxlabel"]
+        )
+        == "fig.supxlabel"
+    )
+    assert (
+        figurecomposer_method._callable_display(colorbar_spec)
+        == "erlab.plotting.nice_colorbar"
+    )
+
+    tool.operation_list.setCurrentRow(1)
+    figurecomposer_method._update_current_layout_engine(tool, 0, "tight")
+    assert tool.tool_status.operations[1].method_args == ("tight",)
+    assert tool.tool_status.operations[1].method_kwargs == {"pad": 0.1}
+    figurecomposer_method._update_current_method_arg(tool, 2, "third")
+    assert tool.tool_status.operations[1].method_args == ("tight", None, "third")
+    figurecomposer_method._update_current_method_string_tuple_arg(tool, 1, "a, b")
+    assert tool.tool_status.operations[1].method_args == ("tight", ("a", "b"), "third")
+    figurecomposer_method._update_current_method_string_tuple_arg(tool, 1, "")
+    assert tool.tool_status.operations[1].method_args == ("tight",)
+    figurecomposer_method._update_current_method_kwarg(tool, "pad", None)
+    assert tool.tool_status.operations[1].method_kwargs == {}
+    figurecomposer_method._update_current_method_kwarg(tool, "pad", 0.3)
+    assert tool.tool_status.operations[1].method_kwargs == {"pad": 0.3}
+    figurecomposer_method._update_current_method_call_policy(
+        tool,
+        figurecomposer_method.MethodCallPolicy.PLAIN_CALL,
+    )
+    assert tool.tool_status.operations[1].method_call_policy == "plain_call"
+    figurecomposer_method._update_current_method_call_policy(
+        tool,
+        figurecomposer_method.MethodCallPolicy.BOUND_FIGURE,
+    )
+    assert tool.tool_status.operations[1].method_call_policy is None
+    figurecomposer_method._update_current_method_text_values(tool, "\nlabel\n")
+    assert tool.tool_status.operations[1].text_values == ("label",)
 
 
 def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
