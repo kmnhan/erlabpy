@@ -901,19 +901,31 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
         watched: QtCore.QObject | None,
         event: QtCore.QEvent | None,
     ) -> bool:
-        if self.search_popup.isVisible() and event is not None:
+        search_popup = getattr(self, "search_popup", None)
+        if search_popup is None or not erlab.interactive.utils.qt_is_valid(
+            search_popup
+        ):
+            return super().eventFilter(watched, event)
+        if search_popup.isVisible() and event is not None:
             if event.type() == QtCore.QEvent.Type.WindowDeactivate:
                 self._hide_search_popup(reset_navigation=True)
             elif event.type() == QtCore.QEvent.Type.MouseButtonPress:
                 mouse_event = event if isinstance(event, QtGui.QMouseEvent) else None
                 if mouse_event is not None:
                     global_pos = mouse_event.globalPosition().toPoint()
-                    if self.search_popup.frameGeometry().contains(
+                    search_edit = getattr(self, "search_edit", None)
+                    search_edit_rect = (
+                        QtCore.QRect(
+                            search_edit.mapToGlobal(QtCore.QPoint(0, 0)),
+                            search_edit.size(),
+                        )
+                        if search_edit is not None
+                        and erlab.interactive.utils.qt_is_valid(search_edit)
+                        else QtCore.QRect()
+                    )
+                    if search_popup.frameGeometry().contains(
                         global_pos
-                    ) or QtCore.QRect(
-                        self.search_edit.mapToGlobal(QtCore.QPoint(0, 0)),
-                        self.search_edit.size(),
-                    ).contains(global_pos):
+                    ) or search_edit_rect.contains(global_pos):
                         return super().eventFilter(watched, event)
                     self._hide_search_popup(reset_navigation=True)
                 elif not self._is_search_popup_target(watched):
@@ -1058,8 +1070,13 @@ class PeriodicTableWindow(QtWidgets.QMainWindow):
             self._refresh_window_state(ensure_visible=False)
 
     def _hide_search_popup(self, *, reset_navigation: bool) -> None:
-        was_visible = self.search_popup.isVisible()
-        self.search_popup.hide()
+        search_popup = getattr(self, "search_popup", None)
+        if search_popup is None or not erlab.interactive.utils.qt_is_valid(
+            search_popup
+        ):
+            return
+        was_visible = search_popup.isVisible()
+        search_popup.hide()
         if reset_navigation:
             self._search_completion_row = None
             self._search_matches = self._all_search_match_atomic_numbers()

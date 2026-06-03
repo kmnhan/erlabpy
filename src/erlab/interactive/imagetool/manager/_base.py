@@ -6,6 +6,7 @@ __all__ = ["_ImageToolManagerBase"]
 
 import threading
 import typing
+import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -432,7 +433,12 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
         if signal is not None:
             signal.connect(self._mark_standalone_app_state_dirty)
 
+        widget_ref = weakref.ref(widget)
+
         def cleanup(_obj: QtCore.QObject | None = None) -> None:
+            current = self._standalone_app_windows.get(key)
+            if current is not None and current is not widget_ref():
+                return
             self._standalone_app_windows.pop(key, None)
             self._standalone_app_event_filters.pop(key, None)
 
@@ -474,7 +480,9 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
             return
         if window_state.visible:
             widget.show()
+            _qt_state.restore_qt_window_state(widget, window_state)
         else:
+            _qt_state.restore_qt_window_state(widget, window_state)
             widget.hide()
         self._standalone_app_pending_states[key] = state
 

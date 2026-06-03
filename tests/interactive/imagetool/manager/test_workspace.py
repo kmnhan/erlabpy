@@ -5172,13 +5172,15 @@ def test_manager_active_window_and_focus_restore_guards(
             QtWidgets.QApplication, "activeWindow", staticmethod(lambda: active)
         )
         monkeypatch.setattr(manager, "_node_uid_from_window", lambda _window: "uid")
-        monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda _obj: False)
+        monkeypatch.setattr(
+            erlab.interactive.utils, "qt_is_valid", lambda *_objs: False
+        )
         assert manager._active_managed_window() is None
 
         monkeypatch.setattr(
             QtWidgets.QApplication, "activeWindow", staticmethod(lambda: other)
         )
-        monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda _obj: True)
+        monkeypatch.setattr(erlab.interactive.utils, "qt_is_valid", lambda *_objs: True)
         manager._restore_focus_after_workspace_save(origin)
 
 
