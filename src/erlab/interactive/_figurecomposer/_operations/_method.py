@@ -74,7 +74,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab.interactive.utils
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_code
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
@@ -87,6 +86,10 @@ from erlab.interactive._figurecomposer._operations._base import (
     _empty_source_editor,
     _empty_source_names,
     _uses_no_source_section,
+)
+from erlab.interactive._figurecomposer._rendering import (
+    _axes_from_selection,
+    _iter_axes,
 )
 from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
@@ -2106,12 +2109,12 @@ def _first_live_axis(
             }
         )
     try:
-        selected_axes = _rendering._axes_from_selection(
+        selected_axes = _axes_from_selection(
             tool, selection, layout_axes, for_plot_slices=False
         )
     except (IndexError, TypeError, ValueError):
         return None
-    axes = _rendering._iter_axes(selected_axes)
+    axes = _iter_axes(selected_axes)
     return axes[0] if axes else None
 
 
@@ -3500,15 +3503,13 @@ def _render_method(
     call_policy = _effective_call_policy(operation, spec)
     axes = None
     if spec.target_domain == MethodTargetDomain.AXES:
-        axes = _rendering._axes_from_selection(
-            tool, operation.axes, axs, for_plot_slices=False
-        )
+        axes = _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
 
     match call_policy:
         case MethodCallPolicy.BOUND_EACH_AXIS:
             if axes is None:
                 return
-            for axis in _rendering._iter_axes(axes):
+            for axis in _iter_axes(axes):
                 args, kwargs = _render_args_kwargs(tool, operation, spec, axis=axis)
                 getattr(axis, spec.call_name)(*args, **kwargs)
         case MethodCallPolicy.AXES_POSITIONAL:
@@ -3525,7 +3526,7 @@ def _render_method(
             if axes is None:
                 return
             args, kwargs = _render_args_kwargs(tool, operation, spec)
-            for axis in _rendering._iter_axes(axes):
+            for axis in _iter_axes(axes):
                 _erlab_callable(spec)(*args, ax=axis, **kwargs)
         case MethodCallPolicy.BOUND_FIGURE:
             args, kwargs = _render_args_kwargs(tool, operation, spec)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import typing
 
-from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
@@ -25,6 +24,11 @@ from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
     StepSection,
+)
+from erlab.interactive._figurecomposer._rendering import (
+    _axes_from_selection,
+    _iter_axes,
+    _render_preview,
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
@@ -573,7 +577,7 @@ def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
     tool._refresh_step_section_button_texts()
     current = tool._current_operation()
     tool._update_source_status(current[1] if current is not None else None)
-    _rendering._render_preview(tool)
+    _render_preview(tool)
     tool.sigInfoChanged.emit()
 
 
@@ -604,10 +608,8 @@ def _render_line(
     line_items = _line_data_items(tool, operation)
     if not line_items:
         return
-    axes = _rendering._iter_axes(
-        _rendering._axes_from_selection(
-            tool, operation.axes, axs, for_plot_slices=False
-        )
+    axes = _iter_axes(
+        _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
     )
     if operation.line_placement == "one_per_axis":
         _render_one_profile_per_axis(tool, operation, axes, line_items)

@@ -13,7 +13,6 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 import erlab
 import erlab.plotting as eplt
-from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_code, _selection_code
 from erlab.interactive._figurecomposer._defaults import (
     _figure_draw_context,
@@ -58,6 +57,12 @@ from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
     OperationSpec,
     StepSection,
+)
+from erlab.interactive._figurecomposer._rendering import (
+    _axes_from_selection,
+    _iter_axes,
+    _make_axes,
+    _render_preview,
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
@@ -2591,16 +2596,14 @@ def _plot_slices_limit_placeholder(
         )
         canvas = FigureCanvasAgg(figure)
         try:
-            axs = _rendering._make_axes(tool, figure, sync_visible=False)
+            axs = _make_axes(tool, figure, sync_visible=False)
             if tool._operation_has_invalid_axes(operation):
                 return ""
             _render_plot_slices(tool, operation, axs)
             with _figure_draw_context():
                 canvas.draw()
-            axes = _rendering._iter_axes(
-                _rendering._axes_from_selection(
-                    tool, operation.axes, axs, for_plot_slices=False
-                )
+            axes = _iter_axes(
+                _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
             )
             if not axes:
                 return ""
@@ -2754,9 +2757,7 @@ def _update_current_cmap(
     tool._update_operations(update_operation, render=False)
     tool._update_step_action_buttons()
     tool._refresh_step_section_button_texts()
-    erlab.interactive.utils.single_shot(
-        tool, 0, lambda: _rendering._render_preview(tool)
-    )
+    erlab.interactive.utils.single_shot(tool, 0, lambda: _render_preview(tool))
     tool.sigInfoChanged.emit()
 
 
@@ -3035,9 +3036,7 @@ def _render_plot_slices(
     axes = _plot_slices_axes(
         operation,
         maps,
-        _rendering._axes_from_selection(
-            tool, operation.axes, axs, for_plot_slices=True
-        ),
+        _axes_from_selection(tool, operation.axes, axs, for_plot_slices=True),
     )
     eplt.plot_slices(
         maps,

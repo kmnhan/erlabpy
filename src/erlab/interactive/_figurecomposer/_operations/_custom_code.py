@@ -7,7 +7,6 @@ import typing
 
 from qtpy import QtCore, QtWidgets
 
-from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_code_tuple,
@@ -23,6 +22,7 @@ from erlab.interactive._figurecomposer._operations._base import (
     _uses_no_axes,
     _uses_no_source_section,
 )
+from erlab.interactive._figurecomposer._rendering import _source_namespace
 from erlab.interactive._figurecomposer._state import (
     FigureOperationKind,
     FigureOperationState,
@@ -78,7 +78,7 @@ def _render_custom(
 ) -> None:
     if not operation.trusted or not operation.code.strip():
         return
-    namespace = _rendering._source_namespace(tool, fig, axs)
+    namespace = _source_namespace(tool, fig, axs)
     # Custom code is the explicit trusted escape hatch in the recipe pipeline.
     exec(operation.code, namespace)  # noqa: S102
 

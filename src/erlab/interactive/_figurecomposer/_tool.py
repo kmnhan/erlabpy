@@ -20,7 +20,7 @@ from matplotlib.figure import Figure
 import xarray as xr
 
 import erlab
-from erlab.interactive._figurecomposer import _codegen, _rendering
+import erlab.interactive._figurecomposer._codegen
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._defaults import (
     _MM_PER_INCH,
@@ -67,6 +67,10 @@ from erlab.interactive._figurecomposer._operations._base import (
     COMMON_AXES_SECTION_TOOLTIP,
     COMMON_SOURCE_SECTION_TOOLTIP,
     StepSection,
+)
+from erlab.interactive._figurecomposer._rendering import (
+    _render_into_figure,
+    _render_preview,
 )
 from erlab.interactive._figurecomposer._sources import (
     _default_plot_operation,
@@ -177,7 +181,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._current_step_section_key = "sources"
         self._build_ui()
         self._apply_recipe_to_controls()
-        _rendering._render_preview(self, show_window=False)
+        _render_preview(self, show_window=False)
 
     @staticmethod
     def _default_recipe(data: xr.DataArray) -> FigureRecipeState:
@@ -258,7 +262,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self.canvas.flush_events()
         self._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
-        _rendering._render_preview(self, show_window=False)
+        _render_preview(self, show_window=False)
         self.canvas.draw()
         self.canvas.flush_events()
 
@@ -1597,7 +1601,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             else:
                 self._update_operation_editor_safely()
         if render:
-            _rendering._render_preview(self)
+            _render_preview(self)
             self.sigInfoChanged.emit()
 
     def _replace_operation(
@@ -1626,7 +1630,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             else:
                 self._update_operation_editor_safely()
         if render:
-            _rendering._render_preview(self)
+            _render_preview(self)
             self.sigInfoChanged.emit()
 
     def _update_current_operation(self, **updates: typing.Any) -> None:
@@ -1654,9 +1658,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
-        erlab.interactive.utils.single_shot(
-            self, 0, lambda: _rendering._render_preview(self)
-        )
+        erlab.interactive.utils.single_shot(self, 0, lambda: _render_preview(self))
         self.sigInfoChanged.emit()
 
     def _update_step_action_buttons(self) -> None:
@@ -1749,7 +1751,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rebuild_axes_grid()
         self._refresh_operation_list()
         self._update_operation_editor()
-        _rendering._render_preview(self)
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     @QtCore.Slot()
@@ -1843,7 +1845,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._rebuild_axes_grid()
         self._refresh_operation_list()
         self._update_operation_editor()
-        _rendering._render_preview(self)
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     @staticmethod
@@ -2013,7 +2015,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     self._sync_axes_selector()
                     self._update_source_status(updated)
                 self._refresh_step_section_button_texts()
-                _rendering._render_preview(self)
+                _render_preview(self)
                 self.sigInfoChanged.emit()
                 return
 
@@ -2306,7 +2308,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._refresh_operation_list()
         self._refresh_step_section_button_texts()
         self._update_operation_editor()
-        _rendering._render_preview(self)
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     @QtCore.Slot()
@@ -2323,7 +2325,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(update={"operations": operations})
         self._refresh_operation_list()
         self.operation_list.setCurrentRow(len(operations) - 1)
-        _rendering._render_preview(self)
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     @QtCore.Slot()
@@ -2423,7 +2425,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                     break
         self._sync_axes_selector()
         self._update_operation_editor()
-        _rendering._render_preview(self)
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     @QtCore.Slot()
@@ -2441,7 +2443,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._apply_recipe_to_controls()
         self.operation_list.setCurrentRow(len(self._recipe.operations) - 1)
-        _rendering._render_preview(self)
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     def add_sources(
@@ -2458,7 +2460,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = self._recipe.model_copy(update={"sources": ordered_sources})
         self._refresh_source_list()
         self._update_source_section()
-        _rendering._render_preview(self)
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     @staticmethod
@@ -3068,7 +3070,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             label_widget.setToolTip(tooltip)
 
     def generated_code(self) -> str:
-        return _codegen.generated_code(self)
+        return erlab.interactive._figurecomposer._codegen.generated_code(self)
 
     @QtCore.Slot()
     def copy_code(self) -> None:
@@ -3088,7 +3090,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         if not filename:
             return
-        _rendering._render_preview(self, show_window=False)
+        _render_preview(self, show_window=False)
         with _figure_draw_context():
             self.figure.savefig(
                 filename,
@@ -3116,7 +3118,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._recipe = status.model_copy(update={"operations": operations})
         self._ensure_primary_source_data()
         self._apply_recipe_to_controls()
-        _rendering._render_preview(self)
+        _render_preview(self)
 
     def set_source_data(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data = dict(source_data)
@@ -3212,7 +3214,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 continue
         self.set_source_data(source_data)
         self._apply_recipe_to_controls()
-        _rendering._render_preview(self, show_window=False)
+        _render_preview(self, show_window=False)
 
     @property
     def preview_pixmap(self) -> QtGui.QPixmap | None:
@@ -3226,7 +3228,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             )
             canvas = FigureCanvasAgg(figure)
             try:
-                _rendering._render_into_figure(self, figure, sync_visible=False)
+                _render_into_figure(self, figure, sync_visible=False)
                 with _figure_draw_context():
                     canvas.draw()
                 width, height = canvas.get_width_height()
@@ -3271,10 +3273,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self._source_data.pop(source.name, None)
         self._refresh_source_list()
         self._update_source_section()
-        _rendering._render_preview(self)
+        _render_preview(self)
 
     def refresh_from_sources(self, source_data: Mapping[str, xr.DataArray]) -> None:
         self._source_data.update(source_data)
         self._refresh_source_list()
         self._update_source_section()
-        _rendering._render_preview(self)
+        _render_preview(self)

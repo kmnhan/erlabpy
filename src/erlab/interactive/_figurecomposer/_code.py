@@ -5,7 +5,6 @@ from __future__ import annotations
 import typing
 
 import erlab
-from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._axes import (
     _compact_axes_code,
     _compact_axes_iterable_code,
@@ -18,6 +17,7 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_span_code,
     _gridspec_valid_axes_ids,
 )
+from erlab.interactive._figurecomposer._rendering import _setup_kwargs
 from erlab.interactive._figurecomposer._sources import (
     _decode_indexers,
     _valid_source_variable,
@@ -136,7 +136,7 @@ def _setup_code(tool: FigureComposerTool) -> str:
         if _gridspec_has_invalid_regions(setup.gridspec.root):
             raise ValueError("GridSpec layout contains regions outside their grids")
         return "\n".join(_gridspec_setup_code_lines(tool))
-    kwargs = _code_kwargs(_rendering._setup_kwargs(tool))
+    kwargs = _code_kwargs(_setup_kwargs(tool))
     return f"fig, axs = plt.subplots({kwargs})"
 
 
