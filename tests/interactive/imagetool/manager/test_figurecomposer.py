@@ -5520,20 +5520,21 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     grid_check = dialog.findChild(
         QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
     )
-    style_combo = dialog.findChild(
-        QtWidgets.QComboBox, "figureComposerToolbarAxesStyleStepCombo"
-    )
-    style_button = dialog.findChild(
-        QtWidgets.QPushButton, "figureComposerToolbarAxesStyleStepButton"
-    )
     assert title_edit is not None
     assert xlim_edit is not None
     assert aspect_edit is not None
     assert xscale_combo is not None
     assert grid_check is not None
-    assert style_combo is not None
-    assert style_button is not None
-    assert style_combo.count() == 1
+    assert (
+        dialog.findChild(QtWidgets.QComboBox, "figureComposerToolbarAxesStyleStepCombo")
+        is None
+    )
+    assert (
+        dialog.findChild(
+            QtWidgets.QPushButton, "figureComposerToolbarAxesStyleStepButton"
+        )
+        is None
+    )
 
     title_edit.setText("Peak")
     title_edit.setModified(True)
@@ -5567,9 +5568,6 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert len(grid_ops) == 1
     assert grid_ops[0].method_args == (True,)
     assert grid_ops[0].method_kwargs == {"which": "major", "axis": "both"}
-
-    style_button.click()
-    assert tool.operation_list.currentRow() == 0
 
 
 def test_figure_composer_toolbar_axes_dialog_updates_curve_style(qtbot) -> None:

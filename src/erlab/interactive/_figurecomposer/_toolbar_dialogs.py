@@ -263,29 +263,20 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_which_combo.setObjectName("figureComposerToolbarAxesGridWhichCombo")
     grid_which_combo.addItems(["major", "minor", "both"])
 
-    style_combo = QtWidgets.QComboBox(axes_page)
-    style_combo.setObjectName("figureComposerToolbarAxesStyleStepCombo")
-    style_button = QtWidgets.QPushButton("Open Step", axes_page)
-    style_button.setObjectName("figureComposerToolbarAxesStyleStepButton")
-    style_button.setToolTip(
-        "Select the recipe step that draws on these axes so its detailed\n"
-        "line, marker, image, and color controls are available in the editor."
-    )
-
     rows = (
         ("Title", title_edit, "X label", xlabel_edit),
         ("Y label", ylabel_edit, "Aspect", aspect_edit),
         ("X limits", xlim_edit, "Y limits", ylim_edit),
         ("X scale", xscale_combo, "Y scale", yscale_combo),
         ("Grid", grid_check, "Grid axis", grid_axis_combo),
-        ("Grid ticks", grid_which_combo, "Plot/style step", style_combo),
     )
     for row, (left_label, left_widget, right_label, right_widget) in enumerate(rows):
         form_layout.addWidget(QtWidgets.QLabel(left_label, axes_page), row, 0)
         form_layout.addWidget(left_widget, row, 1)
         form_layout.addWidget(QtWidgets.QLabel(right_label, axes_page), row, 2)
         form_layout.addWidget(right_widget, row, 3)
-    form_layout.addWidget(style_button, len(rows), 3)
+    form_layout.addWidget(QtWidgets.QLabel("Grid ticks", axes_page), len(rows), 0)
+    form_layout.addWidget(grid_which_combo, len(rows), 1)
 
     for edit in (
         title_edit,
@@ -326,26 +317,6 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             args=args,
             kwargs=kwargs,
         )
-
-    def refresh_style_steps() -> None:
-        selected_axes = set(_axes_for_selection(tool, current_selection()))
-        style_combo.blockSignals(True)
-        try:
-            style_combo.clear()
-            if selected_axes:
-                for index, operation in enumerate(tool._recipe.operations):
-                    if operation.kind not in {
-                        FigureOperationKind.PLOT_SLICES,
-                        FigureOperationKind.LINE,
-                    }:
-                        continue
-                    if selected_axes & set(_axes_for_selection(tool, operation.axes)):
-                        style_combo.addItem(
-                            tool._operation_display_text(operation), index
-                        )
-            style_button.setEnabled(style_combo.count() > 0)
-        finally:
-            style_combo.blockSignals(False)
 
     def refresh_style_targets() -> None:
         nonlocal curve_targets, image_targets
@@ -470,7 +441,6 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                 edit.setModified(False)
         finally:
             updating = False
-        refresh_style_steps()
         refresh_style_targets()
 
     def update_text_method(edit: QtWidgets.QLineEdit, name: str) -> None:
@@ -509,16 +479,6 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                 "axis": grid_axis_combo.currentText(),
             },
         )
-
-    def open_style_step() -> None:
-        index = style_combo.currentData()
-        if not isinstance(index, int):
-            return
-        tool.operation_list.setCurrentRow(index)
-        if tool.step_section_keys:
-            tool._select_step_section(tool.step_section_keys[0])
-        tool.raise_()
-        tool.activateWindow()
 
     def title_finished() -> None:
         update_text_method(title_edit, "set_title")
@@ -561,7 +521,6 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_check.toggled.connect(grid_toggled)
     grid_axis_combo.activated.connect(grid_combo_activated)
     grid_which_combo.activated.connect(grid_combo_activated)
-    style_button.clicked.connect(open_style_step)
     curves_combo.activated.connect(lambda _index: rebuild_curve_editor())
     images_combo.activated.connect(lambda _index: rebuild_image_editor())
     selector.sigSelectionChanged.connect(selection_changed)
