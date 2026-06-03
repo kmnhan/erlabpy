@@ -1252,6 +1252,576 @@ def test_figure_composer_plot_slices_panel_helpers_cover_style_contract(
     ) == {"linewidth": 1.5}
 
 
+def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
+    qtbot,
+    monkeypatch,
+) -> None:
+    first = xr.DataArray(
+        np.arange(24.0).reshape(2, 3, 4),
+        dims=("eV", "kx", "ky"),
+        coords={"eV": [0.0, 1.0], "kx": [0.0, 1.0, 2.0], "ky": range(4)},
+        name="first",
+    )
+    second = xr.DataArray(
+        np.arange(12.0).reshape(2, 6),
+        dims=("eV", "kz"),
+        coords={"eV": [0.0, 1.0], "kz": range(6)},
+        name="second",
+    )
+    first_operation = FigureOperationState.plot_slices(
+        label="first",
+        sources=("first",),
+        axes=FigureAxesSelectionState(axes=((0, 0),), expression="axs[0, 0]"),
+    ).model_copy(
+        update={
+            "transpose": True,
+            "slice_kwargs": {
+                "eV": slice(0.0, 1.0),
+                "kx": 1.0,
+                "ky": [0.0, 1.0],
+                "ky_width": 0.2,
+            },
+        }
+    )
+    second_operation = FigureOperationState.plot_slices(
+        label="second",
+        sources=("second",),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    )
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=1),
+            sources=(
+                FigureSourceState(name="first", label="first"),
+                FigureSourceState(name="second", label="second"),
+            ),
+            operations=(first_operation, second_operation),
+            primary_source="first",
+        ),
+        source_data={"first": first, "second": second},
+    )
+    qtbot.addWidget(tool)
+
+    shape = figurecomposer_plot_slices._plot_slices_shape(tool, first_operation)
+    assert shape.plot_ndim == 1
+    assert shape.panel_count == 2
+    assert shape.valid
+    invalid_shape = figurecomposer_plot_slices._plot_slices_shape(
+        tool,
+        first_operation.model_copy(
+            update={
+                "slice_kwargs": {"eV": 0.0, "kx": 1.0, "ky": 2.0},
+            }
+        ),
+    )
+    assert invalid_shape.plot_ndim == 0
+    assert not invalid_shape.valid
+    assert (
+        figurecomposer_plot_slices._section_summary(tool, "cuts", first_operation)
+        == "additional"
+    )
+    assert (
+        figurecomposer_plot_slices._section_summary(tool, "limits", first_operation)
+        == "auto"
+    )
+    assert (
+        figurecomposer_plot_slices._section_summary(tool, "advanced", first_operation)
+        == "optional"
+    )
+    assert (
+        figurecomposer_plot_slices._section_summary(tool, "unknown", first_operation)
+        == ""
+    )
+
+    mixed_operation = first_operation.model_copy(
+        update={"sources": ("first", "second")}
+    )
+    mixed_shape = figurecomposer_plot_slices._plot_slices_shape(tool, mixed_operation)
+    assert not mixed_shape.valid
+    assert mixed_shape.plot_ndim is None
+
+    empty_tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(),
+            operations=(
+                FigureOperationState.plot_slices(label="missing", sources=("missing",)),
+            ),
+            primary_source="missing",
+        ),
+        source_data={},
+    )
+    qtbot.addWidget(empty_tool)
+    empty_tool._source_data = {}
+    empty_shape = figurecomposer_plot_slices._plot_slices_shape(
+        empty_tool, empty_tool.tool_status.operations[0]
+    )
+    assert not empty_shape.valid
+    assert empty_shape.panel_count == 0
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            tool,
+            "_editable_operations",
+            lambda: ((0, first_operation), (1, second_operation)),
+        )
+        assert (
+            figurecomposer_plot_slices._plot_source_check_state(
+                tool, first_operation, "first"
+            )
+            == QtCore.Qt.CheckState.PartiallyChecked
+        )
+
+    tool._update_source_section()
+    selector = tool.step_source_controls.findChild(
+        QtWidgets.QWidget, "figureComposerPlotSlicesSourceSelector"
+    )
+    assert selector is not None
+    checks = selector.findChildren(QtWidgets.QCheckBox)
+    assert len(checks) == 2
+    first_check = next(
+        check for check in checks if check.property("figure_source_name") == "first"
+    )
+    second_check = next(
+        check for check in checks if check.property("figure_source_name") == "second"
+    )
+    assert first_check.checkState() == QtCore.Qt.CheckState.Checked
+    assert second_check.checkState() == QtCore.Qt.CheckState.Unchecked
+
+    second_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    figurecomposer_plot_slices._plot_source_check_changed(
+        tool, "second", second_check, ("first", "second")
+    )
+    assert tool.tool_status.operations[0].sources == ("first", "second")
+
+    figurecomposer_plot_slices._plot_source_move(tool, "first", 1)
+    assert tool.tool_status.operations[0].sources[:2] == ("second", "first")
+
+
+def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
+    qtbot,
+) -> None:
+    operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("data",),
+    ).model_copy(
+        update={
+            "cmap": "viridis",
+            "norm_name": "PowerNorm",
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    cmap="magma",
+                    norm_name="Normalize",
+                    vmin=0.0,
+                    vmax=1.0,
+                ),
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=1,
+                    cmap="plasma_r",
+                    norm_name="TwoSlopeNorm",
+                    vcenter=0.0,
+                    norm_kwargs={"clip": False},
+                ),
+            ),
+        }
+    )
+    keys = (
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "panel 2"),
+    )
+    editor = figurecomposer_plot_slices._PanelStyleEditorWidget(
+        operation,
+        keys,
+        lambda _owner, signal, slot: signal.connect(slot),
+    )
+    qtbot.addWidget(editor)
+    emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
+    editor.sigPanelStylesChanged.connect(emitted.append)
+
+    for row in range(editor.panel_list.count()):
+        item = editor.panel_list.item(row)
+        assert item is not None
+        item.setSelected(True)
+    editor._sync_controls()
+    assert editor.cmap_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert editor.norm_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert editor.norm_kwargs_edit.placeholderText() == "(multiple values)"
+
+    editor.norm_kwargs_edit.editingFinished.emit()
+    assert emitted == []
+    editor.vmin_edit.setText("0.2")
+    editor.vmin_edit.setModified(True)
+    editor.vmin_edit.editingFinished.emit()
+    assert emitted[-1][0].vmin == pytest.approx(0.2)
+    assert emitted[-1][1].vmin == pytest.approx(0.2)
+
+    editor.norm_override_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert all(style.norm_name is None for style in emitted[-1])
+    assert all(style.norm_kwargs == {} for style in emitted[-1])
+
+    editor.cmap_override_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    assert emitted[-1] == ()
+
+
+def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
+    qtbot,
+) -> None:
+    operation = FigureOperationState.plot_slices(
+        label="line",
+        sources=("data",),
+    ).model_copy(
+        update={
+            "line_kw": {"linewidth": 1.0},
+            "panel_styles_enabled": True,
+            "panel_styles": (
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=0,
+                    line_kw={"color": "red", "linestyle": "-"},
+                ),
+                FigurePlotSlicesPanelStyleState(
+                    map_index=0,
+                    slice_index=1,
+                    line_kw={"color": "blue", "marker": "o", "alpha": 0.5},
+                ),
+            ),
+        }
+    )
+    keys = (
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),
+        figurecomposer_plot_slices._PlotSlicesPanelKey(0, 1, "panel 2"),
+    )
+    editor = figurecomposer_plot_slices._PanelLineStyleEditorWidget(
+        operation,
+        keys,
+        lambda _owner, signal, slot: signal.connect(slot),
+    )
+    qtbot.addWidget(editor)
+    emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
+    editor.sigPanelStylesChanged.connect(emitted.append)
+
+    for row in range(editor.panel_list.count()):
+        item = editor.panel_list.item(row)
+        assert item is not None
+        item.setSelected(True)
+    editor._sync_controls()
+    assert editor.color_edit.line_edit.placeholderText() == "(multiple values)"
+    assert editor.style_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert editor.line_kwargs_edit.placeholderText() == "(multiple values)"
+
+    editor.line_kwargs_edit.editingFinished.emit()
+    assert emitted == []
+    editor.line_kwargs_edit.setText("alpha=0.25, linewidth=9")
+    editor.line_kwargs_edit.setModified(True)
+    editor.line_kwargs_edit.editingFinished.emit()
+    assert emitted[-1][0].line_kw == {
+        "color": "red",
+        "linestyle": "-",
+        "alpha": 0.25,
+    }
+    assert emitted[-1][1].line_kw == {
+        "color": "blue",
+        "marker": "o",
+        "alpha": 0.25,
+    }
+
+    editor._line_kw_changed("linewidth", 2.5, aliases=("lw",))
+    assert all(style.line_kw["linewidth"] == 2.5 for style in emitted[-1])
+
+    editor._line_kw_changed("color", None, aliases=("c",))
+    assert all("color" not in style.line_kw for style in emitted[-1])
+    editor._update_selected_extra_line_kw({})
+    assert all("alpha" not in style.line_kw for style in emitted[-1])
+
+
+def test_figure_composer_color_widgets_parse_and_sync(qtbot) -> None:
+    opaque = QtGui.QColor(1, 2, 3)
+    translucent = QtGui.QColor(1, 2, 3, 4)
+    assert figurecomposer_widgets._qcolor_to_mpl_color_text(opaque) == "#010203"
+    assert figurecomposer_widgets._qcolor_to_mpl_color_text(translucent) == "#01020304"
+    assert (
+        figurecomposer_widgets._qcolor_from_mpl_color_text("(1.0, 0.0, 0.0)")
+        is not None
+    )
+    assert (
+        figurecomposer_widgets._qcolor_from_mpl_color_text("[1.0, 0.0, 0.0]")
+        is not None
+    )
+    assert figurecomposer_widgets._qcolor_from_mpl_color_text("[bad") is None
+    assert figurecomposer_widgets._top_level_comma_parts(
+        "red, (0, 1, 0), 'blue, still blue', [0, 0, 1]"
+    ) == ("red", "(0, 1, 0)", "'blue, still blue'", "[0, 0, 1]")
+    assert figurecomposer_widgets._color_tuple_from_text("") == ()
+    assert figurecomposer_widgets._color_tuple_from_text("['red', 'blue']") == (
+        "red",
+        "blue",
+    )
+    assert figurecomposer_widgets._color_tuple_from_text("[1]") == ("1",)
+
+    color_edit = figurecomposer_widgets._ColorLineEditWidget("tab:blue")
+    qtbot.addWidget(color_edit)
+    color_edit.setPlaceholderText("pick one")
+    color_edit.setToolTip("Line color")
+    color_edit.setLineEditObjectName("lineColorText")
+    color_edit.setColorButtonObjectName("lineColorButton")
+    color_edit.setModified(True)
+    assert color_edit.isModified()
+    assert color_edit.line_edit.placeholderText() == "pick one"
+    assert color_edit.line_edit.objectName() == "lineColorText"
+    color_edit.setText("not-a-color")
+    color_edit._syncing = True
+    color_edit._button_color_changed()
+    color_edit._syncing = False
+    color_edit.color_button.setColor(translucent)
+    color_edit._button_color_changed()
+    assert color_edit.text() == "#01020304"
+
+    color_list = figurecomposer_widgets._ColorListEditorWidget(("red", "blue"))
+    qtbot.addWidget(color_list)
+    changed: list[tuple[str, ...]] = []
+    color_list.colorsChanged.connect(changed.append)
+    assert color_list.colors() == ("red", "blue")
+    color_list.setToolTip("Profile colors")
+    assert all(edit.toolTip() == "Profile colors" for edit in color_list._row_editors())
+    color_list.setMixedPlaceholder("(multiple values)")
+    assert color_list.batchUnchanged()
+    color_list.main_edit.setText("green, (0, 0, 1)")
+    color_list.main_edit.setModified(True)
+    color_list._main_text_finished()
+    assert changed[-1] == ("green", "(0, 0, 1)")
+    color_list._add_color()
+    assert changed[-1] == ("green", "(0, 0, 1)", "")
+    color_list._remove_color(1)
+    assert changed[-1] == ("green",)
+    first_editor = color_list._row_editors()[0]
+    first_editor.setText("black")
+    color_list._row_color_changed()
+    assert changed[-1][0] == "black"
+    color_list._syncing = True
+    color_list._set_colors_from_rows(("white",))
+    color_list._syncing = False
+    assert changed[-1][0] == "black"
+
+
+def test_figure_composer_axes_selector_widget_mouse_selection(qtbot) -> None:
+    selector = figurecomposer_widgets._AxesSelectorWidget()
+    qtbot.addWidget(selector)
+    selector.set_grid(
+        2,
+        3,
+        labels={(0, 0): "left", (0, 1): "middle", (0, 2): "right"},
+    )
+    selector.resize(selector.sizeHint())
+    selector.show()
+    assert selector.cell_rect((5, 5)).isNull()
+    assert selector._axis_at(QtCore.QPoint(-10, -10)) is None
+    assert selector._axis_label((1, 2)) == "1, 2"
+
+    selected: list[tuple[tuple[int, int], ...]] = []
+    selector.sigSelectionChanged.connect(selected.append)
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector.cell_rect((0, 1)).center(),
+    )
+    assert selected[-1] == ((0, 1),)
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
+        pos=selector.cell_rect((1, 2)).center(),
+    )
+    assert selected[-1] == ((0, 1), (0, 2), (1, 1), (1, 2))
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        pos=selector.cell_rect((0, 1)).center(),
+    )
+    assert (0, 1) not in selected[-1]
+
+    qtbot.mousePress(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector.cell_rect((0, 0)).center(),
+    )
+    qtbot.mouseMove(selector, selector.cell_rect((1, 1)).center())
+    qtbot.mouseRelease(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector.cell_rect((1, 1)).center(),
+    )
+    assert selected[-1] == ((0, 0), (0, 1), (1, 0), (1, 1))
+    selector.mousePressEvent(None)
+    selector.mouseMoveEvent(None)
+    selector.leaveEvent(None)
+
+    pixmap = QtGui.QPixmap(selector.size())
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    selector.render(pixmap)
+
+
+def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> None:
+    main_span = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=1,
+        col_start=0,
+        col_stop=1,
+    )
+    child_span = FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=2,
+        col_start=1,
+        col_stop=3,
+    )
+    root = FigureGridSpecGridState(
+        grid_id="root",
+        nrows=2,
+        ncols=3,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="main-axis",
+                label="main",
+                span=main_span,
+            ),
+        ),
+        child_grids=(
+            FigureGridSpecGridState(
+                grid_id="child-grid",
+                label="child",
+                nrows=1,
+                ncols=2,
+                span=child_span,
+                axes=(
+                    FigureGridSpecAxesState(
+                        axes_id="child-axis",
+                        label="child axis",
+                        span=FigureGridSpecSpanState(
+                            row_start=0,
+                            row_stop=1,
+                            col_start=0,
+                            col_stop=1,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    selector = figurecomposer_widgets._GridSpecViewWidget(mode="select")
+    qtbot.addWidget(selector)
+    selector.set_layout(root, labels={"main-axis": "Main", "child-axis": "Child"})
+    selector.resize(selector.sizeHint())
+    selector.show()
+    assert selector.axes_ids() == ("main-axis", "child-axis")
+    assert not selector.axis_rect("main-axis").isNull()
+    assert selector.axis_rect("missing").isNull()
+    assert selector._range_axes_ids("missing", "child-axis") == ("child-axis",)
+
+    selected: list[tuple[str, ...]] = []
+    selector.sigSelectionChanged.connect(selected.append)
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=selector.axis_rect("main-axis").center(),
+    )
+    assert selected[-1] == ("main-axis",)
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        modifier=QtCore.Qt.KeyboardModifier.ShiftModifier,
+        pos=selector.axis_rect("child-axis").center(),
+    )
+    assert selected[-1] == ("main-axis", "child-axis")
+    qtbot.mouseClick(
+        selector,
+        QtCore.Qt.MouseButton.LeftButton,
+        modifier=QtCore.Qt.KeyboardModifier.ControlModifier,
+        pos=selector.axis_rect("main-axis").center(),
+    )
+    assert selected[-1] == ("child-axis",)
+    selector.mouseMoveEvent(None)
+    selector.leaveEvent(None)
+
+    editor = figurecomposer_widgets._GridSpecViewWidget(mode="edit")
+    qtbot.addWidget(editor)
+    region = figurecomposer_widgets._GridSpecRegionInfo(
+        region_id="main-axis",
+        kind="axes",
+        span=main_span,
+        label="main",
+    )
+    child_region = figurecomposer_widgets._GridSpecRegionInfo(
+        region_id="child-grid",
+        kind="grid",
+        span=child_span,
+        label="child",
+    )
+    editor.set_edit_grid(root, (region, child_region), labels={"main-axis": "Main"})
+    editor.resize(editor.sizeHint())
+    editor.show()
+    editor.set_selected_region("main-axis")
+    assert editor.selected_region_id() == "main-axis"
+    assert editor._region_label("unknown") == "unknown"
+    assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=True) is not None
+    assert editor._cell_at(QtCore.QPoint(-100, -100), clamp_to_grid=False) is None
+    assert editor._occupied_grid_cells(root) >= {(0, 0), (0, 1), (1, 1)}
+    assert editor._axis_edges(0, 100, 0, ()) == (0.0,)
+    assert editor._axis_edges(0, 100, 2, (2.0, 1.0)) == (
+        0.0,
+        200.0 / 3.0,
+        100.0,
+    )
+    assert editor._handle_at(QtCore.QPoint(-100, -100)) is None
+    assert editor._active_preview_span() is None
+    editor._drag_mode = "create"
+    editor._drag_origin_cell = (0, 0)
+    editor._drag_current_cell = (1, 1)
+    assert editor._active_preview_span() == FigureGridSpecSpanState(
+        row_start=0,
+        row_stop=2,
+        col_start=0,
+        col_stop=2,
+    )
+    editor._reset_edit_drag()
+
+    created: list[FigureGridSpecSpanState] = []
+    editor.sigRegionCreated.connect(lambda span, _kind: created.append(span))
+    qtbot.mousePress(
+        editor,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=editor.cell_rect((1, 0)).center(),
+    )
+    qtbot.mouseMove(editor, editor.cell_rect((1, 0)).center())
+    qtbot.mouseRelease(
+        editor,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=editor.cell_rect((1, 0)).center(),
+    )
+    assert created[-1] == FigureGridSpecSpanState(
+        row_start=1,
+        row_stop=2,
+        col_start=0,
+        col_stop=1,
+    )
+
+    activated: list[str] = []
+    editor.sigNestedGridActivated.connect(activated.append)
+    qtbot.mouseDClick(
+        editor,
+        QtCore.Qt.MouseButton.LeftButton,
+        pos=editor.span_rect(child_span).center(),
+    )
+    assert activated == ["child-grid"]
+    editor._handle_application_event(QtCore.QEvent(QtCore.QEvent.Type.WindowDeactivate))
+    assert not editor._region_handles_visible
+
+
 def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
     qtbot,
 ) -> None:
@@ -5527,6 +6097,157 @@ def test_figure_composer_line_mean_normalization_executes(qtbot) -> None:
     np.testing.assert_allclose(line.get_ydata(), expected.values)
 
 
+def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(6.0).reshape(2, 3),
+        dims=("cut", "kx"),
+        coords={
+            "cut": [0.0, 1.0],
+            "kx": [-1.0, 0.0, 1.0],
+            "temperature": ("cut", [20.0, 30.0]),
+            "signal": (("cut", "kx"), np.arange(6.0).reshape(2, 3) + 10.0),
+        },
+        name="profile",
+    )
+    operation = FigureOperationState.line(
+        label="profile",
+        source="profile",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(
+        update={
+            "line_x": "kx",
+            "line_y": "signal",
+            "line_iter_dim": "cut",
+            "line_selection": {"kx": slice(-1.0, 1.0)},
+            "line_values_axis": "x",
+            "line_labels": ("a", "b"),
+            "line_colors": ("red", "blue"),
+            "line_kw": {"lw": 2.0, "c": "black", "marker": "o"},
+            "xlim": (-2.0, 2.0),
+            "ylim": (0.0, 20.0),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(operation,),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    assert (
+        figurecomposer_line_profile._line_placement_text("one_per_axis")
+        == "One profile per axis"
+    )
+    assert (
+        figurecomposer_line_profile._line_placement_from_text("One profile per axis")
+        == "one_per_axis"
+    )
+    assert (
+        figurecomposer_line_profile._line_placement_from_text("anything else")
+        == "all_axes"
+    )
+    assert (
+        figurecomposer_line_profile._line_choice_data(
+            tool, operation.model_copy(update={"line_source": None}), values=False
+        )
+        is None
+    )
+    assert (
+        figurecomposer_line_profile._available_line_value_names(
+            tool, operation.model_copy(update={"line_source": "missing"})
+        )
+        == []
+    )
+    assert set(
+        figurecomposer_line_profile._available_line_value_names(tool, operation)
+    ) >= {"cut", "kx", "temperature", "signal"}
+    assert figurecomposer_line_profile._available_line_coordinate_names(
+        tool, operation
+    ) == ["kx"]
+    assert figurecomposer_line_profile._available_line_offset_coords(
+        tool, operation
+    ) == ["temperature"]
+
+    profiles = figurecomposer_line_profile._line_data_items(tool, operation)
+    assert len(profiles) == 2
+    assert all(profile.dims == ("kx",) for profile in profiles)
+    selected_operation = operation.model_copy(
+        update={
+            "map_selections": (
+                FigureDataSelectionState(source="profile", qsel={"cut": 0.0}),
+            )
+        }
+    )
+    assert (
+        len(figurecomposer_line_profile._line_data_items(tool, selected_operation)) == 1
+    )
+    assert (
+        figurecomposer_line_profile._line_data_items(
+            tool, operation.model_copy(update={"line_source": None})
+        )
+        == []
+    )
+    assert (
+        figurecomposer_line_profile._line_data_items(
+            tool, operation.model_copy(update={"line_source": "missing"})
+        )
+        == []
+    )
+    with pytest.raises(ValueError, match="one-dimensional"):
+        figurecomposer_line_profile._line_coordinate(data, None)
+
+    assert figurecomposer_line_profile._line_text_values((), 0, default=None) == ()
+    assert figurecomposer_line_profile._line_text_values(
+        ("shared",), 2, default=None
+    ) == (
+        "shared",
+        "shared",
+    )
+    with pytest.raises(ValueError, match="one value or one per profile"):
+        figurecomposer_line_profile._line_text_values(("a", "b", "c"), 2, default=None)
+    assert figurecomposer_line_profile._line_profile_style_kwargs(operation) == {
+        "linewidth": 2.0,
+        "marker": "o",
+    }
+
+    loop_names = ["profile"]
+    loop_values = ["profiles"]
+    style_lines, kwargs_text = figurecomposer_line_profile._line_style_code(
+        operation,
+        loop_names=loop_names,
+        loop_values=loop_values,
+    )
+    assert loop_names == ["profile", "label", "color"]
+    assert loop_values == ["profiles", "profile_labels", "profile_colors"]
+    assert style_lines == [
+        "profile_labels = ['a', 'b']",
+        "profile_colors = ['red', 'blue']",
+    ]
+    assert "linewidth=2.0" in kwargs_text
+    assert "label=label" in kwargs_text
+    assert "color=color" in kwargs_text
+
+    assert (
+        figurecomposer_line_profile._line_code(
+            tool, operation.model_copy(update={"line_source": None})
+        )
+        == []
+    )
+    selection_lines = figurecomposer_line_profile._line_code(tool, selected_operation)
+    assert selection_lines[0] == "profiles = ["
+    assert any(".qsel(cut=0.0)" in line for line in selection_lines)
+    one_per_axis_lines = figurecomposer_line_profile._line_code(
+        tool, operation.model_copy(update={"line_placement": "one_per_axis"})
+    )
+    assert any(line.startswith("target_axes = list(") for line in one_per_axis_lines)
+    assert any("ax.plot(profile, profile['kx']" in line for line in one_per_axis_lines)
+    assert one_per_axis_lines[-1] == "    ax.set(xlim=(-2.0, 2.0), ylim=(0.0, 20.0))"
+
+
 def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     qtbot,
 ) -> None:
@@ -7591,6 +8312,206 @@ def test_figure_composer_imagetool_norm_parser_uses_structured_fields() -> None:
     }
 
 
+def test_figure_composer_imagetool_value_and_norm_parsers_cover_edges() -> None:
+    from erlab.interactive.imagetool.plot_items import ItoolPlotItem
+
+    class Floatable:
+        def __float__(self) -> float:
+            return 1.5
+
+    fallback = object()
+    assert ItoolPlotItem._figure_composer_plain_value(None) is None
+    assert ItoolPlotItem._figure_composer_plain_value(np.bool_(True)) is True
+    assert ItoolPlotItem._figure_composer_plain_value([np.int64(1)]) == [1]
+    assert ItoolPlotItem._figure_composer_plain_value((np.float64(2.0),)) == (2.0,)
+    assert ItoolPlotItem._figure_composer_plain_value({"a": np.int64(3)}) == {"a": 3}
+    assert ItoolPlotItem._figure_composer_plain_value(np.int64(4)) == 4
+    assert ItoolPlotItem._figure_composer_plain_value(np.float64(5.0)) == 5.0
+    assert ItoolPlotItem._figure_composer_plain_value(Floatable()) == 1.5
+    assert ItoolPlotItem._figure_composer_plain_value(fallback) is fallback
+    assert ItoolPlotItem._figure_composer_indexer_state(slice(1, 3, 2)) == {
+        "kind": "slice",
+        "start": 1,
+        "stop": 3,
+        "step": 2,
+    }
+    assert ItoolPlotItem._figure_composer_indexer_state(2) == 2
+
+    invalid_norms = (
+        "not valid python",
+        "1",
+        "eplt",
+        "mcolors.PowerNorm(1)",
+        "eplt.PowerNorm(1)",
+        "eplt.CenteredPowerNorm(**kwargs)",
+    )
+    for norm_code in invalid_norms:
+        assert ItoolPlotItem._figure_composer_norm_updates(norm_code) is None
+
+    assert ItoolPlotItem._figure_composer_operation_updates({"norm": object()}) is None
+    assert (
+        ItoolPlotItem._figure_composer_operation_updates({"norm": "eplt.PowerNorm(1)"})
+        is None
+    )
+    assert (
+        ItoolPlotItem._figure_composer_operation_updates({"cmap": "|dynamic_cmap|"})
+        is None
+    )
+    assert ItoolPlotItem._figure_composer_operation_updates(
+        {"gamma": np.float64(0.5), "alpha": np.int64(2)}
+    ) == {
+        "norm_name": "PowerNorm",
+        "norm_gamma": 0.5,
+        "extra_kwargs": {"alpha": 2},
+    }
+
+
+def test_figure_composer_imagetool_operation_seed_helpers_cover_branches() -> None:
+    import types
+
+    from erlab.interactive.imagetool.plot_items import ItoolPlotItem
+
+    fake = types.SimpleNamespace(
+        slicer_area=types.SimpleNamespace(current_cursor=0, n_cursors=2),
+        slicer_data_items=[types.SimpleNamespace(normalize=True)],
+        _crop_indexers={"kx": slice(-1.0, 1.0)},
+    )
+    fake._figure_composer_operation_updates = (
+        ItoolPlotItem._figure_composer_operation_updates
+    )
+    fake._figure_composer_plain_value = ItoolPlotItem._figure_composer_plain_value
+    fake._figure_composer_plot_slices_kwargs = lambda _dim_order_plot: {
+        "gamma": 0.5,
+        "colorbar": "right",
+    }
+    fake._figure_composer_line_style_updates = lambda: {"line_colors": ("red", "blue")}
+    fake._figure_composer_line_limit_updates = lambda x_dim: (
+        {"xlim": (-1.0, 1.0)} if x_dim == "kx" else {}
+    )
+
+    selected_maps_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
+        fake,
+        source_name="data",
+        variable_dim=None,
+        dim_order_plot=["kx", "ky"],
+        selected_maps=["data"],
+        map_selections=(FigureDataSelectionState(source="data", qsel={"eV": 0.0}),),
+    )
+    assert selected_maps_operation.map_selections == (
+        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
+    )
+    assert selected_maps_operation.norm_name == "PowerNorm"
+    assert selected_maps_operation.norm_gamma == 0.5
+    assert selected_maps_operation.colorbar == "right"
+
+    no_selection_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
+        fake,
+        source_name="data",
+        variable_dim=None,
+        dim_order_plot=["kx", "ky"],
+        qsel_kwargs=None,
+    )
+    assert no_selection_operation.map_selections == ()
+
+    invalid_key_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
+        fake,
+        source_name="data",
+        variable_dim="eV",
+        dim_order_plot=["kx", "ky"],
+        qsel_kwargs={("bad", "key"): [0.0, 1.0]},
+    )
+    assert tuple(
+        selection.qsel for selection in invalid_key_operation.map_selections
+    ) == (
+        {"('bad', 'key')": 0.0},
+        {"('bad', 'key')": 1.0},
+    )
+
+    slice_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
+        fake,
+        source_name="data",
+        variable_dim="eV",
+        dim_order_plot=["kx", "ky"],
+        qsel_kwargs={"eV": [0.0, 1.0], "eV_width": [0.1, 0.1], "beta": 2.0},
+    )
+    assert slice_operation.slice_dim == "eV"
+    assert slice_operation.slice_values == (0.0, 1.0)
+    assert slice_operation.slice_width == 0.1
+    assert slice_operation.slice_kwargs == {"beta": 2.0}
+
+    unequal_width_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
+        fake,
+        source_name="data",
+        variable_dim="eV",
+        dim_order_plot=["kx", "ky"],
+        qsel_kwargs={"eV": [0.0, 1.0], "eV_width": [0.1, 0.2]},
+    )
+    assert unequal_width_operation.slice_width is None
+    assert unequal_width_operation.slice_kwargs == {"eV_width": [0.1, 0.2]}
+
+    inferred_slice_operation = ItoolPlotItem._figure_composer_plot_slices_operation(
+        fake,
+        source_name="data",
+        variable_dim=None,
+        dim_order_plot=["kx", "ky"],
+        qsel_kwargs={"beta": [0.0, 1.0], "beta_width": [0.2, 0.2]},
+    )
+    assert inferred_slice_operation.slice_dim == "beta"
+    assert inferred_slice_operation.slice_values == (0.0, 1.0)
+    assert inferred_slice_operation.slice_width == 0.2
+    assert inferred_slice_operation.slice_kwargs == {}
+
+    selected_lines_operation = ItoolPlotItem._figure_composer_line_operation(
+        fake,
+        source_name="data",
+        variable_dim="eV",
+        x_dim="kx",
+        selected_lines=["data"],
+        map_selections=(FigureDataSelectionState(source="data", qsel={"eV": 0.0}),),
+    )
+    assert selected_lines_operation.line_x == "kx"
+    assert selected_lines_operation.map_selections == (
+        FigureDataSelectionState(source="data", qsel={"eV": 0.0}),
+    )
+    assert selected_lines_operation.line_normalize == "mean"
+    assert selected_lines_operation.line_colors == ("red", "blue")
+    assert selected_lines_operation.xlim == (-1.0, 1.0)
+
+    no_qsel_line_operation = ItoolPlotItem._figure_composer_line_operation(
+        fake,
+        source_name="data",
+        variable_dim=None,
+        x_dim="kx",
+        qsel_kwargs=None,
+    )
+    assert no_qsel_line_operation.line_selection == {}
+    assert no_qsel_line_operation.line_iter_dim is None
+
+    qsel_line_operation = ItoolPlotItem._figure_composer_line_operation(
+        fake,
+        source_name="data",
+        variable_dim="eV",
+        x_dim="kx",
+        qsel_kwargs={"eV": [0.0, 1.0], "beta": 2.0},
+    )
+    assert qsel_line_operation.line_selection == {"eV": [0.0, 1.0], "beta": 2.0}
+    assert qsel_line_operation.line_iter_dim == "eV"
+
+    invalid_key_line_operation = ItoolPlotItem._figure_composer_line_operation(
+        fake,
+        source_name="data",
+        variable_dim="eV",
+        x_dim="kx",
+        qsel_kwargs={("bad", "key"): [0.0, 1.0]},
+    )
+    assert tuple(
+        selection.qsel for selection in invalid_key_line_operation.map_selections
+    ) == (
+        {"('bad', 'key')": 0.0},
+        {"('bad', 'key')": 1.0},
+    )
+
+
 def test_figure_composer_powernorm_codegen_uses_plot_kwargs(qtbot) -> None:
     import matplotlib.colors as mcolors
 
@@ -8323,6 +9244,146 @@ def test_manager_figure_target_dialog_defaults_to_new_figure(
         button = dialog.button_box.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
         assert button is not None
         assert button.isEnabled()
+
+
+def test_manager_figure_target_dialog_switches_and_repairs_axes_selection(
+    qtbot,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        first_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=2),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        second_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=1),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        qtbot.addWidget(first_tool)
+        qtbot.addWidget(second_tool)
+        first_uid = manager.add_figuretool(first_tool, show=False)
+        second_uid = manager.add_figuretool(second_tool, show=False)
+
+        dialog = manager_mainwindow._AppendFigureTargetDialog(
+            manager,
+            (first_uid, second_uid),
+            FigureOperationState.line(label="line", source="line"),
+            allow_new_figure=True,
+        )
+        qtbot.addWidget(dialog)
+
+        assert dialog.is_new_figure()
+        assert dialog.selector_stack.isHidden()
+        ok_button = dialog.button_box.button(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+        )
+        assert ok_button is not None
+        assert ok_button.isEnabled()
+
+        dialog.figure_combo.setCurrentIndex(dialog.figure_combo.findData(first_uid))
+        assert dialog.figure_uid() == first_uid
+        assert not dialog.is_new_figure()
+        assert dialog.selector_stack.currentWidget() is dialog.axes_selector
+        assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 0),))
+
+        dialog._select_all_axes()
+        assert dialog.axes_selection() == FigureAxesSelectionState(
+            axes=((0, 0), (0, 1))
+        )
+        dialog._clear_axes()
+        assert dialog.axes_selection() is None
+        assert not ok_button.isEnabled()
+        dialog._select_all_axes()
+        assert ok_button.isEnabled()
+        assert dialog.selected_target() == (
+            first_uid,
+            FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        )
+
+        dialog.figure_combo.setCurrentIndex(dialog.figure_combo.findData(second_uid))
+        assert dialog.axes_selection() == FigureAxesSelectionState(axes=((0, 0),))
+
+        dialog.figure_combo.setItemData(dialog.figure_combo.currentIndex(), "missing")
+        dialog._figure_changed()
+        assert dialog.axes_selection() is None
+        assert not ok_button.isEnabled()
+
+
+def test_manager_prompt_append_figure_target_auto_and_cancel_paths(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        data = xr.DataArray(np.arange(4.0), dims=("x",), name="line")
+        assert manager._prompt_append_figure_target(None) is None
+        assert manager._prompt_append_figure_target(None, figure_uid="missing") is None
+
+        single_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=1),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        qtbot.addWidget(single_tool)
+        single_uid = manager.add_figuretool(single_tool, show=False)
+        assert manager._append_single_axis_selection(single_uid) == (
+            FigureAxesSelectionState(axes=((0, 0),))
+        )
+        assert manager._prompt_append_figure_target(None) == (
+            single_uid,
+            FigureAxesSelectionState(axes=((0, 0),)),
+        )
+
+        wide_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=2),
+                sources=(FigureSourceState(name="line", label="line"),),
+                operations=(),
+                primary_source="line",
+            ),
+        )
+        qtbot.addWidget(wide_tool)
+        wide_uid = manager.add_figuretool(wide_tool, show=False)
+
+        class RejectDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                _operation: FigureOperationState | None,
+                *,
+                allow_new_figure: bool = False,
+            ) -> None:
+                assert figure_uids == (wide_uid,)
+                assert allow_new_figure is False
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Rejected
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", RejectDialog
+        )
+        assert manager._prompt_append_figure_target(None, figure_uid=wide_uid) is None
 
 
 def test_manager_child_imagetool_gets_figure_context_actions(
