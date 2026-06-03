@@ -736,9 +736,21 @@ class _WorkspaceIOController:
             finally:
                 self._schedule_macos_workspace_window_file_path_update()
 
-    def _drain_workspace_deferred_events(self) -> None:
+    def _send_workspace_posted_events(self) -> None:
         for _ in range(3):
-            QtWidgets.QApplication.sendPostedEvents(None, 0)
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.MetaCall.value)
+            )
+            QtWidgets.QApplication.sendPostedEvents(
+                None, int(QtCore.QEvent.Type.DeferredDelete.value)
+            )
+
+    def _drain_workspace_restore_events(self) -> None:
+        self._send_workspace_posted_events()
+
+    def _drain_workspace_deferred_events(self) -> None:
+        self._send_workspace_posted_events()
+        for _ in range(3):
             QtWidgets.QApplication.processEvents()
 
     def _workspace_state_snapshot(self) -> _WorkspaceStateSnapshot:
@@ -1505,7 +1517,7 @@ class _WorkspaceIOController:
                     self._restore_workspace_loader_state(manifest)
                     self._restore_standalone_apps_state(manifest)
                 if not mark_dirty:
-                    self._manager._drain_workspace_deferred_events()
+                    self._manager._drain_workspace_restore_events()
             except Exception:
                 if backup_tree is not None and backup_snapshot is not None:
                     try:
@@ -1531,7 +1543,7 @@ class _WorkspaceIOController:
                 backup_tree, [str(key) for key in backup_tree]
             )
             self._manager._load_workspace_figures(backup_tree)
-            self._manager._drain_workspace_deferred_events()
+            self._manager._drain_workspace_restore_events()
         self._manager._restore_workspace_state_snapshot(snapshot)
 
     def _from_datatree(
@@ -1638,7 +1650,7 @@ class _WorkspaceIOController:
                         self._restore_workspace_loader_state(manifest)
                         self._restore_standalone_apps_state(manifest)
                     if not mark_dirty:
-                        self._manager._drain_workspace_deferred_events()
+                        self._manager._drain_workspace_restore_events()
                 except Exception:
                     if backup_tree is not None and backup_snapshot is not None:
                         try:
@@ -2249,7 +2261,7 @@ class _WorkspaceIOController:
             )
             if rebind_data:
                 self._manager._rebind_workspace_backed_imagetools(associated_fname)
-            self._manager._drain_workspace_deferred_events()
+            self._manager._drain_workspace_restore_events()
             self._manager._mark_workspace_clean()
             self._manager._record_recent_workspace(associated_fname)
 

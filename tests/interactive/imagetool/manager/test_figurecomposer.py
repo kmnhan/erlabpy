@@ -2182,7 +2182,22 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
     selector.mouseMoveEvent(None)
     selector.leaveEvent(None)
 
-    editor = figurecomposer_widgets._GridSpecViewWidget(mode="edit")
+    class _RecordingGridSpecViewWidget(figurecomposer_widgets._GridSpecViewWidget):
+        def __init__(self) -> None:
+            super().__init__(mode="edit")
+            self.cursor_shapes: list[QtCore.Qt.CursorShape] = []
+            self.unset_count = 0
+
+        def setCursor(self, cursor: QtGui.QCursor | QtCore.Qt.CursorShape) -> None:
+            shape = cursor.shape() if isinstance(cursor, QtGui.QCursor) else cursor
+            self.cursor_shapes.append(shape)
+            super().setCursor(cursor)
+
+        def unsetCursor(self) -> None:
+            self.unset_count += 1
+            super().unsetCursor()
+
+    editor = _RecordingGridSpecViewWidget()
     qtbot.addWidget(editor)
     region = figurecomposer_widgets._GridSpecRegionInfo(
         region_id="main-axis",
@@ -2230,15 +2245,27 @@ def test_figure_composer_gridspec_view_widget_selection_and_editing(qtbot) -> No
         editor._handle_rects(axis_rect, hit=True)[0][1].center()
     )
     assert editor.cursor().shape() == QtCore.Qt.CursorShape.SizeFDiagCursor
+    assert editor.cursor_shapes == [QtCore.Qt.CursorShape.SizeFDiagCursor]
+    editor._update_hover_cursor(
+        editor._handle_rects(axis_rect, hit=True)[0][1].center()
+    )
+    assert editor.cursor_shapes == [QtCore.Qt.CursorShape.SizeFDiagCursor]
     editor._update_hover_cursor(
         editor._handle_rects(axis_rect, hit=True)[1][1].center()
     )
     assert editor.cursor().shape() == QtCore.Qt.CursorShape.SizeBDiagCursor
+    assert editor.cursor_shapes == [
+        QtCore.Qt.CursorShape.SizeFDiagCursor,
+        QtCore.Qt.CursorShape.SizeBDiagCursor,
+    ]
     editor._set_region_handles_visible(False)
     editor._update_hover_cursor(axis_rect.center())
     assert editor.cursor().shape() == QtCore.Qt.CursorShape.SizeAllCursor
     editor._update_hover_cursor(QtCore.QPoint(-100, -100))
     assert editor.cursor().shape() == QtCore.Qt.CursorShape.ArrowCursor
+    assert editor.unset_count == 1
+    editor._update_hover_cursor(QtCore.QPoint(-100, -100))
+    assert editor.unset_count == 1
     assert editor._active_preview_span() is None
     editor._drag_mode = "create"
     editor._drag_origin_cell = (0, 0)

@@ -2112,6 +2112,9 @@ class ImageToolManager(_ImageToolManagerBase):
     def _drain_workspace_deferred_events(self) -> None:
         self._workspace_controller._drain_workspace_deferred_events()
 
+    def _drain_workspace_restore_events(self) -> None:
+        self._workspace_controller._drain_workspace_restore_events()
+
     def _workspace_state_snapshot(self) -> _WorkspaceStateSnapshot:
         return self._workspace_controller._workspace_state_snapshot()
 

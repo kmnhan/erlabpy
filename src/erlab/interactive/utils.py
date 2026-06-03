@@ -89,6 +89,7 @@ __all__ = [
     "parse_data",
     "qt_is_valid",
     "save_fit_ui",
+    "set_widget_cursor",
     "single_shot",
     "wait_dialog",
     "xImageItem",
@@ -170,6 +171,30 @@ def qt_is_valid(*objects: object) -> bool:
         Objects to validate. ``None`` values are ignored.
     """
     return all(obj is None or _qt_object_is_valid(obj) for obj in objects)
+
+
+_ERLAB_CURSOR_SHAPE_PROPERTY = "_erlab_cursor_shape"
+_ERLAB_CURSOR_UNSET = "unset"
+
+
+def set_widget_cursor(
+    widget: QtWidgets.QWidget | None,
+    shape: QtCore.Qt.CursorShape | None,
+) -> None:
+    """Set or clear a QWidget cursor after validity and idempotence checks."""
+    if widget is None or not qt_is_valid(widget):
+        return
+    shape_key = _ERLAB_CURSOR_UNSET if shape is None else shape.name
+    current_key = widget.property(_ERLAB_CURSOR_SHAPE_PROPERTY)
+    if current_key == shape_key:
+        return
+    if shape is None:
+        if widget.testAttribute(QtCore.Qt.WidgetAttribute.WA_SetCursor):
+            widget.unsetCursor()
+        widget.setProperty(_ERLAB_CURSOR_SHAPE_PROPERTY, _ERLAB_CURSOR_UNSET)
+        return
+    widget.setCursor(shape)
+    widget.setProperty(_ERLAB_CURSOR_SHAPE_PROPERTY, shape_key)
 
 
 def single_shot(

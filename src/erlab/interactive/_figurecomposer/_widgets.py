@@ -1138,6 +1138,7 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
     def hideEvent(self, event: QtGui.QHideEvent | None) -> None:
         self._remove_application_event_filter()
         self._set_region_handles_visible(False)
+        erlab.interactive.utils.set_widget_cursor(self, None)
         super().hideEvent(event)
 
     def set_creation_kind(self, kind: typing.Literal["axes", "grid"]) -> None:
@@ -1408,6 +1409,8 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
 
     def leaveEvent(self, event: QtCore.QEvent | None) -> None:
         self._hovered_axis_id = None
+        if self._mode == "edit":
+            erlab.interactive.utils.set_widget_cursor(self, None)
         self.update()
         if event is not None:
             super().leaveEvent(event)
@@ -1907,13 +1910,14 @@ class _GridSpecViewWidget(QtWidgets.QWidget):
     def _update_hover_cursor(self, pos: QtCore.QPoint) -> None:
         handle = self._handle_at(pos)
         if handle in {"nw", "se"}:
-            self.setCursor(QtCore.Qt.CursorShape.SizeFDiagCursor)
+            cursor_shape = QtCore.Qt.CursorShape.SizeFDiagCursor
         elif handle in {"ne", "sw"}:
-            self.setCursor(QtCore.Qt.CursorShape.SizeBDiagCursor)
+            cursor_shape = QtCore.Qt.CursorShape.SizeBDiagCursor
         elif self._region_at(pos) is not None:
-            self.setCursor(QtCore.Qt.CursorShape.SizeAllCursor)
+            cursor_shape = QtCore.Qt.CursorShape.SizeAllCursor
         else:
-            self.unsetCursor()
+            cursor_shape = None
+        erlab.interactive.utils.set_widget_cursor(self, cursor_shape)
 
     def _active_preview_span(self) -> FigureGridSpecSpanState | None:
         if self._drag_mode in {"move", "resize"}:

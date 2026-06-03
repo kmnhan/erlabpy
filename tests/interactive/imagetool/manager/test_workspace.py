@@ -6804,6 +6804,45 @@ def test_manager_workspace_save_clears_deferred_dirty_events(
         assert focus_restored == [root]
 
 
+def test_manager_workspace_restore_event_drain_avoids_event_loop(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    class _Emitter(QtCore.QObject):
+        sigRecord = QtCore.Signal()
+
+    class _Receiver(QtCore.QObject):
+        @QtCore.Slot()
+        def record(self) -> None:
+            calls.append("record")
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        calls: list[str] = []
+        emitter = _Emitter(manager)
+        receiver = _Receiver(manager)
+        emitter.sigRecord.connect(
+            receiver.record,
+            QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+        emitter.sigRecord.emit()
+
+        with monkeypatch.context() as restore_drain_patch:
+            restore_drain_patch.setattr(
+                QtWidgets.QApplication,
+                "processEvents",
+                lambda *_args, **_kwargs: pytest.fail(
+                    "workspace restore draining must not spin the event loop"
+                ),
+            )
+            manager._drain_workspace_restore_events()
+
+    assert calls == ["record"]
+
+
 def test_manager_workspace_state_save_updates_attrs_without_full_rewrite(
     qtbot,
     monkeypatch,

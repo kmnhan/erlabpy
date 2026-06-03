@@ -923,6 +923,13 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
     def eventFilter(
         self, obj: QtCore.QObject | None = None, event: QtCore.QEvent | None = None
     ) -> bool:
+        view = self.parent()
+        viewport = obj if isinstance(obj, QtWidgets.QWidget) else None
+        if not (
+            isinstance(view, _ImageToolWrapperTreeView)
+            and erlab.interactive.utils.qt_is_valid(view, viewport)
+        ):
+            return super().eventFilter(obj, event)
         if event is not None:  # pragma: no branch
             match event.type():
                 case (
@@ -931,24 +938,27 @@ class _ImageToolWrapperItemDelegate(QtWidgets.QStyledItemDelegate):
                     | QtCore.QEvent.Type.WindowStateChange
                 ):
                     self.preview_popup.hide()
-                    if isinstance(obj, QtWidgets.QWidget):
-                        obj.unsetCursor()
+                    erlab.interactive.utils.set_widget_cursor(viewport, None)
                 case QtCore.QEvent.Type.MouseMove:
-                    view = typing.cast("_ImageToolWrapperTreeView", self.parent())
-                    pos = typing.cast("QtGui.QMouseEvent", event).pos()
+                    if not isinstance(event, QtGui.QMouseEvent):
+                        return super().eventFilter(obj, event)
+                    pos = event.pos()
                     index = view.indexAt(pos)
                     if not index.isValid():
                         self.preview_popup.hide()
-                    if isinstance(obj, QtWidgets.QWidget):
-                        if not index.isValid():
-                            badge = None
-                        else:
-                            option = self._option_for_index(view, index)
-                            badge = self._badge_at(option, index, pos)
-                        if badge is None:
-                            obj.unsetCursor()
-                        else:
-                            obj.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+                    if not index.isValid():
+                        badge = None
+                    else:
+                        option = self._option_for_index(view, index)
+                        badge = self._badge_at(option, index, pos)
+                    erlab.interactive.utils.set_widget_cursor(
+                        viewport,
+                        (
+                            None
+                            if badge is None
+                            else QtCore.Qt.CursorShape.PointingHandCursor
+                        ),
+                    )
 
         return super().eventFilter(obj, event)
 
