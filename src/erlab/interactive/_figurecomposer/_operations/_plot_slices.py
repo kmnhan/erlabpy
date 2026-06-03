@@ -3508,7 +3508,7 @@ def _plot_source_move_button(
     arrow: QtCore.Qt.ArrowType,
     enabled: bool,
     tooltip: str,
-    clicked: typing.Callable[[], None],
+    clicked: Callable[[], None],
 ) -> QtWidgets.QToolButton:
     button = QtWidgets.QToolButton(parent)
     button.setObjectName(
