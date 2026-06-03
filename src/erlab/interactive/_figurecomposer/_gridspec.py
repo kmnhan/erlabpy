@@ -65,7 +65,7 @@ def _gridspec_axis_display_name(setup: FigureSubplotsState, axes_id: str) -> str
     axes_by_id = _gridspec_axes_by_id(setup)
     axis = axes_by_id.get(axes_id)
     if axis is None:
-        return axes_id
+        return "removed axis"
     return axis.label.strip() or _gridspec_axis_code_names(setup).get(axes_id, axes_id)
 
 
@@ -76,7 +76,7 @@ def _gridspec_axis_display_names(
 
 
 def _gridspec_grid_display_name(setup: FigureSubplotsState, grid_id: str) -> str:
-    return _gridspec_grid_display_names(setup).get(grid_id, grid_id)
+    return _gridspec_grid_display_names(setup).get(grid_id, "removed grid")
 
 
 def _gridspec_grid_display_names(setup: FigureSubplotsState) -> dict[str, str]:
@@ -323,7 +323,7 @@ def _gridspec_region_label(
     for child in grid.child_grids:
         if child.grid_id == region_id:
             return grid_names.get(child.grid_id, child.grid_id)
-    return region_id
+    return "removed region"
 
 
 def _gridspec_span_code(

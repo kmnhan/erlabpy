@@ -20,6 +20,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 import erlab
 import erlab.interactive._figurecomposer._code as figurecomposer_code
 import erlab.interactive._figurecomposer._defaults as figurecomposer_defaults
+import erlab.interactive._figurecomposer._gridspec as figurecomposer_gridspec
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
@@ -1835,6 +1836,12 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     ) as excinfo:
         figurecomposer_code._axes_sequence_code(tool, invalid_selection)
     assert "removed-internal-axis" not in str(excinfo.value)
+    display_names = figurecomposer_gridspec._gridspec_axis_display_names(
+        tool.tool_status.setup,
+        invalid_selection.axes_ids,
+    )
+    assert "removed-internal-axis" not in display_names
+    assert display_names[0] == "left panel"
 
 
 def test_figure_composer_gridspec_axes_selector_inlines_nested_grids(qtbot) -> None:
