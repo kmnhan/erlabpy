@@ -6,6 +6,15 @@ from erlab.interactive._options.core import OptionManager
 from erlab.interactive._options.schema import AppOptions
 
 
+@pytest.fixture(autouse=True)
+def isolated_interactive_options(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "ERLAB_INTERACTIVE_OPTIONS_PATH",
+        str(tmp_path / "interactive-options.ini"),
+    )
+    options.restore()
+
+
 @pytest.fixture
 def dialog(qtbot):
     dlg = OptionDialog()
