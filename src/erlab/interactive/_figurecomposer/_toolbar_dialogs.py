@@ -9,6 +9,10 @@ import numpy as np
 from qtpy import QtCore, QtWidgets
 
 import erlab
+from erlab.interactive._figurecomposer._editor_controls import (
+    MIXED_VALUE,
+    MIXED_VALUES_TEXT,
+)
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_axis_display_name,
@@ -56,7 +60,7 @@ from erlab.interactive._figurecomposer._widgets import (
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from matplotlib.axes import Axes
 
@@ -74,6 +78,12 @@ class _StyleTarget(typing.NamedTuple):
     target_kind: str
     label: str
     panel_keys: tuple[_PlotSlicesPanelKey, ...] = ()
+
+
+class _AxisValueState(typing.NamedTuple):
+    value: typing.Any = None
+    mixed: bool = False
+    available: bool = False
 
 
 def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
@@ -397,10 +407,11 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
 
     def refresh_from_axis() -> None:
         nonlocal updating
-        axis = _first_axis(tool, current_selection())
+        axes = _axes_for_selection(tool, current_selection())
         updating = True
         try:
-            if axis is None:
+            if not axes:
+                unavailable_state = _AxisValueState()
                 for widget in (
                     title_edit,
                     xlabel_edit,
@@ -409,27 +420,55 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                     ylim_edit,
                     aspect_edit,
                 ):
-                    widget.clear()
-                    widget.setEnabled(False)
+                    _apply_axis_line_edit_state(widget, unavailable_state)
                 for combo in (xscale_combo, yscale_combo):
+                    _apply_axis_combo_state(combo, unavailable_state)
+                for combo in (grid_axis_combo, grid_which_combo):
                     combo.setEnabled(False)
+                _apply_axis_check_state(grid_check, unavailable_state)
                 return
-            title_edit.setEnabled(True)
-            xlabel_edit.setEnabled(True)
-            ylabel_edit.setEnabled(True)
-            xlim_edit.setEnabled(True)
-            ylim_edit.setEnabled(True)
-            aspect_edit.setEnabled(True)
-            xscale_combo.setEnabled(True)
-            yscale_combo.setEnabled(True)
-            title_edit.setText(axis.get_title())
-            xlabel_edit.setText(axis.get_xlabel())
-            ylabel_edit.setText(axis.get_ylabel())
-            xlim_edit.setText(_float_pair_text(axis.get_xlim()))
-            ylim_edit.setText(_float_pair_text(axis.get_ylim()))
-            aspect_edit.setText(_aspect_text(axis.get_aspect()))
-            xscale_combo.setCurrentText(axis.get_xscale())
-            yscale_combo.setCurrentText(axis.get_yscale())
+            _apply_axis_line_edit_state(
+                title_edit, _axis_value_state(axes, lambda axis: axis.get_title())
+            )
+            _apply_axis_line_edit_state(
+                xlabel_edit, _axis_value_state(axes, lambda axis: axis.get_xlabel())
+            )
+            _apply_axis_line_edit_state(
+                ylabel_edit, _axis_value_state(axes, lambda axis: axis.get_ylabel())
+            )
+            _apply_axis_line_edit_state(
+                xlim_edit,
+                _axis_value_state(axes, lambda axis: _float_pair_text(axis.get_xlim())),
+            )
+            _apply_axis_line_edit_state(
+                ylim_edit,
+                _axis_value_state(axes, lambda axis: _float_pair_text(axis.get_ylim())),
+            )
+            _apply_axis_line_edit_state(
+                aspect_edit,
+                _axis_value_state(axes, lambda axis: _aspect_text(axis.get_aspect())),
+            )
+            _apply_axis_combo_state(
+                xscale_combo,
+                _axis_value_state(axes, lambda axis: axis.get_xscale()),
+            )
+            _apply_axis_combo_state(
+                yscale_combo,
+                _axis_value_state(axes, lambda axis: axis.get_yscale()),
+            )
+            for combo in (grid_axis_combo, grid_which_combo):
+                combo.setEnabled(True)
+            _apply_axis_check_state(
+                grid_check,
+                _axis_value_state(
+                    axes,
+                    lambda axis: _axis_grid_visible(
+                        axis,
+                        which=grid_which_combo.currentText(),
+                        axis_name=grid_axis_combo.currentText(),
+                    ),
+                ),
+            )
             for edit in (
                 title_edit,
                 xlabel_edit,
@@ -444,13 +483,13 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         refresh_style_targets()
 
     def update_text_method(edit: QtWidgets.QLineEdit, name: str) -> None:
-        if updating or not edit.isModified():
+        if updating or _line_edit_mixed_unchanged(edit) or not edit.isModified():
             return
         upsert_axis_method(name, args=(edit.text(),))
         edit.setModified(False)
 
     def update_limit_method(edit: QtWidgets.QLineEdit, name: str) -> None:
-        if updating or not edit.isModified():
+        if updating or _line_edit_mixed_unchanged(edit) or not edit.isModified():
             return
         limits = _float_pair_from_text(edit.text())
         if limits is None:
@@ -459,7 +498,11 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         edit.setModified(False)
 
     def update_aspect() -> None:
-        if updating or not aspect_edit.isModified():
+        if (
+            updating
+            or _line_edit_mixed_unchanged(aspect_edit)
+            or not aspect_edit.isModified()
+        ):
             return
         try:
             aspect = _aspect_value(aspect_edit.text())
@@ -496,12 +539,18 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         update_limit_method(ylim_edit, "set_ylim")
 
     def xscale_activated(_index: int) -> None:
+        if xscale_combo.currentData() is MIXED_VALUE:
+            return
         upsert_axis_method("set_xscale", args=(xscale_combo.currentText(),))
 
     def yscale_activated(_index: int) -> None:
+        if yscale_combo.currentData() is MIXED_VALUE:
+            return
         upsert_axis_method("set_yscale", args=(yscale_combo.currentText(),))
 
-    def grid_toggled(_checked: bool) -> None:
+    def grid_state_changed(state: int) -> None:
+        if QtCore.Qt.CheckState(state) == QtCore.Qt.CheckState.PartiallyChecked:
+            return
         update_grid()
 
     def grid_combo_activated(_index: int) -> None:
@@ -518,7 +567,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     aspect_edit.editingFinished.connect(update_aspect)
     xscale_combo.activated.connect(xscale_activated)
     yscale_combo.activated.connect(yscale_activated)
-    grid_check.toggled.connect(grid_toggled)
+    grid_check.stateChanged.connect(grid_state_changed)
     grid_axis_combo.activated.connect(grid_combo_activated)
     grid_which_combo.activated.connect(grid_combo_activated)
     curves_combo.activated.connect(lambda _index: rebuild_curve_editor())
@@ -1166,13 +1215,6 @@ def _axes_for_selection(
     return _iter_axes(axes_obj)
 
 
-def _first_axis(
-    tool: FigureComposerTool, selection: FigureAxesSelectionState
-) -> Axes | None:
-    axes = _axes_for_selection(tool, selection)
-    return axes[0] if axes else None
-
-
 def _layout_engine_text(tool: FigureComposerTool) -> str:
     return tool._recipe.setup.layout or "default"
 
@@ -1194,6 +1236,112 @@ def _float_pair_from_text(text: str) -> tuple[float, float] | None:
     if len(parts) != 2:
         return None
     return float(parts[0]), float(parts[1])
+
+
+def _axis_value_state(
+    axes: Sequence[Axes],
+    value_getter: Callable[[Axes], typing.Any],
+) -> _AxisValueState:
+    if not axes:
+        return _AxisValueState()
+    values = tuple(value_getter(axis) for axis in axes)
+    if any(value is None for value in values):
+        return _AxisValueState(mixed=True, available=True)
+    first = values[0]
+    if all(value == first for value in values):
+        return _AxisValueState(value=first, available=True)
+    return _AxisValueState(mixed=True, available=True)
+
+
+def _apply_axis_line_edit_state(
+    edit: QtWidgets.QLineEdit, state: _AxisValueState
+) -> None:
+    with QtCore.QSignalBlocker(edit):
+        edit.setEnabled(state.available)
+        edit.setProperty("batch_mixed", state.mixed)
+        if not state.available:
+            edit.clear()
+            edit.setPlaceholderText("")
+        elif state.mixed:
+            edit.clear()
+            edit.setPlaceholderText(MIXED_VALUES_TEXT)
+        else:
+            edit.setPlaceholderText("")
+            edit.setText(str(state.value))
+        edit.setModified(False)
+
+
+def _line_edit_mixed_unchanged(edit: QtWidgets.QLineEdit) -> bool:
+    return bool(edit.property("batch_mixed")) and not edit.isModified()
+
+
+def _apply_axis_combo_state(combo: QtWidgets.QComboBox, state: _AxisValueState) -> None:
+    with QtCore.QSignalBlocker(combo):
+        _remove_mixed_combo_placeholder(combo)
+        combo.setEnabled(state.available)
+        if not state.available:
+            return
+        if state.mixed:
+            combo.insertItem(0, MIXED_VALUES_TEXT, MIXED_VALUE)
+            item = typing.cast("typing.Any", combo.model()).item(0)
+            if item is not None:
+                item.setEnabled(False)
+            combo.setCurrentIndex(0)
+        else:
+            combo.setCurrentText(str(state.value))
+
+
+def _remove_mixed_combo_placeholder(combo: QtWidgets.QComboBox) -> None:
+    for index in reversed(range(combo.count())):
+        if combo.itemData(index) is MIXED_VALUE:
+            combo.removeItem(index)
+
+
+def _apply_axis_check_state(check: QtWidgets.QCheckBox, state: _AxisValueState) -> None:
+    with QtCore.QSignalBlocker(check):
+        check.setEnabled(state.available)
+        if not state.available:
+            check.setTristate(False)
+            check.setChecked(False)
+        elif state.mixed:
+            check.setTristate(True)
+            check.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
+        else:
+            check.setTristate(False)
+            check.setChecked(bool(state.value))
+
+
+def _axis_grid_visible(axis: Axes, *, which: str, axis_name: str) -> bool | None:
+    states: list[bool | None] = []
+    if axis_name in {"x", "both"}:
+        states.append(_axis_direction_grid_visible(axis.xaxis, which))
+    if axis_name in {"y", "both"}:
+        states.append(_axis_direction_grid_visible(axis.yaxis, which))
+    return _merge_grid_states(states)
+
+
+def _axis_direction_grid_visible(axis: typing.Any, which: str) -> bool | None:
+    states: list[bool] = []
+    if which in {"major", "both"}:
+        states.append(_gridlines_visible(axis.get_gridlines()))
+    if which in {"minor", "both"}:
+        states.append(
+            _gridlines_visible(tick.gridline for tick in axis.get_minor_ticks())
+        )
+    return _merge_grid_states(states)
+
+
+def _gridlines_visible(lines: Iterable[typing.Any]) -> bool:
+    return any(line.get_visible() for line in lines)
+
+
+def _merge_grid_states(states: Sequence[bool | None]) -> bool | None:
+    if not states or any(state is None for state in states):
+        return None
+    first = states[0]
+    if all(state == first for state in states):
+        return first
+    return None
 
 
 def _aspect_text(value: typing.Any) -> str:

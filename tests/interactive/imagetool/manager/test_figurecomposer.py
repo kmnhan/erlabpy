@@ -5570,6 +5570,78 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert grid_ops[0].method_kwargs == {"which": "major", "axis": "both"}
 
 
+def test_figure_composer_toolbar_axes_dialog_shows_mixed_axis_selection(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.axes_selector.set_selected_axes(((0, 0), (0, 1)), emit=False)
+    tool.show_figure_window(activate=False)
+    left_axis, right_axis = tool.figure.axes[:2]
+    left_axis.set_title("Left")
+    right_axis.set_title("Right")
+    left_axis.set_xlim(0.1, 1.0)
+    right_axis.set_xlim(0.1, 10.0)
+    right_axis.set_xscale("log")
+    left_axis.grid(True)
+    right_axis.grid(False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    title_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesTitleEdit"
+    )
+    xlim_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesXLimEdit"
+    )
+    xscale_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarAxesXScaleCombo"
+    )
+    grid_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerToolbarAxesGridCheck"
+    )
+    assert title_edit is not None
+    assert xlim_edit is not None
+    assert xscale_combo is not None
+    assert grid_check is not None
+    assert title_edit.text() == ""
+    assert title_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
+    assert xlim_edit.text() == ""
+    assert xlim_edit.placeholderText() == _editor_controls.MIXED_VALUES_TEXT
+    assert xscale_combo.currentText() == _editor_controls.MIXED_VALUES_TEXT
+    assert grid_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+
+    title_edit.setText("Shared")
+    title_edit.setModified(True)
+    title_edit.editingFinished.emit()
+
+    title_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_title")
+    assert len(title_ops) == 1
+    assert title_ops[0].axes.axes == ((0, 0), (0, 1))
+    assert title_ops[0].method_args == ("Shared",)
+
+    _activate_combo_text(xscale_combo, "linear")
+    xscale_ops = _method_operations(tool, FigureMethodFamily.AXES, "set_xscale")
+    assert len(xscale_ops) == 1
+    assert xscale_ops[0].axes.axes == ((0, 0), (0, 1))
+    assert xscale_ops[0].method_args == ("linear",)
+
+    grid_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    grid_ops = _method_operations(tool, FigureMethodFamily.AXES, "grid")
+    assert len(grid_ops) == 1
+    assert grid_ops[0].axes.axes == ((0, 0), (0, 1))
+    assert grid_ops[0].method_args == (True,)
+
+
 def test_figure_composer_toolbar_axes_dialog_updates_curve_style(qtbot) -> None:
     data = _figure_composer_profile_source("data")
     tool = FigureComposerTool(
