@@ -98,6 +98,8 @@ def plot_slices_operation_with_source_styles(
         return operation
 
     updates: dict[str, typing.Any] = {"panel_styles_enabled": True}
+    if cmap_differs:
+        updates["cmap"] = None
     if norm_differs:
         updates.update(_plot_slices_neutral_norm_update())
 
@@ -108,11 +110,7 @@ def plot_slices_operation_with_source_styles(
             map_index = source_index * selections_per_source + selection_index
             for slice_index in range(slice_count):
                 style_update: dict[str, typing.Any] = {}
-                if (
-                    cmap_differs
-                    and style["cmap"] is not None
-                    and style["cmap"] != first_style["cmap"]
-                ):
+                if cmap_differs and style["cmap"] is not None:
                     style_update["cmap"] = style["cmap"]
                 if norm_differs:
                     style_update.update(_plot_slices_panel_norm_style_update(style))

@@ -63,6 +63,9 @@ from erlab.interactive._figurecomposer._operations import (
 from erlab.interactive._figurecomposer._operations import (
     _plot_slices as figurecomposer_plot_slices,
 )
+from erlab.interactive._figurecomposer._seeding import (
+    plot_slices_operation_with_source_styles,
+)
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
 from erlab.interactive.imagetool import itool, provenance
@@ -10884,7 +10887,7 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
         assert operation.ylim == expected.ylim
         assert operation.crop == expected.crop
         assert operation.axis == expected.axis
-        assert operation.cmap == "magma_r"
+        assert operation.cmap is None
         assert operation.same_limits is False
         assert operation.norm_name == "PowerNorm"
         assert operation.norm_gamma is None
@@ -10896,7 +10899,7 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
             for style in operation.panel_styles
         }
         assert set(styles) == {(0, 0), (1, 0)}
-        assert styles[(0, 0)].cmap is None
+        assert styles[(0, 0)].cmap == "magma_r"
         assert styles[(0, 0)].norm_name == "CenteredInversePowerNorm"
         assert styles[(0, 0)].norm_gamma == pytest.approx(0.75)
         assert styles[(0, 0)].vcenter == pytest.approx(0.5 * (vmin + vmax))
@@ -10926,6 +10929,36 @@ def test_manager_plot_slices_setup_honors_order_for_horizontal_seeding() -> None
     assert manager_mainwindow.ImageToolManager._figure_plot_slices_grid_shape(
         multi_source_operation
     ) == (1, 3)
+
+
+def test_plot_slices_source_styles_keep_default_cmap_panels() -> None:
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data_0", "data_1"),
+    )
+    source_operations = (
+        FigureOperationState.plot_slices(
+            label="first",
+            sources=("data_0",),
+        ).model_copy(update={"cmap": "magma"}),
+        FigureOperationState.plot_slices(
+            label="second",
+            sources=("data_1",),
+        ),
+    )
+
+    seeded = plot_slices_operation_with_source_styles(
+        operation,
+        source_operations,
+        selections_per_source=1,
+    )
+
+    assert seeded.cmap is None
+    assert seeded.panel_styles_enabled
+    assert {
+        (style.map_index, style.slice_index): style.cmap
+        for style in seeded.panel_styles
+    } == {(0, 0): "magma"}
 
 
 def test_manager_append_to_gridspec_figure_uses_axes_ids(
