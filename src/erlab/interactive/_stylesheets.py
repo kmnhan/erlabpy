@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import importlib
+import pathlib
 import typing
 
 from matplotlib import style as mpl_style
@@ -13,6 +14,12 @@ if typing.TYPE_CHECKING:
     from collections.abc import Iterable
 
 _ERLAB_REGISTERED_STYLESHEETS: set[str] = set()
+
+
+@functools.cache
+def _erlab_stylesheet_names() -> frozenset[str]:
+    style_dir = pathlib.Path(__file__).resolve().parent.parent / "plotting" / "stylelib"
+    return frozenset(path.stem for path in style_dir.glob("*.mplstyle"))
 
 
 def _stylesheet_name_set() -> frozenset[str]:
@@ -45,6 +52,8 @@ def stylesheets_require_erlab_plotting(names: Iterable[str]) -> bool:
     names = tuple(names)
     if not names:
         return False
+    if any(name in _erlab_stylesheet_names() for name in names):
+        return True
     if any(name in _ERLAB_REGISTERED_STYLESHEETS for name in names):
         return True
     available = _stylesheet_name_set()

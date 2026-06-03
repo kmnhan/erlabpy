@@ -3423,6 +3423,28 @@ def test_figure_composer_generated_code_imports_erlab_for_erlab_stylesheet(
     assert style_import not in image_code
 
 
+def test_figure_composer_generated_code_imports_erlab_for_preloaded_erlab_style(
+    qtbot,
+    restore_interactive_options,
+) -> None:
+    _set_figure_stylesheets(["nature"])
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    code = tool.generated_code()
+
+    style_import = "import erlab.plotting  # registers ERLab matplotlib stylesheets"
+    assert style_import in code
+    assert code.index(style_import) < code.index("plt.style.use")
+    assert "plt.style.use(['nature'])" in code
+
+
 def test_figure_composer_canvas_draw_and_print_use_style_context(
     monkeypatch, recwarn
 ) -> None:
