@@ -6639,11 +6639,25 @@ def test_manager_create_figure_uses_first_selected_main_image_state(
         assert operation.crop == expected.crop
         assert operation.axis == expected.axis
         assert operation.cmap == "magma_r"
-        assert operation.same_limits is True
-        assert operation.norm_name == "CenteredInversePowerNorm"
-        assert operation.norm_gamma == pytest.approx(0.75)
-        assert operation.vcenter == pytest.approx(0.5 * (vmin + vmax))
-        assert operation.halfrange == pytest.approx(0.5 * (vmax - vmin))
+        assert operation.same_limits is False
+        assert operation.norm_name == "PowerNorm"
+        assert operation.norm_gamma is None
+        assert operation.vcenter is None
+        assert operation.halfrange is None
+        assert operation.panel_styles_enabled
+        styles = {
+            (style.map_index, style.slice_index): style
+            for style in operation.panel_styles
+        }
+        assert set(styles) == {(0, 0), (1, 0)}
+        assert styles[(0, 0)].cmap is None
+        assert styles[(0, 0)].norm_name == "CenteredInversePowerNorm"
+        assert styles[(0, 0)].norm_gamma == pytest.approx(0.75)
+        assert styles[(0, 0)].vcenter == pytest.approx(0.5 * (vmin + vmax))
+        assert styles[(0, 0)].halfrange == pytest.approx(0.5 * (vmax - vmin))
+        assert styles[(1, 0)].cmap == "viridis"
+        assert styles[(1, 0)].norm_name is None
+        assert styles[(1, 0)].norm_gamma == pytest.approx(0.25)
 
 
 def test_manager_plot_slices_setup_honors_order_for_horizontal_seeding() -> None:
@@ -6991,3 +7005,85 @@ def test_manager_append_operation_uses_axes_dialog_selection(
 
         assert appended is True
         assert figure_tool.tool_status.operations[-1].axes.axes == ((0, 1),)
+
+
+def test_manager_append_multi_source_plot_slices_preserves_panel_colormaps(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        first = xr.DataArray(
+            np.arange(4.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="first",
+        )
+        second = xr.DataArray(
+            np.arange(4.0, 8.0).reshape(2, 2),
+            dims=("x", "y"),
+            coords={"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            name="second",
+        )
+        itool(first, manager=True)
+        itool(second, manager=True)
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        manager.get_imagetool(0).slicer_area.set_colormap("magma")
+        manager.get_imagetool(1).slicer_area.set_colormap("viridis", reverse=True)
+
+        figure_tool = FigureComposerTool(
+            first,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(nrows=1, ncols=2),
+                sources=(FigureSourceState(name="seed", label="seed"),),
+                operations=(),
+                primary_source="seed",
+            ),
+        )
+        qtbot.addWidget(figure_tool)
+        figure_uid = manager.add_figuretool(figure_tool, show=False)
+
+        class FakeAppendDialog:
+            def __init__(
+                self,
+                _manager: erlab.interactive.imagetool.manager.ImageToolManager,
+                figure_uids: tuple[str, ...],
+                operation: FigureOperationState,
+            ) -> None:
+                assert figure_uids == (figure_uid,)
+                assert operation.kind == FigureOperationKind.PLOT_SLICES
+
+            def exec(self) -> QtWidgets.QDialog.DialogCode:
+                return QtWidgets.QDialog.DialogCode.Accepted
+
+            def selected_target(self) -> tuple[str, FigureAxesSelectionState]:
+                return figure_uid, FigureAxesSelectionState(axes=((0, 0), (0, 1)))
+
+        monkeypatch.setattr(
+            manager_mainwindow, "_AppendFigureTargetDialog", FakeAppendDialog
+        )
+
+        appended = manager.append_figure_from_targets(
+            (0, 1),
+            figure_uid=figure_uid,
+            show=False,
+        )
+
+        assert appended is True
+        operation = figure_tool.tool_status.operations[-1]
+        assert operation.kind == FigureOperationKind.PLOT_SLICES
+        assert operation.sources == ("data_0", "data_1")
+        assert operation.order == "F"
+        assert operation.axes.axes == ((0, 0), (0, 1))
+        assert operation.cmap == "magma"
+        assert operation.panel_styles_enabled
+        assert operation.panel_styles == (
+            FigurePlotSlicesPanelStyleState(
+                map_index=1,
+                slice_index=0,
+                cmap="viridis_r",
+            ),
+        )

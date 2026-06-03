@@ -1329,25 +1329,37 @@ class ImageToolManager(_ImageToolManagerBase):
             )
         return tuple(operations)
 
-    def _figure_plot_slices_operation_from_target(
-        self, target: int | str, source_names: tuple[str, ...]
+    def _figure_plot_slices_operation_from_targets(
+        self, targets: tuple[int | str, ...], source_names: tuple[str, ...]
     ) -> typing.Any | None:
         from erlab.interactive._figurecomposer import FigureOperationKind
+        from erlab.interactive._figurecomposer._seeding import (
+            plot_slices_operation_with_source_styles,
+        )
 
         if not source_names:
             return None
-        node = self._node_for_target(target)
-        tool = node.imagetool
-        if tool is None:
+        source_operations: list[typing.Any] = []
+        for index, target in enumerate(targets):
+            if index >= len(source_names):
+                break
+            node = self._node_for_target(target)
+            tool = node.imagetool
+            if tool is None or not tool.slicer_area.axes:
+                return None
+            plot = typing.cast("typing.Any", tool.slicer_area.axes[0])
+            if not plot.is_image:
+                return None
+            source_operation = plot.figure_composer_operation(
+                source_name=source_names[index]
+            )
+            if source_operation.kind != FigureOperationKind.PLOT_SLICES:
+                return None
+            source_operations.append(source_operation)
+        if not source_operations:
             return None
-        if not tool.slicer_area.axes:
-            return None
-        plot = typing.cast("typing.Any", tool.slicer_area.axes[0])
-        if not plot.is_image:
-            return None
-        operation = plot.figure_composer_operation(source_name=source_names[0])
-        if operation.kind != FigureOperationKind.PLOT_SLICES:
-            return None
+
+        operation = source_operations[0]
         updates: dict[str, typing.Any] = {"sources": source_names}
         if len(source_names) > 1:
             updates["order"] = "F"
@@ -1357,7 +1369,12 @@ class ImageToolManager(_ImageToolManagerBase):
                 for source_name in source_names
                 for selection in operation.map_selections
             )
-        return operation.model_copy(update=updates)
+        expanded_operation = operation.model_copy(update=updates)
+        return plot_slices_operation_with_source_styles(
+            expanded_operation,
+            tuple(source_operations),
+            selections_per_source=max(len(operation.map_selections), 1),
+        )
 
     @staticmethod
     def _figure_plot_slices_grid_shape(operation: typing.Any) -> tuple[int, int]:
@@ -1432,8 +1449,8 @@ class ImageToolManager(_ImageToolManagerBase):
             and custom_code is None
             and all(data.squeeze(drop=True).ndim > 1 for data in source_data.values())
         ):
-            auto_operation = self._figure_plot_slices_operation_from_target(
-                resolved_targets[0], source_names
+            auto_operation = self._figure_plot_slices_operation_from_targets(
+                resolved_targets, source_names
             )
         setup = self._figure_setup_for_operation(
             None if custom_code is not None else operation or auto_operation,
@@ -1589,7 +1606,19 @@ class ImageToolManager(_ImageToolManagerBase):
             source_data[source_model.name] = data
             sources.append(source_model)
 
-        prompt = self._prompt_append_figure_target(operation, figure_uid=figure_uid)
+        source_names = tuple(source.name for source in sources)
+        auto_operation = None
+        if operation is None and all(
+            data.squeeze(drop=True).ndim > 1 for data in source_data.values()
+        ):
+            auto_operation = self._figure_plot_slices_operation_from_targets(
+                resolved_targets, source_names
+            )
+        prompt_operation = operation or auto_operation
+
+        prompt = self._prompt_append_figure_target(
+            prompt_operation, figure_uid=figure_uid
+        )
         if prompt is None:
             return False
         resolved_figure_uid, axes_selection = prompt
@@ -1603,6 +1632,8 @@ class ImageToolManager(_ImageToolManagerBase):
         operations = (
             (operation,)
             if operation is not None
+            else (auto_operation,)
+            if auto_operation is not None
             else self._make_figure_operations_for_sources(
                 source_data, setup=tool.tool_status.setup
             )
