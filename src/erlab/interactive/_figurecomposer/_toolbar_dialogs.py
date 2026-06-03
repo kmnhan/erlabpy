@@ -86,6 +86,47 @@ class _AxisValueState(typing.NamedTuple):
     available: bool = False
 
 
+def _add_axis_form_row(
+    layout: QtWidgets.QFormLayout,
+    label: str,
+    widget: QtWidgets.QWidget,
+    tooltip: str,
+) -> None:
+    widget.setToolTip(tooltip)
+    layout.addRow(label, widget)
+    label_widget = layout.labelForField(widget)
+    if label_widget is not None:
+        label_widget.setToolTip(tooltip)
+
+
+def _add_axis_compound_form_row(
+    layout: QtWidgets.QFormLayout,
+    label: str,
+    object_name: str,
+    controls: Sequence[tuple[str, QtWidgets.QWidget, str]],
+    tooltip: str,
+) -> None:
+    parent = layout.parentWidget()
+    row_widget = QtWidgets.QWidget(parent)
+    row_widget.setObjectName(object_name)
+    row_widget.setToolTip(tooltip)
+    row_layout = QtWidgets.QHBoxLayout(row_widget)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    for control_label, widget, control_tooltip in controls:
+        label_widget = QtWidgets.QLabel(control_label, row_widget)
+        label_widget.setBuddy(widget)
+        label_widget.setToolTip(control_tooltip)
+        widget.setToolTip(control_tooltip)
+        row_layout.addWidget(label_widget)
+        row_layout.addWidget(
+            widget, 0 if isinstance(widget, QtWidgets.QCheckBox) else 1
+        )
+    layout.addRow(label, row_widget)
+    form_label = layout.labelForField(row_widget)
+    if form_label is not None:
+        form_label.setToolTip(tooltip)
+
+
 def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
     """Show the toolbar subplot adjustment dialog for *tool*."""
     if _show_existing_dialog(tool, "_subplot_adjust_dialog"):
@@ -227,9 +268,10 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     root_layout.addWidget(tab_widget, 1)
 
     axes_page = QtWidgets.QWidget(tab_widget)
-    form_layout = QtWidgets.QGridLayout(axes_page)
-    form_layout.setColumnStretch(1, 1)
-    form_layout.setColumnStretch(3, 1)
+    form_layout = QtWidgets.QFormLayout(axes_page)
+    form_layout.setFieldGrowthPolicy(
+        QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+    )
     tab_widget.addTab(axes_page, "Axes")
 
     curves_page, curves_combo, curves_layout = _style_tab_page(
@@ -266,6 +308,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
 
     grid_check = QtWidgets.QCheckBox(axes_page)
     grid_check.setObjectName("figureComposerToolbarAxesGridCheck")
+    grid_check.setText("Show")
     grid_axis_combo = QtWidgets.QComboBox(axes_page)
     grid_axis_combo.setObjectName("figureComposerToolbarAxesGridAxisCombo")
     grid_axis_combo.addItems(["both", "x", "y"])
@@ -273,38 +316,90 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_which_combo.setObjectName("figureComposerToolbarAxesGridWhichCombo")
     grid_which_combo.addItems(["major", "minor", "both"])
 
-    rows = (
-        ("Title", title_edit, "X label", xlabel_edit),
-        ("Y label", ylabel_edit, "Aspect", aspect_edit),
-        ("X limits", xlim_edit, "Y limits", ylim_edit),
-        ("X scale", xscale_combo, "Y scale", yscale_combo),
-        ("Grid", grid_check, "Grid axis", grid_axis_combo),
+    title_tooltip = (
+        "Set ax.set_title(...) on every selected axis.\n"
+        "Use an empty value to clear titles."
     )
-    for row, (left_label, left_widget, right_label, right_widget) in enumerate(rows):
-        form_layout.addWidget(QtWidgets.QLabel(left_label, axes_page), row, 0)
-        form_layout.addWidget(left_widget, row, 1)
-        form_layout.addWidget(QtWidgets.QLabel(right_label, axes_page), row, 2)
-        form_layout.addWidget(right_widget, row, 3)
-    form_layout.addWidget(QtWidgets.QLabel("Grid ticks", axes_page), len(rows), 0)
-    form_layout.addWidget(grid_which_combo, len(rows), 1)
+    xlabel_tooltip = (
+        "Set ax.set_xlabel(...) on every selected axis.\n"
+        "Use an empty value to clear x labels."
+    )
+    ylabel_tooltip = (
+        "Set ax.set_ylabel(...) on every selected axis.\n"
+        "Use an empty value to clear y labels."
+    )
+    xlim_tooltip = (
+        "Set ax.set_xlim(left, right) on every selected axis.\n"
+        "Enter two comma-separated numbers."
+    )
+    ylim_tooltip = (
+        "Set ax.set_ylim(bottom, top) on every selected axis.\n"
+        "Enter two comma-separated numbers."
+    )
+    xscale_tooltip = (
+        "Set ax.set_xscale(...) on every selected axis.\n"
+        "Choices come from matplotlib.scale.get_scale_names()."
+    )
+    yscale_tooltip = (
+        "Set ax.set_yscale(...) on every selected axis.\n"
+        "Choices come from matplotlib.scale.get_scale_names()."
+    )
+    aspect_tooltip = (
+        "Set ax.set_aspect(...) on every selected axis.\n"
+        "Use auto, equal, or a numeric aspect ratio."
+    )
+    grid_check_tooltip = (
+        "Turn grid lines on or off for every selected axis,\n"
+        "using the Axis and Ticks choices in this row."
+    )
+    grid_axis_tooltip = "Choose the x, y, or both axes for ax.grid(..., axis=...)."
+    grid_which_tooltip = (
+        "Choose major ticks, minor ticks, or both for ax.grid(..., which=...)."
+    )
 
-    for edit in (
-        title_edit,
-        xlabel_edit,
-        ylabel_edit,
-        xlim_edit,
-        ylim_edit,
-        aspect_edit,
-    ):
-        edit.setToolTip(
-            "Editing this value adds or updates the matching ax.* recipe step\n"
-            "for the selected axes."
-        )
-    for combo in (xscale_combo, yscale_combo, grid_axis_combo, grid_which_combo):
-        combo.setToolTip(
-            "Changing this value adds or updates the matching ax.* recipe step\n"
-            "for the selected axes."
-        )
+    _add_axis_form_row(form_layout, "Title", title_edit, title_tooltip)
+    _add_axis_compound_form_row(
+        form_layout,
+        "Labels",
+        "figureComposerToolbarAxesLabelsRow",
+        (
+            ("x", xlabel_edit, xlabel_tooltip),
+            ("y", ylabel_edit, ylabel_tooltip),
+        ),
+        "Axis label text for every selected axis.",
+    )
+    _add_axis_compound_form_row(
+        form_layout,
+        "Limits",
+        "figureComposerToolbarAxesLimitsRow",
+        (
+            ("x", xlim_edit, xlim_tooltip),
+            ("y", ylim_edit, ylim_tooltip),
+        ),
+        "Numeric x/y view limits for every selected axis.",
+    )
+    _add_axis_compound_form_row(
+        form_layout,
+        "Scales",
+        "figureComposerToolbarAxesScalesRow",
+        (
+            ("x", xscale_combo, xscale_tooltip),
+            ("y", yscale_combo, yscale_tooltip),
+        ),
+        "Matplotlib x/y scale names for every selected axis.",
+    )
+    _add_axis_form_row(form_layout, "Aspect", aspect_edit, aspect_tooltip)
+    _add_axis_compound_form_row(
+        form_layout,
+        "Grid",
+        "figureComposerToolbarAxesGridRow",
+        (
+            ("Visible", grid_check, grid_check_tooltip),
+            ("Axis", grid_axis_combo, grid_axis_tooltip),
+            ("Ticks", grid_which_combo, grid_which_tooltip),
+        ),
+        "Grid visibility and target tick lines for every selected axis.",
+    )
 
     updating = False
     curve_targets: list[_StyleTarget] = []

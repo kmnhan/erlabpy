@@ -5511,6 +5511,12 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     xlim_edit = dialog.findChild(
         QtWidgets.QLineEdit, "figureComposerToolbarAxesXLimEdit"
     )
+    xlabel_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesXLabelEdit"
+    )
+    ylabel_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarAxesYLabelEdit"
+    )
     aspect_edit = dialog.findChild(
         QtWidgets.QLineEdit, "figureComposerToolbarAxesAspectEdit"
     )
@@ -5522,9 +5528,36 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     )
     assert title_edit is not None
     assert xlim_edit is not None
+    assert xlabel_edit is not None
+    assert ylabel_edit is not None
     assert aspect_edit is not None
     assert xscale_combo is not None
     assert grid_check is not None
+    labels_row = dialog.findChild(
+        QtWidgets.QWidget, "figureComposerToolbarAxesLabelsRow"
+    )
+    limits_row = dialog.findChild(
+        QtWidgets.QWidget, "figureComposerToolbarAxesLimitsRow"
+    )
+    scales_row = dialog.findChild(
+        QtWidgets.QWidget, "figureComposerToolbarAxesScalesRow"
+    )
+    grid_row = dialog.findChild(QtWidgets.QWidget, "figureComposerToolbarAxesGridRow")
+    assert labels_row is not None
+    assert limits_row is not None
+    assert scales_row is not None
+    assert grid_row is not None
+    assert (
+        labels_row.findChild(QtWidgets.QLineEdit, xlabel_edit.objectName()) is not None
+    )
+    assert (
+        labels_row.findChild(QtWidgets.QLineEdit, ylabel_edit.objectName()) is not None
+    )
+    assert limits_row.findChild(QtWidgets.QLineEdit, xlim_edit.objectName()) is not None
+    assert (
+        scales_row.findChild(QtWidgets.QComboBox, xscale_combo.objectName()) is not None
+    )
+    assert grid_row.findChild(QtWidgets.QCheckBox, grid_check.objectName()) is not None
     assert (
         dialog.findChild(QtWidgets.QComboBox, "figureComposerToolbarAxesStyleStepCombo")
         is None
