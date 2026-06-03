@@ -21,6 +21,7 @@ import xarray as xr
 
 import erlab
 import erlab.interactive._figurecomposer._codegen
+import erlab.interactive._figurecomposer._provenance
 import erlab.interactive._figurecomposer._toolbar_dialogs
 from erlab.interactive._figurecomposer._axes import _all_axes
 from erlab.interactive._figurecomposer._defaults import (
@@ -3377,7 +3378,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if not script_inputs:
             return None
         return provenance.script(
+            erlab.interactive._figurecomposer._provenance._figure_build_operation(self),
             start_label="Figure",
+            active_name="fig",
             script_inputs=script_inputs,
         )
 

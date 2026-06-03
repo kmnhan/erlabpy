@@ -173,6 +173,7 @@ _SCRIPT_REPLAY_ALLOWED_BUILTINS = {
     "sum": sum,
     "tuple": tuple,
 }
+_SCRIPT_REPLAY_ALLOWED_IMPORT_ROOTS = {"erlab", "matplotlib", "numpy", "xarray"}
 _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.AsyncFor,
     ast.AsyncFunctionDef,
@@ -182,8 +183,6 @@ _SCRIPT_REPLAY_FORBIDDEN_NODES = (
     ast.Delete,
     ast.For,
     ast.Global,
-    ast.Import,
-    ast.ImportFrom,
     ast.Lambda,
     ast.Match,
     ast.Nonlocal,
@@ -2910,7 +2909,22 @@ def _validate_script_replay_code(code: str) -> None:
     except SyntaxError as exc:
         raise ValueError(f"Script replay code is not valid Python: {exc}") from exc
 
+    def validate_import(node: ast.Import | ast.ImportFrom) -> None:
+        if isinstance(node, ast.Import):
+            roots = {alias.name.partition(".")[0] for alias in node.names}
+        else:
+            if node.level != 0 or node.module is None:
+                raise TypeError("Script replay code contains unsupported ImportFrom")
+            roots = {node.module.partition(".")[0]}
+        if not roots <= _SCRIPT_REPLAY_ALLOWED_IMPORT_ROOTS:
+            raise TypeError(
+                f"Script replay code contains unsupported {type(node).__name__}"
+            )
+
     for node in ast.walk(module):
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            validate_import(node)
+            continue
         if isinstance(node, _SCRIPT_REPLAY_FORBIDDEN_NODES):
             raise TypeError(
                 f"Script replay code contains unsupported {type(node).__name__}"

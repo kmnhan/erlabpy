@@ -171,6 +171,20 @@ class _CurrentScopeNames(ast.NodeVisitor):
         elif isinstance(node.ctx, (ast.Store, ast.Del)):
             self.stores.add(node.id)
 
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self.stores.add(
+                alias.asname
+                if alias.asname is not None
+                else alias.name.partition(".")[0]
+            )
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            self.stores.add(alias.asname if alias.asname is not None else alias.name)
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.stores.add(node.name)
         for decorator in node.decorator_list:

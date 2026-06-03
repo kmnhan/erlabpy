@@ -66,7 +66,12 @@ from erlab.interactive._figurecomposer._operations import (
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
 from erlab.interactive.imagetool import itool, provenance
-from tests.interactive.imagetool.manager.helpers import select_tools
+from tests.interactive.imagetool.manager.helpers import (
+    _exec_generated_code,
+    select_child_tool,
+    select_tools,
+    trigger_menu_action,
+)
 
 _COLLAPSED_LAYOUT_WARNING = (
     "constrained_layout not applied because axes sizes collapsed to zero.  "
@@ -97,6 +102,24 @@ def _expected_layout_from_rcparams() -> str | None:
     if mpl.rcParams["figure.autolayout"]:
         return "tight"
     return None
+
+
+def _file_load_provenance(path: Path) -> provenance.ToolProvenanceSpec:
+    return provenance.file_load(
+        start_label=f"Load data from file '{path.name}'",
+        seed_code=f"import xarray\n\nderived = xarray.load_dataarray({str(path)!r})",
+        file_load_source=provenance.FileLoadSource(
+            path=str(path),
+            loader_label="xarray.load_dataarray",
+            loader_text="xarray.load_dataarray",
+            kwargs_text="",
+            replay_call=provenance.FileReplayCall(
+                kind="callable",
+                target="xarray.load_dataarray",
+                selected_index=0,
+            ),
+        ),
+    )
 
 
 def _select_operation_rows(tool: FigureComposerTool, rows: tuple[int, ...]) -> None:
@@ -2710,6 +2733,59 @@ def test_figure_composer_rebases_source_node_uids(qtbot) -> None:
     rebased_spec = provenance.parse_tool_provenance_spec(source.provenance_spec)
     assert rebased_spec is not None
     assert rebased_spec.script_inputs[0].node_uid == "new-nested"
+
+
+def test_figure_composer_provenance_includes_sources_and_build_step(
+    qtbot, tmp_path: Path
+) -> None:
+    data = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+        name="map",
+    )
+    file_path = tmp_path / "map.nc"
+    data.to_netcdf(file_path)
+    source_spec = _file_load_provenance(file_path)
+    operation = FigureOperationState.plot_slices(
+        label="plot_slices",
+        sources=("data_0",),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"annotate": False})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(
+                    name="data_0",
+                    label="test source",
+                    provenance_spec=source_spec.model_dump(mode="json"),
+                ),
+            ),
+            operations=(operation,),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": data},
+    )
+    qtbot.addWidget(tool)
+
+    spec = tool.current_provenance_spec()
+    assert spec is not None
+    assert spec.active_name == "fig"
+    assert tuple(script_input.name for script_input in spec.script_inputs) == (
+        "data_0",
+    )
+    entries = spec.display_entries()
+    assert len(entries) == 3
+    assert entries[1].code is None
+    assert not entries[1].copyable
+    assert entries[2].code is not None
+    assert entries[2].copyable
+
+    code = spec.display_code()
+    assert code is not None
+    namespace = _exec_generated_code(code, {})
+    assert isinstance(namespace["fig"], Figure)
 
 
 def test_axes_selector_size_hint_tracks_grid(qtbot):
@@ -10369,6 +10445,106 @@ def test_manager_figures_ui_is_lazy_and_figures_survive_source_removal(
         assert figure_uid not in manager._tool_graph.nodes
         assert not manager.left_tabs.tabBar().isVisible()
         assert not manager.left_tabs.isTabVisible(1)
+
+
+def test_manager_copy_full_code_for_file_backed_figure_composer_sources(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    first = xr.DataArray(
+        np.arange(9.0).reshape(3, 3),
+        dims=("x", "y"),
+        coords={"x": np.arange(3), "y": np.arange(3)},
+        name="first",
+    )
+    second = first + 10.0
+    first_path = tmp_path / "first.h5"
+    second_path = tmp_path / "second.h5"
+    first.to_netcdf(first_path, engine="h5netcdf")
+    second.to_netcdf(second_path, engine="h5netcdf")
+
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(
+            first,
+            manager=True,
+            file_path=first_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        itool(
+            second,
+            manager=True,
+            file_path=second_path,
+            load_func=(xr.load_dataarray, {"engine": "h5netcdf"}, 0),
+        )
+        qtbot.wait_until(lambda: manager.ntools == 2, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0, 1), show=False)
+        assert figure_uid is not None
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, figure_uid)
+        manager._update_info(uid=figure_uid)
+        assert manager.metadata_derivation_list.count() == 4
+
+        copied: list[str] = []
+        monkeypatch.setattr(
+            erlab.interactive.utils,
+            "copy_to_clipboard",
+            lambda text: copied.append(text) or text,
+        )
+        monkeypatch.setattr(
+            manager,
+            "_prompt_replay_input_name",
+            lambda _node: pytest.fail("file-backed figure replay should not prompt"),
+        )
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
+        assert copied
+        namespace = _exec_generated_code(copied[-1], {})
+        assert isinstance(namespace["fig"], Figure)
+
+
+def test_manager_copy_full_code_for_memory_figure_reports_unavailable(
+    qtbot,
+    monkeypatch,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        manager.show()
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        itool(
+            xr.DataArray(
+                np.arange(4.0),
+                dims=("x",),
+                coords={"x": np.arange(4.0)},
+                name="line",
+            ),
+            manager=True,
+        )
+        qtbot.wait_until(lambda: manager.ntools == 1, timeout=5000)
+
+        figure_uid = manager.create_figure_from_targets((0,), show=False)
+        assert figure_uid is not None
+        manager.tree_view.clearSelection()
+        select_child_tool(manager, figure_uid)
+        manager._update_info(uid=figure_uid)
+        assert manager.metadata_derivation_list.count() == 3
+
+        copied: list[str] = []
+        monkeypatch.setattr(erlab.interactive.utils, "copy_to_clipboard", copied.append)
+        menu = manager._build_metadata_derivation_menu()
+        assert menu is not None
+        trigger_menu_action(menu, manager._metadata_copy_full_action)
+        assert not copied
+        assert manager._status_bar.currentMessage()
 
 
 def test_manager_figure_action_new_target_creates_second_figure(
