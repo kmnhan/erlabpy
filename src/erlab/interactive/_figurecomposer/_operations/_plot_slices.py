@@ -212,7 +212,9 @@ def _plot_slices_panel_keys(
         else operation.sources
     )
     map_labels = tuple(
-        source_names[index] if index < len(source_names) else f"map {index + 1}"
+        tool._source_display_name(source_names[index])
+        if index < len(source_names)
+        else f"map {index + 1}"
         for index in range(map_count)
     )
     slice_labels = _plot_slices_slice_labels(operation, slice_count)
@@ -2820,7 +2822,9 @@ def _plot_slices_shape(
         source_name = (
             source_names[index] if index < len(source_names) else f"map {index + 1}"
         )
-        source_labels.append(f"{source_name}({_format_dim_sizes(data)})")
+        source_labels.append(
+            f"{tool._source_display_name(source_name)}({_format_dim_sizes(data)})"
+        )
 
     plot_maps = [data.T if operation.transpose else data for data in maps]
     dims = tuple(str(dim) for dim in plot_maps[0].dims)
@@ -3234,7 +3238,9 @@ def _create_plot_slices_operation(tool: FigureComposerTool) -> FigureOperationSt
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     operation = _normalized_selection_operation(tool, operation)
     prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
-    source_text = ", ".join(operation.sources) or "missing source"
+    source_text = ", ".join(tool._source_display_names(operation.sources))
+    if not source_text:
+        source_text = "missing source"
     shape = _plot_slices_shape(tool, operation)
     plot_kind = "Line slices" if shape.plot_ndim == 1 else "Image slices"
     if operation.slice_dim and operation.slice_values:
@@ -3401,10 +3407,13 @@ def _build_plot_source_row(
     row_order: tuple[str, ...],
     order_controls_enabled: bool,
 ) -> tuple[QtWidgets.QCheckBox, QtWidgets.QToolButton, QtWidgets.QToolButton]:
-    check = QtWidgets.QCheckBox(source_name, selector)
+    check = QtWidgets.QCheckBox(tool._source_display_name(source_name), selector)
     check.setObjectName(f"figureComposerPlotSlicesSourceCheck_{index}")
     check.setProperty("figure_source_name", source_name)
-    check.setToolTip("Include this DataArray in the maps passed to plot_slices.")
+    check.setToolTip(
+        "Include this DataArray in the maps passed to plot_slices.\n"
+        + tool._source_tooltip(source_name)
+    )
     state = _plot_source_check_state(tool, operation, source_name)
     check.setTristate(state == QtCore.Qt.CheckState.PartiallyChecked)
     check.setCheckState(state)
@@ -3534,7 +3543,7 @@ def _section_summary(
     operation = _normalized_selection_operation(tool, operation)
     match key:
         case "sources":
-            return ", ".join(operation.sources) or "none"
+            return ", ".join(tool._source_display_names(operation.sources)) or "none"
         case "axes":
             return tool._axes_target_text(operation.axes)
         case "cuts":

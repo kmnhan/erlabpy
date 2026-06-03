@@ -400,6 +400,116 @@ def test_figure_composer_plot_slices_source_selector_updates_sources(
     assert captured_maps == [("second", "first")]
 
 
+def test_figure_composer_source_ui_keeps_aliases_as_internal_keys(qtbot) -> None:
+    first = _figure_composer_image_source("first")
+    second = _figure_composer_image_source("second")
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data_0", label="ImageTool 0: sample_map"),
+                FigureSourceState(name="data_1", label="ImageTool 1: reference_map"),
+            ),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data_0",),
+                    axes=FigureAxesSelectionState(),
+                    slice_dim="eV",
+                    slice_values=(0.0,),
+                ),
+            ),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": first, "data_1": second},
+    )
+    qtbot.addWidget(tool)
+
+    first_item = tool.source_list.item(0)
+    assert first_item is not None
+    assert first_item.data(QtCore.Qt.ItemDataRole.UserRole) == "data_0"
+
+    tool._select_step_section("sources")
+    checks = _plot_source_checks(tool)
+    assert checks["data_0"].property("figure_source_name") == "data_0"
+
+    assert tool.tool_status.operations[0].sources == ("data_0",)
+    assert "data_0" in tool.generated_code()
+
+
+def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
+    source = FigureSourceState(name="data_0", label="ImageTool 0: sample_map")
+    assert (
+        figurecomposer_sources._source_display_label(source, "data_0")
+        == "ImageTool 0: sample_map"
+    )
+    assert (
+        figurecomposer_sources._source_display_tooltip(source, "data_0")
+        == "ImageTool 0: sample_map\nAlias: data_0"
+    )
+
+    duplicates = figurecomposer_sources._source_duplicate_labels(
+        (
+            FigureSourceState(name="data_0", label="ImageTool"),
+            FigureSourceState(name="data_1", label="ImageTool"),
+        )
+    )
+    assert duplicates == frozenset(("ImageTool",))
+    assert (
+        figurecomposer_sources._source_display_label(
+            FigureSourceState(name="data_0", label="ImageTool"),
+            "data_0",
+            disambiguate=True,
+        )
+        == "ImageTool (data_0)"
+    )
+
+
+def test_figure_composer_line_source_combo_uses_alias_data_and_updates_recipe(
+    qtbot,
+) -> None:
+    first = _figure_composer_profile_source("first")
+    second = _figure_composer_profile_source("second")
+    tool = FigureComposerTool(
+        first,
+        recipe=FigureRecipeState(
+            sources=(
+                FigureSourceState(name="data_0", label="ImageTool 0: first"),
+                FigureSourceState(name="data_1", label="ImageTool 1: second"),
+            ),
+            operations=(FigureOperationState.line(label="line", source="data_0"),),
+            primary_source="data_0",
+        ),
+        source_data={"data_0": first, "data_1": second},
+    )
+    qtbot.addWidget(tool)
+    tool._select_step_section("sources")
+
+    source_combos = tool.step_source_controls.findChildren(
+        QtWidgets.QComboBox, "figureComposerLineSourceCombo"
+    )
+    source_combo = next(
+        (
+            combo
+            for combo in source_combos
+            if combo.property("figure_composer_editor_generation")
+            == tool._operation_editor_generation
+        ),
+        None,
+    )
+    assert source_combo is not None
+    first_index = source_combo.findData("data_0")
+    second_index = source_combo.findData("data_1")
+    assert first_index >= 0
+    assert second_index >= 0
+    assert source_combo.itemData(first_index) == "data_0"
+    assert source_combo.itemData(second_index) == "data_1"
+
+    _activate_combo_index(source_combo, second_index)
+
+    assert tool.tool_status.operations[0].line_source == "data_1"
+
+
 def test_figure_composer_plot_slices_source_selector_batch_toggles_sources(
     qtbot,
 ) -> None:

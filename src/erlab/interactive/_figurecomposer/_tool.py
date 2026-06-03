@@ -73,6 +73,9 @@ from erlab.interactive._figurecomposer._sources import (
     _default_setup_for_data,
     _source_data_from_blob,
     _source_data_to_blob,
+    _source_display_label,
+    _source_display_tooltip,
+    _source_duplicate_labels,
     _source_label,
     _source_name,
 )
@@ -993,12 +996,21 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def _refresh_source_list(self) -> None:
         self.source_list.clear()
         source_by_name = {source.name: source for source in self._recipe.sources}
+        duplicate_labels = _source_duplicate_labels(self._recipe.sources)
         for name, data in self._source_data.items():
             source = source_by_name.get(name)
-            label = source.label if source is not None else name
+            display = _source_display_label(
+                source,
+                name,
+                disambiguate=(
+                    source is not None
+                    and (source.label.strip() or name) in duplicate_labels
+                ),
+            )
             dims = " x ".join(f"{dim}:{data.sizes[dim]}" for dim in data.dims)
-            item = QtWidgets.QListWidgetItem(f"{name}  {label}  ({dims})")
+            item = QtWidgets.QListWidgetItem(f"{display}  ({dims})")
             item.setData(QtCore.Qt.ItemDataRole.UserRole, name)
+            item.setToolTip(_source_display_tooltip(source, name))
             if source is None:
                 item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
             self.source_list.addItem(item)
@@ -1009,10 +1021,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             if source.name not in self._source_data
         ]
         for source in missing:
-            item = QtWidgets.QListWidgetItem(
-                f"{source.name}  {source.label}  (missing)"
+            display = _source_display_label(
+                source,
+                source.name,
+                disambiguate=(source.label.strip() or source.name) in duplicate_labels,
             )
+            item = QtWidgets.QListWidgetItem(f"{display}  (missing)")
             item.setData(QtCore.Qt.ItemDataRole.UserRole, source.name)
+            item.setToolTip(_source_display_tooltip(source, source.name))
             item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
             self.source_list.addItem(item)
 
@@ -2058,6 +2074,26 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return names
         return tuple(self._source_data)
 
+    def _source_by_name(self) -> dict[str, FigureSourceState]:
+        return {source.name: source for source in self._recipe.sources}
+
+    def _source_display_name(self, name: str) -> str:
+        sources = self._source_by_name()
+        source = sources.get(name)
+        duplicate_labels = _source_duplicate_labels(tuple(sources.values()))
+        return _source_display_label(
+            source,
+            name,
+            disambiguate=source is not None
+            and (source.label.strip() or name) in duplicate_labels,
+        )
+
+    def _source_display_names(self, names: Sequence[str]) -> tuple[str, ...]:
+        return tuple(self._source_display_name(name) for name in names)
+
+    def _source_tooltip(self, name: str) -> str:
+        return _source_display_tooltip(self._source_by_name().get(name), name)
+
     def _selected_axes_state(self) -> FigureAxesSelectionState:
         if self._recipe.setup.layout_mode == "gridspec":
             axes_ids = self.gridspec_axes_selector.selected_axes_ids()
@@ -2653,10 +2689,13 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             source for source in selected_sources if source not in self._source_data
         ]
         if missing:
-            self.source_status_label.setText("Missing sources: " + ", ".join(missing))
+            self.source_status_label.setText(
+                "Missing sources: " + ", ".join(self._source_display_names(missing))
+            )
         elif selected_sources:
             self.source_status_label.setText(
-                "Selected sources: " + ", ".join(selected_sources)
+                "Selected sources: "
+                + ", ".join(self._source_display_names(selected_sources))
             )
         else:
             self.source_status_label.setText("This step does not read a data source.")
@@ -2905,6 +2944,52 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         adapter.connect_commit(
             self._connect_editor_signal,
             changed,
+        )
+        return combo
+
+    def _source_combo(
+        self,
+        values: Sequence[str],
+        current: str | None,
+        changed: Callable[[str | None], None],
+        *,
+        parent: QtWidgets.QWidget | None = None,
+        mixed: bool = False,
+        enabled: bool = True,
+    ) -> QtWidgets.QComboBox:
+        combo = QtWidgets.QComboBox(parent or self.operation_editor)
+        self._mark_editor_control(combo)
+        adapter = ComboBoxDataControlAdapter(combo)
+        if mixed:
+            combo.addItem(_MIXED_VALUES_TEXT, _MIXED_VALUE)
+        for value in values:
+            combo.addItem(self._source_display_name(value), value)
+            combo.setItemData(
+                combo.count() - 1,
+                self._source_tooltip(value),
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        if current is not None and current not in values and not mixed:
+            combo.addItem(self._source_display_name(current), current)
+            combo.setItemData(
+                combo.count() - 1,
+                self._source_tooltip(current),
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        if mixed:
+            item = typing.cast("typing.Any", combo.model()).item(0)
+            if item is not None:
+                item.setEnabled(False)
+            combo.setCurrentIndex(0)
+        elif current is not None:
+            for index in range(combo.count()):
+                if combo.itemData(index) == current:
+                    combo.setCurrentIndex(index)
+                    break
+        combo.setEnabled(enabled)
+        adapter.connect_commit(
+            self._connect_editor_signal,
+            lambda value: changed(typing.cast("str | None", value)),
         )
         return combo
 

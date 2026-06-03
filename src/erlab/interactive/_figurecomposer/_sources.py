@@ -18,6 +18,7 @@ from erlab.interactive._figurecomposer._state import (
     FigureAxesSelectionState,
     FigureDataSelectionState,
     FigureOperationState,
+    FigureSourceState,
     FigureSubplotsState,
 )
 
@@ -49,6 +50,35 @@ def _source_label(data: xr.DataArray) -> str:
     if data.name is None:
         return "data"
     return str(data.name)
+
+
+def _source_display_label(
+    source: FigureSourceState | None, name: str, *, disambiguate: bool = False
+) -> str:
+    """Return the user-facing source label for a recipe source alias."""
+    label = name if source is None else source.label.strip() or name
+    if source is not None and disambiguate and label != name:
+        return f"{label} ({name})"
+    return label
+
+
+def _source_duplicate_labels(
+    sources: Sequence[FigureSourceState],
+) -> frozenset[str]:
+    counts: dict[str, int] = {}
+    for source in sources:
+        label = source.label.strip() or source.name
+        counts[label] = counts.get(label, 0) + 1
+    return frozenset(label for label, count in counts.items() if count > 1)
+
+
+def _source_display_tooltip(source: FigureSourceState | None, name: str) -> str:
+    if source is None:
+        return f"Alias: {name}"
+    label = source.label.strip() or name
+    if label == name:
+        return f"Alias: {name}"
+    return f"{label}\nAlias: {name}"
 
 
 def _valid_source_variable(name: str) -> str:

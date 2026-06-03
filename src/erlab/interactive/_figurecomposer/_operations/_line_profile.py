@@ -972,7 +972,11 @@ def _default_profile_x_dim(
 
 def _display_text(tool: FigureComposerTool, operation: FigureOperationState) -> str:
     prefix = "Needs axes: " if _has_invalid_target(tool, operation) else ""
-    source = operation.line_source or "missing source"
+    source = (
+        tool._source_display_name(operation.line_source)
+        if operation.line_source is not None
+        else "missing source"
+    )
     return f"{prefix}Line/profile: {source}"
 
 
@@ -997,12 +1001,15 @@ def _source_names(operation: FigureOperationState) -> tuple[str, ...]:
 def _build_source_editor(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> None:
-    source_combo = tool._combo(
+    source_mixed = tool._batch_is_mixed(operation, lambda target: target.line_source)
+    source_combo = tool._source_combo(
         tool._source_names(),
-        operation.line_source,
-        lambda text: tool._update_current_operation(line_source=text or None),
+        None if source_mixed else operation.line_source,
+        lambda source: tool._update_current_operation(line_source=source),
         parent=tool.step_source_controls,
+        mixed=source_mixed,
     )
+    source_combo.setObjectName("figureComposerLineSourceCombo")
     tool._add_form_row(
         tool.step_source_controls_layout,
         "Line data",
@@ -1030,7 +1037,9 @@ def _section_summary(
 ) -> str:
     match key:
         case "sources":
-            return operation.line_source or "none"
+            if operation.line_source is None:
+                return "none"
+            return tool._source_display_name(operation.line_source)
         case "axes":
             return tool._axes_target_text(operation.axes)
         case "line":
