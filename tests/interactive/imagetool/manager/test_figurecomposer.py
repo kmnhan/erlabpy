@@ -41,6 +41,7 @@ from erlab.interactive._figurecomposer import (
     FigureRecipeState,
     FigureSourceState,
     FigureSubplotsState,
+    _line_transform,
 )
 from erlab.interactive._figurecomposer._operations import (
     _custom_code as figurecomposer_custom_code,
@@ -4549,23 +4550,23 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert figurecomposer_line_profile._available_line_offset_coords(
         tool, operation
     ) == ["temperature"]
-    assert figurecomposer_line_profile._line_offsets_for_profiles(
-        tool,
+    assert _line_transform.line_offsets_for_profiles(
         operation.model_copy(
             update={"line_offset_source": "index", "line_offset_scale": 2.0}
         ),
         profiles,
     ) == (0.0, 2.0, 4.0)
-    assert figurecomposer_line_profile._line_offsets_for_profiles(
-        tool,
+    assert _line_transform.line_offsets_for_profiles(
         operation.model_copy(
             update={"line_offset_source": "coordinate", "line_offset_scale": 0.5}
         ),
         profiles,
     ) == (0.0, 0.5, 1.0)
-    assert figurecomposer_line_profile._line_offsets_for_profiles(
-        tool, operation, profiles
-    ) == (0.1, 0.2, 0.3)
+    assert _line_transform.line_offsets_for_profiles(operation, profiles) == (
+        0.1,
+        0.2,
+        0.3,
+    )
 
     fig = tool.figure
     figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
@@ -4688,8 +4689,12 @@ def test_figure_composer_one_profile_per_axis_codegen_executes(qtbot) -> None:
     assert "profiles =" in code
     assert "profile_scales = [0.1, 0.2, 0.3]" in code
     assert "profile_offsets = [-0.2, 0.0, 0.2]" in code
-    assert "for ax, profile, scale, offset in zip(" in code
-    assert "ax.plot(profile['kx'], offset + scale * profile" in code
+    assert (
+        "profiles = [\n    offset + scale * (profile / profile.max(skipna=True))"
+    ) in code
+    assert "for profile, scale, offset in zip(" in code
+    assert "for ax, profile in zip(" in code
+    assert "ax.plot(profile['kx'], profile" in code
 
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
@@ -5848,6 +5853,80 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     assert line.get_alpha() == 0.75
 
 
+def test_figure_composer_plot_slices_line_transforms_codegen_executes(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.array([[1.0, 2.0], [3.0, 6.0], [5.0, 10.0]]),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0, 2.0], "kx": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="line_slices",
+        sources=("data",),
+        axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+        slice_dim="eV",
+        slice_values=(0.0, 1.0),
+        slice_width=0.1,
+    ).model_copy(
+        update={
+            "line_normalize": "max",
+            "line_scales": (0.5, 2.0),
+            "line_offsets": (1.0, -1.0),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
+    assert colors_page.findChild(
+        QtWidgets.QWidget, "figureComposerPlotSlicesLineTransformGroup"
+    )
+    assert colors_page.findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesLineNormalizeCombo"
+    )
+    assert colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesLineScalesEdit"
+    )
+    assert colors_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerPlotSlicesLineOffsetsEdit"
+    )
+
+    kwargs = figurecomposer_plot_slices._plot_slices_kwargs(
+        tool, tool.tool_status.operations[0]
+    )
+    assert "line_normalize" not in kwargs
+    assert "line_scales" not in kwargs
+    assert "line_offsets" not in kwargs
+
+    code = tool.generated_code()
+    assert "import xarray as xr" in code
+    assert "data.qsel(eV=0.0, eV_width=0.1).squeeze(drop=True)" in code
+    assert "profile_scales = [0.5, 2.0]" in code
+    assert "profile_offsets = [1.0, -1.0]" in code
+    assert (
+        "profiles = [\n    offset + scale * (profile / profile.max(skipna=True))"
+    ) in code
+    assert "eplt.plot_slices(plot_maps[0]" in code
+    assert "eV_width" not in code.split("eplt.plot_slices(", maxsplit=1)[1]
+
+    namespace: dict[str, typing.Any] = {"data": data}
+    exec(code, namespace)  # noqa: S102
+    axs = namespace["axs"]
+    np.testing.assert_allclose(axs[0, 0].lines[0].get_ydata(), [1.25, 1.5])
+    np.testing.assert_allclose(axs[0, 1].lines[0].get_ydata(), [0.0, 1.0])
+
+
 def test_figure_composer_plot_slices_line_panels_ignore_image_cmap(qtbot) -> None:
     data = xr.DataArray(
         np.arange(6.0).reshape(3, 2),
@@ -5966,6 +6045,52 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
     assert cuts_page.findChild(
         QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
     )
+
+
+def test_figure_composer_plot_slices_image_panels_hide_line_transforms(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(12.0).reshape(3, 2, 2),
+        dims=("eV", "kx", "ky"),
+        coords={"eV": [0.0, 1.0, 2.0], "kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="image_slices",
+        sources=("data",),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(
+        update={
+            "line_normalize": "max",
+            "line_scales": (2.0,),
+            "line_offsets": (1.0,),
+        }
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
+    assert (
+        colors_page.findChild(
+            QtWidgets.QWidget, "figureComposerPlotSlicesLineTransformGroup"
+        )
+        is None
+    )
+    code = tool.generated_code()
+    assert "profile_scales" not in code
+    assert "profile_offsets" not in code
+    assert "plot_maps" not in code
 
 
 def test_figure_composer_plot_slices_image_panel_styles_codegen_executes(

@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import math
 import typing
-
-import numpy as np
-from qtpy import QtWidgets
 
 from erlab.interactive._figurecomposer import _rendering
 from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
@@ -19,6 +15,11 @@ from erlab.interactive._figurecomposer._line_style import (
     optional_positive_spinbox,
     optional_positive_spinbox_value,
     update_current_line_kw,
+)
+from erlab.interactive._figurecomposer._line_transform import (
+    add_line_transform_controls,
+    profile_transform_code_lines,
+    transform_profiles,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -38,10 +39,8 @@ from erlab.interactive._figurecomposer._state import (
 from erlab.interactive._figurecomposer._text import (
     _code_kwargs,
     _dict_from_text,
-    _float_tuple_from_text,
     _format_dict,
     _format_string_tuple,
-    _format_tuple,
     _string_tuple_from_text,
 )
 from erlab.interactive._figurecomposer._widgets import (
@@ -54,14 +53,11 @@ if typing.TYPE_CHECKING:
 
     import matplotlib.axes
     import xarray as xr
+    from qtpy import QtWidgets
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
-_PROFILE_NORMALIZE_CODE = {
-    "max": "profiles = [profile / profile.max(skipna=True) for profile in profiles]",
-    "mean": "profiles = [profile / profile.mean(skipna=True) for profile in profiles]",
-}
 _LINE_PROFILE_STYLE_KEY_ALIASES = {
     "c": "color",
     "ls": "linestyle",
@@ -84,26 +80,6 @@ def _line_placement_from_text(
     if text == "One profile per axis":
         return "one_per_axis"
     return "all_axes"
-
-
-def _line_normalize_text(mode: str) -> str:
-    match mode:
-        case "max":
-            return "Each profile by maximum"
-        case "mean":
-            return "Each profile by mean"
-    return "None"
-
-
-def _line_normalize_from_text(
-    text: str,
-) -> typing.Literal["none", "max", "mean"]:
-    match text:
-        case "Each profile by maximum":
-            return "max"
-        case "Each profile by mean":
-            return "mean"
-    return "none"
 
 
 def _line_choice_data(
@@ -339,32 +315,6 @@ def _build_line_editor(
         ),
     )
 
-    normalize_mixed = tool._batch_is_mixed(
-        operation, lambda target: target.line_normalize
-    )
-    normalize_combo = tool._combo(
-        [
-            _line_normalize_text("none"),
-            _line_normalize_text("max"),
-            _line_normalize_text("mean"),
-        ],
-        None if normalize_mixed else _line_normalize_text(operation.line_normalize),
-        lambda text: tool._update_current_operation(
-            line_normalize=_line_normalize_from_text(text)
-        ),
-        parent=page,
-        mixed=normalize_mixed,
-    )
-    normalize_combo.setObjectName("figureComposerLineNormalizeCombo")
-    tool._add_form_row(
-        tool.operation_editor_layout,
-        "Normalize",
-        normalize_combo,
-        "Normalize each extracted 1D profile independently before "
-        "scale/offset. This does not normalize the source image or all "
-        "profiles together.",
-    )
-
     placement_mixed = tool._batch_is_mixed(
         operation, lambda target: target.line_placement
     )
@@ -407,127 +357,14 @@ def _build_line_editor(
         "x: values on x, coordinate on y.",
     )
 
-    scales_text, scales_mixed = tool._batch_text(
-        operation, lambda target: target.line_scales, _format_tuple
-    )
-    scales_edit = tool._line_edit(scales_text)
-    tool._apply_mixed_line_edit(scales_edit, scales_mixed)
-    tool._connect_line_edit_finished(
-        scales_edit,
-        lambda text: tool._update_current_operation(
-            line_scales=_float_tuple_from_text(text)
-        ),
-    )
-    tool._add_form_row(
+    add_line_transform_controls(
+        tool,
+        operation,
+        page,
         tool.operation_editor_layout,
-        "Scales",
-        scales_edit,
-        "Scale applied to profile data values.\n"
-        "Use one value or comma-separated per-profile values.",
+        object_prefix="figureComposerLine",
+        offset_coord_options=lambda target: _available_line_offset_coords(tool, target),
     )
-
-    offset_source_mixed = tool._batch_is_mixed(
-        operation, lambda target: target.line_offset_source
-    )
-    offset_source_combo = tool._combo(
-        ["manual", "index", "coordinate", "associated"],
-        None if offset_source_mixed else operation.line_offset_source,
-        lambda source: _update_current_line_offset_source(tool, source),
-        parent=page,
-        mixed=offset_source_mixed,
-    )
-    offset_source_combo.setObjectName("figureComposerLineOffsetSourceCombo")
-    tool._add_form_row(
-        tool.operation_editor_layout,
-        "Offset source",
-        offset_source_combo,
-        "Where offsets come from.\n"
-        "manual: use Offsets.\n"
-        "index/coordinate/associated: derive from One profile per.",
-    )
-
-    if operation.line_offset_source == "associated":
-        offset_coord_values = ["", *_available_line_offset_coords(tool, operation)]
-        offset_coord_options_match = tool._batch_options_match(
-            operation,
-            lambda target: ["", *_available_line_offset_coords(tool, target)],
-        )
-        offset_coord_mixed = tool._batch_is_mixed(
-            operation, lambda target: target.line_offset_coord
-        )
-        if (
-            operation.line_offset_coord is not None
-            and operation.line_offset_coord not in offset_coord_values
-        ):
-            offset_coord_values.append(operation.line_offset_coord)
-        offset_coord_combo = tool._combo(
-            offset_coord_values,
-            None if offset_coord_mixed else operation.line_offset_coord or "",
-            lambda text: tool._update_current_operation(line_offset_coord=text or None),
-            parent=page,
-            mixed=offset_coord_mixed,
-            enabled=offset_coord_options_match,
-        )
-        offset_coord_combo.setObjectName("figureComposerLineOffsetCoordinateCombo")
-        tool._add_form_row(
-            tool.operation_editor_layout,
-            "Offset coordinate",
-            offset_coord_combo,
-            "Associated coordinate used when Offset source is associated."
-            + (
-                "\nDisabled while selected steps have different valid choices."
-                if not offset_coord_options_match
-                else ""
-            ),
-        )
-
-    if operation.line_offset_source != "manual":
-        offset_scale_mixed = tool._batch_is_mixed(
-            operation, lambda target: target.line_offset_scale
-        )
-        offset_scale_spin = QtWidgets.QDoubleSpinBox(page)
-        offset_scale_spin.setRange(-1_000_000_000.0, 1_000_000_000.0)
-        offset_scale_spin.setDecimals(6)
-        offset_scale_spin.setSingleStep(0.1)
-        offset_scale_spin.setKeyboardTracking(False)
-        offset_scale_spin.setValue(operation.line_offset_scale)
-        offset_scale_spin.setObjectName("figureComposerLineOffsetScaleEdit")
-        tool._connect_value_signal(
-            offset_scale_spin,
-            offset_scale_spin.valueChanged,
-            float,
-            lambda value: tool._update_current_operation(line_offset_scale=value),
-        )
-        offset_scale_tooltip = "Multiplier applied to offsets from the selected source."
-        if offset_scale_mixed:
-            offset_scale_tooltip += "\nSelected steps have multiple values."
-        tool._add_form_row(
-            tool.operation_editor_layout,
-            "Offset scale",
-            offset_scale_spin,
-            offset_scale_tooltip,
-        )
-
-    if operation.line_offset_source == "manual":
-        offsets_text, offsets_mixed = tool._batch_text(
-            operation, lambda target: target.line_offsets, _format_tuple
-        )
-        offsets_edit = tool._line_edit(offsets_text)
-        tool._apply_mixed_line_edit(offsets_edit, offsets_mixed)
-        offsets_edit.setObjectName("figureComposerLineOffsetsEdit")
-        tool._connect_line_edit_finished(
-            offsets_edit,
-            lambda text: tool._update_current_operation(
-                line_offsets=_float_tuple_from_text(text)
-            ),
-        )
-        tool._add_form_row(
-            tool.operation_editor_layout,
-            "Offsets",
-            offsets_edit,
-            "Offset applied to profile data values.\n"
-            "Use one value or comma-separated per-profile values.",
-        )
     return [("line", "Line", page)]
 
 
@@ -691,13 +528,6 @@ def _add_line_style_controls(
     )
 
 
-def _update_current_line_offset_source(tool: FigureComposerTool, source: str) -> None:
-    updates: dict[str, typing.Any] = {"line_offset_source": source}
-    if source == "manual":
-        updates["line_offset_scale"] = 1.0
-    tool._update_current_operation_rebuild(**updates)
-
-
 def _update_current_line_labels(tool: FigureComposerTool, text: str) -> None:
     editable = tool._editable_operations()
     if not editable:
@@ -782,19 +612,15 @@ def _render_line(
     if operation.line_placement == "one_per_axis":
         _render_one_profile_per_axis(tool, operation, axes, line_items)
         return
-    scales = _line_transform_values(operation.line_scales, len(line_items), default=1.0)
-    offsets = _line_offsets_for_profiles(tool, operation, line_items)
+    line_items = transform_profiles(operation, line_items)
     styles = _line_styles_for_profiles(operation, len(line_items))
     for axis in axes:
-        for line_data, scale, offset, kwargs in zip(
-            line_items, scales, offsets, styles, strict=True
-        ):
-            line_values = offset + scale * line_data
+        for line_data, kwargs in zip(line_items, styles, strict=True):
             if operation.line_values_axis == "x":
                 coordinate = _line_coordinate(line_data, operation.line_x)
-                axis.plot(line_values.values, coordinate.values, **kwargs)
+                axis.plot(line_data.values, coordinate.values, **kwargs)
             else:
-                line_values.plot(ax=axis, x=operation.line_x, **kwargs)
+                line_data.plot(ax=axis, x=operation.line_x, **kwargs)
         _apply_line_axes_limits(axis, operation)
 
 
@@ -808,18 +634,14 @@ def _render_one_profile_per_axis(
         axes = axes * len(profiles)
     elif len(profiles) == 1 and len(axes) > 1:
         profiles = profiles * len(axes)
-    scales = _line_transform_values(operation.line_scales, len(profiles), default=1.0)
-    offsets = _line_offsets_for_profiles(tool, operation, profiles)
+    profiles = transform_profiles(operation, profiles)
     styles = _line_styles_for_profiles(operation, len(profiles))
-    for axis, profile, scale, offset, kwargs in zip(
-        axes, profiles, scales, offsets, styles, strict=True
-    ):
+    for axis, profile, kwargs in zip(axes, profiles, styles, strict=True):
         coordinate = _line_coordinate(profile, operation.line_x)
-        values = offset + scale * profile
         if operation.line_values_axis == "x":
-            axis.plot(values.values, coordinate.values, **kwargs)
+            axis.plot(profile.values, coordinate.values, **kwargs)
         else:
-            axis.plot(coordinate.values, values.values, **kwargs)
+            axis.plot(coordinate.values, profile.values, **kwargs)
         _apply_line_axes_limits(axis, operation)
 
 
@@ -860,27 +682,12 @@ def _line_data_items(
     else:
         return []
 
-    normalized: list[xr.DataArray] = []
+    profiles: list[xr.DataArray] = []
     for line_data in line_items:
         if line_data.ndim != 1:
             continue
-        line_data = _normalize_line_data(line_data, operation.line_normalize)
-        normalized.append(line_data)
-    return normalized
-
-
-def _normalize_line_data(
-    line_data: xr.DataArray, mode: typing.Literal["none", "max", "mean"]
-) -> xr.DataArray:
-    if mode == "none":
-        return line_data
-    if mode == "max":
-        scale = float(line_data.max(skipna=True))
-    else:
-        scale = float(line_data.mean(skipna=True))
-    if math.isfinite(scale) and scale != 0.0:
-        return line_data / scale
-    return line_data
+        profiles.append(line_data)
+    return profiles
 
 
 def _line_coordinate(line_data: xr.DataArray, dim: str | None) -> xr.DataArray:
@@ -889,46 +696,6 @@ def _line_coordinate(line_data: xr.DataArray, dim: str | None) -> xr.DataArray:
     if line_data.ndim != 1:
         raise ValueError("Profile overlays require one-dimensional profiles")
     return line_data[line_data.dims[0]]
-
-
-def _line_offsets_for_profiles(
-    tool: FigureComposerTool,
-    operation: FigureOperationState,
-    profiles: Sequence[xr.DataArray],
-) -> tuple[float, ...]:
-    count = len(profiles)
-    if operation.line_offset_source == "manual":
-        return _line_transform_values(operation.line_offsets, count, default=0.0)
-    if operation.line_offset_source == "index":
-        offsets = tuple(float(index) for index in range(count))
-    else:
-        coord_name = _line_offset_coordinate_name(operation)
-        offsets = tuple(
-            _profile_scalar_coord_value(profile, coord_name) for profile in profiles
-        )
-    if operation.line_offset_scale == 1.0:
-        return offsets
-    return tuple(operation.line_offset_scale * offset for offset in offsets)
-
-
-def _line_offset_coordinate_name(operation: FigureOperationState) -> str:
-    if operation.line_offset_source == "coordinate":
-        if operation.line_iter_dim is None:
-            raise ValueError("Coordinate offsets require One profile per")
-        return operation.line_iter_dim
-    if operation.line_offset_coord is None:
-        raise ValueError("Associated-coordinate offsets require a coordinate")
-    return operation.line_offset_coord
-
-
-def _profile_scalar_coord_value(profile: xr.DataArray, coord_name: str) -> float:
-    coord = profile.coords.get(coord_name)
-    if coord is None:
-        raise ValueError(f"Profile has no coordinate named {coord_name!r}")
-    values = np.asarray(coord.values).reshape(-1)
-    if values.size != 1:
-        raise ValueError(f"Profile coordinate {coord_name!r} is not scalar")
-    return float(values[0])
 
 
 def _line_styles_for_profiles(
@@ -974,22 +741,6 @@ def _line_text_values(
             "Profile labels and colors must be one value or one per profile"
         )
     return tuple(values)
-
-
-def _line_transform_values(
-    values: Sequence[float], count: int, *, default: float
-) -> tuple[float, ...]:
-    if count < 1:
-        return ()
-    if not values:
-        return (default,) * count
-    if len(values) == 1:
-        return (float(values[0]),) * count
-    if len(values) != count:
-        raise ValueError(
-            "Profile scales and offsets must be one value or one per profile"
-        )
-    return tuple(float(value) for value in values)
 
 
 def _line_code(tool: FigureComposerTool, operation: FigureOperationState) -> list[str]:
@@ -1039,17 +790,9 @@ def _regular_line_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     lines: list[str] = []
-    if operation.line_normalize != "none":
-        lines.append(_PROFILE_NORMALIZE_CODE[operation.line_normalize])
+    lines.extend(profile_transform_code_lines(operation))
     loop_names = ["profile"]
     loop_values = ["profiles"]
-    lines.extend(
-        _line_value_code(
-            operation,
-            loop_names=loop_names,
-            loop_values=loop_values,
-        )
-    )
     style_lines, kwargs_text = _line_style_code(
         operation,
         loop_names=loop_names,
@@ -1069,9 +812,8 @@ def _regular_line_code(
     lines.append(f"for ax in {_axes_sequence_code(tool, operation.axes)}:")
     lines.append(f"    {loop}")
     coordinate = _line_coordinate_code(operation)
-    value_expr = _line_profile_value_expression(operation)
     if operation.line_values_axis == "x":
-        call_args = f"{value_expr}, {coordinate}"
+        call_args = f"profile, {coordinate}"
         if kwargs_text:
             call_args += f", {kwargs_text}"
         lines.append(f"        ax.plot({call_args})")
@@ -1081,74 +823,10 @@ def _regular_line_code(
             call_args += f", x={operation.line_x!r}"
         if kwargs_text:
             call_args += f", {kwargs_text}"
-        plot_target = "profile" if value_expr == "profile" else f"({value_expr})"
-        lines.append(f"        {plot_target}.plot({call_args})")
+        lines.append(f"        profile.plot({call_args})")
     if axes_limits_code := _line_axes_limits_code(operation):
         lines.append(f"    {axes_limits_code}")
     return lines
-
-
-def _line_value_code(
-    operation: FigureOperationState,
-    *,
-    loop_names: list[str],
-    loop_values: list[str],
-) -> list[str]:
-    lines: list[str] = []
-    if operation.line_scales:
-        if len(operation.line_scales) == 1:
-            lines.append(f"profile_scale = {operation.line_scales[0]!r}")
-        else:
-            lines.append(f"profile_scales = {list(operation.line_scales)!r}")
-            loop_names.append("scale")
-            loop_values.append("profile_scales")
-
-    if not _line_uses_offsets(operation):
-        return lines
-
-    if operation.line_offset_source == "manual":
-        if len(operation.line_offsets) == 1:
-            lines.append(f"profile_offset = {operation.line_offsets[0]!r}")
-            return lines
-        lines.append(f"profile_offsets = {list(operation.line_offsets)!r}")
-    elif operation.line_offset_source == "index":
-        lines.append(
-            "profile_offsets = [float(index) for index in range(len(profiles))]"
-        )
-    else:
-        coord_name = _line_offset_coordinate_name(operation)
-        lines.append(
-            "profile_offsets = "
-            f"[float(profile[{coord_name!r}]) for profile in profiles]"
-        )
-
-    if operation.line_offset_scale != 1.0:
-        lines.append(f"profile_offset_scale = {operation.line_offset_scale!r}")
-        lines.append(
-            "profile_offsets = "
-            "[profile_offset_scale * offset for offset in profile_offsets]"
-        )
-    loop_names.append("offset")
-    loop_values.append("profile_offsets")
-    return lines
-
-
-def _line_uses_offsets(operation: FigureOperationState) -> bool:
-    return operation.line_offset_source != "manual" or bool(operation.line_offsets)
-
-
-def _line_profile_value_expression(operation: FigureOperationState) -> str:
-    if not operation.line_scales:
-        value_expr = "profile"
-    elif len(operation.line_scales) == 1:
-        value_expr = "profile_scale * profile"
-    else:
-        value_expr = "scale * profile"
-    if not _line_uses_offsets(operation):
-        return value_expr
-    if operation.line_offset_source == "manual" and len(operation.line_offsets) == 1:
-        return f"profile_offset + {value_expr}"
-    return f"offset + {value_expr}"
 
 
 def _line_style_code(
@@ -1186,29 +864,20 @@ def _one_profile_per_axis_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     lines: list[str] = []
-    if operation.line_normalize != "none":
-        lines.append(_PROFILE_NORMALIZE_CODE[operation.line_normalize])
     lines.append(f"target_axes = list({_axes_sequence_code(tool, operation.axes)})")
     lines.append("if len(target_axes) == 1 and len(profiles) > 1:")
     lines.append("    target_axes = target_axes * len(profiles)")
     lines.append("elif len(profiles) == 1 and len(target_axes) > 1:")
     lines.append("    profiles = profiles * len(target_axes)")
+    lines.extend(profile_transform_code_lines(operation))
     loop_names = ["ax", "profile"]
     loop_values = ["target_axes", "profiles"]
-    lines.extend(
-        _line_value_code(
-            operation,
-            loop_names=loop_names,
-            loop_values=loop_values,
-        )
-    )
     style_lines, kwargs_text = _line_style_code(
         operation,
         loop_names=loop_names,
         loop_values=loop_values,
     )
     lines.extend(style_lines)
-    value_expr = _line_profile_value_expression(operation)
     coordinate = _line_coordinate_code(operation)
     lines.append(
         "for "
@@ -1218,9 +887,9 @@ def _one_profile_per_axis_code(
         + ", strict=True):"
     )
     if operation.line_values_axis == "x":
-        call_args = f"{value_expr}, {coordinate}"
+        call_args = f"profile, {coordinate}"
     else:
-        call_args = f"{coordinate}, {value_expr}"
+        call_args = f"{coordinate}, profile"
     if kwargs_text:
         call_args += f", {kwargs_text}"
     lines.append(f"    ax.plot({call_args})")

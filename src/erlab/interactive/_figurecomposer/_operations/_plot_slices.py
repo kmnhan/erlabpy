@@ -6,6 +6,7 @@ import math
 import typing
 
 import numpy as np
+import xarray as xr
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
@@ -30,6 +31,12 @@ from erlab.interactive._figurecomposer._line_style import (
     optional_positive_spinbox_value,
     update_current_extra_line_kw,
     update_current_line_kw,
+)
+from erlab.interactive._figurecomposer._line_transform import (
+    add_line_transform_controls,
+    line_transform_active,
+    profile_transform_code_lines,
+    transform_profiles,
 )
 from erlab.interactive._figurecomposer._norms import (
     _MATPLOTLIB_NORM_NAMES,
@@ -83,7 +90,6 @@ if typing.TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Sequence
 
     import matplotlib.axes
-    import xarray as xr
 
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
@@ -465,6 +471,100 @@ def _has_panel_line_kw_overrides(
     keys = _plot_slices_panel_keys(tool, operation)
     styles = _panel_style_map_for_keys(operation, keys)
     return any(_panel_style_has_line_override(style) for style in styles.values())
+
+
+def _plot_slices_uses_transformed_line_maps(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> bool:
+    return _plot_slices_shape(tool, operation).plot_ndim == 1 and line_transform_active(
+        operation
+    )
+
+
+def _plot_slices_panel_qsel_kwargs(
+    operation: FigureOperationState, key: _PlotSlicesPanelKey
+) -> dict[str, typing.Any]:
+    kwargs = dict(operation.slice_kwargs)
+    if operation.slice_dim and operation.slice_values:
+        kwargs[operation.slice_dim] = operation.slice_values[key.slice_index]
+        if operation.slice_width is not None:
+            kwargs[f"{operation.slice_dim}_width"] = operation.slice_width
+    return kwargs
+
+
+def _plot_slices_line_profiles(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    maps: Sequence[xr.DataArray] | None = None,
+) -> tuple[list[xr.DataArray], tuple[_PlotSlicesPanelKey, ...]]:
+    operation = _normalized_selection_operation(tool, operation)
+    if maps is None:
+        maps = _operation_maps(tool, operation)
+    keys = _plot_slices_panel_keys(tool, operation)
+    profiles: list[xr.DataArray] = []
+    profile_keys: list[_PlotSlicesPanelKey] = []
+    for key in keys:
+        if key.map_index >= len(maps):
+            continue
+        kwargs = _plot_slices_panel_qsel_kwargs(operation, key)
+        data = maps[key.map_index]
+        profile = (
+            data.qsel(**kwargs).squeeze(drop=True)
+            if kwargs
+            else data.squeeze(drop=True)
+        )
+        if profile.ndim != 1:
+            continue
+        profiles.append(profile)
+        profile_keys.append(key)
+    return profiles, tuple(profile_keys)
+
+
+def _plot_slices_transformed_maps(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    maps: Sequence[xr.DataArray],
+) -> list[xr.DataArray]:
+    profiles, keys = _plot_slices_line_profiles(tool, operation, maps)
+    transformed = transform_profiles(operation, profiles)
+    if not operation.slice_dim or not operation.slice_values:
+        return transformed
+
+    map_profiles: list[list[tuple[int, xr.DataArray]]] = [[] for _map in maps]
+    for key, profile in zip(keys, transformed, strict=True):
+        map_profiles[key.map_index].append((key.slice_index, profile))
+
+    transformed_maps: list[xr.DataArray] = []
+    slice_values = list(operation.slice_values)
+    for profiles_for_map in map_profiles:
+        if len(profiles_for_map) != len(slice_values):
+            continue
+        ordered_profiles = [
+            profile
+            for _index, profile in sorted(profiles_for_map, key=lambda item: item[0])
+        ]
+        transformed_maps.append(
+            xr.concat(
+                ordered_profiles,
+                dim=xr.IndexVariable(operation.slice_dim, slice_values),
+            )
+        )
+    return transformed_maps
+
+
+def _available_plot_slices_offset_coords(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> list[str]:
+    profiles, _keys = _plot_slices_line_profiles(tool, operation)
+    names: list[str] = []
+    for profile in profiles:
+        for name, coord in profile.coords.items():
+            name_str = str(name)
+            if name_str in profile.dims or name_str in names:
+                continue
+            if np.asarray(coord.values).reshape(-1).size == 1:
+                names.append(name_str)
+    return names
 
 
 def _panel_norm_code(
@@ -2077,6 +2177,30 @@ def _build_plot_slices_editor(
             "Additional Matplotlib Line2D kwargs not covered by the controls above.",
         )
 
+        transform_widget = QtWidgets.QWidget(colors_page)
+        transform_widget.setObjectName("figureComposerPlotSlicesLineTransformGroup")
+        transform_layout = QtWidgets.QFormLayout(transform_widget)
+        transform_layout.setContentsMargins(0, 0, 0, 0)
+        transform_layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        add_line_transform_controls(
+            tool,
+            operation,
+            transform_widget,
+            transform_layout,
+            object_prefix="figureComposerPlotSlicesLine",
+            offset_coord_options=lambda target: _available_plot_slices_offset_coords(
+                tool, target
+            ),
+        )
+        tool._add_form_row(
+            colors_layout,
+            "Line transform",
+            transform_widget,
+            "Normalize, scale, and offset 1D plot_slices inputs before plotting.",
+        )
+
         gradient_mixed = tool._batch_is_mixed(operation, lambda target: target.gradient)
         gradient_check = tool._check_box(
             operation.gradient,
@@ -2878,6 +3002,21 @@ def _plot_slices_kwargs(
     return kwargs
 
 
+def _plot_slices_transformed_kwargs(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, typing.Any]:
+    kwargs = _plot_slices_kwargs(tool, operation)
+    for key in operation.slice_kwargs:
+        kwargs.pop(key, None)
+    if operation.slice_dim:
+        kwargs.pop(f"{operation.slice_dim}_width", None)
+        if operation.slice_values:
+            kwargs[operation.slice_dim] = list(operation.slice_values)
+        else:
+            kwargs.pop(operation.slice_dim, None)
+    return kwargs
+
+
 def _render_plot_slices(
     tool: FigureComposerTool, operation: FigureOperationState, axs: typing.Any
 ) -> None:
@@ -2885,6 +3024,10 @@ def _render_plot_slices(
     maps = _operation_maps(tool, operation)
     if not maps:
         return
+    kwargs = _plot_slices_kwargs(tool, operation)
+    if _plot_slices_uses_transformed_line_maps(tool, operation):
+        maps = _plot_slices_transformed_maps(tool, operation, maps)
+        kwargs = _plot_slices_transformed_kwargs(tool, operation)
     axes = _plot_slices_axes(
         operation,
         maps,
@@ -2895,7 +3038,7 @@ def _render_plot_slices(
     eplt.plot_slices(
         maps,
         axes=typing.cast("Iterable[matplotlib.axes.Axes]", axes),
-        **_plot_slices_kwargs(tool, operation),
+        **kwargs,
     )
 
 
@@ -2949,9 +3092,93 @@ def _plot_slices_code(
     return f"eplt.plot_slices({maps_code}, {kwargs_text})"
 
 
+def _plot_slices_profile_source_codes(
+    operation: FigureOperationState,
+) -> tuple[str, ...]:
+    if operation.map_selections:
+        return tuple(
+            _selection_code(selection) for selection in operation.map_selections
+        )
+    return tuple(_valid_source_variable(source) for source in operation.sources)
+
+
+def _plot_slices_profile_code(
+    source_code: str, operation: FigureOperationState, key: _PlotSlicesPanelKey
+) -> str:
+    kwargs = _plot_slices_panel_qsel_kwargs(operation, key)
+    if not kwargs:
+        return f"{source_code}.squeeze(drop=True)"
+    return f"{source_code}.qsel({_code_kwargs(kwargs)}).squeeze(drop=True)"
+
+
+def _plot_slices_transformed_maps_code(
+    operation: FigureOperationState,
+    keys: tuple[_PlotSlicesPanelKey, ...],
+) -> tuple[list[str], str]:
+    if not operation.slice_dim or not operation.slice_values:
+        maps_code = "profiles[0]" if len(keys) == 1 else "profiles"
+        return [], maps_code
+
+    map_count = max((key.map_index for key in keys), default=-1) + 1
+    slice_values = list(operation.slice_values)
+    lines = ["plot_maps = ["]
+    for map_index in range(map_count):
+        profile_indices = [
+            index for index, key in enumerate(keys) if key.map_index == map_index
+        ]
+        if len(profile_indices) != len(slice_values):
+            continue
+        profile_items = ", ".join(f"profiles[{index}]" for index in profile_indices)
+        lines.append("    xr.concat(")
+        lines.append(f"        [{profile_items}],")
+        lines.append(
+            f"        dim=xr.IndexVariable({operation.slice_dim!r}, {slice_values!r}),"
+        )
+        lines.append("    ),")
+    lines.append("]")
+    maps_code = "plot_maps[0]" if map_count == 1 else "plot_maps"
+    return lines, maps_code
+
+
+def _plot_slices_transformed_code_lines(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> list[str]:
+    operation = _normalized_selection_operation(tool, operation)
+    source_codes = _plot_slices_profile_source_codes(operation)
+    if not source_codes:
+        return []
+    keys = tuple(
+        key
+        for key in _plot_slices_panel_keys(tool, operation)
+        if key.map_index < len(source_codes)
+    )
+    if not keys:
+        return []
+
+    lines = ["profiles = ["]
+    lines.extend(
+        "    "
+        + _plot_slices_profile_code(source_codes[key.map_index], operation, key)
+        + ","
+        for key in keys
+    )
+    lines.append("]")
+    lines.extend(profile_transform_code_lines(operation))
+    map_lines, maps_code = _plot_slices_transformed_maps_code(operation, keys)
+    lines.extend(map_lines)
+
+    kwargs = _plot_slices_transformed_code_kwargs(tool, operation)
+    kwargs["axes"] = _RawCode(_axes_code(tool, operation.axes, for_plot_slices=True))
+    kwargs_text = _code_kwargs(kwargs)
+    lines.append(f"eplt.plot_slices({maps_code}, {kwargs_text})")
+    return lines
+
+
 def _plot_slices_code_lines(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
+    if _plot_slices_uses_transformed_line_maps(tool, operation):
+        return _plot_slices_transformed_code_lines(tool, operation)
     code = _plot_slices_code(tool, operation)
     if code is None:
         return []
@@ -2977,6 +3204,12 @@ def _plot_slices_code_kwargs(
     elif not is_line_plot and not _use_powernorm_plot_kwargs(operation):
         kwargs["norm"] = _RawCode(_norm_code(operation))
     return kwargs
+
+
+def _plot_slices_transformed_code_kwargs(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, typing.Any]:
+    return _plot_slices_transformed_kwargs(tool, operation)
 
 
 _SECTION_TOOLTIPS = {
@@ -3337,6 +3570,13 @@ def _required_imports(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> tuple[str, ...]:
     imports = ["import erlab.plotting as eplt"]
+    if (
+        operation.enabled
+        and _plot_slices_uses_transformed_line_maps(tool, operation)
+        and operation.slice_dim
+        and operation.slice_values
+    ):
+        imports.append("import xarray as xr")
     if (
         operation.enabled
         and _plot_slices_shape(tool, operation).plot_ndim != 1
