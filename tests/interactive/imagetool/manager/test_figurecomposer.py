@@ -5571,6 +5571,127 @@ def test_figure_composer_toolbar_axes_dialog_updates_recipe(qtbot) -> None:
     assert tool.operation_list.currentRow() == 0
 
 
+def test_figure_composer_toolbar_axes_dialog_updates_curve_style(qtbot) -> None:
+    data = _figure_composer_profile_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.line(
+                    label="profile",
+                    source="data",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    target_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarCurveTargetCombo"
+    )
+    colors_edit = dialog.findChild(
+        QtWidgets.QLineEdit, "figureComposerToolbarCurveColorsEdit"
+    )
+    style_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarCurveLineStyleCombo"
+    )
+    width_spin = dialog.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerToolbarCurveLineWidthSpin"
+    )
+    marker_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarCurveMarkerCombo"
+    )
+    assert target_combo is not None
+    assert colors_edit is not None
+    assert style_combo is not None
+    assert width_spin is not None
+    assert marker_combo is not None
+    assert target_combo.count() == 1
+
+    colors_edit.setText("tab:red, tab:blue")
+    colors_edit.setModified(True)
+    colors_edit.editingFinished.emit()
+    _activate_combo_text(style_combo, "--")
+    width_spin.setValue(2.5)
+    _activate_combo_text(marker_combo, "o")
+
+    operation = tool.tool_status.operations[0]
+    assert operation.line_colors == ("tab:red", "tab:blue")
+    assert operation.line_kw["linestyle"] == "--"
+    assert operation.line_kw["linewidth"] == 2.5
+    assert operation.line_kw["marker"] == "o"
+
+
+def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+                    slice_dim="eV",
+                    slice_values=(-0.5, 0.5),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    target_combo = dialog.findChild(
+        QtWidgets.QComboBox, "figureComposerToolbarImageTargetCombo"
+    )
+    panel_list = dialog.findChild(
+        QtWidgets.QListWidget, "figureComposerPlotSlicesPanelStyleList"
+    )
+    cmap_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerPanelCmapOverrideCheck"
+    )
+    cmap_combo = dialog.findChild(
+        erlab.interactive.colors.ColorMapComboBox, "figureComposerPanelCmapCombo"
+    )
+    assert target_combo is not None
+    assert panel_list is not None
+    assert cmap_check is not None
+    assert cmap_combo is not None
+    assert target_combo.count() == 1
+    assert panel_list.count() == 2
+
+    panel_list.clearSelection()
+    first_panel = panel_list.item(0)
+    assert first_panel is not None
+    first_panel.setSelected(True)
+    cmap_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    cmap_combo.setCurrentText("magma")
+    cmap_combo.activated.emit(cmap_combo.currentIndex())
+
+    operation = tool.tool_status.operations[0]
+    assert operation.panel_styles_enabled
+    assert operation.panel_styles == (
+        FigurePlotSlicesPanelStyleState(
+            map_index=0,
+            slice_index=0,
+            cmap="magma",
+        ),
+    )
+
+
 def test_figure_composer_toolbar_axes_dialog_uses_gridspec_selector(qtbot) -> None:
     data = _figure_composer_image_source("data")
     tool = FigureComposerTool(

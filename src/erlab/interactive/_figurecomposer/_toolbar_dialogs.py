@@ -14,6 +14,27 @@ from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_axis_display_name,
     _gridspec_valid_axes_ids,
 )
+from erlab.interactive._figurecomposer._line_style import (
+    CONTROLLED_LINE_KW_KEYS,
+    LINE_MARKER_OPTIONS,
+    LINE_STYLE_OPTIONS,
+    color_kw_value_from_text,
+    extra_line_kw,
+    line_kw_float,
+    line_kw_text,
+    optional_positive_spinbox,
+    optional_positive_spinbox_value,
+)
+from erlab.interactive._figurecomposer._operations._plot_slices import (
+    _PLOT_SLICES_PANEL_IMAGE,
+    _PLOT_SLICES_PANEL_LINE,
+    _PanelLineStyleEditorWidget,
+    _PanelStyleEditorWidget,
+    _plot_slices_panel_keys,
+    _plot_slices_panel_kind,
+    _plot_slices_shape,
+    _PlotSlicesPanelKey,
+)
 from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
@@ -24,14 +45,18 @@ from erlab.interactive._figurecomposer._state import (
     FigureMethodFamily,
     FigureOperationKind,
     FigureOperationState,
+    FigurePlotSlicesPanelStyleState,
 )
+from erlab.interactive._figurecomposer._text import _dict_from_text, _format_dict
 from erlab.interactive._figurecomposer._widgets import (
     _AxesSelectorWidget,
+    _ColorLineEditWidget,
+    _ColorListEditorWidget,
     _GridSpecViewWidget,
 )
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from matplotlib.axes import Axes
 
@@ -39,6 +64,16 @@ if typing.TYPE_CHECKING:
 
 
 _LAYOUT_ENGINE_OPTIONS = ("none", "tight", "constrained", "compressed")
+_STYLE_TARGET_PLOT_SLICES = "plot_slices"
+_STYLE_TARGET_LINE = "line"
+
+
+class _StyleTarget(typing.NamedTuple):
+    operation_id: str
+    operation_index: int
+    target_kind: str
+    label: str
+    panel_keys: tuple[_PlotSlicesPanelKey, ...] = ()
 
 
 def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
@@ -182,46 +217,61 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     selector = _selector_widget(tool, dialog)
     root_layout.addWidget(selector)
 
-    form_host = QtWidgets.QWidget(dialog)
-    form_layout = QtWidgets.QGridLayout(form_host)
+    tab_widget = QtWidgets.QTabWidget(dialog)
+    tab_widget.setObjectName("figureComposerToolbarCustomizeTabs")
+    root_layout.addWidget(tab_widget, 1)
+
+    axes_page = QtWidgets.QWidget(tab_widget)
+    form_layout = QtWidgets.QGridLayout(axes_page)
     form_layout.setContentsMargins(0, 0, 0, 0)
     form_layout.setColumnStretch(1, 1)
     form_layout.setColumnStretch(3, 1)
-    root_layout.addWidget(form_host)
+    tab_widget.addTab(axes_page, "Axes")
 
-    title_edit = QtWidgets.QLineEdit(form_host)
+    curves_page, curves_combo, curves_layout = _style_tab_page(
+        tab_widget,
+        combo_object_name="figureComposerToolbarCurveTargetCombo",
+    )
+    images_page, images_combo, images_layout = _style_tab_page(
+        tab_widget,
+        combo_object_name="figureComposerToolbarImageTargetCombo",
+    )
+    curves_tab_index = tab_widget.addTab(curves_page, "Curves")
+    images_tab_index = tab_widget.addTab(images_page, "Images")
+
+    title_edit = QtWidgets.QLineEdit(axes_page)
     title_edit.setObjectName("figureComposerToolbarAxesTitleEdit")
-    xlabel_edit = QtWidgets.QLineEdit(form_host)
+    xlabel_edit = QtWidgets.QLineEdit(axes_page)
     xlabel_edit.setObjectName("figureComposerToolbarAxesXLabelEdit")
-    ylabel_edit = QtWidgets.QLineEdit(form_host)
+    ylabel_edit = QtWidgets.QLineEdit(axes_page)
     ylabel_edit.setObjectName("figureComposerToolbarAxesYLabelEdit")
-    xlim_edit = QtWidgets.QLineEdit(form_host)
+    xlim_edit = QtWidgets.QLineEdit(axes_page)
     xlim_edit.setObjectName("figureComposerToolbarAxesXLimEdit")
-    ylim_edit = QtWidgets.QLineEdit(form_host)
+    ylim_edit = QtWidgets.QLineEdit(axes_page)
     ylim_edit.setObjectName("figureComposerToolbarAxesYLimEdit")
-    aspect_edit = QtWidgets.QLineEdit(form_host)
+    aspect_edit = QtWidgets.QLineEdit(axes_page)
     aspect_edit.setObjectName("figureComposerToolbarAxesAspectEdit")
 
-    xscale_combo = QtWidgets.QComboBox(form_host)
+    xscale_combo = QtWidgets.QComboBox(axes_page)
     xscale_combo.setObjectName("figureComposerToolbarAxesXScaleCombo")
-    yscale_combo = QtWidgets.QComboBox(form_host)
+    yscale_combo = QtWidgets.QComboBox(axes_page)
     yscale_combo.setObjectName("figureComposerToolbarAxesYScaleCombo")
     scale_names = tuple(mscale.get_scale_names())
     xscale_combo.addItems(scale_names)
     yscale_combo.addItems(scale_names)
 
-    grid_check = QtWidgets.QCheckBox(form_host)
+    grid_check = QtWidgets.QCheckBox(axes_page)
     grid_check.setObjectName("figureComposerToolbarAxesGridCheck")
-    grid_axis_combo = QtWidgets.QComboBox(form_host)
+    grid_axis_combo = QtWidgets.QComboBox(axes_page)
     grid_axis_combo.setObjectName("figureComposerToolbarAxesGridAxisCombo")
     grid_axis_combo.addItems(["both", "x", "y"])
-    grid_which_combo = QtWidgets.QComboBox(form_host)
+    grid_which_combo = QtWidgets.QComboBox(axes_page)
     grid_which_combo.setObjectName("figureComposerToolbarAxesGridWhichCombo")
     grid_which_combo.addItems(["major", "minor", "both"])
 
-    style_combo = QtWidgets.QComboBox(form_host)
+    style_combo = QtWidgets.QComboBox(axes_page)
     style_combo.setObjectName("figureComposerToolbarAxesStyleStepCombo")
-    style_button = QtWidgets.QPushButton("Select Step", form_host)
+    style_button = QtWidgets.QPushButton("Open Step", axes_page)
     style_button.setObjectName("figureComposerToolbarAxesStyleStepButton")
     style_button.setToolTip(
         "Select the recipe step that draws on these axes so its detailed\n"
@@ -237,9 +287,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         ("Grid ticks", grid_which_combo, "Plot/style step", style_combo),
     )
     for row, (left_label, left_widget, right_label, right_widget) in enumerate(rows):
-        form_layout.addWidget(QtWidgets.QLabel(left_label, form_host), row, 0)
+        form_layout.addWidget(QtWidgets.QLabel(left_label, axes_page), row, 0)
         form_layout.addWidget(left_widget, row, 1)
-        form_layout.addWidget(QtWidgets.QLabel(right_label, form_host), row, 2)
+        form_layout.addWidget(QtWidgets.QLabel(right_label, axes_page), row, 2)
         form_layout.addWidget(right_widget, row, 3)
     form_layout.addWidget(style_button, len(rows), 3)
 
@@ -262,6 +312,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         )
 
     updating = False
+    curve_targets: list[_StyleTarget] = []
+    image_targets: list[_StyleTarget] = []
 
     def current_selection() -> FigureAxesSelectionState:
         return _selector_selection(tool, selector)
@@ -300,6 +352,83 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             style_button.setEnabled(style_combo.count() > 0)
         finally:
             style_combo.blockSignals(False)
+
+    def refresh_style_targets() -> None:
+        nonlocal curve_targets, image_targets
+        selection = current_selection()
+        curve_targets = _curve_style_targets(tool, selection)
+        image_targets = _image_style_targets(tool, selection)
+        _populate_style_target_combo(curves_combo, curve_targets)
+        _populate_style_target_combo(images_combo, image_targets)
+        tab_widget.setTabEnabled(curves_tab_index, bool(curve_targets))
+        tab_widget.setTabEnabled(images_tab_index, bool(image_targets))
+        rebuild_curve_editor()
+        rebuild_image_editor()
+
+    def rebuild_curve_editor() -> None:
+        _clear_layout(curves_layout)
+        target = _current_style_target(curves_combo, curve_targets)
+        if target is None:
+            _add_style_placeholder(curves_layout, curves_page)
+            return
+        operation = _operation_by_id(tool, target.operation_id)
+        if operation is None:
+            _add_style_placeholder(curves_layout, curves_page)
+            return
+        if target.target_kind == _STYLE_TARGET_PLOT_SLICES:
+            editor = _PanelLineStyleEditorWidget(
+                operation,
+                target.panel_keys,
+                _connect_panel_editor_signal,
+                curves_page,
+            )
+
+            def apply_panel_line_styles(
+                styles: Sequence[FigurePlotSlicesPanelStyleState],
+                *,
+                operation_id: str = target.operation_id,
+                panel_keys: tuple[_PlotSlicesPanelKey, ...] = target.panel_keys,
+            ) -> None:
+                _update_plot_slices_panel_styles(tool, operation_id, panel_keys, styles)
+
+            editor.sigPanelStylesChanged.connect(apply_panel_line_styles)
+        else:
+            editor = _LineOperationStyleWidget(operation, curves_page)
+
+            def apply_line_operation(
+                updated: FigureOperationState,
+                *,
+                operation_id: str = target.operation_id,
+            ) -> None:
+                _replace_operation_by_id(tool, operation_id, updated)
+
+            editor.sigOperationChanged.connect(apply_line_operation)
+        curves_layout.addWidget(editor)
+
+    def rebuild_image_editor() -> None:
+        _clear_layout(images_layout)
+        target = _current_style_target(images_combo, image_targets)
+        operation = _operation_by_id(tool, target.operation_id) if target else None
+        if target is None or operation is None:
+            _add_style_placeholder(images_layout, images_page)
+            return
+        editor = _PanelStyleEditorWidget(
+            operation,
+            target.panel_keys,
+            _connect_panel_editor_signal,
+            images_page,
+        )
+
+        def apply_panel_image_styles(
+            styles: Sequence[FigurePlotSlicesPanelStyleState],
+            *,
+            operation_id: str = target.operation_id,
+            panel_keys: tuple[_PlotSlicesPanelKey, ...] = target.panel_keys,
+        ) -> None:
+            _update_plot_slices_panel_styles(tool, operation_id, panel_keys, styles)
+
+        editor.sigPanelStylesChanged.connect(apply_panel_image_styles)
+        images_layout.addWidget(editor)
 
     def refresh_from_axis() -> None:
         nonlocal updating
@@ -348,6 +477,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         finally:
             updating = False
         refresh_style_steps()
+        refresh_style_targets()
 
     def update_text_method(edit: QtWidgets.QLineEdit, name: str) -> None:
         if updating or not edit.isModified():
@@ -438,6 +568,8 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
     grid_axis_combo.activated.connect(grid_combo_activated)
     grid_which_combo.activated.connect(grid_combo_activated)
     style_button.clicked.connect(open_style_step)
+    curves_combo.activated.connect(lambda _index: rebuild_curve_editor())
+    images_combo.activated.connect(lambda _index: rebuild_image_editor())
     selector.sigSelectionChanged.connect(selection_changed)
     refresh_from_axis()
 
@@ -460,6 +592,445 @@ def close_toolbar_dialogs(tool: FigureComposerTool) -> None:
         ) and erlab.interactive.utils.qt_is_valid(dialog):
             dialog.close()
         setattr(tool, attr_name, None)
+
+
+class _LineOperationStyleWidget(QtWidgets.QWidget):
+    """Recipe-backed line style editor for Line/Profile operations."""
+
+    sigOperationChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        operation: FigureOperationState,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._operation = operation
+
+        self.colors_widget = _ColorListEditorWidget(operation.line_colors, self)
+        self.colors_widget.setObjectName("figureComposerToolbarCurveColorsWidget")
+        self.colors_widget.setMainEditObjectName("figureComposerToolbarCurveColorsEdit")
+        self.colors_widget.setToolTip(
+            "Color for the plotted profiles.\n"
+            "Use one color for all profiles or one color per profile."
+        )
+
+        self.style_combo = QtWidgets.QComboBox(self)
+        self.style_combo.setObjectName("figureComposerToolbarCurveLineStyleCombo")
+        self.style_combo.addItems(list(LINE_STYLE_OPTIONS))
+        self.style_combo.setCurrentText(line_kw_text(operation, "linestyle", "ls"))
+        self.style_combo.setToolTip("Matplotlib line style for these profiles.")
+
+        self.width_spin = optional_positive_spinbox(
+            line_kw_float(operation, "linewidth", "lw"),
+            parent=self,
+        )
+        self.width_spin.setObjectName("figureComposerToolbarCurveLineWidthSpin")
+        self.width_spin.setToolTip("Matplotlib line width for these profiles.")
+
+        self.marker_combo = QtWidgets.QComboBox(self)
+        self.marker_combo.setObjectName("figureComposerToolbarCurveMarkerCombo")
+        self.marker_combo.addItems(list(LINE_MARKER_OPTIONS))
+        self.marker_combo.setCurrentText(line_kw_text(operation, "marker"))
+        self.marker_combo.setToolTip("Matplotlib marker style for these profiles.")
+
+        self.marker_size_spin = optional_positive_spinbox(
+            line_kw_float(operation, "markersize", "ms"),
+            parent=self,
+        )
+        self.marker_size_spin.setObjectName("figureComposerToolbarCurveMarkerSizeSpin")
+        self.marker_size_spin.setToolTip("Matplotlib marker size for these profiles.")
+
+        self.marker_face_edit = _ColorLineEditWidget(
+            line_kw_text(operation, "markerfacecolor", "mfc"),
+            self,
+        )
+        self.marker_face_edit.setLineEditObjectName(
+            "figureComposerToolbarCurveMarkerFaceEdit"
+        )
+        self.marker_face_edit.setColorButtonObjectName(
+            "figureComposerToolbarCurveMarkerFaceButton"
+        )
+        self.marker_face_edit.setToolTip(
+            "Marker face color for these profiles.\n"
+            "Leave blank to use Matplotlib defaults."
+        )
+
+        self.marker_edge_edit = _ColorLineEditWidget(
+            line_kw_text(operation, "markeredgecolor", "mec"),
+            self,
+        )
+        self.marker_edge_edit.setLineEditObjectName(
+            "figureComposerToolbarCurveMarkerEdgeEdit"
+        )
+        self.marker_edge_edit.setColorButtonObjectName(
+            "figureComposerToolbarCurveMarkerEdgeButton"
+        )
+        self.marker_edge_edit.setToolTip(
+            "Marker edge color for these profiles.\n"
+            "Leave blank to use Matplotlib defaults."
+        )
+
+        self.extra_kwargs_edit = QtWidgets.QLineEdit(
+            _format_dict(extra_line_kw(operation)),
+            self,
+        )
+        self.extra_kwargs_edit.setObjectName("figureComposerToolbarCurveLineKwEdit")
+        self.extra_kwargs_edit.setPlaceholderText("optional")
+        self.extra_kwargs_edit.setToolTip(
+            "Additional Matplotlib Line2D keyword arguments.\n"
+            "Controlled style keys above are stored in their dedicated controls."
+        )
+
+        layout = QtWidgets.QFormLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        layout.addRow("Colors", self.colors_widget)
+        layout.addRow("Line style", self.style_combo)
+        layout.addRow("Line width", self.width_spin)
+        layout.addRow("Marker", self.marker_combo)
+        layout.addRow("Marker size", self.marker_size_spin)
+        layout.addRow("Marker face", self.marker_face_edit)
+        layout.addRow("Marker edge", self.marker_edge_edit)
+        layout.addRow("Line kwargs", self.extra_kwargs_edit)
+
+        self.colors_widget.colorsChanged.connect(self._colors_changed)
+        self.style_combo.activated.connect(self._style_changed)
+        self.width_spin.valueChanged.connect(self._width_changed)
+        self.marker_combo.activated.connect(self._marker_changed)
+        self.marker_size_spin.valueChanged.connect(self._marker_size_changed)
+        self.marker_face_edit.editingFinished.connect(self._marker_face_changed)
+        self.marker_edge_edit.editingFinished.connect(self._marker_edge_changed)
+        self.extra_kwargs_edit.editingFinished.connect(self._extra_kwargs_changed)
+
+    def _set_operation(self, operation: FigureOperationState) -> None:
+        self._operation = operation
+        self.sigOperationChanged.emit(operation)
+
+    def _colors_changed(self, colors: Sequence[str]) -> None:
+        self._set_operation(
+            self._operation.model_copy(update={"line_colors": tuple(colors)})
+        )
+
+    def _style_changed(self, _index: int) -> None:
+        self._update_line_kw(
+            "linestyle",
+            self.style_combo.currentText() or None,
+            aliases=("ls",),
+        )
+
+    def _width_changed(self, value: float) -> None:
+        self._update_line_kw(
+            "linewidth",
+            optional_positive_spinbox_value(value),
+            aliases=("lw",),
+        )
+
+    def _marker_changed(self, _index: int) -> None:
+        self._update_line_kw("marker", self.marker_combo.currentText() or None)
+
+    def _marker_size_changed(self, value: float) -> None:
+        self._update_line_kw(
+            "markersize",
+            optional_positive_spinbox_value(value),
+            aliases=("ms",),
+        )
+
+    def _marker_face_changed(self) -> None:
+        self._update_line_kw(
+            "markerfacecolor",
+            color_kw_value_from_text(self.marker_face_edit.text()),
+            aliases=("mfc",),
+        )
+
+    def _marker_edge_changed(self) -> None:
+        self._update_line_kw(
+            "markeredgecolor",
+            color_kw_value_from_text(self.marker_edge_edit.text()),
+            aliases=("mec",),
+        )
+
+    def _extra_kwargs_changed(self) -> None:
+        line_kw = {
+            key: value
+            for key, value in self._operation.line_kw.items()
+            if key in CONTROLLED_LINE_KW_KEYS
+        }
+        line_kw.update(_dict_from_text(self.extra_kwargs_edit.text()))
+        self._set_operation(self._operation.model_copy(update={"line_kw": line_kw}))
+
+    def _update_line_kw(
+        self,
+        key: str,
+        value: typing.Any,
+        *,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
+        line_kw = dict(self._operation.line_kw)
+        for candidate in (key, *aliases):
+            line_kw.pop(candidate, None)
+        if value is not None:
+            line_kw[key] = value
+        self._set_operation(self._operation.model_copy(update={"line_kw": line_kw}))
+
+
+def _style_tab_page(
+    parent: QtWidgets.QWidget,
+    *,
+    combo_object_name: str,
+) -> tuple[QtWidgets.QWidget, QtWidgets.QComboBox, QtWidgets.QVBoxLayout]:
+    page = QtWidgets.QWidget(parent)
+    layout = QtWidgets.QVBoxLayout(page)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+    combo = QtWidgets.QComboBox(page)
+    combo.setObjectName(combo_object_name)
+    combo.setToolTip("Choose the plotted item to customize.")
+    layout.addWidget(combo)
+    editor_layout = QtWidgets.QVBoxLayout()
+    editor_layout.setContentsMargins(0, 0, 0, 0)
+    editor_layout.setSpacing(6)
+    layout.addLayout(editor_layout)
+    layout.addStretch(1)
+    return page, combo, editor_layout
+
+
+def _connect_panel_editor_signal(
+    _owner: QtWidgets.QWidget,
+    signal: typing.Any,
+    slot: Callable[..., None],
+) -> None:
+    signal.connect(slot)
+
+
+def _clear_layout(layout: QtWidgets.QLayout) -> None:
+    while (item := layout.takeAt(0)) is not None:
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+        child_layout = item.layout()
+        if child_layout is not None:
+            _clear_layout(child_layout)
+
+
+def _add_style_placeholder(
+    layout: QtWidgets.QVBoxLayout, parent: QtWidgets.QWidget
+) -> None:
+    label = QtWidgets.QLabel("No matching plotted items on the selected axes.", parent)
+    label.setObjectName("figureComposerToolbarStylePlaceholder")
+    label.setWordWrap(True)
+    layout.addWidget(label)
+
+
+def _populate_style_target_combo(
+    combo: QtWidgets.QComboBox, targets: Sequence[_StyleTarget]
+) -> None:
+    with QtCore.QSignalBlocker(combo):
+        combo.clear()
+        for index, target in enumerate(targets):
+            combo.addItem(target.label, index)
+        combo.setEnabled(bool(targets))
+
+
+def _current_style_target(
+    combo: QtWidgets.QComboBox, targets: Sequence[_StyleTarget]
+) -> _StyleTarget | None:
+    index = combo.currentData()
+    if isinstance(index, int) and 0 <= index < len(targets):
+        return targets[index]
+    return None
+
+
+def _curve_style_targets(
+    tool: FigureComposerTool, selection: FigureAxesSelectionState
+) -> list[_StyleTarget]:
+    selected_axis_ids = _axis_identity_set(tool, selection)
+    if not selected_axis_ids:
+        return []
+    targets: list[_StyleTarget] = []
+    for index, operation in enumerate(tool._recipe.operations):
+        if not operation.enabled:
+            continue
+        if operation.kind == FigureOperationKind.LINE:
+            if _operation_hits_axes(tool, operation, selected_axis_ids):
+                targets.append(
+                    _StyleTarget(
+                        operation.operation_id,
+                        index,
+                        _STYLE_TARGET_LINE,
+                        tool._operation_display_text(operation),
+                    )
+                )
+            continue
+        if operation.kind != FigureOperationKind.PLOT_SLICES:
+            continue
+        if _plot_slices_panel_kind(_plot_slices_shape(tool, operation)) != (
+            _PLOT_SLICES_PANEL_LINE
+        ):
+            continue
+        panel_keys = _selected_plot_slices_panel_keys(
+            tool, operation, selected_axis_ids
+        )
+        if panel_keys:
+            targets.append(
+                _StyleTarget(
+                    operation.operation_id,
+                    index,
+                    _STYLE_TARGET_PLOT_SLICES,
+                    _style_target_label(tool, operation, panel_keys),
+                    panel_keys,
+                )
+            )
+    return targets
+
+
+def _image_style_targets(
+    tool: FigureComposerTool, selection: FigureAxesSelectionState
+) -> list[_StyleTarget]:
+    selected_axis_ids = _axis_identity_set(tool, selection)
+    if not selected_axis_ids:
+        return []
+    targets: list[_StyleTarget] = []
+    for index, operation in enumerate(tool._recipe.operations):
+        if (
+            not operation.enabled
+            or operation.kind != FigureOperationKind.PLOT_SLICES
+            or _plot_slices_panel_kind(_plot_slices_shape(tool, operation))
+            != _PLOT_SLICES_PANEL_IMAGE
+        ):
+            continue
+        panel_keys = _selected_plot_slices_panel_keys(
+            tool, operation, selected_axis_ids
+        )
+        if panel_keys:
+            targets.append(
+                _StyleTarget(
+                    operation.operation_id,
+                    index,
+                    _STYLE_TARGET_PLOT_SLICES,
+                    _style_target_label(tool, operation, panel_keys),
+                    panel_keys,
+                )
+            )
+    return targets
+
+
+def _axis_identity_set(
+    tool: FigureComposerTool, selection: FigureAxesSelectionState
+) -> set[int]:
+    return {id(axis) for axis in _axes_for_selection(tool, selection)}
+
+
+def _operation_hits_axes(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    selected_axis_ids: set[int],
+) -> bool:
+    operation_axis_ids = {
+        id(axis) for axis in _axes_for_selection(tool, operation.axes)
+    }
+    return bool(selected_axis_ids & operation_axis_ids)
+
+
+def _selected_plot_slices_panel_keys(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    selected_axis_ids: set[int],
+) -> tuple[_PlotSlicesPanelKey, ...]:
+    operation_axes = _axes_for_selection(tool, operation.axes)
+    operation_axis_ids = {id(axis) for axis in operation_axes}
+    if not (selected_axis_ids & operation_axis_ids):
+        return ()
+    panel_keys = _plot_slices_panel_keys(tool, operation)
+    if len(operation_axes) != len(panel_keys):
+        return panel_keys
+    return tuple(
+        key
+        for key, axis in zip(panel_keys, operation_axes, strict=True)
+        if id(axis) in selected_axis_ids
+    )
+
+
+def _style_target_label(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    panel_keys: Sequence[_PlotSlicesPanelKey],
+) -> str:
+    text = tool._operation_display_text(operation)
+    if len(panel_keys) == 1:
+        return f"{text}: {panel_keys[0].label}"
+    return f"{text}: {len(panel_keys)} panels"
+
+
+def _operation_by_id(
+    tool: FigureComposerTool, operation_id: str
+) -> FigureOperationState | None:
+    for operation in tool._recipe.operations:
+        if operation.operation_id == operation_id:
+            return operation
+    return None
+
+
+def _replace_operation_by_id(
+    tool: FigureComposerTool, operation_id: str, updated: FigureOperationState
+) -> None:
+    for index, operation in enumerate(tool._recipe.operations):
+        if operation.operation_id == operation_id:
+            _replace_recipe_operation(tool, index, updated)
+            return
+
+
+def _update_plot_slices_panel_styles(
+    tool: FigureComposerTool,
+    operation_id: str,
+    edited_panel_keys: Sequence[_PlotSlicesPanelKey],
+    styles: Sequence[FigurePlotSlicesPanelStyleState],
+) -> None:
+    operation = _operation_by_id(tool, operation_id)
+    if operation is None or operation.kind != FigureOperationKind.PLOT_SLICES:
+        return
+    edited_keys = {(key.map_index, key.slice_index) for key in edited_panel_keys}
+    incoming_styles = tuple(styles)
+    merged = (
+        *(
+            style
+            for style in operation.panel_styles
+            if (style.map_index, style.slice_index) not in edited_keys
+        ),
+        *incoming_styles,
+    )
+    merged = tuple(
+        sorted(merged, key=lambda style: (style.map_index, style.slice_index))
+    )
+    _replace_operation_by_id(
+        tool,
+        operation_id,
+        operation.model_copy(
+            update={"panel_styles_enabled": bool(merged), "panel_styles": merged}
+        ),
+    )
+
+
+def _replace_recipe_operation(
+    tool: FigureComposerTool, index: int, operation: FigureOperationState
+) -> None:
+    if index < 0 or index >= len(tool._recipe.operations):
+        return
+    current = tool._current_operation()
+    current_id = current[1].operation_id if current is not None else None
+    selected_ids = tool._selected_operation_ids()
+    operations = list(tool._recipe.operations)
+    operations[index] = operation
+    _set_operations(
+        tool,
+        tuple(operations),
+        current_id,
+        selected_ids,
+        rebuild_editor=False,
+    )
 
 
 def _dialog_parent(tool: FigureComposerTool) -> QtWidgets.QWidget:
@@ -592,6 +1163,8 @@ def _set_operations(
     operations: tuple[FigureOperationState, ...],
     current_id: str | None,
     selected_ids: set[str],
+    *,
+    rebuild_editor: bool = True,
 ) -> None:
     tool._recipe = tool._recipe.model_copy(update={"operations": operations})
     tool._refresh_operation_list()
@@ -607,7 +1180,8 @@ def _set_operations(
     tool._refresh_step_section_button_texts()
     current = tool._current_operation()
     tool._update_source_status(current[1] if current is not None else None)
-    tool._update_operation_editor_safely()
+    if rebuild_editor:
+        tool._update_operation_editor_safely()
     _render_preview(tool)
     tool.sigInfoChanged.emit()
 
