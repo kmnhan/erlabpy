@@ -223,14 +223,11 @@ def transform_profiles(
 ) -> list[xr.DataArray]:
     if not line_transform_active(operation):
         return list(profiles)
-    normalized = [
-        normalize_line_data(profile, operation.line_normalize) for profile in profiles
-    ]
-    scales = line_transform_values(operation.line_scales, len(normalized), default=1.0)
-    offsets = line_offsets_for_profiles(operation, normalized)
+    scales = line_transform_values(operation.line_scales, len(profiles), default=1.0)
+    offsets = line_offsets_for_profiles(operation, profiles)
     return [
-        offset + scale * profile
-        for profile, scale, offset in zip(normalized, scales, offsets, strict=True)
+        offset + scale * normalize_line_data(profile, operation.line_normalize)
+        for profile, scale, offset in zip(profiles, scales, offsets, strict=True)
     ]
 
 
