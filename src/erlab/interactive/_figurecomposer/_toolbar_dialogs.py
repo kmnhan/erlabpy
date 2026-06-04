@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import typing
+import weakref
 
 import matplotlib.scale as mscale
 import numpy as np
@@ -461,7 +462,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             ) -> None:
                 _update_plot_slices_panel_styles(tool, operation_id, panel_keys, styles)
 
-            editor.sigPanelStylesChanged.connect(apply_panel_line_styles)
+            _connect_panel_editor_signal(
+                editor, editor.sigPanelStylesChanged, apply_panel_line_styles
+            )
         else:
             editor = _LineOperationStyleWidget(operation, curves_page)
 
@@ -472,7 +475,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             ) -> None:
                 _replace_operation_by_id(tool, operation_id, updated)
 
-            editor.sigOperationChanged.connect(apply_line_operation)
+            _connect_panel_editor_signal(
+                editor, editor.sigOperationChanged, apply_line_operation
+            )
         curves_layout.addWidget(editor)
 
     def rebuild_image_editor() -> None:
@@ -497,7 +502,9 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
         ) -> None:
             _update_plot_slices_panel_styles(tool, operation_id, panel_keys, styles)
 
-        editor.sigPanelStylesChanged.connect(apply_panel_image_styles)
+        _connect_panel_editor_signal(
+            editor, editor.sigPanelStylesChanged, apply_panel_image_styles
+        )
         images_layout.addWidget(editor)
 
     def refresh_from_axis() -> None:
@@ -892,11 +899,21 @@ def _style_tab_page(
 
 
 def _connect_panel_editor_signal(
-    _owner: QtWidgets.QWidget,
+    owner: QtWidgets.QWidget,
     signal: typing.Any,
     slot: Callable[..., None],
 ) -> None:
-    signal.connect(slot)
+    owner_ref = weakref.ref(owner)
+
+    def guarded_slot(*args: typing.Any) -> None:
+        owner_widget = owner_ref()
+        if owner_widget is None or not erlab.interactive.utils.qt_is_valid(
+            owner_widget
+        ):
+            return
+        slot(*args)
+
+    signal.connect(guarded_slot)
 
 
 def _clear_layout(layout: QtWidgets.QLayout) -> None:

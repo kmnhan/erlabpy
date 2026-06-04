@@ -67,6 +67,9 @@ from erlab.interactive._figurecomposer._operations import (
 from erlab.interactive._figurecomposer._seeding import (
     plot_slices_operation_with_source_styles,
 )
+from erlab.interactive._figurecomposer._toolbar_dialogs import (
+    _connect_panel_editor_signal,
+)
 from erlab.interactive._options import options
 from erlab.interactive._options.schema import AppOptions, FigureOptions
 from erlab.interactive.imagetool import itool, provenance
@@ -9362,6 +9365,31 @@ def test_figure_composer_operation_list_event_filter_is_removed_on_close(
     assert tool._operation_list_viewport is None
     assert tool._operation_multi_select_event is False
     assert erlab.interactive.utils.qt_is_valid(viewport)
+
+
+def test_figure_composer_toolbar_panel_signal_skips_destroyed_owner(qtbot) -> None:
+    class SignalSender(QtCore.QObject):
+        sigChanged = QtCore.Signal(object)
+
+    owner = QtWidgets.QWidget()
+    qtbot.addWidget(owner)
+    sender = SignalSender()
+    calls: list[object] = []
+
+    _connect_panel_editor_signal(owner, sender.sigChanged, calls.append)
+
+    sender.sigChanged.emit("live")
+    assert calls == ["live"]
+
+    owner.deleteLater()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.waitUntil(
+        lambda: not erlab.interactive.utils.qt_is_valid(owner),
+        timeout=1000,
+    )
+    sender.sigChanged.emit("stale")
+
+    assert calls == ["live"]
 
 
 def test_figure_composer_erlab_method_allows_empty_text_values(qtbot) -> None:
