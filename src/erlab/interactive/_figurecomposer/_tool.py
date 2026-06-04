@@ -161,6 +161,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._operation_render_errors: dict[str, str] = {}
         self._operation_editor_generation = 0
+        self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._source_data: dict[str, xr.DataArray] = {}
         self._recipe = recipe or self._default_recipe(data)
         self._active_gridspec_grid_id = self._recipe.setup.gridspec.root.grid_id
@@ -1734,7 +1735,6 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._update_operations(
             lambda _index, operation: operation.model_copy(update=updates),
             rebuild_editor=True,
-            defer_editor_rebuild=True,
         )
 
     def _update_current_operation_in_place(self, **updates: typing.Any) -> None:
@@ -2865,14 +2865,20 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._set_step_sections(sections)
 
     def _update_operation_editor_safely(self) -> None:
-        if self._operation_editor_sender_requires_deferred_rebuild():
+        if (
+            self._operation_editor_rebuild_must_wait()
+            or self._operation_editor_sender_requires_deferred_rebuild()
+        ):
             self._queue_operation_editor_update()
             return
         self._update_operation_editor()
 
     def _operation_editor_sender_requires_deferred_rebuild(self) -> bool:
-        sender = self.sender()
-        if not isinstance(sender, QtWidgets.QWidget):
+        sender = self._active_editor_signal_widget
+        if sender is None:
+            qt_sender = self.sender()
+            sender = qt_sender if isinstance(qt_sender, QtWidgets.QWidget) else None
+        if sender is None or not erlab.interactive.utils.qt_is_valid(sender):
             return False
         editor_roots = (
             self.step_editor_stack,
@@ -2948,7 +2954,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 guarded_widget
             ):
                 return
-            callback(*args)
+            previous_widget = self._active_editor_signal_widget
+            self._active_editor_signal_widget = guarded_widget
+            try:
+                callback(*args)
+            finally:
+                self._active_editor_signal_widget = previous_widget
 
         signal.connect(guarded_callback)
 
