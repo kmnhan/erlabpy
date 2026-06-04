@@ -1235,11 +1235,12 @@ def test_manager_workspace_loader_state_does_not_create_explorer_app_state(
     name_filter = next(iter(erlab.io.loaders[loader_name].file_dialog_methods))
     explorer_kwargs = {loader_name: {"single": False}}
     explorer_extensions = {loader_name: {"coordinate_attrs": ["explorer"]}}
+    root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
+    qtbot.addWidget(root)
 
     with manager_context() as manager:
         qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
         manager.show()
-        root = erlab.interactive.imagetool.ImageTool(test_data, _in_manager=True)
         manager.add_imagetool(root, show=False)
         manager._recent_directory = str(example_data_dir)
         manager._recent_name_filter = name_filter
