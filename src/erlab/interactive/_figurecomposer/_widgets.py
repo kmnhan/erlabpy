@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import math
 import typing
 import weakref
@@ -628,6 +629,20 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
             self, self.hide
         )
 
+    def _event_filter_targets(self) -> tuple[QtCore.QObject, ...]:
+        return tuple(
+            target
+            for target in (self, self.centralWidget(), self.toolbar, self.canvas)
+            if target is not None
+        )
+
+    def _remove_event_filters(self) -> None:
+        for target in self._event_filter_targets():
+            if not erlab.interactive.utils.qt_is_valid(target):
+                continue
+            with contextlib.suppress(RuntimeError):
+                target.removeEventFilter(self)
+
     def eventFilter(
         self,
         watched: QtCore.QObject | None,
@@ -712,6 +727,9 @@ class _FigureComposerDisplayWindow(QtWidgets.QMainWindow):
 
     def close_from_owner(self) -> None:
         self._closing_from_owner = True
+        self._suppress_resize_signal = True
+        self._resize_signal_pending = False
+        self._remove_event_filters()
         self.close()
 
     def resizeEvent(self, event: QtGui.QResizeEvent | None) -> None:

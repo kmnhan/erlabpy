@@ -2945,8 +2945,12 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     assert tool.tool_status.setup.figsize != (8.0, 6.0)
     typing.cast("typing.Any", tool.figure)._original_dpi = 0.0
     assert not tool._sync_recipe_figsize_to_canvas(draw=False, emit_info=False)
+    window = tool.figure_window
     tool._hide_figure_window()
     tool._close_figure_window()
+    assert tool._figure_window is None
+    window.sigCanvasSizeChanged.emit(8.0, 6.0)
+    assert tool.tool_status.setup.figsize != (8.0, 6.0)
     tool._close_figure_window()
 
     assert not tool.remove_operation_button.isEnabled()

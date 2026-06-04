@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import textwrap
@@ -249,11 +250,38 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 subplot_adjust_callback=lambda: self._show_subplot_adjust_dialog(),
                 axes_customize_callback=lambda: self._show_axes_customize_dialog(),
             )
+            window_ref = weakref.ref(self._figure_window)
+            tool_ref = weakref.ref(self)
+
+            def figure_window_destroyed(
+                _obj: QtCore.QObject | None = None,
+                *,
+                owner_ref: weakref.ReferenceType[FigureComposerTool] = tool_ref,
+                ref: weakref.ReferenceType[_FigureComposerDisplayWindow] = window_ref,
+            ) -> None:
+                owner = owner_ref()
+                if owner is not None:
+                    owner._figure_window_destroyed(ref)
+
             self._figure_window.sigCanvasSizeChanged.connect(
                 self._figure_window_canvas_size_changed
             )
+            self._figure_window.destroyed.connect(figure_window_destroyed)
         self._figure_window.setWindowTitle(self._figure_window_title())
         return self._figure_window
+
+    def _figure_window_destroyed(
+        self, window_ref: weakref.ReferenceType[_FigureComposerDisplayWindow]
+    ) -> None:
+        window = window_ref()
+        if window is not None and self._figure_window is window:
+            self._figure_window = None
+
+    def _disconnect_figure_window(self, window: _FigureComposerDisplayWindow) -> None:
+        with contextlib.suppress(TypeError, RuntimeError):
+            window.sigCanvasSizeChanged.disconnect(
+                self._figure_window_canvas_size_changed
+            )
 
     def _figure_window_title(self) -> str:
         display_name = self._tool_display_name
@@ -356,6 +384,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             return
         window = self._figure_window
         self._figure_window = None
+        self._disconnect_figure_window(window)
         window.close_from_owner()
         window.deleteLater()
 
