@@ -9,6 +9,7 @@ from pathlib import Path
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.scale as mscale
+import matplotlib.transforms as mtransforms
 import numpy as np
 import pyqtgraph as pg
 import pytest
@@ -6596,7 +6597,7 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
                 ).model_copy(
                     update={
                         "method_args": (0.1, 0.9, "Panel"),
-                        "method_coordinate_system": "axes",
+                        "method_transform": "axes",
                         "method_kwargs": {"ha": "left", "va": "top"},
                     }
                 ),
@@ -6715,17 +6716,17 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     tool.operation_list.setCurrentRow(0)
     tool._select_step_section("method")
     method_combo = tool.findChild(QtWidgets.QComboBox, "figureComposerAxesMethodCombo")
-    coord_combo = tool.findChild(
-        QtWidgets.QComboBox, "figureComposerAxesMethodCoordCombo"
+    transform_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerMethodTransformModeCombo"
     )
     text_edit = tool.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodTextEdit")
     kwargs_edit = tool.findChild(QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit")
     assert method_combo is not None
-    assert coord_combo is not None
+    assert transform_combo is not None
     assert text_edit is not None
     assert kwargs_edit is not None
     assert method_combo.currentText() == "Text"
-    assert coord_combo.currentText() == "axes"
+    assert transform_combo.currentText() == "axes"
     assert text_edit.text() == "Panel"
     assert kwargs_edit.text() == 'ha="left", va="top"'
     assert tool.step_section_buttons["method"].text() == "ax.text"
@@ -6884,6 +6885,237 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert axs[0, 1].get_aspect() == 2.5
 
 
+def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(nrows=1, ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                    axes=FigureAxesSelectionState(axes=((0, 0),)),
+                ).model_copy(
+                    update={
+                        "method_args": (
+                            (0.0, 0.5, 1.0),
+                            (1.0, 0.5, 0.0),
+                        ),
+                        "method_kwargs": {
+                            "color": "C1",
+                            "linestyle": "--",
+                            "linewidth": 2.5,
+                            "marker": "o",
+                            "markersize": 4.0,
+                            "markerfacecolor": "white",
+                            "markeredgecolor": "black",
+                            "alpha": 0.75,
+                            "label": "manual",
+                            "zorder": 4.0,
+                            "clip_on": False,
+                            "transform": "ignored",
+                        },
+                        "method_transform": "blend",
+                        "method_transform_x": "data",
+                        "method_transform_y": "axes",
+                    }
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                    axes=FigureAxesSelectionState(axes=((0, 1),)),
+                ).model_copy(
+                    update={
+                        "method_args": ((0.0, 0.25, 1.0),),
+                        "method_transform": "custom",
+                        "method_transform_expression": "ax.transAxes",
+                        "trusted": True,
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    method_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodCombo"
+    )
+    x_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodPlotXEdit"
+    )
+    y_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodPlotYEdit"
+    )
+    color_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodPlotColorEdit"
+    )
+    color_button = method_page.findChild(
+        QtWidgets.QWidget, "figureComposerAxesMethodPlotColorEditButton"
+    )
+    style_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodPlotLineStyleCombo"
+    )
+    width_spin = method_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodPlotLineWidthSpin"
+    )
+    marker_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerAxesMethodPlotMarkerCombo"
+    )
+    transform_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerMethodTransformModeCombo"
+    )
+    transform_x_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerMethodTransformXCombo"
+    )
+    transform_y_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerMethodTransformYCombo"
+    )
+    kwargs_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodKwEdit"
+    )
+    assert method_combo is not None
+    assert x_edit is not None
+    assert y_edit is not None
+    assert color_edit is not None
+    assert color_button is not None
+    assert style_combo is not None
+    assert width_spin is not None
+    assert marker_combo is not None
+    assert transform_combo is not None
+    assert transform_x_combo is not None
+    assert transform_y_combo is not None
+    assert kwargs_edit is not None
+    assert method_combo.currentText() == "Plot"
+    assert x_edit.text() == "0.0, 0.5, 1.0"
+    assert y_edit.text() == "1.0, 0.5, 0.0"
+    assert color_edit.text() == "C1"
+    assert style_combo.currentText() == "--"
+    assert width_spin.value() == pytest.approx(2.5)
+    assert marker_combo.currentText() == "o"
+    assert transform_combo.currentText() == "blend"
+    assert transform_x_combo.currentText() == "data"
+    assert transform_y_combo.currentText() == "axes"
+    assert kwargs_edit.text() == "clip_on=False"
+
+    color_edit.setText("tab:blue")
+    color_edit.setModified(True)
+    color_widget = color_edit.parentWidget()
+    assert isinstance(color_widget, figurecomposer_widgets._ColorLineEditWidget)
+    color_widget.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["color"] == "tab:blue"
+    kwargs_edit.setText('clip_on=True, transform="ax.transData"')
+    kwargs_edit.setModified(True)
+    kwargs_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["clip_on"] is True
+    assert tool.tool_status.operations[0].method_kwargs["transform"] == "ignored"
+
+    tool.operation_list.setCurrentRow(1)
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    custom_transform_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerMethodTransformExpressionEdit"
+    )
+    custom_transform_trusted = method_page.findChild(
+        QtWidgets.QCheckBox, "figureComposerMethodTransformTrustedCheck"
+    )
+    assert custom_transform_edit is not None
+    assert custom_transform_trusted is not None
+    assert custom_transform_edit.text() == "ax.transAxes"
+    assert custom_transform_trusted.isChecked()
+
+    fig = tool.figure
+    figurecomposer_rendering._render_into_figure(tool, fig, sync_visible=False)
+    assert tool._operation_render_errors == {}
+    line = fig.axes[0].lines[0]
+    np.testing.assert_allclose(line.get_xdata(), (0.0, 0.5, 1.0))
+    np.testing.assert_allclose(line.get_ydata(), (1.0, 0.5, 0.0))
+    assert line.get_color() == "tab:blue"
+    assert line.get_linestyle() == "--"
+    assert line.get_linewidth() == pytest.approx(2.5)
+    assert line.get_marker() == "o"
+    assert line.get_markersize() == pytest.approx(4.0)
+    assert line.get_markerfacecolor() == "white"
+    assert line.get_markeredgecolor() == "black"
+    assert line.get_alpha() == pytest.approx(0.75)
+    assert line.get_label() == "manual"
+    assert line.get_zorder() == pytest.approx(4.0)
+    assert line.get_clip_on() is True
+    assert isinstance(line.get_transform(), mtransforms.BlendedGenericTransform)
+    assert fig.axes[1].lines[0].get_transform() == fig.axes[1].transAxes
+
+    code = tool.generated_code()
+    assert "import matplotlib.transforms as mtransforms" in code
+    assert "ax.plot((0.0, 0.5, 1.0), (1.0, 0.5, 0.0)" in code
+    assert 'color="tab:blue"' in code
+    assert "clip_on=True" in code
+    assert "transform=ax.transData" not in code
+    assert (
+        "transform=mtransforms.blended_transform_factory(ax.transData, ax.transAxes)"
+    ) in code
+    assert "ax.plot((0.0, 0.25, 1.0), transform=ax.transAxes)" in code
+
+    namespace: dict[str, typing.Any] = {}
+    exec(code, namespace)  # noqa: S102
+    axs = namespace["axs"]
+    assert len(axs[0, 0].lines) == 1
+    assert axs[0, 0].lines[0].get_color() == "tab:blue"
+    assert axs[0, 1].lines[0].get_transform() == axs[0, 1].transAxes
+
+
+def test_figure_composer_loaded_custom_method_transform_requires_trust(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                ).model_copy(
+                    update={
+                        "method_args": ((0.0, 1.0),),
+                        "method_transform": "custom",
+                        "method_transform_expression": "ax.transAxes",
+                        "trusted": True,
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    loaded = erlab.interactive.utils.ToolWindow.from_dataset(tool.to_dataset())
+    qtbot.addWidget(loaded)
+    assert isinstance(loaded, FigureComposerTool)
+    operation = loaded.tool_status.operations[0]
+    assert operation.method_transform == "custom"
+    assert operation.method_transform_expression == "ax.transAxes"
+    assert operation.trusted is False
+
+    figurecomposer_rendering._render_into_figure(
+        loaded, loaded.figure, sync_visible=False
+    )
+    assert "not trusted" in loaded._operation_render_errors[operation.operation_id]
+
+
 def test_figure_composer_limit_methods_default_to_current_axis_limits(qtbot) -> None:
     tool = FigureComposerTool(_figure_composer_profile_source("data"))
     qtbot.addWidget(tool)
@@ -6983,6 +7215,102 @@ def test_figure_composer_batch_same_method_edits_selected_steps(qtbot) -> None:
     title_edit.editingFinished.emit()
     assert tool.tool_status.operations[0].method_args == ("shared",)
     assert tool.tool_status.operations[1].method_args == ("shared",)
+    assert tool.tool_status.operations[2].method_args == ("unchanged",)
+    assert _selected_operation_rows(tool) == (0, 1)
+
+
+def test_figure_composer_batch_same_plot_method_edits_selected_steps(qtbot) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                ).model_copy(
+                    update={
+                        "method_kwargs": {"color": "red", "linewidth": 1.0},
+                        "method_transform": "axes",
+                    }
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="plot",
+                ).model_copy(
+                    update={
+                        "method_kwargs": {"color": "blue", "linewidth": 3.0},
+                        "method_transform": "figure",
+                    }
+                ),
+                FigureOperationState.method(
+                    family=FigureMethodFamily.AXES,
+                    name="set_title",
+                    args=("unchanged",),
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    _select_operation_rows(tool, (0, 1))
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    color_edit = method_page.findChild(
+        QtWidgets.QLineEdit, "figureComposerAxesMethodPlotColorEdit"
+    )
+    transform_combo = method_page.findChild(
+        QtWidgets.QComboBox, "figureComposerMethodTransformModeCombo"
+    )
+    width_spin = method_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerAxesMethodPlotLineWidthSpin"
+    )
+    assert color_edit is not None
+    assert transform_combo is not None
+    assert width_spin is not None
+    assert color_edit.text() == ""
+    assert color_edit.placeholderText() == "(multiple values)"
+    assert transform_combo.currentText() == "(multiple values)"
+    assert width_spin.value() == pytest.approx(float(mpl.rcParams["lines.linewidth"]))
+    width_spin_container = width_spin.parentWidget()
+    assert width_spin_container is not None
+    assert width_spin_container.findChild(
+        QtWidgets.QLabel, "figureComposerMixedValueMarker"
+    )
+
+    color_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["color"] == "red"
+    assert tool.tool_status.operations[1].method_kwargs["color"] == "blue"
+    assert tool.tool_status.operations[0].method_kwargs["linewidth"] == pytest.approx(
+        1.0
+    )
+    assert tool.tool_status.operations[1].method_kwargs["linewidth"] == pytest.approx(
+        3.0
+    )
+
+    color_edit.setText("tab:green")
+    color_edit.setModified(True)
+    color_edit.editingFinished.emit()
+    assert tool.tool_status.operations[0].method_kwargs["color"] == "tab:green"
+    assert tool.tool_status.operations[1].method_kwargs["color"] == "tab:green"
+    width_spin.setValue(4.5)
+    assert tool.tool_status.operations[0].method_kwargs["linewidth"] == pytest.approx(
+        4.5
+    )
+    assert tool.tool_status.operations[1].method_kwargs["linewidth"] == pytest.approx(
+        4.5
+    )
+
+    _activate_combo_text(transform_combo, "blend")
+    assert tool.tool_status.operations[0].method_transform == "blend"
+    assert tool.tool_status.operations[1].method_transform == "blend"
     assert tool.tool_status.operations[2].method_args == ("unchanged",)
     assert _selected_operation_rows(tool) == (0, 1)
 

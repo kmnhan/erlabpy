@@ -68,6 +68,7 @@ import typing
 
 import matplotlib
 import matplotlib.scale
+import matplotlib.transforms as mtransforms
 import numpy as np
 from matplotlib.figure import Figure
 from qtpy import QtCore, QtGui, QtWidgets
@@ -78,6 +79,11 @@ from erlab.interactive._figurecomposer._code import _axes_code, _axes_sequence_c
 from erlab.interactive._figurecomposer._gridspec import (
     _gridspec_all_axes_ids,
     _gridspec_valid_axes_ids,
+)
+from erlab.interactive._figurecomposer._line_style import (
+    LINE_MARKER_OPTIONS,
+    LINE_STYLE_OPTIONS,
+    color_kw_value_from_text,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -111,6 +117,7 @@ from erlab.interactive._figurecomposer._text import (
     _string_tuple_from_text,
     _text_tuple_from_text,
 )
+from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -149,6 +156,7 @@ class MethodControlKind(enum.StrEnum):
     TEXT_ARG = "text_arg"
     LITERAL_ARG = "literal_arg"
     LITERAL_SEQUENCE_ARG = "literal_sequence_arg"
+    PLOT_DATA_ARGS = "plot_data_args"
     STRING_TUPLE_ARG = "string_tuple_arg"
     FLOAT_PAIR_ARGS = "float_pair_args"
     ASPECT_ARG = "aspect_arg"
@@ -162,7 +170,8 @@ class MethodControlKind(enum.StrEnum):
     LITERAL_KWARG = "literal_kwarg"
     STRING_TUPLE_KWARG = "string_tuple_kwarg"
     FLOAT_PAIR_KWARG = "float_pair_kwarg"
-    COORDINATE_SYSTEM = "coordinate_system"
+    TRANSFORM = "transform"
+    COLOR_KWARG = "color_kwarg"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -311,6 +320,18 @@ def _literal_sequence_arg(
         arg_index=index,
         object_name=object_name,
         tooltip=tooltip,
+    )
+
+
+def _plot_data_args() -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.PLOT_DATA_ARGS,
+        label="Data",
+        object_name="figureComposerAxesMethodPlotData",
+        tooltip=(
+            "Literal sequences passed to ax.plot.\n"
+            "Leave x blank to call ax.plot(y, ...)."
+        ),
     )
 
 
@@ -560,18 +581,44 @@ def _float_pair_kwarg(
     )
 
 
-def _coordinate_system_control() -> MethodControlSpec:
+def _color_kwarg(
+    label: str, key: str, object_name: str, tooltip: str
+) -> MethodControlSpec:
     return MethodControlSpec(
-        kind=MethodControlKind.COORDINATE_SYSTEM,
-        label="Coordinates",
-        object_name="figureComposerAxesMethodCoordCombo",
-        tooltip="Use data coordinates or normalized axes coordinates.",
-        options=("data", "axes"),
+        kind=MethodControlKind.COLOR_KWARG,
+        label=label,
+        key=key,
+        object_name=object_name,
+        tooltip=tooltip,
+    )
+
+
+def _transform_control() -> MethodControlSpec:
+    return MethodControlSpec(
+        kind=MethodControlKind.TRANSFORM,
+        label="Transform",
+        object_name="figureComposerMethodTransformModeCombo",
+        tooltip=(
+            "Coordinate transform for this method.\n"
+            "Use custom only for trusted local expressions using ax, fig, "
+            "or mtransforms."
+        ),
+        options=(
+            "data",
+            "axes",
+            "figure",
+            "dpi",
+            "xaxis",
+            "yaxis",
+            "blend",
+            "custom",
+        ),
         default="data",
     )
 
 
 _AXIS_OPTIONS = ("x", "y", "z")
+_TRANSFORM_COMPONENT_OPTIONS = ("data", "axes", "figure", "dpi")
 _SCALE_OPTIONS = tuple(matplotlib.scale.get_scale_names())
 _DEFAULT_SCALE = "log" if "log" in _SCALE_OPTIONS else _SCALE_OPTIONS[0]
 _FLATTEN_ORDER_OPTIONS = ("C", "F", "A", "K")
@@ -740,7 +787,7 @@ AXES_METHODS: dict[str, MethodSpec] = {
         call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
         default_args=(0.5, 0.5, "Text"),
         controls=(
-            _coordinate_system_control(),
+            _transform_control(),
             _float_arg(
                 "x",
                 0,
@@ -759,6 +806,97 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "figureComposerAxesMethodTextEdit",
                 "Text string passed as the third ax.text argument.",
             ),
+        ),
+    ),
+    "plot": MethodSpec(
+        family=FigureMethodFamily.AXES,
+        name="plot",
+        label="Plot",
+        tooltip="Runs ax.plot on every selected axis.",
+        target_domain=MethodTargetDomain.AXES,
+        call_policy=MethodCallPolicy.BOUND_EACH_AXIS,
+        default_args=((0.0, 1.0),),
+        controls=(
+            _plot_data_args(),
+            _color_kwarg(
+                "Color",
+                "color",
+                "figureComposerAxesMethodPlotColorEdit",
+                "Matplotlib color for the plotted line.",
+            ),
+            _kwarg_combo(
+                "Line style",
+                "linestyle",
+                LINE_STYLE_OPTIONS,
+                "",
+                "figureComposerAxesMethodPlotLineStyleCombo",
+                "Matplotlib line style for the plotted line.",
+            ),
+            _float_kwarg(
+                "Line width",
+                "linewidth",
+                "figureComposerAxesMethodPlotLineWidthSpin",
+                "Line width for the plotted line.",
+                default=float(matplotlib.rcParams["lines.linewidth"]),
+                minimum=0.0,
+                maximum=1_000_000.0,
+                step=0.5,
+            ),
+            _kwarg_combo(
+                "Marker",
+                "marker",
+                LINE_MARKER_OPTIONS,
+                "",
+                "figureComposerAxesMethodPlotMarkerCombo",
+                "Matplotlib marker style for the plotted line.",
+            ),
+            _float_kwarg(
+                "Marker size",
+                "markersize",
+                "figureComposerAxesMethodPlotMarkerSizeSpin",
+                "Marker size for the plotted line.",
+                default=float(matplotlib.rcParams["lines.markersize"]),
+                minimum=0.0,
+                maximum=1_000_000.0,
+                step=0.5,
+            ),
+            _color_kwarg(
+                "Marker face",
+                "markerfacecolor",
+                "figureComposerAxesMethodPlotMarkerFaceColorEdit",
+                "Matplotlib marker face color.",
+            ),
+            _color_kwarg(
+                "Marker edge",
+                "markeredgecolor",
+                "figureComposerAxesMethodPlotMarkerEdgeColorEdit",
+                "Matplotlib marker edge color.",
+            ),
+            _float_kwarg(
+                "Alpha",
+                "alpha",
+                "figureComposerAxesMethodPlotAlphaSpin",
+                "Line opacity between 0 and 1.",
+                default=1.0,
+                minimum=0.0,
+                maximum=1.0,
+                step=0.05,
+            ),
+            _text_kwarg(
+                "Label",
+                "label",
+                "figureComposerAxesMethodPlotLabelEdit",
+                "Legend label for this plotted line.",
+            ),
+            _float_kwarg(
+                "Z order",
+                "zorder",
+                "figureComposerAxesMethodPlotZOrderSpin",
+                "Drawing order for this line.",
+                default=2.0,
+                step=1.0,
+            ),
+            _transform_control(),
         ),
     ),
     "legend": MethodSpec(
@@ -2348,7 +2486,7 @@ def _build_method_editor(
     if spec.allow_extra_kwargs:
         kwargs_text, kwargs_mixed = tool._batch_text(
             operation,
-            lambda target: target.method_kwargs,
+            lambda target: _extra_method_kwargs(target, spec),
             lambda value: _format_dict(typing.cast("dict[str, typing.Any]", value)),
         )
         kwargs_edit = tool._line_edit(kwargs_text, parent=page)
@@ -2356,8 +2494,8 @@ def _build_method_editor(
         kwargs_edit.setObjectName(_method_kwargs_object_name(operation.method_family))
         tool._connect_line_edit_finished(
             kwargs_edit,
-            lambda text: tool._update_current_operation(
-                method_kwargs=_dict_from_text(text),
+            lambda text: _update_current_extra_method_kwargs(
+                tool, spec, _dict_from_text(text)
             ),
         )
         tool._add_form_row(
@@ -2385,23 +2523,92 @@ def _add_method_control_row(
     control: MethodControlSpec,
 ) -> None:
     match control.kind:
-        case MethodControlKind.COORDINATE_SYSTEM:
-            mixed = tool._batch_is_mixed(
-                operation, lambda target: target.method_coordinate_system
+        case MethodControlKind.TRANSFORM:
+            mode_mixed = tool._batch_is_mixed(
+                operation, lambda target: target.method_transform
             )
-            combo = tool._combo(
+            mode_combo = tool._combo(
                 control.options,
-                None if mixed else operation.method_coordinate_system,
-                lambda text: tool._update_current_operation(
-                    method_coordinate_system=typing.cast(
-                        'typing.Literal["data", "axes"]', text
-                    )
-                ),
+                None if mode_mixed else operation.method_transform,
+                _method_transform_update_callback(tool),
                 parent=layout.parentWidget(),
-                mixed=mixed,
+                mixed=mode_mixed,
             )
-            combo.setObjectName(control.object_name)
-            tool._add_form_row(layout, control.label, combo, control.tooltip)
+            mode_combo.setObjectName(control.object_name)
+            tool._add_form_row(layout, control.label, mode_combo, control.tooltip)
+            if not mode_mixed and operation.method_transform == "blend":
+                x_mixed = tool._batch_is_mixed(
+                    operation, lambda target: target.method_transform_x
+                )
+                x_combo = tool._combo(
+                    _TRANSFORM_COMPONENT_OPTIONS,
+                    None if x_mixed else operation.method_transform_x,
+                    lambda text: tool._update_current_operation(
+                        method_transform_x=text
+                    ),
+                    parent=layout.parentWidget(),
+                    mixed=x_mixed,
+                )
+                x_combo.setObjectName("figureComposerMethodTransformXCombo")
+                y_mixed = tool._batch_is_mixed(
+                    operation, lambda target: target.method_transform_y
+                )
+                y_combo = tool._combo(
+                    _TRANSFORM_COMPONENT_OPTIONS,
+                    None if y_mixed else operation.method_transform_y,
+                    lambda text: tool._update_current_operation(
+                        method_transform_y=text
+                    ),
+                    parent=layout.parentWidget(),
+                    mixed=y_mixed,
+                )
+                y_combo.setObjectName("figureComposerMethodTransformYCombo")
+                tool._add_compound_form_row(
+                    layout,
+                    "Blend",
+                    (
+                        ("x", x_combo, "Transform used for x coordinates."),
+                        ("y", y_combo, "Transform used for y coordinates."),
+                    ),
+                    "Build a blended transform from separate x and y components.",
+                )
+            elif not mode_mixed and operation.method_transform == "custom":
+                expression_text, expression_mixed = tool._batch_text(
+                    operation, lambda target: target.method_transform_expression, str
+                )
+                expression_edit = tool._line_edit(
+                    expression_text,
+                    parent=layout.parentWidget(),
+                )
+                tool._apply_mixed_line_edit(expression_edit, expression_mixed)
+                expression_edit.setObjectName(
+                    "figureComposerMethodTransformExpressionEdit"
+                )
+                tool._connect_line_edit_finished(
+                    expression_edit,
+                    lambda text: tool._update_current_operation(
+                        method_transform_expression=text
+                    ),
+                )
+                tool._add_form_row(
+                    layout,
+                    "Expression",
+                    expression_edit,
+                    "Python expression for transform=.\n"
+                    "Available names: ax, fig, mtransforms.",
+                )
+                trusted_check = tool._check_box(
+                    operation.trusted,
+                    _operation_trust_update_callback(tool),
+                    parent=layout.parentWidget(),
+                )
+                trusted_check.setObjectName("figureComposerMethodTransformTrustedCheck")
+                tool._add_form_row(
+                    layout,
+                    "Trusted",
+                    trusted_check,
+                    "Allow this custom transform expression to execute.",
+                )
         case MethodControlKind.ARG_COMBO:
             index = _control_arg_index(control)
             value_getter: Callable[[FigureOperationState], typing.Any]
@@ -2434,7 +2641,9 @@ def _add_method_control_row(
                 lambda target: _method_arg_value(target, spec, index, control.default),
             )
             spinbox = _int_spinbox(
-                _method_arg_value(operation, spec, index, control.default),
+                control.default
+                if mixed
+                else _method_arg_value(operation, spec, index, control.default),
                 control,
                 parent=layout.parentWidget(),
             )
@@ -2448,7 +2657,9 @@ def _add_method_control_row(
             tool._add_form_row(
                 layout,
                 control.label,
-                spinbox,
+                tool._mixed_value_widget(
+                    spinbox, mixed=mixed, parent=layout.parentWidget()
+                ),
                 _numeric_control_tooltip(control, mixed),
             )
         case MethodControlKind.FLOAT_ARG:
@@ -2458,7 +2669,9 @@ def _add_method_control_row(
                 lambda target: _method_arg_value(target, spec, index, 0.0),
             )
             spinbox = _float_spinbox(
-                _method_arg_value(operation, spec, index, 0.0),
+                control.default
+                if mixed
+                else _method_arg_value(operation, spec, index, 0.0),
                 control,
                 parent=layout.parentWidget(),
             )
@@ -2472,7 +2685,9 @@ def _add_method_control_row(
             tool._add_form_row(
                 layout,
                 control.label,
-                spinbox,
+                tool._mixed_value_widget(
+                    spinbox, mixed=mixed, parent=layout.parentWidget()
+                ),
                 _numeric_control_tooltip(control, mixed),
             )
         case MethodControlKind.TEXT_ARG:
@@ -2532,6 +2747,43 @@ def _add_method_control_row(
                 ),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.PLOT_DATA_ARGS:
+            x_text, x_mixed = tool._batch_text(
+                operation,
+                lambda target: _plot_x_arg_value(target, spec),
+                _format_optional_plot_sequence,
+            )
+            x_edit = tool._line_edit(x_text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(x_edit, x_mixed)
+            x_edit.setObjectName("figureComposerAxesMethodPlotXEdit")
+            tool._connect_line_edit_finished(
+                x_edit,
+                lambda text: _update_current_plot_data_arg(tool, "x", text),
+            )
+            tool._add_form_row(
+                layout,
+                "X values",
+                x_edit,
+                "Optional literal x sequence.\nLeave blank to call ax.plot(y, ...).",
+            )
+            y_text, y_mixed = tool._batch_text(
+                operation,
+                lambda target: _plot_y_arg_value(target, spec),
+                _format_plot_sequence,
+            )
+            y_edit = tool._line_edit(y_text, parent=layout.parentWidget())
+            tool._apply_mixed_line_edit(y_edit, y_mixed)
+            y_edit.setObjectName("figureComposerAxesMethodPlotYEdit")
+            tool._connect_line_edit_finished(
+                y_edit,
+                lambda text: _update_current_plot_data_arg(tool, "y", text),
+            )
+            tool._add_form_row(
+                layout,
+                "Y values",
+                y_edit,
+                "Required literal y sequence passed to ax.plot.",
+            )
         case MethodControlKind.STRING_TUPLE_ARG:
             index = _control_arg_index(control)
             text, mixed = tool._batch_text(
@@ -2647,7 +2899,9 @@ def _add_method_control_row(
                     lambda target: _method_kwarg_value(target, key, control.default),
                 )
                 spinbox = _int_spinbox(
-                    _method_kwarg_value(operation, key, control.default),
+                    control.default
+                    if mixed
+                    else _method_kwarg_value(operation, key, control.default),
                     control,
                     parent=layout.parentWidget(),
                 )
@@ -2661,7 +2915,9 @@ def _add_method_control_row(
                 tool._add_form_row(
                     layout,
                     control.label,
-                    spinbox,
+                    tool._mixed_value_widget(
+                        spinbox, mixed=mixed, parent=layout.parentWidget()
+                    ),
                     _numeric_control_tooltip(control, mixed),
                 )
             else:
@@ -2690,7 +2946,9 @@ def _add_method_control_row(
                     lambda target: _method_kwarg_value(target, key, control.default),
                 )
                 spinbox = _float_spinbox(
-                    _method_kwarg_value(operation, key, control.default),
+                    control.default
+                    if mixed
+                    else _method_kwarg_value(operation, key, control.default),
                     control,
                     parent=layout.parentWidget(),
                 )
@@ -2704,7 +2962,9 @@ def _add_method_control_row(
                 tool._add_form_row(
                     layout,
                     control.label,
-                    spinbox,
+                    tool._mixed_value_widget(
+                        spinbox, mixed=mixed, parent=layout.parentWidget()
+                    ),
                     _numeric_control_tooltip(control, mixed),
                 )
             else:
@@ -2744,7 +3004,14 @@ def _add_method_control_row(
             tooltip = control.tooltip
             if mixed:
                 tooltip += "\nSelected steps have multiple values."
-            tool._add_form_row(layout, control.label, spinbox, tooltip)
+            tool._add_form_row(
+                layout,
+                control.label,
+                tool._mixed_value_widget(
+                    spinbox, mixed=mixed, parent=layout.parentWidget()
+                ),
+                tooltip,
+            )
         case MethodControlKind.TEXT_KWARG:
             key = _control_key(control)
             text, mixed = tool._batch_text(
@@ -2760,6 +3027,30 @@ def _add_method_control_row(
                 _parsed_method_kwarg_update_callback(tool, key, _empty_text_as_none),
             )
             tool._add_form_row(layout, control.label, edit, control.tooltip)
+        case MethodControlKind.COLOR_KWARG:
+            key = _control_key(control)
+            color_text, color_mixed = tool._batch_text(
+                operation,
+                lambda target: _method_kwarg_value(target, key, ""),
+                lambda value: str(value or ""),
+            )
+            color_edit = _ColorLineEditWidget(
+                color_text,
+                parent=layout.parentWidget(),
+            )
+            color_edit.setLineEditObjectName(control.object_name)
+            color_edit.setColorButtonObjectName(f"{control.object_name}Button")
+            tool._apply_mixed_line_edit(color_edit.line_edit, color_mixed)
+            tool._connect_value_signal(
+                color_edit,
+                color_edit.editingFinished,
+                color_edit.text,
+                _method_color_kwarg_update_callback(tool, key),
+                unchanged_mixed=lambda: tool._line_edit_batch_unchanged(
+                    color_edit.line_edit
+                ),
+            )
+            tool._add_form_row(layout, control.label, color_edit, control.tooltip)
         case MethodControlKind.LITERAL_KWARG:
             key = _control_key(control)
             text, mixed = tool._batch_text(
@@ -2843,6 +3134,36 @@ def _method_kwarg_update_callback(
     return functools.partial(_update_current_method_kwarg, tool, key)
 
 
+def _method_color_kwarg_update_callback(
+    tool: FigureComposerTool, key: str
+) -> Callable[[str], None]:
+    def update(text: str) -> None:
+        _update_current_method_kwarg(tool, key, color_kw_value_from_text(text))
+
+    return update
+
+
+def _method_transform_update_callback(
+    tool: FigureComposerTool,
+) -> Callable[[str], None]:
+    def update(text: str) -> None:
+        tool._update_current_operation_rebuild(
+            method_transform=text,
+            trusted=text == "custom",
+        )
+
+    return update
+
+
+def _operation_trust_update_callback(
+    tool: FigureComposerTool,
+) -> Callable[[bool], None]:
+    def update(checked: bool) -> None:
+        tool._update_current_operation(trusted=checked)
+
+    return update
+
+
 def _parsed_method_kwarg_update_callback(
     tool: FigureComposerTool,
     key: str,
@@ -2918,6 +3239,124 @@ def _method_kwarg_value(
     operation: FigureOperationState, key: str, default: typing.Any
 ) -> typing.Any:
     return operation.method_kwargs.get(key, default)
+
+
+def _controlled_method_kwarg_keys(spec: MethodSpec) -> frozenset[str]:
+    keys = {
+        control.key
+        for control in spec.controls
+        if control.key is not None
+        and control.kind
+        in {
+            MethodControlKind.KWARG_COMBO,
+            MethodControlKind.BOOL_KWARG_COMBO,
+            MethodControlKind.INT_KWARG,
+            MethodControlKind.FLOAT_KWARG,
+            MethodControlKind.SUBPLOTS_ADJUST_KWARG,
+            MethodControlKind.TEXT_KWARG,
+            MethodControlKind.LITERAL_KWARG,
+            MethodControlKind.STRING_TUPLE_KWARG,
+            MethodControlKind.FLOAT_PAIR_KWARG,
+            MethodControlKind.COLOR_KWARG,
+        }
+    }
+    if _method_has_transform_control(spec):
+        keys.add("transform")
+    return frozenset(keys)
+
+
+def _extra_method_kwargs(
+    operation: FigureOperationState, spec: MethodSpec
+) -> dict[str, typing.Any]:
+    controlled = _controlled_method_kwarg_keys(spec)
+    return {
+        key: value
+        for key, value in operation.method_kwargs.items()
+        if key not in controlled
+    }
+
+
+def _update_current_extra_method_kwargs(
+    tool: FigureComposerTool, spec: MethodSpec, extra_kwargs: dict[str, typing.Any]
+) -> None:
+    controlled = _controlled_method_kwarg_keys(spec)
+
+    def update_kwargs(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        kwargs = {
+            key: value
+            for key, value in operation.method_kwargs.items()
+            if key in controlled
+        }
+        kwargs.update(
+            {key: value for key, value in extra_kwargs.items() if key not in controlled}
+        )
+        return operation.model_copy(update={"method_kwargs": kwargs})
+
+    tool._update_operations(update_kwargs)
+
+
+def _plot_x_arg_value(
+    operation: FigureOperationState, spec: MethodSpec
+) -> tuple[typing.Any, ...] | None:
+    args = _method_args(operation, spec)
+    if len(args) < 2:
+        return None
+    return typing.cast("tuple[typing.Any, ...]", args[0])
+
+
+def _plot_y_arg_value(
+    operation: FigureOperationState, spec: MethodSpec
+) -> tuple[typing.Any, ...]:
+    args = _method_args(operation, spec)
+    if len(args) >= 2:
+        return typing.cast("tuple[typing.Any, ...]", args[1])
+    if args:
+        return typing.cast("tuple[typing.Any, ...]", args[0])
+    if spec.default_args:
+        return typing.cast("tuple[typing.Any, ...]", spec.default_args[0])
+    return ()
+
+
+def _format_plot_sequence(value: typing.Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return _format_literal_sequence(value)
+    return _format_literal_value(value)
+
+
+def _format_optional_plot_sequence(value: typing.Any) -> str:
+    return "" if value is None else _format_plot_sequence(value)
+
+
+def _plot_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
+    stripped = text.strip()
+    if not stripped:
+        return ()
+    return tuple(_literal_sequence_from_text(stripped))
+
+
+def _update_current_plot_data_arg(
+    tool: FigureComposerTool,
+    axis: typing.Literal["x", "y"],
+    text: str,
+) -> None:
+    value = None if axis == "x" and not text.strip() else _plot_sequence_from_text(text)
+
+    def update_args(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        spec = _method_spec(operation)
+        x_value = _plot_x_arg_value(operation, spec)
+        y_value = _plot_y_arg_value(operation, spec)
+        if axis == "x":
+            x_value = value
+        else:
+            y_value = typing.cast("tuple[typing.Any, ...]", value)
+        args = (y_value,) if x_value is None else (x_value, y_value)
+        return operation.model_copy(update={"method_args": args})
+
+    tool._update_operations(update_args)
 
 
 def _subplots_adjust_default(tool: FigureComposerTool, key: str) -> float:
@@ -3289,7 +3728,10 @@ def _update_current_method_family(
         method_kwargs={},
         method_call_policy=None,
         text_values=(),
-        method_coordinate_system="data",
+        method_transform="data",
+        method_transform_x="data",
+        method_transform_y="axes",
+        method_transform_expression="",
         axes=axes,
     )
 
@@ -3312,7 +3754,10 @@ def _update_current_method_name(tool: FigureComposerTool, name: str) -> None:
         method_kwargs={},
         method_call_policy=None,
         text_values=(),
-        method_coordinate_system="data",
+        method_transform="data",
+        method_transform_x="data",
+        method_transform_y="axes",
+        method_transform_expression="",
         axes=axes,
     )
 
@@ -3440,16 +3885,126 @@ def _label_values(operation: FigureOperationState) -> str | list[str]:
     return values
 
 
+def _method_has_transform_control(spec: MethodSpec) -> bool:
+    return any(control.kind == MethodControlKind.TRANSFORM for control in spec.controls)
+
+
+def _transform_component(
+    figure: Figure, axis: Axes, component: str
+) -> mtransforms.Transform:
+    match component:
+        case "data":
+            return axis.transData
+        case "axes":
+            return axis.transAxes
+        case "figure":
+            return figure.transFigure
+        case "dpi":
+            return figure.dpi_scale_trans
+    raise ValueError(f"Unknown transform component: {component}")
+
+
+def _transform_component_code(component: str) -> str:
+    match component:
+        case "data":
+            return "ax.transData"
+        case "axes":
+            return "ax.transAxes"
+        case "figure":
+            return "fig.transFigure"
+        case "dpi":
+            return "fig.dpi_scale_trans"
+    raise ValueError(f"Unknown transform component: {component}")
+
+
+def _render_method_transform(
+    operation: FigureOperationState,
+    spec: MethodSpec,
+    *,
+    figure: Figure,
+    axis: Axes,
+) -> mtransforms.Transform | None:
+    if not _method_has_transform_control(spec):
+        return None
+    match operation.method_transform:
+        case "data":
+            return None
+        case "axes":
+            return axis.transAxes
+        case "figure":
+            return figure.transFigure
+        case "dpi":
+            return figure.dpi_scale_trans
+        case "xaxis":
+            return axis.get_xaxis_transform()
+        case "yaxis":
+            return axis.get_yaxis_transform()
+        case "blend":
+            return mtransforms.blended_transform_factory(
+                _transform_component(figure, axis, operation.method_transform_x),
+                _transform_component(figure, axis, operation.method_transform_y),
+            )
+        case "custom":
+            if not operation.trusted:
+                raise ValueError("Custom transform expression is not trusted")
+            expression = operation.method_transform_expression.strip()
+            if not expression:
+                raise ValueError("Custom transform expression is empty")
+            namespace = {"ax": axis, "fig": figure, "mtransforms": mtransforms}
+            transform = eval(expression, {"__builtins__": {}}, namespace)  # noqa: S307
+            if not isinstance(transform, mtransforms.Transform):
+                raise TypeError("Custom transform expression must return a Transform")
+            return transform
+    raise ValueError(f"Unknown transform mode: {operation.method_transform}")
+
+
+def _method_transform_code(
+    operation: FigureOperationState, spec: MethodSpec
+) -> _RawCode | None:
+    if not _method_has_transform_control(spec):
+        return None
+    match operation.method_transform:
+        case "data":
+            return None
+        case "axes":
+            return _RawCode("ax.transAxes")
+        case "figure":
+            return _RawCode("fig.transFigure")
+        case "dpi":
+            return _RawCode("fig.dpi_scale_trans")
+        case "xaxis":
+            return _RawCode("ax.get_xaxis_transform()")
+        case "yaxis":
+            return _RawCode("ax.get_yaxis_transform()")
+        case "blend":
+            return _RawCode(
+                "mtransforms.blended_transform_factory("
+                f"{_transform_component_code(operation.method_transform_x)}, "
+                f"{_transform_component_code(operation.method_transform_y)})"
+            )
+        case "custom":
+            if not operation.trusted:
+                raise ValueError("Custom transform expression is not trusted")
+            expression = operation.method_transform_expression.strip()
+            if not expression:
+                raise ValueError("Custom transform expression is empty")
+            return _RawCode(expression)
+    raise ValueError(f"Unknown transform mode: {operation.method_transform}")
+
+
 def _render_args_kwargs(
     tool: FigureComposerTool,
     operation: FigureOperationState,
     spec: MethodSpec,
     *,
+    figure: Figure | None = None,
     axis: Axes | None = None,
 ) -> tuple[tuple[typing.Any, ...], dict[str, typing.Any]]:
     args = list(_method_args(operation, spec, tool))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
+    if _method_has_transform_control(spec):
+        kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
         args.append(_label_values(operation))
     elif (
@@ -3457,13 +4012,10 @@ def _render_args_kwargs(
         and operation.text_values
     ):
         kwargs.setdefault(spec.text_values_kwarg, list(operation.text_values))
-    if (
-        axis is not None
-        and spec.family == FigureMethodFamily.AXES
-        and spec.name == "text"
-        and operation.method_coordinate_system == "axes"
-    ):
-        kwargs["transform"] = axis.transAxes
+    if axis is not None and figure is not None:
+        transform = _render_method_transform(operation, spec, figure=figure, axis=axis)
+        if transform is not None:
+            kwargs["transform"] = transform
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
     return tuple(args), kwargs
@@ -3479,6 +4031,8 @@ def _code_args_kwargs(
     args = list(_method_args(operation, spec, tool))
     kwargs = dict(spec.default_kwargs)
     kwargs.update(operation.method_kwargs)
+    if _method_has_transform_control(spec):
+        kwargs.pop("transform", None)
     if spec.text_values_policy == MethodTextValuesPolicy.POSITIONAL:
         args.append(_label_values(operation))
     elif (
@@ -3486,13 +4040,9 @@ def _code_args_kwargs(
         and operation.text_values
     ):
         kwargs.setdefault(spec.text_values_kwarg, list(operation.text_values))
-    if (
-        axis_transform is not None
-        and spec.family == FigureMethodFamily.AXES
-        and spec.name == "text"
-        and operation.method_coordinate_system == "axes"
-    ):
-        kwargs["transform"] = _RawCode(axis_transform)
+    transform_code = _method_transform_code(operation, spec)
+    if axis_transform is not None and transform_code is not None:
+        kwargs["transform"] = transform_code
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
     return tuple(args), kwargs
@@ -3519,7 +4069,9 @@ def _render_method(
             if axes is None:
                 return
             for axis in _iter_axes(axes):
-                args, kwargs = _render_args_kwargs(tool, operation, spec, axis=axis)
+                args, kwargs = _render_args_kwargs(
+                    tool, operation, spec, figure=figure, axis=axis
+                )
                 getattr(axis, spec.call_name)(*args, **kwargs)
         case MethodCallPolicy.AXES_POSITIONAL:
             if axes is None:
@@ -3608,13 +4160,30 @@ def _call_parts(args: Sequence[typing.Any], kwargs: dict[str, typing.Any]) -> st
     return ", ".join(part for part in (_code_args(args), _code_kwargs(kwargs)) if part)
 
 
+def _method_requires_transform_import(operation: FigureOperationState) -> bool:
+    spec = _method_spec(operation)
+    return _method_has_transform_control(spec) and (
+        operation.method_transform == "blend"
+        or (operation.method_transform == "custom" and operation.trusted)
+    )
+
+
+def _loaded_operation(operation: FigureOperationState) -> FigureOperationState:
+    if operation.method_transform == "custom":
+        return operation.model_copy(update={"trusted": False})
+    return operation
+
+
 def _required_imports(
     _tool: FigureComposerTool, operation: FigureOperationState
 ) -> Sequence[str]:
+    imports: list[str] = []
     spec = _method_spec(operation)
     if spec.family == FigureMethodFamily.ERLAB:
-        return ("import erlab.plotting as eplt",)
-    return ()
+        imports.append("import erlab.plotting as eplt")
+    if _method_requires_transform_import(operation):
+        imports.append("import matplotlib.transforms as mtransforms")
+    return tuple(imports)
 
 
 SPEC = OperationSpec(
@@ -3637,4 +4206,5 @@ SPEC = OperationSpec(
     render=_render_method,
     code_lines=_method_code,
     required_imports=_required_imports,
+    loaded_operation=_loaded_operation,
 )

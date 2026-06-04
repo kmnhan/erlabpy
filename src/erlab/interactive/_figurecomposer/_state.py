@@ -370,7 +370,12 @@ class FigureOperationState(pydantic.BaseModel):
     method_kwargs: dict[str, typing.Any] = pydantic.Field(default_factory=dict)
     method_call_policy: str | None = None
     text_values: tuple[str, ...] = ()
-    method_coordinate_system: typing.Literal["data", "axes"] = "data"
+    method_transform: typing.Literal[
+        "data", "axes", "figure", "dpi", "xaxis", "yaxis", "blend", "custom"
+    ] = "data"
+    method_transform_x: typing.Literal["data", "axes", "figure", "dpi"] = "data"
+    method_transform_y: typing.Literal["data", "axes", "figure", "dpi"] = "axes"
+    method_transform_expression: str = ""
 
     code: str = ""
     trusted: bool = False
