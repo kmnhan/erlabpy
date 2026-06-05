@@ -5065,6 +5065,34 @@ def test_manager_records_recent_workspace_accesses(
         ]
 
 
+def test_manager_registry_refresh_errors_are_non_modal(
+    monkeypatch,
+    caplog,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    def fail_refresh_manager_record(*_args: object, **_kwargs: object) -> None:
+        raise manager_workspace_io.ImageToolManagerRegistryError("locked")
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager_workspace_io,
+            "refresh_manager_record",
+            fail_refresh_manager_record,
+        )
+        with caplog.at_level(logging.WARNING, logger=manager_workspace_io.logger.name):
+            manager._refresh_manager_record()
+
+    records = [
+        record
+        for record in caplog.records
+        if record.message == "Could not refresh ImageTool manager registry record"
+    ]
+    assert len(records) == 1
+    assert records[0].suppress_ui_alert is True
+
+
 def test_manager_records_packaged_workspace_with_desktop_shell(
     monkeypatch,
     tmp_path,

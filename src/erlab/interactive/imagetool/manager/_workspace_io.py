@@ -25,7 +25,10 @@ from erlab.interactive.imagetool.manager._dialogs import (
     _ChooseFromDataTreeDialog,
     _is_loader_func,
 )
-from erlab.interactive.imagetool.manager._registry import refresh_manager_record
+from erlab.interactive.imagetool.manager._registry import (
+    ImageToolManagerRegistryError,
+    refresh_manager_record,
+)
 from erlab.interactive.imagetool.manager._widgets import (
     _MAX_RECENT_WORKSPACES,
     _RECENT_WORKSPACES_SETTINGS_KEY,
@@ -393,10 +396,17 @@ class _WorkspaceIOController:
         )
 
     def _refresh_manager_record(self) -> None:
-        refresh_manager_record(
-            self._manager._manager_record.internal_id,
-            workspace_path=self._manager.workspace_path,
-        )
+        try:
+            refresh_manager_record(
+                self._manager._manager_record.internal_id,
+                workspace_path=self._manager.workspace_path,
+            )
+        except ImageToolManagerRegistryError:
+            logger.warning(
+                "Could not refresh ImageTool manager registry record",
+                exc_info=True,
+                extra={"suppress_ui_alert": True},
+            )
 
     def _update_workspace_window_title(self) -> None:
         if self._manager._workspace_state.path is None:
