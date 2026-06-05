@@ -1091,12 +1091,17 @@ class _WorkspaceIOController:
                                 chunks={},
                             )
                             try:
-                                ds = opened.copy(deep=False)
+                                opened_ds = opened.copy(deep=False)
+                                ds = (
+                                    _manager_workspace._restore_workspace_dataset_attrs(
+                                        opened_ds
+                                    )
+                                )
                             finally:
                                 opened.close()
                             break
             if ds is None:
-                ds = (
+                ds = _manager_workspace._restore_workspace_dataset_attrs(
                     typing.cast("xr.DataTree", node_tree["imagetool"])
                     .to_dataset(inherit=False)
                     .load()
@@ -1108,7 +1113,7 @@ class _WorkspaceIOController:
                 loaded_targets_by_uid=loaded_targets_by_uid,
             )
         elif "tool" in node_tree:
-            ds = (
+            ds = _manager_workspace._restore_workspace_dataset_attrs(
                 typing.cast("xr.DataTree", node_tree["tool"])
                 .to_dataset(inherit=False)
                 .load()
@@ -1246,8 +1251,12 @@ class _WorkspaceIOController:
             )
             try:
                 if load:
-                    return opened.load()
-                return opened.copy(deep=False)
+                    return _manager_workspace._restore_workspace_dataset_attrs(
+                        opened.load()
+                    )
+                return _manager_workspace._restore_workspace_dataset_attrs(
+                    opened.copy(deep=False)
+                )
             finally:
                 opened.close()
 
@@ -2790,6 +2799,12 @@ class _WorkspaceIOController:
             with erlab.interactive.utils.wait_dialog(
                 self._manager, "Saving workspace..."
             ):
+                for node in tree.subtree:
+                    ds = node.to_dataset(inherit=False)
+                    if ds.variables or ds.attrs:
+                        node.dataset = (
+                            _manager_workspace._sanitize_workspace_attr_names(ds)
+                        )
                 tree.to_netcdf(
                     fname,
                     engine="h5netcdf",

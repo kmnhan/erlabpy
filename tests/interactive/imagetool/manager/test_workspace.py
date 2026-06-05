@@ -2202,6 +2202,27 @@ def test_workspace_h5py_attrs_and_root_validation(tmp_path) -> None:
         manager_workspace._read_workspace_root_attrs_h5py(fname)
 
 
+def _rich_workspace_attr_value() -> dict[str, typing.Any]:
+    return {
+        "X Motor": "EPU Gap",
+        "Start": np.float64(20.0),
+        "Bidirect": False,
+        "raw": b"\xff",
+        "points": np.array([1, 2, 3], dtype=np.int16),
+        "window": (None, complex(1.0, -2.0)),
+    }
+
+
+def _assert_rich_workspace_attr(value: typing.Any) -> None:
+    assert isinstance(value, dict)
+    assert value["X Motor"] == "EPU Gap"
+    assert value["Start"] == np.float64(20.0)
+    assert value["Bidirect"] is False
+    assert value["raw"] == b"\xff"
+    np.testing.assert_array_equal(value["points"], np.array([1, 2, 3], dtype=np.int16))
+    assert value["window"] == (None, complex(1.0, -2.0))
+
+
 def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
     import h5py
 
@@ -2219,6 +2240,26 @@ def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
         assert "" not in list(group.attrs)
         assert group.attrs["note"] == ""
         assert group.attrs["valid"] == "kept"
+
+
+def test_replace_h5_attrs_encodes_non_native_attr_values(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "replace-rich-attrs.itws"
+    rich_attr = _rich_workspace_attr_value()
+    with h5py.File(fname, "w") as h5_file:
+        group = h5_file.create_group("0/imagetool")
+
+        manager_workspace._replace_h5_attrs(
+            group.attrs,
+            {"Single Motor Scan": rich_attr, "valid": "kept"},
+        )
+
+        assert "Single Motor Scan" not in group.attrs
+        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        decoded = manager_workspace._h5py_attrs_to_dict(group.attrs)
+        assert decoded["valid"] == "kept"
+        _assert_rich_workspace_attr(decoded["Single Motor Scan"])
 
 
 def _assert_workspace_h5py_roundtrip(
@@ -2445,6 +2486,66 @@ def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
     assert loaded.coords["elapsed"].attrs["units"] == "seconds since start"
 
 
+def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
+    tmp_path,
+) -> None:
+    import h5py
+
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    fname = tmp_path / "rich-attrs-fast-path.itws"
+    rich_attr = _rich_workspace_attr_value()
+    data = xr.DataArray(
+        np.arange(2.0),
+        dims=("x",),
+        coords={
+            "x": xr.DataArray(
+                [0.0, 1.0],
+                dims=("x",),
+                attrs={"axis_config": rich_attr},
+            ),
+            "temperature": xr.DataArray(
+                [20.0, 21.0],
+                dims=("x",),
+                attrs={"scan_config": rich_attr},
+            ),
+        },
+        attrs={"Single Motor Scan": rich_attr},
+        name=data_name,
+    )
+    ds = data.to_dataset()
+    ds.attrs["dataset_config"] = rich_attr
+
+    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/imagetool", ds)
+
+    assert ds.attrs["dataset_config"] is rich_attr
+    assert ds[data_name].attrs["Single Motor Scan"] is rich_attr
+    with h5py.File(fname, "r") as h5_file:
+        group = h5_file["0/imagetool"]
+        saved_data = group[data_name]
+        assert "dataset_config" not in group.attrs
+        assert "Single Motor Scan" not in saved_data.attrs
+        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname, "0/imagetool", preferred_data_name=data_name
+    )
+    assert loaded is not None
+    _assert_rich_workspace_attr(loaded.attrs["dataset_config"])
+    _assert_rich_workspace_attr(loaded[data_name].attrs["Single Motor Scan"])
+    _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
+    _assert_rich_workspace_attr(loaded.coords["temperature"].attrs["scan_config"])
+
+    opened = manager_xarray.open_workspace_dataset(fname, "0/imagetool", chunks=None)
+    try:
+        restored = manager_workspace._restore_workspace_dataset_attrs(opened.load())
+    finally:
+        opened.close()
+    _assert_rich_workspace_attr(restored.attrs["dataset_config"])
+    _assert_rich_workspace_attr(restored[data_name].attrs["Single Motor Scan"])
+    _assert_rich_workspace_attr(restored.coords["x"].attrs["axis_config"])
+
+
 def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> None:
     import h5py
 
@@ -2502,12 +2603,17 @@ def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> N
 
 def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> None:
     fname = tmp_path / "invalid-attrs-fallback.itws"
+    rich_attr = _rich_workspace_attr_value()
     ds = xr.Dataset(
         {
             "left": xr.DataArray(
                 [1.0, 2.0],
                 dims=("x",),
-                attrs={"": "dropped", "left_note": ""},
+                attrs={
+                    "": "dropped",
+                    "left_note": "",
+                    "Single Motor Scan": rich_attr,
+                },
             ),
             "right": ("x", [3.0, 4.0]),
         },
@@ -2515,17 +2621,17 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
             "x": xr.DataArray(
                 [0.0, 1.0],
                 dims=("x",),
-                attrs={None: "dropped", "axis_note": ""},
+                attrs={None: "dropped", "axis_note": "", "axis_config": rich_attr},
             )
         },
-        attrs={"": "dropped", "dataset_note": ""},
+        attrs={"": "dropped", "dataset_note": "", "dataset_config": rich_attr},
     )
 
     manager_workspace._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
 
     opened = xr.open_dataset(fname, group="/0/tool", engine="h5netcdf")
     try:
-        loaded = opened.load()
+        loaded = manager_workspace._restore_workspace_dataset_attrs(opened.load())
     finally:
         opened.close()
 
@@ -2535,12 +2641,15 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
     assert loaded.attrs["dataset_note"] == ""
     assert "" not in loaded["left"].attrs
     assert loaded["left"].attrs["left_note"] == ""
+    _assert_rich_workspace_attr(loaded["left"].attrs["Single Motor Scan"])
     assert "" not in loaded.coords["x"].attrs
     assert loaded.coords["x"].attrs["axis_note"] == ""
+    _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
+    _assert_rich_workspace_attr(loaded.attrs["dataset_config"])
 
 
 def test_workspace_h5py_fast_path_rejects_invalid_payloads(
-    monkeypatch, tmp_path
+    caplog, monkeypatch, tmp_path
 ) -> None:
     data_name = manager_workspace_io._ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
@@ -2607,13 +2716,16 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     bad_attrs = xr.Dataset({data_name: ("x", [1.0])}, coords={"x": [0.0]})
     bad_attrs.attrs["bad"] = object()
     fname = tmp_path / "bad-attrs.itws"
-    assert not manager_workspace._write_workspace_dataset_group_h5py(
-        fname, "0/imagetool", bad_attrs
-    )
+    with caplog.at_level(logging.WARNING, logger=manager_workspace.logger.name):
+        assert manager_workspace._write_workspace_dataset_group_h5py(
+            fname, "0/imagetool", bad_attrs
+        )
+    assert "unsupported value type object" in caplog.text
     import h5py
 
     with h5py.File(fname, "r") as h5_file:
-        assert "0/imagetool" not in h5_file
+        assert "0/imagetool" in h5_file
+        assert "bad" not in h5_file["0/imagetool"].attrs
 
 
 def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
@@ -3327,6 +3439,7 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
             "itool_title": "new",
             "manager_node_uid": "n0",
             "manager_node_kind": "imagetool",
+            "Single Motor Scan": _rich_workspace_attr_value(),
         }
     )
     tree = xr.DataTree.from_dict({"0/imagetool": rewritten})
@@ -3349,6 +3462,8 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
     with h5py.File(fname, "r") as h5_file:
         group = h5_file["0/imagetool"]
         assert group.attrs["itool_title"] == "new"
+        decoded_attrs = manager_workspace._h5py_attrs_to_dict(group.attrs)
+        _assert_rich_workspace_attr(decoded_attrs["Single Motor Scan"])
         np.testing.assert_array_equal(
             group[manager_workspace_io._ITOOL_DATA_NAME][...],
             np.arange(12, dtype=np.float64).reshape(3, 4),
@@ -3716,6 +3831,41 @@ def test_workspace_recovery_rolls_back_attr_only_transaction(tmp_path) -> None:
         assert h5_file["0/imagetool"].attrs["itool_title"] == "old"
         assert (
             manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs) == 0
+        )
+    _assert_no_workspace_internal_groups(fname)
+
+
+def test_workspace_transaction_attr_update_encodes_non_native_values(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "rich-attrs-transaction.itws"
+    _write_transaction_test_workspace(fname)
+    fallback = (
+        "0",
+        {"0/imagetool": _transaction_test_dataset(2.0, title="fallback")},
+    )
+    rich_attr = _rich_workspace_attr_value()
+    manager_workspace._write_workspace_transaction_file(
+        fname,
+        (),
+        (
+            (
+                "0/imagetool",
+                {"itool_title": "new", "Single Motor Scan": rich_attr},
+                fallback,
+            ),
+        ),
+        _transaction_test_root_attrs(delta_save_count=1),
+    )
+
+    with h5py.File(fname, "r") as h5_file:
+        decoded_attrs = manager_workspace._h5py_attrs_to_dict(
+            h5_file["0/imagetool"].attrs
+        )
+        assert decoded_attrs["itool_title"] == "new"
+        _assert_rich_workspace_attr(decoded_attrs["Single Motor Scan"])
+        assert (
+            manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs) == 1
         )
     _assert_no_workspace_internal_groups(fname)
 
@@ -6930,6 +7080,83 @@ def test_manager_workspace_full_save_drops_empty_attr_name(
             ].attrs
             assert "" not in list(saved_attrs)
             assert saved_attrs["note"] == ""
+
+
+def test_manager_workspace_full_save_roundtrips_non_native_data_attrs(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    rich_attr = _rich_workspace_attr_value()
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={
+                "x": xr.DataArray(
+                    np.arange(5),
+                    dims=("x",),
+                    attrs={"axis_config": rich_attr},
+                ),
+                "y": np.arange(5),
+            },
+            attrs={"Single Motor Scan": rich_attr},
+            name="data",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        live_rich_attr = root.slicer_area._data.attrs["Single Motor Scan"]
+        live_axis_attr = root.slicer_area._data.coords["x"].attrs["axis_config"]
+
+        fname = tmp_path / "rich-data-attrs.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        assert root.slicer_area._data.attrs["Single Motor Scan"] is live_rich_attr
+        assert root.slicer_area._data.coords["x"].attrs["axis_config"] is live_axis_attr
+        assert (
+            manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR
+            not in root.slicer_area._data.attrs
+        )
+        with h5py.File(fname, "r") as h5_file:
+            saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            assert "Single Motor Scan" not in saved_data.attrs
+            assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded = manager.get_imagetool(0).slicer_area._data
+        _assert_rich_workspace_attr(loaded.attrs["Single Motor Scan"])
+        _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        tree = manager_xarray.open_workspace_datatree(fname, chunks=None)
+        try:
+            assert manager._from_datatree(
+                tree,
+                replace=True,
+                mark_dirty=False,
+                select=False,
+                workspace_file_path=fname,
+            )
+        finally:
+            tree.close()
+        loaded = manager.get_imagetool(0).slicer_area._data
+        _assert_rich_workspace_attr(loaded.attrs["Single Motor Scan"])
+        _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
 
 
 def test_manager_workspace_save_preserves_reordered_roots(
