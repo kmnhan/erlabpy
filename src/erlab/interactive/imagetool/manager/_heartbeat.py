@@ -263,3 +263,5 @@ class _RegistryHeartbeatController(QtCore.QObject):
                 _ORPHANED_HEARTBEAT_OBJECTS.remove(orphan)
 
         thread.finished.connect(release_orphan)
+        if not thread.isRunning():
+            release_orphan()

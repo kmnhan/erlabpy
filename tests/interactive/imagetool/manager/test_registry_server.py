@@ -714,6 +714,141 @@ def test_manager_registry_heartbeat_stop_is_safe_while_refresh_is_in_flight(
     assert controller._worker is None
 
 
+def test_manager_registry_heartbeat_controller_edge_paths(
+    qtbot,
+    caplog,
+) -> None:
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    try:
+        controller._in_flight_generation = 3
+        controller._refresh_finished(object())
+        assert controller.is_busy
+
+        controller._refresh_finished(manager_heartbeat._HeartbeatResult(2, ok=True))
+        assert controller.is_busy
+
+        with caplog.at_level(logging.WARNING, logger=manager_heartbeat.logger.name):
+            controller._handle_result(
+                manager_heartbeat._HeartbeatResult(3, ok=False, lock_failed=True)
+            )
+            controller._consecutive_lock_failures = (
+                manager_heartbeat._LOCK_FAILURE_WARNING_THRESHOLD - 1
+            )
+            controller._handle_result(
+                manager_heartbeat._HeartbeatResult(
+                    3,
+                    ok=False,
+                    error_text="locked",
+                    lock_failed=True,
+                )
+            )
+
+        assert any(
+            record.message.startswith("Could not lock ImageTool manager registry for")
+            and record.suppress_ui_alert is True
+            for record in caplog.records
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=manager_heartbeat.logger.name):
+            controller._handle_result(
+                manager_heartbeat._HeartbeatResult(
+                    3,
+                    ok=False,
+                    error_text="write failed",
+                )
+            )
+            controller._handle_result(
+                manager_heartbeat._HeartbeatResult(
+                    3,
+                    ok=False,
+                    error_text="write failed again",
+                )
+            )
+
+        assert any(
+            record.levelno == logging.DEBUG
+            and record.message.startswith(
+                "Could not refresh ImageTool manager registry record"
+            )
+            and record.suppress_ui_alert is True
+            for record in caplog.records
+        )
+
+        controller.stop()
+        controller.request_refresh("ignored.itws", coalesce_if_busy=True)
+        assert not controller.is_busy
+
+        controller._stopping = False
+        with caplog.at_level(logging.WARNING, logger=manager_heartbeat.logger.name):
+            controller.request_refresh("missing-thread.itws", coalesce_if_busy=False)
+
+        assert any(
+            record.message
+            == "ImageTool manager registry heartbeat thread is unavailable"
+            and record.suppress_ui_alert is True
+            for record in caplog.records
+        )
+        controller._disconnect_worker_signals()
+    finally:
+        controller.stop()
+
+
+def test_manager_registry_heartbeat_retains_orphan_until_thread_finishes(
+    qtbot,
+) -> None:
+    thread = QtCore.QThread()
+    worker = manager_heartbeat._RegistryHeartbeatWorker()
+    worker.moveToThread(thread)
+    thread.start()
+    manager_heartbeat._RegistryHeartbeatController._retain_orphaned_thread(
+        thread,
+        worker,
+    )
+    assert (thread, worker) in manager_heartbeat._ORPHANED_HEARTBEAT_OBJECTS
+
+    thread.quit()
+    assert thread.wait(1000)
+    qtbot.waitUntil(
+        lambda: (thread, worker) not in manager_heartbeat._ORPHANED_HEARTBEAT_OBJECTS,
+        timeout=1000,
+    )
+
+
+def test_manager_registry_heartbeat_logs_thread_stop_timeout(
+    qtbot,
+    monkeypatch,
+    caplog,
+) -> None:
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    thread = controller._thread
+    assert thread is not None
+    original_wait = thread.wait
+    monkeypatch.setattr(thread, "wait", lambda _timeout_ms: False)
+
+    with caplog.at_level(logging.WARNING, logger=manager_heartbeat.logger.name):
+        controller.stop()
+
+    assert controller._thread is None
+    assert controller._worker is None
+    assert any(
+        record.message
+        == "ImageTool manager registry heartbeat thread did not stop promptly"
+        and record.suppress_ui_alert is True
+        for record in caplog.records
+    )
+
+    monkeypatch.setattr(thread, "wait", original_wait)
+    thread.quit()
+    assert thread.wait(1000)
+    qtbot.waitUntil(
+        lambda: all(
+            orphan_thread is not thread
+            for orphan_thread, _worker in manager_heartbeat._ORPHANED_HEARTBEAT_OBJECTS
+        ),
+        timeout=1000,
+    )
+
+
 def test_itool_magic_manager_target_normalization() -> None:
     assert _normalize_manager_target_args("-m data") == "-m data"
     assert _normalize_manager_target_args("-m 1 data") == "-m --manager-index 1 data"
