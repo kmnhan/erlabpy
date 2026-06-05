@@ -4042,7 +4042,7 @@ def test_workspace_window_title_placeholder_non_macos(monkeypatch) -> None:
     )
 
 
-def test_manager_workspace_window_title_sets_file_path_normally(
+def test_manager_workspace_window_title_sets_file_path_on_non_macos(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -4056,6 +4056,7 @@ def test_manager_workspace_window_title_sets_file_path_normally(
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "linux")
             patch.setattr(
                 ImageToolManager,
                 "setWindowFilePath",
@@ -4064,6 +4065,35 @@ def test_manager_workspace_window_title_sets_file_path_normally(
             manager._update_workspace_window_title()
 
         assert file_path_calls == [str(workspace)]
+        assert workspace.name in manager.windowTitle()
+        assert manager.isWindowModified()
+
+
+def test_manager_workspace_window_title_defers_file_path_on_macos(
+    monkeypatch,
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "macos-workspace.itws"
+        manager._workspace_state.path = workspace
+        manager._workspace_state.structure_modified = True
+        file_path_calls: list[str] = []
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
+            manager._update_workspace_window_title()
+            assert file_path_calls == []
+            qtbot.wait_until(lambda: file_path_calls == [str(workspace)])
+
         assert workspace.name in manager.windowTitle()
         assert manager.isWindowModified()
 
@@ -4093,8 +4123,89 @@ def test_manager_workspace_window_title_skips_file_path_during_macos_close(
         finally:
             manager._workspace_state.closing_document = previous_closing
 
+        assert not (
+            manager._workspace_controller._workspace_window_file_path_timer.isActive()
+        )
+        assert manager._workspace_controller._pending_workspace_window_file_path is None
         assert workspace.name in manager.windowTitle()
         assert manager.isWindowModified()
+
+
+def test_manager_workspace_window_file_path_waits_for_load_on_macos(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        workspace = tmp_path / "loading.itws"
+        manager._workspace_state.path = workspace
+        manager._workspace_state.loading_depth = 1
+        file_path_calls: list[str] = []
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+                patch.setattr(
+                    ImageToolManager,
+                    "setWindowFilePath",
+                    lambda _manager, path: file_path_calls.append(path),
+                )
+                manager._update_workspace_window_title()
+                controller._workspace_window_file_path_timer.stop()
+                controller._apply_macos_workspace_window_file_path()
+
+                assert file_path_calls == []
+                assert controller._pending_workspace_window_file_path == str(workspace)
+                assert not controller._workspace_window_file_path_timer.isActive()
+
+                manager._workspace_state.loading_depth = 0
+                controller._schedule_macos_workspace_window_file_path_update()
+                assert controller._workspace_window_file_path_timer.isActive()
+                controller._workspace_window_file_path_timer.stop()
+                controller._apply_macos_workspace_window_file_path()
+
+            assert file_path_calls == [str(workspace)]
+        finally:
+            manager._workspace_state.loading_depth = 0
+            controller._workspace_window_file_path_timer.stop()
+
+
+def test_manager_loaded_workspace_association_defers_macos_file_path_update(
+    monkeypatch,
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "loaded.itws"
+        workspace.touch()
+        file_path_calls: list[str] = []
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
+            with manager._workspace_document_access_context(workspace) as access:
+                manager._associate_loaded_workspace_file(
+                    access.path,
+                    manager_workspace._current_workspace_schema_version(),
+                    workspace_access=access,
+                    rebind_data=False,
+                )
+            assert file_path_calls == []
+            qtbot.wait_until(lambda: file_path_calls == [str(workspace.resolve())])
+
+        assert manager.workspace_path == str(workspace.resolve())
+        assert workspace.name in manager.windowTitle()
+        assert not manager.isWindowModified()
 
 
 def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
@@ -4128,19 +4239,35 @@ def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
 
 def test_manager_close_cancel_restores_workspace_document_closing_state(
     monkeypatch,
+    qtbot,
+    tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
     with manager_context() as manager:
+        workspace = tmp_path / "cancel-close.itws"
+        manager._workspace_state.path = workspace
         manager._workspace_state.structure_modified = True
         manager._workspace_state.closing_document = False
+        file_path_calls: list[str] = []
         event = QtGui.QCloseEvent()
         with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
             patch.setattr(
                 manager, "_confirm_save_dirty_workspace", lambda _message: False
             )
+            manager._update_workspace_window_title()
+            manager._workspace_controller._workspace_window_file_path_timer.stop()
             manager.closeEvent(event)
+            assert file_path_calls == []
+            assert manager._workspace_controller._workspace_window_file_path_timer.isActive()
+            qtbot.wait_until(lambda: file_path_calls == [str(workspace)])
 
         assert not event.isAccepted()
         assert not manager._workspace_state.closing_document
