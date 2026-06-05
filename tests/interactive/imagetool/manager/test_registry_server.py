@@ -1,8 +1,11 @@
 import concurrent.futures
+import contextlib
 import dataclasses
 import json
+import logging
 import subprocess
 import sys
+import threading
 import typing
 from collections.abc import Callable
 
@@ -10,9 +13,11 @@ import numpy as np
 import pytest
 import xarray as xr
 import zmq
+from qtpy import QtCore
 
 import erlab
 import erlab.interactive.imagetool._itool as itool_mod
+import erlab.interactive.imagetool.manager._heartbeat as manager_heartbeat
 import erlab.interactive.imagetool.manager._registry as manager_registry
 import erlab.interactive.imagetool.manager._server as manager_server
 from erlab.interactive.imagetool import itool
@@ -25,6 +30,7 @@ from .helpers import _use_isolated_manager_registry
 
 def test_manager_selection_info_single_manager(
     tmp_path,
+    qtbot,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
@@ -42,6 +48,13 @@ def test_manager_selection_info_single_manager(
 
         workspace_path = tmp_path / "selected.itws"
         manager._adopt_workspace_path(workspace_path)
+        qtbot.waitUntil(
+            lambda: (
+                manager_mod.manager_selection_info()["managers"][0]["workspace_path"]
+                == str(workspace_path.resolve())
+            ),
+            timeout=2000,
+        )
         info = manager_mod.manager_selection_info()
         assert info["managers"][0]["workspace_path"] == str(workspace_path.resolve())
 
@@ -113,6 +126,81 @@ def test_manager_registry_object_repr_and_mapping(monkeypatch, tmp_path) -> None
     assert "ManagerInfo(" not in html
     assert "internal_id" not in html
     assert f"workspace={workspace_path!r}" in repr(manager_mod.managers[0])
+
+
+def test_manager_registry_lock_timeout_is_configurable(monkeypatch, tmp_path) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    timeouts: list[int] = []
+
+    class RecordingLockFile:
+        def __init__(self, _path: str) -> None:
+            return
+
+        def setStaleLockTime(self, _timeout_ms: int) -> None:
+            return
+
+        def tryLock(self, timeout_ms: int) -> bool:
+            timeouts.append(timeout_ms)
+            return True
+
+        def unlock(self) -> None:
+            return
+
+    monkeypatch.setattr(registry.QtCore, "QLockFile", RecordingLockFile)
+
+    with registry._registry_lock(timeout_ms=123):
+        pass
+
+    assert timeouts == [123]
+
+
+def test_manager_registry_lock_failure_uses_specific_error(
+    monkeypatch, tmp_path
+) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+
+    class FailingLockFile:
+        def __init__(self, _path: str) -> None:
+            return
+
+        def setStaleLockTime(self, _timeout_ms: int) -> None:
+            return
+
+        def tryLock(self, _timeout_ms: int) -> bool:
+            return False
+
+        def error(self) -> str:
+            return "locked"
+
+        def unlock(self) -> None:
+            return
+
+    monkeypatch.setattr(registry.QtCore, "QLockFile", FailingLockFile)
+
+    with (
+        pytest.raises(registry.ImageToolManagerRegistryLockError, match="locked"),
+        registry._registry_lock(timeout_ms=1),
+    ):
+        pass
+
+
+def test_manager_registry_refresh_uses_requested_lock_timeout(
+    monkeypatch, tmp_path
+) -> None:
+    registry = _use_isolated_manager_registry(monkeypatch, tmp_path)
+    timeouts: list[int] = []
+
+    @contextlib.contextmanager
+    def capture_lock(timeout_ms: int = registry._LOCK_TIMEOUT_MS):
+        timeouts.append(timeout_ms)
+        yield
+
+    monkeypatch.setattr(registry, "_registry_lock", capture_lock)
+    monkeypatch.setattr(registry, "_active_records_unlocked", list)
+
+    registry.refresh_manager_record("missing", lock_timeout_ms=321)
+
+    assert timeouts == [321]
 
 
 def test_manager_handle_forwards_to_public_api(
@@ -459,6 +547,171 @@ time.sleep(1.0)
     assert indexes == [0, 1, 2]
     for process, (_stdout, stderr) in zip(processes, outputs, strict=True):
         assert process.returncode == 0, stderr
+
+
+def test_manager_registry_heartbeat_runs_refresh_off_gui_thread(
+    qtbot,
+    monkeypatch,
+) -> None:
+    gui_thread = QtCore.QThread.currentThread()
+    calls: list[tuple[QtCore.QThread, str, str | None, int]] = []
+
+    def refresh_record(
+        internal_id: str,
+        *,
+        workspace_path: str | None | object = None,
+        lock_timeout_ms: int,
+    ) -> None:
+        calls.append(
+            (
+                QtCore.QThread.currentThread(),
+                internal_id,
+                workspace_path if isinstance(workspace_path, str) else None,
+                lock_timeout_ms,
+            )
+        )
+
+    monkeypatch.setattr(manager_heartbeat, "refresh_manager_record", refresh_record)
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    try:
+        controller.request_refresh("workspace.itws", coalesce_if_busy=False)
+        qtbot.waitUntil(lambda: bool(calls) and not controller.is_busy, timeout=2000)
+    finally:
+        controller.stop()
+
+    assert len(calls) == 1
+    assert calls[0][0] != gui_thread
+    assert calls[0][1:] == (
+        "manager-id",
+        "workspace.itws",
+        manager_heartbeat._HEARTBEAT_LOCK_TIMEOUT_MS,
+    )
+
+
+def test_manager_registry_heartbeat_skips_ticks_and_coalesces_workspace_refreshes(
+    qtbot,
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[tuple[str | None, int]] = []
+
+    def refresh_record(
+        _internal_id: str,
+        *,
+        workspace_path: str | None | object = None,
+        lock_timeout_ms: int,
+    ) -> None:
+        calls.append(
+            (
+                workspace_path if isinstance(workspace_path, str) else None,
+                lock_timeout_ms,
+            )
+        )
+        if len(calls) == 1:
+            started.set()
+            release.wait(2)
+
+    monkeypatch.setattr(manager_heartbeat, "refresh_manager_record", refresh_record)
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    try:
+        controller.request_refresh("initial.itws", coalesce_if_busy=False)
+        qtbot.waitUntil(started.is_set, timeout=1000)
+        assert controller.is_busy
+
+        controller.request_refresh("timer-skipped.itws", coalesce_if_busy=False)
+        controller.request_refresh("workspace-updated.itws", coalesce_if_busy=True)
+        release.set()
+
+        qtbot.waitUntil(
+            lambda: len(calls) == 2 and not controller.is_busy,
+            timeout=2000,
+        )
+    finally:
+        release.set()
+        controller.stop()
+
+    assert calls == [
+        ("initial.itws", manager_heartbeat._HEARTBEAT_LOCK_TIMEOUT_MS),
+        ("workspace-updated.itws", manager_heartbeat._HEARTBEAT_LOCK_TIMEOUT_MS),
+    ]
+
+
+def test_manager_registry_heartbeat_logs_failures_without_modal_alerts(
+    qtbot,
+    monkeypatch,
+    caplog,
+) -> None:
+    failures = [
+        manager_registry.ImageToolManagerRegistryLockError("locked"),
+        manager_registry.ImageToolManagerRegistryError("write failed"),
+    ]
+
+    def refresh_record(
+        _internal_id: str,
+        *,
+        workspace_path: str | None | object = None,
+        lock_timeout_ms: int,
+    ) -> None:
+        raise failures.pop(0)
+
+    monkeypatch.setattr(manager_heartbeat, "refresh_manager_record", refresh_record)
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+    try:
+        with caplog.at_level(logging.DEBUG, logger=manager_heartbeat.logger.name):
+            controller.request_refresh(None, coalesce_if_busy=False)
+            qtbot.waitUntil(lambda: not controller.is_busy, timeout=1000)
+            controller.request_refresh(None, coalesce_if_busy=False)
+            qtbot.waitUntil(lambda: not controller.is_busy, timeout=1000)
+    finally:
+        controller.stop()
+
+    debug_records = [
+        record
+        for record in caplog.records
+        if record.message.startswith(
+            "Could not lock ImageTool manager registry for heartbeat refresh"
+        )
+    ]
+    warning_records = [
+        record
+        for record in caplog.records
+        if record.message.startswith(
+            "Could not refresh ImageTool manager registry record"
+        )
+    ]
+    assert len(debug_records) == 1
+    assert debug_records[0].suppress_ui_alert is True
+    assert len(warning_records) == 1
+    assert warning_records[0].suppress_ui_alert is True
+
+
+def test_manager_registry_heartbeat_stop_is_safe_while_refresh_is_in_flight(
+    qtbot,
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+
+    def refresh_record(
+        _internal_id: str,
+        *,
+        workspace_path: str | None | object = None,
+        lock_timeout_ms: int,
+    ) -> None:
+        started.set()
+        QtCore.QThread.msleep(50)
+
+    monkeypatch.setattr(manager_heartbeat, "refresh_manager_record", refresh_record)
+    controller = manager_heartbeat._RegistryHeartbeatController("manager-id")
+
+    controller.request_refresh(None, coalesce_if_busy=False)
+    qtbot.waitUntil(started.is_set, timeout=1000)
+    controller.stop()
+
+    assert controller.is_stopping
+    assert not controller.is_busy
+    assert controller._thread is None
+    assert controller._worker is None
 
 
 def test_itool_magic_manager_target_normalization() -> None:

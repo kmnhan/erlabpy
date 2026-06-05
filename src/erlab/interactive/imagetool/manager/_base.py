@@ -32,6 +32,9 @@ if typing.TYPE_CHECKING:
     from erlab.interactive.imagetool.manager._details_panel import (
         _DetailsPanelController,
     )
+    from erlab.interactive.imagetool.manager._heartbeat import (
+        _RegistryHeartbeatController,
+    )
     from erlab.interactive.imagetool.manager._io import _MultiFileHandler
     from erlab.interactive.imagetool.manager._lineage import _LineageController
     from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
@@ -157,6 +160,7 @@ class _ImageToolManagerBase(QtWidgets.QMainWindow):
     _recent_loader_extensions_by_filter: dict[str, dict[str, typing.Any]]
     _recent_name_filter: str | None
     _refreshing_figure_list: bool
+    _registry_heartbeat: _RegistryHeartbeatController
     _registry_heartbeat_timer: QtCore.QTimer
     _sigDataReplaced: QtCore.SignalInstance
     _sigReloadLinkers: QtCore.SignalInstance

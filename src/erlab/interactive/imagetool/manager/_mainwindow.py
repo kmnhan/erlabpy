@@ -17,6 +17,7 @@ from erlab.interactive.imagetool.manager._actions import _ActionsController
 from erlab.interactive.imagetool.manager._base import _ImageToolManagerBase
 from erlab.interactive.imagetool.manager._dependency import _ManagerDependencyTracker
 from erlab.interactive.imagetool.manager._details_panel import _DetailsPanelController
+from erlab.interactive.imagetool.manager._heartbeat import _RegistryHeartbeatController
 from erlab.interactive.imagetool.manager._lineage import _LineageController
 from erlab.interactive.imagetool.manager._linking import _ManagerLinkRegistry
 from erlab.interactive.imagetool.manager._metadata import _ManagerToolMetadataQueue
@@ -408,10 +409,13 @@ class ImageToolManager(_ImageToolManagerBase):
             unregister_manager_record(self._manager_record.internal_id)
             raise
 
+        self._registry_heartbeat = _RegistryHeartbeatController(
+            self._manager_record.internal_id,
+            parent=self,
+        )
         self._registry_heartbeat_timer = QtCore.QTimer(self)
         self._registry_heartbeat_timer.setInterval(3000)
-        self._registry_heartbeat_timer.timeout.connect(self._refresh_manager_record)
-        self._registry_heartbeat_timer.start()
+        self._registry_heartbeat_timer.timeout.connect(self._registry_heartbeat_tick)
 
         # Shared memory for detecting multiple instances
         # No longer used starting from v3.8.2, but kept for backward compatibility
@@ -428,6 +432,7 @@ class ImageToolManager(_ImageToolManagerBase):
             self, self._flush_pending_tool_metadata_updates
         )
         self._update_workspace_window_title()
+        self._registry_heartbeat_timer.start()
 
         qapp = QtWidgets.QApplication.instance()
         self._application_quit_filter: _ApplicationQuitFilter | None = None
@@ -1042,6 +1047,7 @@ class ImageToolManager(_ImageToolManagerBase):
 
             logger.debug("Stopping servers...")
             self._registry_heartbeat_timer.stop()
+            self._registry_heartbeat.stop()
             self._stop_servers()
             unregister_manager_record(self._manager_record.internal_id)
 
@@ -2007,8 +2013,13 @@ class ImageToolManager(_ImageToolManagerBase):
     def is_workspace_modified(self) -> bool:
         return self._workspace_controller.is_workspace_modified
 
-    def _refresh_manager_record(self) -> None:
-        self._workspace_controller._refresh_manager_record()
+    def _registry_heartbeat_tick(self) -> None:
+        self._workspace_controller._refresh_manager_record(coalesce_if_busy=False)
+
+    def _refresh_manager_record(self, *, coalesce_if_busy: bool = True) -> None:
+        self._workspace_controller._refresh_manager_record(
+            coalesce_if_busy=coalesce_if_busy
+        )
 
     def _update_workspace_window_title(self) -> None:
         self._workspace_controller._update_workspace_window_title()

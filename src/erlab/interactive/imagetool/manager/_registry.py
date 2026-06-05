@@ -46,6 +46,10 @@ class ImageToolManagerRegistryError(RuntimeError):
     """Raised when the live manager registry cannot be safely updated."""
 
 
+class ImageToolManagerRegistryLockError(ImageToolManagerRegistryError):
+    """Raised when the live manager registry lock cannot be acquired."""
+
+
 @dataclasses.dataclass(frozen=True)
 class _ManagerRecord:
     internal_id: str
@@ -122,12 +126,12 @@ _default_manager_index: int | None = (
 
 
 @contextlib.contextmanager
-def _registry_lock() -> Iterator[None]:
+def _registry_lock(timeout_ms: int = _LOCK_TIMEOUT_MS) -> Iterator[None]:
     _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock = QtCore.QLockFile(str(_LOCK_PATH))
     lock.setStaleLockTime(_LOCK_STALE_MS)
-    if not lock.tryLock(_LOCK_TIMEOUT_MS):
-        raise ImageToolManagerRegistryError(
+    if not lock.tryLock(timeout_ms):
+        raise ImageToolManagerRegistryLockError(
             f"Could not lock ImageTool manager registry: {lock.error()!s}"
         )
     try:
@@ -313,9 +317,10 @@ def refresh_manager_record(
     internal_id: str,
     *,
     workspace_path: str | None | object = _WORKSPACE_PATH_UNCHANGED,
+    lock_timeout_ms: int = _LOCK_TIMEOUT_MS,
 ) -> None:
     """Refresh a manager heartbeat."""
-    with _registry_lock():
+    with _registry_lock(lock_timeout_ms):
         records = _active_records_unlocked()
         refreshed: list[_ManagerRecord] = []
         changed = False
