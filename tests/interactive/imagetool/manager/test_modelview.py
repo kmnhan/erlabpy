@@ -773,7 +773,13 @@ def test_manager_open_preselects_default_loader_filter(
         def exec(self) -> bool:
             return False
 
-    manager = types.SimpleNamespace(_recent_name_filter=None, _recent_directory=None)
+    class _FakeManager(QtCore.QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self._recent_name_filter = None
+            self._recent_directory = None
+
+    manager = _FakeManager()
     manager._preferred_name_filter = types.MethodType(
         ImageToolManager._preferred_name_filter, manager
     )
@@ -1094,14 +1100,17 @@ def test_manager_open_loader_selection_branches(
     def _select_loader_options(*args, **kwargs):
         select_calls.append((*args, kwargs))
 
-    manager = types.SimpleNamespace(
-        _recent_name_filter=None,
-        _recent_directory=None,
-        _select_loader_options=_select_loader_options,
-        _add_from_multiple_files=lambda *args, **kwargs: add_calls.append(
-            (args, kwargs)
-        ),
-    )
+    class _FakeManager(QtCore.QObject):
+        def __init__(self) -> None:
+            super().__init__()
+            self._recent_name_filter = None
+            self._recent_directory = None
+            self._select_loader_options = _select_loader_options
+            self._add_from_multiple_files = lambda *args, **kwargs: add_calls.append(
+                (args, kwargs)
+            )
+
+    manager = _FakeManager()
     manager._preferred_name_filter = types.MethodType(
         ImageToolManager._preferred_name_filter, manager
     )
