@@ -29,6 +29,7 @@ import erlab.interactive._figurecomposer._norms as figurecomposer_norms
 import erlab.interactive._figurecomposer._rendering as figurecomposer_rendering
 import erlab.interactive._figurecomposer._sources as figurecomposer_sources
 import erlab.interactive._figurecomposer._text as figurecomposer_text
+import erlab.interactive._figurecomposer._tool as figurecomposer_tool_module
 import erlab.interactive._figurecomposer._widgets as figurecomposer_widgets
 import erlab.interactive._stylesheets
 import erlab.interactive.imagetool.manager._mainwindow as manager_mainwindow
@@ -931,6 +932,18 @@ def test_figure_composer_editor_control_adapters_cover_mixed_states(qtbot) -> No
     assert combo.currentData() is _editor_controls.MIXED_VALUE
     assert not combo.model().item(0).isEnabled()
 
+    committed_values: list[str] = []
+    commit_combo = QtWidgets.QComboBox(parent)
+    commit_combo.addItems(["a", "b"])
+    _editor_controls.ComboBoxControlAdapter(commit_combo).connect_commit(
+        lambda _widget, signal, callback: signal.connect(callback),
+        committed_values.append,
+    )
+    commit_combo.setCurrentIndex(1)
+    assert committed_values == []
+    commit_combo.activated.emit(1)
+    assert committed_values == ["b"]
+
     check = QtWidgets.QCheckBox(parent)
     check_adapter = _editor_controls.CheckBoxControlAdapter(check)
     check_adapter.set_mixed(True)
@@ -1327,7 +1340,8 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "erlab.interactive._figurecomposer._operations._plot_slices._render_preview",
+        figurecomposer_tool_module,
+        "_render_preview",
         lambda *_args, **_kwargs: None,
     )
     image = xr.DataArray(
@@ -9707,6 +9721,48 @@ def test_figure_composer_plot_slices_color_controls_do_not_commit_on_rebuild(
         3.5,
         3.5,
     ]
+
+
+def test_figure_composer_plot_slices_gamma_queues_preview_render(
+    qtbot,
+    monkeypatch,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0).reshape(2, 2),
+        dims=("kx", "ky"),
+        coords={"kx": [0.0, 1.0], "ky": [0.0, 1.0]},
+        name="data",
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(label="plot", sources=("data",)),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    render_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        figurecomposer_tool_module,
+        "_render_preview",
+        lambda *args, **_kwargs: render_calls.append(args),
+    )
+
+    figurecomposer_plot_slices._update_current_norm_gamma(tool, 0.75)
+
+    assert tool.tool_status.operations[0].norm_gamma == 0.75
+    assert render_calls == []
+    assert tool._preview_render_update_pending
+
+    figurecomposer_plot_slices._update_current_norm_gamma(tool, 0.5)
+
+    assert tool.tool_status.operations[0].norm_gamma == 0.5
+    assert render_calls == []
+    qtbot.waitUntil(lambda: len(render_calls) == 1, timeout=1000)
+    assert not tool._preview_render_update_pending
 
 
 def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> None:

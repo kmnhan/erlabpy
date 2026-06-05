@@ -118,6 +118,7 @@ if typing.TYPE_CHECKING:
 
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
+_PREVIEW_RENDER_UPDATE_DELAY_MS = 50
 _PERSISTED_SOURCE_MAP_ATTR = "_figure_composer_source_payloads"
 _PERSISTED_SOURCE_VAR_PREFIX = "_figure_composer_source_payload_"
 _PERSISTED_SOURCE_DIM_PREFIX = "_figure_composer_source_payload_bytes_"
@@ -156,6 +157,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._updating_controls = False
         self._rendering = False
         self._operation_editor_update_pending = False
+        self._preview_render_update_pending = False
         self._retired_editor_drain_pending = False
         self._operation_multi_select_event = False
         self._operation_list_viewport: QtWidgets.QWidget | None = None
@@ -1775,7 +1777,24 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         )
         self._update_step_action_buttons()
         self._refresh_step_section_button_texts()
-        erlab.interactive.utils.single_shot(self, 0, lambda: _render_preview(self))
+        self.sigInfoChanged.emit()
+        self._queue_preview_render_update()
+
+    def _queue_preview_render_update(self) -> None:
+        if self._preview_render_update_pending:
+            return
+        self._preview_render_update_pending = True
+        erlab.interactive.utils.single_shot(
+            self,
+            _PREVIEW_RENDER_UPDATE_DELAY_MS,
+            self._run_queued_preview_render_update,
+        )
+
+    def _run_queued_preview_render_update(self) -> None:
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        self._preview_render_update_pending = False
+        _render_preview(self)
         self.sigInfoChanged.emit()
 
     def _update_step_action_buttons(self) -> None:

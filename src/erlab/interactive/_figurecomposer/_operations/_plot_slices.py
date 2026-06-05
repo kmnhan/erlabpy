@@ -62,7 +62,6 @@ from erlab.interactive._figurecomposer._rendering import (
     _axes_from_selection,
     _iter_axes,
     _make_axes,
-    _render_preview,
 )
 from erlab.interactive._figurecomposer._sources import (
     _available_source_dims,
@@ -2723,7 +2722,9 @@ def _update_current_norm_gamma(tool: FigureComposerTool, value: float) -> None:
             }
         )
 
-    tool._update_operations(update_operation)
+    tool._update_operations(update_operation, render=False)
+    tool.sigInfoChanged.emit()
+    tool._queue_preview_render_update()
 
 
 def _update_current_norm_kwargs(tool: FigureComposerTool, text: str) -> None:
@@ -2802,8 +2803,8 @@ def _update_current_cmap(
     tool._update_operations(update_operation, render=False)
     tool._update_step_action_buttons()
     tool._refresh_step_section_button_texts()
-    erlab.interactive.utils.single_shot(tool, 0, lambda: _render_preview(tool))
     tool.sigInfoChanged.emit()
+    tool._queue_preview_render_update()
 
 
 def _update_current_panel_styles_enabled(

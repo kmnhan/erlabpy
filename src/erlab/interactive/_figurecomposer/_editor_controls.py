@@ -161,7 +161,7 @@ class ComboBoxControlAdapter(EditorControlAdapter):
         combo = self.widget
         connector(
             combo,
-            combo.currentIndexChanged,
+            combo.activated,
             lambda _index, combo=combo: (
                 None
                 if combo.currentData() is MIXED_VALUE
