@@ -3123,6 +3123,188 @@ def test_figure_composer_tool_edge_state_contracts(qtbot, monkeypatch) -> None:
     assert grid_tool.gridspec_status_label.text()
 
 
+def test_figure_composer_editor_factories_preserve_mixed_and_missing_values(
+    qtbot,
+) -> None:
+    data = _figure_composer_profile_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            sources=(FigureSourceState(name="data", label="data"),),
+            primary_source="data",
+        ),
+        source_data={"data": data},
+    )
+    qtbot.addWidget(tool)
+    committed: list[typing.Any] = []
+
+    source_combo = tool._source_combo(
+        ("data",),
+        "stale_source",
+        committed.append,
+    )
+    assert source_combo.findData("stale_source") >= 0
+    assert source_combo.findData("data") >= 0
+    _activate_combo_index(source_combo, source_combo.findData("data"))
+    assert committed[-1] == "data"
+
+    mixed_source_combo = tool._source_combo(
+        ("data",),
+        "data",
+        committed.append,
+        mixed=True,
+    )
+    before = list(committed)
+    assert mixed_source_combo.currentData() is _editor_controls.MIXED_VALUE
+    _activate_combo_index(mixed_source_combo, mixed_source_combo.currentIndex())
+    assert committed == before
+
+    name_combo = tool._optional_name_combo(
+        ("kx",),
+        "missing_dim",
+        "auto",
+        committed.append,
+    )
+    assert name_combo.findData("missing_dim") >= 0
+    _activate_combo_index(name_combo, name_combo.findData(None))
+    assert committed[-1] is None
+
+    mixed_name_combo = tool._optional_name_combo(
+        ("kx",),
+        None,
+        "auto",
+        committed.append,
+        mixed=True,
+    )
+    before = list(committed)
+    assert mixed_name_combo.currentData() is _editor_controls.MIXED_VALUE
+    _activate_combo_index(mixed_name_combo, mixed_name_combo.currentIndex())
+    assert committed == before
+
+    mixed_check = tool._check_box(False, committed.append, mixed=True)
+    assert mixed_check.checkState() == QtCore.Qt.CheckState.PartiallyChecked
+    before = list(committed)
+    mixed_check.stateChanged.emit(int(QtCore.Qt.CheckState.PartiallyChecked.value))
+    assert committed == before
+    mixed_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    assert committed[-1] is True
+
+
+def test_figure_composer_axes_selection_guards_recipe_updates(qtbot) -> None:
+    data = _figure_composer_profile_source("data")
+    line_operation = FigureOperationState.line(
+        label="profile",
+        source="data",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(line_operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    tool._updating_controls = True
+    try:
+        tool._axes_selection_changed(((0, 1),))
+    finally:
+        tool._updating_controls = False
+    assert tool.tool_status.operations[0].axes.axes == ((0, 0),)
+
+    tool._axes_selection_changed(())
+    assert tool.tool_status.operations[0].axes.axes == ((0, 0),)
+
+    tool._axes_selection_changed(((0, 1),))
+    assert tool.tool_status.operations[0].axes.axes == ((0, 1),)
+
+    tool.axes_expression_edit.setText("axs[0, :]")
+    tool._axes_expression_changed()
+    assert tool.tool_status.operations[0].axes.expression == "axs[0, :]"
+
+    tool.add_operation(
+        FigureOperationState.custom(label="code", code="pass", trusted=True)
+    )
+    tool.operation_list.setCurrentRow(1)
+    tool._axes_selection_changed(((0, 0),))
+    assert tool.tool_status.operations[1].axes.axes == ()
+    tool.axes_expression_edit.setText("axs")
+    tool._axes_expression_changed()
+    assert tool.tool_status.operations[1].axes.expression == ""
+
+
+def test_figure_composer_gridspec_axes_selection_guards_recipe_updates(
+    qtbot,
+) -> None:
+    data = _figure_composer_profile_source("data")
+    root = FigureGridSpecGridState(
+        nrows=1,
+        ncols=2,
+        axes=(
+            FigureGridSpecAxesState(
+                axes_id="left",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=0,
+                    col_stop=1,
+                ),
+            ),
+            FigureGridSpecAxesState(
+                axes_id="right",
+                span=FigureGridSpecSpanState(
+                    row_start=0,
+                    row_stop=1,
+                    col_start=1,
+                    col_stop=2,
+                ),
+            ),
+        ),
+    )
+    line_operation = FigureOperationState.line(
+        label="profile",
+        source="data",
+        axes=FigureAxesSelectionState(axes_ids=("left",)),
+    )
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(
+                layout_mode="gridspec",
+                gridspec=FigureGridSpecLayoutState(root=root),
+            ),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(line_operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+
+    tool.gridspec_axes_selector.set_selected_axes_ids(("right",), emit=False)
+    tool._updating_controls = True
+    try:
+        tool._gridspec_axes_selection_changed()
+    finally:
+        tool._updating_controls = False
+    assert tool.tool_status.operations[0].axes.axes_ids == ("left",)
+
+    tool._gridspec_axes_selection_changed()
+    assert tool.tool_status.operations[0].axes.axes_ids == ("right",)
+
+    tool.add_operation(
+        FigureOperationState.custom(label="code", code="pass", trusted=True)
+    )
+    tool.operation_list.setCurrentRow(1)
+    tool.gridspec_axes_selector.set_selected_axes_ids(("left",), emit=False)
+    tool._gridspec_axes_selection_changed()
+    assert tool.tool_status.operations[1].axes.axes_ids == ()
+
+
 def test_figure_composer_recipe_codegen_and_loaded_custom_code_trust(qtbot) -> None:
     data = xr.DataArray(
         np.arange(4.0),
