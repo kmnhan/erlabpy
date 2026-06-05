@@ -1587,6 +1587,57 @@ def test_manager_workspace_save_selection_cancel_does_not_write(
             assert len(closed_trees) == 1
 
 
+def test_manager_workspace_save_selection_encodes_rich_attrs(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    class _AcceptedChooseDialog:
+        def __init__(self, _manager, tree: xr.DataTree, *, mode: str) -> None:
+            assert mode == "save"
+            self._tree_widget = QtWidgets.QTreeWidget()
+            root_item = self._tree_widget.invisibleRootItem()
+            for key in tree:
+                item = QtWidgets.QTreeWidgetItem(root_item)
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
+                item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._workspace_io,
+        "_ChooseFromDataTreeDialog",
+        _AcceptedChooseDialog,
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        rich_attr = _rich_workspace_attr_value()
+        data = xr.DataArray(
+            np.arange(4).reshape((2, 2)),
+            dims=("x", "y"),
+            attrs={"Single Motor Scan": rich_attr},
+        )
+        root = itool(data, link=False, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "selected-rich.itws"
+        manager._save_to_file(str(fname))
+
+    with h5py.File(fname, "r") as h5_file:
+        saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+        assert "Single Motor Scan" not in saved_data.attrs
+        decoded = manager_workspace._h5py_attrs_to_dict(saved_data.attrs)
+    _assert_rich_workspace_attr(decoded["Single Motor Scan"])
+
+
 def test_manager_workspace_load_selection_skips_unchecked_children(
     qtbot,
     monkeypatch,
@@ -2221,6 +2272,108 @@ def _assert_rich_workspace_attr(value: typing.Any) -> None:
     assert value["raw"] == b"\xff"
     np.testing.assert_array_equal(value["points"], np.array([1, 2, 3], dtype=np.int16))
     assert value["window"] == (None, complex(1.0, -2.0))
+
+
+def test_workspace_attr_native_detection_handles_edge_types() -> None:
+    assert manager_workspace._workspace_attr_value_writes_natively(b"ok")
+    assert not manager_workspace._workspace_attr_value_writes_natively(b"\xff")
+    assert not manager_workspace._workspace_attr_value_writes_natively(b"a\x00")
+    assert manager_workspace._workspace_attr_value_writes_natively(
+        np.array([1, 2], dtype=np.int16)
+    )
+    assert not manager_workspace._workspace_attr_value_writes_natively(
+        np.array([object()], dtype=object)
+    )
+    assert manager_workspace._workspace_attr_value_writes_natively(np.float64(1.0))
+    assert not manager_workspace._workspace_attr_value_writes_natively(
+        np.datetime64("2024-01-01")
+    )
+    assert manager_workspace._workspace_attr_value_writes_natively(
+        ("text", b"bytes", np.bool_(True), complex(1.0, 2.0))
+    )
+    assert not manager_workspace._workspace_attr_value_writes_natively(([1],))
+
+
+def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
+    import decimal
+    import math
+
+    value = {
+        None: None,
+        False: True,
+        np.int64(3): 5,
+        7: np.float64(2.5),
+        1.5: math.inf,
+        complex(1.0, -2.0): -math.inf,
+        "nan": math.nan,
+        b"\xff": b"\x00\xff",
+        ("tuple", 2): [
+            np.array([[1, 2], [3, 4]], dtype=np.int16),
+            np.array([{"nested": (None, complex(3.0, 4.0))}], dtype=object),
+        ],
+    }
+
+    decoded = manager_workspace._workspace_decode_attr_value(
+        manager_workspace._workspace_encode_attr_value(value)
+    )
+
+    assert decoded[None] is None
+    assert decoded[False] is True
+    assert decoded[3] == 5
+    assert decoded[7] == np.float64(2.5)
+    assert decoded[1.5] == math.inf
+    assert decoded[complex(1.0, -2.0)] == -math.inf
+    assert math.isnan(decoded["nan"])
+    assert decoded[b"\xff"] == b"\x00\xff"
+    np.testing.assert_array_equal(
+        decoded[("tuple", 2)][0], np.array([[1, 2], [3, 4]], dtype=np.int16)
+    )
+    assert decoded[("tuple", 2)][1][0]["nested"] == (None, complex(3.0, 4.0))
+
+    with pytest.raises(TypeError, match="unsupported attr key type"):
+        manager_workspace._workspace_encode_attr_key(["bad"])
+    with pytest.raises(TypeError, match="unsupported numeric attr type"):
+        manager_workspace._workspace_encode_attr_value(decimal.Decimal("1.0"))
+    with pytest.raises(TypeError, match="must be a mapping"):
+        manager_workspace._workspace_decode_attr_value([])
+    with pytest.raises(TypeError, match="unknown workspace attr value kind"):
+        manager_workspace._workspace_decode_attr_value({"kind": "unknown"})
+    with pytest.raises(TypeError, match="not hashable"):
+        manager_workspace._workspace_decode_attr_key({"kind": "list", "items": []})
+
+    assert manager_workspace._workspace_encoded_attr_entries(b"\xff") is None
+    assert manager_workspace._workspace_encoded_attr_entries(1) is None
+    assert manager_workspace._workspace_encoded_attr_entries("{bad-json") is None
+    assert (
+        manager_workspace._workspace_encoded_attr_entries(
+            json.dumps({"version": -1, "attrs": []})
+        )
+        is None
+    )
+    assert (
+        manager_workspace._workspace_encoded_attr_entries(
+            json.dumps(
+                {
+                    "version": manager_workspace._WORKSPACE_ENCODED_ATTRS_VERSION,
+                    "attrs": [["too-short"]],
+                }
+            )
+        )
+        is None
+    )
+
+    invalid_payload = json.dumps(
+        {
+            "version": manager_workspace._WORKSPACE_ENCODED_ATTRS_VERSION,
+            "attrs": [[{"kind": "list", "items": []}, {"kind": "str", "value": "x"}]],
+        }
+    )
+    with caplog.at_level(logging.WARNING):
+        restored = manager_workspace._restore_workspace_serialized_attrs(
+            {manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR: invalid_payload}
+        )
+    assert restored == {}
+    assert "Ignoring invalid encoded workspace attribute" in caplog.text
 
 
 def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
@@ -4173,6 +4326,44 @@ def test_manager_workspace_window_file_path_waits_for_load_on_macos(
             controller._workspace_window_file_path_timer.stop()
 
 
+def test_manager_workspace_window_file_path_apply_guard_paths(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        file_path_calls: list[str] = []
+        workspace = str(tmp_path / "same.itws")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
+
+            controller._pending_workspace_window_file_path = None
+            controller._apply_macos_workspace_window_file_path()
+            assert controller._pending_workspace_window_file_path is None
+
+            manager._workspace_state.closing_document = True
+            controller._pending_workspace_window_file_path = workspace
+            controller._apply_macos_workspace_window_file_path()
+            assert file_path_calls == []
+            assert controller._pending_workspace_window_file_path == workspace
+
+            manager._workspace_state.closing_document = False
+            patch.setattr(
+                ImageToolManager, "windowFilePath", lambda _manager: workspace
+            )
+            controller._apply_macos_workspace_window_file_path()
+            assert file_path_calls == []
+            assert controller._pending_workspace_window_file_path is None
+
+
 def test_manager_loaded_workspace_association_defers_macos_file_path_update(
     monkeypatch,
     qtbot,
@@ -4206,6 +4397,34 @@ def test_manager_loaded_workspace_association_defers_macos_file_path_update(
         assert manager.workspace_path == str(workspace.resolve())
         assert workspace.name in manager.windowTitle()
         assert not manager.isWindowModified()
+
+
+def test_manager_loaded_workspace_association_rebinds_data_after_path_update_context(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "loaded-rebind.itws"
+        workspace.touch()
+        rebind_paths: list[pathlib.Path] = []
+
+        monkeypatch.setattr(
+            manager,
+            "_rebind_workspace_backed_imagetools",
+            lambda path: rebind_paths.append(pathlib.Path(path)),
+        )
+        with manager._workspace_document_access_context(workspace) as access:
+            manager._associate_loaded_workspace_file(
+                access.path,
+                manager_workspace._current_workspace_schema_version(),
+                workspace_access=access,
+                rebind_data=True,
+            )
+
+        assert rebind_paths == [workspace.resolve()]
 
 
 def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
@@ -4246,6 +4465,7 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
     ],
 ) -> None:
     with manager_context() as manager:
+        controller = manager._workspace_controller
         workspace = tmp_path / "cancel-close.itws"
         manager._workspace_state.path = workspace
         manager._workspace_state.structure_modified = True
@@ -4263,10 +4483,10 @@ def test_manager_close_cancel_restores_workspace_document_closing_state(
                 manager, "_confirm_save_dirty_workspace", lambda _message: False
             )
             manager._update_workspace_window_title()
-            manager._workspace_controller._workspace_window_file_path_timer.stop()
+            controller._workspace_window_file_path_timer.stop()
             manager.closeEvent(event)
             assert file_path_calls == []
-            assert manager._workspace_controller._workspace_window_file_path_timer.isActive()
+            assert controller._workspace_window_file_path_timer.isActive()
             qtbot.wait_until(lambda: file_path_calls == [str(workspace)])
 
         assert not event.isAccepted()
@@ -4460,6 +4680,41 @@ def test_manager_workspace_save_as_locked_target_does_not_write(
         lock.unlock()
 
     assert operation_errors
+
+
+def test_manager_workspace_save_as_reports_document_write_error(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "write-error.itws"
+    operation_errors: list[tuple[typing.Any, ...]] = []
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager, "_workspace_save_dialog", lambda *args, **kwargs: str(fname)
+        )
+        monkeypatch.setattr(
+            manager,
+            "_save_workspace_document",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda *args, **kwargs: operation_errors.append(args),
+        )
+
+        assert not manager.save_as(native=False)
+
+    assert operation_errors == [
+        (
+            "Error while saving workspace",
+            "An error occurred while saving the workspace file.",
+        )
+    ]
 
 
 def test_manager_workspace_load_locks_before_recovery(
