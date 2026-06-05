@@ -1587,6 +1587,57 @@ def test_manager_workspace_save_selection_cancel_does_not_write(
             assert len(closed_trees) == 1
 
 
+def test_manager_workspace_save_selection_encodes_rich_attrs(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    class _AcceptedChooseDialog:
+        def __init__(self, _manager, tree: xr.DataTree, *, mode: str) -> None:
+            assert mode == "save"
+            self._tree_widget = QtWidgets.QTreeWidget()
+            root_item = self._tree_widget.invisibleRootItem()
+            for key in tree:
+                item = QtWidgets.QTreeWidgetItem(root_item)
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, key)
+                item.setCheckState(0, QtCore.Qt.CheckState.Checked)
+
+        def exec(self) -> QtWidgets.QDialog.DialogCode:
+            return QtWidgets.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(
+        erlab.interactive.imagetool.manager._workspace_io,
+        "_ChooseFromDataTreeDialog",
+        _AcceptedChooseDialog,
+    )
+
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        rich_attr = _rich_workspace_attr_value()
+        data = xr.DataArray(
+            np.arange(4).reshape((2, 2)),
+            dims=("x", "y"),
+            attrs={"Single Motor Scan": rich_attr},
+        )
+        root = itool(data, link=False, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+
+        fname = tmp_path / "selected-rich.itws"
+        manager._save_to_file(str(fname))
+
+    with h5py.File(fname, "r") as h5_file:
+        saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+        assert "Single Motor Scan" not in saved_data.attrs
+        decoded = manager_workspace._h5py_attrs_to_dict(saved_data.attrs)
+    _assert_rich_workspace_attr(decoded["Single Motor Scan"])
+
+
 def test_manager_workspace_load_selection_skips_unchecked_children(
     qtbot,
     monkeypatch,
@@ -2202,6 +2253,129 @@ def test_workspace_h5py_attrs_and_root_validation(tmp_path) -> None:
         manager_workspace._read_workspace_root_attrs_h5py(fname)
 
 
+def _rich_workspace_attr_value() -> dict[str, typing.Any]:
+    return {
+        "X Motor": "EPU Gap",
+        "Start": np.float64(20.0),
+        "Bidirect": False,
+        "raw": b"\xff",
+        "points": np.array([1, 2, 3], dtype=np.int16),
+        "window": (None, complex(1.0, -2.0)),
+    }
+
+
+def _assert_rich_workspace_attr(value: typing.Any) -> None:
+    assert isinstance(value, dict)
+    assert value["X Motor"] == "EPU Gap"
+    assert value["Start"] == np.float64(20.0)
+    assert value["Bidirect"] is False
+    assert value["raw"] == b"\xff"
+    np.testing.assert_array_equal(value["points"], np.array([1, 2, 3], dtype=np.int16))
+    assert value["window"] == (None, complex(1.0, -2.0))
+
+
+def test_workspace_attr_native_detection_handles_edge_types() -> None:
+    assert manager_workspace._workspace_attr_value_writes_natively(b"ok")
+    assert not manager_workspace._workspace_attr_value_writes_natively(b"\xff")
+    assert not manager_workspace._workspace_attr_value_writes_natively(b"a\x00")
+    assert manager_workspace._workspace_attr_value_writes_natively(
+        np.array([1, 2], dtype=np.int16)
+    )
+    assert not manager_workspace._workspace_attr_value_writes_natively(
+        np.array([object()], dtype=object)
+    )
+    assert manager_workspace._workspace_attr_value_writes_natively(np.float64(1.0))
+    assert not manager_workspace._workspace_attr_value_writes_natively(
+        np.datetime64("2024-01-01")
+    )
+    assert manager_workspace._workspace_attr_value_writes_natively(
+        ("text", b"bytes", np.bool_(True), complex(1.0, 2.0))
+    )
+    assert not manager_workspace._workspace_attr_value_writes_natively(([1],))
+
+
+def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:
+    import decimal
+    import math
+
+    value = {
+        None: None,
+        False: True,
+        np.int64(3): 5,
+        7: np.float64(2.5),
+        1.5: math.inf,
+        complex(1.0, -2.0): -math.inf,
+        "nan": math.nan,
+        b"\xff": b"\x00\xff",
+        ("tuple", 2): [
+            np.array([[1, 2], [3, 4]], dtype=np.int16),
+            np.array([{"nested": (None, complex(3.0, 4.0))}], dtype=object),
+        ],
+    }
+
+    decoded = manager_workspace._workspace_decode_attr_value(
+        manager_workspace._workspace_encode_attr_value(value)
+    )
+
+    assert decoded[None] is None
+    assert decoded[False] is True
+    assert decoded[3] == 5
+    assert decoded[7] == np.float64(2.5)
+    assert decoded[1.5] == math.inf
+    assert decoded[complex(1.0, -2.0)] == -math.inf
+    assert math.isnan(decoded["nan"])
+    assert decoded[b"\xff"] == b"\x00\xff"
+    np.testing.assert_array_equal(
+        decoded[("tuple", 2)][0], np.array([[1, 2], [3, 4]], dtype=np.int16)
+    )
+    assert decoded[("tuple", 2)][1][0]["nested"] == (None, complex(3.0, 4.0))
+
+    with pytest.raises(TypeError, match="unsupported attr key type"):
+        manager_workspace._workspace_encode_attr_key(["bad"])
+    with pytest.raises(TypeError, match="unsupported numeric attr type"):
+        manager_workspace._workspace_encode_attr_value(decimal.Decimal("1.0"))
+    with pytest.raises(TypeError, match="must be a mapping"):
+        manager_workspace._workspace_decode_attr_value([])
+    with pytest.raises(TypeError, match="unknown workspace attr value kind"):
+        manager_workspace._workspace_decode_attr_value({"kind": "unknown"})
+    with pytest.raises(TypeError, match="not hashable"):
+        manager_workspace._workspace_decode_attr_key({"kind": "list", "items": []})
+
+    assert manager_workspace._workspace_encoded_attr_entries(b"\xff") is None
+    assert manager_workspace._workspace_encoded_attr_entries(1) is None
+    assert manager_workspace._workspace_encoded_attr_entries("{bad-json") is None
+    assert (
+        manager_workspace._workspace_encoded_attr_entries(
+            json.dumps({"version": -1, "attrs": []})
+        )
+        is None
+    )
+    assert (
+        manager_workspace._workspace_encoded_attr_entries(
+            json.dumps(
+                {
+                    "version": manager_workspace._WORKSPACE_ENCODED_ATTRS_VERSION,
+                    "attrs": [["too-short"]],
+                }
+            )
+        )
+        is None
+    )
+
+    invalid_payload = json.dumps(
+        {
+            "version": manager_workspace._WORKSPACE_ENCODED_ATTRS_VERSION,
+            "attrs": [[{"kind": "list", "items": []}, {"kind": "str", "value": "x"}]],
+        }
+    )
+    with caplog.at_level(logging.WARNING):
+        restored = manager_workspace._restore_workspace_serialized_attrs(
+            {manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR: invalid_payload}
+        )
+    assert restored == {}
+    assert "Ignoring invalid encoded workspace attribute" in caplog.text
+
+
 def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
     import h5py
 
@@ -2219,6 +2393,26 @@ def test_replace_h5_attrs_drops_invalid_attr_names(tmp_path) -> None:
         assert "" not in list(group.attrs)
         assert group.attrs["note"] == ""
         assert group.attrs["valid"] == "kept"
+
+
+def test_replace_h5_attrs_encodes_non_native_attr_values(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "replace-rich-attrs.itws"
+    rich_attr = _rich_workspace_attr_value()
+    with h5py.File(fname, "w") as h5_file:
+        group = h5_file.create_group("0/imagetool")
+
+        manager_workspace._replace_h5_attrs(
+            group.attrs,
+            {"Single Motor Scan": rich_attr, "valid": "kept"},
+        )
+
+        assert "Single Motor Scan" not in group.attrs
+        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        decoded = manager_workspace._h5py_attrs_to_dict(group.attrs)
+        assert decoded["valid"] == "kept"
+        _assert_rich_workspace_attr(decoded["Single Motor Scan"])
 
 
 def _assert_workspace_h5py_roundtrip(
@@ -2445,6 +2639,66 @@ def test_workspace_h5py_fast_path_keeps_numeric_since_units(tmp_path) -> None:
     assert loaded.coords["elapsed"].attrs["units"] == "seconds since start"
 
 
+def test_workspace_writer_roundtrips_non_native_attr_values_from_fast_path(
+    tmp_path,
+) -> None:
+    import h5py
+
+    data_name = manager_workspace_io._ITOOL_DATA_NAME
+    fname = tmp_path / "rich-attrs-fast-path.itws"
+    rich_attr = _rich_workspace_attr_value()
+    data = xr.DataArray(
+        np.arange(2.0),
+        dims=("x",),
+        coords={
+            "x": xr.DataArray(
+                [0.0, 1.0],
+                dims=("x",),
+                attrs={"axis_config": rich_attr},
+            ),
+            "temperature": xr.DataArray(
+                [20.0, 21.0],
+                dims=("x",),
+                attrs={"scan_config": rich_attr},
+            ),
+        },
+        attrs={"Single Motor Scan": rich_attr},
+        name=data_name,
+    )
+    ds = data.to_dataset()
+    ds.attrs["dataset_config"] = rich_attr
+
+    manager_workspace._write_workspace_dataset_group_to_file(fname, "0/imagetool", ds)
+
+    assert ds.attrs["dataset_config"] is rich_attr
+    assert ds[data_name].attrs["Single Motor Scan"] is rich_attr
+    with h5py.File(fname, "r") as h5_file:
+        group = h5_file["0/imagetool"]
+        saved_data = group[data_name]
+        assert "dataset_config" not in group.attrs
+        assert "Single Motor Scan" not in saved_data.attrs
+        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in group.attrs
+        assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+
+    loaded = manager_workspace._read_workspace_dataset_group_h5py(
+        fname, "0/imagetool", preferred_data_name=data_name
+    )
+    assert loaded is not None
+    _assert_rich_workspace_attr(loaded.attrs["dataset_config"])
+    _assert_rich_workspace_attr(loaded[data_name].attrs["Single Motor Scan"])
+    _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
+    _assert_rich_workspace_attr(loaded.coords["temperature"].attrs["scan_config"])
+
+    opened = manager_xarray.open_workspace_dataset(fname, "0/imagetool", chunks=None)
+    try:
+        restored = manager_workspace._restore_workspace_dataset_attrs(opened.load())
+    finally:
+        opened.close()
+    _assert_rich_workspace_attr(restored.attrs["dataset_config"])
+    _assert_rich_workspace_attr(restored[data_name].attrs["Single Motor Scan"])
+    _assert_rich_workspace_attr(restored.coords["x"].attrs["axis_config"])
+
+
 def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> None:
     import h5py
 
@@ -2502,12 +2756,17 @@ def test_workspace_writer_drops_invalid_attr_names_from_fast_path(tmp_path) -> N
 
 def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> None:
     fname = tmp_path / "invalid-attrs-fallback.itws"
+    rich_attr = _rich_workspace_attr_value()
     ds = xr.Dataset(
         {
             "left": xr.DataArray(
                 [1.0, 2.0],
                 dims=("x",),
-                attrs={"": "dropped", "left_note": ""},
+                attrs={
+                    "": "dropped",
+                    "left_note": "",
+                    "Single Motor Scan": rich_attr,
+                },
             ),
             "right": ("x", [3.0, 4.0]),
         },
@@ -2515,17 +2774,17 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
             "x": xr.DataArray(
                 [0.0, 1.0],
                 dims=("x",),
-                attrs={None: "dropped", "axis_note": ""},
+                attrs={None: "dropped", "axis_note": "", "axis_config": rich_attr},
             )
         },
-        attrs={"": "dropped", "dataset_note": ""},
+        attrs={"": "dropped", "dataset_note": "", "dataset_config": rich_attr},
     )
 
     manager_workspace._write_workspace_dataset_group_to_file(fname, "0/tool", ds)
 
     opened = xr.open_dataset(fname, group="/0/tool", engine="h5netcdf")
     try:
-        loaded = opened.load()
+        loaded = manager_workspace._restore_workspace_dataset_attrs(opened.load())
     finally:
         opened.close()
 
@@ -2535,12 +2794,15 @@ def test_workspace_writer_drops_invalid_attr_names_from_fallback(tmp_path) -> No
     assert loaded.attrs["dataset_note"] == ""
     assert "" not in loaded["left"].attrs
     assert loaded["left"].attrs["left_note"] == ""
+    _assert_rich_workspace_attr(loaded["left"].attrs["Single Motor Scan"])
     assert "" not in loaded.coords["x"].attrs
     assert loaded.coords["x"].attrs["axis_note"] == ""
+    _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
+    _assert_rich_workspace_attr(loaded.attrs["dataset_config"])
 
 
 def test_workspace_h5py_fast_path_rejects_invalid_payloads(
-    monkeypatch, tmp_path
+    caplog, monkeypatch, tmp_path
 ) -> None:
     data_name = manager_workspace_io._ITOOL_DATA_NAME
     private_attr = imagetool_serialization._PRIVATE_COORDS_ATTR
@@ -2607,13 +2869,16 @@ def test_workspace_h5py_fast_path_rejects_invalid_payloads(
     bad_attrs = xr.Dataset({data_name: ("x", [1.0])}, coords={"x": [0.0]})
     bad_attrs.attrs["bad"] = object()
     fname = tmp_path / "bad-attrs.itws"
-    assert not manager_workspace._write_workspace_dataset_group_h5py(
-        fname, "0/imagetool", bad_attrs
-    )
+    with caplog.at_level(logging.WARNING, logger=manager_workspace.logger.name):
+        assert manager_workspace._write_workspace_dataset_group_h5py(
+            fname, "0/imagetool", bad_attrs
+        )
+    assert "unsupported value type object" in caplog.text
     import h5py
 
     with h5py.File(fname, "r") as h5_file:
-        assert "0/imagetool" not in h5_file
+        assert "0/imagetool" in h5_file
+        assert "bad" not in h5_file["0/imagetool"].attrs
 
 
 def test_workspace_h5py_reader_rejects_malformed_groups(tmp_path) -> None:
@@ -3327,6 +3592,7 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
             "itool_title": "new",
             "manager_node_uid": "n0",
             "manager_node_kind": "imagetool",
+            "Single Motor Scan": _rich_workspace_attr_value(),
         }
     )
     tree = xr.DataTree.from_dict({"0/imagetool": rewritten})
@@ -3349,6 +3615,8 @@ def test_write_full_workspace_tree_file_copies_unchanged_payload_groups(
     with h5py.File(fname, "r") as h5_file:
         group = h5_file["0/imagetool"]
         assert group.attrs["itool_title"] == "new"
+        decoded_attrs = manager_workspace._h5py_attrs_to_dict(group.attrs)
+        _assert_rich_workspace_attr(decoded_attrs["Single Motor Scan"])
         np.testing.assert_array_equal(
             group[manager_workspace_io._ITOOL_DATA_NAME][...],
             np.arange(12, dtype=np.float64).reshape(3, 4),
@@ -3720,6 +3988,41 @@ def test_workspace_recovery_rolls_back_attr_only_transaction(tmp_path) -> None:
     _assert_no_workspace_internal_groups(fname)
 
 
+def test_workspace_transaction_attr_update_encodes_non_native_values(tmp_path) -> None:
+    import h5py
+
+    fname = tmp_path / "rich-attrs-transaction.itws"
+    _write_transaction_test_workspace(fname)
+    fallback = (
+        "0",
+        {"0/imagetool": _transaction_test_dataset(2.0, title="fallback")},
+    )
+    rich_attr = _rich_workspace_attr_value()
+    manager_workspace._write_workspace_transaction_file(
+        fname,
+        (),
+        (
+            (
+                "0/imagetool",
+                {"itool_title": "new", "Single Motor Scan": rich_attr},
+                fallback,
+            ),
+        ),
+        _transaction_test_root_attrs(delta_save_count=1),
+    )
+
+    with h5py.File(fname, "r") as h5_file:
+        decoded_attrs = manager_workspace._h5py_attrs_to_dict(
+            h5_file["0/imagetool"].attrs
+        )
+        assert decoded_attrs["itool_title"] == "new"
+        _assert_rich_workspace_attr(decoded_attrs["Single Motor Scan"])
+        assert (
+            manager_workspace._workspace_delta_save_count_from_attrs(h5_file.attrs) == 1
+        )
+    _assert_no_workspace_internal_groups(fname)
+
+
 def test_workspace_recovery_cleans_orphan_internal_groups(tmp_path) -> None:
     import h5py
 
@@ -3892,7 +4195,7 @@ def test_workspace_window_title_placeholder_non_macos(monkeypatch) -> None:
     )
 
 
-def test_manager_workspace_window_title_sets_file_path_normally(
+def test_manager_workspace_window_title_sets_file_path_on_non_macos(
     monkeypatch,
     tmp_path,
     manager_context: Callable[
@@ -3906,6 +4209,7 @@ def test_manager_workspace_window_title_sets_file_path_normally(
         file_path_calls: list[str] = []
 
         with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "linux")
             patch.setattr(
                 ImageToolManager,
                 "setWindowFilePath",
@@ -3914,6 +4218,35 @@ def test_manager_workspace_window_title_sets_file_path_normally(
             manager._update_workspace_window_title()
 
         assert file_path_calls == [str(workspace)]
+        assert workspace.name in manager.windowTitle()
+        assert manager.isWindowModified()
+
+
+def test_manager_workspace_window_title_defers_file_path_on_macos(
+    monkeypatch,
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "macos-workspace.itws"
+        manager._workspace_state.path = workspace
+        manager._workspace_state.structure_modified = True
+        file_path_calls: list[str] = []
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
+            manager._update_workspace_window_title()
+            assert file_path_calls == []
+            qtbot.wait_until(lambda: file_path_calls == [str(workspace)])
+
         assert workspace.name in manager.windowTitle()
         assert manager.isWindowModified()
 
@@ -3943,8 +4276,155 @@ def test_manager_workspace_window_title_skips_file_path_during_macos_close(
         finally:
             manager._workspace_state.closing_document = previous_closing
 
+        assert not (
+            manager._workspace_controller._workspace_window_file_path_timer.isActive()
+        )
+        assert manager._workspace_controller._pending_workspace_window_file_path is None
         assert workspace.name in manager.windowTitle()
         assert manager.isWindowModified()
+
+
+def test_manager_workspace_window_file_path_waits_for_load_on_macos(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        workspace = tmp_path / "loading.itws"
+        manager._workspace_state.path = workspace
+        manager._workspace_state.loading_depth = 1
+        file_path_calls: list[str] = []
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+                patch.setattr(
+                    ImageToolManager,
+                    "setWindowFilePath",
+                    lambda _manager, path: file_path_calls.append(path),
+                )
+                manager._update_workspace_window_title()
+                controller._workspace_window_file_path_timer.stop()
+                controller._apply_macos_workspace_window_file_path()
+
+                assert file_path_calls == []
+                assert controller._pending_workspace_window_file_path == str(workspace)
+                assert not controller._workspace_window_file_path_timer.isActive()
+
+                manager._workspace_state.loading_depth = 0
+                controller._schedule_macos_workspace_window_file_path_update()
+                assert controller._workspace_window_file_path_timer.isActive()
+                controller._workspace_window_file_path_timer.stop()
+                controller._apply_macos_workspace_window_file_path()
+
+            assert file_path_calls == [str(workspace)]
+        finally:
+            manager._workspace_state.loading_depth = 0
+            controller._workspace_window_file_path_timer.stop()
+
+
+def test_manager_workspace_window_file_path_apply_guard_paths(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        controller = manager._workspace_controller
+        file_path_calls: list[str] = []
+        workspace = str(tmp_path / "same.itws")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
+
+            controller._pending_workspace_window_file_path = None
+            controller._apply_macos_workspace_window_file_path()
+            assert controller._pending_workspace_window_file_path is None
+
+            manager._workspace_state.closing_document = True
+            controller._pending_workspace_window_file_path = workspace
+            controller._apply_macos_workspace_window_file_path()
+            assert file_path_calls == []
+            assert controller._pending_workspace_window_file_path == workspace
+
+            manager._workspace_state.closing_document = False
+            patch.setattr(
+                ImageToolManager, "windowFilePath", lambda _manager: workspace
+            )
+            controller._apply_macos_workspace_window_file_path()
+            assert file_path_calls == []
+            assert controller._pending_workspace_window_file_path is None
+
+
+def test_manager_loaded_workspace_association_defers_macos_file_path_update(
+    monkeypatch,
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "loaded.itws"
+        workspace.touch()
+        file_path_calls: list[str] = []
+
+        with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
+            with manager._workspace_document_access_context(workspace) as access:
+                manager._associate_loaded_workspace_file(
+                    access.path,
+                    manager_workspace._current_workspace_schema_version(),
+                    workspace_access=access,
+                    rebind_data=False,
+                )
+            assert file_path_calls == []
+            qtbot.wait_until(lambda: file_path_calls == [str(workspace.resolve())])
+
+        assert manager.workspace_path == str(workspace.resolve())
+        assert workspace.name in manager.windowTitle()
+        assert not manager.isWindowModified()
+
+
+def test_manager_loaded_workspace_association_rebinds_data_after_path_update_context(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    with manager_context() as manager:
+        workspace = tmp_path / "loaded-rebind.itws"
+        workspace.touch()
+        rebind_paths: list[pathlib.Path] = []
+
+        monkeypatch.setattr(
+            manager,
+            "_rebind_workspace_backed_imagetools",
+            lambda path: rebind_paths.append(pathlib.Path(path)),
+        )
+        with manager._workspace_document_access_context(workspace) as access:
+            manager._associate_loaded_workspace_file(
+                access.path,
+                manager_workspace._current_workspace_schema_version(),
+                workspace_access=access,
+                rebind_data=True,
+            )
+
+        assert rebind_paths == [workspace.resolve()]
 
 
 def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
@@ -3978,19 +4458,36 @@ def test_manager_workspace_window_title_sets_file_path_for_non_macos_close(
 
 def test_manager_close_cancel_restores_workspace_document_closing_state(
     monkeypatch,
+    qtbot,
+    tmp_path,
     manager_context: Callable[
         ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
     ],
 ) -> None:
     with manager_context() as manager:
+        controller = manager._workspace_controller
+        workspace = tmp_path / "cancel-close.itws"
+        manager._workspace_state.path = workspace
         manager._workspace_state.structure_modified = True
         manager._workspace_state.closing_document = False
+        file_path_calls: list[str] = []
         event = QtGui.QCloseEvent()
         with monkeypatch.context() as patch:
+            patch.setattr(manager_mainwindow.sys, "platform", "darwin")
+            patch.setattr(
+                ImageToolManager,
+                "setWindowFilePath",
+                lambda _manager, path: file_path_calls.append(path),
+            )
             patch.setattr(
                 manager, "_confirm_save_dirty_workspace", lambda _message: False
             )
+            manager._update_workspace_window_title()
+            controller._workspace_window_file_path_timer.stop()
             manager.closeEvent(event)
+            assert file_path_calls == []
+            assert controller._workspace_window_file_path_timer.isActive()
+            qtbot.wait_until(lambda: file_path_calls == [str(workspace)])
 
         assert not event.isAccepted()
         assert not manager._workspace_state.closing_document
@@ -4183,6 +4680,41 @@ def test_manager_workspace_save_as_locked_target_does_not_write(
         lock.unlock()
 
     assert operation_errors
+
+
+def test_manager_workspace_save_as_reports_document_write_error(
+    monkeypatch,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    fname = tmp_path / "write-error.itws"
+    operation_errors: list[tuple[typing.Any, ...]] = []
+
+    with manager_context() as manager:
+        monkeypatch.setattr(
+            manager, "_workspace_save_dialog", lambda *args, **kwargs: str(fname)
+        )
+        monkeypatch.setattr(
+            manager,
+            "_save_workspace_document",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_show_operation_error",
+            lambda *args, **kwargs: operation_errors.append(args),
+        )
+
+        assert not manager.save_as(native=False)
+
+    assert operation_errors == [
+        (
+            "Error while saving workspace",
+            "An error occurred while saving the workspace file.",
+        )
+    ]
 
 
 def test_manager_workspace_load_locks_before_recovery(
@@ -6930,6 +7462,83 @@ def test_manager_workspace_full_save_drops_empty_attr_name(
             ].attrs
             assert "" not in list(saved_attrs)
             assert saved_attrs["note"] == ""
+
+
+def test_manager_workspace_full_save_roundtrips_non_native_data_attrs(
+    qtbot,
+    tmp_path,
+    manager_context: Callable[
+        ..., typing.ContextManager[erlab.interactive.imagetool.manager.ImageToolManager]
+    ],
+) -> None:
+    import h5py
+
+    rich_attr = _rich_workspace_attr_value()
+    with manager_context() as manager:
+        qtbot.wait_until(erlab.interactive.imagetool.manager.is_running)
+        data = xr.DataArray(
+            np.arange(25).reshape((5, 5)),
+            dims=["x", "y"],
+            coords={
+                "x": xr.DataArray(
+                    np.arange(5),
+                    dims=("x",),
+                    attrs={"axis_config": rich_attr},
+                ),
+                "y": np.arange(5),
+            },
+            attrs={"Single Motor Scan": rich_attr},
+            name="data",
+        )
+        root = itool(data, manager=False, execute=False)
+        assert isinstance(root, erlab.interactive.imagetool.ImageTool)
+        manager.add_imagetool(root, show=False)
+        live_rich_attr = root.slicer_area._data.attrs["Single Motor Scan"]
+        live_axis_attr = root.slicer_area._data.coords["x"].attrs["axis_config"]
+
+        fname = tmp_path / "rich-data-attrs.itws"
+        manager._save_workspace_document(fname, force_full=True)
+
+        assert root.slicer_area._data.attrs["Single Motor Scan"] is live_rich_attr
+        assert root.slicer_area._data.coords["x"].attrs["axis_config"] is live_axis_attr
+        assert (
+            manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR
+            not in root.slicer_area._data.attrs
+        )
+        with h5py.File(fname, "r") as h5_file:
+            saved_data = h5_file["0/imagetool"][manager_workspace_io._ITOOL_DATA_NAME]
+            assert "Single Motor Scan" not in saved_data.attrs
+            assert manager_workspace._WORKSPACE_ENCODED_ATTRS_ATTR in saved_data.attrs
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        assert manager._load_workspace_file(
+            fname,
+            replace=True,
+            associate=False,
+            mark_dirty=False,
+            select=False,
+        )
+        loaded = manager.get_imagetool(0).slicer_area._data
+        _assert_rich_workspace_attr(loaded.attrs["Single Motor Scan"])
+        _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
+
+        manager.remove_all_tools()
+        qtbot.wait_until(lambda: manager.ntools == 0, timeout=5000)
+        tree = manager_xarray.open_workspace_datatree(fname, chunks=None)
+        try:
+            assert manager._from_datatree(
+                tree,
+                replace=True,
+                mark_dirty=False,
+                select=False,
+                workspace_file_path=fname,
+            )
+        finally:
+            tree.close()
+        loaded = manager.get_imagetool(0).slicer_area._data
+        _assert_rich_workspace_attr(loaded.attrs["Single Motor Scan"])
+        _assert_rich_workspace_attr(loaded.coords["x"].attrs["axis_config"])
 
 
 def test_manager_workspace_save_preserves_reordered_roots(
