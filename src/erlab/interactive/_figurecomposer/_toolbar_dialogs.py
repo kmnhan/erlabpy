@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import typing
 import weakref
 
@@ -51,6 +52,14 @@ from erlab.interactive._figurecomposer._state import (
     FigureOperationKind,
     FigureOperationState,
     FigurePlotSlicesPanelStyleState,
+)
+from erlab.interactive._figurecomposer._subplot_adjust import (
+    SUBPLOTS_ADJUST_SPINBOX_DECIMALS,
+    SUBPLOTS_ADJUST_SPINBOX_MAXIMUM,
+    SUBPLOTS_ADJUST_SPINBOX_MINIMUM,
+    SUBPLOTS_ADJUST_SPINBOX_STEP,
+    normalize_subplots_adjust_kwargs,
+    subplots_adjust_spinbox_range,
 )
 from erlab.interactive._figurecomposer._text import _dict_from_text, _format_dict
 from erlab.interactive._figurecomposer._widgets import (
@@ -168,9 +177,12 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
     def add_spinbox(key: str, label: str, layout: QtWidgets.QFormLayout) -> None:
         spinbox = QtWidgets.QDoubleSpinBox(dialog)
         spinbox.setObjectName(f"figureComposerToolbarSubplotAdjust_{key}")
-        spinbox.setRange(0.0, 1.0)
-        spinbox.setDecimals(3)
-        spinbox.setSingleStep(0.005)
+        spinbox.setRange(
+            SUBPLOTS_ADJUST_SPINBOX_MINIMUM,
+            SUBPLOTS_ADJUST_SPINBOX_MAXIMUM,
+        )
+        spinbox.setDecimals(SUBPLOTS_ADJUST_SPINBOX_DECIMALS)
+        spinbox.setSingleStep(SUBPLOTS_ADJUST_SPINBOX_STEP)
         spinbox.setKeyboardTracking(False)
         spinbox.setValue(float(getattr(subplotpars, key)))
         spinbox.setToolTip(
@@ -184,6 +196,16 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
         add_spinbox(key, key, border_layout)
     for key in ("hspace", "wspace"):
         add_spinbox(key, key, spacing_layout)
+
+    def spinbox_values() -> dict[str, float]:
+        return {key: spinbox.value() for key, spinbox in spinboxes.items()}
+
+    def update_spinbox_ranges() -> None:
+        for key, spinbox in spinboxes.items():
+            values = spinbox_values()
+            minimum, maximum = subplots_adjust_spinbox_range(key, values)
+            with QtCore.QSignalBlocker(spinbox):
+                spinbox.setRange(minimum, maximum)
 
     def adjust_enabled() -> bool:
         return engine_combo.currentText() == "none"
@@ -199,7 +221,7 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
             spinbox.setEnabled(enabled)
             spinbox.setToolTip(tooltip)
 
-    def update_adjust_operation() -> None:
+    def update_adjust_operation(*, changed_key: str | None = None) -> None:
         if tool._updating_controls or not adjust_enabled():
             return
         _upsert_method_operation(
@@ -207,7 +229,10 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
             FigureMethodFamily.FIGURE,
             "subplots_adjust",
             label="Adjust subplots",
-            kwargs={key: spinbox.value() for key, spinbox in spinboxes.items()},
+            kwargs=normalize_subplots_adjust_kwargs(
+                spinbox_values(),
+                changed_key=changed_key,
+            ),
             enabled=True,
         )
 
@@ -232,12 +257,14 @@ def show_subplot_adjust_dialog(tool: FigureComposerTool) -> None:
     def engine_activated(_index: int) -> None:
         update_engine(engine_combo.currentText())
 
-    def adjust_spinbox_changed(_value: float) -> None:
-        update_adjust_operation()
+    def adjust_spinbox_changed(key: str, _value: float) -> None:
+        update_spinbox_ranges()
+        update_adjust_operation(changed_key=key)
 
     engine_combo.activated.connect(engine_activated)
-    for spinbox in spinboxes.values():
-        spinbox.valueChanged.connect(adjust_spinbox_changed)
+    for key, spinbox in spinboxes.items():
+        spinbox.valueChanged.connect(functools.partial(adjust_spinbox_changed, key))
+    update_spinbox_ranges()
     update_adjust_enabled()
 
     button_box = QtWidgets.QDialogButtonBox(

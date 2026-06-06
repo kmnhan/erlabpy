@@ -103,6 +103,12 @@ from erlab.interactive._figurecomposer._state import (
     FigureOperationKind,
     FigureOperationState,
 )
+from erlab.interactive._figurecomposer._subplot_adjust import (
+    SUBPLOTS_ADJUST_SPINBOX_DECIMALS,
+    SUBPLOTS_ADJUST_SPINBOX_STEP,
+    normalize_subplots_adjust_kwargs,
+    subplots_adjust_spinbox_range,
+)
 from erlab.interactive._figurecomposer._text import (
     _code_args,
     _code_kwargs,
@@ -221,10 +227,6 @@ class MethodSpec:
         return (self.call_policy,)
 
 
-_SUBPLOTS_ADJUST_SPINBOX_MINIMUM = 0.0
-_SUBPLOTS_ADJUST_SPINBOX_MAXIMUM = 1.0
-_SUBPLOTS_ADJUST_SPINBOX_DECIMALS = 3
-_SUBPLOTS_ADJUST_SPINBOX_STEP = 0.005
 _INT_SPINBOX_MINIMUM = -1_000_000
 _INT_SPINBOX_MAXIMUM = 1_000_000
 _FLOAT_SPINBOX_MINIMUM = -1_000_000_000.0
@@ -3134,6 +3136,12 @@ def _method_kwarg_update_callback(
     return functools.partial(_update_current_method_kwarg, tool, key)
 
 
+def _subplots_adjust_kwarg_update_callback(
+    tool: FigureComposerTool, key: str
+) -> Callable[[typing.Any], None]:
+    return functools.partial(_update_current_subplots_adjust_kwarg, tool, key)
+
+
 def _method_color_kwarg_update_callback(
     tool: FigureComposerTool, key: str
 ) -> Callable[[str], None]:
@@ -3433,11 +3441,13 @@ def _subplots_adjust_spinbox(
     parent: QtWidgets.QWidget | None,
 ) -> QtWidgets.QDoubleSpinBox:
     spinbox = QtWidgets.QDoubleSpinBox(parent)
-    spinbox.setRange(_SUBPLOTS_ADJUST_SPINBOX_MINIMUM, _SUBPLOTS_ADJUST_SPINBOX_MAXIMUM)
-    spinbox.setDecimals(_SUBPLOTS_ADJUST_SPINBOX_DECIMALS)
-    spinbox.setSingleStep(_SUBPLOTS_ADJUST_SPINBOX_STEP)
+    values = _subplots_adjust_values(tool, operation)
+    minimum, maximum = subplots_adjust_spinbox_range(key, values)
+    spinbox.setRange(minimum, maximum)
+    spinbox.setDecimals(SUBPLOTS_ADJUST_SPINBOX_DECIMALS)
+    spinbox.setSingleStep(SUBPLOTS_ADJUST_SPINBOX_STEP)
     spinbox.setKeyboardTracking(False)
-    value = _subplots_adjust_default(tool, key)
+    value = float(values[key])
     if not mixed:
         with contextlib.suppress(TypeError, ValueError):
             value = float(_method_kwarg_value(operation, key, value))
@@ -3446,9 +3456,23 @@ def _subplots_adjust_spinbox(
         spinbox,
         spinbox.valueChanged,
         float,
-        _method_kwarg_update_callback(tool, key),
+        _subplots_adjust_kwarg_update_callback(tool, key),
     )
     return spinbox
+
+
+def _subplots_adjust_values(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for key in ("left", "bottom", "right", "top", "wspace", "hspace"):
+        default = _subplots_adjust_default(tool, key)
+        value = _method_kwarg_value(operation, key, default)
+        with contextlib.suppress(TypeError, ValueError):
+            values[key] = float(value)
+            continue
+        values[key] = default
+    return values
 
 
 def _method_control_visible(
@@ -3484,6 +3508,10 @@ def _filter_layout_engine_kwargs(
         return kwargs
     allowed_keys = _layout_engine_kwarg_keys(args[0])
     return {key: value for key, value in kwargs.items() if key in allowed_keys}
+
+
+def _is_subplots_adjust_method(spec: MethodSpec) -> bool:
+    return spec.family == FigureMethodFamily.FIGURE and spec.name == "subplots_adjust"
 
 
 def _control_arg_index(control: MethodControlSpec) -> int:
@@ -3819,6 +3847,28 @@ def _update_current_method_kwarg(
     tool._update_operations(update_kwarg)
 
 
+def _update_current_subplots_adjust_kwarg(
+    tool: FigureComposerTool, key: str, value: typing.Any
+) -> None:
+    def update_kwarg(
+        _operation_index: int, operation: FigureOperationState
+    ) -> FigureOperationState:
+        defaults = _subplots_adjust_values(tool, operation)
+        kwargs = dict(operation.method_kwargs)
+        if value is None:
+            kwargs.pop(key, None)
+        else:
+            kwargs[key] = value
+        kwargs = normalize_subplots_adjust_kwargs(
+            kwargs,
+            defaults=defaults,
+            changed_key=key,
+        )
+        return operation.model_copy(update={"method_kwargs": kwargs})
+
+    tool._update_operations(update_kwarg)
+
+
 def _call_policy_from_label(text: str) -> MethodCallPolicy:
     for policy, label in _CALL_POLICY_LABELS.items():
         if label == text:
@@ -4018,6 +4068,11 @@ def _render_args_kwargs(
             kwargs["transform"] = transform
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
+    elif _is_subplots_adjust_method(spec):
+        kwargs = normalize_subplots_adjust_kwargs(
+            kwargs,
+            defaults=_subplots_adjust_values(tool, operation),
+        )
     return tuple(args), kwargs
 
 
@@ -4045,6 +4100,11 @@ def _code_args_kwargs(
         kwargs["transform"] = transform_code
     if _is_layout_engine_method(spec):
         kwargs = _filter_layout_engine_kwargs(args, kwargs)
+    elif _is_subplots_adjust_method(spec):
+        kwargs = normalize_subplots_adjust_kwargs(
+            kwargs,
+            defaults=_subplots_adjust_values(tool, operation),
+        )
     return tuple(args), kwargs
 
 

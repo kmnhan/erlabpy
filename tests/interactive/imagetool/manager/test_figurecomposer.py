@@ -5779,8 +5779,12 @@ def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
     top_spin = dialog.findChild(
         QtWidgets.QDoubleSpinBox, "figureComposerToolbarSubplotAdjust_top"
     )
+    bottom_spin = dialog.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerToolbarSubplotAdjust_bottom"
+    )
     assert engine_combo is not None
     assert top_spin is not None
+    assert bottom_spin is not None
     assert engine_combo.currentText() == "none"
     assert top_spin.isEnabled()
 
@@ -5800,6 +5804,10 @@ def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
     assert len(adjust_ops) == 1
     assert adjust_ops[0].enabled
     assert adjust_ops[0].method_kwargs["top"] == pytest.approx(0.91)
+
+    bottom_spin.setValue(0.99)
+    adjust_ops = _method_operations(tool, FigureMethodFamily.FIGURE, "subplots_adjust")
+    assert adjust_ops[0].method_kwargs["bottom"] < adjust_ops[0].method_kwargs["top"]
 
     _activate_combo_text(engine_combo, "compressed")
 
@@ -5823,6 +5831,102 @@ def test_figure_composer_toolbar_subplot_dialog_updates_recipe(qtbot) -> None:
     assert tool.tool_status.setup.layout == "none"
     assert adjust_ops[0].enabled
     assert top_spin.isEnabled()
+
+
+def test_figure_composer_subplots_adjust_pairs_stay_valid(qtbot) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(layout="none"),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="subplots_adjust",
+                    kwargs={"left": 0.2, "right": 0.8, "bottom": 0.2, "top": 0.8},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.operation_list.setCurrentRow(0)
+    tool._select_step_section("method")
+    method_page = tool.step_editor_stack.currentWidget()
+    left_spin = method_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustLeftEdit"
+    )
+    right_spin = method_page.findChild(
+        QtWidgets.QDoubleSpinBox, "figureComposerFigureSubplotsAdjustRightEdit"
+    )
+    assert left_spin is not None
+    assert right_spin is not None
+
+    left_spin.setValue(0.95)
+
+    operation = tool.tool_status.operations[0]
+    assert operation.method_kwargs["left"] < operation.method_kwargs["right"]
+
+    invalid_tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(layout="none"),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.method(
+                    family=FigureMethodFamily.FIGURE,
+                    name="subplots_adjust",
+                    kwargs={"left": 0.95, "right": 0.2, "bottom": 0.9, "top": 0.1},
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(invalid_tool)
+    fig = invalid_tool.figure
+    figurecomposer_rendering._render_into_figure(invalid_tool, fig, sync_visible=False)
+    assert fig.subplotpars.left < fig.subplotpars.right
+    assert fig.subplotpars.bottom < fig.subplotpars.top
+
+    namespace = {"data": data}
+    exec(invalid_tool.generated_code(), namespace)  # noqa: S102
+    generated_fig = namespace["fig"]
+    assert generated_fig.subplotpars.left < generated_fig.subplotpars.right
+    assert generated_fig.subplotpars.bottom < generated_fig.subplotpars.top
+
+    for partial_kwargs in (
+        {"left": 0.95, "bottom": 0.95},
+        {"right": 0.05, "top": 0.05},
+    ):
+        partial_tool = FigureComposerTool(
+            data,
+            recipe=FigureRecipeState(
+                setup=FigureSubplotsState(layout="none"),
+                sources=(FigureSourceState(name="data", label="data"),),
+                operations=(
+                    FigureOperationState.method(
+                        family=FigureMethodFamily.FIGURE,
+                        name="subplots_adjust",
+                        kwargs=partial_kwargs,
+                    ),
+                ),
+                primary_source="data",
+            ),
+        )
+        qtbot.addWidget(partial_tool)
+        fig = partial_tool.figure
+        figurecomposer_rendering._render_into_figure(
+            partial_tool, fig, sync_visible=False
+        )
+        assert fig.subplotpars.left < fig.subplotpars.right
+        assert fig.subplotpars.bottom < fig.subplotpars.top
+
+        namespace = {"data": data}
+        exec(partial_tool.generated_code(), namespace)  # noqa: S102
+        generated_fig = namespace["fig"]
+        assert generated_fig.subplotpars.left < generated_fig.subplotpars.right
+        assert generated_fig.subplotpars.bottom < generated_fig.subplotpars.top
 
 
 def test_figure_composer_toolbar_subplot_dialog_reuses_live_dialog(qtbot) -> None:
