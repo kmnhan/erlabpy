@@ -2605,7 +2605,7 @@ def _build_plot_slices_editor(
         ("cuts", "Selection", cuts_page),
         ("view", "View", view_page),
         ("colors", "Colors", colors_page),
-        ("advanced", "Advanced", advanced_page),
+        ("advanced", "Other", advanced_page),
     ]
 
 
@@ -3644,7 +3644,7 @@ def _section_summary(
                 return "per-panel"
             return operation.cmap or "default"
         case "advanced":
-            return "set" if _effective_extra_kwargs(tool, operation) else "optional"
+            return "set" if _effective_extra_kwargs(tool, operation) else ""
     return ""
 
 
