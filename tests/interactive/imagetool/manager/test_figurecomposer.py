@@ -550,14 +550,14 @@ def test_figure_composer_source_display_helpers_keep_alias_secondary() -> None:
 def test_figure_composer_text_helpers_parse_user_inputs() -> None:
     assert figurecomposer_text._float_pair_from_text("") is None
     assert figurecomposer_text._float_pair_from_text("1, 2.5") == (1.0, 2.5)
-    with pytest.raises(ValueError, match="Expected two"):
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="two"):
         figurecomposer_text._float_pair_from_text("1")
 
     assert figurecomposer_text._plot_limit_from_text("") is None
     assert figurecomposer_text._plot_limit_from_text("1.5") == 1.5
     assert figurecomposer_text._plot_limit_from_text("[2]") == 2.0
     assert figurecomposer_text._plot_limit_from_text("(1, 2)") == (1.0, 2.0)
-    with pytest.raises(ValueError, match="Expected one"):
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="one"):
         figurecomposer_text._plot_limit_from_text("(1, 2, 3)")
 
     assert figurecomposer_text._literal_sequence_from_text("") == ()
@@ -574,7 +574,7 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
         "alpha",
         "2",
     )
-    with pytest.raises(TypeError, match="Expected a string"):
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="text"):
         figurecomposer_text._string_tuple_from_text("(1)")
     assert figurecomposer_text._text_tuple_from_text("a\n\nb") == ("a", "b")
     assert figurecomposer_text._text_tuple_from_text("a\n\nb", preserve_empty=True) == (
@@ -591,12 +591,14 @@ def test_figure_composer_text_helpers_parse_user_inputs() -> None:
         "b": slice(0, 2),
     }
     assert figurecomposer_text._dict_from_text("{'a': 1}") == {"a": 1}
-    with pytest.raises(TypeError, match="Expected a dictionary"):
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
         figurecomposer_text._dict_from_text("1")
-    with pytest.raises(TypeError, match="Expected explicit keyword"):
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="explicit"):
         figurecomposer_text._dict_from_text("**{'a': 1}")
-    with pytest.raises(TypeError, match="Expected explicit dictionary"):
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="explicit"):
         figurecomposer_text._dict_from_text("{**{'a': 1}}")
+    with pytest.raises(figurecomposer_text.FigureComposerInputError, match="keyword"):
+        figurecomposer_text._dict_from_text("{alpha: 1}")
 
     assert figurecomposer_text._format_pair(None) == ""
     assert figurecomposer_text._format_plot_limit(2.0) == "2"
@@ -1819,7 +1821,7 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     )
     assert (
         figurecomposer_plot_slices._section_summary(tool, "advanced", first_operation)
-        == "optional"
+        == ""
     )
     assert (
         figurecomposer_plot_slices._section_summary(tool, "unknown", first_operation)
@@ -3626,6 +3628,59 @@ def test_figure_composer_reports_and_clears_render_errors(qtbot) -> None:
     assert "(render error)" not in item.text()
     assert "RuntimeError: boom" not in item.toolTip()
     assert "Render error" not in tool.source_status_label.text()
+
+
+def test_figure_composer_editor_input_errors_mark_and_clear_invalid_steps(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.arange(4.0),
+        dims=("x",),
+        coords={"x": np.arange(4.0)},
+        name="data",
+    )
+    tool = FigureComposerTool(data)
+    qtbot.addWidget(tool)
+
+    operation = tool.tool_status.operations[0]
+    edit = QtWidgets.QLineEdit(tool)
+    tool._connect_line_edit_finished(
+        edit,
+        lambda text: tool._update_current_operation(
+            extra_kwargs=figurecomposer_text._dict_from_text(text)
+        ),
+    )
+
+    edit.setText("{alpha: 0.5}")
+    edit.editingFinished.emit()
+
+    assert tool._operation_has_invalid_input(operation)
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert "Invalid input:" in item.toolTip()
+    assert "Invalid input:" in tool.source_status_label.text()
+    with pytest.raises(ValueError, match="invalid step inputs"):
+        tool.generated_code()
+
+    check = QtWidgets.QCheckBox(tool)
+    tool._connect_editor_signal(
+        check,
+        check.toggled,
+        lambda checked: tool._update_current_operation(transpose=checked),
+    )
+    check.setChecked(not operation.transpose)
+
+    assert tool._operation_has_invalid_input(operation)
+
+    edit.setText("alpha=0.5")
+    edit.editingFinished.emit()
+
+    assert not tool._operation_has_invalid_input(operation)
+    assert tool.tool_status.operations[0].extra_kwargs == {"alpha": 0.5}
+    item = tool.operation_list.item(0)
+    assert item is not None
+    assert "Invalid input:" not in item.toolTip()
+    assert "Invalid input:" not in tool.source_status_label.text()
 
 
 def test_figure_composer_defaults_follow_stylesheet_rcparams(
@@ -5471,13 +5526,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesCropCheck"
     )
     order_combo = tool.findChild(QtWidgets.QComboBox, "figureComposerOrderCombo")
-    transpose_check = next(
-        (
-            check
-            for check in tool.findChildren(QtWidgets.QCheckBox)
-            if check.text() == "Transpose"
-        ),
-        None,
+    transpose_check = tool.findChild(
+        QtWidgets.QCheckBox, "figureComposerTransposeCheck"
     )
     same_limits_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerSameLimitsCombo"

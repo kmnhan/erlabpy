@@ -59,7 +59,6 @@ or inspect generated code when the call form itself is product behavior.
 
 from __future__ import annotations
 
-import ast
 import contextlib
 import dataclasses
 import enum
@@ -120,6 +119,7 @@ from erlab.interactive._figurecomposer._text import (
     _format_literal_sequence,
     _format_pair,
     _format_string_tuple,
+    _literal_from_text,
     _literal_sequence_from_text,
     _RawCode,
     _string_tuple_from_text,
@@ -2645,23 +2645,23 @@ def _add_method_control_row(
                 )
         case MethodControlKind.ARG_COMBO:
             index = _control_arg_index(control)
-            value_getter: Callable[[FigureOperationState], typing.Any]
+            arg_value_getter: Callable[[FigureOperationState], typing.Any]
             if _is_layout_engine_method(spec):
 
-                def value_getter(target: FigureOperationState) -> typing.Any:
+                def arg_value_getter(target: FigureOperationState) -> typing.Any:
                     return _layout_engine_name(target, spec)
             else:
 
-                def value_getter(target: FigureOperationState) -> typing.Any:
+                def arg_value_getter(target: FigureOperationState) -> typing.Any:
                     return _method_arg_value(target, spec, index, control.default)
 
             mixed = tool._batch_is_mixed(
                 operation,
-                value_getter,
+                arg_value_getter,
             )
             combo = tool._combo(
                 control.options,
-                None if mixed else str(value_getter(operation)),
+                None if mixed else str(arg_value_getter(operation)),
                 _method_arg_callback(tool, index, spec),
                 parent=layout.parentWidget(),
                 mixed=mixed,
@@ -2893,27 +2893,27 @@ def _add_method_control_row(
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.KWARG_COMBO:
             key = _control_key(control)
-            value_getter: Callable[[FigureOperationState], typing.Any]
+            kwarg_value_getter: Callable[[FigureOperationState], typing.Any]
             if control.none_label is None:
 
-                def value_getter(target: FigureOperationState) -> typing.Any:
+                def kwarg_value_getter(target: FigureOperationState) -> typing.Any:
                     return _method_kwarg_value(target, key, control.default)
 
             else:
 
-                def value_getter(target: FigureOperationState) -> typing.Any:
+                def kwarg_value_getter(target: FigureOperationState) -> typing.Any:
                     return normalize_style_value(
                         _method_kwarg_value(target, key, control.default)
                     )
 
             mixed = tool._batch_is_mixed(
                 operation,
-                value_getter,
+                kwarg_value_getter,
             )
             if control.none_label is None:
                 combo = tool._combo(
                     control.options,
-                    None if mixed else str(value_getter(operation)),
+                    None if mixed else str(kwarg_value_getter(operation)),
                     _method_kwarg_callback(tool, key),
                     parent=layout.parentWidget(),
                     mixed=mixed,
@@ -2921,9 +2921,9 @@ def _add_method_control_row(
             else:
                 combo = tool._optional_name_combo(
                     control.options,
-                    None if mixed else value_getter(operation),
+                    None if mixed else kwarg_value_getter(operation),
                     control.none_label,
-                    _method_kwarg_callback(tool, key),
+                    _method_optional_kwarg_callback(tool, key),
                     parent=layout.parentWidget(),
                     mixed=mixed,
                 )
@@ -3621,6 +3621,15 @@ def _method_kwarg_callback(tool: FigureComposerTool, key: str) -> Callable[[str]
     return update
 
 
+def _method_optional_kwarg_callback(
+    tool: FigureComposerTool, key: str
+) -> Callable[[str | None], None]:
+    def update(text: str | None) -> None:
+        _update_current_method_kwarg(tool, key, text)
+
+    return update
+
+
 def _update_current_layout_engine(
     tool: FigureComposerTool, index: int, text: str
 ) -> None:
@@ -3683,7 +3692,7 @@ def _literal_value_from_text(text: str) -> typing.Any:
         return None
     if stripped.startswith("{") or "=" in stripped:
         return _dict_from_text(stripped)
-    return ast.literal_eval(stripped)
+    return _literal_from_text(stripped)
 
 
 def _aspect_value_from_text(text: str) -> str | float | None:
@@ -3693,8 +3702,8 @@ def _aspect_value_from_text(text: str) -> str | float | None:
     if stripped in {"auto", "equal"}:
         return stripped
     try:
-        value = ast.literal_eval(stripped)
-    except (SyntaxError, ValueError):
+        value = _literal_from_text(stripped)
+    except ValueError:
         return stripped
     if isinstance(value, str):
         return value

@@ -18,32 +18,70 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._state import FigureLimit
 
 
+class FigureComposerInputError(ValueError):
+    """Invalid text entered into a Figure Composer editor control."""
+
+
+_DICT_INPUT_MESSAGE = (
+    "Enter keyword arguments like alpha=0.5, or a dictionary literal like "
+    "{'alpha': 0.5}."
+)
+_LITERAL_INPUT_MESSAGE = "Enter a valid Python literal, such as 1, 'text', or [1, 2]."
+
+
+def _input_error(message: str) -> FigureComposerInputError:
+    return FigureComposerInputError(message)
+
+
+def _literal_from_text(
+    text: str, *, message: str = _LITERAL_INPUT_MESSAGE
+) -> typing.Any:
+    try:
+        return ast.literal_eval(text)
+    except (SyntaxError, TypeError, ValueError) as exc:
+        raise _input_error(message) from exc
+
+
 def _float_pair_from_text(text: str) -> tuple[float, float] | None:
     parts = [part.strip() for part in text.split(",") if part.strip()]
     if not parts:
         return None
     if len(parts) != 2:
-        raise ValueError("Expected two comma-separated values")
-    return (float(parts[0]), float(parts[1]))
+        raise _input_error("Enter exactly two comma-separated numbers.")
+    try:
+        return (float(parts[0]), float(parts[1]))
+    except ValueError as exc:
+        raise _input_error("Enter exactly two comma-separated numbers.") from exc
 
 
 def _plot_limit_from_text(text: str) -> FigureLimit | None:
     stripped = text.strip()
     if not stripped:
         return None
-    value = ast.literal_eval(stripped)
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, list | tuple):
-        if len(value) == 1:
-            return float(value[0])
-        if len(value) == 2:
-            return (float(value[0]), float(value[1]))
-    raise ValueError("Expected one number or two comma-separated numbers")
+    value = _literal_from_text(
+        stripped,
+        message="Enter one number or one pair of numbers, such as -1, 1.",
+    )
+    try:
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, list | tuple):
+            if len(value) == 1:
+                return float(value[0])
+            if len(value) == 2:
+                return (float(value[0]), float(value[1]))
+    except (TypeError, ValueError) as exc:
+        raise _input_error(
+            "Enter one number or one pair of numbers, such as -1, 1."
+        ) from exc
+    raise _input_error("Enter one number or one pair of numbers, such as -1, 1.")
 
 
 def _float_tuple_from_text(text: str) -> tuple[float, ...]:
-    return tuple(float(part.strip()) for part in text.split(",") if part.strip())
+    try:
+        return tuple(float(part.strip()) for part in text.split(",") if part.strip())
+    except ValueError as exc:
+        raise _input_error("Enter comma-separated numbers.") from exc
 
 
 def _literal_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
@@ -51,11 +89,19 @@ def _literal_sequence_from_text(text: str) -> tuple[typing.Any, ...]:
     if not stripped:
         return ()
     if stripped[0] in "[(":
-        value = ast.literal_eval(stripped)
+        value = _literal_from_text(
+            stripped,
+            message=(
+                "Enter comma-separated literal values, or a Python list/tuple literal."
+            ),
+        )
         if isinstance(value, (list, tuple)):
             return tuple(value)
         return (value,)
-    value = ast.literal_eval(f"({stripped},)")
+    value = _literal_from_text(
+        f"({stripped},)",
+        message="Enter comma-separated literal values.",
+    )
     if not isinstance(value, tuple):
         return (value,)
     return value
@@ -70,11 +116,16 @@ def _string_tuple_from_text(text: str) -> tuple[str, ...]:
     if not stripped:
         return ()
     if stripped[0] in "[(":
-        value = ast.literal_eval(stripped)
+        value = _literal_from_text(
+            stripped,
+            message="Enter text values separated by commas, or a string list literal.",
+        )
         if isinstance(value, str):
             return (value,)
         if not isinstance(value, (list, tuple)):
-            raise TypeError("Expected a string, list, or tuple literal")
+            raise _input_error(
+                "Enter text values separated by commas, or a string list literal."
+            )
         return tuple(str(item) for item in value)
     return tuple(part.strip() for part in text.split(",") if part.strip())
 
@@ -99,37 +150,51 @@ def _literal_from_ast(node: ast.AST, *, allow_slice: bool = False) -> typing.Any
         return slice(
             *(_literal_from_ast(arg, allow_slice=allow_slice) for arg in node.args)
         )
-    return ast.literal_eval(node)
+    try:
+        return ast.literal_eval(node)
+    except (TypeError, ValueError) as exc:
+        raise _input_error(_LITERAL_INPUT_MESSAGE) from exc
 
 
 def _dict_from_text(text: str, *, allow_slice: bool = False) -> dict[str, typing.Any]:
     stripped = text.strip()
     if not stripped:
         return {}
-    expression = ast.parse(
-        f"_kwargs({stripped})" if not stripped.startswith("{") else stripped,
-        mode="eval",
-    ).body
+    try:
+        expression = ast.parse(
+            f"_kwargs({stripped})" if not stripped.startswith("{") else stripped,
+            mode="eval",
+        ).body
+    except SyntaxError as exc:
+        raise _input_error(_DICT_INPUT_MESSAGE) from exc
     if isinstance(expression, ast.Call):
         if expression.args:
-            raise TypeError("Expected a dictionary literal or keyword arguments")
+            raise _input_error(_DICT_INPUT_MESSAGE)
         kwargs: dict[str, typing.Any] = {}
         for keyword in expression.keywords:
             if keyword.arg is None:
-                raise TypeError("Expected explicit keyword arguments")
-            kwargs[keyword.arg] = _literal_from_ast(
-                keyword.value, allow_slice=allow_slice
-            )
+                raise _input_error(
+                    "Enter explicit keyword arguments; avoid ** unpacking."
+                )
+            try:
+                kwargs[keyword.arg] = _literal_from_ast(
+                    keyword.value, allow_slice=allow_slice
+                )
+            except FigureComposerInputError as exc:
+                raise _input_error(_DICT_INPUT_MESSAGE) from exc
         return kwargs
     if not isinstance(expression, ast.Dict):
-        raise TypeError("Expected a dictionary literal or keyword arguments")
+        raise _input_error(_DICT_INPUT_MESSAGE)
     dict_kwargs: dict[typing.Any, typing.Any] = {}
     for key_node, value_node in zip(expression.keys, expression.values, strict=True):
         if key_node is None:
-            raise TypeError("Expected explicit dictionary keys")
-        dict_kwargs[_literal_from_ast(key_node, allow_slice=allow_slice)] = (
-            _literal_from_ast(value_node, allow_slice=allow_slice)
-        )
+            raise _input_error("Enter explicit dictionary keys; avoid ** unpacking.")
+        try:
+            key = _literal_from_ast(key_node, allow_slice=allow_slice)
+            value = _literal_from_ast(value_node, allow_slice=allow_slice)
+        except FigureComposerInputError as exc:
+            raise _input_error(_DICT_INPUT_MESSAGE) from exc
+        dict_kwargs[key] = value
     return dict_kwargs
 
 

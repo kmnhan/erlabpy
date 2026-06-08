@@ -99,6 +99,7 @@ from erlab.interactive._figurecomposer._state import (
     FigureSubplotsState,
 )
 from erlab.interactive._figurecomposer._text import (
+    FigureComposerInputError,
     _format_axes_tuple,
     _format_tuple,
     _literal_sequence_from_text,
@@ -165,6 +166,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_list_viewport: QtWidgets.QWidget | None = None
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
         self._operation_render_errors: dict[str, str] = {}
+        self._operation_input_errors: dict[str, dict[str, str]] = {}
         self._operation_editor_generation = 0
         self._active_editor_signal_widget: QtWidgets.QWidget | None = None
         self._source_data: dict[str, xr.DataArray] = {}
@@ -1423,7 +1425,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self.operation_list.clear()
             for operation in self._recipe.operations:
                 render_error = self._operation_render_errors.get(operation.operation_id)
+                input_error = self._operation_input_error_text(operation)
                 text = self._operation_display_text(operation)
+                if input_error is not None:
+                    text = f"{text} (invalid input)"
                 if render_error is not None:
                     text = f"{text} (render error)"
                 item = QtWidgets.QListWidgetItem(text)
@@ -1435,11 +1440,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 )
                 item.setData(QtCore.Qt.ItemDataRole.UserRole, operation.operation_id)
                 tooltip = self._operation_tooltip(operation)
+                if input_error is not None:
+                    tooltip = f"{tooltip}\n\nInvalid input: {input_error}"
                 if render_error is not None:
                     tooltip = f"{tooltip}\n\nRender error: {render_error}"
                 item.setToolTip(tooltip)
                 if (
                     self._operation_has_invalid_axes(operation)
+                    or input_error is not None
                     or render_error is not None
                 ):
                     item.setForeground(QtGui.QBrush(QtGui.QColor("darkRed")))
@@ -1501,6 +1509,95 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         current = self._current_operation()
         self._update_source_status(current[1] if current is not None else None)
 
+    def _set_operation_input_errors(
+        self, errors: Mapping[str, Mapping[str, str]]
+    ) -> None:
+        input_errors = {
+            operation_id: dict(operation_errors)
+            for operation_id, operation_errors in errors.items()
+            if operation_errors
+        }
+        if input_errors == self._operation_input_errors:
+            return
+        self._operation_input_errors = input_errors
+        self._refresh_operation_list()
+        self._refresh_step_section_button_texts()
+        current = self._current_operation()
+        self._update_source_status(current[1] if current is not None else None)
+
+    def _operation_has_invalid_input(self, operation: FigureOperationState) -> bool:
+        return operation.operation_id in self._operation_input_errors
+
+    def _operation_input_error_text(
+        self, operation: FigureOperationState
+    ) -> str | None:
+        operation_errors = self._operation_input_errors.get(operation.operation_id)
+        if not operation_errors:
+            return None
+        messages = tuple(dict.fromkeys(operation_errors.values()))
+        if len(messages) == 1:
+            return messages[0]
+        return f"{len(messages)} invalid inputs: " + "; ".join(messages)
+
+    def _record_editor_input_error(
+        self, widget: QtWidgets.QWidget, error: FigureComposerInputError
+    ) -> None:
+        operation_ids = self._editable_operation_ids_for_error()
+        if not operation_ids:
+            return
+        key = self._editor_input_error_key(widget)
+        errors = {
+            operation_id: dict(operation_errors)
+            for operation_id, operation_errors in self._operation_input_errors.items()
+        }
+        for operation_id in operation_ids:
+            operation_errors = errors.setdefault(operation_id, {})
+            operation_errors[key] = str(error)
+        self._set_operation_input_errors(errors)
+
+    def _clear_editor_input_error(self, widget: QtWidgets.QWidget) -> None:
+        if not self._operation_input_errors:
+            return
+        operation_ids = self._editable_operation_ids_for_error()
+        if not operation_ids:
+            return
+        key = self._editor_input_error_key(widget)
+        errors = {
+            operation_id: dict(operation_errors)
+            for operation_id, operation_errors in self._operation_input_errors.items()
+        }
+        changed = False
+        for operation_id in operation_ids:
+            operation_errors = errors.get(operation_id)
+            if operation_errors is None or key not in operation_errors:
+                continue
+            del operation_errors[key]
+            changed = True
+        if changed:
+            self._set_operation_input_errors(errors)
+
+    @staticmethod
+    def _editor_input_error_key(widget: QtWidgets.QWidget) -> str:
+        object_name = widget.objectName()
+        if object_name:
+            return object_name
+        return f"anonymous:{id(widget)}"
+
+    def _editable_operation_ids_for_error(self) -> tuple[str, ...]:
+        editable = self._editable_operations()
+        if editable:
+            return tuple(operation.operation_id for _index, operation in editable)
+        current = self._current_operation()
+        return () if current is None else (current[1].operation_id,)
+
+    def _clear_operation_input_errors(self, operation_ids: Sequence[str]) -> None:
+        if not operation_ids or not self._operation_input_errors:
+            return
+        errors = dict(self._operation_input_errors)
+        for operation_id in operation_ids:
+            errors.pop(operation_id, None)
+        self._set_operation_input_errors(errors)
+
     def _axes_target_text(self, selection: FigureAxesSelectionState) -> str:
         if selection.expression:
             return selection.expression
@@ -1550,11 +1647,22 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         return tuple(
             index
             for index, operation in enumerate(self._recipe.operations)
+            if operation.enabled
+            and (
+                self._operation_has_invalid_axes(operation)
+                or self._operation_has_invalid_input(operation)
+            )
+        )
+
+    def _invalid_operation_target_indices(self) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, operation in enumerate(self._recipe.operations)
             if operation.enabled and self._operation_has_invalid_axes(operation)
         )
 
     def _warn_invalid_operation_targets(self) -> bool:
-        indices = self._invalid_operation_indices()
+        indices = self._invalid_operation_target_indices()
         if not indices:
             return False
         self.editor_tabs.setCurrentWidget(self.recipe_page)
@@ -1744,8 +1852,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         sync_axes: bool = True,
     ) -> None:
         operations = list(self._recipe.operations)
+        previous_operation = operations[index]
         operations[index] = operation
         self._recipe = self._recipe.model_copy(update={"operations": tuple(operations)})
+        self._clear_operation_input_errors(
+            (previous_operation.operation_id, operation.operation_id)
+        )
         self._refresh_operation_list()
         self._set_current_operation_row_silent(index)
         if sync_axes:
@@ -2835,6 +2947,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         if operation is None:
             self.source_status_label.setText("Select a step to choose data sources.")
             return
+        if (input_error := self._operation_input_error_text(operation)) is not None:
+            self.source_status_label.setText(f"Invalid input: {input_error}")
+            return
         if (
             render_error := self._operation_render_errors.get(operation.operation_id)
         ) is not None:
@@ -3024,6 +3139,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             self._active_editor_signal_widget = guarded_widget
             try:
                 callback(*args)
+            except FigureComposerInputError as exc:
+                self._record_editor_input_error(guarded_widget, exc)
+            else:
+                self._clear_editor_input_error(guarded_widget)
             finally:
                 self._active_editor_signal_widget = previous_widget
 

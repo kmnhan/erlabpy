@@ -1806,6 +1806,7 @@ def _build_plot_slices_editor(
         lambda checked: tool._update_current_operation_rebuild(transpose=checked),
         mixed=transpose_mixed,
     )
+    transpose_check.setObjectName("figureComposerTransposeCheck")
     transpose_check.setText("")
     transpose_check.setToolTip("Swap the plotted x/y orientation.")
     tool._add_form_row(
@@ -2671,7 +2672,7 @@ def _operation_field_getter(
 def _plot_slices_rendered_value(
     tool: FigureComposerTool,
     operation: FigureOperationState,
-    reader: Callable[[list[matplotlib.axes.Axes]], typing.Any],
+    reader: Callable[[Sequence[matplotlib.axes.Axes]], typing.Any],
 ) -> typing.Any:
     with _figure_style_context():
         figure = Figure(
@@ -2683,7 +2684,7 @@ def _plot_slices_rendered_value(
         try:
             axs = _make_axes(tool, figure, sync_visible=False)
             if tool._operation_has_invalid_axes(operation):
-                return ""
+                return None
             _render_plot_slices(tool, operation, axs)
             with _figure_draw_context():
                 canvas.draw()
@@ -2711,7 +2712,8 @@ def _plot_slices_limit_placeholder(
     )
     if limits is None:
         return ""
-    return _format_pair((float(limits[0]), float(limits[1])))
+    limit_pair = _rendered_float_pair(limits)
+    return "" if limit_pair is None else _format_pair(limit_pair)
 
 
 def _plot_slices_color_limit_placeholders(
@@ -2720,14 +2722,28 @@ def _plot_slices_color_limit_placeholders(
     if operation.vmin is not None and operation.vmax is not None:
         return {}
     clim = _plot_slices_rendered_value(tool, operation, _first_mappable_clim)
-    if clim is None:
+    clim_pair = _rendered_float_pair(clim)
+    if clim_pair is None:
         return {}
     placeholders: dict[str, str] = {}
-    if operation.vmin is None and (vmin := _format_placeholder_number(clim[0])):
+    if operation.vmin is None and (vmin := _format_placeholder_number(clim_pair[0])):
         placeholders["vmin"] = vmin
-    if operation.vmax is None and (vmax := _format_placeholder_number(clim[1])):
+    if operation.vmax is None and (vmax := _format_placeholder_number(clim_pair[1])):
         placeholders["vmax"] = vmax
     return placeholders
+
+
+def _rendered_float_pair(value: object) -> tuple[float, float] | None:
+    if isinstance(value, str | bytes) or not isinstance(value, tuple | list):
+        return None
+    if len(value) != 2:
+        return None
+    try:
+        first = float(value[0])
+        second = float(value[1])
+    except (TypeError, ValueError):
+        return None
+    return first, second
 
 
 def _first_mappable_clim(

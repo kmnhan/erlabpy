@@ -18,6 +18,13 @@ if typing.TYPE_CHECKING:
 def generated_code(tool: FigureComposerTool) -> str:
     invalid_indices = tool._invalid_operation_indices()
     if invalid_indices:
+        if any(
+            tool._operation_has_invalid_input(tool._recipe.operations[index])
+            for index in invalid_indices
+        ):
+            raise ValueError(
+                "Cannot generate code until invalid step inputs are fixed."
+            )
         raise ValueError(
             "Cannot generate code until all enabled steps target axes in the "
             "current figure layout"
