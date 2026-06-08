@@ -7636,13 +7636,7 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     )
     assert fallback_spec is next(iter(figurecomposer_method.AXES_METHODS.values()))
     assert (
-        figurecomposer_method._method_label(
-            FigureOperationState.method(
-                family=FigureMethodFamily.AXES,
-                name="missing",
-            )
-        )
-        == fallback_spec.label
+        figurecomposer_method._method_selector_text(fallback_spec) == fallback_spec.name
     )
 
     colorbar_operation = FigureOperationState.method(
@@ -7857,10 +7851,24 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     assert figurecomposer_method._optional_int_from_text("3") == 3
 
     assert figurecomposer_method._family_from_label("bad") == FigureMethodFamily.ERLAB
-    assert figurecomposer_method._method_name_from_label(
-        FigureMethodFamily.AXES,
-        "bad",
-    ) == next(iter(figurecomposer_method.AXES_METHODS))
+    assert (
+        figurecomposer_method._method_selector_text(
+            figurecomposer_method.AXES_METHODS["set_xlabel"]
+        )
+        == "set_xlabel"
+    )
+    assert (
+        figurecomposer_method._method_selector_text(
+            figurecomposer_method.FIGURE_METHODS["supxlabel"]
+        )
+        == "supxlabel"
+    )
+    assert (
+        figurecomposer_method._method_selector_text(
+            figurecomposer_method.ERLAB_METHODS["clean_labels"]
+        )
+        == "clean_labels"
+    )
     assert (
         figurecomposer_method._method_combo_object_name(FigureMethodFamily.FIGURE)
         == "figureComposerFigureMethodCombo"
@@ -7890,6 +7898,14 @@ def test_figure_composer_method_helper_edge_contracts(qtbot) -> None:
     )
 
     tool.operation_list.setCurrentRow(1)
+    tool._select_step_section("method")
+    figure_method_combo = tool.findChild(
+        QtWidgets.QComboBox, "figureComposerFigureMethodCombo"
+    )
+    assert figure_method_combo is not None
+    assert figure_method_combo.currentText() == "set_layout_engine"
+    assert figure_method_combo.currentData() == "set_layout_engine"
+
     figurecomposer_method._update_current_layout_engine(tool, 0, "tight")
     assert tool.tool_status.operations[1].method_args == ("tight",)
     assert tool.tool_status.operations[1].method_kwargs == {"pad": 0.1}
@@ -8065,7 +8081,8 @@ def test_figure_composer_axes_methods_render_and_codegen(qtbot) -> None:
     assert transform_combo is not None
     assert text_edit is not None
     assert kwargs_edit is not None
-    assert method_combo.currentText() == "Text"
+    assert method_combo.currentText() == "text"
+    assert method_combo.currentData() == "text"
     assert transform_combo.currentText() == "axes"
     assert text_edit.text() == "Panel"
     assert kwargs_edit.text() == 'ha="left", va="top"'
@@ -8336,7 +8353,8 @@ def test_figure_composer_axes_plot_method_render_and_codegen(qtbot) -> None:
     assert transform_x_combo is not None
     assert transform_y_combo is not None
     assert kwargs_edit is not None
-    assert method_combo.currentText() == "Plot"
+    assert method_combo.currentText() == "plot"
+    assert method_combo.currentData() == "plot"
     assert x_edit.text() == "0.0, 0.5, 1.0"
     assert y_edit.text() == "1.0, 0.5, 0.0"
     assert color_edit.text() == "C1"

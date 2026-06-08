@@ -2221,8 +2221,37 @@ def _effective_call_policy(
     return spec.call_policy
 
 
-def _method_label(operation: FigureOperationState) -> str:
-    return _method_spec(operation).label
+def _method_selector_text(spec: MethodSpec) -> str:
+    return spec.name
+
+
+def _method_combo(
+    tool: FigureComposerTool,
+    family: FigureMethodFamily,
+    current_name: str,
+    parent: QtWidgets.QWidget,
+) -> QtWidgets.QComboBox:
+    combo = QtWidgets.QComboBox(parent)
+    tool._mark_editor_control(combo)
+    for spec in _method_specs(family).values():
+        combo.addItem(_method_selector_text(spec), spec.name)
+        combo.setItemData(
+            combo.count() - 1,
+            spec.tooltip,
+            QtCore.Qt.ItemDataRole.ToolTipRole,
+        )
+    for index in range(combo.count()):
+        if combo.itemData(index) == current_name:
+            combo.setCurrentIndex(index)
+            break
+
+    def method_activated(_index: int) -> None:
+        method_name = combo.currentData()
+        if isinstance(method_name, str):
+            _update_current_method_name(tool, method_name)
+
+    tool._connect_editor_signal(combo, combo.activated, method_activated)
+    return combo
 
 
 def _live_layout_axes(
@@ -2389,13 +2418,8 @@ def _build_method_editor(
     method_layout = QtWidgets.QHBoxLayout(method_widget)
     method_layout.setContentsMargins(0, 0, 0, 0)
     method_layout.setSpacing(6)
-    method_combo = tool._combo(
-        [method.label for method in _method_specs(operation.method_family).values()],
-        spec.label,
-        lambda text: _update_current_method_name(
-            tool, _method_name_from_label(operation.method_family, text)
-        ),
-        parent=method_widget,
+    method_combo = _method_combo(
+        tool, operation.method_family, spec.name, method_widget
     )
     method_combo.setObjectName(_method_combo_object_name(operation.method_family))
     method_combo.setToolTip("Function or method called by this recipe step.")
@@ -3701,13 +3725,6 @@ def _family_from_label(text: str) -> FigureMethodFamily:
         if label == text:
             return family
     return FigureMethodFamily.ERLAB
-
-
-def _method_name_from_label(family: FigureMethodFamily, text: str) -> str:
-    for name, spec in _method_specs(family).items():
-        if spec.label == text:
-            return name
-    return next(iter(_method_specs(family)))
 
 
 def _method_combo_object_name(family: FigureMethodFamily) -> str:
