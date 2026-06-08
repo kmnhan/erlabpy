@@ -1781,7 +1781,7 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
         == "additional"
     )
     assert (
-        figurecomposer_plot_slices._section_summary(tool, "limits", first_operation)
+        figurecomposer_plot_slices._section_summary(tool, "view", first_operation)
         == "auto"
     )
     assert (
@@ -5360,9 +5360,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "sources",
         "axes",
         "cuts",
-        "limits",
+        "view",
         "colors",
-        "style",
         "advanced",
     ]
     assert [
@@ -5372,9 +5371,8 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         "figureComposerStepSourcesPage",
         "figureComposerTargetAxesPage",
         "figureComposerPlotSlicesCutsPage",
-        "figureComposerPlotSlicesLimitsPage",
+        "figureComposerPlotSlicesViewPage",
         "figureComposerPlotSlicesColorsPage",
-        "figureComposerPlotSlicesStylePage",
         "figureComposerPlotSlicesAdvancedPage",
     ]
     assert tool.findChild(QtWidgets.QTabWidget, "figureComposerPlotSlicesTabs") is None
@@ -5382,12 +5380,18 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         QtWidgets.QWidget, "figureComposerPlotSlicesColorsPage"
     )
     cuts_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesCutsPage")
-    limits_page = tool.findChild(
-        QtWidgets.QWidget, "figureComposerPlotSlicesLimitsPage"
-    )
-    style_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesStylePage")
+    view_page = tool.findChild(QtWidgets.QWidget, "figureComposerPlotSlicesViewPage")
     crop_check = tool.findChild(
         QtWidgets.QCheckBox, "figureComposerPlotSlicesCropCheck"
+    )
+    order_combo = tool.findChild(QtWidgets.QComboBox, "figureComposerOrderCombo")
+    transpose_check = next(
+        (
+            check
+            for check in tool.findChildren(QtWidgets.QCheckBox)
+            if check.text() == "Transpose"
+        ),
+        None,
     )
     same_limits_combo = tool.findChild(
         QtWidgets.QComboBox, "figureComposerSameLimitsCombo"
@@ -5401,18 +5405,21 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     )
     assert colors_page is not None
     assert cuts_page is not None
-    assert limits_page is not None
-    assert style_page is not None
+    assert view_page is not None
     assert crop_check is not None
+    assert order_combo is not None
+    assert transpose_check is not None
     assert same_limits_combo is not None
     assert axis_combo is not None
     assert annotate_kwargs_edit is not None
     assert colorbar_kwargs_edit is not None
-    assert limits_page.isAncestorOf(crop_check)
+    assert view_page.isAncestorOf(crop_check)
+    assert view_page.isAncestorOf(order_combo)
+    assert view_page.isAncestorOf(transpose_check)
     assert not cuts_page.isAncestorOf(crop_check)
-    assert same_limits_combo.parent() is style_page
-    assert axis_combo.parent() is style_page
-    assert annotate_kwargs_edit.parent() is style_page
+    assert same_limits_combo.parent() is colors_page
+    assert axis_combo.parent() is view_page
+    assert annotate_kwargs_edit.parent() is view_page
     assert colorbar_kwargs_edit.parent() is colors_page
     assert all(
         widget.toolTip()
@@ -5479,7 +5486,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
         tool.step_editor_stack.currentWidget().objectName()
         == "figureComposerPlotSlicesColorsPage"
     )
-    tool._select_step_section("limits")
+    tool._select_step_section("view")
     limit_edits = tool.step_editor_stack.currentWidget().findChildren(
         QtWidgets.QLineEdit
     )
@@ -5500,7 +5507,7 @@ def test_figure_composer_plot_slices_operation_uses_separate_window(
     assert "ylim=2.5" in tool.generated_code()
     assert (
         tool.step_editor_stack.currentWidget().objectName()
-        == "figureComposerPlotSlicesLimitsPage"
+        == "figureComposerPlotSlicesViewPage"
     )
     qtbot.mouseClick(
         tool.step_section_buttons["colors"], QtCore.Qt.MouseButton.LeftButton
@@ -11136,10 +11143,10 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
         is None
     )
 
-    tool._select_step_section("style")
-    style_page = tool.step_editor_stack.currentWidget()
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
     assert (
-        style_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
+        colors_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
         is None
     )
 
@@ -11379,11 +11386,13 @@ def test_figure_composer_plot_slices_mixed_image_line_batch_hides_color_controls
     )
     assert mixed_label is not None
 
-    tool._select_step_section("style")
-    style_page = tool.step_editor_stack.currentWidget()
-    assert style_page.findChild(QtWidgets.QComboBox, "figureComposerAxisCombo")
+    tool._select_step_section("view")
+    view_page = tool.step_editor_stack.currentWidget()
+    assert view_page.findChild(QtWidgets.QComboBox, "figureComposerAxisCombo")
+    tool._select_step_section("colors")
+    colors_page = tool.step_editor_stack.currentWidget()
     assert (
-        style_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
+        colors_page.findChild(QtWidgets.QComboBox, "figureComposerSameLimitsCombo")
         is None
     )
 
@@ -11696,7 +11705,7 @@ def test_figure_composer_dict_inputs_prefer_keyword_form(qtbot) -> None:
     qtbot.addWidget(tool)
 
     tool.operation_list.setCurrentRow(0)
-    tool._select_step_section("style")
+    tool._select_step_section("view")
     annotate_kwargs_edit = tool.findChild(
         QtWidgets.QLineEdit, "figureComposerAnnotateKwEdit"
     )

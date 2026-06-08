@@ -1663,14 +1663,11 @@ def _build_plot_slices_editor(
     cuts_page, basic_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesCutsPage"
     )
-    limits_page, limits_layout = tool._new_step_form_page(
-        "figureComposerPlotSlicesLimitsPage"
+    view_page, view_layout = tool._new_step_form_page(
+        "figureComposerPlotSlicesViewPage"
     )
     colors_page, colors_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesColorsPage"
-    )
-    style_page, style_layout = tool._new_step_form_page(
-        "figureComposerPlotSlicesStylePage"
     )
     advanced_page, advanced_layout = tool._new_step_form_page(
         "figureComposerPlotSlicesAdvancedPage"
@@ -1779,19 +1776,19 @@ def _build_plot_slices_editor(
         ["C", "F"],
         None if order_mixed else operation.order,
         lambda text: tool._update_current_operation_rebuild(order=text),
-        parent=cuts_page,
+        parent=view_page,
         mixed=order_mixed,
     )
     order_combo.setObjectName("figureComposerOrderCombo")
     tool._add_form_row(
-        basic_layout,
+        view_layout,
         "Panel order",
         order_combo,
         "C places sources by row and cuts by column. F places cuts by row "
         "and sources by column.",
     )
 
-    options_widget = QtWidgets.QWidget(cuts_page)
+    options_widget = QtWidgets.QWidget(view_page)
     options_layout = QtWidgets.QHBoxLayout(options_widget)
     options_layout.setContentsMargins(0, 0, 0, 0)
     transpose_mixed = tool._batch_is_mixed(operation, lambda target: target.transpose)
@@ -1805,10 +1802,10 @@ def _build_plot_slices_editor(
     options_layout.addWidget(transpose_check)
     options_layout.addStretch(1)
     tool._add_form_row(
-        basic_layout,
+        view_layout,
         "Options",
         options_widget,
-        "Common plot_slices boolean options for this step.",
+        "View-orientation options for this step.",
     )
 
     limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
@@ -1838,20 +1835,20 @@ def _build_plot_slices_editor(
             )
         )
     tool._add_compound_form_row(
-        limits_layout,
+        view_layout,
         "Limits",
         limit_controls,
         "Optional x/y plot limits for this step.",
     )
 
-    limits_options_widget = QtWidgets.QWidget(limits_page)
+    limits_options_widget = QtWidgets.QWidget(view_page)
     limits_options_layout = QtWidgets.QHBoxLayout(limits_options_widget)
     limits_options_layout.setContentsMargins(0, 0, 0, 0)
     crop_mixed = tool._batch_is_mixed(operation, lambda target: target.crop)
     crop_check = tool._check_box(
         operation.crop,
         lambda checked: tool._update_current_operation(crop=checked),
-        parent=limits_page,
+        parent=view_page,
         mixed=crop_mixed,
     )
     crop_check.setObjectName("figureComposerPlotSlicesCropCheck")
@@ -1860,7 +1857,7 @@ def _build_plot_slices_editor(
     limits_options_layout.addWidget(crop_check)
     limits_options_layout.addStretch(1)
     tool._add_form_row(
-        limits_layout,
+        view_layout,
         "Options",
         limits_options_widget,
         "Limit-related plot_slices options for this step.",
@@ -1903,43 +1900,23 @@ def _build_plot_slices_editor(
             "Dict literal or keyword arguments forwarded as colorbar_kw.",
         )
 
-        same_limits_mixed = tool._batch_is_mixed(
-            operation, lambda target: target.same_limits
-        )
-        same_limits_combo = tool._combo(
-            ["False", "True", "row", "col", "all"],
-            None if same_limits_mixed else str(operation.same_limits),
-            lambda text: tool._update_current_operation(
-                same_limits=_bool_or_text(text)
-            ),
-            parent=style_page,
-            mixed=same_limits_mixed,
-        )
-        same_limits_combo.setObjectName("figureComposerSameLimitsCombo")
-        tool._add_form_row(
-            style_layout,
-            "Match color limits",
-            same_limits_combo,
-            "Control plot_slices same_limits for image color scaling.",
-        )
-
     axis_mixed = tool._batch_is_mixed(operation, lambda target: target.axis)
     axis_combo = tool._combo(
         ["auto", "on", "off", "equal", "scaled", "tight", "image", "square"],
         None if axis_mixed else operation.axis,
         lambda text: tool._update_current_operation(axis=text),
-        parent=style_page,
+        parent=view_page,
         mixed=axis_mixed,
     )
     axis_combo.setObjectName("figureComposerAxisCombo")
     tool._add_form_row(
-        style_layout,
+        view_layout,
         "Axis",
         axis_combo,
         "Matplotlib axis mode passed through plot_slices.",
     )
 
-    label_options_widget = QtWidgets.QWidget(style_page)
+    label_options_widget = QtWidgets.QWidget(view_page)
     label_options_layout = QtWidgets.QHBoxLayout(label_options_widget)
     label_options_layout.setContentsMargins(0, 0, 0, 0)
     show_labels_mixed = tool._batch_is_mixed(
@@ -1964,7 +1941,7 @@ def _build_plot_slices_editor(
     label_options_layout.addWidget(annotate_check)
     label_options_layout.addStretch(1)
     tool._add_form_row(
-        style_layout,
+        view_layout,
         "Labels",
         label_options_widget,
         "Label and annotation visibility options for plot_slices.",
@@ -1975,7 +1952,7 @@ def _build_plot_slices_editor(
     )
     annotate_kwargs_edit = tool._line_edit(
         annotate_kwargs_text,
-        parent=style_page,
+        parent=view_page,
     )
     tool._apply_mixed_line_edit(annotate_kwargs_edit, annotate_kwargs_mixed)
     annotate_kwargs_edit.setObjectName("figureComposerAnnotateKwEdit")
@@ -1984,7 +1961,7 @@ def _build_plot_slices_editor(
         lambda text: tool._update_current_operation(annotate_kw=_dict_from_text(text)),
     )
     tool._add_form_row(
-        style_layout,
+        view_layout,
         "Annotation kwargs",
         annotate_kwargs_edit,
         "Dict literal or keyword arguments forwarded as annotate_kw.",
@@ -2523,6 +2500,26 @@ def _build_plot_slices_editor(
             "Extra dict literal or keyword arguments for the norm constructor.",
         )
 
+        same_limits_mixed = tool._batch_is_mixed(
+            operation, lambda target: target.same_limits
+        )
+        same_limits_combo = tool._combo(
+            ["False", "True", "row", "col", "all"],
+            None if same_limits_mixed else str(operation.same_limits),
+            lambda text: tool._update_current_operation(
+                same_limits=_bool_or_text(text)
+            ),
+            parent=colors_page,
+            mixed=same_limits_mixed,
+        )
+        same_limits_combo.setObjectName("figureComposerSameLimitsCombo")
+        tool._add_form_row(
+            colors_layout,
+            "Match color limits",
+            same_limits_combo,
+            "Control plot_slices same_limits for image color scaling.",
+        )
+
         panel_styles_mixed = tool._batch_is_mixed(
             operation, lambda target: target.panel_styles_enabled
         )
@@ -2597,9 +2594,8 @@ def _build_plot_slices_editor(
     )
     return [
         ("cuts", "Cuts", cuts_page),
-        ("limits", "Limits", limits_page),
+        ("view", "View", view_page),
         ("colors", "Colors", colors_page),
-        ("style", "Style", style_page),
         ("advanced", "Advanced", advanced_page),
     ]
 
@@ -3289,9 +3285,8 @@ def _plot_slices_transformed_code_kwargs(
 
 _SECTION_TOOLTIPS = {
     "cuts": "Choose slice dimension, cut values, and extraction options.",
-    "limits": "Set explicit x/y axis limits for this slice plot.",
+    "view": "Set orientation, axis limits, labels, and annotation behavior.",
     "colors": "Set image color scaling or 1D line styling for this plot_slices step.",
-    "style": "Set labels, annotation, aspect, and shared color-limit options.",
     "advanced": "Pass advanced keyword arguments to plot_slices.",
 }
 
@@ -3623,7 +3618,7 @@ def _section_summary(
             if operation.slice_kwargs:
                 return "additional"
             return "none"
-        case "limits":
+        case "view":
             labels = [
                 label
                 for label, value in (("x", operation.xlim), ("y", operation.ylim))
@@ -3639,8 +3634,6 @@ def _section_summary(
             if operation.panel_styles_enabled and operation.panel_styles:
                 return "per-panel"
             return operation.cmap or "default"
-        case "style":
-            return operation.axis
         case "advanced":
             return "set" if _effective_extra_kwargs(tool, operation) else "optional"
     return ""
