@@ -91,7 +91,7 @@ from erlab.interactive._figurecomposer._text import (
 from erlab.interactive._figurecomposer._widgets import _ColorLineEditWidget
 
 if typing.TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     import matplotlib.axes
 
@@ -288,6 +288,19 @@ def _panel_style_for(
     operation: FigureOperationState, key: _PlotSlicesPanelKey
 ) -> FigurePlotSlicesPanelStyleState:
     return _panel_style_map(operation).get(
+        (key.map_index, key.slice_index),
+        FigurePlotSlicesPanelStyleState(
+            map_index=key.map_index,
+            slice_index=key.slice_index,
+        ),
+    )
+
+
+def _panel_style_from_map(
+    styles: Mapping[tuple[int, int], FigurePlotSlicesPanelStyleState],
+    key: _PlotSlicesPanelKey,
+) -> FigurePlotSlicesPanelStyleState:
+    return styles.get(
         (key.map_index, key.slice_index),
         FigurePlotSlicesPanelStyleState(
             map_index=key.map_index,
@@ -664,7 +677,6 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
 
         self.cmap_override_check = QtWidgets.QCheckBox("Override colormap", self)
         self.cmap_override_check.setObjectName("figureComposerPanelCmapOverrideCheck")
-        self.cmap_override_check.setTristate(True)
         self.cmap_override_check.setToolTip(
             "Store a colormap override for the selected panels."
         )
@@ -674,12 +686,10 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         self.cmap_combo.ensure_populated()
         self.cmap_reverse_check = QtWidgets.QCheckBox("Reverse", self)
         self.cmap_reverse_check.setObjectName("figureComposerPanelCmapReverseCheck")
-        self.cmap_reverse_check.setTristate(True)
         self.cmap_reverse_check.setToolTip("Append _r to the per-panel colormap.")
 
         self.norm_override_check = QtWidgets.QCheckBox("Override norm", self)
         self.norm_override_check.setObjectName("figureComposerPanelNormOverrideCheck")
-        self.norm_override_check.setTristate(True)
         self.norm_override_check.setToolTip(
             "Store normalization overrides for the selected panels."
         )
@@ -786,7 +796,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
         return edit
 
     def _panel_row_text(self, key: _PlotSlicesPanelKey) -> str:
-        style = _panel_style_for(self._operation, key)
+        style = _panel_style_from_map(self._styles, key)
         parts = [key.label]
         if _panel_style_has_cmap_override(style):
             parts.append(_effective_panel_cmap(self._operation, style))
@@ -810,7 +820,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
 
     def _selected_styles(self) -> tuple[FigurePlotSlicesPanelStyleState, ...]:
         return tuple(
-            _panel_style_for(self._operation, key) for key in self._selected_keys()
+            _panel_style_from_map(self._styles, key) for key in self._selected_keys()
         )
 
     @staticmethod
@@ -851,6 +861,7 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
     @staticmethod
     def _set_check_state(check: QtWidgets.QCheckBox, value: object) -> None:
         with QtCore.QSignalBlocker(check):
+            check.setTristate(value is _MISSING)
             if value is _MISSING:
                 check.setCheckState(QtCore.Qt.CheckState.PartiallyChecked)
             else:
@@ -1061,7 +1072,14 @@ class _PanelStyleEditorWidget(QtWidgets.QWidget):
                 self._styles[style_key] = next_style
             else:
                 self._styles.pop(style_key, None)
-        self.sigPanelStylesChanged.emit(self.styles())
+        styles = self.styles()
+        self._operation = self._operation.model_copy(
+            update={
+                "panel_styles_enabled": bool(styles),
+                "panel_styles": styles,
+            }
+        )
+        self.sigPanelStylesChanged.emit(styles)
         self._sync_rows()
         self._sync_controls()
 
@@ -1242,7 +1260,7 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
         return None if not stripped else float(stripped)
 
     def _panel_row_text(self, key: _PlotSlicesPanelKey) -> str:
-        style = _panel_style_for(self._operation, key)
+        style = _panel_style_from_map(self._styles, key)
         color = line_kw_text(
             self._operation.model_copy(update={"line_kw": style.line_kw}),
             "color",
@@ -1265,7 +1283,7 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
 
     def _selected_styles(self) -> tuple[FigurePlotSlicesPanelStyleState, ...]:
         return tuple(
-            _panel_style_for(self._operation, key) for key in self._selected_keys()
+            _panel_style_from_map(self._styles, key) for key in self._selected_keys()
         )
 
     @staticmethod
@@ -1473,7 +1491,14 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
             self._styles.pop(style_key, None)
 
     def _emit_styles_changed(self) -> None:
-        self.sigPanelStylesChanged.emit(self.styles())
+        styles = self.styles()
+        self._operation = self._operation.model_copy(
+            update={
+                "panel_styles_enabled": bool(styles),
+                "panel_styles": styles,
+            }
+        )
+        self.sigPanelStylesChanged.emit(styles)
         self._sync_rows()
         self._sync_controls()
 

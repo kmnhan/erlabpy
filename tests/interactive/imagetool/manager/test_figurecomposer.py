@@ -1908,7 +1908,11 @@ def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
         assert item is not None
         item.setSelected(True)
     editor._sync_controls()
+    assert not editor.cmap_override_check.isTristate()
+    assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Checked
     assert editor.cmap_combo.currentData() is figurecomposer_plot_slices._MISSING
+    assert not editor.norm_override_check.isTristate()
+    assert editor.norm_override_check.checkState() == QtCore.Qt.CheckState.Checked
     assert editor.norm_combo.currentData() is figurecomposer_plot_slices._MISSING
     assert editor.norm_kwargs_edit.placeholderText() == "(multiple values)"
 
@@ -1926,6 +1930,52 @@ def test_figure_composer_plot_slices_image_panel_style_editor_updates_styles(
 
     editor.cmap_override_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
     assert emitted[-1] == ()
+    assert not editor.cmap_override_check.isTristate()
+    assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Unchecked
+    assert not editor.cmap_combo.isEnabled()
+    assert all("magma" not in editor.panel_list.item(row).text() for row in range(2))
+
+
+def test_figure_composer_plot_slices_panel_override_controls_stay_live(
+    qtbot,
+) -> None:
+    operation = FigureOperationState.plot_slices(
+        label="image",
+        sources=("data",),
+    ).model_copy(update={"cmap": "viridis", "norm_name": "PowerNorm"})
+    keys = (figurecomposer_plot_slices._PlotSlicesPanelKey(0, 0, "panel 1"),)
+    editor = figurecomposer_plot_slices._PanelStyleEditorWidget(
+        operation,
+        keys,
+        lambda _owner, signal, slot: signal.connect(slot),
+    )
+    qtbot.addWidget(editor)
+    emitted: list[tuple[FigurePlotSlicesPanelStyleState, ...]] = []
+    editor.sigPanelStylesChanged.connect(emitted.append)
+
+    assert not editor.cmap_override_check.isTristate()
+    editor.cmap_override_check.click()
+    assert editor.cmap_override_check.checkState() == QtCore.Qt.CheckState.Checked
+    assert editor.cmap_combo.isEnabled()
+    assert emitted[-1] == (
+        FigurePlotSlicesPanelStyleState(
+            map_index=0,
+            slice_index=0,
+            cmap="viridis",
+        ),
+    )
+
+    editor.norm_override_check.click()
+    assert editor.norm_override_check.checkState() == QtCore.Qt.CheckState.Checked
+    assert editor.norm_combo.isEnabled()
+    assert emitted[-1] == (
+        FigurePlotSlicesPanelStyleState(
+            map_index=0,
+            slice_index=0,
+            cmap="viridis",
+            norm_name="PowerNorm",
+        ),
+    )
 
 
 def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
@@ -1997,6 +2047,11 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
     assert all("color" not in style.line_kw for style in emitted[-1])
     editor._update_selected_extra_line_kw({})
     assert all("alpha" not in style.line_kw for style in emitted[-1])
+    assert all(
+        "red" not in editor.panel_list.item(row).text()
+        and "blue" not in editor.panel_list.item(row).text()
+        for row in range(2)
+    )
 
 
 def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> None:
@@ -7072,10 +7127,16 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
     cmap_combo = dialog.findChild(
         erlab.interactive.colors.ColorMapComboBox, "figureComposerPanelCmapCombo"
     )
+    norm_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerPanelNormOverrideCheck"
+    )
+    norm_combo = dialog.findChild(QtWidgets.QComboBox, "figureComposerPanelNormCombo")
     assert target_combo is not None
     assert panel_list is not None
     assert cmap_check is not None
     assert cmap_combo is not None
+    assert norm_check is not None
+    assert norm_combo is not None
     assert target_combo.count() == 1
     assert panel_list.count() == 2
 
@@ -7084,8 +7145,14 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
     assert first_panel is not None
     first_panel.setSelected(True)
     cmap_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    assert cmap_check.checkState() == QtCore.Qt.CheckState.Checked
+    assert cmap_combo.isEnabled()
     cmap_combo.setCurrentText("magma")
     cmap_combo.activated.emit(cmap_combo.currentIndex())
+    norm_check.setCheckState(QtCore.Qt.CheckState.Checked)
+    assert norm_check.checkState() == QtCore.Qt.CheckState.Checked
+    assert norm_combo.isEnabled()
+    _activate_combo_text(norm_combo, "Normalize")
 
     operation = tool.tool_status.operations[0]
     assert operation.panel_styles_enabled
@@ -7094,6 +7161,7 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
             map_index=0,
             slice_index=0,
             cmap="magma",
+            norm_name="Normalize",
         ),
     )
 
