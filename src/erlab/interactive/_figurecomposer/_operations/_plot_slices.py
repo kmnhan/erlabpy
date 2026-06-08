@@ -2426,6 +2426,11 @@ def _build_plot_slices_editor(
                 "Symmetric half-range for centered ERLab normalization classes.",
             ),
         }
+        color_limit_placeholders = (
+            _plot_slices_color_limit_placeholders(tool, operation)
+            if "vmin" in norm_fields or "vmax" in norm_fields
+            else {}
+        )
         norm_number_widgets: dict[str, tuple[str, QtWidgets.QWidget, str]] = {}
         for attr in ("vmin", "vmax", "vcenter", "halfrange"):
             if attr not in norm_fields:
@@ -2439,7 +2444,13 @@ def _build_plot_slices_editor(
             edit = tool._line_edit(text)
             tool._apply_mixed_line_edit(edit, mixed)
             edit.setObjectName(f"figureComposer{attr[0].upper()}{attr[1:]}NormEdit")
-            placeholder = "" if mixed else _norm_field_placeholder(operation, attr)
+            placeholder = (
+                ""
+                if mixed
+                else color_limit_placeholders.get(
+                    attr, _norm_field_placeholder(operation, attr)
+                )
+            )
             if placeholder:
                 edit.setPlaceholderText(placeholder)
             tool._connect_line_edit_finished(
@@ -2657,11 +2668,11 @@ def _operation_field_getter(
     return getter
 
 
-def _plot_slices_limit_placeholder(
-    tool: FigureComposerTool, operation: FigureOperationState, attr: str
-) -> str:
-    if attr not in {"xlim", "ylim"} or getattr(operation, attr) is not None:
-        return ""
+def _plot_slices_rendered_value(
+    tool: FigureComposerTool,
+    operation: FigureOperationState,
+    reader: Callable[[list[matplotlib.axes.Axes]], typing.Any],
+) -> typing.Any:
     with _figure_style_context():
         figure = Figure(
             figsize=tool._recipe.setup.figsize,
@@ -2680,13 +2691,67 @@ def _plot_slices_limit_placeholder(
                 _axes_from_selection(tool, operation.axes, axs, for_plot_slices=False)
             )
             if not axes:
-                return ""
-            limits = axes[0].get_xlim() if attr == "xlim" else axes[0].get_ylim()
+                return None
+            return reader(axes)
         except Exception:
-            return ""
+            return None
         finally:
             figure.clear()
+
+
+def _plot_slices_limit_placeholder(
+    tool: FigureComposerTool, operation: FigureOperationState, attr: str
+) -> str:
+    if attr not in {"xlim", "ylim"} or getattr(operation, attr) is not None:
+        return ""
+    limits = _plot_slices_rendered_value(
+        tool,
+        operation,
+        lambda axes: axes[0].get_xlim() if attr == "xlim" else axes[0].get_ylim(),
+    )
+    if limits is None:
+        return ""
     return _format_pair((float(limits[0]), float(limits[1])))
+
+
+def _plot_slices_color_limit_placeholders(
+    tool: FigureComposerTool, operation: FigureOperationState
+) -> dict[str, str]:
+    if operation.vmin is not None and operation.vmax is not None:
+        return {}
+    clim = _plot_slices_rendered_value(tool, operation, _first_mappable_clim)
+    if clim is None:
+        return {}
+    placeholders: dict[str, str] = {}
+    if operation.vmin is None and (vmin := _format_placeholder_number(clim[0])):
+        placeholders["vmin"] = vmin
+    if operation.vmax is None and (vmax := _format_placeholder_number(clim[1])):
+        placeholders["vmax"] = vmax
+    return placeholders
+
+
+def _first_mappable_clim(
+    axes: Sequence[matplotlib.axes.Axes],
+) -> tuple[float, float] | None:
+    for axis in axes:
+        for mappable in (*axis.images, *axis.collections):
+            get_clim = getattr(mappable, "get_clim", None)
+            if get_clim is None:
+                continue
+            vmin, vmax = get_clim()
+            if vmin is None or vmax is None:
+                continue
+            try:
+                return float(vmin), float(vmax)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _format_placeholder_number(value: float) -> str:
+    if not math.isfinite(value):
+        return ""
+    return f"{value:g}"
 
 
 def _norm_field_placeholder(operation: FigureOperationState, attr: str) -> str:

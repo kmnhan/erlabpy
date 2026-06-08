@@ -1687,6 +1687,16 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
         )
         == ""
     )
+    assert figurecomposer_plot_slices._plot_slices_color_limit_placeholders(
+        tool,
+        FigureOperationState.plot_slices(
+            label="image",
+            sources=("image",),
+            slice_dim="eV",
+            slice_values=(0.0,),
+            axes=FigureAxesSelectionState(axes=((0, 0),)),
+        ),
+    ) == {"vmin": "0", "vmax": "11"}
     assert (
         figurecomposer_plot_slices._norm_gamma_value(
             image_operation.model_copy(update={"norm_gamma": None, "gamma": None})
@@ -10884,8 +10894,14 @@ def test_figure_composer_norm_controls_are_dynamic_and_split_kwargs(qtbot) -> No
         )
         is not None
     )
-    assert colors_page.findChild(QtWidgets.QLineEdit, "figureComposerVminNormEdit")
-    assert colors_page.findChild(QtWidgets.QLineEdit, "figureComposerVmaxNormEdit")
+    vmin_edit = colors_page.findChild(QtWidgets.QLineEdit, "figureComposerVminNormEdit")
+    vmax_edit = colors_page.findChild(QtWidgets.QLineEdit, "figureComposerVmaxNormEdit")
+    assert vmin_edit is not None
+    assert vmax_edit is not None
+    assert vmin_edit.text() == ""
+    assert vmax_edit.text() == ""
+    assert vmin_edit.placeholderText() == "0"
+    assert vmax_edit.placeholderText() == "3"
     assert (
         colors_page.findChild(QtWidgets.QLineEdit, "figureComposerHalfrangeNormEdit")
         is None
