@@ -7138,6 +7138,11 @@ def test_figure_composer_toolbar_axes_dialog_updates_plot_slices_curve_style(
     assert line_kwargs_edit is not None
     assert target_combo.count() == 1
     assert panel_list.count() == 2
+    main_panel_styles_check = tool.findChild(
+        QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
+    )
+    assert main_panel_styles_check is not None
+    assert main_panel_styles_check.checkState() == QtCore.Qt.CheckState.Unchecked
 
     panel_list.clearSelection()
     first_panel = panel_list.item(0)
@@ -7171,6 +7176,11 @@ def test_figure_composer_toolbar_axes_dialog_updates_plot_slices_curve_style(
             },
         ),
     )
+    main_panel_styles_check = tool.findChild(
+        QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
+    )
+    assert main_panel_styles_check is not None
+    assert main_panel_styles_check.checkState() == QtCore.Qt.CheckState.Checked
 
 
 def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
@@ -7247,6 +7257,11 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
             norm_name="Normalize",
         ),
     )
+    main_panel_styles_check = tool.findChild(
+        QtWidgets.QCheckBox, "figureComposerPlotSlicesPanelStylesCheck"
+    )
+    assert main_panel_styles_check is not None
+    assert main_panel_styles_check.checkState() == QtCore.Qt.CheckState.Checked
 
 
 def test_figure_composer_toolbar_axes_dialog_uses_gridspec_selector(qtbot) -> None:

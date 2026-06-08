@@ -1124,11 +1124,20 @@ def _operation_by_id(
 
 
 def _replace_operation_by_id(
-    tool: FigureComposerTool, operation_id: str, updated: FigureOperationState
+    tool: FigureComposerTool,
+    operation_id: str,
+    updated: FigureOperationState,
+    *,
+    rebuild_editor: bool = False,
 ) -> None:
     for index, operation in enumerate(tool._recipe.operations):
         if operation.operation_id == operation_id:
-            _replace_recipe_operation(tool, index, updated)
+            _replace_recipe_operation(
+                tool,
+                index,
+                updated,
+                rebuild_editor=rebuild_editor,
+            )
             return
 
 
@@ -1160,11 +1169,16 @@ def _update_plot_slices_panel_styles(
         operation.model_copy(
             update={"panel_styles_enabled": bool(merged), "panel_styles": merged}
         ),
+        rebuild_editor=_current_operation_id(tool) == operation_id,
     )
 
 
 def _replace_recipe_operation(
-    tool: FigureComposerTool, index: int, operation: FigureOperationState
+    tool: FigureComposerTool,
+    index: int,
+    operation: FigureOperationState,
+    *,
+    rebuild_editor: bool = False,
 ) -> None:
     if index < 0 or index >= len(tool._recipe.operations):
         return
@@ -1178,8 +1192,13 @@ def _replace_recipe_operation(
         tuple(operations),
         current_id,
         selected_ids,
-        rebuild_editor=False,
+        rebuild_editor=rebuild_editor,
     )
+
+
+def _current_operation_id(tool: FigureComposerTool) -> str | None:
+    current = tool._current_operation()
+    return current[1].operation_id if current is not None else None
 
 
 def _dialog_parent(tool: FigureComposerTool) -> QtWidgets.QWidget:
