@@ -1800,24 +1800,19 @@ def _build_plot_slices_editor(
         "and sources by column.",
     )
 
-    options_widget = QtWidgets.QWidget(view_page)
-    options_layout = QtWidgets.QHBoxLayout(options_widget)
-    options_layout.setContentsMargins(0, 0, 0, 0)
     transpose_mixed = tool._batch_is_mixed(operation, lambda target: target.transpose)
     transpose_check = tool._check_box(
         operation.transpose,
         lambda checked: tool._update_current_operation_rebuild(transpose=checked),
         mixed=transpose_mixed,
     )
-    transpose_check.setText("Transpose")
+    transpose_check.setText("")
     transpose_check.setToolTip("Swap the plotted x/y orientation.")
-    options_layout.addWidget(transpose_check)
-    options_layout.addStretch(1)
     tool._add_form_row(
         view_layout,
-        "Options",
-        options_widget,
-        "View-orientation options for this step.",
+        "Transpose",
+        transpose_check,
+        "Swap the plotted x/y orientation.",
     )
 
     limit_controls: list[tuple[str, QtWidgets.QWidget, str]] = []
@@ -1853,9 +1848,6 @@ def _build_plot_slices_editor(
         "Optional x/y plot limits for this step.",
     )
 
-    limits_options_widget = QtWidgets.QWidget(view_page)
-    limits_options_layout = QtWidgets.QHBoxLayout(limits_options_widget)
-    limits_options_layout.setContentsMargins(0, 0, 0, 0)
     crop_mixed = tool._batch_is_mixed(operation, lambda target: target.crop)
     crop_check = tool._check_box(
         operation.crop,
@@ -1864,15 +1856,13 @@ def _build_plot_slices_editor(
         mixed=crop_mixed,
     )
     crop_check.setObjectName("figureComposerPlotSlicesCropCheck")
-    crop_check.setText("Crop")
+    crop_check.setText("")
     crop_check.setToolTip("Crop each slice to explicit x/y limits before plotting.")
-    limits_options_layout.addWidget(crop_check)
-    limits_options_layout.addStretch(1)
     tool._add_form_row(
         view_layout,
-        "Options",
-        limits_options_widget,
-        "Limit-related plot_slices options for this step.",
+        "Crop",
+        crop_check,
+        "Crop each slice to explicit x/y limits before plotting.",
     )
 
     if is_image_plot:
