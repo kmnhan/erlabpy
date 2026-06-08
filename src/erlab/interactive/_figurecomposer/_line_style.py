@@ -16,10 +16,16 @@ if typing.TYPE_CHECKING:
     from erlab.interactive._figurecomposer._tool import FigureComposerTool
 
 
+def _is_no_style_token(value: str) -> bool:
+    return value == "" or value.isspace() or value.lower() == "none"
+
+
 def _style_options(values: Iterable[typing.Any]) -> tuple[str, ...]:
-    options = [""]
+    options = ["none"]
     for value in values:
         if not isinstance(value, str):
+            continue
+        if _is_no_style_token(value):
             continue
         if value not in options:
             options.append(value)
@@ -28,6 +34,7 @@ def _style_options(values: Iterable[typing.Any]) -> tuple[str, ...]:
 
 LINE_STYLE_OPTIONS = _style_options(matplotlib.lines.lineStyles)
 LINE_MARKER_OPTIONS = _style_options(matplotlib.markers.MarkerStyle.markers)
+LINE_STYLE_DEFAULT_LABEL = "None"
 CONTROLLED_LINE_KW_KEYS = frozenset(
     (
         "c",
@@ -101,6 +108,47 @@ def line_kw_value(
 def line_kw_text(operation: FigureOperationState, key: str, *aliases: str) -> str:
     value = line_kw_value(operation, key, *aliases)
     return "" if value is None else str(value)
+
+
+def line_kw_style_value(
+    operation: FigureOperationState, key: str, *aliases: str
+) -> str | None:
+    value = line_kw_value(operation, key, *aliases)
+    return normalize_style_value(value)
+
+
+def normalize_style_value(value: typing.Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return "none" if _is_no_style_token(text) else text
+
+
+def configure_style_combo(
+    combo: QtWidgets.QComboBox,
+    options: tuple[str, ...],
+    current: str | None,
+) -> None:
+    combo.clear()
+    combo.addItem(LINE_STYLE_DEFAULT_LABEL, None)
+    for value in options:
+        combo.addItem(value, value)
+    set_style_combo_value(combo, current)
+
+
+def set_style_combo_value(combo: QtWidgets.QComboBox, current: str | None) -> None:
+    normalized = normalize_style_value(current)
+    for index in range(combo.count()):
+        if combo.itemData(index) == normalized:
+            combo.setCurrentIndex(index)
+            return
+    if normalized is not None:
+        combo.addItem(normalized, normalized)
+        combo.setCurrentIndex(combo.count() - 1)
+
+
+def style_combo_value(combo: QtWidgets.QComboBox) -> str | None:
+    return typing.cast("str | None", combo.currentData())
 
 
 def line_kw_float(

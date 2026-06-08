@@ -7,9 +7,11 @@ import typing
 from erlab.interactive._figurecomposer._code import _axes_sequence_code, _selection_code
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
+    LINE_STYLE_DEFAULT_LABEL,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
     line_kw_float,
+    line_kw_style_value,
     line_kw_text,
     optional_positive_spinbox,
     optional_positive_spinbox_value,
@@ -378,14 +380,13 @@ def _add_line_style_controls(
     page: QtWidgets.QWidget,
 ) -> None:
     line_style_mixed = tool._batch_is_mixed(
-        operation, lambda target: line_kw_text(target, "linestyle", "ls")
+        operation, lambda target: line_kw_style_value(target, "linestyle", "ls")
     )
-    line_style_combo = tool._combo(
+    line_style_combo = tool._optional_name_combo(
         LINE_STYLE_OPTIONS,
-        None if line_style_mixed else line_kw_text(operation, "linestyle", "ls"),
-        lambda text: update_current_line_kw(
-            tool, "linestyle", text or None, aliases=("ls",)
-        ),
+        None if line_style_mixed else line_kw_style_value(operation, "linestyle", "ls"),
+        LINE_STYLE_DEFAULT_LABEL,
+        lambda text: update_current_line_kw(tool, "linestyle", text, aliases=("ls",)),
         parent=page,
         mixed=line_style_mixed,
     )
@@ -431,12 +432,13 @@ def _add_line_style_controls(
     )
 
     marker_mixed = tool._batch_is_mixed(
-        operation, lambda target: line_kw_text(target, "marker")
+        operation, lambda target: line_kw_style_value(target, "marker")
     )
-    marker_combo = tool._combo(
+    marker_combo = tool._optional_name_combo(
         LINE_MARKER_OPTIONS,
-        None if marker_mixed else line_kw_text(operation, "marker"),
-        lambda text: update_current_line_kw(tool, "marker", text or None),
+        None if marker_mixed else line_kw_style_value(operation, "marker"),
+        LINE_STYLE_DEFAULT_LABEL,
+        lambda text: update_current_line_kw(tool, "marker", text),
         parent=page,
         mixed=marker_mixed,
     )

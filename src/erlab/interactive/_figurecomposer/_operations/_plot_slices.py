@@ -21,13 +21,18 @@ from erlab.interactive._figurecomposer._defaults import (
 from erlab.interactive._figurecomposer._line_style import (
     CONTROLLED_LINE_KW_KEYS,
     LINE_MARKER_OPTIONS,
+    LINE_STYLE_DEFAULT_LABEL,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
+    configure_style_combo,
     extra_line_kw,
     line_kw_float,
+    line_kw_style_value,
     line_kw_text,
     optional_positive_spinbox,
     optional_positive_spinbox_value,
+    set_style_combo_value,
+    style_combo_value,
     update_current_extra_line_kw,
     update_current_line_kw,
 )
@@ -1131,11 +1136,11 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
         self.color_edit.setColorButtonObjectName("figureComposerPanelLineColorButton")
         self.style_combo = QtWidgets.QComboBox(self)
         self.style_combo.setObjectName("figureComposerPanelLineStyleCombo")
-        self.style_combo.addItems(list(LINE_STYLE_OPTIONS))
+        configure_style_combo(self.style_combo, LINE_STYLE_OPTIONS, None)
         self.width_edit = self._line_edit("figureComposerPanelLineWidthEdit")
         self.marker_combo = QtWidgets.QComboBox(self)
         self.marker_combo.setObjectName("figureComposerPanelLineMarkerCombo")
-        self.marker_combo.addItems(list(LINE_MARKER_OPTIONS))
+        configure_style_combo(self.marker_combo, LINE_MARKER_OPTIONS, None)
         self.marker_size_edit = self._line_edit("figureComposerPanelLineMarkerSizeEdit")
         self.marker_face_edit = _ColorLineEditWidget(parent=self)
         self.marker_face_edit.setLineEditObjectName(
@@ -1187,7 +1192,7 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
             self.style_combo.activated,
             lambda _index: self._line_kw_changed(
                 "linestyle",
-                self.style_combo.currentText() or None,
+                style_combo_value(self.style_combo),
                 aliases=("ls",),
             ),
         )
@@ -1204,7 +1209,7 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
             self,
             self.marker_combo.activated,
             lambda _index: self._line_kw_changed(
-                "marker", self.marker_combo.currentText() or None
+                "marker", style_combo_value(self.marker_combo)
             ),
         )
         connect_signal(
@@ -1299,6 +1304,12 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
         operation = self._operation.model_copy(update={"line_kw": style.line_kw})
         return line_kw_text(operation, *keys)
 
+    def _line_style_value(
+        self, style: FigurePlotSlicesPanelStyleState, *keys: str
+    ) -> str | None:
+        operation = self._operation.model_copy(update={"line_kw": style.line_kw})
+        return line_kw_style_value(operation, *keys)
+
     def _sync_controls(self) -> None:
         if self._updating:
             return
@@ -1315,7 +1326,8 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
                 self.style_combo,
                 self._common_value(
                     tuple(
-                        self._line_value(style, "linestyle", "ls") for style in styles
+                        self._line_style_value(style, "linestyle", "ls")
+                        for style in styles
                     )
                 ),
             )
@@ -1330,7 +1342,7 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
             self._set_combo(
                 self.marker_combo,
                 self._common_value(
-                    tuple(self._line_value(style, "marker") for style in styles)
+                    tuple(self._line_style_value(style, "marker") for style in styles)
                 ),
             )
             self._set_line_edit(
@@ -1393,7 +1405,7 @@ class _PanelLineStyleEditorWidget(QtWidgets.QWidget):
                 _PanelStyleEditorWidget._set_combo_mixed(combo)
             else:
                 _PanelStyleEditorWidget._remove_combo_mixed(combo)
-                combo.setCurrentText("" if value is None else str(value))
+                set_style_combo_value(combo, None if value is None else str(value))
 
     @classmethod
     def _extra_line_kw(cls, line_kw: dict[str, typing.Any]) -> dict[str, typing.Any]:
@@ -2005,13 +2017,16 @@ def _build_plot_slices_editor(
         )
 
         line_style_mixed = tool._batch_is_mixed(
-            operation, lambda target: line_kw_text(target, "linestyle", "ls")
+            operation, lambda target: line_kw_style_value(target, "linestyle", "ls")
         )
-        line_style_combo = tool._combo(
+        line_style_combo = tool._optional_name_combo(
             LINE_STYLE_OPTIONS,
-            None if line_style_mixed else line_kw_text(operation, "linestyle", "ls"),
+            None
+            if line_style_mixed
+            else line_kw_style_value(operation, "linestyle", "ls"),
+            LINE_STYLE_DEFAULT_LABEL,
             lambda text: update_current_line_kw(
-                tool, "linestyle", text or None, aliases=("ls",)
+                tool, "linestyle", text, aliases=("ls",)
             ),
             parent=colors_page,
             mixed=line_style_mixed,
@@ -2059,12 +2074,13 @@ def _build_plot_slices_editor(
         )
 
         marker_mixed = tool._batch_is_mixed(
-            operation, lambda target: line_kw_text(target, "marker")
+            operation, lambda target: line_kw_style_value(target, "marker")
         )
-        marker_combo = tool._combo(
+        marker_combo = tool._optional_name_combo(
             LINE_MARKER_OPTIONS,
-            None if marker_mixed else line_kw_text(operation, "marker"),
-            lambda text: update_current_line_kw(tool, "marker", text or None),
+            None if marker_mixed else line_kw_style_value(operation, "marker"),
+            LINE_STYLE_DEFAULT_LABEL,
+            lambda text: update_current_line_kw(tool, "marker", text),
             parent=colors_page,
             mixed=marker_mixed,
         )

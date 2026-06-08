@@ -673,6 +673,15 @@ def test_figure_composer_source_helpers_cover_selection_contract() -> None:
 
 
 def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
+    assert "" not in figurecomposer_line_style.LINE_STYLE_OPTIONS
+    assert " " not in figurecomposer_line_style.LINE_STYLE_OPTIONS
+    assert "None" not in figurecomposer_line_style.LINE_STYLE_OPTIONS
+    assert "none" in figurecomposer_line_style.LINE_STYLE_OPTIONS
+    assert "" not in figurecomposer_line_style.LINE_MARKER_OPTIONS
+    assert " " not in figurecomposer_line_style.LINE_MARKER_OPTIONS
+    assert "None" not in figurecomposer_line_style.LINE_MARKER_OPTIONS
+    assert "none" in figurecomposer_line_style.LINE_MARKER_OPTIONS
+
     assert figurecomposer_line_style.color_kw_value_from_text("") is None
     assert figurecomposer_line_style.color_kw_value_from_text("tab:blue") == "tab:blue"
     assert figurecomposer_line_style.color_kw_value_from_text("['red', 'blue']") == (
@@ -683,6 +692,21 @@ def test_figure_composer_line_style_helpers_update_recipe(qtbot) -> None:
 
     parent = QtWidgets.QWidget()
     qtbot.addWidget(parent)
+    combo = QtWidgets.QComboBox(parent)
+    figurecomposer_line_style.configure_style_combo(
+        combo,
+        figurecomposer_line_style.LINE_STYLE_OPTIONS,
+        None,
+    )
+    assert combo.itemData(0) is None
+    assert figurecomposer_line_style.style_combo_value(combo) is None
+    figurecomposer_line_style.set_style_combo_value(combo, "")
+    assert figurecomposer_line_style.style_combo_value(combo) == "none"
+    figurecomposer_line_style.set_style_combo_value(combo, " ")
+    assert figurecomposer_line_style.style_combo_value(combo) == "none"
+    figurecomposer_line_style.set_style_combo_value(combo, "None")
+    assert figurecomposer_line_style.style_combo_value(combo) == "none"
+
     spinbox = figurecomposer_line_style.optional_positive_spinbox(None, parent=parent)
     assert (
         figurecomposer_line_style.optional_positive_spinbox_value(spinbox.value())

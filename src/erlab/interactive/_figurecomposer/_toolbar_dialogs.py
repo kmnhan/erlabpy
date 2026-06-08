@@ -25,11 +25,14 @@ from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
+    configure_style_combo,
     extra_line_kw,
     line_kw_float,
+    line_kw_style_value,
     line_kw_text,
     optional_positive_spinbox,
     optional_positive_spinbox_value,
+    style_combo_value,
 )
 from erlab.interactive._figurecomposer._operations._plot_slices import (
     _PLOT_SLICES_PANEL_IMAGE,
@@ -748,8 +751,11 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
 
         self.style_combo = QtWidgets.QComboBox(self)
         self.style_combo.setObjectName("figureComposerToolbarCurveLineStyleCombo")
-        self.style_combo.addItems(list(LINE_STYLE_OPTIONS))
-        self.style_combo.setCurrentText(line_kw_text(operation, "linestyle", "ls"))
+        configure_style_combo(
+            self.style_combo,
+            LINE_STYLE_OPTIONS,
+            line_kw_style_value(operation, "linestyle", "ls"),
+        )
         self.style_combo.setToolTip("Matplotlib line style for these profiles.")
 
         self.width_spin = optional_positive_spinbox(
@@ -761,8 +767,11 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
 
         self.marker_combo = QtWidgets.QComboBox(self)
         self.marker_combo.setObjectName("figureComposerToolbarCurveMarkerCombo")
-        self.marker_combo.addItems(list(LINE_MARKER_OPTIONS))
-        self.marker_combo.setCurrentText(line_kw_text(operation, "marker"))
+        configure_style_combo(
+            self.marker_combo,
+            LINE_MARKER_OPTIONS,
+            line_kw_style_value(operation, "marker"),
+        )
         self.marker_combo.setToolTip("Matplotlib marker style for these profiles.")
 
         self.marker_size_spin = optional_positive_spinbox(
@@ -848,7 +857,7 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
     def _style_changed(self, _index: int) -> None:
         self._update_line_kw(
             "linestyle",
-            self.style_combo.currentText() or None,
+            style_combo_value(self.style_combo),
             aliases=("ls",),
         )
 
@@ -860,7 +869,7 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         )
 
     def _marker_changed(self, _index: int) -> None:
-        self._update_line_kw("marker", self.marker_combo.currentText() or None)
+        self._update_line_kw("marker", style_combo_value(self.marker_combo))
 
     def _marker_size_changed(self, value: float) -> None:
         self._update_line_kw(

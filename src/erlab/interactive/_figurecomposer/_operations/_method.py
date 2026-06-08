@@ -82,8 +82,10 @@ from erlab.interactive._figurecomposer._gridspec import (
 )
 from erlab.interactive._figurecomposer._line_style import (
     LINE_MARKER_OPTIONS,
+    LINE_STYLE_DEFAULT_LABEL,
     LINE_STYLE_OPTIONS,
     color_kw_value_from_text,
+    normalize_style_value,
 )
 from erlab.interactive._figurecomposer._operations._base import (
     AddStepActionSpec,
@@ -194,6 +196,7 @@ class MethodControlSpec:
     maximum: int | float | None = None
     decimals: int | None = None
     step: int | float | None = None
+    none_label: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -418,9 +421,11 @@ def _kwarg_combo(
     label: str,
     key: str,
     options: Sequence[str],
-    default: str,
+    default: typing.Any,
     object_name: str,
     tooltip: str,
+    *,
+    none_label: str | None = None,
 ) -> MethodControlSpec:
     return MethodControlSpec(
         kind=MethodControlKind.KWARG_COMBO,
@@ -430,6 +435,7 @@ def _kwarg_combo(
         tooltip=tooltip,
         options=tuple(options),
         default=default,
+        none_label=none_label,
     )
 
 
@@ -830,9 +836,10 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "Line style",
                 "linestyle",
                 LINE_STYLE_OPTIONS,
-                "",
+                None,
                 "figureComposerAxesMethodPlotLineStyleCombo",
                 "Matplotlib line style for the plotted line.",
+                none_label=LINE_STYLE_DEFAULT_LABEL,
             ),
             _float_kwarg(
                 "Line width",
@@ -848,9 +855,10 @@ AXES_METHODS: dict[str, MethodSpec] = {
                 "Marker",
                 "marker",
                 LINE_MARKER_OPTIONS,
-                "",
+                None,
                 "figureComposerAxesMethodPlotMarkerCombo",
                 "Matplotlib marker style for the plotted line.",
+                none_label=LINE_STYLE_DEFAULT_LABEL,
             ),
             _float_kwarg(
                 "Marker size",
@@ -2861,19 +2869,40 @@ def _add_method_control_row(
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.KWARG_COMBO:
             key = _control_key(control)
+            value_getter: Callable[[FigureOperationState], typing.Any]
+            if control.none_label is None:
+
+                def value_getter(target: FigureOperationState) -> typing.Any:
+                    return _method_kwarg_value(target, key, control.default)
+
+            else:
+
+                def value_getter(target: FigureOperationState) -> typing.Any:
+                    return normalize_style_value(
+                        _method_kwarg_value(target, key, control.default)
+                    )
+
             mixed = tool._batch_is_mixed(
                 operation,
-                lambda target: _method_kwarg_value(target, key, control.default),
+                value_getter,
             )
-            combo = tool._combo(
-                control.options,
-                None
-                if mixed
-                else str(_method_kwarg_value(operation, key, control.default)),
-                _method_kwarg_callback(tool, key),
-                parent=layout.parentWidget(),
-                mixed=mixed,
-            )
+            if control.none_label is None:
+                combo = tool._combo(
+                    control.options,
+                    None if mixed else str(value_getter(operation)),
+                    _method_kwarg_callback(tool, key),
+                    parent=layout.parentWidget(),
+                    mixed=mixed,
+                )
+            else:
+                combo = tool._optional_name_combo(
+                    control.options,
+                    None if mixed else value_getter(operation),
+                    control.none_label,
+                    _method_kwarg_callback(tool, key),
+                    parent=layout.parentWidget(),
+                    mixed=mixed,
+                )
             combo.setObjectName(control.object_name)
             tool._add_form_row(layout, control.label, combo, control.tooltip)
         case MethodControlKind.BOOL_KWARG_COMBO:
