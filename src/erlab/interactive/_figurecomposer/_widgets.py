@@ -18,8 +18,6 @@ import matplotlib.colors
 from matplotlib.figure import Figure
 # isort: on
 
-import pyqtgraph as pg
-
 import erlab.interactive.utils
 from erlab.interactive._figurecomposer._axes import _all_axes_for_shape
 from erlab.interactive._figurecomposer._defaults import (
@@ -260,7 +258,7 @@ def _format_color_tuple(colors: tuple[str, ...]) -> str:
 
 
 class _ColorLineEditWidget(QtWidgets.QWidget):
-    """Color text input with a native-dialog pyqtgraph color picker."""
+    """Color text input with a lifetime-safe color picker."""
 
     editingFinished = QtCore.Signal()
 
@@ -268,10 +266,7 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._syncing = False
         self.line_edit = QtWidgets.QLineEdit(text, self)
-        self.color_button = pg.ColorButton(self)
-        self.color_button.colorDialog.setOption(
-            QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog, False
-        )
+        self.color_button = _ColorPickerButton(self)
         self.color_button.setToolTip("Choose a color.")
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -279,7 +274,7 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
         layout.addWidget(self.line_edit, 1)
         layout.addWidget(self.color_button)
         self.line_edit.editingFinished.connect(self._text_finished)
-        self.color_button.sigColorChanged.connect(self._button_color_changed)
+        self.color_button.colorSelected.connect(self._button_color_changed)
         self._update_button_from_text()
 
     def text(self) -> str:
@@ -317,10 +312,9 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
             self._update_button_from_text()
         self.editingFinished.emit()
 
-    def _button_color_changed(self) -> None:
+    def _button_color_changed(self, color: QtGui.QColor) -> None:
         if self._syncing:
             return
-        color = self.color_button.color(mode="qcolor")
         if not isinstance(color, QtGui.QColor) or not color.isValid():
             return
         self._syncing = True
@@ -337,6 +331,68 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
             return
         with QtCore.QSignalBlocker(self.color_button):
             self.color_button.setColor(color)
+
+
+class _ColorPickerButton(QtWidgets.QPushButton):
+    """Push button that opens a color dialog without persistent dialog ownership."""
+
+    colorSelected = QtCore.Signal(QtGui.QColor)
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._color = QtGui.QColor(128, 128, 128)
+        self._dialog_open = False
+        self.setMinimumSize(22, 18)
+        self.clicked.connect(self._choose_color)
+
+    def color(self) -> QtGui.QColor:
+        return QtGui.QColor(self._color)
+
+    def setColor(self, color: QtGui.QColor) -> None:
+        if not isinstance(color, QtGui.QColor) or not color.isValid():
+            return
+        self._color = QtGui.QColor(color)
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        painter = QtGui.QPainter(self)
+        try:
+            rect = self.rect().adjusted(5, 4, -5, -4)
+            painter.fillRect(rect, QtCore.Qt.GlobalColor.white)
+            painter.fillRect(
+                rect,
+                QtGui.QBrush(QtCore.Qt.BrushStyle.DiagCrossPattern),
+            )
+            painter.fillRect(rect, self._color)
+            painter.setPen(self.palette().color(QtGui.QPalette.ColorRole.Mid))
+            painter.drawRect(rect)
+        finally:
+            painter.end()
+
+    def _choose_color(self) -> None:
+        if self._dialog_open or not erlab.interactive.utils.qt_is_valid(self):
+            return
+        self._dialog_open = True
+        try:
+            parent = self.window()
+            if not erlab.interactive.utils.qt_is_valid(parent):
+                parent = None
+            color = QtWidgets.QColorDialog.getColor(
+                self._color,
+                parent,
+                "Choose Color",
+                QtWidgets.QColorDialog.ColorDialogOption.ShowAlphaChannel,
+            )
+        finally:
+            if erlab.interactive.utils.qt_is_valid(self):
+                self._dialog_open = False
+        if not erlab.interactive.utils.qt_is_valid(self):
+            return
+        if not color.isValid():
+            return
+        self.setColor(color)
+        self.colorSelected.emit(QtGui.QColor(color))
 
 
 class _ColorListEditorWidget(QtWidgets.QWidget):

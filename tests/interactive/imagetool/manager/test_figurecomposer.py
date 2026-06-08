@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import matplotlib.scale as mscale
 import matplotlib.transforms as mtransforms
 import numpy as np
-import pyqtgraph as pg
 import pytest
 import xarray as xr
 from matplotlib import style as mpl_style
@@ -2118,14 +2117,33 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
     assert color_edit.line_edit.objectName() == "lineColorText"
     color_edit.setText("not-a-color")
     color_edit._syncing = True
-    color_edit._button_color_changed()
+    color_edit._button_color_changed(translucent)
     color_edit._syncing = False
-    with monkeypatch.context() as context:
-        context.setattr(color_edit.color_button, "color", lambda **_kwargs: object())
-        color_edit._button_color_changed()
-    color_edit.color_button.setColor(translucent)
-    color_edit._button_color_changed()
+    color_edit._button_color_changed(typing.cast("QtGui.QColor", object()))
+    color_edit._button_color_changed(translucent)
     assert color_edit.text() == "#01020304"
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            QtWidgets.QColorDialog,
+            "getColor",
+            lambda *_args, **_kwargs: opaque,
+        )
+        color_edit.color_button._choose_color()
+    assert color_edit.text() == "#010203"
+
+    deleted_edit = figurecomposer_widgets._ColorLineEditWidget("tab:red")
+    qtbot.addWidget(deleted_edit)
+    deleted_button = deleted_edit.color_button
+
+    def delete_during_dialog(*_args, **_kwargs) -> QtGui.QColor:
+        deleted_edit.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+        return QtGui.QColor("blue")
+
+    with monkeypatch.context() as context:
+        context.setattr(QtWidgets.QColorDialog, "getColor", delete_during_dialog)
+        deleted_button._choose_color()
 
     color_list = figurecomposer_widgets._ColorListEditorWidget(("red", "blue"))
     qtbot.addWidget(color_list)
@@ -9719,7 +9737,8 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
         QtWidgets.QLineEdit, "figureComposerLineMarkerEdgeColorEdit"
     )
     marker_face_button = line_page.findChild(
-        pg.ColorButton, "figureComposerLineMarkerFaceColorButton"
+        figurecomposer_widgets._ColorPickerButton,
+        "figureComposerLineMarkerFaceColorButton",
     )
     assert line_style_combo is not None
     assert line_style_combo.currentText() == "--"
@@ -9732,9 +9751,6 @@ def test_figure_composer_profile_lines_support_per_profile_style_and_offsets(
     assert marker_face_edit is not None
     assert marker_face_edit.text() == "yellow"
     assert marker_face_button is not None
-    assert not marker_face_button.colorDialog.testOption(
-        QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog
-    )
     assert marker_edge_edit is not None
     assert marker_edge_edit.text() == "black"
 
