@@ -317,7 +317,7 @@ class ColorOptions(BaseModel):
         default=1e30,
         title="Max display value",
         description=(
-            "Largest finite absolute data value ImageTool will send to Qt rendering. "
+            "Largest finite absolute data value ImageTool will display. "
             "Larger finite values and infinities are treated as missing for display "
             "only; source data is not modified."
         ),

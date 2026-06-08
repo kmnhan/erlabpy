@@ -272,7 +272,7 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
         self.color_button.colorDialog.setOption(
             QtWidgets.QColorDialog.ColorDialogOption.DontUseNativeDialog, False
         )
-        self.color_button.setToolTip("Pick a color with the native color dialog.")
+        self.color_button.setToolTip("Choose a color.")
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -298,7 +298,7 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
         super().setToolTip(text)
         self.line_edit.setToolTip(text)
         tooltip = "" if text is None else text
-        self.color_button.setToolTip(f"{tooltip}\nPick a color with the native dialog.")
+        self.color_button.setToolTip(f"{tooltip}\nChoose a color.")
 
     def setLineEditObjectName(self, object_name: str) -> None:
         self.line_edit.setObjectName(object_name)
