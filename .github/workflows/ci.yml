@@ -249,14 +249,14 @@ jobs:
           uv run python -m scripts.merge_junit_xml "${junit_files[@]}" --output junit.xml
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
 
       - name: Upload test results to Codecov
         if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           report_type: "test_results"
