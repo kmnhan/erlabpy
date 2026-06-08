@@ -806,7 +806,8 @@ def _regular_line_code(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     lines: list[str] = []
-    lines.extend(profile_transform_code_lines(operation))
+    profiles = _line_data_items(tool, operation)
+    lines.extend(profile_transform_code_lines(operation, profiles=profiles))
     loop_names = ["profile"]
     loop_values = ["profiles"]
     style_lines, kwargs_text = _line_style_code(
@@ -885,7 +886,8 @@ def _one_profile_per_axis_code(
     lines.append("    target_axes = target_axes * len(profiles)")
     lines.append("elif len(profiles) == 1 and len(target_axes) > 1:")
     lines.append("    profiles = profiles * len(target_axes)")
-    lines.extend(profile_transform_code_lines(operation))
+    profiles = _line_data_items(tool, operation)
+    lines.extend(profile_transform_code_lines(operation, profiles=profiles))
     loop_names = ["ax", "profile"]
     loop_values = ["target_axes", "profiles"]
     style_lines, kwargs_text = _line_style_code(

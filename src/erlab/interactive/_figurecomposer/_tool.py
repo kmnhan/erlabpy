@@ -3270,7 +3270,12 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def copy_code(self) -> None:
         if self._warn_invalid_operation_targets():
             return
-        erlab.interactive.utils.copy_to_clipboard(self.generated_code())
+        try:
+            code = self.generated_code()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Cannot Copy Figure Code", str(exc))
+            return
+        erlab.interactive.utils.copy_to_clipboard(code)
 
     @QtCore.Slot()
     def export_figure(self) -> None:

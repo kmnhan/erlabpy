@@ -847,10 +847,8 @@ def test_figure_composer_line_transform_helpers_cover_edge_cases() -> None:
         coords={"kx": [0.0, 1.0], "center": 2.0},
     )
     assert _line_transform.line_normalize_from_text("unknown") == "none"
-    xr.testing.assert_equal(
-        _line_transform.normalize_line_data(profile, "max"),
-        profile,
-    )
+    with pytest.raises(ValueError, match="Cannot normalize profile by max"):
+        _line_transform.normalize_line_data(profile, "max")
     assert _line_transform.line_transform_values((), 0, default=1.0) == ()
     assert _line_transform.line_transform_values((), 2, default=1.0) == (1.0, 1.0)
     assert _line_transform.line_transform_values((2.0,), 2, default=1.0) == (
@@ -902,6 +900,12 @@ def test_figure_composer_line_transform_helpers_cover_edge_cases() -> None:
         "    for profile in profiles",
         "]",
     ]
+    normalized_operation = code_operation.model_copy(update={"line_normalize": "max"})
+    with pytest.raises(ValueError, match="Cannot normalize profile by max"):
+        _line_transform.profile_transform_code_lines(
+            normalized_operation,
+            profiles=(profile,),
+        )
 
 
 def test_figure_composer_editor_control_adapters_cover_mixed_states(qtbot) -> None:
@@ -9333,6 +9337,49 @@ def test_figure_composer_line_mean_normalization_executes(qtbot) -> None:
     np.testing.assert_allclose(line.get_ydata(), expected.values)
 
 
+def test_figure_composer_line_normalization_reports_zero_scale(
+    qtbot, monkeypatch
+) -> None:
+    profile = xr.DataArray(
+        np.array([0.0, 0.0]),
+        dims=("kx",),
+        coords={"kx": [-1.0, 1.0]},
+        name="profile",
+    )
+    operation = FigureOperationState.line(
+        label="profile",
+        source="profile",
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+    ).model_copy(update={"line_x": "kx", "line_normalize": "max"})
+    tool = FigureComposerTool(
+        profile,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="profile", label="profile"),),
+            operations=(operation,),
+            primary_source="profile",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    figurecomposer_rendering._render_into_figure(tool, tool.figure, sync_visible=False)
+
+    error_text = tool._operation_render_errors[operation.operation_id]
+    assert "Cannot normalize profile by max" in error_text
+    with pytest.raises(ValueError, match="Cannot normalize profile by max"):
+        tool.generated_code()
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda parent, title, text: warnings.append(text),
+    )
+    tool.copy_code()
+    assert warnings
+    assert "Cannot normalize profile by max" in warnings[0]
+
+
 def test_figure_composer_line_profile_helper_contracts(qtbot) -> None:
     data = xr.DataArray(
         np.arange(6.0).reshape(2, 3),
@@ -11126,6 +11173,37 @@ def test_figure_composer_plot_slices_line_transforms_codegen_executes(
     axs = namespace["axs"]
     np.testing.assert_allclose(axs[0, 0].lines[0].get_ydata(), [1.25, 1.5])
     np.testing.assert_allclose(axs[0, 1].lines[0].get_ydata(), [0.0, 1.0])
+
+
+def test_figure_composer_plot_slices_line_transform_rejects_zero_scale(
+    qtbot,
+) -> None:
+    data = xr.DataArray(
+        np.zeros((2, 2)),
+        dims=("eV", "kx"),
+        coords={"eV": [0.0, 1.0], "kx": [0.0, 1.0]},
+        name="data",
+    )
+    operation = FigureOperationState.plot_slices(
+        label="line_slices",
+        sources=("data",),
+        axes=FigureAxesSelectionState(axes=((0, 0),)),
+        slice_dim="eV",
+        slice_values=(0.0,),
+    ).model_copy(update={"line_normalize": "max"})
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(operation,),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+
+    with pytest.raises(ValueError, match="Cannot normalize profile by max"):
+        tool.generated_code()
 
 
 def test_figure_composer_plot_slices_line_panels_ignore_image_cmap(qtbot) -> None:

@@ -236,13 +236,31 @@ def normalize_line_data(
 ) -> xr.DataArray:
     if mode == "none":
         return line_data
+    scale = line_normalization_scale(line_data, mode)
+    return line_data / scale
+
+
+def line_normalization_scale(
+    line_data: xr.DataArray, mode: typing.Literal["max", "mean"]
+) -> float:
     if mode == "max":
         scale = float(line_data.max(skipna=True))
     else:
         scale = float(line_data.mean(skipna=True))
     if math.isfinite(scale) and scale != 0.0:
-        return line_data / scale
-    return line_data
+        return scale
+    raise ValueError(
+        f"Cannot normalize profile by {mode}: normalization factor is {scale!r}"
+    )
+
+
+def validate_line_normalization(
+    operation: FigureOperationState, profiles: Sequence[xr.DataArray]
+) -> None:
+    if operation.line_normalize == "none":
+        return
+    for profile in profiles:
+        line_normalization_scale(profile, operation.line_normalize)
 
 
 def line_offsets_for_profiles(
@@ -305,10 +323,15 @@ def line_uses_offsets(operation: FigureOperationState) -> bool:
 
 
 def profile_transform_code_lines(
-    operation: FigureOperationState, *, profiles_name: str = "profiles"
+    operation: FigureOperationState,
+    *,
+    profiles: Sequence[xr.DataArray] | None = None,
+    profiles_name: str = "profiles",
 ) -> list[str]:
     if not line_transform_active(operation):
         return []
+    if profiles is not None:
+        validate_line_normalization(operation, profiles)
 
     lines: list[str] = []
     loop_names = ["profile"]

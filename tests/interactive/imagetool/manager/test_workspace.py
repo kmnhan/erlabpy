@@ -2289,10 +2289,34 @@ def test_workspace_attr_native_detection_handles_edge_types() -> None:
     assert not manager_workspace._workspace_attr_value_writes_natively(
         np.datetime64("2024-01-01")
     )
+    assert manager_workspace._workspace_attr_value_writes_natively(("left", "right"))
+    assert manager_workspace._workspace_attr_value_writes_natively((b"left", b"right"))
     assert manager_workspace._workspace_attr_value_writes_natively(
-        ("text", b"bytes", np.bool_(True), complex(1.0, 2.0))
+        (np.bool_(True), complex(1.0, 2.0))
+    )
+    assert not manager_workspace._workspace_attr_value_writes_natively([1, "text"])
+    assert not manager_workspace._workspace_attr_value_writes_natively(
+        ("text", b"bytes")
     )
     assert not manager_workspace._workspace_attr_value_writes_natively(([1],))
+
+
+def test_workspace_mixed_scalar_attrs_use_typed_encoding() -> None:
+    attrs = {
+        "mixed_list": [1, "text"],
+        "mixed_tuple": ("text", b"bytes"),
+        "native_numbers": [1, 2.0],
+    }
+
+    serializable = manager_workspace._workspace_serializable_attrs(attrs)
+
+    assert "mixed_list" not in serializable
+    assert "mixed_tuple" not in serializable
+    assert serializable["native_numbers"] == [1, 2.0]
+    restored = manager_workspace._restore_workspace_serialized_attrs(serializable)
+    assert restored["mixed_list"] == [1, "text"]
+    assert restored["mixed_tuple"] == ("text", b"bytes")
+    assert restored["native_numbers"] == [1, 2.0]
 
 
 def test_workspace_attr_typed_encoding_roundtrips_safe_values(caplog) -> None:

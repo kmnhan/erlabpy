@@ -616,17 +616,38 @@ def _workspace_attr_value_writes_natively(value: typing.Any) -> bool:
     if isinstance(value, bool | int | float | complex):
         return True
     if isinstance(value, list | tuple):
-        return all(_workspace_attr_scalar_writes_natively(item) for item in value)
+        return _workspace_attr_sequence_writes_natively(value)
     return False
 
 
-def _workspace_attr_scalar_writes_natively(value: typing.Any) -> bool:
-    import numpy as np
+def _workspace_attr_sequence_writes_natively(
+    value: list[typing.Any] | tuple[typing.Any, ...],
+) -> bool:
+    if not value:
+        return True
+    if all(isinstance(item, str) for item in value):
+        return True
+    if all(
+        isinstance(item, bytes)
+        and b"\x00" not in item
+        and _workspace_bytes_are_utf8(item)
+        for item in value
+    ):
+        return True
+    return all(_workspace_attr_numeric_scalar_writes_natively(item) for item in value)
 
+
+def _workspace_attr_scalar_writes_natively(value: typing.Any) -> bool:
     if isinstance(value, str):
         return True
     if isinstance(value, bytes):
         return b"\x00" not in value and _workspace_bytes_are_utf8(value)
+    return _workspace_attr_numeric_scalar_writes_natively(value)
+
+
+def _workspace_attr_numeric_scalar_writes_natively(value: typing.Any) -> bool:
+    import numpy as np
+
     if isinstance(value, np.generic):
         return isinstance(value, (np.number, np.bool_))
     return isinstance(value, bool | int | float | complex)

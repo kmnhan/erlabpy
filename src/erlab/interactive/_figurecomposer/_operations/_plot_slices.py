@@ -3193,6 +3193,7 @@ def _plot_slices_transformed_code_lines(
     tool: FigureComposerTool, operation: FigureOperationState
 ) -> list[str]:
     operation = _normalized_selection_operation(tool, operation)
+    profiles, _ = _plot_slices_line_profiles(tool, operation)
     source_codes = _plot_slices_profile_source_codes(operation)
     if not source_codes:
         return []
@@ -3212,7 +3213,7 @@ def _plot_slices_transformed_code_lines(
         for key in keys
     )
     lines.append("]")
-    lines.extend(profile_transform_code_lines(operation))
+    lines.extend(profile_transform_code_lines(operation, profiles=profiles))
     map_lines, maps_code = _plot_slices_transformed_maps_code(operation, keys)
     lines.extend(map_lines)
 
