@@ -488,7 +488,16 @@ def _add_line_style_controls(
         lambda target: line_kw_text(target, "markerfacecolor", "mfc"),
         str,
     )
-    marker_face_edit = _ColorLineEditWidget(marker_face_text, parent=page)
+    marker_inherited_color = (
+        operation.line_colors[0]
+        if operation.line_colors
+        else line_kw_text(operation, "color", "c") or None
+    )
+    marker_face_edit = _ColorLineEditWidget(
+        marker_face_text,
+        parent=page,
+        inherited_color=marker_inherited_color,
+    )
     marker_face_edit.setLineEditObjectName("figureComposerLineMarkerFaceColorEdit")
     marker_face_edit.setColorButtonObjectName("figureComposerLineMarkerFaceColorButton")
     tool._apply_mixed_line_edit(marker_face_edit.line_edit, marker_face_mixed)
@@ -511,7 +520,11 @@ def _add_line_style_controls(
         lambda target: line_kw_text(target, "markeredgecolor", "mec"),
         str,
     )
-    marker_edge_edit = _ColorLineEditWidget(marker_edge_text, parent=page)
+    marker_edge_edit = _ColorLineEditWidget(
+        marker_edge_text,
+        parent=page,
+        inherited_color=marker_inherited_color,
+    )
     marker_edge_edit.setLineEditObjectName("figureComposerLineMarkerEdgeColorEdit")
     marker_edge_edit.setColorButtonObjectName("figureComposerLineMarkerEdgeColorButton")
     tool._apply_mixed_line_edit(marker_edge_edit.line_edit, marker_edge_mixed)

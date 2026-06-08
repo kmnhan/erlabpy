@@ -2080,6 +2080,21 @@ def test_figure_composer_plot_slices_line_panel_style_editor_updates_styles(
 def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> None:
     opaque = QtGui.QColor(1, 2, 3)
     translucent = QtGui.QColor(1, 2, 3, 4)
+    grayscale = figurecomposer_widgets._qcolor_from_mpl_color_text("0.5")
+    assert grayscale is not None
+    assert grayscale.getRgb() == (128, 128, 128, 255)
+    cycle_color = figurecomposer_widgets._qcolor_from_mpl_color_text("C1")
+    assert cycle_color is not None
+    assert (
+        cycle_color.getRgb()
+        == QtGui.QColor.fromRgbF(*mpl.colors.to_rgba("C1")).getRgb()
+    )
+    tuple_alpha = figurecomposer_widgets._qcolor_from_mpl_color_text("(1, 0, 0, 0.5)")
+    assert tuple_alpha is not None
+    assert tuple_alpha.getRgb() == (255, 0, 0, 128)
+    hex_alpha = figurecomposer_widgets._qcolor_from_mpl_color_text("#01020304")
+    assert hex_alpha is not None
+    assert hex_alpha.getRgb() == (1, 2, 3, 4)
     assert figurecomposer_widgets._qcolor_to_mpl_color_text(opaque) == "#010203"
     assert figurecomposer_widgets._qcolor_to_mpl_color_text(translucent) == "#01020304"
     assert (
@@ -2104,6 +2119,25 @@ def test_figure_composer_color_widgets_parse_and_sync(qtbot, monkeypatch) -> Non
         "blue",
     )
     assert figurecomposer_widgets._color_tuple_from_text("[1]") == ("1",)
+
+    inherited_edit = figurecomposer_widgets._ColorLineEditWidget(
+        "",
+        inherited_color="C1",
+    )
+    qtbot.addWidget(inherited_edit)
+    assert (
+        inherited_edit.color_button.color().getRgb()
+        == QtGui.QColor.fromRgbF(*mpl.colors.to_rgba("C1")).getRgb()
+    )
+    inherited_edit.setText("0.5")
+    assert inherited_edit.color_button.color().getRgb() == (128, 128, 128, 255)
+    inherited_edit.setText("")
+    assert (
+        inherited_edit.color_button.color().getRgb()
+        == QtGui.QColor.fromRgbF(*mpl.colors.to_rgba("C1")).getRgb()
+    )
+    inherited_edit.setInheritedColor("#01020304")
+    assert inherited_edit.color_button.color().getRgb() == (1, 2, 3, 4)
 
     color_edit = figurecomposer_widgets._ColorLineEditWidget("tab:blue")
     qtbot.addWidget(color_edit)

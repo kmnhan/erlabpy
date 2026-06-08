@@ -784,6 +784,7 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         self.marker_face_edit = _ColorLineEditWidget(
             line_kw_text(operation, "markerfacecolor", "mfc"),
             self,
+            inherited_color=operation.line_colors[0] if operation.line_colors else None,
         )
         self.marker_face_edit.setLineEditObjectName(
             "figureComposerToolbarCurveMarkerFaceEdit"
@@ -799,6 +800,7 @@ class _LineOperationStyleWidget(QtWidgets.QWidget):
         self.marker_edge_edit = _ColorLineEditWidget(
             line_kw_text(operation, "markeredgecolor", "mec"),
             self,
+            inherited_color=operation.line_colors[0] if operation.line_colors else None,
         )
         self.marker_edge_edit.setLineEditObjectName(
             "figureComposerToolbarCurveMarkerEdgeEdit"

@@ -184,6 +184,23 @@ def _qcolor_to_mpl_color_text(color: QtGui.QColor) -> str:
     return f"#{color.red():02x}{color.green():02x}{color.blue():02x}{color.alpha():02x}"
 
 
+def _qcolor_from_mpl_color_value(color_value: object) -> QtGui.QColor | None:
+    try:
+        with _figure_style_context():
+            red, green, blue, alpha = matplotlib.colors.to_rgba(
+                typing.cast("typing.Any", color_value)
+            )
+    except (TypeError, ValueError):
+        return None
+    color = QtGui.QColor.fromRgbF(
+        float(red),
+        float(green),
+        float(blue),
+        float(alpha),
+    )
+    return color if color.isValid() else None
+
+
 def _qcolor_from_mpl_color_text(text: str) -> QtGui.QColor | None:
     stripped = text.strip()
     if not stripped:
@@ -196,15 +213,30 @@ def _qcolor_from_mpl_color_text(text: str) -> QtGui.QColor | None:
             color_value = stripped
         if isinstance(color_value, list):
             color_value = tuple(color_value)
-    try:
-        color = QtGui.QColor(
-            matplotlib.colors.to_hex(
-                typing.cast("typing.Any", color_value), keep_alpha=True
-            )
+    return _qcolor_from_mpl_color_value(color_value)
+
+
+def _default_mpl_line_color(index: int = 0) -> QtGui.QColor:
+    with _figure_style_context():
+        cycle_colors = matplotlib.rcParams["axes.prop_cycle"].by_key().get("color", ())
+        color_value = (
+            cycle_colors[index % len(cycle_colors)]
+            if cycle_colors
+            else matplotlib.rcParams["lines.color"]
         )
-    except (TypeError, ValueError):
-        return None
-    return color if color.isValid() else None
+    color = _qcolor_from_mpl_color_value(color_value)
+    if color is not None:
+        return color
+    return QtGui.QColor.fromRgbF(0.0, 0.0, 0.0, 1.0)
+
+
+def _inherited_qcolor(
+    color: object | None,
+    *,
+    default_index: int = 0,
+) -> QtGui.QColor:
+    parsed = None if color is None else _qcolor_from_mpl_color_value(color)
+    return _default_mpl_line_color(default_index) if parsed is None else parsed
 
 
 def _top_level_comma_parts(text: str) -> tuple[str, ...]:
@@ -262,11 +294,22 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
 
     editingFinished = QtCore.Signal()
 
-    def __init__(self, text: str = "", parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(
+        self,
+        text: str = "",
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        inherited_color: object | None = None,
+        inherited_color_index: int = 0,
+    ) -> None:
         super().__init__(parent)
         self._syncing = False
+        self._inherited_color = _inherited_qcolor(
+            inherited_color,
+            default_index=inherited_color_index,
+        )
         self.line_edit = QtWidgets.QLineEdit(text, self)
-        self.color_button = _ColorPickerButton(self)
+        self.color_button = _ColorPickerButton(self, color=self._button_color())
         self.color_button.setToolTip("Choose a color.")
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -285,6 +328,13 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
             self.line_edit.setText(text)
             self.line_edit.setModified(False)
         self._update_button_from_text()
+
+    def setInheritedColor(
+        self, color: object | None, *, default_index: int = 0
+    ) -> None:
+        self._inherited_color = _inherited_qcolor(color, default_index=default_index)
+        if not self.line_edit.text().strip():
+            self._update_button_from_text()
 
     def setPlaceholderText(self, text: str) -> None:
         self.line_edit.setPlaceholderText(text)
@@ -326,11 +376,16 @@ class _ColorLineEditWidget(QtWidgets.QWidget):
         self.editingFinished.emit()
 
     def _update_button_from_text(self) -> None:
-        color = _qcolor_from_mpl_color_text(self.line_edit.text())
+        color = self._button_color()
         if color is None:
             return
         with QtCore.QSignalBlocker(self.color_button):
             self.color_button.setColor(color)
+
+    def _button_color(self) -> QtGui.QColor | None:
+        if not self.line_edit.text().strip():
+            return QtGui.QColor(self._inherited_color)
+        return _qcolor_from_mpl_color_text(self.line_edit.text())
 
 
 class _ColorPickerButton(QtWidgets.QPushButton):
@@ -338,9 +393,18 @@ class _ColorPickerButton(QtWidgets.QPushButton):
 
     colorSelected = QtCore.Signal(QtGui.QColor)
 
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        color: QtGui.QColor | None = None,
+    ) -> None:
         super().__init__(parent)
-        self._color = QtGui.QColor(128, 128, 128)
+        self._color = (
+            QtGui.QColor(color)
+            if color is not None and color.isValid()
+            else _default_mpl_line_color()
+        )
         self._dialog_open = False
         self.setMinimumSize(22, 18)
         self.clicked.connect(self._choose_color)
@@ -531,7 +595,11 @@ class _ColorListEditorWidget(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        edit = _ColorLineEditWidget(color, row)
+        edit = _ColorLineEditWidget(
+            color,
+            row,
+            inherited_color_index=index,
+        )
         edit.setLineEditObjectName(f"figureComposerLineColorItemEdit_{index}")
         edit.setColorButtonObjectName(f"figureComposerLineColorButton_{index}")
         edit.setToolTip(self.toolTip())

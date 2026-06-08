@@ -3068,6 +3068,11 @@ def _add_method_control_row(
             color_edit = _ColorLineEditWidget(
                 color_text,
                 parent=layout.parentWidget(),
+                inherited_color=(
+                    _method_kwarg_value(operation, "color", None)
+                    if key != "color"
+                    else None
+                ),
             )
             color_edit.setLineEditObjectName(control.object_name)
             color_edit.setColorButtonObjectName(f"{control.object_name}Button")

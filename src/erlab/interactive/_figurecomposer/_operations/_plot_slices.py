@@ -2131,9 +2131,11 @@ def _build_plot_slices_editor(
             lambda target: line_kw_text(target, "markerfacecolor", "mfc"),
             str,
         )
+        marker_inherited_color = line_color_text or None
         marker_face_edit = _ColorLineEditWidget(
             marker_face_text,
             parent=colors_page,
+            inherited_color=marker_inherited_color,
         )
         marker_face_edit.setLineEditObjectName(
             "figureComposerPlotSlicesMarkerFaceColorEdit"
@@ -2165,6 +2167,7 @@ def _build_plot_slices_editor(
         marker_edge_edit = _ColorLineEditWidget(
             marker_edge_text,
             parent=colors_page,
+            inherited_color=marker_inherited_color,
         )
         marker_edge_edit.setLineEditObjectName(
             "figureComposerPlotSlicesMarkerEdgeColorEdit"
