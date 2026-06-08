@@ -1691,7 +1691,7 @@ def _build_plot_slices_editor(
         "\n".join(
             (
                 f"Sources: {shape.source_text}",
-                f"Cuts: {shape.selection_text}",
+                f"Selection: {shape.selection_text}",
                 f"Result: {shape.panel_text}",
                 shape.axes_text,
             )
@@ -1706,7 +1706,7 @@ def _build_plot_slices_editor(
         basic_layout,
         "Data shape",
         shape_summary,
-        "Shows the source dimensions, cuts, result per subplot, and targets.",
+        "Shows source dimensions, selected values, result per subplot, and targets.",
     )
 
     dims = _available_source_dims(tool._source_data, operation.sources)
@@ -1720,7 +1720,7 @@ def _build_plot_slices_editor(
     dim_combo.setObjectName("figureComposerPlotSlicesDimensionCombo")
     tool._add_form_row(
         basic_layout,
-        "Cut dimension",
+        "Dimension",
         dim_combo,
         "Data dimension passed as the slice keyword to plot_slices.",
     )
@@ -1739,9 +1739,9 @@ def _build_plot_slices_editor(
     )
     tool._add_form_row(
         basic_layout,
-        "Cut values",
+        "Values",
         values_edit,
-        "Comma-separated coordinate values to slice along the cut dimension.",
+        "Comma-separated coordinate values to select along the dimension.",
     )
 
     width_text, width_mixed = tool._batch_text(
@@ -2612,7 +2612,7 @@ def _build_plot_slices_editor(
         "Dict literal or keyword arguments merged into the plot_slices call.",
     )
     return [
-        ("cuts", "Cuts", cuts_page),
+        ("cuts", "Selection", cuts_page),
         ("view", "View", view_page),
         ("colors", "Colors", colors_page),
         ("advanced", "Advanced", advanced_page),
@@ -2946,9 +2946,9 @@ def _plot_slices_shape(
                 f"{'s' if slice_count != 1 else ''}{width_text}"
             )
         else:
-            selection_parts.append(f"{operation.slice_dim}: choose cut values")
+            selection_parts.append(f"{operation.slice_dim}: choose values")
     else:
-        selection_parts.append("No cut dimension selected")
+        selection_parts.append("No selection dimension")
 
     advanced_selections: list[str] = []
     for key, value in operation.slice_kwargs.items():
@@ -2991,7 +2991,7 @@ def _plot_slices_shape(
         dims_text = "none" if not plot_dims else " × ".join(plot_dims)
         panel_text = (
             f"Each target panel would be {len(plot_dims)}D ({dims_text}); "
-            "choose cuts until each panel is 1D or 2D."
+            "choose selections until each panel is 1D or 2D."
         )
         valid = False
 
@@ -3303,7 +3303,7 @@ def _plot_slices_transformed_code_kwargs(
 
 
 _SECTION_TOOLTIPS = {
-    "cuts": "Choose slice dimension, cut values, and extraction options.",
+    "cuts": "Choose dimension, values, and extraction options.",
     "view": "Set orientation, axis limits, labels, and annotation behavior.",
     "colors": "Set image color scaling or 1D line styling for this plot_slices step.",
     "advanced": "Pass advanced keyword arguments to plot_slices.",
