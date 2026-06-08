@@ -3406,7 +3406,7 @@ def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
                         axes=(
                             FigureGridSpecAxesState(
                                 axes_id="main-axis",
-                                label="main",
+                                label="main_axis",
                                 span=FigureGridSpecSpanState(
                                     row_start=0,
                                     row_stop=1,
@@ -3435,8 +3435,8 @@ def test_figure_composer_custom_code_codegen_gridspec_axes_alias(qtbot) -> None:
 
     code = tool.generated_code()
     assert "axs = {" in code
-    assert "'main-axis': main" in code
-    assert "ax = main" in code
+    assert "'main-axis': main_axis" in code
+    assert "ax = main_axis" in code
     namespace: dict[str, typing.Any] = {"data": data}
     exec(code, namespace)  # noqa: S102
     assert namespace["fig"].axes[0].get_title() == "main"
@@ -4207,10 +4207,25 @@ def test_figure_composer_gridspec_helpers_cover_names_and_invalid_regions() -> N
 
     assert figurecomposer_gridspec._gridspec_axis_code_names(setup) == {
         "first": "peak",
-        "second": "peak_1",
-        "keyword": "class_",
-        "child-axis": "ax_1_child",
+        "second": "ax1",
+        "keyword": "ax2",
+        "child-axis": "ax3",
     }
+    assert (
+        figurecomposer_gridspec._gridspec_axis_variable_name_error(
+            setup, "first", "valid_name"
+        )
+        == ""
+    )
+    assert "identifier" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "1 child"
+    )
+    assert "keyword" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "class"
+    )
+    assert "unique" in figurecomposer_gridspec._gridspec_axis_variable_name_error(
+        setup, "first", "peak"
+    )
     assert figurecomposer_gridspec._gridspec_grid_path(setup, "missing") == (root,)
     assert (
         figurecomposer_gridspec._gridspec_region_label(setup, root, "child-grid")
@@ -4275,9 +4290,6 @@ def test_figure_composer_gridspec_helpers_cover_names_and_invalid_regions() -> N
             col_stop=1,
         ),
     )
-    assert figurecomposer_gridspec._sanitize_axes_name("") == ""
-    assert figurecomposer_gridspec._sanitize_axes_name("1 child") == "ax_1_child"
-    assert figurecomposer_gridspec._sanitize_axes_name("class") == "class_"
     assert figurecomposer_gridspec._slice_code(0, 1, 3) == "0"
     assert figurecomposer_gridspec._slice_code(0, 3, 3) == ":"
     assert figurecomposer_gridspec._slice_code(0, 2, 3) == ":2"
@@ -4457,7 +4469,7 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     data = xr.DataArray(np.arange(4.0), dims=("x",), name="data")
     left_axis = FigureGridSpecAxesState(
         axes_id="left-axis",
-        label="left panel",
+        label="left_panel",
         span=FigureGridSpecSpanState(
             row_start=0,
             row_stop=1,
@@ -4506,7 +4518,6 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
     assert tool.axes_selector.isHidden()
     assert not tool.gridspec_axes_selector.isHidden()
     assert tool.axes_expression_edit.isHidden()
-    assert tool.target_axes_status_label.text() == "Targets: left panel"
     assert tool.gridspec_axes_selector.axes_ids() == ("left-axis", "right-axis")
     assert not tool.gridspec_axes_selector.axis_rect("left-axis").isNull()
     assert not tool.gridspec_axes_selector.axis_rect("right-axis").isNull()
@@ -4585,7 +4596,7 @@ def test_figure_composer_gridspec_axis_code_and_selector(qtbot) -> None:
         invalid_selection.axes_ids,
     )
     assert "removed-internal-axis" not in display_names
-    assert display_names[0] == "left panel"
+    assert display_names[0] == "left_panel"
 
 
 def test_figure_composer_gridspec_axes_selector_inlines_nested_grids(qtbot) -> None:
@@ -4960,8 +4971,13 @@ def test_figure_composer_gridspec_widget_hides_handles_after_outside_click(
 
     assert widget.selected_region_id() == axis.axes_id
     assert not widget._region_handles_visible
+    tool.gridspec_region_label_edit.setText("1 renamed")
+    tool._gridspec_region_label_changed()
+    assert tool.gridspec_region_label_edit.property("invalid") is True
+    assert tool.tool_status.setup.gridspec.root.axes[0].label == ""
     tool.gridspec_region_label_edit.setText("renamed")
     tool._gridspec_region_label_changed()
+    assert tool.gridspec_region_label_edit.property("invalid") is False
     assert tool.tool_status.setup.gridspec.root.axes[0].label == "renamed"
 
 
@@ -8592,7 +8608,7 @@ def test_figure_composer_figure_layout_methods_render_and_codegen(qtbot) -> None
     assert top_spin is not None
     assert left_spin.value() == pytest.approx(0.2)
     assert left_spin.minimum() == pytest.approx(0.0)
-    assert left_spin.maximum() == pytest.approx(1.0)
+    assert left_spin.maximum() == pytest.approx(0.8 - 10.0 ** -left_spin.decimals())
     assert left_spin.decimals() == 3
     assert left_spin.singleStep() == pytest.approx(0.005)
     assert not left_spin.keyboardTracking()
