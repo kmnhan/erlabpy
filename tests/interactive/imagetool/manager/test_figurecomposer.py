@@ -10761,6 +10761,24 @@ def test_figure_composer_editor_widget_rebuilds_are_deferred(
     )
     assert dimension_combo is not None
     rebuild_calls.clear()
+    tool.eventFilter(
+        dimension_combo,
+        QtCore.QEvent(QtCore.QEvent.Type.MouseButtonPress),
+    )
+    assert tool._operation_editor_rebuild_must_wait()
+    tool._update_current_operation_rebuild(slice_values=(0.0, 1.0))
+
+    assert tool._operation_editor_update_pending is True
+    qtbot.wait(100)
+    assert rebuild_calls == []
+    qtbot.waitUntil(lambda: rebuild_calls == [None], timeout=1000)
+    assert tool._operation_editor_update_pending is False
+
+    dimension_combo = tool.step_editor_stack.currentWidget().findChild(
+        QtWidgets.QComboBox, "figureComposerPlotSlicesDimensionCombo"
+    )
+    assert dimension_combo is not None
+    rebuild_calls.clear()
     _activate_combo_text(dimension_combo, "kx")
 
     assert tool.tool_status.operations[0].slice_dim == "kx"

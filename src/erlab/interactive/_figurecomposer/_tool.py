@@ -122,6 +122,10 @@ if typing.TYPE_CHECKING:
 _OPERATION_EDITOR_UPDATE_DELAY_MS = 25
 _RETIRED_EDITOR_DRAIN_DELAY_MS = 100
 _PREVIEW_RENDER_UPDATE_DELAY_MS = 50
+_COMBO_POPUP_REBUILD_GRACE_MS = 150
+_COMBO_INTERACTION_REBUILD_GRACE_MS = 250
+_COMBO_TRACKED_PROPERTY = "figure_composer_combo_tracked"
+_COMBO_POPUP_GUARD_ID_PROPERTY = "figure_composer_combo_popup_guard_id"
 _PERSISTED_SOURCE_MAP_ATTR = "_figure_composer_source_payloads"
 _PERSISTED_SOURCE_VAR_PREFIX = "_figure_composer_source_payload_"
 _PERSISTED_SOURCE_DIM_PREFIX = "_figure_composer_source_payload_bytes_"
@@ -162,6 +166,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_editor_update_pending = False
         self._preview_render_update_pending = False
         self._retired_editor_drain_pending = False
+        self._combo_popup_guard_tokens: set[int] = set()
+        self._next_combo_popup_guard_token = 0
+        self._tracked_combo_refs: list[weakref.ReferenceType[QtWidgets.QComboBox]] = []
         self._operation_multi_select_event = False
         self._operation_list_viewport: QtWidgets.QWidget | None = None
         self._retired_editor_widgets: list[QtWidgets.QWidget] = []
@@ -1009,6 +1016,14 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self.layout_combo.currentTextChanged.connect(self._setup_controls_changed)
         self.sharex_combo.currentTextChanged.connect(self._setup_controls_changed)
         self.sharey_combo.currentTextChanged.connect(self._setup_controls_changed)
+        for combo in (
+            self.layout_mode_combo,
+            self.layout_combo,
+            self.sharex_combo,
+            self.sharey_combo,
+            self.gridspec_region_kind_combo,
+        ):
+            self._track_combo_interaction(combo)
 
         self.setCentralWidget(root)
         self.setWindowTitle("Figure Composer")
@@ -2205,6 +2220,7 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
     def eventFilter(
         self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
     ) -> bool:
+        self._handle_combo_interaction_event(watched, event)
         operation_list_viewport = self._operation_list_viewport
         if (
             operation_list_viewport is not None
@@ -2227,6 +2243,107 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
                 self, 0, self._clear_operation_multi_select_event
             )
         return super().eventFilter(watched, event)
+
+    def _handle_combo_interaction_event(
+        self, watched: QtCore.QObject | None, event: QtCore.QEvent | None
+    ) -> None:
+        if event is None or watched is None:
+            return
+        event_type = event.type()
+        if isinstance(watched, QtWidgets.QComboBox):
+            if event_type in {
+                QtCore.QEvent.Type.MouseButtonPress,
+                QtCore.QEvent.Type.KeyPress,
+                QtCore.QEvent.Type.Wheel,
+            }:
+                self._begin_transient_combo_popup_guard()
+            return
+        if not isinstance(watched, QtWidgets.QAbstractItemView):
+            return
+        if self._combo_for_popup_view(watched) is None:
+            return
+        if event_type in {QtCore.QEvent.Type.Show, QtCore.QEvent.Type.ShowToParent}:
+            self._begin_combo_popup_view_guard(watched)
+        elif event_type in {
+            QtCore.QEvent.Type.Hide,
+            QtCore.QEvent.Type.HideToParent,
+            QtCore.QEvent.Type.Close,
+        }:
+            self._end_combo_popup_view_guard(watched)
+
+    def _track_combo_interaction(self, combo: QtWidgets.QComboBox) -> None:
+        if combo.property(_COMBO_TRACKED_PROPERTY):
+            return
+        combo.setProperty(_COMBO_TRACKED_PROPERTY, True)
+        combo.installEventFilter(self)
+        view = combo.view()
+        if view is not None and erlab.interactive.utils.qt_is_valid(view):
+            view.installEventFilter(self)
+        self._tracked_combo_refs.append(weakref.ref(combo))
+
+    def _combo_for_popup_view(
+        self, view: QtWidgets.QAbstractItemView
+    ) -> QtWidgets.QComboBox | None:
+        matched_combo: QtWidgets.QComboBox | None = None
+        for combo in self._live_tracked_combos():
+            combo_view = combo.view()
+            if combo_view is not None and combo_view is view:
+                matched_combo = combo
+        return matched_combo
+
+    def _live_tracked_combos(self) -> tuple[QtWidgets.QComboBox, ...]:
+        live_refs: list[weakref.ReferenceType[QtWidgets.QComboBox]] = []
+        live_combos: list[QtWidgets.QComboBox] = []
+        for combo_ref in self._tracked_combo_refs:
+            combo = combo_ref()
+            if combo is None or not erlab.interactive.utils.qt_is_valid(combo):
+                continue
+            live_refs.append(combo_ref)
+            live_combos.append(combo)
+        self._tracked_combo_refs = live_refs
+        return tuple(live_combos)
+
+    def _tracked_combo_popup_is_visible(self) -> bool:
+        for combo in self._live_tracked_combos():
+            view = combo.view()
+            if view is not None and view.isVisible():
+                return True
+        return False
+
+    def _begin_transient_combo_popup_guard(self) -> None:
+        token = self._begin_combo_popup_guard()
+        self._schedule_combo_popup_guard_end(token, _COMBO_INTERACTION_REBUILD_GRACE_MS)
+
+    def _begin_combo_popup_view_guard(self, view: QtWidgets.QAbstractItemView) -> None:
+        if isinstance(view.property(_COMBO_POPUP_GUARD_ID_PROPERTY), int):
+            return
+        view.setProperty(
+            _COMBO_POPUP_GUARD_ID_PROPERTY,
+            self._begin_combo_popup_guard(),
+        )
+
+    def _end_combo_popup_view_guard(self, view: QtWidgets.QAbstractItemView) -> None:
+        token = view.property(_COMBO_POPUP_GUARD_ID_PROPERTY)
+        if not isinstance(token, int):
+            return
+        view.setProperty(_COMBO_POPUP_GUARD_ID_PROPERTY, None)
+        self._schedule_combo_popup_guard_end(token, _COMBO_POPUP_REBUILD_GRACE_MS)
+
+    def _begin_combo_popup_guard(self) -> int:
+        token = self._next_combo_popup_guard_token
+        self._next_combo_popup_guard_token += 1
+        self._combo_popup_guard_tokens.add(token)
+        return token
+
+    def _schedule_combo_popup_guard_end(self, token: int, delay_ms: int) -> None:
+        def discard_guard() -> None:
+            self._combo_popup_guard_tokens.discard(token)
+
+        erlab.interactive.utils.single_shot(
+            self,
+            delay_ms,
+            discard_guard,
+        )
 
     def _remove_operation_list_event_filter(self) -> None:
         viewport = self._operation_list_viewport
@@ -3092,8 +3209,9 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
         self._operation_editor_update_pending = False
         self._update_operation_editor()
 
-    @staticmethod
-    def _operation_editor_rebuild_must_wait() -> bool:
+    def _operation_editor_rebuild_must_wait(self) -> bool:
+        if self._combo_popup_guard_tokens or self._tracked_combo_popup_is_visible():
+            return True
         popup = QtWidgets.QApplication.activePopupWidget()
         return popup is not None and erlab.interactive.utils.qt_is_valid(popup)
 
@@ -3110,6 +3228,10 @@ class FigureComposerTool(erlab.interactive.utils.ToolWindow[FigureRecipeState]):
             "figure_composer_editor_generation",
             self._operation_editor_generation,
         )
+        if isinstance(widget, QtWidgets.QComboBox):
+            self._track_combo_interaction(widget)
+        for combo in widget.findChildren(QtWidgets.QComboBox):
+            self._track_combo_interaction(combo)
 
     def _editor_control_signal_allowed(self, widget: QtWidgets.QWidget) -> bool:
         return (
