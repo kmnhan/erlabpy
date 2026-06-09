@@ -1744,6 +1744,9 @@ def test_figure_composer_plot_slices_edge_helper_contracts(
     )
     assert tool.tool_status.operations[1].panel_styles_enabled
     assert tool.tool_status.operations[1].panel_styles[0].cmap == "plasma"
+    figurecomposer_plot_slices._update_current_panel_styles(tool, ())
+    assert not tool.tool_status.operations[1].panel_styles_enabled
+    assert tool.tool_status.operations[1].panel_styles == ()
 
 
 def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
@@ -6401,7 +6404,7 @@ def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:
         tool.tool_status.operations[1],
         {id(tool.figure.axes[0])},
     )
-    figurecomposer_toolbar_dialogs._update_plot_slices_panel_styles(
+    panel_update = figurecomposer_toolbar_dialogs._update_plot_slices_panel_styles(
         tool,
         slices_id,
         panel_keys,
@@ -6413,6 +6416,7 @@ def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:
             ),
         ),
     )
+    assert panel_update is not None
     updated_slices = tool.tool_status.operations[1]
     assert updated_slices.panel_styles == (
         FigurePlotSlicesPanelStyleState(
@@ -6426,6 +6430,22 @@ def test_figure_composer_toolbar_operation_helpers_update_recipe(qtbot) -> None:
             cmap="viridis",
         ),
     )
+
+    stale_update = figurecomposer_toolbar_dialogs._update_plot_slices_panel_styles(
+        tool,
+        slices_id,
+        panel_keys,
+        (
+            FigurePlotSlicesPanelStyleState(
+                map_index=0,
+                slice_index=0,
+                cmap="plasma",
+            ),
+        ),
+        expected_operation=slices,
+    )
+    assert stale_update is None
+    assert tool.tool_status.operations[1].panel_styles == updated_slices.panel_styles
 
     figurecomposer_toolbar_dialogs._update_plot_slices_panel_styles(
         tool,
@@ -7291,6 +7311,9 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
     tool._show_axes_customize_dialog()
     dialog = tool._axes_customize_dialog
     assert isinstance(dialog, QtWidgets.QDialog)
+    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    assert selector is not None
+    selector.set_selected_axes(((0, 0), (0, 1)), emit=True)
     target_combo = dialog.findChild(
         QtWidgets.QComboBox, "figureComposerToolbarImageTargetCombo"
     )
@@ -7345,6 +7368,81 @@ def test_figure_composer_toolbar_axes_dialog_updates_image_style(qtbot) -> None:
     )
     assert main_panel_styles_check is not None
     assert main_panel_styles_check.checkState() == QtCore.Qt.CheckState.Checked
+
+
+def test_figure_composer_toolbar_axes_dialog_keeps_cleared_image_styles_on_close(
+    qtbot,
+) -> None:
+    data = _figure_composer_image_source("data")
+    tool = FigureComposerTool(
+        data,
+        recipe=FigureRecipeState(
+            setup=FigureSubplotsState(ncols=2),
+            sources=(FigureSourceState(name="data", label="data"),),
+            operations=(
+                FigureOperationState.plot_slices(
+                    label="plot_slices",
+                    sources=("data",),
+                    axes=FigureAxesSelectionState(axes=((0, 0), (0, 1))),
+                    slice_dim="eV",
+                    slice_values=(-0.5, 0.5),
+                ).model_copy(
+                    update={
+                        "panel_styles_enabled": True,
+                        "panel_styles": (
+                            FigurePlotSlicesPanelStyleState(
+                                map_index=0,
+                                slice_index=0,
+                                cmap="magma",
+                            ),
+                            FigurePlotSlicesPanelStyleState(
+                                map_index=0,
+                                slice_index=1,
+                                cmap="plasma",
+                            ),
+                        ),
+                    }
+                ),
+            ),
+            primary_source="data",
+        ),
+    )
+    qtbot.addWidget(tool)
+    tool.show_figure_window(activate=False)
+
+    tool._show_axes_customize_dialog()
+    dialog = tool._axes_customize_dialog
+    assert isinstance(dialog, QtWidgets.QDialog)
+    selector = dialog.findChild(figurecomposer_widgets._AxesSelectorWidget)
+    assert selector is not None
+    selector.set_selected_axes(((0, 0), (0, 1)), emit=True)
+
+    panel_list = dialog.findChild(
+        QtWidgets.QListWidget, "figureComposerPlotSlicesPanelStyleList"
+    )
+    cmap_check = dialog.findChild(
+        QtWidgets.QCheckBox, "figureComposerPanelCmapOverrideCheck"
+    )
+    assert panel_list is not None
+    assert cmap_check is not None
+    assert panel_list.count() == 2
+    for row in range(panel_list.count()):
+        item = panel_list.item(row)
+        assert item is not None
+        item.setSelected(True)
+
+    cmap_check.setCheckState(QtCore.Qt.CheckState.Unchecked)
+    operation = tool.tool_status.operations[0]
+    assert not operation.panel_styles_enabled
+    assert operation.panel_styles == ()
+
+    dialog.close()
+    QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+    qtbot.waitUntil(lambda: tool._axes_customize_dialog is None, timeout=1000)
+
+    operation = tool.tool_status.operations[0]
+    assert not operation.panel_styles_enabled
+    assert operation.panel_styles == ()
 
 
 def test_figure_composer_toolbar_axes_dialog_uses_gridspec_selector(qtbot) -> None:

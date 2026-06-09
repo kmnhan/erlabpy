@@ -484,6 +484,7 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                 _connect_panel_editor_signal,
                 curves_page,
             )
+            expected_operation = operation
 
             def apply_panel_line_styles(
                 styles: Sequence[FigurePlotSlicesPanelStyleState],
@@ -491,7 +492,16 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
                 operation_id: str = target.operation_id,
                 panel_keys: tuple[_PlotSlicesPanelKey, ...] = target.panel_keys,
             ) -> None:
-                _update_plot_slices_panel_styles(tool, operation_id, panel_keys, styles)
+                nonlocal expected_operation
+                updated = _update_plot_slices_panel_styles(
+                    tool,
+                    operation_id,
+                    panel_keys,
+                    styles,
+                    expected_operation=expected_operation,
+                )
+                if updated is not None:
+                    expected_operation = updated
 
             _connect_panel_editor_signal(
                 editor, editor.sigPanelStylesChanged, apply_panel_line_styles
@@ -525,13 +535,24 @@ def show_axes_customize_dialog(tool: FigureComposerTool) -> None:
             images_page,
         )
 
+        expected_operation = operation
+
         def apply_panel_image_styles(
             styles: Sequence[FigurePlotSlicesPanelStyleState],
             *,
             operation_id: str = target.operation_id,
             panel_keys: tuple[_PlotSlicesPanelKey, ...] = target.panel_keys,
         ) -> None:
-            _update_plot_slices_panel_styles(tool, operation_id, panel_keys, styles)
+            nonlocal expected_operation
+            updated = _update_plot_slices_panel_styles(
+                tool,
+                operation_id,
+                panel_keys,
+                styles,
+                expected_operation=expected_operation,
+            )
+            if updated is not None:
+                expected_operation = updated
 
         _connect_panel_editor_signal(
             editor, editor.sigPanelStylesChanged, apply_panel_image_styles
@@ -1147,10 +1168,14 @@ def _update_plot_slices_panel_styles(
     operation_id: str,
     edited_panel_keys: Sequence[_PlotSlicesPanelKey],
     styles: Sequence[FigurePlotSlicesPanelStyleState],
-) -> None:
+    *,
+    expected_operation: FigureOperationState | None = None,
+) -> FigureOperationState | None:
     operation = _operation_by_id(tool, operation_id)
     if operation is None or operation.kind != FigureOperationKind.PLOT_SLICES:
-        return
+        return None
+    if expected_operation is not None and operation != expected_operation:
+        return None
     edited_keys = {(key.map_index, key.slice_index) for key in edited_panel_keys}
     incoming_styles = tuple(styles)
     merged = (
@@ -1164,14 +1189,16 @@ def _update_plot_slices_panel_styles(
     merged = tuple(
         sorted(merged, key=lambda style: (style.map_index, style.slice_index))
     )
+    updated = operation.model_copy(
+        update={"panel_styles_enabled": bool(merged), "panel_styles": merged}
+    )
     _replace_operation_by_id(
         tool,
         operation_id,
-        operation.model_copy(
-            update={"panel_styles_enabled": bool(merged), "panel_styles": merged}
-        ),
+        updated,
         rebuild_editor=_current_operation_id(tool) == operation_id,
     )
+    return updated
 
 
 def _replace_recipe_operation(

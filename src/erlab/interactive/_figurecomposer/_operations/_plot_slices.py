@@ -2943,7 +2943,7 @@ def _update_current_panel_styles(
     ) -> FigureOperationState:
         return operation.model_copy(
             update={
-                "panel_styles_enabled": True,
+                "panel_styles_enabled": bool(styles),
                 "panel_styles": tuple(styles),
             }
         )
