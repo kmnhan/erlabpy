@@ -85,7 +85,6 @@ from erlab.interactive._figurecomposer._text import (
     _dict_from_text,
     _float_tuple_from_text,
     _format_dict,
-    _format_dim_sizes,
     _format_pair,
     _format_plot_limit,
     _format_tuple,
@@ -1690,10 +1689,9 @@ def _build_plot_slices_editor(
     shape_summary = QtWidgets.QLabel(
         "\n".join(
             (
-                f"Sources: {shape.source_text}",
-                f"Selection: {shape.selection_text}",
-                f"Result: {shape.panel_text}",
-                shape.axes_text,
+                f"Input dims: {shape.source_text}",
+                f"Plotted dims: {shape.panel_text}",
+                *(("Status: " + shape.selection_text,) if not shape.valid else ()),
             )
         ),
         cuts_page,
@@ -1704,9 +1702,9 @@ def _build_plot_slices_editor(
         shape_summary.setForegroundRole(QtGui.QPalette.ColorRole.Link)
     tool._add_form_row(
         basic_layout,
-        "Data shape",
+        "Dimensions",
         shape_summary,
-        "Shows source dimensions, selected values, result per subplot, and targets.",
+        "Shows the input dimensions and the dimensions plotted by this step.",
     )
 
     dims = _available_source_dims(tool._source_data, operation.sources)
@@ -2960,38 +2958,23 @@ def _plot_slices_shape(
     maps = _operation_maps(tool, operation)
     if not maps:
         return _PlotSlicesShape(
-            source_text="No source data is available for this step.",
+            source_text="unavailable",
             selection_text="Select at least one valid source.",
-            panel_text="Cannot determine the plotted data shape.",
-            axes_text="Targets: " + tool._axes_target_text(operation.axes),
+            panel_text="unavailable",
+            axes_text="",
             plot_dims=(),
             plot_ndim=None,
             panel_count=0,
             valid=False,
         )
 
-    source_names = (
-        tuple(selection.source for selection in operation.map_selections)
-        if operation.map_selections
-        else operation.sources
-    )
-    source_labels: list[str] = []
-    for index, data in enumerate(maps):
-        source_name = (
-            source_names[index] if index < len(source_names) else f"map {index + 1}"
-        )
-        source_labels.append(
-            f"{tool._source_display_name(source_name)}({_format_dim_sizes(data)})"
-        )
-
-    plot_maps = [data.T if operation.transpose else data for data in maps]
-    dims = tuple(str(dim) for dim in plot_maps[0].dims)
-    if any(tuple(str(dim) for dim in data.dims) != dims for data in plot_maps[1:]):
+    dims = tuple(str(dim) for dim in maps[0].dims)
+    if any(tuple(str(dim) for dim in data.dims) != dims for data in maps[1:]):
         return _PlotSlicesShape(
-            source_text="; ".join(source_labels),
-            selection_text="All plot_slices sources must have matching dimensions.",
-            panel_text="Cannot plot mixed source dimensions in one step.",
-            axes_text="Targets: " + tool._axes_target_text(operation.axes),
+            source_text="mixed",
+            selection_text="All inputs must have matching dimensions.",
+            panel_text="unavailable",
+            axes_text="",
             plot_dims=(),
             plot_ndim=None,
             panel_count=0,
@@ -2999,86 +2982,63 @@ def _plot_slices_shape(
         )
 
     selected_dims: set[str] = set()
-    selection_parts: list[str] = []
+    selection_error = ""
     slice_count = 1
     if operation.slice_dim:
-        if operation.slice_dim not in dims:
-            selection_parts.append(f"{operation.slice_dim}: not in source dims")
+        if operation.slice_dim not in dims and operation.slice_values:
+            selection_error = f"{operation.slice_dim!r} is not an input dimension."
         elif operation.slice_values:
             selected_dims.add(operation.slice_dim)
             slice_count = len(operation.slice_values)
-            width_text = (
-                ""
-                if operation.slice_width is None
-                else f", width {operation.slice_width:g}"
-            )
-            selection_parts.append(
-                f"{operation.slice_dim}: {slice_count} cut"
-                f"{'s' if slice_count != 1 else ''}{width_text}"
-            )
-        else:
-            selection_parts.append(f"{operation.slice_dim}: choose values")
-    else:
-        selection_parts.append("No selection dimension")
 
-    advanced_selections: list[str] = []
     for key, value in operation.slice_kwargs.items():
         if key.endswith("_width") or key not in dims:
             continue
         count = _selection_value_count(value)
         if isinstance(value, slice):
-            advanced_selections.append(f"{key}: range")
-        elif count is None:
+            continue
+        if count is None:
             selected_dims.add(key)
-            advanced_selections.append(f"{key}: single value")
         else:
             selected_dims.add(key)
             slice_count = max(slice_count, count)
-            advanced_selections.append(f"{key}: {count} cut{'s' if count != 1 else ''}")
-    if advanced_selections:
-        selection_parts.append("Advanced: " + ", ".join(advanced_selections))
 
     plot_dims = tuple(dim for dim in dims if dim not in selected_dims)
     panel_count = len(maps) * slice_count
-    if operation.axes.expression:
-        axes_text = f"Targets: {operation.axes.expression}"
-    else:
-        if tool._recipe.setup.layout_mode == "gridspec":
-            target_count = len(operation.axes.axes_ids)
-        else:
-            target_count = len(operation.axes.valid_axes(tool._recipe.setup))
-        axes_text = (
-            f"Targets: {target_count} selected for {panel_count} panel"
-            f"{'s' if panel_count != 1 else ''}"
-        )
-
-    if len(plot_dims) == 1:
-        panel_text = f"Each target panel: 1D line over {plot_dims[0]}"
+    if selection_error:
+        panel_text = "unavailable"
+        valid = False
+    elif len(plot_dims) == 1:
+        panel_text = f"{plot_dims[0]} (1D line)"
         valid = True
     elif len(plot_dims) == 2:
-        panel_text = f"Each target panel: 2D image, y={plot_dims[0]}, x={plot_dims[1]}"
+        panel_text = f"{_format_dim_names(plot_dims)} (2D image)"
         valid = True
     else:
-        dims_text = "none" if not plot_dims else " × ".join(plot_dims)
-        panel_text = (
-            f"Each target panel would be {len(plot_dims)}D ({dims_text}); "
-            "choose selections until each panel is 1D or 2D."
-        )
+        panel_text = f"{_format_dim_names(plot_dims)} ({len(plot_dims)}D, unsupported)"
         valid = False
 
-    source_text = "; ".join(source_labels)
-    if operation.transpose:
-        source_text += " (plot order transposed)"
     return _PlotSlicesShape(
-        source_text=source_text,
-        selection_text="; ".join(selection_parts),
+        source_text=_format_dim_names(dims),
+        selection_text=(
+            selection_error
+            or (
+                "Choose selections until the plotted dimensions are 1D or 2D."
+                if not valid
+                else ""
+            )
+        ),
         panel_text=panel_text,
-        axes_text=axes_text,
+        axes_text="",
         plot_dims=plot_dims,
         plot_ndim=len(plot_dims),
         panel_count=panel_count,
         valid=valid,
     )
+
+
+def _format_dim_names(dims: Sequence[str]) -> str:
+    return ", ".join(dims) if dims else "none"
 
 
 def _plot_slices_kwargs(

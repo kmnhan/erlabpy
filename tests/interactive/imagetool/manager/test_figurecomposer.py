@@ -1798,6 +1798,9 @@ def test_figure_composer_plot_slices_shape_and_source_editor_contracts(
     qtbot.addWidget(tool)
 
     shape = figurecomposer_plot_slices._plot_slices_shape(tool, first_operation)
+    assert shape.source_text == "eV, kx, ky"
+    assert shape.panel_text == "eV (1D line)"
+    assert shape.selection_text == ""
     assert shape.plot_ndim == 1
     assert shape.panel_count == 2
     assert shape.valid
@@ -11259,8 +11262,10 @@ def test_figure_composer_plot_slices_line_panels_use_line_controls(qtbot) -> Non
     )
     order_combo = tool.findChild(QtWidgets.QComboBox, "figureComposerOrderCombo")
     assert shape_summary is not None
-    assert "1D line over kx" in shape_summary.text()
-    assert "2 selected for 2 panels" in shape_summary.text()
+    assert "Input dims: eV, kx" in shape_summary.text()
+    assert "Plotted dims: kx (1D line)" in shape_summary.text()
+    assert "Targets:" not in shape_summary.text()
+    assert "Selection:" not in shape_summary.text()
     assert order_combo is not None
 
     tool._select_step_section("colors")
